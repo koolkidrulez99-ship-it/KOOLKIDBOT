@@ -1,0 +1,1010 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>KOOLKID AI BOT</title>
+<script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+
+<style>
+    body{
+        background:linear-gradient(135deg,#0f172a,#020617);
+        font-family:Arial, sans-serif;
+        color:white;
+        margin:0;
+        padding:20px;
+    }
+
+    .container{
+        max-width:1100px;
+        margin:auto;
+        padding:20px;
+    }
+
+    h1{
+        text-align:center;
+        color:#38bdf8;
+        text-shadow:0 0 20px #38bdf8;
+    }
+
+    .card{
+        background:#111827;
+        padding:20px;
+        border-radius:15px;
+        margin:15px 0;
+        box-shadow:0 0 25px rgba(0,0,0,0.6);
+        position:relative;
+    }
+
+    button{
+        padding:10px 20px;
+        margin:5px;
+        border:none;
+        border-radius:10px;
+        cursor:pointer;
+        font-weight:bold;
+        transition:0.2s;
+        color:white;
+    }
+    button:hover{transform:scale(1.05);}
+
+    input, select{
+        padding:8px;
+        margin:5px;
+        border-radius:8px;
+        border:none;
+        background:#1f2937;
+        color:white;
+    }
+
+    .green{color:#22c55e;}
+    .red{color:#ef4444;}
+    .blue{color:#38bdf8;}
+
+    .digit-stream{
+        font-size:22px;
+        letter-spacing:5px;
+        text-align:center;
+        padding:10px;
+        background:#0f172a;
+        border-radius:10px;
+        margin-top:10px;
+        max-height:60px;
+        overflow:hidden;
+    }
+
+    .history-box{
+        max-height:200px;
+        overflow-y:auto;
+    }
+
+    .profile-btn {
+        font-size: 1.5rem;
+        padding: 15px 30px;
+        margin: 10px;
+        border-radius: 15px;
+        font-weight: bold;
+        transition: 0.3s;
+    }
+
+    .koolkid-btn {background: #38bdf8; box-shadow: 0 0 20px #38bdf8;}
+    .jokerjoe-btn {background: #a855f7; box-shadow: 0 0 20px #a855f7;}
+    .human-btn {background: #22c55e; box-shadow: 0 0 20px #22c55e;}
+
+    .profile-btn.active {transform: scale(1.05); border: 2px solid white;}
+    .profile-btn:not(.active) {opacity: 0.7;}
+
+    .tick-box{
+        width:80px;
+        height:60px;
+        background:#1e3a8a;
+        border-radius:12px;
+        display:flex;
+        justify-content:center;
+        align-items:center;
+        font-size:2rem;
+        font-weight:bold;
+        box-shadow:0 0 15px rgba(56,189,248,0.7);
+    }
+
+    .pnl-box{
+        width:160px;
+        height:60px;
+        border-radius:12px;
+        display:flex;
+        justify-content:center;
+        align-items:center;
+        font-size:1.4rem;
+        font-weight:bold;
+        background:#0f172a;
+        border:2px solid #334155;
+    }
+
+    .confidence-wrap{
+        margin-top:15px;
+        display:grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap:10px;
+    }
+
+    .conf-item{
+        background:#0f172a;
+        padding:12px;
+        border-radius:12px;
+        border:1px solid #334155;
+    }
+
+    .conf-bar-bg{
+        width:100%;
+        background:#1f2937;
+        border-radius:10px;
+        overflow:hidden;
+        margin-top:6px;
+        height:18px;
+    }
+
+    .conf-bar-fill{
+        height:18px;
+        width:0%;
+        background:linear-gradient(90deg,#ef4444,#facc15,#22c55e);
+        transition:0.3s;
+    }
+
+    .digit-grid{
+        display:grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 10px;
+        margin-top: 15px;
+    }
+
+    .digit-cell{
+        background:#1f2937;
+        padding:10px;
+        border-radius:10px;
+        text-align:center;
+        border:2px solid #374151;
+        transition:0.2s;
+        cursor:pointer;
+        user-select:none;
+    }
+
+    .digit-cell.flash{
+        border-color:#ef4444;
+        box-shadow:0 0 18px #ef4444;
+        transform:scale(1.05);
+    }
+
+    .trash-btn{
+        float:right;
+        cursor:pointer;
+        font-size:20px;
+        padding:5px 10px;
+        border-radius:8px;
+        background:#ef4444;
+    }
+
+    .rate-row{
+        display:flex;
+        gap:12px;
+        flex-wrap:wrap;
+        margin-bottom:12px;
+    }
+    .rate-box{
+        flex:1;
+        min-width:210px;
+        background:#0f172a;
+        border:1px solid #334155;
+        border-radius:12px;
+        padding:12px;
+        display:flex;
+        justify-content:space-between;
+        align-items:center;
+        font-weight:bold;
+    }
+    .rate-win{
+        border-color:#22c55e;
+        box-shadow:0 0 14px rgba(34,197,94,0.25);
+    }
+    .rate-loss{
+        border-color:#ef4444;
+        box-shadow:0 0 14px rgba(239,68,68,0.25);
+    }
+
+    .digit-popup{
+        position:fixed;
+        z-index:9999;
+        background:#111827;
+        border:1px solid #334155;
+        border-radius:12px;
+        box-shadow:0 0 25px rgba(0,0,0,0.6);
+        padding:10px;
+        display:none;
+        min-width:180px;
+    }
+    .digit-popup h4{
+        margin:0 0 8px 0;
+        color:#38bdf8;
+        font-size:14px;
+    }
+    .digit-popup button{
+        width:100%;
+        margin:6px 0;
+    }
+
+    /* =================== TOAST NOTIFICATIONS =================== */
+    #toastContainer{
+        position:fixed;
+        top:15px;
+        right:15px;
+        z-index:99999;
+        display:flex;
+        flex-direction:column;
+        gap:10px;
+        width:280px;
+        pointer-events:none;
+    }
+
+    .toast{
+        background:#111827;
+        border:1px solid #334155;
+        border-radius:12px;
+        padding:12px 14px;
+        box-shadow:0 0 25px rgba(0,0,0,0.7);
+        font-weight:bold;
+        font-size:14px;
+        opacity:0;
+        transform:translateX(40px);
+        transition:0.35s;
+        pointer-events:none;
+    }
+
+    .toast.show{
+        opacity:1;
+        transform:translateX(0px);
+    }
+
+    .toast.success{border-color:#22c55e; color:#22c55e;}
+    .toast.error{border-color:#ef4444; color:#ef4444;}
+    .toast.warn{border-color:#facc15; color:#facc15;}
+    .toast.info{border-color:#38bdf8; color:#38bdf8;}
+
+</style>
+</head>
+
+<body>
+
+<!-- TOAST CONTAINER -->
+<div id="toastContainer"></div>
+
+<div class="container">
+
+    <h1>KOOLKID AI TRADING ENGINE</h1>
+    <a href="/logout" style="color:#ef4444; font-weight:bold;">Logout</a>
+
+    <!-- PROFILE -->
+    <div class="card" style="text-align:center;">
+        <h3>🎮 SELECT PROFILE</h3>
+        <button id="koolkidBtn" class="profile-btn koolkid-btn active" onclick="setProfile('KOOLKID')">🔵 KOOLKID</button>
+        <button id="jokerjoeBtn" class="profile-btn jokerjoe-btn" onclick="setProfile('JOKERJOE')">🃏 JOKERJOE</button>
+        <button id="humanBtn" class="profile-btn human-btn" onclick="setProfile('HUMAN')">🧑 HUMAN</button>
+
+        <h4 id="profileTitle" style="margin-top:10px; color:#38bdf8;">KOOLKID MODE: OVER & UNDER</h4>
+    </div>
+
+    <!-- API -->
+    <div class="card">
+        <h3>🔌 API CONNECTION</h3>
+        <input id="token" placeholder="Enter API Token" type="password" style="width:40%;">
+        <button onclick="connect()" style="background:#38bdf8;">Connect</button>
+        <button onclick="disconnect()" style="background:#ef4444;">Disconnect</button>
+
+        <select id="symbol"></select>
+
+        <p>Status: <span id="apiStatus" class="red">Not Connected</span></p>
+    </div>
+
+    <!-- ACCOUNT DASHBOARD -->
+    <div class="card" id="accountDashboard" style="display:none;">
+        <h3>💰 ACCOUNT DASHBOARD</h3>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:15px;">
+            <div>
+                <div style="color:#94a3b8;">Balance</div>
+                <div style="font-size:2rem; font-weight:bold; color:#38bdf8;">
+                    $<span id="balance">0</span>
+                </div>
+            </div>
+
+            <div>
+                <div style="color:#94a3b8;">Net P&L</div>
+                <div id="netPnlBox" class="pnl-box">$0.00</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- LIVE TICK INFO -->
+    <div class="card">
+        <h3>📍 LIVE TICK INFO</h3>
+
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div>
+                <div style="color:#94a3b8;">Last Digit</div>
+                <div id="lastDigitBox" class="tick-box">-</div>
+            </div>
+
+            <div>
+                <div style="color:#94a3b8;">Tick Count</div>
+                <div style="font-size:2rem; font-weight:bold; color:#facc15;">
+                    <span id="tickCount">0</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="digit-stream" id="digitStream">-</div>
+    </div>
+
+    <!-- KOOLKID CONFIDENCE -->
+    <div class="card" id="confidencePanel">
+        <h3>📊 KOOLKID CONFIDENCE BARS</h3>
+
+        <div class="confidence-wrap">
+            <div class="conf-item">
+                <div>OVER 1: <span id="confOver1Text">0</span>%</div>
+                <div class="conf-bar-bg"><div id="confOver1" class="conf-bar-fill"></div></div>
+            </div>
+
+            <div class="conf-item">
+                <div>OVER 2: <span id="confOver2Text">0</span>%</div>
+                <div class="conf-bar-bg"><div id="confOver2" class="conf-bar-fill"></div></div>
+            </div>
+
+            <div class="conf-item">
+                <div>UNDER 8: <span id="confUnder8Text">0</span>%</div>
+                <div class="conf-bar-bg"><div id="confUnder8" class="conf-bar-fill"></div></div>
+            </div>
+
+            <div class="conf-item">
+                <div>UNDER 9: <span id="confUnder9Text">0</span>%</div>
+                <div class="conf-bar-bg"><div id="confUnder9" class="conf-bar-fill"></div></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- DIGIT ANALYSIS -->
+    <div class="card" id="digitAnalysisPanel">
+        <h3>📊 100 TICK DIGIT ANALYSIS</h3>
+        <div class="digit-grid" id="digitGrid"></div>
+    </div>
+
+    <!-- MANUAL TRADING -->
+    <div class="card">
+        <h3>🎮 MANUAL TRADE</h3>
+
+        <div style="display:flex; gap:14px; flex-wrap:wrap; align-items:flex-end;">
+            <div style="flex:1; min-width:220px;">
+                <div style="color:#94a3b8; font-size:13px; margin-left:6px;">Stake</div>
+                <input id="stake" type="number" value="1" min="0.35" step="0.35" style="width:100%;">
+            </div>
+
+            <div style="flex:1; min-width:220px;">
+                <div style="color:#94a3b8; font-size:13px; margin-left:6px;">Barrier</div>
+                <input id="barrier" type="number" value="5" min="0" max="9" style="width:100%;">
+            </div>
+        </div>
+
+        <!-- TP/SL -->
+        <div style="display:flex; gap:14px; flex-wrap:wrap; align-items:flex-end; margin-top:10px;">
+            <div style="flex:1; min-width:220px;">
+                <div style="color:#94a3b8; font-size:13px; margin-left:6px;">Take Profit (TP)</div>
+                <input id="tp" type="number" value="0" step="0.1" style="width:100%;">
+            </div>
+
+            <div style="flex:1; min-width:220px;">
+                <div style="color:#94a3b8; font-size:13px; margin-left:6px;">Stop Loss (SL)</div>
+                <input id="sl" type="number" value="0" step="0.1" style="width:100%;">
+            </div>
+        </div>
+
+        <div style="margin-top:8px;">
+            <button id="autoSlBtn" onclick="toggleAutoSL()" style="background:#facc15; width:100%;">
+                AUTO SL: ON
+            </button>
+        </div>
+
+        <div style="margin-top:8px; display:flex; gap:10px; flex-wrap:wrap;">
+            <button onclick="manualTP()" style="background:#22c55e; flex:1;">SET TP</button>
+            <button onclick="manualSL()" style="background:#ef4444; flex:1;">SET SL</button>
+        </div>
+
+        <!-- AUTO -->
+        <div style="margin-top:10px;">
+            <button id="autoBtn" onclick="toggleAuto()" style="background:#38bdf8; width:100%;">AUTO OFF</button>
+        </div>
+
+        <!-- KOOLKID BUTTONS -->
+        <div id="koolkidButtons" style="margin-top:12px;">
+            <button style="background:#22c55e; width:100%;" onclick="take3('UNDER')">🔥 TAKE 3 UNDER NOW</button>
+            <button style="background:#38bdf8; width:100%;" onclick="take3('OVER')">🔥 TAKE 3 OVER NOW</button>
+
+            <button style="background:#ec4899; width:100%;" onclick="burst4('UNDER')">⚡ BURST 4 UNDER FAST</button>
+            <button style="background:#a855f7; width:100%;" onclick="burst4('OVER')">⚡ BURST 4 OVER FAST</button>
+        </div>
+
+        <!-- JOKERJOE BUTTONS -->
+        <div id="jokerjoeButtons" style="margin-top:12px; display:none;">
+            <button style="background:#a855f7; width:100%;" onclick="trade('MATCHES')">✅ DIGIT MATCHES</button>
+            <button style="background:#f59e0b; width:100%;" onclick="trade('DIFFERS')">❌ DIGIT DIFFERS</button>
+
+            <button style="background:#a855f7; width:100%;" onclick="take3('MATCHES')">🔥 TAKE 3 MATCHES NOW</button>
+            <button style="background:#f59e0b; width:100%;" onclick="take3('DIFFERS')">🔥 TAKE 3 DIFFERS NOW</button>
+
+            <button style="background:#f59e0b; width:100%;" onclick="burst4('DIFFERS')">⚡ BURST 4 DIFFERS FAST</button>
+        </div>
+
+    </div>
+
+    <!-- TRADE HISTORY -->
+    <div class="card">
+        <h3>
+            📜 TRADE HISTORY
+            <span class="trash-btn" onclick="clearHistory()">🗑️</span>
+        </h3>
+
+        <div class="rate-row">
+            <div class="rate-box rate-win">
+                <span>Win Rate</span>
+                <span style="color:#22c55e;"><span id="winrate">0</span>%</span>
+            </div>
+            <div class="rate-box rate-loss">
+                <span>Loss Rate</span>
+                <span style="color:#ef4444;"><span id="loserate">0</span>%</span>
+            </div>
+        </div>
+
+        <div class="rate-row" style="margin-top:-4px;">
+            <div class="rate-box">
+                <span>Wins</span>
+                <span style="color:#22c55e;"><span id="wins">0</span></span>
+            </div>
+            <div class="rate-box">
+                <span>Losses</span>
+                <span style="color:#ef4444;"><span id="losses">0</span></span>
+            </div>
+        </div>
+
+        <div id="history" class="history-box">
+            <p style="text-align:center; color:#64748b;">No trades yet</p>
+        </div>
+    </div>
+
+</div>
+
+<!-- popup -->
+<div id="digitPopup" class="digit-popup">
+    <h4 id="popupTitle">Digit</h4>
+    <button id="popupBtn1" style="background:#38bdf8;" onclick="popupTrade('OVER')">TAKE OVER</button>
+    <button id="popupBtn2" style="background:#22c55e;" onclick="popupTrade('UNDER')">TAKE UNDER</button>
+</div>
+
+<script>
+const socket = io();
+
+let activeProfile = "KOOLKID";
+let digitBuffer = [];
+let lastClickedDigit = null;
+let apiConnected = false;
+
+let autoSL = true;
+
+const apiStatus = document.getElementById("apiStatus");
+const balanceDisplay = document.getElementById("balance");
+const netPnlBox = document.getElementById("netPnlBox");
+
+const lastDigitBox = document.getElementById("lastDigitBox");
+const tickCountEl = document.getElementById("tickCount");
+const digitStream = document.getElementById("digitStream");
+const digitGrid = document.getElementById("digitGrid");
+
+const winsEl = document.getElementById("wins");
+const lossesEl = document.getElementById("losses");
+const winrateEl = document.getElementById("winrate");
+const loserateEl = document.getElementById("loserate");
+
+const historyDiv = document.getElementById("history");
+const accountDashboard = document.getElementById("accountDashboard");
+
+const profileTitle = document.getElementById("profileTitle");
+
+const confidencePanel = document.getElementById("confidencePanel");
+const digitAnalysisPanel = document.getElementById("digitAnalysisPanel");
+
+const koolkidButtons = document.getElementById("koolkidButtons");
+const jokerjoeButtons = document.getElementById("jokerjoeButtons");
+
+// Confidence bars
+const confOver1 = document.getElementById("confOver1");
+const confOver2 = document.getElementById("confOver2");
+const confUnder8 = document.getElementById("confUnder8");
+const confUnder9 = document.getElementById("confUnder9");
+
+const confOver1Text = document.getElementById("confOver1Text");
+const confOver2Text = document.getElementById("confOver2Text");
+const confUnder8Text = document.getElementById("confUnder8Text");
+const confUnder9Text = document.getElementById("confUnder9Text");
+
+const barrierInput = document.getElementById("barrier");
+const stakeInput = document.getElementById("stake");
+
+const tpInput = document.getElementById("tp");
+const slInput = document.getElementById("sl");
+
+const digitPopup = document.getElementById("digitPopup");
+const popupTitle = document.getElementById("popupTitle");
+
+// ================== TOAST FUNCTION ==================
+function showToast(message, type="info"){
+    const container = document.getElementById("toastContainer");
+
+    const toast = document.createElement("div");
+    toast.className = `toast ${type}`;
+    toast.innerText = message;
+
+    container.appendChild(toast);
+
+    setTimeout(()=>toast.classList.add("show"), 50);
+
+    setTimeout(()=>{
+        toast.classList.remove("show");
+        setTimeout(()=>toast.remove(), 400);
+    }, 3500);
+}
+
+// ================== DIGIT GRID ==================
+function initDigitGrid(){
+    digitGrid.innerHTML = "";
+    for(let i=0;i<10;i++){
+        const div = document.createElement("div");
+        div.className = "digit-cell";
+        div.id = `digit-${i}`;
+        div.innerHTML = `
+            <div style="font-size:1.6rem; font-weight:bold; color:#38bdf8;">${i}</div>
+            <div id="percent-${i}" style="color:#94a3b8;">0%</div>
+        `;
+        div.addEventListener("click", (ev) => onDigitClicked(i, ev));
+        digitGrid.appendChild(div);
+    }
+}
+initDigitGrid();
+
+function onDigitClicked(digit, ev){
+    barrierInput.value = digit;
+    lastClickedDigit = digit;
+
+    popupTitle.innerText = `Digit ${digit}`;
+
+    const btn1 = document.getElementById("popupBtn1");
+    const btn2 = document.getElementById("popupBtn2");
+
+    if(activeProfile === "KOOLKID"){
+        btn1.innerText = "TAKE OVER";
+        btn2.innerText = "TAKE UNDER";
+        btn1.style.background = "#38bdf8";
+        btn2.style.background = "#22c55e";
+        btn1.setAttribute("onclick", "popupTrade('OVER')");
+        btn2.setAttribute("onclick", "popupTrade('UNDER')");
+    }
+
+    if(activeProfile === "JOKERJOE"){
+        btn1.innerText = "TAKE MATCH";
+        btn2.innerText = "TAKE DIFFER";
+        btn1.style.background = "#a855f7";
+        btn2.style.background = "#f59e0b";
+        btn1.setAttribute("onclick", "popupTrade('MATCHES')");
+        btn2.setAttribute("onclick", "popupTrade('DIFFERS')");
+    }
+
+    digitPopup.style.left = (ev.clientX + 12) + "px";
+    digitPopup.style.top  = (ev.clientY + 12) + "px";
+    digitPopup.style.display = "block";
+}
+
+function hidePopup(){
+    digitPopup.style.display = "none";
+}
+
+document.addEventListener("click", (e) => {
+    const isDigitCell = e.target.closest(".digit-cell");
+    const isPopup = e.target.closest("#digitPopup");
+    if(!isDigitCell && !isPopup){
+        hidePopup();
+    }
+});
+
+async function popupTrade(type){
+    if(lastClickedDigit === null) return;
+    await trade(type, lastClickedDigit);
+    hidePopup();
+}
+
+// ================== MARKETS ==================
+function loadMarketList(){
+    const symbolSelect = document.getElementById("symbol");
+    symbolSelect.innerHTML = "";
+
+    const markets = [
+        {value:"R_10", label:"Volatility 10"},
+        {value:"R_25", label:"Volatility 25"},
+        {value:"R_50", label:"Volatility 50"},
+        {value:"R_75", label:"Volatility 75"},
+        {value:"R_100", label:"Volatility 100"},
+
+        {value:"1HZ10V", label:"Volatility 10 (1s)"},
+        {value:"1HZ15V", label:"Volatility 15 (1s)"},
+        {value:"1HZ25V", label:"Volatility 25 (1s)"},
+        {value:"1HZ30V", label:"Volatility 30 (1s)"},
+        {value:"1HZ50V", label:"Volatility 50 (1s)"},
+        {value:"1HZ75V", label:"Volatility 75 (1s)"},
+        {value:"1HZ90V", label:"Volatility 90 (1s)"},
+        {value:"1HZ100V", label:"Volatility 100 (1s)"},
+
+        {value:"BOOM300N", label:"Boom 300"},
+        {value:"BOOM500N", label:"Boom 500"},
+        {value:"BOOM1000N", label:"Boom 1000"},
+
+        {value:"CRASH300N", label:"Crash 300"},
+        {value:"CRASH500N", label:"Crash 500"},
+        {value:"CRASH1000N", label:"Crash 1000"},
+
+        {value:"RDBULL", label:"Bull Market"},
+        {value:"RDBEAR", label:"Bear Market"},
+    ];
+
+    markets.forEach(m=>{
+        const opt = document.createElement("option");
+        opt.value = m.value;
+        opt.innerText = m.label;
+        symbolSelect.appendChild(opt);
+    });
+
+    symbolSelect.value = "R_10";
+}
+loadMarketList();
+
+document.getElementById("symbol").addEventListener("change", function(){
+    fetch("/change_market", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({symbol:this.value})
+    });
+
+    showToast("📊 Market Changed: " + this.value, "warn");
+});
+
+// ================== PROFILE ==================
+function setProfile(profile){
+    activeProfile = profile;
+
+    document.getElementById("koolkidBtn").classList.remove("active");
+    document.getElementById("jokerjoeBtn").classList.remove("active");
+    document.getElementById("humanBtn").classList.remove("active");
+
+    if(profile === "KOOLKID"){
+        document.getElementById("koolkidBtn").classList.add("active");
+        profileTitle.innerText = "KOOLKID MODE: OVER & UNDER";
+        profileTitle.style.color = "#38bdf8";
+
+        confidencePanel.style.display = "block";
+        digitAnalysisPanel.style.display = "block";
+
+        koolkidButtons.style.display = "block";
+        jokerjoeButtons.style.display = "none";
+    }
+
+    if(profile === "JOKERJOE"){
+        document.getElementById("jokerjoeBtn").classList.add("active");
+        profileTitle.innerText = "JOKERJOE MODE: MATCHES & DIFFERS";
+        profileTitle.style.color = "#a855f7";
+
+        confidencePanel.style.display = "none";
+        digitAnalysisPanel.style.display = "block";
+
+        koolkidButtons.style.display = "none";
+        jokerjoeButtons.style.display = "block";
+    }
+
+    if(profile === "HUMAN"){
+        document.getElementById("humanBtn").classList.add("active");
+        profileTitle.innerText = "HUMAN MODE: MULTIPLIERS";
+        profileTitle.style.color = "#22c55e";
+
+        confidencePanel.style.display = "none";
+        digitAnalysisPanel.style.display = "none";
+
+        koolkidButtons.style.display = "none";
+        jokerjoeButtons.style.display = "none";
+    }
+
+    fetch("/set_profile", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({profile})
+    });
+
+    showToast("🎮 Profile Changed: " + profile, "info");
+}
+
+// ================== API ==================
+async function connect(){
+    const token = document.getElementById("token").value;
+    await fetch("/set_token", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({token})
+    });
+    document.getElementById("token").value = "";
+}
+
+async function disconnect(){
+    await fetch("/disconnect", {method:"POST"});
+
+    apiStatus.innerText = "Disconnected";
+    apiStatus.className = "red";
+
+    accountDashboard.style.display = "none";
+
+    balanceDisplay.innerText = "0.00";
+    netPnlBox.innerText = "$0.00";
+    netPnlBox.style.color = "white";
+
+    tickCountEl.innerText = "0";
+    lastDigitBox.innerText = "-";
+    digitStream.innerHTML = "-";
+
+    for(let i=0;i<10;i++){
+        const p = document.getElementById(`percent-${i}`);
+        if(p) p.innerText = "0%";
+    }
+
+    winsEl.innerText = "0";
+    lossesEl.innerText = "0";
+    winrateEl.innerText = "0";
+    loserateEl.innerText = "0";
+
+    historyDiv.innerHTML = `<p style="text-align:center; color:#64748b;">No trades yet</p>`;
+    hidePopup();
+
+    showToast("🔌 Disconnected", "error");
+}
+
+async function clearHistory(){
+    await fetch("/clear_history", {method:"POST"});
+    showToast("🗑️ Trade History Cleared", "warn");
+}
+
+// ================== AUTO ==================
+async function toggleAuto(){
+    const res = await fetch("/toggle_auto", {method:"POST"});
+    const data = await res.json();
+    const btn = document.getElementById("autoBtn");
+
+    if(data.auto_trade){
+        btn.innerText = "AUTO ON";
+        btn.style.background = "#22c55e";
+        showToast("🤖 AUTO MODE ENABLED", "success");
+    }else{
+        btn.innerText = "AUTO OFF";
+        btn.style.background = "#38bdf8";
+        showToast("🛑 AUTO MODE DISABLED", "error");
+    }
+}
+
+// ================== TP / SL ==================
+async function sendRiskControls(){
+    const tp = parseFloat(tpInput.value || "0");
+    const sl = parseFloat(slInput.value || "0");
+
+    await fetch("/set_risk_controls", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({
+            tp: tp,
+            sl: sl,
+            auto_sl: autoSL
+        })
+    });
+}
+
+async function toggleAutoSL(){
+    autoSL = !autoSL;
+    const btn = document.getElementById("autoSlBtn");
+
+    if(autoSL){
+        btn.innerText = "AUTO SL: ON";
+        btn.style.background = "#facc15";
+        showToast("🛡️ AUTO SL ENABLED", "warn");
+    }else{
+        btn.innerText = "AUTO SL: OFF";
+        btn.style.background = "#64748b";
+        showToast("⚠️ AUTO SL DISABLED", "error");
+    }
+
+    await sendRiskControls();
+}
+
+async function manualTP(){
+    await sendRiskControls();
+    showToast("🎯 TP Updated: $" + tpInput.value, "success");
+}
+
+async function manualSL(){
+    await sendRiskControls();
+    showToast("🛑 SL Updated: $" + slInput.value, "error");
+}
+
+// ================== TRADE FUNCTIONS ==================
+async function trade(type, barrierOverride=null){
+    const stake = stakeInput.value;
+    const symbol = document.getElementById("symbol").value;
+    const barrier = barrierOverride !== null ? barrierOverride : barrierInput.value;
+
+    await fetch("/manual_trade", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({type, stake, symbol, barrier})
+    });
+}
+
+async function take3(type){
+    const stake = stakeInput.value;
+    const symbol = document.getElementById("symbol").value;
+    const barrier = barrierInput.value;
+
+    await fetch("/manual_3_trades", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({type, stake, symbol, barrier})
+    });
+
+    showToast("🔥 TAKE 3 SENT (" + type + ")", "info");
+}
+
+async function burst4(type){
+    const stake = stakeInput.value;
+    const symbol = document.getElementById("symbol").value;
+    const barrier = barrierInput.value;
+
+    await fetch("/burst_4", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({type, stake, symbol, barrier})
+    });
+
+    showToast("⚡ BURST 4 SENT (" + type + ")", "warn");
+}
+
+// ================== SOCKET EVENTS ==================
+socket.on("connection_status", (data)=>{
+    apiConnected = data.connected;
+
+    if(data.connected){
+        apiStatus.innerText = "Connected";
+        apiStatus.className = "green";
+        accountDashboard.style.display = "block";
+
+        showToast("✅ API AUTHORIZED", "success");
+    } else {
+        apiStatus.innerText = "Not Connected";
+        apiStatus.className = "red";
+        accountDashboard.style.display = "none";
+    }
+});
+
+socket.on("trade_placed", (data)=>{
+    showToast("📌 TRADE PLACED", "info");
+});
+
+socket.on("history_cleared", ()=>{
+    winsEl.innerText = "0";
+    lossesEl.innerText = "0";
+    winrateEl.innerText = "0";
+    loserateEl.innerText = "0";
+    historyDiv.innerHTML = `<p style="text-align:center; color:#64748b;">No trades yet</p>`;
+});
+
+socket.on("balance_update", (data)=>{
+    balanceDisplay.innerText = Number(data.balance).toFixed(2);
+});
+
+socket.on("tick", (data)=>{
+    if(!apiConnected) return;
+
+    tickCountEl.innerText = data.tick_count;
+
+    digitBuffer.push(data.digit);
+    if(digitBuffer.length > 20) digitBuffer.shift();
+
+    digitStream.innerHTML = digitBuffer.join(" ");
+    lastDigitBox.innerText = data.digit;
+
+    for(let i=0;i<10;i++){
+        const cell = document.getElementById(`digit-${i}`);
+        cell.classList.remove("flash");
+    }
+
+    const activeCell = document.getElementById(`digit-${data.digit}`);
+    if(activeCell){
+        activeCell.classList.add("flash");
+        setTimeout(()=>activeCell.classList.remove("flash"), 250);
+    }
+});
+
+socket.on("digit_analysis", (data)=>{
+    if(data.percentages){
+        for(let i=0;i<10;i++){
+            const p = document.getElementById(`percent-${i}`);
+            if(p){
+                p.innerText = (data.percentages[i] ?? 0) + "%";
+            }
+        }
+    }
+
+    if(data.confidence && activeProfile === "KOOLKID"){
+        confOver1.style.width = data.confidence.over1 + "%";
+        confOver2.style.width = data.confidence.over2 + "%";
+        confUnder8.style.width = data.confidence.under8 + "%";
+        confUnder9.style.width = data.confidence.under9 + "%";
+
+        confOver1Text.innerText = data.confidence.over1;
+        confOver2Text.innerText = data.confidence.over2;
+        confUnder8Text.innerText = data.confidence.under8;
+        confUnder9Text.innerText = data.confidence.under9;
+    }
+});
+
+socket.on("trade_result", (data)=>{
+    const p = document.createElement("p");
+
+    if(data.result === "WIN"){
+        p.style.color = "#22c55e";
+        showToast("🎯 TP HIT! +$" + data.profit, "success");
+    } else {
+        p.style.color = "#ef4444";
+        showToast("🛑 SL HIT! -$" + Math.abs(data.profit), "error");
+    }
+
+    p.innerHTML = `${data.time} - ${data.result} (${data.profit})`;
+
+    if(historyDiv.innerText.includes("No trades")){
+        historyDiv.innerHTML = "";
+    }
+
+    historyDiv.prepend(p);
+});
+
+socket.on("stats_update", (data)=>{
+    winsEl.innerText = data.wins;
+    lossesEl.innerText = data.losses;
+    winrateEl.innerText = data.winrate;
+    loserateEl.innerText = data.loserate;
+
+    const pnl = data.net_pnl || 0;
+    netPnlBox.innerText = (pnl >= 0 ? "+$" : "-$") + Math.abs(pnl).toFixed(2);
+    netPnlBox.style.color = pnl >= 0 ? "#22c55e" : "#ef4444";
+
+    const btn = document.getElementById("autoBtn");
+    if(data.auto_trade){
+        btn.innerText = "AUTO ON";
+        btn.style.background = "#22c55e";
+    }else{
+        btn.innerText = "AUTO OFF";
+        btn.style.background = "#38bdf8";
+    }
+});
+
+// DEFAULT LOAD
+setProfile("KOOLKID");
+sendRiskControls();
+</script>
+
+</body>
+</html>

@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Register - KoolKid Bot</title>
+
+  <style>
+    body{
+      background:linear-gradient(135deg,#0f172a,#020617);
+      font-family:Arial, sans-serif;
+      color:white;
+      display:flex;
+      justify-content:center;
+      align-items:center;
+      height:100vh;
+      margin:0;
+    }
+    .card{
+      background:#111827;
+      padding:30px;
+      border-radius:15px;
+      width:380px;
+      box-shadow:0 0 25px rgba(0,0,0,0.6);
+      text-align:center;
+    }
+    h2{
+      color:#a855f7;
+      text-shadow:0 0 15px #a855f7;
+    }
+    input{
+      width:90%;
+      padding:12px;
+      margin:10px 0;
+      border-radius:10px;
+      border:none;
+      background:#1f2937;
+      color:white;
+      font-size:15px;
+    }
+    button{
+      width:95%;
+      padding:12px;
+      margin-top:10px;
+      border:none;
+      border-radius:10px;
+      font-weight:bold;
+      cursor:pointer;
+      background:#a855f7;
+      color:white;
+      font-size:16px;
+      transition:0.2s;
+    }
+    button:hover{
+      transform:scale(1.05);
+    }
+    .error{
+      color:#ef4444;
+      font-weight:bold;
+      margin-top:10px;
+    }
+    a{
+      color:#38bdf8;
+      text-decoration:none;
+      font-weight:bold;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="card">
+    <h2>📝 Register</h2>
+
+    <form method="POST">
+      <input type="text" name="username" placeholder="Choose Username" required />
+      <input type="password" name="password" placeholder="Choose Password" required />
+      <button type="submit">Create Account</button>
+    </form>
+
+    {% if error %}
+      <p class="error">{{ error }}</p>
+    {% endif %}
+
+    <p style="margin-top:15px;">
+      Already have an account? <a href="/login">Login</a>
+    </p>
+  </div>
+</body>
+</html>
