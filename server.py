@@ -122,11 +122,9 @@ def extract_last_decimal_digit(price, pip_size=2):
         return 0
 
 
-# ---------------- LOGIN REQUIRED DECORATOR ---------------- #
+# ---------------- LOGIN REQUIRED CHECK ---------------- #
 def login_required():
-    if "user" not in session:
-        return False
-    return True
+    return "user" in session
 
 
 # ---------------- ROUTES (LOGIN SYSTEM) ---------------- #
@@ -172,6 +170,7 @@ def logout():
 def index():
     if not login_required():
         return redirect(url_for("login"))
+
     return render_template("index.html", username=session.get("user"))
 
 
@@ -229,6 +228,7 @@ def on_message(ws, message):
             socketio.emit("api_error", {"message": msg})
             return
 
+        # AUTH SUCCESS
         if "authorize" in data:
             ws_connected = True
             loginid = data["authorize"].get("loginid", "UNKNOWN")
@@ -248,9 +248,11 @@ def on_message(ws, message):
             socketio.emit("balance_update", {"balance": balance})
             send_stats_update()
 
+            # Subscribe tick + balance
             ws.send(json.dumps({"ticks": current_symbol, "subscribe": 1}))
             ws.send(json.dumps({"balance": 1, "subscribe": 1}))
 
+        # BALANCE STREAM
         if "balance" in data:
             try:
                 balance = float(data["balance"]["balance"])
@@ -259,10 +261,12 @@ def on_message(ws, message):
             except:
                 pass
 
+        # TICK STREAM
         if "tick" in data:
             tick = data["tick"]
             process_tick(tick)
 
+        # BUY CONFIRMATION
         if "buy" in data:
             socketio.emit("trade_placed", data["buy"])
 
@@ -274,6 +278,7 @@ def on_message(ws, message):
                     "subscribe": 1
                 }))
 
+        # CONTRACT UPDATES
         if "proposal_open_contract" in data:
             contract = data["proposal_open_contract"]
             process_contract(contract)
@@ -400,7 +405,7 @@ def disconnect():
         return jsonify({"error": "Unauthorized"}), 403
 
     global api_token, ws_connected, ws
-    global current_symbol, balance, session_start_balance
+    global balance, session_start_balance
 
     try:
         if ws:
@@ -445,8 +450,7 @@ def set_profile():
         return jsonify({"error": "Unauthorized"}), 403
 
     global active_profile
-    data = request.json
-    profile = data.get("profile", "KOOLKID")
+    profile = request.json.get("profile", "KOOLKID")
 
     if profile not in strategies:
         return jsonify({"error": "Invalid profile"}), 400
@@ -464,8 +468,8 @@ def change_market():
         return jsonify({"error": "Unauthorized"}), 403
 
     global current_symbol
-
     symbol = request.json.get("symbol")
+
     if not symbol:
         return jsonify({"error": "No symbol provided"}), 400
 
@@ -561,7 +565,10 @@ def burst_4():
     return jsonify({"status": "success", "placed": placed})
 
 
+# ---------------- MAIN ENTRY (RENDER SAFE) ---------------- #
 if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+
     print("""
 ╔══════════════════════════════════════════════════════════════╗
 ║     🚀 KOOLKID AI BOT SERVER (LOGIN + DATABASE BUILD)        ║
@@ -571,10 +578,4 @@ if __name__ == "__main__":
 ╚══════════════════════════════════════════════════════════════╝
     """)
 
-    import os
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-   socketio.run(app, host="0.0.0.0", port=port, allow_unsafe_werkzeug=True)
-
-
+    socketio.run(app, host="0.0.0.0", port=port, debug=True, allow_unsafe_werkzeug=True)
