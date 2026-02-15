@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Admin Panel - KOOLKID BOT</title>
+    <style>
+        body{
+            background:#0f172a;
+            color:white;
+            font-family:Arial;
+            padding:20px;
+        }
+        h1{
+            color:#38bdf8;
+            text-shadow:0 0 15px #38bdf8;
+        }
+        table{
+            width:100%;
+            border-collapse:collapse;
+            margin-top:20px;
+        }
+        th, td{
+            border:1px solid #334155;
+            padding:10px;
+            text-align:left;
+        }
+        th{
+            background:#111827;
+        }
+        button{
+            background:#ef4444;
+            color:white;
+            padding:8px 12px;
+            border:none;
+            cursor:pointer;
+            border-radius:8px;
+            font-weight:bold;
+        }
+        button:hover{
+            transform:scale(1.05);
+        }
+        a{
+            color:#facc15;
+            font-weight:bold;
+        }
+    </style>
+</head>
+<body>
+
+<h1>🛡️ ADMIN PANEL - KOOLKID BOT</h1>
+
+<p>Logged in as: <b>{{admin}}</b></p>
+<a href="/logout">Logout</a>
+
+<table>
+    <tr>
+        <th>ID</th>
+        <th>Username</th>
+        <th>Email</th>
+        <th>Admin</th>
+        <th>Action</th>
+    </tr>
+
+    {% for u in users %}
+    <tr>
+        <td>{{u[0]}}</td>
+        <td>{{u[1]}}</td>
+        <td>{{u[2]}}</td>
+        <td>{{u[3]}}</td>
+        <td>
+            {% if u[1] != "koolkidrulez" %}
+            <button onclick="deleteUser({{u[0]}})">Delete</button>
+            {% else %}
+            🔒 Protected
+            {% endif %}
+        </td>
+    </tr>
+    {% endfor %}
+</table>
+
+<script>
+async function deleteUser(id){
+    if(!confirm("Delete this user?")) return;
+
+    const res = await fetch("/admin/delete_user", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({user_id:id})
+    });
+
+    const data = await res.json();
+
+    if(data.status === "deleted"){
+        alert("User deleted");
+        location.reload();
+    }else{
+        alert("Error: " + (data.error || "unknown"));
+    }
+}
+</script>
+
+</body>
+</html>

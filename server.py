@@ -7,7 +7,7 @@ import websocket
 import time
 import sqlite3
 from flask import Flask, render_template, request, jsonify, redirect, url_for, session
-from flask_socketio import SocketIO, join_room, leave_room
+from flask_socketio import SocketIO
 from datetime import datetime
 import logging
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -21,7 +21,16 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__, template_folder="templates")
-app.config["SECRET_KEY"] = "koolkid-secret-key-2025"
+
+# ===============================
+# ENV VARIABLES (SAFE DEFAULTS)
+# ===============================
+app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "koolkid-secret-key-2025")
+
+ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "koolkidrulez")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "Koolkid@12345")  # change in Render ENV
+
+MAX_USERS = int(os.environ.get("MAX_USERS", "150"))
 
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
@@ -48,7 +57,42 @@ def init_db():
     conn.close()
 
 
+def ensure_admin_user():
+    """
+    Auto-create the admin account so you never get locked out.
+    """
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+
+    c.execute("SELECT id FROM users WHERE username = ?", (ADMIN_USERNAME,))
+    exists = c.fetchone()
+
+    if not exists:
+        hashed_pw = generate_password_hash(ADMIN_PASSWORD)
+        c.execute("INSERT INTO users (username, password) VALUES (?, ?)", (ADMIN_USERNAME, hashed_pw))
+        conn.commit()
+        print(f"✅ Admin account created automatically: {ADMIN_USERNAME}")
+
+    conn.close()
+
+
+def get_user_count():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM users")
+    count = c.fetchone()[0]
+    conn.close()
+    return count
+
+
 def create_user(username, password):
+    if username.lower() == ADMIN_USERNAME.lower():
+        return False, "Username is reserved"
+
+    # limit users
+    if get_user_count() >= MAX_USERS:
+        return False, f"User limit reached ({MAX_USERS} max)"
+
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
 
@@ -80,6 +124,28 @@ def verify_user(username, password):
 
 # Initialize DB
 init_db()
+ensure_admin_user()
+
+
+# ---------------- GLOBAL STATE ---------------- #
+api_token = ""
+ws = None
+ws_connected = False
+
+# Profile + symbol
+active_profile = "KOOLKID"
+current_symbol = "R_25"
+
+# Balance tracking
+balance = 0.0
+session_start_balance = None
+
+# Strategy instances
+strategies = {
+    "KOOLKID": KoolKidStrategy(),
+    "JOKERJOE": JokerJoeStrategy(),
+    "HUMAN": HumanStrategy()
+}
 
 
 # ---------------- HELPERS ---------------- #
@@ -101,95 +167,24 @@ def extract_last_decimal_digit(price, pip_size=2):
         return 0
 
 
+# ---------------- LOGIN REQUIRED CHECK ---------------- #
 def login_required():
     return "user" in session
 
 
-def get_username():
-    return session.get("user")
-
-
-def get_room(username):
-    return f"user_{username}"
-
-
-# ---------------- MULTI USER BOT STORAGE ---------------- #
-user_bots = {}
-user_lock = threading.Lock()
-
-
-def create_user_bot(username):
-    """
-    Creates bot state for a user if not existing.
-    """
-    with user_lock:
-        if username not in user_bots:
-            user_bots[username] = {
-                "api_token": "",
-                "ws": None,
-                "ws_connected": False,
-                "active_profile": "KOOLKID",
-                "current_symbol": "R_25",
-                "balance": 0.0,
-                "session_start_balance": None,
-                "strategies": {
-                    "KOOLKID": KoolKidStrategy(),
-                    "JOKERJOE": JokerJoeStrategy(),
-                    "HUMAN": HumanStrategy()
-                }
-            }
-
-
-def reset_user_bot(username):
-    with user_lock:
-        if username in user_bots:
-            bot = user_bots[username]
-
-            try:
-                if bot["ws"]:
-                    bot["ws"].close()
-            except:
-                pass
-
-            bot["api_token"] = ""
-            bot["ws"] = None
-            bot["ws_connected"] = False
-            bot["balance"] = 0.0
-            bot["session_start_balance"] = None
-            bot["active_profile"] = "KOOLKID"
-            bot["current_symbol"] = "R_25"
-
-            for strat in bot["strategies"].values():
-                strat.reset()
-
-
-# ---------------- SOCKET.IO ROOM JOIN ---------------- #
-@socketio.on("connect")
-def on_socket_connect():
-    if login_required():
-        username = get_username()
-        join_room(get_room(username))
-        logger.info(f"🟢 Socket joined room: {get_room(username)}")
-
-
-@socketio.on("disconnect")
-def on_socket_disconnect():
-    if login_required():
-        username = get_username()
-        leave_room(get_room(username))
-        logger.info(f"🔴 Socket left room: {get_room(username)}")
+def is_admin():
+    return session.get("user", "").lower() == ADMIN_USERNAME.lower()
 
 
 # ---------------- ROUTES (LOGIN SYSTEM) ---------------- #
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
-        username = request.form.get("username")
-        password = request.form.get("password")
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "").strip()
 
         if verify_user(username, password):
             session["user"] = username
-            create_user_bot(username)
             return redirect(url_for("index"))
         else:
             return render_template("login.html", error="Invalid username or password")
@@ -200,8 +195,15 @@ def login():
 @app.route("/register", methods=["GET", "POST"])
 def register():
     if request.method == "POST":
-        username = request.form.get("username")
-        password = request.form.get("password")
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "").strip()
+
+        # basic password rules
+        if len(password) < 8:
+            return render_template("register.html", error="Password must be at least 8 characters")
+
+        if password.isdigit() or password.isalpha():
+            return render_template("register.html", error="Password must include letters and numbers")
 
         ok, msg = create_user(username, password)
 
@@ -215,10 +217,6 @@ def register():
 
 @app.route("/logout")
 def logout():
-    username = session.get("user")
-    if username:
-        reset_user_bot(username)
-
     session.pop("user", None)
     return redirect(url_for("login"))
 
@@ -233,15 +231,10 @@ def index():
 
 
 # ---------------- DERIV BUY FUNCTION ---------------- #
-def send_buy(username, contract_type, stake, symbol, barrier):
-    bot = user_bots.get(username)
+def send_buy(contract_type, stake, symbol, barrier):
+    global ws
 
-    if not bot:
-        return False, "Bot not found"
-
-    ws = bot["ws"]
-
-    if not bot["ws_connected"] or not ws:
+    if not ws_connected or not ws:
         return False, "Not connected"
 
     contract_map = {
@@ -279,63 +272,58 @@ def send_buy(username, contract_type, stake, symbol, barrier):
 
 
 # ---------------- WEBSOCKET HANDLERS ---------------- #
-def on_message(username, ws, message):
-    bot = user_bots.get(username)
-    if not bot:
-        return
+def on_message(ws, message):
+    global ws_connected, balance, session_start_balance
 
     try:
         data = json.loads(message)
-        room = get_room(username)
 
         if "error" in data:
             msg = data["error"].get("message", "Unknown API Error")
-            logger.error(f"API Error [{username}]: {msg}")
-            socketio.emit("api_error", {"message": msg}, room=room)
+            logger.error(f"API Error: {msg}")
+            socketio.emit("api_error", {"message": msg})
             return
 
         # AUTH SUCCESS
         if "authorize" in data:
-            bot["ws_connected"] = True
+            ws_connected = True
             loginid = data["authorize"].get("loginid", "UNKNOWN")
-            bot["balance"] = float(data["authorize"].get("balance", 0))
+            balance = float(data["authorize"].get("balance", 0))
 
-            if bot["session_start_balance"] is None:
-                bot["session_start_balance"] = bot["balance"]
+            if session_start_balance is None:
+                session_start_balance = balance
 
-            logger.info(f"✅ Authorized [{username}]: {loginid} Balance={bot['balance']}")
+            logger.info(f"✅ Authorized: {loginid} Balance={balance}")
 
             socketio.emit("connection_status", {
                 "connected": True,
                 "loginid": loginid,
-                "balance": bot["balance"]
-            }, room=room)
+                "balance": balance
+            })
 
-            socketio.emit("balance_update", {"balance": bot["balance"]}, room=room)
+            socketio.emit("balance_update", {"balance": balance})
+            send_stats_update()
 
-            send_stats_update(username)
-
-            # Subscribe tick + balance
-            ws.send(json.dumps({"ticks": bot["current_symbol"], "subscribe": 1}))
+            ws.send(json.dumps({"ticks": current_symbol, "subscribe": 1}))
             ws.send(json.dumps({"balance": 1, "subscribe": 1}))
 
         # BALANCE STREAM
         if "balance" in data:
             try:
-                bot["balance"] = float(data["balance"]["balance"])
-                socketio.emit("balance_update", {"balance": bot["balance"]}, room=room)
-                send_stats_update(username)
+                balance = float(data["balance"]["balance"])
+                socketio.emit("balance_update", {"balance": balance})
+                send_stats_update()
             except:
                 pass
 
         # TICK STREAM
         if "tick" in data:
             tick = data["tick"]
-            process_tick(username, tick)
+            process_tick(tick)
 
         # BUY CONFIRMATION
         if "buy" in data:
-            socketio.emit("trade_placed", data["buy"], room=room)
+            socketio.emit("trade_placed", data["buy"])
 
             contract_id = data["buy"].get("contract_id")
             if contract_id:
@@ -348,28 +336,26 @@ def on_message(username, ws, message):
         # CONTRACT UPDATES
         if "proposal_open_contract" in data:
             contract = data["proposal_open_contract"]
-            process_contract(username, contract)
+            process_contract(contract)
 
     except Exception as e:
-        logger.error(f"on_message error [{username}]: {e}")
+        logger.error(f"on_message error: {e}")
 
 
-def process_tick(username, tick):
-    bot = user_bots.get(username)
-    if not bot:
-        return
+def process_tick(tick):
+    global current_symbol
 
     try:
         symbol = tick.get("symbol")
         price = tick.get("quote")
 
-        if symbol != bot["current_symbol"]:
+        if symbol != current_symbol:
             return
 
         pip_size = tick.get("pip_size", 2)
         digit = extract_last_decimal_digit(price, pip_size)
 
-        strategy = bot["strategies"].get(bot["active_profile"])
+        strategy = strategies.get(active_profile)
         if strategy:
             strategy.on_tick(tick, digit)
 
@@ -379,106 +365,79 @@ def process_tick(username, tick):
             "price": price,
             "tick_count": strategy.tick_count if strategy else 0,
             "timestamp": now_time()
-        }, room=get_room(username))
+        })
 
         if strategy:
-            socketio.emit("digit_analysis", strategy.get_ui_payload(), room=get_room(username))
+            socketio.emit("digit_analysis", strategy.get_ui_payload())
 
     except Exception as e:
-        logger.error(f"process_tick error [{username}]: {e}")
+        logger.error(f"process_tick error: {e}")
 
 
-def process_contract(username, contract):
-    bot = user_bots.get(username)
-    if not bot:
-        return
+def process_contract(contract):
+    global balance
 
     try:
         if not (contract.get("is_sold") or contract.get("is_settled")):
             return
 
         profit = float(contract.get("profit", 0))
-        bot["balance"] = float(bot["balance"]) + profit
+        balance = float(balance) + profit
 
-        strategy = bot["strategies"].get(bot["active_profile"])
+        strategy = strategies.get(active_profile)
         if strategy:
-            strategy.on_contract(contract, bot["balance"])
+            strategy.on_contract(contract, balance)
 
-        socketio.emit("trade_result", strategy.get_last_trade_entry() if strategy else {}, room=get_room(username))
-        send_stats_update(username)
+        socketio.emit("trade_result", strategy.get_last_trade_entry() if strategy else {})
+        send_stats_update()
 
     except Exception as e:
-        logger.error(f"process_contract error [{username}]: {e}")
+        logger.error(f"process_contract error: {e}")
 
 
-def send_stats_update(username):
-    bot = user_bots.get(username)
-    if not bot:
-        return
+def send_stats_update():
+    strategy = strategies.get(active_profile)
 
-    strategy = bot["strategies"].get(bot["active_profile"])
     if not strategy:
         return
 
-    payload = strategy.get_stats_payload(bot["balance"], bot["session_start_balance"])
-    payload["profile"] = bot["active_profile"]
+    payload = strategy.get_stats_payload(balance, session_start_balance)
+    payload["profile"] = active_profile
 
-    socketio.emit("stats_update", payload, room=get_room(username))
-
-
-def on_open(username, ws):
-    bot = user_bots.get(username)
-    if not bot:
-        return
-
-    logger.info(f"🔌 WebSocket Connected [{username}]")
-    bot["ws_connected"] = True
-
-    if bot["api_token"]:
-        ws.send(json.dumps({"authorize": bot["api_token"]}))
+    socketio.emit("stats_update", payload)
 
 
-def on_error(username, ws, error):
-    logger.error(f"WebSocket Error [{username}]: {error}")
-    socketio.emit("api_error", {"message": str(error)}, room=get_room(username))
+def on_open(ws):
+    global ws_connected
+    logger.info("🔌 WebSocket Connected")
+    ws_connected = True
+
+    if api_token:
+        ws.send(json.dumps({"authorize": api_token}))
 
 
-def on_close(username, ws, code, msg):
-    bot = user_bots.get(username)
-    if not bot:
-        return
-
-    bot["ws_connected"] = False
-    logger.warning(f"🔌 WebSocket Disconnected [{username}]")
-    socketio.emit("connection_status", {"connected": False}, room=get_room(username))
+def on_error(ws, error):
+    logger.error(f"WebSocket Error: {error}")
+    socketio.emit("api_error", {"message": str(error)})
 
 
-def start_ws(username):
-    bot = user_bots.get(username)
-    if not bot:
-        return
+def on_close(ws, code, msg):
+    global ws_connected
+    ws_connected = False
+    logger.warning("🔌 WebSocket Disconnected")
+    socketio.emit("connection_status", {"connected": False})
 
-    def _on_message(ws, message):
-        on_message(username, ws, message)
 
-    def _on_open(ws):
-        on_open(username, ws)
-
-    def _on_error(ws, error):
-        on_error(username, ws, error)
-
-    def _on_close(ws, code, msg):
-        on_close(username, ws, code, msg)
-
-    bot["ws"] = websocket.WebSocketApp(
+def start_ws():
+    global ws
+    ws = websocket.WebSocketApp(
         DERIV_WS,
-        on_message=_on_message,
-        on_open=_on_open,
-        on_error=_on_error,
-        on_close=_on_close
+        on_message=on_message,
+        on_open=on_open,
+        on_error=on_error,
+        on_close=on_close
     )
-
-    bot["ws"].run_forever(ping_interval=30)
+    ws.run_forever(ping_interval=30)
 
 
 # ---------------- BOT API ROUTES (PROTECTED) ---------------- #
@@ -487,15 +446,11 @@ def set_token():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
 
-    username = get_username()
-    create_user_bot(username)
+    global api_token, session_start_balance
+    api_token = request.json.get("token", "")
+    session_start_balance = None
 
-    bot = user_bots[username]
-
-    bot["api_token"] = request.json.get("token", "")
-    bot["session_start_balance"] = None
-
-    threading.Thread(target=start_ws, args=(username,), daemon=True).start()
+    threading.Thread(target=start_ws, daemon=True).start()
     return jsonify({"status": "connecting"})
 
 
@@ -504,12 +459,28 @@ def disconnect():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
 
-    username = get_username()
-    reset_user_bot(username)
+    global api_token, ws_connected, ws
+    global balance, session_start_balance
 
-    socketio.emit("connection_status", {"connected": False}, room=get_room(username))
-    socketio.emit("reset_ui", room=get_room(username))
-    send_stats_update(username)
+    try:
+        if ws:
+            ws.close()
+    except:
+        pass
+
+    ws_connected = False
+    api_token = ""
+    ws = None
+
+    balance = 0.0
+    session_start_balance = None
+
+    for strat in strategies.values():
+        strat.reset()
+
+    socketio.emit("connection_status", {"connected": False})
+    socketio.emit("reset_ui")
+    send_stats_update()
 
     return jsonify({"status": "disconnected"})
 
@@ -519,16 +490,12 @@ def clear_history():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
 
-    username = get_username()
-    bot = user_bots.get(username)
+    strategy = strategies.get(active_profile)
+    if strategy:
+        strategy.clear_history()
 
-    if bot:
-        strategy = bot["strategies"].get(bot["active_profile"])
-        if strategy:
-            strategy.clear_history()
-
-    socketio.emit("history_cleared", room=get_room(username))
-    send_stats_update(username)
+    socketio.emit("history_cleared")
+    send_stats_update()
     return jsonify({"status": "cleared"})
 
 
@@ -537,20 +504,17 @@ def set_profile():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
 
-    username = get_username()
-    bot = user_bots.get(username)
-
+    global active_profile
     profile = request.json.get("profile", "KOOLKID")
 
-    if profile not in ["KOOLKID", "JOKERJOE", "HUMAN"]:
+    if profile not in strategies:
         return jsonify({"error": "Invalid profile"}), 400
 
-    bot["active_profile"] = profile
+    active_profile = profile
+    socketio.emit("profile_update", {"profile": active_profile})
+    send_stats_update()
 
-    socketio.emit("profile_update", {"profile": profile}, room=get_room(username))
-    send_stats_update(username)
-
-    return jsonify({"status": "success", "profile": profile})
+    return jsonify({"status": "success", "profile": active_profile})
 
 
 @app.route("/change_market", methods=["POST"])
@@ -558,29 +522,27 @@ def change_market():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
 
-    username = get_username()
-    bot = user_bots.get(username)
-
+    global current_symbol
     symbol = request.json.get("symbol")
 
     if not symbol:
         return jsonify({"error": "No symbol provided"}), 400
 
-    bot["current_symbol"] = symbol
+    current_symbol = symbol
 
-    strategy = bot["strategies"].get(bot["active_profile"])
+    strategy = strategies.get(active_profile)
     if strategy:
         strategy.reset_tick_analysis()
 
-    if bot["ws_connected"] and bot["ws"]:
+    if ws_connected and ws:
         try:
-            bot["ws"].send(json.dumps({"forget_all": "ticks"}))
-            bot["ws"].send(json.dumps({"ticks": bot["current_symbol"], "subscribe": 1}))
+            ws.send(json.dumps({"forget_all": "ticks"}))
+            ws.send(json.dumps({"ticks": current_symbol, "subscribe": 1}))
         except:
             pass
 
-    socketio.emit("market_change", {"symbol": bot["current_symbol"]}, room=get_room(username))
-    return jsonify({"status": "success", "symbol": bot["current_symbol"]})
+    socketio.emit("market_change", {"symbol": current_symbol})
+    return jsonify({"status": "success", "symbol": current_symbol})
 
 
 @app.route("/toggle_auto", methods=["POST"])
@@ -588,15 +550,12 @@ def toggle_auto():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
 
-    username = get_username()
-    bot = user_bots.get(username)
-
-    strategy = bot["strategies"].get(bot["active_profile"])
+    strategy = strategies.get(active_profile)
     if not strategy:
         return jsonify({"status": "error", "message": "No strategy loaded"}), 400
 
     new_state = strategy.toggle_auto()
-    send_stats_update(username)
+    send_stats_update()
 
     return jsonify({"status": "success", "auto_trade": new_state})
 
@@ -606,17 +565,14 @@ def manual_trade():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
 
-    username = get_username()
-    bot = user_bots.get(username)
-
     data = request.json
 
     contract_type = data.get("type")
     stake = float(data.get("stake", 1))
-    symbol = data.get("symbol", bot["current_symbol"])
+    symbol = data.get("symbol", current_symbol)
     barrier = int(data.get("barrier", 5))
 
-    ok, msg = send_buy(username, contract_type, stake, symbol, barrier)
+    ok, msg = send_buy(contract_type, stake, symbol, barrier)
     return jsonify({"status": "success" if ok else "error", "message": msg})
 
 
@@ -625,19 +581,16 @@ def manual_3_trades():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
 
-    username = get_username()
-    bot = user_bots.get(username)
-
     data = request.json
 
     contract_type = data.get("type")
     stake = float(data.get("stake", 1))
-    symbol = data.get("symbol", bot["current_symbol"])
+    symbol = data.get("symbol", current_symbol)
     barrier = int(data.get("barrier", 5))
 
     placed = 0
     for _ in range(3):
-        ok, _msg = send_buy(username, contract_type, stake, symbol, barrier)
+        ok, _msg = send_buy(contract_type, stake, symbol, barrier)
         if ok:
             placed += 1
         time.sleep(0.15)
@@ -650,19 +603,16 @@ def burst_4():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
 
-    username = get_username()
-    bot = user_bots.get(username)
-
     data = request.json
 
     contract_type = data.get("type")
     stake = float(data.get("stake", 1))
-    symbol = data.get("symbol", bot["current_symbol"])
+    symbol = data.get("symbol", current_symbol)
     barrier = int(data.get("barrier", 5))
 
     placed = 0
     for _ in range(4):
-        ok, _msg = send_buy(username, contract_type, stake, symbol, barrier)
+        ok, _msg = send_buy(contract_type, stake, symbol, barrier)
         if ok:
             placed += 1
         time.sleep(0.10)
@@ -676,10 +626,11 @@ if __name__ == "__main__":
 
     print("""
 ╔══════════════════════════════════════════════════════════════╗
-║     🚀 KOOLKID AI BOT SERVER (MULTI USER BUILD)              ║
+║     🚀 KOOLKID AI BOT SERVER (ADMIN + USERS SYSTEM)          ║
 ║     - SQLite Users Database                                 ║
-║     - Each user has own Deriv WS + Token                     ║
-║     - Multi-user safe (rooms + isolated strategies)          ║
+║     - Admin auto-created                                    ║
+║     - Register / Login / Logout                             ║
+║     - Max Users Limit                                       ║
 ╚══════════════════════════════════════════════════════════════╝
     """)
 
