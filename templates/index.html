@@ -376,9 +376,9 @@
         <div class="digit-grid" id="digitGrid"></div>
     </div>
 
-    <!-- MANUAL TRADING -->
+    <!-- MANUAL TRADING & AUTO -->
     <div class="card">
-        <h3>🎮 MANUAL TRADE</h3>
+        <h3>🎮 MANUAL & AUTO TRADE</h3>
 
         <div style="display:flex; gap:14px; flex-wrap:wrap; align-items:flex-end;">
             <div style="flex:1; min-width:220px;">
@@ -416,12 +416,25 @@
             <button onclick="manualSL()" style="background:#ef4444; flex:1;">SET SL</button>
         </div>
 
-        <!-- AUTO -->
+        <!-- MASTER AUTO -->
         <div style="margin-top:10px;">
             <button id="autoBtn" onclick="toggleAuto()" style="background:#38bdf8; width:100%;">AUTO OFF</button>
         </div>
 
-        <!-- KOOLKID BUTTONS -->
+        <!-- KOOLKID AUTO MODES -->
+        <div id="koolkidAutos" style="margin-top:12px;">
+            <button id="kidracksBtn" style="background:#1e293b; width:100%;" onclick="toggleKidracksAuto()">
+                KIDRACKS AUTO TRADE: OFF
+            </button>
+            <button id="koolkidspeedBtn" style="background:#1e293b; width:100%;" onclick="toggleKoolkidspeedAuto()">
+                KOOLKIDSPEED AUTO: OFF
+            </button>
+            <button id="koolluckBtn" style="background:#1e293b; width:100%;" onclick="toggleKoolluckAuto()">
+                KOOL🍀KID LUCK: OFF
+            </button>
+        </div>
+
+        <!-- KOOLKID QUICK FIRE BUTTONS -->
         <div id="koolkidButtons" style="margin-top:12px;">
             <button style="background:#22c55e; width:100%;" onclick="take3('UNDER')">🔥 TAKE 3 UNDER NOW</button>
             <button style="background:#38bdf8; width:100%;" onclick="take3('OVER')">🔥 TAKE 3 OVER NOW</button>
@@ -520,6 +533,7 @@ const digitAnalysisPanel = document.getElementById("digitAnalysisPanel");
 
 const koolkidButtons = document.getElementById("koolkidButtons");
 const jokerjoeButtons = document.getElementById("jokerjoeButtons");
+const koolkidAutos = document.getElementById("koolkidAutos");
 
 // Confidence bars
 const confOver1 = document.getElementById("confOver1");
@@ -698,6 +712,7 @@ function setProfile(profile){
 
         koolkidButtons.style.display = "block";
         jokerjoeButtons.style.display = "none";
+        koolkidAutos.style.display = "block";
     }
 
     if(profile === "JOKERJOE"){
@@ -710,6 +725,7 @@ function setProfile(profile){
 
         koolkidButtons.style.display = "none";
         jokerjoeButtons.style.display = "block";
+        koolkidAutos.style.display = "none";
     }
 
     if(profile === "HUMAN"){
@@ -722,6 +738,7 @@ function setProfile(profile){
 
         koolkidButtons.style.display = "none";
         jokerjoeButtons.style.display = "none";
+        koolkidAutos.style.display = "none";
     }
 
     fetch("/set_profile", {
@@ -773,6 +790,9 @@ async function disconnect(){
     historyDiv.innerHTML = `<p style="text-align:center; color:#64748b;">No trades yet</p>`;
     hidePopup();
 
+    // reset auto mode buttons
+    updateAutoModeButtons({kidracks:false, koolkidspeed:false, koolluck:false});
+
     showToast("🔌 Disconnected", "error");
 }
 
@@ -781,7 +801,7 @@ async function clearHistory(){
     showToast("🗑️ Trade History Cleared", "warn");
 }
 
-// ================== AUTO ==================
+// ================== MASTER AUTO ==================
 async function toggleAuto(){
     const res = await fetch("/toggle_auto", {method:"POST"});
     const data = await res.json();
@@ -790,13 +810,29 @@ async function toggleAuto(){
     if(data.auto_trade){
         btn.innerText = "AUTO ON";
         btn.style.background = "#22c55e";
-        showToast("🤖 AUTO MODE ENABLED", "success");
+        showToast("🤖 MASTER AUTO ENABLED", "success");
     }else{
         btn.innerText = "AUTO OFF";
         btn.style.background = "#38bdf8";
-        showToast("🛑 AUTO MODE DISABLED", "error");
+        showToast("🛑 MASTER AUTO DISABLED", "error");
     }
 }
+
+// ================== AUTO STAKE ==================
+async function syncAutoStake(){
+    const stake = parseFloat(stakeInput.value || "1");
+    if(isNaN(stake) || stake <= 0){
+        return;
+    }
+    await fetch("/set_auto_stake", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({stake})
+    });
+}
+
+stakeInput.addEventListener("change", syncAutoStake);
+stakeInput.addEventListener("blur", syncAutoStake);
 
 // ================== TP / SL ==================
 async function sendRiskControls(){
@@ -839,6 +875,64 @@ async function manualTP(){
 async function manualSL(){
     await sendRiskControls();
     showToast("🛑 SL Updated: $" + slInput.value, "error");
+}
+
+// ================== KOOLKID AUTO MODE BUTTON HELPERS ==================
+function updateAutoModeButtons(modes){
+    const kidBtn = document.getElementById("kidracksBtn");
+    const speedBtn = document.getElementById("koolkidspeedBtn");
+    const luckBtn = document.getElementById("koolluckBtn");
+
+    if(modes.kidracks !== undefined){
+        if(modes.kidracks){
+            kidBtn.innerText = "KIDRACKS AUTO TRADE: ON";
+            kidBtn.style.background = "#22c55e";
+        }else{
+            kidBtn.innerText = "KIDRACKS AUTO TRADE: OFF";
+            kidBtn.style.background = "#1e293b";
+        }
+    }
+
+    if(modes.koolkidspeed !== undefined){
+        if(modes.koolkidspeed){
+            speedBtn.innerText = "KOOLKIDSPEED AUTO: ON";
+            speedBtn.style.background = "#38bdf8";
+        }else{
+            speedBtn.innerText = "KOOLKIDSPEED AUTO: OFF";
+            speedBtn.style.background = "#1e293b";
+        }
+    }
+
+    if(modes.koolluck !== undefined){
+        if(modes.koolluck){
+            luckBtn.innerText = "KOOL🍀KID LUCK: ON";
+            luckBtn.style.background = "#22c55e";
+        }else{
+            luckBtn.innerText = "KOOL🍀KID LUCK: OFF";
+            luckBtn.style.background = "#1e293b";
+        }
+    }
+}
+
+async function toggleKidracksAuto(){
+    const res = await fetch("/toggle_kidracks_auto", {method:"POST"});
+    const data = await res.json();
+    updateAutoModeButtons({kidracks: data.kidracks_auto});
+    showToast("KIDRACKS AUTO: " + (data.kidracks_auto ? "ON" : "OFF"), data.kidracks_auto ? "success" : "error");
+}
+
+async function toggleKoolkidspeedAuto(){
+    const res = await fetch("/toggle_koolkidspeed_auto", {method:"POST"});
+    const data = await res.json();
+    updateAutoModeButtons({koolkidspeed: data.koolkidspeed_auto});
+    showToast("KOOLKIDSPEED AUTO: " + (data.koolkidspeed_auto ? "ON" : "OFF"), data.koolkidspeed_auto ? "success" : "error");
+}
+
+async function toggleKoolluckAuto(){
+    const res = await fetch("/toggle_koolluck_auto", {method:"POST"});
+    const data = await res.json();
+    updateAutoModeButtons({koolluck: data.koolluck_auto});
+    showToast("KOOL🍀KID LUCK: " + (data.koolluck_auto ? "ON" : "OFF"), data.koolluck_auto ? "success" : "error");
 }
 
 // ================== TRADE FUNCTIONS ==================
@@ -1001,9 +1095,14 @@ socket.on("stats_update", (data)=>{
     }
 });
 
+socket.on("auto_mode_update", (modes)=>{
+    updateAutoModeButtons(modes);
+});
+
 // DEFAULT LOAD
 setProfile("KOOLKID");
 sendRiskControls();
+syncAutoStake();
 </script>
 
 </body>

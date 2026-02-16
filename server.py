@@ -6,10 +6,10 @@ import threading
 import websocket
 import time
 import sqlite3
+import logging
+from datetime import datetime
 from flask import Flask, render_template, request, jsonify, redirect, url_for, session
 from flask_socketio import SocketIO
-from datetime import datetime
-import logging
 from werkzeug.security import generate_password_hash, check_password_hash
 
 # STRATEGIES
@@ -28,8 +28,7 @@ app = Flask(__name__, template_folder="templates")
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "koolkid-secret-key-2025")
 
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "koolkidrulez")
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "Koolkid@12345")  # change in Render ENV
-
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "Koolkid@12345")
 MAX_USERS = int(os.environ.get("MAX_USERS", "150"))
 
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
@@ -44,26 +43,25 @@ DB_FILE = "users.db"
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT UNIQUE NOT NULL,
-        password TEXT NOT NULL
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL
+        )
+        """
     )
-    """)
-
     conn.commit()
     conn.close()
 
 
 def ensure_admin_user():
     """
-    Auto-create the admin account so you never get locked out.
+    Auto-create admin so you never get locked out.
     """
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-
     c.execute("SELECT id FROM users WHERE username = ?", (ADMIN_USERNAME,))
     exists = c.fetchone()
 
@@ -89,7 +87,6 @@ def create_user(username, password):
     if username.lower() == ADMIN_USERNAME.lower():
         return False, "Username is reserved"
 
-    # limit users
     if get_user_count() >= MAX_USERS:
         return False, f"User limit reached ({MAX_USERS} max)"
 
@@ -111,7 +108,6 @@ def create_user(username, password):
 def verify_user(username, password):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-
     c.execute("SELECT password FROM users WHERE username = ?", (username,))
     row = c.fetchone()
     conn.close()
@@ -132,19 +128,20 @@ api_token = ""
 ws = None
 ws_connected = False
 
-# Profile + symbol
 active_profile = "KOOLKID"
 current_symbol = "R_25"
 
-# Balance tracking
 balance = 0.0
 session_start_balance = None
+
+# ✅ ONE GLOBAL AUTO STAKE (ALL AUTO MODES USE THIS)
+auto_stake = 1.0
 
 # Strategy instances
 strategies = {
     "KOOLKID": KoolKidStrategy(),
     "JOKERJOE": JokerJoeStrategy(),
-    "HUMAN": HumanStrategy()
+    "HUMAN": HumanStrategy(),
 }
 
 
@@ -154,6 +151,9 @@ def now_time():
 
 
 def extract_last_decimal_digit(price, pip_size=2):
+    """
+    Correct decimal formatting so we get the true last digit (fixes the 'always 0' bug).
+    """
     try:
         fmt = "{:0." + str(int(pip_size)) + "f}"
         price_str = fmt.format(float(price))
@@ -163,7 +163,7 @@ def extract_last_decimal_digit(price, pip_size=2):
 
         decimal_part = price_str.split(".")[1]
         return int(decimal_part[-1])
-    except:
+    except Exception:
         return 0
 
 
@@ -198,7 +198,6 @@ def register():
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "").strip()
 
-        # basic password rules
         if len(password) < 8:
             return render_template("register.html", error="Password must be at least 8 characters")
 
@@ -241,7 +240,7 @@ def send_buy(contract_type, stake, symbol, barrier):
         "OVER": "DIGITOVER",
         "UNDER": "DIGITUNDER",
         "MATCHES": "DIGITMATCH",
-        "DIFFERS": "DIGITDIFF"
+        "DIFFERS": "DIGITDIFF",
     }
 
     if contract_type not in contract_map:
@@ -260,8 +259,8 @@ def send_buy(contract_type, stake, symbol, barrier):
             "duration": 1,
             "duration_unit": "t",
             "symbol": symbol,
-            "barrier": int(barrier)
-        }
+            "barrier": int(barrier),
+        },
     }
 
     try:
@@ -269,6 +268,65 @@ def send_buy(contract_type, stake, symbol, barrier):
         return True, "Trade sent"
     except Exception as e:
         return False, str(e)
+
+
+# ---------------- AUTO TRADE ENGINE ---------------- #
+def run_auto_trade(strategy):
+    """
+    Runs KoolKid auto engines (KidRacks, KoolKidspeed, KoolLuck).
+    Uses ONE GLOBAL auto_stake.
+    Respects master auto switch (strategy.auto_trade).
+    """
+    global auto_stake
+
+    if not strategy:
+        return
+
+    # 🔒 MASTER AUTO TOGGLE – if OFF, no auto trades at all
+    if not getattr(strategy, "auto_trade", False):
+        return
+
+    if active_profile != "KOOLKID":
+        return
+
+    if not hasattr(strategy, "check_auto_trade_signal"):
+        return
+
+    signals = strategy.check_auto_trade_signal()
+
+    if not signals:
+        return
+
+    if isinstance(signals, dict):
+        signals = [signals]
+
+    for sig in signals:
+        try:
+            ctype = sig.get("type")
+            barrier = sig.get("barrier")
+            symbol = current_symbol
+
+            stake = auto_stake
+
+            ok, msg = send_buy(ctype, stake, symbol, barrier)
+
+            if ok:
+                socketio.emit(
+                    "trade_placed",
+                    {
+                        "type": ctype,
+                        "barrier": barrier,
+                        "stake": stake,
+                        "symbol": symbol,
+                        "mode": sig.get("mode"),
+                    },
+                )
+                logger.info(f"🤖 AUTO TRADE SENT [{sig.get('mode')}]: {ctype} barrier={barrier} stake={stake}")
+            else:
+                logger.error(f"❌ AUTO TRADE FAILED: {msg}")
+
+        except Exception as e:
+            logger.error(f"Auto trade error: {e}")
 
 
 # ---------------- WEBSOCKET HANDLERS ---------------- #
@@ -295,11 +353,10 @@ def on_message(ws, message):
 
             logger.info(f"✅ Authorized: {loginid} Balance={balance}")
 
-            socketio.emit("connection_status", {
-                "connected": True,
-                "loginid": loginid,
-                "balance": balance
-            })
+            socketio.emit(
+                "connection_status",
+                {"connected": True, "loginid": loginid, "balance": balance},
+            )
 
             socketio.emit("balance_update", {"balance": balance})
             send_stats_update()
@@ -313,7 +370,7 @@ def on_message(ws, message):
                 balance = float(data["balance"]["balance"])
                 socketio.emit("balance_update", {"balance": balance})
                 send_stats_update()
-            except:
+            except Exception:
                 pass
 
         # TICK STREAM
@@ -327,11 +384,15 @@ def on_message(ws, message):
 
             contract_id = data["buy"].get("contract_id")
             if contract_id:
-                ws.send(json.dumps({
-                    "proposal_open_contract": 1,
-                    "contract_id": contract_id,
-                    "subscribe": 1
-                }))
+                ws.send(
+                    json.dumps(
+                        {
+                            "proposal_open_contract": 1,
+                            "contract_id": contract_id,
+                            "subscribe": 1,
+                        }
+                    )
+                )
 
         # CONTRACT UPDATES
         if "proposal_open_contract" in data:
@@ -359,16 +420,23 @@ def process_tick(tick):
         if strategy:
             strategy.on_tick(tick, digit)
 
-        socketio.emit("tick", {
-            "symbol": symbol,
-            "digit": digit,
-            "price": price,
-            "tick_count": strategy.tick_count if strategy else 0,
-            "timestamp": now_time()
-        })
+        socketio.emit(
+            "tick",
+            {
+                "symbol": symbol,
+                "digit": digit,
+                "price": price,
+                "tick_count": strategy.tick_count if strategy else 0,
+                "timestamp": now_time(),
+            },
+        )
 
         if strategy:
             socketio.emit("digit_analysis", strategy.get_ui_payload())
+
+        # 🔥 AUTO TRADE ENGINE RUNS HERE
+        if active_profile == "KOOLKID":
+            run_auto_trade(strategy)
 
     except Exception as e:
         logger.error(f"process_tick error: {e}")
@@ -388,7 +456,10 @@ def process_contract(contract):
         if strategy:
             strategy.on_contract(contract, balance)
 
-        socketio.emit("trade_result", strategy.get_last_trade_entry() if strategy else {})
+        socketio.emit(
+            "trade_result",
+            strategy.get_last_trade_entry() if strategy else {},
+        )
         send_stats_update()
 
     except Exception as e:
@@ -435,12 +506,12 @@ def start_ws():
         on_message=on_message,
         on_open=on_open,
         on_error=on_error,
-        on_close=on_close
+        on_close=on_close,
     )
     ws.run_forever(ping_interval=30)
 
 
-# ---------------- BOT API ROUTES (PROTECTED) ---------------- #
+# ---------------- BOT API ROUTES ---------------- #
 @app.route("/set_token", methods=["POST"])
 def set_token():
     if not login_required():
@@ -454,6 +525,29 @@ def set_token():
     return jsonify({"status": "connecting"})
 
 
+@app.route("/set_auto_stake", methods=["POST"])
+def set_auto_stake_route():
+    """
+    Frontend sends the stake input here.
+    ALL AUTO MODES USE THIS STAKE.
+    """
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    global auto_stake
+
+    try:
+        auto_stake = float(request.json.get("stake", 1))
+        if auto_stake <= 0:
+            auto_stake = 1.0
+    except Exception:
+        auto_stake = 1.0
+
+    logger.info(f"💰 AUTO STAKE UPDATED: {auto_stake}")
+
+    return jsonify({"status": "success", "auto_stake": auto_stake})
+
+
 @app.route("/disconnect", methods=["POST"])
 def disconnect():
     if not login_required():
@@ -465,7 +559,7 @@ def disconnect():
     try:
         if ws:
             ws.close()
-    except:
+    except Exception:
         pass
 
     ws_connected = False
@@ -538,28 +632,114 @@ def change_market():
         try:
             ws.send(json.dumps({"forget_all": "ticks"}))
             ws.send(json.dumps({"ticks": current_symbol, "subscribe": 1}))
-        except:
+        except Exception:
             pass
 
     socketio.emit("market_change", {"symbol": current_symbol})
     return jsonify({"status": "success", "symbol": current_symbol})
 
 
+# ---------------- RISK CONTROL ROUTE ---------------- #
+@app.route("/set_risk_controls", methods=["POST"])
+def set_risk_controls():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    data = request.json
+    tp = float(data.get("tp", 0))
+    sl = float(data.get("sl", 0))
+    auto_sl = bool(data.get("auto_sl", True))
+
+    strategy = strategies.get(active_profile)
+    if strategy:
+        strategy.set_risk_controls(tp=tp, sl=sl, auto_sl=auto_sl)
+
+    return jsonify({"status": "success"})
+
+
+# ---------------- MASTER AUTO SWITCH ---------------- #
 @app.route("/toggle_auto", methods=["POST"])
 def toggle_auto():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
 
-    strategy = strategies.get(active_profile)
-    if not strategy:
+    strat = strategies.get(active_profile)
+    if not strat:
         return jsonify({"status": "error", "message": "No strategy loaded"}), 400
 
-    new_state = strategy.toggle_auto()
-    send_stats_update()
-
+    new_state = strat.toggle_auto()
     return jsonify({"status": "success", "auto_trade": new_state})
 
 
+# ---------------- AUTO MODE ROUTES ---------------- #
+@app.route("/toggle_kidracks_auto", methods=["POST"])
+def toggle_kidracks_auto_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    strat = strategies.get("KOOLKID")
+    state = strat.toggle_kidracks_auto()
+
+    socketio.emit("auto_mode_update", strat.get_ui_payload().get("auto_modes", {}))
+
+    return jsonify({"status": "success", "kidracks_auto": state})
+
+
+@app.route("/toggle_koolkidspeed_auto", methods=["POST"])
+def toggle_koolkidspeed_auto_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    strat = strategies.get("KOOLKID")
+    state = strat.toggle_koolkidspeed_auto()
+
+    socketio.emit("auto_mode_update", strat.get_ui_payload().get("auto_modes", {}))
+
+    return jsonify({"status": "success", "koolkidspeed_auto": state})
+
+
+@app.route("/toggle_koolluck_auto", methods=["POST"])
+def toggle_koolluck_auto_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    strat = strategies.get("KOOLKID")
+    state = strat.toggle_koolluck_auto()
+
+    socketio.emit("auto_mode_update", strat.get_ui_payload().get("auto_modes", {}))
+
+    return jsonify({"status": "success", "koolluck_auto": state})
+
+
+@app.route("/set_kidracks_settings", methods=["POST"])
+def set_kidracks_settings():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    data = request.json
+    barrier = int(data.get("barrier", 5))
+
+    strat = strategies.get("KOOLKID")
+    strat.kidracks_barrier = barrier
+
+    return jsonify({"status": "success"})
+
+
+@app.route("/set_koolkidspeed_settings", methods=["POST"])
+def set_koolkidspeed_settings():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    data = request.json
+    barrier = int(data.get("barrier", 5))
+
+    strat = strategies.get("KOOLKID")
+    strat.koolkidspeed_barrier = barrier
+
+    return jsonify({"status": "success"})
+
+
+# ---------------- MANUAL TRADING ROUTES ---------------- #
 @app.route("/manual_trade", methods=["POST"])
 def manual_trade():
     if not login_required():
@@ -620,18 +800,21 @@ def burst_4():
     return jsonify({"status": "success", "placed": placed})
 
 
-# ---------------- MAIN ENTRY (RENDER SAFE) ---------------- #
+# ---------------- MAIN ENTRY ---------------- #
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
 
-    print("""
+    print(
+        """
 ╔══════════════════════════════════════════════════════════════╗
-║     🚀 KOOLKID AI BOT SERVER (ADMIN + USERS SYSTEM)          ║
-║     - SQLite Users Database                                 ║
-║     - Admin auto-created                                    ║
-║     - Register / Login / Logout                             ║
-║     - Max Users Limit                                       ║
+║     🚀 KOOLKID AI BOT SERVER (AUTO MODES ENABLED)            ║
+║     - KidRacks Auto Trade                                   ║
+║     - KoolKidspeed Auto Trade                               ║
+║     - Kool🍀Luck Auto Trade                                  ║
+║     - Master AUTO switch                                    ║
+║     - GLOBAL AUTO STAKE                                     ║
 ╚══════════════════════════════════════════════════════════════╝
-    """)
+    """
+    )
 
     socketio.run(app, host="0.0.0.0", port=port, debug=True, allow_unsafe_werkzeug=True)

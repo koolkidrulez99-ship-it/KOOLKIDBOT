@@ -1,4 +1,5 @@
 from collections import deque, Counter
+import time
 
 class BaseStrategy:
     def __init__(self):
@@ -15,7 +16,16 @@ class BaseStrategy:
         self.total_profit = 0.0
         self.total_loss = 0.0
 
+        # OLD AUTO TRADE (keep for other profiles if needed)
         self.auto_trade = False
+
+        # NEW AUTO MODES (KOOLKID ONLY)
+        self.auto_kidracks = False
+        self.auto_koolspeed = False
+
+        # Cooldown so bot doesn't spam trades too fast
+        self.last_trade_time = 0
+        self.trade_cooldown_seconds = 1.0
 
         # Risk Controls
         self.tp = 0.0
@@ -24,6 +34,9 @@ class BaseStrategy:
 
         # Live session pnl tracker
         self.session_profit = 0.0
+
+        # Barrier user selected
+        self.selected_barrier = 5
 
     def reset(self):
         self.tick_count = 0
@@ -40,7 +53,11 @@ class BaseStrategy:
         self.total_loss = 0.0
 
         self.auto_trade = False
+        self.auto_kidracks = False
+        self.auto_koolspeed = False
+
         self.session_profit = 0.0
+        self.last_trade_time = 0
 
     def reset_tick_analysis(self):
         self.tick_count = 0
@@ -57,9 +74,32 @@ class BaseStrategy:
         self.total_loss = 0.0
         self.session_profit = 0.0
 
+    # ---------------- AUTO TOGGLES ---------------- #
     def toggle_auto(self):
         self.auto_trade = not self.auto_trade
         return self.auto_trade
+
+    def toggle_kidracks(self):
+        self.auto_kidracks = not self.auto_kidracks
+
+        # Only one mode at a time
+        if self.auto_kidracks:
+            self.auto_koolspeed = False
+
+        return self.auto_kidracks
+
+    def toggle_koolspeed(self):
+        self.auto_koolspeed = not self.auto_koolspeed
+
+        # Only one mode at a time
+        if self.auto_koolspeed:
+            self.auto_kidracks = False
+
+        return self.auto_koolspeed
+
+    # ---------------- SETTINGS ---------------- #
+    def set_selected_barrier(self, barrier):
+        self.selected_barrier = int(barrier)
 
     def set_risk_controls(self, tp=0.0, sl=0.0, auto_sl=True):
         self.tp = float(tp)
@@ -84,14 +124,28 @@ class BaseStrategy:
         """
         if self.tp > 0 and self.session_profit >= self.tp:
             self.auto_trade = False
+            self.auto_kidracks = False
+            self.auto_koolspeed = False
             return "TP HIT"
 
         if self.sl > 0 and self.session_profit <= -abs(self.sl):
             self.auto_trade = False
+            self.auto_kidracks = False
+            self.auto_koolspeed = False
             return "SL HIT"
 
         return None
 
+    def can_place_trade(self):
+        now = time.time()
+        if (now - self.last_trade_time) < self.trade_cooldown_seconds:
+            return False
+        return True
+
+    def mark_trade_sent(self):
+        self.last_trade_time = time.time()
+
+    # ---------------- CORE EVENTS ---------------- #
     def on_tick(self, tick, digit):
         self.last_tick_digit = digit
         self.tick_count += 1
@@ -140,7 +194,9 @@ class BaseStrategy:
             "tick_count": self.tick_count,
             "last_digit": self.last_tick_digit,
             "percentages": self.digit_percentages,
-            "confidence": {}
+            "confidence": {},
+            "auto_kidracks": self.auto_kidracks,
+            "auto_koolspeed": self.auto_koolspeed
         }
 
     def get_stats_payload(self, balance, session_start_balance):
@@ -163,5 +219,7 @@ class BaseStrategy:
             "total_loss": round(self.total_loss, 2),
             "net_pnl": round(net_pnl, 2),
             "session_pnl": round(session_pnl, 2),
-            "auto_trade": self.auto_trade
+            "auto_trade": self.auto_trade,
+            "auto_kidracks": self.auto_kidracks,
+            "auto_koolspeed": self.auto_koolspeed
         }
