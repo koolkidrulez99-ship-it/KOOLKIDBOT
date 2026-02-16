@@ -5,7 +5,9 @@ import json
 import threading
 import websocket
 import time
+import uuid
 import sqlite3
+
 from flask import Flask, render_template, request, jsonify, redirect, url_for, session
 from flask_socketio import SocketIO, join_room
 from datetime import datetime
@@ -39,44 +41,25 @@ DERIV_WS = "wss://ws.derivws.com/websockets/v3?app_id=1089"
 # DATABASE FILE
 DB_FILE = "users.db"
 
-# ===================================
-# PER-USER STATE (TRUE MULTI-USER)
-# ===================================
-user_sessions = {}
-sessions_lock = threading.Lock()
-
-
-def get_user_state(username: str):
-    """
-    Get or create state bucket for a given username.
-    This is where we keep that user's:
-      - Deriv WS connection
-      - api_token
-      - active_profile
-      - strategies
-      - balance, symbol, etc.
-    """
-    if not username:
-        return None
-
-    with sessions_lock:
-        if username not in user_sessions:
-            user_sessions[username] = {
-                "api_token": "",
-                "ws": None,
-                "ws_connected": False,
-                "active_profile": "KOOLKID",
-                "current_symbol": "R_25",
-                "balance": 0.0,
-                "session_start_balance": None,
-                "auto_stake": 1.0,
-                "strategies": {
-                    "KOOLKID": KoolKidStrategy(),
-                    "JOKERJOE": JokerJoeStrategy(),
-                    "HUMAN": HumanStrategy()
-                },
-            }
-        return user_sessions[username]
+# ==========================
+# MULTI-CLIENT STATE
+# ==========================
+# clients[client_id] = {
+#   "api_token": str,
+#   "ws": WebSocketApp or None,
+#   "ws_connected": bool,
+#   "active_profile": "KOOLKID"|"JOKERJOE"|"HUMAN",
+#   "current_symbol": str,
+#   "balance": float,
+#   "session_start_balance": float|None,
+#   "auto_stake": float,
+#   "strategies": {
+#       "KOOLKID": KoolKidStrategy(),
+#       "JOKERJOE": JokerJoeStrategy(),
+#       "HUMAN": HumanStrategy()
+#   }
+# }
+clients = {}
 
 
 # ---------------- DATABASE SETUP ---------------- #
@@ -84,15 +67,13 @@ def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
 
-    c.execute(
-        """
+    c.execute("""
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT UNIQUE NOT NULL,
         password TEXT NOT NULL
     )
-    """
-    )
+    """)
 
     conn.commit()
     conn.close()
@@ -162,7 +143,7 @@ def verify_user(username, password):
     return check_password_hash(row[0], password)
 
 
-# Initialize DB
+# Initialize DB + Admin
 init_db()
 ensure_admin_user()
 
@@ -174,7 +155,6 @@ def now_time():
 
 def extract_last_decimal_digit(price, pip_size=2):
     try:
-        # NOTE: fixed format string
         fmt = "{:0." + str(int(pip_size)) + "f}"
         price_str = fmt.format(float(price))
 
@@ -187,7 +167,6 @@ def extract_last_decimal_digit(price, pip_size=2):
         return 0
 
 
-# ---------------- LOGIN REQUIRED CHECK ---------------- #
 def login_required():
     return "user" in session
 
@@ -196,21 +175,47 @@ def is_admin():
     return session.get("user", "").lower() == ADMIN_USERNAME.lower()
 
 
-# ---------------- SOCKET.IO CONNECTION ---------------- #
-@socketio.on("connect")
-def handle_socket_connect():
+def get_client_id():
     """
-    When a browser connects via Socket.IO, drop them
-    into a room named by their username so we can emit
-    per-user events from the WS threads.
+    Each browser / device gets its own client_id in the Flask session.
+    Same username on 2 devices => 2 different client_ids => 2 independent bots.
     """
-    username = session.get("user")
-    if not username:
-        # reject unauthorized socket connections
-        return False
+    cid = session.get("client_id")
+    if not cid:
+        cid = str(uuid.uuid4())
+        session["client_id"] = cid
+    return cid
 
-    join_room(username)
-    logger.info(f"🔌 Socket.IO connected for user {username}")
+
+def init_client(client_id):
+    """
+    Initialize a fresh client state.
+    """
+    if client_id in clients:
+        return
+
+    clients[client_id] = {
+        "api_token": "",
+        "ws": None,
+        "ws_connected": False,
+        "active_profile": "KOOLKID",
+        "current_symbol": "R_25",
+        "balance": 0.0,
+        "session_start_balance": None,
+        "auto_stake": 1.0,
+        "strategies": {
+            "KOOLKID": KoolKidStrategy(),
+            "JOKERJOE": JokerJoeStrategy(),
+            "HUMAN": HumanStrategy()
+        }
+    }
+
+
+def get_client_state():
+    cid = get_client_id()
+    if cid not in clients:
+        init_client(cid)
+    return cid, clients[cid]
 
 
 # ---------------- ROUTES (LOGIN SYSTEM) ---------------- #
@@ -222,6 +227,9 @@ def login():
 
         if verify_user(username, password):
             session["user"] = username
+            # new client_id for this session
+            session["client_id"] = str(uuid.uuid4())
+            init_client(session["client_id"])
             return redirect(url_for("index"))
         else:
             return render_template("login.html", error="Invalid username or password")
@@ -253,22 +261,37 @@ def register():
 
 @app.route("/logout")
 def logout():
-    username = session.get("user")
-    session.pop("user", None)
-
-    # Optionally, also close that user's WS here
-    if username:
-        state = get_user_state(username)
-        ws = state.get("ws")
-        if ws:
+    cid = session.pop("client_id", None)
+    if cid and cid in clients:
+        state = clients.pop(cid, None)
+        if state and state.get("ws"):
             try:
-                ws.close()
+                state["ws"].close()
             except Exception:
                 pass
-            state["ws"] = None
-            state["ws_connected"] = False
 
+    session.pop("user", None)
     return redirect(url_for("login"))
+
+
+# ---------------- SOCKET.IO CONNECT ---------------- #
+@socketio.on("connect")
+def handle_connect():
+    if not login_required():
+        # reject unauthorized socket connections
+        return False
+
+    cid, state = get_client_state()
+    join_room(cid)
+
+    # Send initial connection + stats state for this client only
+    socketio.emit("connection_status", {
+        "connected": state["ws_connected"],
+        "loginid": "UNKNOWN",
+        "balance": state["balance"]
+    }, room=cid)
+
+    send_stats_update(cid)
 
 
 # ---------------- BOT ROUTE (PROTECTED) ---------------- #
@@ -280,23 +303,23 @@ def index():
     return render_template("index.html", username=session.get("user"))
 
 
-# ---------------- PER-USER DERIV BUY FUNCTION ---------------- #
-def send_buy(username, contract_type, stake, symbol, barrier):
-    state = get_user_state(username)
+# ---------------- DERIV BUY FUNCTION (PER CLIENT) ---------------- #
+def send_buy(client_id, contract_type, stake, symbol, barrier):
+    state = clients.get(client_id)
     if not state:
-        return False, "No user session"
+        return False, "No client state"
 
     ws = state.get("ws")
     ws_connected = state.get("ws_connected", False)
 
-    if not ws or not ws_connected:
+    if not ws_connected or not ws:
         return False, "Not connected"
 
     contract_map = {
         "OVER": "DIGITOVER",
         "UNDER": "DIGITUNDER",
         "MATCHES": "DIGITMATCH",
-        "DIFFERS": "DIGITDIFF",
+        "DIFFERS": "DIGITDIFF"
     }
 
     if contract_type not in contract_map:
@@ -315,8 +338,8 @@ def send_buy(username, contract_type, stake, symbol, barrier):
             "duration": 1,
             "duration_unit": "t",
             "symbol": symbol,
-            "barrier": int(barrier),
-        },
+            "barrier": int(barrier)
+        }
     }
 
     try:
@@ -326,21 +349,24 @@ def send_buy(username, contract_type, stake, symbol, barrier):
         return False, str(e)
 
 
-# ---------------- AUTO TRADE ENGINE (PER USER) ---------------- #
-def run_auto_trade(username, strategy):
+# ---------------- AUTO TRADE ENGINE (PER CLIENT) ---------------- #
+def run_auto_trade(client_id, state):
     """
-    Run all KoolKid auto engines for ONE USER.
-    Uses that user's auto_stake + active profile.
-    Requires master AUTO to be ON.
+    Runs KoolKid auto engines independently for this client.
+    Uses this client's auto_stake.
+    Master auto (strategy.auto_trade) must be ON.
     """
-    if not strategy or not getattr(strategy, "auto_trade", False):
+    active_profile = state.get("active_profile", "KOOLKID")
+    if active_profile != "KOOLKID":
         return
 
-    state = get_user_state(username)
-    if not state:
+    strategies = state.get("strategies", {})
+    strategy = strategies.get("KOOLKID")
+    if not strategy:
         return
 
-    if state.get("active_profile") != "KOOLKID":
+    # MASTER AUTO MUST BE ON
+    if not getattr(strategy, "auto_trade", False):
         return
 
     if not hasattr(strategy, "check_auto_trade_signal"):
@@ -353,126 +379,115 @@ def run_auto_trade(username, strategy):
     if isinstance(signals, dict):
         signals = [signals]
 
-    auto_stake = float(state.get("auto_stake", 1.0))
-    symbol = state.get("current_symbol", "R_25")
-
     for sig in signals:
         try:
             ctype = sig.get("type")
             barrier = sig.get("barrier")
+            symbol = state.get("current_symbol", "R_25")
+            stake = float(state.get("auto_stake", 1.0))
 
-            # Force using per-user auto_stake
-            ok, msg = send_buy(username, ctype, auto_stake, symbol, barrier)
+            ok, msg = send_buy(client_id, ctype, stake, symbol, barrier)
 
             if ok:
-                socketio.emit(
-                    "trade_placed",
-                    {
-                        "type": ctype,
-                        "barrier": barrier,
-                        "stake": auto_stake,
-                        "symbol": symbol,
-                        "mode": sig.get("mode", "AUTO"),
-                    },
-                    room=username,
-                )
-                logger.info(f"🤖 [{username}] AUTO TRADE SENT: {ctype} barrier={barrier} stake={auto_stake}")
+                socketio.emit("trade_placed", {
+                    "type": ctype,
+                    "barrier": barrier,
+                    "stake": stake,
+                    "symbol": symbol
+                }, room=client_id)
+
+                logger.info(f"[{client_id}] 🤖 AUTO TRADE SENT: {ctype} barrier={barrier} stake={stake}")
             else:
-                logger.error(f"❌ [{username}] AUTO TRADE FAILED: {msg}")
+                logger.error(f"[{client_id}] ❌ AUTO TRADE FAILED: {msg}")
+
         except Exception as e:
-            logger.error(f"Auto trade error for {username}: {e}")
+            logger.error(f"[{client_id}] Auto trade error: {e}")
 
 
-# ---------------- WEBSOCKET HANDLERS (PER USER WRAPPERS) ---------------- #
-def handle_on_message(username, ws, message):
-    state = get_user_state(username)
+# ---------------- WEBSOCKET HANDLERS (PER CLIENT) ---------------- #
+def handle_on_message(client_id, ws, message):
+    state = clients.get(client_id)
     if not state:
         return
 
     try:
         data = json.loads(message)
 
+        # API ERROR
         if "error" in data:
             msg = data["error"].get("message", "Unknown API Error")
-            logger.error(f"[{username}] API Error: {msg}")
-            socketio.emit("api_error", {"message": msg}, room=username)
+            logger.error(f"[{client_id}] API Error: {msg}")
+            socketio.emit("api_error", {"message": msg}, room=client_id)
             return
 
         # AUTH SUCCESS
         if "authorize" in data:
             state["ws_connected"] = True
             loginid = data["authorize"].get("loginid", "UNKNOWN")
-            balance = float(data["authorize"].get("balance", 0.0))
+            balance = float(data["authorize"].get("balance", 0))
+
             state["balance"] = balance
 
             if state["session_start_balance"] is None:
                 state["session_start_balance"] = balance
 
-            logger.info(f"✅ [{username}] Authorized: {loginid} Balance={balance}")
+            logger.info(f"[{client_id}] ✅ Authorized: {loginid} Balance={balance}")
 
-            socketio.emit(
-                "connection_status",
-                {
-                    "connected": True,
-                    "loginid": loginid,
-                    "balance": balance,
-                },
-                room=username,
-            )
+            socketio.emit("connection_status", {
+                "connected": True,
+                "loginid": loginid,
+                "balance": balance
+            }, room=client_id)
 
-            socketio.emit("balance_update", {"balance": balance}, room=username)
-            send_stats_update(username)
+            socketio.emit("balance_update", {"balance": balance}, room=client_id)
+            send_stats_update(client_id)
 
-            # Subscribe tick + balance
+            # Subscribe for this client's symbol & balance
             ws.send(json.dumps({"ticks": state["current_symbol"], "subscribe": 1}))
             ws.send(json.dumps({"balance": 1, "subscribe": 1}))
 
         # BALANCE STREAM
         if "balance" in data:
             try:
-                bal = float(data["balance"]["balance"])
-                state["balance"] = bal
-                socketio.emit("balance_update", {"balance": bal}, room=username)
-                send_stats_update(username)
+                balance = float(data["balance"]["balance"])
+                state["balance"] = balance
+                socketio.emit("balance_update", {"balance": balance}, room=client_id)
+                send_stats_update(client_id)
             except Exception:
                 pass
 
         # TICK STREAM
         if "tick" in data:
             tick = data["tick"]
-            process_tick(username, tick)
+            process_tick(client_id, tick)
 
         # BUY CONFIRMATION
         if "buy" in data:
-            socketio.emit("trade_placed", data["buy"], room=username)
+            socketio.emit("trade_placed", data["buy"], room=client_id)
 
             contract_id = data["buy"].get("contract_id")
             if contract_id:
-                ws.send(
-                    json.dumps(
-                        {
-                            "proposal_open_contract": 1,
-                            "contract_id": contract_id,
-                            "subscribe": 1,
-                        }
-                    )
-                )
+                ws.send(json.dumps({
+                    "proposal_open_contract": 1,
+                    "contract_id": contract_id,
+                    "subscribe": 1
+                }))
 
         # CONTRACT UPDATES
         if "proposal_open_contract" in data:
             contract = data["proposal_open_contract"]
-            process_contract(username, contract)
+            process_contract(client_id, contract)
 
     except Exception as e:
-        logger.error(f"[{username}] on_message error: {e}")
+        logger.error(f"[{client_id}] on_message error: {e}")
 
 
-def process_tick(username, tick):
+def process_tick(client_id, tick):
+    state = clients.get(client_id)
+    if not state:
+        return
+
     try:
-        state = get_user_state(username)
-        if not state:
-            return
-
         symbol = tick.get("symbol")
         price = tick.get("quote")
 
@@ -482,136 +497,132 @@ def process_tick(username, tick):
         pip_size = tick.get("pip_size", 2)
         digit = extract_last_decimal_digit(price, pip_size)
 
-        strategies = state["strategies"]
-        active_profile = state["active_profile"]
-        strategy = strategies.get(active_profile)
+        strategies = state.get("strategies", {})
+        strategy = strategies.get(state.get("active_profile", "KOOLKID"))
 
         if strategy:
             strategy.on_tick(tick, digit)
 
-        socketio.emit(
-            "tick",
-            {
-                "symbol": symbol,
-                "digit": digit,
-                "price": price,
-                "tick_count": strategy.tick_count if strategy else 0,
-                "timestamp": now_time(),
-            },
-            room=username,
-        )
+        socketio.emit("tick", {
+            "symbol": symbol,
+            "digit": digit,
+            "price": price,
+            "tick_count": strategy.tick_count if strategy else 0,
+            "timestamp": now_time()
+        }, room=client_id)
 
         if strategy:
-            socketio.emit("digit_analysis", strategy.get_ui_payload(), room=username)
+            socketio.emit("digit_analysis", strategy.get_ui_payload(), room=client_id)
 
-        # AUTO trade engine (only KoolKid, only if AUTO is ON)
-        if active_profile == "KOOLKID":
-            run_auto_trade(username, strategy)
+        # AUTO ENGINE
+        if state.get("active_profile") == "KOOLKID":
+            run_auto_trade(client_id, state)
 
     except Exception as e:
-        logger.error(f"[{username}] process_tick error: {e}")
+        logger.error(f"[{client_id}] process_tick error: {e}")
 
 
-def process_contract(username, contract):
+def process_contract(client_id, contract):
+    state = clients.get(client_id)
+    if not state:
+        return
+
     try:
-        state = get_user_state(username)
-        if not state:
-            return
-
         if not (contract.get("is_sold") or contract.get("is_settled")):
             return
 
         profit = float(contract.get("profit", 0))
         state["balance"] = float(state.get("balance", 0.0)) + profit
 
-        strategies = state["strategies"]
-        strategy = strategies.get(state["active_profile"])
+        strategies = state.get("strategies", {})
+        strategy = strategies.get(state.get("active_profile", "KOOLKID"))
 
         if strategy:
             strategy.on_contract(contract, state["balance"])
 
-        socketio.emit(
-            "trade_result",
-            strategy.get_last_trade_entry() if strategy else {},
-            room=username,
-        )
-        send_stats_update(username)
+        socketio.emit("trade_result", strategy.get_last_trade_entry() if strategy else {}, room=client_id)
+        send_stats_update(client_id)
 
     except Exception as e:
-        logger.error(f"[{username}] process_contract error: {e}")
+        logger.error(f"[{client_id}] process_contract error: {e}")
 
 
-def send_stats_update(username):
-    state = get_user_state(username)
+def send_stats_update(client_id):
+    state = clients.get(client_id)
     if not state:
         return
 
-    strategies = state["strategies"]
-    active_profile = state["active_profile"]
-    strategy = strategies.get(active_profile)
+    strategies = state.get("strategies", {})
+    strategy = strategies.get(state.get("active_profile", "KOOLKID"))
 
     if not strategy:
         return
 
     payload = strategy.get_stats_payload(state.get("balance", 0.0), state.get("session_start_balance"))
-    payload["profile"] = active_profile
+    payload["profile"] = state.get("active_profile", "KOOLKID")
 
-    socketio.emit("stats_update", payload, room=username)
+    socketio.emit("stats_update", payload, room=client_id)
 
 
-def handle_on_open(username, ws):
-    logger.info(f"🔌 [{username}] WebSocket Connected")
-    state = get_user_state(username)
+def handle_on_open(client_id, ws):
+    state = clients.get(client_id)
     if not state:
         return
+
+    logger.info(f"[{client_id}] 🔌 WebSocket Connected")
     state["ws_connected"] = True
 
-    token = state.get("api_token")
-    if token:
-        ws.send(json.dumps({"authorize": token}))
+    api_token = state.get("api_token")
+    if api_token:
+        ws.send(json.dumps({"authorize": api_token}))
 
 
-def handle_on_error(username, ws, error):
-    logger.error(f"[{username}] WebSocket Error: {error}")
-    socketio.emit("api_error", {"message": str(error)}, room=username)
+def handle_on_error(client_id, ws, error):
+    logger.error(f"[{client_id}] WebSocket Error: {error}")
+    socketio.emit("api_error", {"message": str(error)}, room=client_id)
 
 
-def handle_on_close(username, ws, code, msg):
-    logger.warning(f"🔌 [{username}] WebSocket Disconnected ({code}) {msg}")
-    state = get_user_state(username)
+def handle_on_close(client_id, ws, code, msg):
+    state = clients.get(client_id)
     if not state:
         return
+
     state["ws_connected"] = False
-    state["ws"] = None
-    socketio.emit("connection_status", {"connected": False}, room=username)
+    logger.warning(f"[{client_id}] 🔌 WebSocket Disconnected")
+    socketio.emit("connection_status", {"connected": False}, room=client_id)
 
 
-def start_ws_for_user(username):
-    """
-    Start a dedicated Deriv WebSocket for ONE user.
-    """
-    state = get_user_state(username)
+def start_ws_for_client(client_id):
+    state = clients.get(client_id)
     if not state:
         return
 
-    def _on_message(ws, message):
-        handle_on_message(username, ws, message)
+    # close old ws if exists
+    old_ws = state.get("ws")
+    if old_ws:
+        try:
+            old_ws.close()
+        except Exception:
+            pass
 
-    def _on_open(ws):
-        handle_on_open(username, ws)
+    def _on_message(ws, message, cid=client_id):
+        handle_on_message(cid, ws, message)
 
-    def _on_error(ws, error):
-        handle_on_error(username, ws, error)
+    def _on_open(ws, cid=client_id):
+        handle_on_open(cid, ws)
 
-    def _on_close(ws, code, msg):
-        handle_on_close(username, ws, code, msg)
+    def _on_error(ws, error, cid=client_id):
+        handle_on_error(cid, ws, error)
+
+    def _on_close(ws, code, msg, cid=client_id):
+        handle_on_close(cid, ws, code, msg)
 
     ws_app = websocket.WebSocketApp(
         DERIV_WS,
         on_message=_on_message,
         on_open=_on_open,
         on_error=_on_error,
-        on_close=_on_close,
+        on_close=_on_close
     )
 
     state["ws"] = ws_app
@@ -624,41 +635,28 @@ def set_token():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
 
-    username = session.get("user")
-    state = get_user_state(username)
-    if not state:
-        return jsonify({"error": "No user session"}), 400
-
+    cid, state = get_client_state()
     token = request.json.get("token", "")
+
     state["api_token"] = token
     state["session_start_balance"] = None
 
-    # Close old WS if any
-    old_ws = state.get("ws")
-    if old_ws:
-        try:
-            old_ws.close()
-        except Exception:
-            pass
-        state["ws"] = None
-        state["ws_connected"] = False
+    t = threading.Thread(target=start_ws_for_client, args=(cid,), daemon=True)
+    t.start()
 
-    threading.Thread(target=start_ws_for_user, args=(username,), daemon=True).start()
     return jsonify({"status": "connecting"})
 
 
 @app.route("/set_auto_stake", methods=["POST"])
 def set_auto_stake():
     """
-    Per-user AUTO stake (used by ALL auto modes).
+    Frontend sends the stake input here.
+    ALL AUTO MODES USE THIS STAKE for that client.
     """
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
 
-    username = session.get("user")
-    state = get_user_state(username)
-    if not state:
-        return jsonify({"error": "No user session"}), 400
+    cid, state = get_client_state()
 
     try:
         stake = float(request.json.get("stake", 1))
@@ -668,7 +666,7 @@ def set_auto_stake():
         stake = 1.0
 
     state["auto_stake"] = stake
-    logger.info(f"💰 [{username}] AUTO STAKE UPDATED: {stake}")
+    logger.info(f"[{cid}] 💰 AUTO STAKE UPDATED: {stake}")
 
     return jsonify({"status": "success", "auto_stake": stake})
 
@@ -678,10 +676,7 @@ def disconnect():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
 
-    username = session.get("user")
-    state = get_user_state(username)
-    if not state:
-        return jsonify({"error": "No user session"}), 400
+    cid, state = get_client_state()
 
     ws = state.get("ws")
     if ws:
@@ -690,7 +685,6 @@ def disconnect():
         except Exception:
             pass
 
-    # Reset this user's state (but keep strategies objects so history clears via reset)
     state["ws"] = None
     state["ws_connected"] = False
     state["api_token"] = ""
@@ -700,9 +694,9 @@ def disconnect():
     for strat in state["strategies"].values():
         strat.reset()
 
-    socketio.emit("connection_status", {"connected": False}, room=username)
-    socketio.emit("reset_ui", room=username)
-    send_stats_update(username)
+    socketio.emit("connection_status", {"connected": False}, room=cid)
+    socketio.emit("reset_ui", room=cid)
+    send_stats_update(cid)
 
     return jsonify({"status": "disconnected"})
 
@@ -712,18 +706,15 @@ def clear_history():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
 
-    username = session.get("user")
-    state = get_user_state(username)
-    if not state:
-        return jsonify({"error": "No user session"}), 400
+    cid, state = get_client_state()
 
     strategies = state["strategies"]
-    strat = strategies.get(state["active_profile"])
-    if strat:
-        strat.clear_history()
+    strategy = strategies.get(state["active_profile"], None)
+    if strategy:
+        strategy.clear_history()
 
-    socketio.emit("history_cleared", room=username)
-    send_stats_update(username)
+    socketio.emit("history_cleared", room=cid)
+    send_stats_update(cid)
     return jsonify({"status": "cleared"})
 
 
@@ -732,19 +723,15 @@ def set_profile():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
 
-    username = session.get("user")
-    state = get_user_state(username)
-    if not state:
-        return jsonify({"error": "No user session"}), 400
-
+    cid, state = get_client_state()
     profile = request.json.get("profile", "KOOLKID")
 
     if profile not in state["strategies"]:
         return jsonify({"error": "Invalid profile"}), 400
 
     state["active_profile"] = profile
-    socketio.emit("profile_update", {"profile": profile}, room=username)
-    send_stats_update(username)
+    socketio.emit("profile_update", {"profile": profile}, room=cid)
+    send_stats_update(cid)
 
     return jsonify({"status": "success", "profile": profile})
 
@@ -754,11 +741,7 @@ def change_market():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
 
-    username = session.get("user")
-    state = get_user_state(username)
-    if not state:
-        return jsonify({"error": "No user session"}), 400
-
+    cid, state = get_client_state()
     symbol = request.json.get("symbol")
 
     if not symbol:
@@ -766,9 +749,9 @@ def change_market():
 
     state["current_symbol"] = symbol
 
-    strat = state["strategies"].get(state["active_profile"])
-    if strat:
-        strat.reset_tick_analysis()
+    strategy = state["strategies"].get(state["active_profile"])
+    if strategy:
+        strategy.reset_tick_analysis()
 
     ws = state.get("ws")
     if state.get("ws_connected") and ws:
@@ -778,7 +761,7 @@ def change_market():
         except Exception:
             pass
 
-    socketio.emit("market_change", {"symbol": state["current_symbol"]}, room=username)
+    socketio.emit("market_change", {"symbol": state["current_symbol"]}, room=cid)
     return jsonify({"status": "success", "symbol": state["current_symbol"]})
 
 
@@ -788,19 +771,16 @@ def set_risk_controls():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
 
-    username = session.get("user")
-    state = get_user_state(username)
-    if not state:
-        return jsonify({"error": "No user session"}), 400
+    cid, state = get_client_state()
 
     data = request.json
     tp = float(data.get("tp", 0))
     sl = float(data.get("sl", 0))
     auto_sl = bool(data.get("auto_sl", True))
 
-    strat = state["strategies"].get(state["active_profile"])
-    if strat:
-        strat.set_risk_controls(tp=tp, sl=sl, auto_sl=auto_sl)
+    strategy = state["strategies"].get(state["active_profile"])
+    if strategy:
+        strategy.set_risk_controls(tp=tp, sl=sl, auto_sl=auto_sl)
 
     return jsonify({"status": "success"})
 
@@ -811,38 +791,30 @@ def toggle_auto():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
 
-    username = session.get("user")
-    state = get_user_state(username)
-    if not state:
-        return jsonify({"error": "No user session"}), 400
+    cid, state = get_client_state()
 
-    strat = state["strategies"].get(state["active_profile"])
-    if not strat:
+    strategy = state["strategies"].get(state["active_profile"])
+    if not strategy:
         return jsonify({"status": "error", "message": "No strategy loaded"}), 400
 
-    new_state = strat.toggle_auto()
-    send_stats_update(username)
+    new_state = strategy.toggle_auto()
+    send_stats_update(cid)
 
     return jsonify({"status": "success", "auto_trade": new_state})
 
 
-# ---------------- AUTO MODE ROUTES ---------------- #
+# ---------------- AUTO MODE ROUTES (KOOLKID) ---------------- #
 @app.route("/toggle_kidracks_auto", methods=["POST"])
 def toggle_kidracks_auto_route():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
 
-    username = session.get("user")
-    state = get_user_state(username)
-    if not state:
-        return jsonify({"error": "No user session"}), 400
-
+    cid, state = get_client_state()
     strat = state["strategies"].get("KOOLKID")
-    state_flag = strat.toggle_kidracks_auto()
+    state_val = strat.toggle_kidracks_auto()
 
-    socketio.emit("auto_mode_update", strat.get_ui_payload().get("auto_modes", {}), room=username)
-
-    return jsonify({"status": "success", "kidracks_auto": state_flag})
+    socketio.emit("auto_mode_update", strat.get_ui_payload().get("auto_modes", {}), room=cid)
+    return jsonify({"status": "success", "kidracks_auto": state_val})
 
 
 @app.route("/toggle_koolkidspeed_auto", methods=["POST"])
@@ -850,17 +822,12 @@ def toggle_koolkidspeed_auto_route():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
 
-    username = session.get("user")
-    state = get_user_state(username)
-    if not state:
-        return jsonify({"error": "No user session"}), 400
-
+    cid, state = get_client_state()
     strat = state["strategies"].get("KOOLKID")
-    state_flag = strat.toggle_koolkidspeed_auto()
+    state_val = strat.toggle_koolkidspeed_auto()
 
-    socketio.emit("auto_mode_update", strat.get_ui_payload().get("auto_modes", {}), room=username)
-
-    return jsonify({"status": "success", "koolkidspeed_auto": state_flag})
+    socketio.emit("auto_mode_update", strat.get_ui_payload().get("auto_modes", {}), room=cid)
+    return jsonify({"status": "success", "koolkidspeed_auto": state_val})
 
 
 @app.route("/toggle_koolluck_auto", methods=["POST"])
@@ -868,17 +835,12 @@ def toggle_koolluck_auto_route():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
 
-    username = session.get("user")
-    state = get_user_state(username)
-    if not state:
-        return jsonify({"error": "No user session"}), 400
-
+    cid, state = get_client_state()
     strat = state["strategies"].get("KOOLKID")
-    state_flag = strat.toggle_koolluck_auto()
+    state_val = strat.toggle_koolluck_auto()
 
-    socketio.emit("auto_mode_update", strat.get_ui_payload().get("auto_modes", {}), room=username)
-
-    return jsonify({"status": "success", "koolluck_auto": state_flag})
+    socketio.emit("auto_mode_update", strat.get_ui_payload().get("auto_modes", {}), room=cid)
+    return jsonify({"status": "success", "koolluck_auto": state_val})
 
 
 @app.route("/set_kidracks_settings", methods=["POST"])
@@ -886,11 +848,7 @@ def set_kidracks_settings():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
 
-    username = session.get("user")
-    state = get_user_state(username)
-    if not state:
-        return jsonify({"error": "No user session"}), 400
-
+    cid, state = get_client_state()
     data = request.json
     barrier = int(data.get("barrier", 5))
 
@@ -905,11 +863,7 @@ def set_koolkidspeed_settings():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
 
-    username = session.get("user")
-    state = get_user_state(username)
-    if not state:
-        return jsonify({"error": "No user session"}), 400
-
+    cid, state = get_client_state()
     data = request.json
     barrier = int(data.get("barrier", 5))
 
@@ -925,11 +879,7 @@ def manual_trade():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
 
-    username = session.get("user")
-    state = get_user_state(username)
-    if not state:
-        return jsonify({"error": "No user session"}), 400
-
+    cid, state = get_client_state()
     data = request.json
 
     contract_type = data.get("type")
@@ -937,7 +887,7 @@ def manual_trade():
     symbol = data.get("symbol", state.get("current_symbol", "R_25"))
     barrier = int(data.get("barrier", 5))
 
-    ok, msg = send_buy(username, contract_type, stake, symbol, barrier)
+    ok, msg = send_buy(cid, contract_type, stake, symbol, barrier)
     return jsonify({"status": "success" if ok else "error", "message": msg})
 
 
@@ -946,11 +896,7 @@ def manual_3_trades():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
 
-    username = session.get("user")
-    state = get_user_state(username)
-    if not state:
-        return jsonify({"error": "No user session"}), 400
-
+    cid, state = get_client_state()
     data = request.json
 
     contract_type = data.get("type")
@@ -960,7 +906,7 @@ def manual_3_trades():
 
     placed = 0
     for _ in range(3):
-        ok, _msg = send_buy(username, contract_type, stake, symbol, barrier)
+        ok, _msg = send_buy(cid, contract_type, stake, symbol, barrier)
         if ok:
             placed += 1
         time.sleep(0.15)
@@ -973,11 +919,7 @@ def burst_4():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
 
-    username = session.get("user")
-    state = get_user_state(username)
-    if not state:
-        return jsonify({"error": "No user session"}), 400
-
+    cid, state = get_client_state()
     data = request.json
 
     contract_type = data.get("type")
@@ -987,7 +929,7 @@ def burst_4():
 
     placed = 0
     for _ in range(4):
-        ok, _msg = send_buy(username, contract_type, stake, symbol, barrier)
+        ok, _msg = send_buy(cid, contract_type, stake, symbol, barrier)
         if ok:
             placed += 1
         time.sleep(0.10)
@@ -999,15 +941,13 @@ def burst_4():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
 
-    print(
-        """
+    print("""
 ╔══════════════════════════════════════════════════════════════╗
 ║     🚀 KOOLKID AI BOT SERVER (TRUE MULTI-USER MODE)          ║
-║     - Each user has their own Deriv WS & strategies          ║
-║     - Admin + Users + Max Users Limit                        ║
-║     - KidRacks / KoolKidspeed / KOOL🍀KID LUCK auto modes    ║
+║     - Per-session client_id                                  ║
+║     - Separate WS + state per browser/device                 ║
+║     - KIDRACKS / KOOLKIDSPEED / KOOL🍀KID LUCK               ║
 ╚══════════════════════════════════════════════════════════════╝
-    """
-    )
+    """)
 
     socketio.run(app, host="0.0.0.0", port=port, debug=True, allow_unsafe_werkzeug=True)
