@@ -420,6 +420,9 @@
         <div style="margin-top:10px;">
             <button id="autoBtn" onclick="toggleAuto()" style="background:#38bdf8; width:100%;">AUTO OFF</button>
         </div>
+        <p style="margin-top:6px; font-size:12px; color:#9ca3af; text-align:center;">
+            Note: MASTER AUTO must be ON to use the auto modes below, and auto modes only start after 100 ticks.
+        </p>
 
         <!-- KOOLKID AUTO MODES -->
         <div id="koolkidAutos" style="margin-top:12px;">
@@ -436,11 +439,12 @@
 
         <!-- KOOLKID QUICK FIRE BUTTONS -->
         <div id="koolkidButtons" style="margin-top:12px;">
-            <button style="background:#22c55e; width:100%;" onclick="take3('UNDER')">🔥 TAKE 3 UNDER NOW</button>
-            <button style="background:#38bdf8; width:100%;" onclick="take3('OVER')">🔥 TAKE 3 OVER NOW</button>
+            <!-- UNDER = ORANGE, OVER = DEEP BLUE -->
+            <button style="background:#f97316; width:100%;" onclick="take3('UNDER')">🔥 TAKE 3 UNDER NOW</button>
+            <button style="background:#1d4ed8; width:100%;" onclick="take3('OVER')">🔥 TAKE 3 OVER NOW</button>
 
-            <button style="background:#ec4899; width:100%;" onclick="burst4('UNDER')">⚡ BURST 4 UNDER FAST</button>
-            <button style="background:#a855f7; width:100%;" onclick="burst4('OVER')">⚡ BURST 4 OVER FAST</button>
+            <button style="background:#f97316; width:100%;" onclick="burst4('UNDER')">⚡ BURST 4 UNDER FAST</button>
+            <button style="background:#1d4ed8; width:100%;" onclick="burst4('OVER')">⚡ BURST 4 OVER FAST</button>
         </div>
 
         <!-- JOKERJOE BUTTONS -->
@@ -492,11 +496,20 @@
 
 </div>
 
-<!-- popup -->
+<!-- digit popup -->
 <div id="digitPopup" class="digit-popup">
     <h4 id="popupTitle">Digit</h4>
     <button id="popupBtn1" style="background:#38bdf8;" onclick="popupTrade('OVER')">TAKE OVER</button>
     <button id="popupBtn2" style="background:#22c55e;" onclick="popupTrade('UNDER')">TAKE UNDER</button>
+</div>
+
+<!-- AUTO BARRIER POPUP (ONLY FOR KIDRACKS / KOOLKIDSPEED) -->
+<div id="autoBarrierPopup" class="digit-popup" style="display:none;">
+    <h4 id="autoBarrierTitle">Set Barrier</h4>
+    <input id="autoBarrierInput" type="number" min="0" max="9"
+           style="width:100%; margin-bottom:8px; padding:6px; border-radius:8px; border:none; background:#1f2937; color:white;">
+    <button id="autoBarrierConfirm" style="background:#22c55e; width:100%; margin-top:4px;">CONFIRM</button>
+    <button id="autoBarrierCancel" style="background:#ef4444; width:100%; margin-top:4px;">CANCEL</button>
 </div>
 
 <script>
@@ -554,6 +567,14 @@ const slInput = document.getElementById("sl");
 
 const digitPopup = document.getElementById("digitPopup");
 const popupTitle = document.getElementById("popupTitle");
+
+// NEW: auto barrier popup for KIDRACKS / KOOLKIDSPEED
+const autoBarrierPopup = document.getElementById("autoBarrierPopup");
+const autoBarrierTitle = document.getElementById("autoBarrierTitle");
+const autoBarrierInput = document.getElementById("autoBarrierInput");
+const autoBarrierConfirm = document.getElementById("autoBarrierConfirm");
+const autoBarrierCancel = document.getElementById("autoBarrierCancel");
+let currentAutoBarrierMode = null; // "KIDRACKS" or "KOOLKIDSPEED"
 
 // ================== TOAST FUNCTION ==================
 function showToast(message, type="info"){
@@ -613,8 +634,8 @@ function onDigitClicked(digit, ev){
         btn2.innerText = "TAKE DIFFER";
         btn1.style.background = "#a855f7";
         btn2.style.background = "#f59e0b";
-        btn1.setAttribute("onclick", "popupTrade('MATCHES')");
-        btn2.setAttribute("onclick", "popupTrade('DIFFERS')");
+        btn1.setAttribute("onclick", 'popupTrade("MATCHES")');
+        btn2.setAttribute("onclick", 'popupTrade("DIFFERS")');
     }
 
     digitPopup.style.left = (ev.clientX + 12) + "px";
@@ -639,6 +660,78 @@ async function popupTrade(type){
     await trade(type, lastClickedDigit);
     hidePopup();
 }
+
+// ================== AUTO BARRIER POPUP HELPERS ==================
+function showAutoBarrierPopup(mode){
+    currentAutoBarrierMode = mode; // "KIDRACKS" or "KOOLKIDSPEED"
+    if(mode === "KIDRACKS"){
+        autoBarrierTitle.innerText = "Set KidRacks Barrier (0-9)";
+    }else if(mode === "KOOLKIDSPEED"){
+        autoBarrierTitle.innerText = "Set KoolKidspeed Barrier (0-9)";
+    }else{
+        autoBarrierTitle.innerText = "Set Barrier (0-9)";
+    }
+
+    // default to current manual barrier or 5
+    autoBarrierInput.value = barrierInput.value || 5;
+
+    autoBarrierPopup.style.left = "50%";
+    autoBarrierPopup.style.top = "50%";
+    autoBarrierPopup.style.transform = "translate(-50%, -50%)";
+    autoBarrierPopup.style.display = "block";
+}
+
+function hideAutoBarrierPopup(){
+    autoBarrierPopup.style.display = "none";
+    currentAutoBarrierMode = null;
+}
+
+autoBarrierConfirm.addEventListener("click", async ()=>{
+    if(!currentAutoBarrierMode){
+        hideAutoBarrierPopup();
+        return;
+    }
+
+    let val = parseInt(autoBarrierInput.value || "5", 10);
+    if(isNaN(val) || val < 0 || val > 9){
+        val = 5;
+    }
+
+    // Only set the barrier for the chosen mode, then toggle that mode ON
+    try{
+        if(currentAutoBarrierMode === "KIDRACKS"){
+            await fetch("/set_kidracks_settings", {
+                method:"POST",
+                headers:{"Content-Type":"application/json"},
+                body:JSON.stringify({ barrier: val })
+            });
+
+            const res = await fetch("/toggle_kidracks_auto", {method:"POST"});
+            const data = await res.json();
+            updateAutoModeButtons({kidracks: data.kidracks_auto});
+            showToast("KIDRACKS AUTO: " + (data.kidracks_auto ? "ON" : "OFF") + " @ barrier " + val, data.kidracks_auto ? "success" : "error");
+        }
+        else if(currentAutoBarrierMode === "KOOLKIDSPEED"){
+            await fetch("/set_koolkidspeed_settings", {
+                method:"POST",
+                headers:{"Content-Type":"application/json"},
+                body:JSON.stringify({ barrier: val })
+            });
+
+            const res = await fetch("/toggle_koolkidspeed_auto", {method:"POST"});
+            const data = await res.json();
+            updateAutoModeButtons({koolkidspeed: data.koolkidspeed_auto});
+            showToast("KOOLKIDSPEED AUTO: " + (data.koolkidspeed_auto ? "ON" : "OFF") + " @ barrier " + val, data.koolkidspeed_auto ? "success" : "error");
+        }
+    }catch(e){
+        console.error(e);
+        showToast("Error setting auto barrier", "error");
+    }
+
+    hideAutoBarrierPopup();
+});
+
+autoBarrierCancel.addEventListener("click", hideAutoBarrierPopup);
 
 // ================== MARKETS ==================
 function loadMarketList(){
@@ -914,18 +1007,35 @@ function updateAutoModeButtons(modes){
     }
 }
 
+// When clicking KIDRACKS button:
+//  - If it's OFF → open popup to set barrier, then turn ON inside confirm handler.
+//  - If it's ON  → just toggle OFF.
 async function toggleKidracksAuto(){
-    const res = await fetch("/toggle_kidracks_auto", {method:"POST"});
-    const data = await res.json();
-    updateAutoModeButtons({kidracks: data.kidracks_auto});
-    showToast("KIDRACKS AUTO: " + (data.kidracks_auto ? "ON" : "OFF"), data.kidracks_auto ? "success" : "error");
+    const kidBtn = document.getElementById("kidracksBtn");
+    const isOn = kidBtn.innerText.includes("ON");
+
+    if(isOn){
+        const res = await fetch("/toggle_kidracks_auto", {method:"POST"});
+        const data = await res.json();
+        updateAutoModeButtons({kidracks: data.kidracks_auto});
+        showToast("KIDRACKS AUTO: " + (data.kidracks_auto ? "ON" : "OFF"), data.kidracks_auto ? "success" : "error");
+    }else{
+        showAutoBarrierPopup("KIDRACKS");
+    }
 }
 
 async function toggleKoolkidspeedAuto(){
-    const res = await fetch("/toggle_koolkidspeed_auto", {method:"POST"});
-    const data = await res.json();
-    updateAutoModeButtons({koolkidspeed: data.koolkidspeed_auto});
-    showToast("KOOLKIDSPEED AUTO: " + (data.koolkidspeed_auto ? "ON" : "OFF"), data.koolkidspeed_auto ? "success" : "error");
+    const speedBtn = document.getElementById("koolkidspeedBtn");
+    const isOn = speedBtn.innerText.includes("ON");
+
+    if(isOn){
+        const res = await fetch("/toggle_koolkidspeed_auto", {method:"POST"});
+        const data = await res.json();
+        updateAutoModeButtons({koolkidspeed: data.koolkidspeed_auto});
+        showToast("KOOLKIDSPEED AUTO: " + (data.koolkidspeed_auto ? "ON" : "OFF"), data.koolkidspeed_auto ? "success" : "error");
+    }else{
+        showAutoBarrierPopup("KOOLKIDSPEED");
+    }
 }
 
 async function toggleKoolluckAuto(){
