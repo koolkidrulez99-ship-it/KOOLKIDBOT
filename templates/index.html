@@ -267,6 +267,67 @@
     .toast.error{border-color:#ef4444; color:#ef4444;}
     .toast.warn{border-color:#facc15; color:#facc15;}
     .toast.info{border-color:#38bdf8; color:#38bdf8;}
+
+    /* =================== HOW TO USE PANEL =================== */
+    .api-grid{
+        display:flex;
+        gap:15px;
+        flex-wrap:wrap;
+        align-items:flex-start;
+    }
+    .api-left{
+        flex:1;
+        min-width:340px;
+    }
+    .api-right{
+        width:360px;
+        max-width:100%;
+        background:#0f172a;
+        border:1px solid #334155;
+        border-radius:12px;
+        padding:12px;
+        box-shadow:0 0 18px rgba(0,0,0,0.35);
+    }
+    .howto-title{
+        display:flex;
+        justify-content:space-between;
+        align-items:center;
+        gap:10px;
+        font-weight:bold;
+        color:#38bdf8;
+        margin-bottom:8px;
+    }
+    .howto-title button{
+        padding:6px 10px;
+        border-radius:10px;
+        background:#1f2937;
+        color:#cbd5e1;
+        font-size:12px;
+    }
+    .howto-body{
+        font-size:12px;
+        color:#cbd5e1;
+        line-height:1.4;
+        max-height:260px;
+        overflow:auto;
+        padding-right:6px;
+    }
+    .howto-body ul{
+        margin:8px 0 0 18px;
+        padding:0;
+    }
+    .howto-body li{
+        margin:6px 0;
+    }
+    .howto-badge{
+        display:inline-block;
+        padding:2px 8px;
+        border:1px solid #334155;
+        border-radius:999px;
+        font-size:11px;
+        color:#94a3b8;
+        margin-left:6px;
+    }
 </style>
 </head>
 
@@ -291,13 +352,32 @@
     <!-- API -->
     <div class="card">
         <h3>🔌 API CONNECTION</h3>
-        <input id="token" placeholder="Enter API Token" type="password" style="width:40%;">
-        <button onclick="connect()" style="background:#38bdf8;">Connect</button>
-        <button onclick="disconnect()" style="background:#ef4444;">Disconnect</button>
 
-        <select id="symbol"></select>
+        <!-- NEW: two-column layout with right-side How To Use -->
+        <div class="api-grid">
+            <div class="api-left">
+                <input id="token" placeholder="Enter API Token" type="password" style="width:40%;">
+                <button onclick="connect()" style="background:#38bdf8;">Connect</button>
+                <button onclick="disconnect()" style="background:#ef4444;">Disconnect</button>
 
-        <p>Status: <span id="apiStatus" class="red">Not Connected</span></p>
+                <select id="symbol"></select>
+
+                <p>Status: <span id="apiStatus" class="red">Not Connected</span></p>
+            </div>
+
+            <div class="api-right" id="howToUsePanel">
+                <div class="howto-title">
+                    <div>
+                        📘 HOW TO USE
+                        <span class="howto-badge" id="howtoModeBadge">KOOLKID</span>
+                    </div>
+                    <button id="howtoToggleBtn" onclick="toggleHowTo()">HIDE</button>
+                </div>
+                <div class="howto-body" id="howtoBody">
+                    <!-- filled by JS depending on profile -->
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- ACCOUNT DASHBOARD -->
@@ -374,12 +454,10 @@
 
         <!-- DIFFERS ANALYSIS (JOKERJOE ONLY) -->
         <div id="differsAnalysisBox" style="display:none; margin-top:16px; padding:12px; background:#0f172a; border:1px solid #334155; border-radius:12px;">
-            <div style="font-weight:bold; color:#f59e0b; margin-bottom:8px;">❌ DIFFERS ANALYSIS (≤ 10%)</div>
+            <!-- CHANGED: name + icon -->
+            <div style="font-weight:bold; color:#f59e0b; margin-bottom:8px;">📊 DIFFERS ANALYSIS</div>
 
-            <div style="font-size:12px; color:#cbd5e1; margin-bottom:10px;">
-                Green digits are low-frequency digits (10% or lower). Gold digits are “golden” after being absent for 20 ticks and then printing again.
-            </div>
-
+            <!-- (kept internal tooltips on digits; removed paragraph description per your request) -->
             <div id="differsDigitsRow" style="display:flex; flex-wrap:wrap; gap:8px;"></div>
         </div>
     </div>
@@ -427,18 +505,12 @@
         <!-- JOKERJOE: INSTA 5 (DIRECTLY ABOVE MASTER AUTO) -->
         <div id="insta5Wrap" style="margin-top:10px; display:none;">
             <button id="insta5Btn" onclick="insta5()" style="background:#a855f7; width:100%;">INSTA 5 ON 5</button>
-            <div style="margin-top:6px; font-size:12px; color:#cbd5e1; text-align:center;">
-                Places 5 DIFFERS trades instantly on the selected barrier.
-            </div>
         </div>
 
         <!-- MASTER AUTO -->
         <div style="margin-top:10px;">
             <button id="autoBtn" onclick="toggleAuto()" style="background:#38bdf8; width:100%;">AUTO OFF</button>
         </div>
-        <p style="margin-top:6px; font-size:12px; color:#9ca3af; text-align:center;">
-            Note: MASTER AUTO must be ON to use auto modes that require it, and those modes only start after 100 ticks.
-        </p>
 
         <!-- KOOLKID AUTO MODES -->
         <div id="koolkidAutos" style="margin-top:12px;">
@@ -469,9 +541,6 @@
 
             <!-- kidgambleX -->
             <button style="background:#a855f7; width:100%;" onclick="kidgambleX()">🎲 kidgambleX</button>
-            <div style="margin-top:6px; margin-bottom:10px; font-size:12px; color:#cbd5e1; text-align:center;">
-                This button places three DIGIT MATCHES trades on the three highest-percentage digits. For professional use only. Use at your own risk.
-            </div>
 
             <!-- sludgeX auto mode -->
             <button id="sludgeXBtn" style="background:#1e293b; width:100%;" onclick="toggleSludgeXAuto()">
@@ -483,21 +552,15 @@
                 tripleX AUTO: OFF
             </button>
 
-            <!-- kidX auto mode (NEW) -->
+            <!-- kidX auto mode -->
             <button id="kidXBtn" style="background:#ef4444; width:100%;" onclick="toggleKidXAuto()">
                 kidX: OFF
             </button>
-            <div style="margin-top:6px; margin-bottom:10px; font-size:12px; color:#cbd5e1; text-align:center;">
-                kidX: Uses selected barrier. Requires Master Auto. After 100 ticks, if barrier digit % ≤ 10% and price touches it, it places 3 DIFFERS trades over 5 ticks, then cooldown 10 seconds.
-            </div>
 
-            <!-- MultiG auto mode (NEW) -->
+            <!-- MultiG auto mode -->
             <button id="multiGBtn" style="background:#ef4444; width:100%;" onclick="toggleMultiGAuto()">
                 MultiG: OFF
             </button>
-            <div style="margin-top:6px; margin-bottom:10px; font-size:12px; color:#cbd5e1; text-align:center;">
-                MultiG: Independent of Master Auto. After 100 ticks, queues DIFFERS trades on digits with % ≤ 9%, holds 30s before placing. Countdown appears in trade history.
-            </div>
 
             <button style="background:#f59e0b; width:100%;" onclick="take3('DIFFERS')">🔥 TAKE 3 DIFFERS NOW</button>
             <button style="background:#f59e0b; width:100%;" onclick="burst4('DIFFERS')">⚡ BURST 4 DIFFERS FAST</button>
@@ -628,6 +691,92 @@ let currentAutoBarrierMode = null;
 // JokerJoe new buttons
 const insta5Wrap = document.getElementById("insta5Wrap");
 const insta5Btn = document.getElementById("insta5Btn");
+
+// How To Use elements
+const howtoPanel = document.getElementById("howToUsePanel");
+const howtoBody = document.getElementById("howtoBody");
+const howtoBadge = document.getElementById("howtoModeBadge");
+const howtoToggleBtn = document.getElementById("howtoToggleBtn");
+let howtoVisible = true;
+
+// ================== HOW TO USE CONTENT ==================
+function getHowToHTMLForProfile(profile){
+    if(profile === "KOOLKID"){
+        return `
+            <div style="color:#94a3b8; margin-bottom:8px;">
+                Simple guide for KOOLKID buttons. No strategy details.
+            </div>
+            <ul>
+                <li><b>Digit Grid:</b> tap a digit to set your barrier and open quick actions.</li>
+                <li><b>TAKE OVER / TAKE UNDER (popup):</b> places a trade using the digit you clicked.</li>
+                <li><b>Stake:</b> your trade amount.</li>
+                <li><b>Barrier:</b> the digit you are trading on.</li>
+                <li><b>AUTO SL:</b> toggles automatic stop-loss behavior.</li>
+                <li><b>SET TP / SET SL:</b> updates your profit target and stop limit.</li>
+                <li><b>MASTER AUTO:</b> turns automated modes on/off (if your server supports them).</li>
+                <li><b>KIDRACKS AUTO:</b> an auto mode that can run after the analysis warms up.</li>
+                <li><b>KOOLKIDSPEED AUTO:</b> a faster auto mode option (server-controlled).</li>
+                <li><b>KOOL🍀KID LUCK:</b> a luck-based toggle (server-controlled).</li>
+                <li><b>TAKE 3 UNDER / TAKE 3 OVER:</b> sends 3 quick trades using current settings.</li>
+                <li><b>BURST 4 UNDER / BURST 4 OVER:</b> sends 4 quick trades fast using current settings.</li>
+                <li><b>Confidence Bars:</b> a visual helper showing current confidence values.</li>
+            </ul>
+        `;
+    }
+
+    if(profile === "JOKERJOE"){
+        return `
+            <div style="color:#94a3b8; margin-bottom:8px;">
+                Simple guide for JOKERJOE buttons. No strategy details.
+            </div>
+            <ul>
+                <li><b>Digit Grid:</b> tap a digit to set your barrier and open quick actions.</li>
+                <li><b>TAKE MATCH / TAKE DIFFER (popup):</b> places a trade using the digit you clicked.</li>
+                <li><b>DIGIT MATCHES:</b> manual trade using the selected barrier.</li>
+                <li><b>DIGIT DIFFERS:</b> manual trade using the selected barrier.</li>
+                <li><b>INSTA 5:</b> places 5 trades instantly on the selected barrier.</li>
+                <li><b>kidgambleX:</b> places trades on top digits based on the current 100-tick analysis.</li>
+                <li><b>sludgeX AUTO:</b> toggles an automated mode (server-controlled).</li>
+                <li><b>tripleX AUTO:</b> toggles an automated mode (server-controlled).</li>
+                <li><b>kidX:</b> auto mode that uses selected barrier and requires MASTER AUTO (starts after 100 ticks).</li>
+                <li><b>MultiG:</b> auto mode that queues a trade and shows a countdown in history (starts after 100 ticks).</li>
+                <li><b>TAKE 3 DIFFERS:</b> sends 3 quick DIFFERS trades.</li>
+                <li><b>BURST 4 DIFFERS:</b> sends 4 quick DIFFERS trades fast.</li>
+                <li><b>Differs Analysis:</b> highlights low-frequency and special digits as they appear.</li>
+            </ul>
+        `;
+    }
+
+    // HUMAN
+    return `
+        <div style="color:#94a3b8; margin-bottom:8px;">
+            Simple guide for HUMAN mode. No strategy details.
+        </div>
+        <ul>
+            <li><b>Stake:</b> your trade amount.</li>
+            <li><b>TP / SL:</b> set your take-profit and stop-loss limits.</li>
+            <li><b>AUTO SL:</b> toggles automatic stop-loss behavior.</li>
+            <li><b>Digit Grid:</b> hidden in this mode (as configured).</li>
+            <li><b>Use this mode:</b> for manual control and monitoring.</li>
+        </ul>
+    `;
+}
+
+function refreshHowTo(){
+    howtoBadge.innerText = activeProfile;
+    howtoBody.innerHTML = getHowToHTMLForProfile(activeProfile);
+}
+
+function toggleHowTo(){
+    howtoVisible = !howtoVisible;
+    if(howtoVisible){
+        howtoBody.style.display = "block";
+        howtoToggleBtn.innerText = "HIDE";
+    }else{
+        howtoBody.style.display = "none";
+        howtoToggleBtn.innerText = "SHOW";
+    }
+}
 
 // ================== TOAST FUNCTION ==================
 function showToast(message, type="info"){
@@ -910,6 +1059,7 @@ function setProfile(profile){
         body:JSON.stringify({profile})
     });
 
+    refreshHowTo();
     showToast("🎮 Profile Changed: " + profile, "info");
 }
 
@@ -1188,7 +1338,7 @@ async function toggleTripleXAuto(){
     }
 }
 
-// ================== JOKERJOE kidX TOGGLE (NEW) ==================
+// ================== JOKERJOE kidX TOGGLE ==================
 async function toggleKidXAuto(){
     const barrier = parseInt(barrierInput.value || "5", 10);
 
@@ -1207,7 +1357,7 @@ async function toggleKidXAuto(){
     }
 }
 
-// ================== JOKERJOE MultiG TOGGLE (NEW) ==================
+// ================== JOKERJOE MultiG TOGGLE ==================
 async function toggleMultiGAuto(){
     const res = await fetch("/toggle_multig_auto", {method:"POST"});
     const data = await res.json();
@@ -1220,7 +1370,7 @@ async function toggleMultiGAuto(){
     }
 }
 
-// ================== JOKERJOE INSTA 5 (NEW) ==================
+// ================== JOKERJOE INSTA 5 ==================
 async function insta5(){
     const stake = stakeInput.value;
     const symbol = document.getElementById("symbol").value;
@@ -1401,12 +1551,12 @@ function renderDiffersAnalysis(da){
             div.style.background = "linear-gradient(135deg,#facc15,#f59e0b)";
             div.style.color = "#0b1220";
             div.style.boxShadow = "0 0 14px rgba(250,204,21,0.35)";
-            div.title = "Golden differs: absent for 20 ticks, then printed again (≤10%).";
+            div.title = "Golden differs: absent for 20 ticks, then printed again.";
         }else{
             div.style.background = "rgba(34,197,94,0.15)";
             div.style.color = "#22c55e";
             div.style.boxShadow = "0 0 12px rgba(34,197,94,0.20)";
-            div.title = "Low-frequency differs digit (≤10%).";
+            div.title = "Low-frequency differs digit.";
         }
 
         div.innerText = item.digit;
@@ -1456,7 +1606,6 @@ socket.on("digit_analysis", (data)=>{
         renderDiffersAnalysis(data.differs_analysis);
     }
 
-    // MultiG countdown (trade history)
     if(activeProfile === "JOKERJOE" && data.multig_pending){
         renderMultiGCountdown(data.multig_pending);
     }else{
@@ -1534,6 +1683,7 @@ setProfile("KOOLKID");
 sendRiskControls();
 syncAutoStake();
 updateInsta5Label();
+refreshHowTo();
 </script>
 
 </body>
