@@ -267,13 +267,10 @@
     .toast.error{border-color:#ef4444; color:#ef4444;}
     .toast.warn{border-color:#facc15; color:#facc15;}
     .toast.info{border-color:#38bdf8; color:#38bdf8;}
-
 </style>
 </head>
 
 <body>
-
-<!-- TOAST CONTAINER -->
 <div id="toastContainer"></div>
 
 <div class="container">
@@ -375,7 +372,7 @@
         <h3>📊 100 TICK DIGIT ANALYSIS</h3>
         <div class="digit-grid" id="digitGrid"></div>
 
-        <!-- NEW: DIFFERS ANALYSIS (JOKERJOE ONLY) -->
+        <!-- DIFFERS ANALYSIS (JOKERJOE ONLY) -->
         <div id="differsAnalysisBox" style="display:none; margin-top:16px; padding:12px; background:#0f172a; border:1px solid #334155; border-radius:12px;">
             <div style="font-weight:bold; color:#f59e0b; margin-bottom:8px;">❌ DIFFERS ANALYSIS (≤ 10%)</div>
 
@@ -427,12 +424,20 @@
             <button onclick="manualSL()" style="background:#ef4444; flex:1;">SET SL</button>
         </div>
 
+        <!-- JOKERJOE: INSTA 5 (DIRECTLY ABOVE MASTER AUTO) -->
+        <div id="insta5Wrap" style="margin-top:10px; display:none;">
+            <button id="insta5Btn" onclick="insta5()" style="background:#a855f7; width:100%;">INSTA 5 ON 5</button>
+            <div style="margin-top:6px; font-size:12px; color:#cbd5e1; text-align:center;">
+                Places 5 DIFFERS trades instantly on the selected barrier.
+            </div>
+        </div>
+
         <!-- MASTER AUTO -->
         <div style="margin-top:10px;">
             <button id="autoBtn" onclick="toggleAuto()" style="background:#38bdf8; width:100%;">AUTO OFF</button>
         </div>
         <p style="margin-top:6px; font-size:12px; color:#9ca3af; text-align:center;">
-            Note: MASTER AUTO must be ON to use the auto modes below, and auto modes only start after 100 ticks.
+            Note: MASTER AUTO must be ON to use auto modes that require it, and those modes only start after 100 ticks.
         </p>
 
         <!-- KOOLKID AUTO MODES -->
@@ -462,21 +467,37 @@
             <button style="background:#a855f7; width:100%;" onclick="trade('MATCHES')">✅ DIGIT MATCHES</button>
             <button style="background:#f59e0b; width:100%;" onclick="trade('DIFFERS')">❌ DIGIT DIFFERS</button>
 
-            <!-- kidgambleX (replaces TAKE 3 MATCHES NOW) -->
+            <!-- kidgambleX -->
             <button style="background:#a855f7; width:100%;" onclick="kidgambleX()">🎲 kidgambleX</button>
             <div style="margin-top:6px; margin-bottom:10px; font-size:12px; color:#cbd5e1; text-align:center;">
                 This button places three DIGIT MATCHES trades on the three highest-percentage digits. For professional use only. Use at your own risk.
             </div>
 
-            <!-- sludgeX auto mode (toggle) -->
+            <!-- sludgeX auto mode -->
             <button id="sludgeXBtn" style="background:#1e293b; width:100%;" onclick="toggleSludgeXAuto()">
                 sludgeX AUTO: OFF
             </button>
 
-            <!-- tripleX auto mode (toggle) ✅ ADDED -->
+            <!-- tripleX auto mode -->
             <button id="tripleXBtn" style="background:#1e293b; width:100%;" onclick="toggleTripleXAuto()">
                 tripleX AUTO: OFF
             </button>
+
+            <!-- kidX auto mode (NEW) -->
+            <button id="kidXBtn" style="background:#ef4444; width:100%;" onclick="toggleKidXAuto()">
+                kidX: OFF
+            </button>
+            <div style="margin-top:6px; margin-bottom:10px; font-size:12px; color:#cbd5e1; text-align:center;">
+                kidX: Uses selected barrier. Requires Master Auto. After 100 ticks, if barrier digit % ≤ 10% and price touches it, it places 3 DIFFERS trades over 5 ticks, then cooldown 10 seconds.
+            </div>
+
+            <!-- MultiG auto mode (NEW) -->
+            <button id="multiGBtn" style="background:#ef4444; width:100%;" onclick="toggleMultiGAuto()">
+                MultiG: OFF
+            </button>
+            <div style="margin-top:6px; margin-bottom:10px; font-size:12px; color:#cbd5e1; text-align:center;">
+                MultiG: Independent of Master Auto. After 100 ticks, queues DIFFERS trades on digits with % ≤ 9%, holds 30s before placing. Countdown appears in trade history.
+            </div>
 
             <button style="background:#f59e0b; width:100%;" onclick="take3('DIFFERS')">🔥 TAKE 3 DIFFERS NOW</button>
             <button style="background:#f59e0b; width:100%;" onclick="burst4('DIFFERS')">⚡ BURST 4 DIFFERS FAST</button>
@@ -592,17 +613,21 @@ const slInput = document.getElementById("sl");
 const digitPopup = document.getElementById("digitPopup");
 const popupTitle = document.getElementById("popupTitle");
 
-// NEW: differs analysis container
+// differs analysis
 const differsAnalysisBox = document.getElementById("differsAnalysisBox");
 const differsDigitsRow = document.getElementById("differsDigitsRow");
 
-// NEW: auto barrier popup for KIDRACKS / KOOLKIDSPEED
+// auto barrier popup for KIDRACKS / KOOLKIDSPEED
 const autoBarrierPopup = document.getElementById("autoBarrierPopup");
 const autoBarrierTitle = document.getElementById("autoBarrierTitle");
 const autoBarrierInput = document.getElementById("autoBarrierInput");
 const autoBarrierConfirm = document.getElementById("autoBarrierConfirm");
 const autoBarrierCancel = document.getElementById("autoBarrierCancel");
-let currentAutoBarrierMode = null; // "KIDRACKS" or "KOOLKIDSPEED"
+let currentAutoBarrierMode = null;
+
+// JokerJoe new buttons
+const insta5Wrap = document.getElementById("insta5Wrap");
+const insta5Btn = document.getElementById("insta5Btn");
 
 // ================== TOAST FUNCTION ==================
 function showToast(message, type="info"){
@@ -639,9 +664,15 @@ function initDigitGrid(){
 }
 initDigitGrid();
 
+function updateInsta5Label(){
+    const b = parseInt(barrierInput.value || "5", 10);
+    insta5Btn.innerText = `INSTA 5 ON ${isNaN(b) ? 5 : b}`;
+}
+
 function onDigitClicked(digit, ev){
     barrierInput.value = digit;
     lastClickedDigit = digit;
+    updateInsta5Label();
 
     popupTitle.innerText = `Digit ${digit}`;
 
@@ -671,6 +702,9 @@ function onDigitClicked(digit, ev){
     digitPopup.style.display = "block";
 }
 
+barrierInput.addEventListener("change", updateInsta5Label);
+barrierInput.addEventListener("blur", updateInsta5Label);
+
 function hidePopup(){
     digitPopup.style.display = "none";
 }
@@ -691,7 +725,7 @@ async function popupTrade(type){
 
 // ================== AUTO BARRIER POPUP HELPERS ==================
 function showAutoBarrierPopup(mode){
-    currentAutoBarrierMode = mode; // "KIDRACKS" or "KOOLKIDSPEED"
+    currentAutoBarrierMode = mode;
     if(mode === "KIDRACKS"){
         autoBarrierTitle.innerText = "Set KidRacks Barrier (0-9)";
     }else if(mode === "KOOLKIDSPEED"){
@@ -833,6 +867,8 @@ function setProfile(profile){
         koolkidButtons.style.display = "block";
         jokerjoeButtons.style.display = "none";
         koolkidAutos.style.display = "block";
+
+        insta5Wrap.style.display = "none";
     }
 
     if(profile === "JOKERJOE"){
@@ -847,6 +883,9 @@ function setProfile(profile){
         koolkidButtons.style.display = "none";
         jokerjoeButtons.style.display = "block";
         koolkidAutos.style.display = "none";
+
+        insta5Wrap.style.display = "block";
+        updateInsta5Label();
     }
 
     if(profile === "HUMAN"){
@@ -861,6 +900,8 @@ function setProfile(profile){
         koolkidButtons.style.display = "none";
         jokerjoeButtons.style.display = "none";
         koolkidAutos.style.display = "none";
+
+        insta5Wrap.style.display = "none";
     }
 
     fetch("/set_profile", {
@@ -914,8 +955,7 @@ async function disconnect(){
 
     differsDigitsRow.innerHTML = "";
 
-    // reset auto mode buttons
-    updateAutoModeButtons({kidracks:false, koolkidspeed:false, koolluck:false, sludgex:false, triplex:false});
+    updateAutoModeButtons({kidracks:false, koolkidspeed:false, koolluck:false, sludgex:false, triplex:false, kidx:false, multig:false});
 
     showToast("🔌 Disconnected", "error");
 }
@@ -1037,7 +1077,7 @@ function updateAutoModeButtons(modes){
         }
     }
 
-    // JOKERJOE sludgeX toggle button
+    // JOKERJOE sludgeX
     const sludgeBtn = document.getElementById("sludgeXBtn");
     if(modes.sludgex !== undefined && sludgeBtn){
         if(modes.sludgex){
@@ -1049,7 +1089,7 @@ function updateAutoModeButtons(modes){
         }
     }
 
-    // JOKERJOE tripleX toggle button ✅ ADDED
+    // JOKERJOE tripleX
     const tripBtn = document.getElementById("tripleXBtn");
     if(modes.triplex !== undefined && tripBtn){
         if(modes.triplex){
@@ -1060,11 +1100,33 @@ function updateAutoModeButtons(modes){
             tripBtn.style.background = "#1e293b";
         }
     }
+
+    // JOKERJOE kidX (RED OFF / BLUE ON)
+    const kidXBtn = document.getElementById("kidXBtn");
+    if(modes.kidx !== undefined && kidXBtn){
+        if(modes.kidx){
+            kidXBtn.innerText = "kidX: ON";
+            kidXBtn.style.background = "#1d4ed8";
+        }else{
+            kidXBtn.innerText = "kidX: OFF";
+            kidXBtn.style.background = "#ef4444";
+        }
+    }
+
+    // JOKERJOE MultiG (RED OFF / BLUE ON)
+    const multiGBtn = document.getElementById("multiGBtn");
+    if(modes.multig !== undefined && multiGBtn){
+        if(modes.multig){
+            multiGBtn.innerText = "MultiG: ON";
+            multiGBtn.style.background = "#1d4ed8";
+        }else{
+            multiGBtn.innerText = "MultiG: OFF";
+            multiGBtn.style.background = "#ef4444";
+        }
+    }
 }
 
 // When clicking KIDRACKS button:
-//  - If it's OFF → open popup to set barrier, then turn ON inside confirm handler.
-//  - If it's ON  → just toggle OFF.
 async function toggleKidracksAuto(){
     const kidBtn = document.getElementById("kidracksBtn");
     const isOn = kidBtn.innerText.includes("ON");
@@ -1113,7 +1175,7 @@ async function toggleSludgeXAuto(){
     }
 }
 
-// ================== JOKERJOE tripleX TOGGLE ✅ ADDED ==================
+// ================== JOKERJOE tripleX TOGGLE ==================
 async function toggleTripleXAuto(){
     const res = await fetch("/toggle_triplex_auto", {method:"POST"});
     const data = await res.json();
@@ -1123,6 +1185,63 @@ async function toggleTripleXAuto(){
         showToast("tripleX AUTO: " + (data.triplex_auto ? "ON" : "OFF"), data.triplex_auto ? "success" : "error");
     }else{
         showToast(data.message || "tripleX toggle failed", "error");
+    }
+}
+
+// ================== JOKERJOE kidX TOGGLE (NEW) ==================
+async function toggleKidXAuto(){
+    const barrier = parseInt(barrierInput.value || "5", 10);
+
+    const res = await fetch("/toggle_kidx_auto", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ barrier: isNaN(barrier) ? 5 : barrier })
+    });
+
+    const data = await res.json();
+    if(data.status === "success"){
+        updateAutoModeButtons({kidx: data.kidx_auto});
+        showToast("kidX: " + (data.kidx_auto ? "ON" : "OFF") + " @ barrier " + (data.barrier ?? barrier), data.kidx_auto ? "success" : "error");
+    }else{
+        showToast(data.message || "kidX toggle failed", "error");
+    }
+}
+
+// ================== JOKERJOE MultiG TOGGLE (NEW) ==================
+async function toggleMultiGAuto(){
+    const res = await fetch("/toggle_multig_auto", {method:"POST"});
+    const data = await res.json();
+
+    if(data.status === "success"){
+        updateAutoModeButtons({multig: data.multig_auto});
+        showToast("MultiG: " + (data.multig_auto ? "ON" : "OFF"), data.multig_auto ? "success" : "error");
+    }else{
+        showToast(data.message || "MultiG toggle failed", "error");
+    }
+}
+
+// ================== JOKERJOE INSTA 5 (NEW) ==================
+async function insta5(){
+    const stake = stakeInput.value;
+    const symbol = document.getElementById("symbol").value;
+    const barrier = parseInt(barrierInput.value || "5", 10);
+
+    try{
+        const res = await fetch("/insta5", {
+            method:"POST",
+            headers:{"Content-Type":"application/json"},
+            body: JSON.stringify({ stake, symbol, barrier: isNaN(barrier) ? 5 : barrier })
+        });
+
+        const data = await res.json();
+        if(data.status === "success"){
+            showToast("⚡ INSTA 5 SENT ON " + (data.barrier ?? barrier) + " (placed " + (data.placed||0) + ")", "warn");
+        }else{
+            showToast(data.message || "INSTA 5 failed", "error");
+        }
+    }catch(e){
+        console.error(e);
+        showToast("INSTA 5 request error", "error");
     }
 }
 
@@ -1209,7 +1328,7 @@ socket.on("connection_status", (data)=>{
     }
 });
 
-socket.on("trade_placed", (data)=>{
+socket.on("trade_placed", (_data)=>{
     showToast("📌 TRADE PLACED", "info");
 });
 
@@ -1257,7 +1376,6 @@ function renderDiffersAnalysis(da){
     const green = da.green_digits || [];
     const golden = da.golden_digits || [];
 
-    // Render gold first, then green (excluding duplicates)
     const all = [];
     golden.forEach(d => all.push({digit:d, type:"gold"}));
     green.forEach(d => {
@@ -1296,6 +1414,34 @@ function renderDiffersAnalysis(da){
     });
 }
 
+// MultiG countdown in trade history
+function renderMultiGCountdown(pending){
+    const id = "multigCountdownLine";
+    const existing = document.getElementById(id);
+
+    if(!pending || !pending.active){
+        if(existing) existing.remove();
+        return;
+    }
+
+    const txt = `⏳ MultiG DIFFERS on ${pending.barrier} in ${pending.seconds_remaining}s`;
+    if(existing){
+        existing.innerText = txt;
+        return;
+    }
+
+    const p = document.createElement("p");
+    p.id = id;
+    p.style.color = "#38bdf8";
+    p.style.fontWeight = "bold";
+    p.innerText = txt;
+
+    if(historyDiv.innerText.includes("No trades")){
+        historyDiv.innerHTML = "";
+    }
+    historyDiv.prepend(p);
+}
+
 socket.on("digit_analysis", (data)=>{
     if(data.percentages){
         for(let i=0;i<10;i++){
@@ -1306,19 +1452,24 @@ socket.on("digit_analysis", (data)=>{
         }
     }
 
-    // JOKERJOE differs analysis display
     if(activeProfile === "JOKERJOE" && data.differs_analysis){
         renderDiffersAnalysis(data.differs_analysis);
     }
 
-    // Keep sludgeX + tripleX buttons in sync if strategy sends auto modes
+    // MultiG countdown (trade history)
+    if(activeProfile === "JOKERJOE" && data.multig_pending){
+        renderMultiGCountdown(data.multig_pending);
+    }else{
+        renderMultiGCountdown(null);
+    }
+
     if(data.auto_modes){
-        if(data.auto_modes.sludgex !== undefined){
-            updateAutoModeButtons({sludgex: data.auto_modes.sludgex});
-        }
-        if(data.auto_modes.triplex !== undefined){
-            updateAutoModeButtons({triplex: data.auto_modes.triplex});
-        }
+        updateAutoModeButtons({
+            sludgex: data.auto_modes.sludgex,
+            triplex: data.auto_modes.triplex,
+            kidx: data.auto_modes.kidx,
+            multig: data.auto_modes.multig
+        });
     }
 
     if(data.confidence && activeProfile === "KOOLKID"){
@@ -1339,10 +1490,10 @@ socket.on("trade_result", (data)=>{
 
     if(data.result === "WIN"){
         p.style.color = "#22c55e";
-        showToast("🎯 TP HIT! +$" + data.profit, "success");
+        showToast("🎯 WIN! +$" + data.profit, "success");
     } else {
         p.style.color = "#ef4444";
-        showToast("🛑 SL HIT! -$" + Math.abs(data.profit), "error");
+        showToast("🛑 LOSS! -$" + Math.abs(data.profit), "error");
     }
 
     p.innerHTML = `${data.time} - ${data.result} (${data.profit})`;
@@ -1372,14 +1523,6 @@ socket.on("stats_update", (data)=>{
         btn.innerText = "AUTO OFF";
         btn.style.background = "#38bdf8";
     }
-
-    // Keep tripleX in sync from stats payload too (optional but safe)
-    if(data.triplex_auto !== undefined){
-        updateAutoModeButtons({triplex: data.triplex_auto});
-    }
-    if(data.sludgex_auto !== undefined){
-        updateAutoModeButtons({sludgex: data.sludgex_auto});
-    }
 });
 
 socket.on("auto_mode_update", (modes)=>{
@@ -1390,6 +1533,7 @@ socket.on("auto_mode_update", (modes)=>{
 setProfile("KOOLKID");
 sendRiskControls();
 syncAutoStake();
+updateInsta5Label();
 </script>
 
 </body>

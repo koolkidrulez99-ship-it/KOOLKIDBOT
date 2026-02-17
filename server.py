@@ -203,6 +203,21 @@ def get_client_state():
     return cid, clients[cid]
 
 
+def emit_jokerjoe_modes(cid, strat: JokerJoeStrategy):
+    """
+    Send updated JokerJoe auto mode toggles to UI.
+    """
+    try:
+        socketio.emit("auto_mode_update", {
+            "sludgex": bool(getattr(strat, "sludgex_auto", False)),
+            "triplex": bool(getattr(strat, "triplex_auto", False)),
+            "kidx": bool(getattr(strat, "kidx_auto", False)),
+            "multig": bool(getattr(strat, "multig_auto", False)),
+        }, room=cid)
+    except Exception:
+        pass
+
+
 # ---------------- ROUTES (LOGIN SYSTEM) ---------------- #
 @app.route("/login", methods=["GET", "POST"])
 def login():
@@ -274,6 +289,14 @@ def handle_connect():
         "balance": state["balance"]
     }, room=cid)
 
+    # sync jokerjoe toggles if user is on jokerjoe
+    try:
+        jj = state["strategies"].get("JOKERJOE")
+        if jj:
+            emit_jokerjoe_modes(cid, jj)
+    except Exception:
+        pass
+
     send_stats_update(cid)
 
 
@@ -341,13 +364,32 @@ def run_auto_trade(client_id, state):
     if not strategy:
         return
 
-    if not getattr(strategy, "auto_trade", False):
-        return
+    # NOTE: For JOKERJOE:
+    # - Master Auto toggles strategy.auto_trade and controls kidX + sludgeX + tripleX
+    # - MultiG is independent and returns signals through check_multig_signal()
 
-    if not hasattr(strategy, "check_auto_trade_signal"):
-        return
+    signals = None
 
-    signals = strategy.check_auto_trade_signal()
+    # MultiG can run even if master auto is OFF, but only for JOKERJOE
+    if active_profile == "JOKERJOE" and hasattr(strategy, "check_multig_signal"):
+        try:
+            multig_sig = strategy.check_multig_signal()
+            if multig_sig:
+                signals = multig_sig
+        except Exception:
+            pass
+
+    # Master auto based signals (existing)
+    if hasattr(strategy, "check_auto_trade_signal"):
+        try:
+            auto_sig = strategy.check_auto_trade_signal()
+            if auto_sig:
+                # If we already have a MultiG signal, prefer MultiG (it has its own delay)
+                if not signals:
+                    signals = auto_sig
+        except Exception:
+            pass
+
     if not signals:
         return
 
@@ -368,10 +410,11 @@ def run_auto_trade(client_id, state):
                     "type": ctype,
                     "barrier": barrier,
                     "stake": stake,
-                    "symbol": symbol
+                    "symbol": symbol,
+                    "mode": sig.get("mode", "")
                 }, room=client_id)
 
-                logger.info(f"[{client_id}] 🤖 AUTO TRADE SENT ({active_profile}): {ctype} barrier={barrier} stake={stake}")
+                logger.info(f"[{client_id}] 🤖 AUTO TRADE SENT ({active_profile}): {ctype} barrier={barrier} stake={stake} mode={sig.get('mode')}")
             else:
                 logger.error(f"[{client_id}] ❌ AUTO TRADE FAILED: {msg}")
 
@@ -484,8 +527,34 @@ def process_tick(client_id, tick):
 
         run_auto_trade(client_id, state)
 
+        # If active profile is JokerJoe, keep auto buttons synced
+        if state.get("active_profile") == "JOKERJOE":
+            jj = state["strategies"].get("JOKERJOE")
+            if jj:
+                emit_jokerjoe_modes(client_id, jj)
+
     except Exception as e:
         logger.error(f"[{client_id}] process_tick error: {e}")
+
+
+def _is_contract_settled_fast(contract: dict) -> bool:
+    """
+    Deriv contract settlement detection:
+    Many times 'status' becomes 'sold' before some flags.
+    For 1-tick contracts, we want to emit results as soon as possible.
+    """
+    try:
+        if contract.get("is_sold") or contract.get("is_settled"):
+            return True
+        status = (contract.get("status") or "").lower()
+        if status in ("sold", "won", "lost", "settled"):
+            return True
+        # Sometimes sell_price appears immediately
+        if contract.get("sell_price") is not None and contract.get("sell_price") != "":
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def process_contract(client_id, contract):
@@ -494,7 +563,7 @@ def process_contract(client_id, contract):
         return
 
     try:
-        if not (contract.get("is_sold") or contract.get("is_settled")):
+        if not _is_contract_settled_fast(contract):
             return
 
         profit = float(contract.get("profit", 0))
@@ -694,6 +763,12 @@ def set_profile():
     socketio.emit("profile_update", {"profile": profile}, room=cid)
     send_stats_update(cid)
 
+    # sync jokerjoe toggles when switching to jokerjoe
+    if profile == "JOKERJOE":
+        jj = state["strategies"].get("JOKERJOE")
+        if jj:
+            emit_jokerjoe_modes(cid, jj)
+
     return jsonify({"status": "success", "profile": profile})
 
 
@@ -758,6 +833,12 @@ def toggle_auto():
 
     new_state = strategy.toggle_auto()
     send_stats_update(cid)
+
+    # sync modes (especially for JOKERJOE)
+    if state.get("active_profile") == "JOKERJOE":
+        jj = state["strategies"].get("JOKERJOE")
+        if jj:
+            emit_jokerjoe_modes(cid, jj)
 
     return jsonify({"status": "success", "auto_trade": new_state})
 
@@ -832,7 +913,7 @@ def set_koolkidspeed_settings():
     return jsonify({"status": "success"})
 
 
-# ---------------- JOKERJOE: sludgeX toggle (already used by your HTML) ---------------- #
+# ---------------- JOKERJOE: sludgeX toggle ---------------- #
 @app.route("/toggle_sludgex_auto", methods=["POST"])
 def toggle_sludgex_auto_route():
     if not login_required():
@@ -846,13 +927,11 @@ def toggle_sludgex_auto_route():
     new_val = strat.toggle_sludgex_auto()
     send_stats_update(cid)
 
-    # keep UI in sync
-    socketio.emit("auto_mode_update", {"sludgex": bool(new_val), "triplex": bool(getattr(strat, "triplex_auto", False))}, room=cid)
-
+    emit_jokerjoe_modes(cid, strat)
     return jsonify({"status": "success", "sludgex_auto": new_val})
 
 
-# ---------------- JOKERJOE: tripleX toggle (ADDED BACK) ---------------- #
+# ---------------- JOKERJOE: tripleX toggle ---------------- #
 @app.route("/toggle_triplex_auto", methods=["POST"])
 def toggle_triplex_auto_route():
     if not login_required():
@@ -866,12 +945,50 @@ def toggle_triplex_auto_route():
     new_val = strat.toggle_triplex_auto()
     send_stats_update(cid)
 
-    socketio.emit("auto_mode_update", {"sludgex": bool(getattr(strat, "sludgex_auto", False)), "triplex": bool(new_val)}, room=cid)
-
+    emit_jokerjoe_modes(cid, strat)
     return jsonify({"status": "success", "triplex_auto": new_val})
 
 
-# ---------------- JOKERJOE: kidgambleX route (ADDED BACKEND) ---------------- #
+# ---------------- JOKERJOE: kidX toggle (NEW) ---------------- #
+@app.route("/toggle_kidx_auto", methods=["POST"])
+def toggle_kidx_auto_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    strat = state["strategies"].get("JOKERJOE")
+    if not strat or not hasattr(strat, "toggle_kidx_auto"):
+        return jsonify({"status": "error", "message": "JOKERJOE strategy not available"}), 400
+
+    data = request.json or {}
+    barrier = int(data.get("barrier", 5))
+
+    new_val = strat.toggle_kidx_auto(barrier=barrier)
+    send_stats_update(cid)
+
+    emit_jokerjoe_modes(cid, strat)
+    return jsonify({"status": "success", "kidx_auto": bool(new_val), "barrier": barrier})
+
+
+# ---------------- JOKERJOE: MultiG toggle (NEW) ---------------- #
+@app.route("/toggle_multig_auto", methods=["POST"])
+def toggle_multig_auto_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    strat = state["strategies"].get("JOKERJOE")
+    if not strat or not hasattr(strat, "toggle_multig_auto"):
+        return jsonify({"status": "error", "message": "JOKERJOE strategy not available"}), 400
+
+    new_val = strat.toggle_multig_auto()
+    send_stats_update(cid)
+
+    emit_jokerjoe_modes(cid, strat)
+    return jsonify({"status": "success", "multig_auto": bool(new_val)})
+
+
+# ---------------- JOKERJOE: kidgambleX route ---------------- #
 @app.route("/kidgamblex", methods=["POST"])
 def kidgamblex_route():
     if not login_required():
@@ -905,6 +1022,36 @@ def kidgamblex_route():
         time.sleep(0.12)
 
     return jsonify({"status": "success", "digits": digits, "placed": placed})
+
+
+# ---------------- JOKERJOE: INSTA 5 (MANUAL) ---------------- #
+@app.route("/insta5", methods=["POST"])
+def insta5_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    data = request.json or {}
+
+    contract_type = "DIFFERS"  # as requested (JOKERJOE manual)
+    try:
+        stake = float(data.get("stake", state.get("auto_stake", 1.0)))
+        if stake <= 0:
+            stake = 1.0
+    except Exception:
+        stake = 1.0
+
+    symbol = data.get("symbol", state.get("current_symbol", "R_25"))
+    barrier = int(data.get("barrier", 5))
+
+    placed = 0
+    for _ in range(5):
+        ok, _msg = send_buy(cid, contract_type, stake, symbol, barrier)
+        if ok:
+            placed += 1
+        time.sleep(0.06)
+
+    return jsonify({"status": "success", "placed": placed, "barrier": barrier})
 
 
 # ---------------- MANUAL TRADING ROUTES ---------------- #
@@ -981,6 +1128,7 @@ if __name__ == "__main__":
 ║     - Per-session client_id                                  ║
 ║     - Separate WS + state per browser/device                 ║
 ║     - KIDRACKS / KOOLKIDSPEED / KOOL🍀KID LUCK               ║
+║     - JOKERJOE: sludgeX / tripleX / kidX / MultiG            ║
 ╚══════════════════════════════════════════════════════════════╝
     """)
 
