@@ -44,21 +44,6 @@ DB_FILE = "users.db"
 # ==========================
 # MULTI-CLIENT STATE
 # ==========================
-# clients[client_id] = {
-#   "api_token": str,
-#   "ws": WebSocketApp or None,
-#   "ws_connected": bool,
-#   "active_profile": "KOOLKID"|"JOKERJOE"|"HUMAN",
-#   "current_symbol": str,
-#   "balance": float,
-#   "session_start_balance": float|None,
-#   "auto_stake": float,
-#   "strategies": {
-#       "KOOLKID": KoolKidStrategy(),
-#       "JOKERJOE": JokerJoeStrategy(),
-#       "HUMAN": HumanStrategy()
-#   }
-# }
 clients = {}
 
 
@@ -278,13 +263,11 @@ def logout():
 @socketio.on("connect")
 def handle_connect():
     if not login_required():
-        # reject unauthorized socket connections
         return False
 
     cid, state = get_client_state()
     join_room(cid)
 
-    # Send initial connection + stats state for this client only
     socketio.emit("connection_status", {
         "connected": state["ws_connected"],
         "loginid": "UNKNOWN",
@@ -351,21 +334,13 @@ def send_buy(client_id, contract_type, stake, symbol, barrier):
 
 # ---------------- AUTO TRADE ENGINE (PER CLIENT) ---------------- #
 def run_auto_trade(client_id, state):
-    """
-    Runs KoolKid auto engines independently for this client.
-    Uses this client's auto_stake.
-    Master auto (strategy.auto_trade) must be ON.
-    """
     active_profile = state.get("active_profile", "KOOLKID")
-    if active_profile != "KOOLKID":
-        return
 
     strategies = state.get("strategies", {})
-    strategy = strategies.get("KOOLKID")
+    strategy = strategies.get(active_profile)
     if not strategy:
         return
 
-    # MASTER AUTO MUST BE ON
     if not getattr(strategy, "auto_trade", False):
         return
 
@@ -396,7 +371,7 @@ def run_auto_trade(client_id, state):
                     "symbol": symbol
                 }, room=client_id)
 
-                logger.info(f"[{client_id}] 🤖 AUTO TRADE SENT: {ctype} barrier={barrier} stake={stake}")
+                logger.info(f"[{client_id}] 🤖 AUTO TRADE SENT ({active_profile}): {ctype} barrier={barrier} stake={stake}")
             else:
                 logger.error(f"[{client_id}] ❌ AUTO TRADE FAILED: {msg}")
 
@@ -413,14 +388,12 @@ def handle_on_message(client_id, ws, message):
     try:
         data = json.loads(message)
 
-        # API ERROR
         if "error" in data:
             msg = data["error"].get("message", "Unknown API Error")
             logger.error(f"[{client_id}] API Error: {msg}")
             socketio.emit("api_error", {"message": msg}, room=client_id)
             return
 
-        # AUTH SUCCESS
         if "authorize" in data:
             state["ws_connected"] = True
             loginid = data["authorize"].get("loginid", "UNKNOWN")
@@ -442,11 +415,9 @@ def handle_on_message(client_id, ws, message):
             socketio.emit("balance_update", {"balance": balance}, room=client_id)
             send_stats_update(client_id)
 
-            # Subscribe for this client's symbol & balance
             ws.send(json.dumps({"ticks": state["current_symbol"], "subscribe": 1}))
             ws.send(json.dumps({"balance": 1, "subscribe": 1}))
 
-        # BALANCE STREAM
         if "balance" in data:
             try:
                 balance = float(data["balance"]["balance"])
@@ -456,12 +427,10 @@ def handle_on_message(client_id, ws, message):
             except Exception:
                 pass
 
-        # TICK STREAM
         if "tick" in data:
             tick = data["tick"]
             process_tick(client_id, tick)
 
-        # BUY CONFIRMATION
         if "buy" in data:
             socketio.emit("trade_placed", data["buy"], room=client_id)
 
@@ -473,7 +442,6 @@ def handle_on_message(client_id, ws, message):
                     "subscribe": 1
                 }))
 
-        # CONTRACT UPDATES
         if "proposal_open_contract" in data:
             contract = data["proposal_open_contract"]
             process_contract(client_id, contract)
@@ -514,9 +482,7 @@ def process_tick(client_id, tick):
         if strategy:
             socketio.emit("digit_analysis", strategy.get_ui_payload(), room=client_id)
 
-        # AUTO ENGINE
-        if state.get("active_profile") == "KOOLKID":
-            run_auto_trade(client_id, state)
+        run_auto_trade(client_id, state)
 
     except Exception as e:
         logger.error(f"[{client_id}] process_tick error: {e}")
@@ -597,7 +563,6 @@ def start_ws_for_client(client_id):
     if not state:
         return
 
-    # close old ws if exists
     old_ws = state.get("ws")
     if old_ws:
         try:
@@ -649,10 +614,6 @@ def set_token():
 
 @app.route("/set_auto_stake", methods=["POST"])
 def set_auto_stake():
-    """
-    Frontend sends the stake input here.
-    ALL AUTO MODES USE THIS STAKE for that client.
-    """
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
 
@@ -765,7 +726,6 @@ def change_market():
     return jsonify({"status": "success", "symbol": state["current_symbol"]})
 
 
-# ---------------- RISK CONTROL ROUTE ---------------- #
 @app.route("/set_risk_controls", methods=["POST"])
 def set_risk_controls():
     if not login_required():
@@ -779,13 +739,12 @@ def set_risk_controls():
     auto_sl = bool(data.get("auto_sl", True))
 
     strategy = state["strategies"].get(state["active_profile"])
-    if strategy:
+    if strategy and hasattr(strategy, "set_risk_controls"):
         strategy.set_risk_controls(tp=tp, sl=sl, auto_sl=auto_sl)
 
     return jsonify({"status": "success"})
 
 
-# ---------------- MASTER AUTO TOGGLE ---------------- #
 @app.route("/toggle_auto", methods=["POST"])
 def toggle_auto():
     if not login_required():
@@ -871,6 +830,81 @@ def set_koolkidspeed_settings():
     strat.koolkidspeed_barrier = barrier
 
     return jsonify({"status": "success"})
+
+
+# ---------------- JOKERJOE: sludgeX toggle (already used by your HTML) ---------------- #
+@app.route("/toggle_sludgex_auto", methods=["POST"])
+def toggle_sludgex_auto_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    strat = state["strategies"].get("JOKERJOE")
+    if not strat or not hasattr(strat, "toggle_sludgex_auto"):
+        return jsonify({"status": "error", "message": "JOKERJOE strategy not available"}), 400
+
+    new_val = strat.toggle_sludgex_auto()
+    send_stats_update(cid)
+
+    # keep UI in sync
+    socketio.emit("auto_mode_update", {"sludgex": bool(new_val), "triplex": bool(getattr(strat, "triplex_auto", False))}, room=cid)
+
+    return jsonify({"status": "success", "sludgex_auto": new_val})
+
+
+# ---------------- JOKERJOE: tripleX toggle (ADDED BACK) ---------------- #
+@app.route("/toggle_triplex_auto", methods=["POST"])
+def toggle_triplex_auto_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    strat = state["strategies"].get("JOKERJOE")
+    if not strat or not hasattr(strat, "toggle_triplex_auto"):
+        return jsonify({"status": "error", "message": "JOKERJOE strategy not available"}), 400
+
+    new_val = strat.toggle_triplex_auto()
+    send_stats_update(cid)
+
+    socketio.emit("auto_mode_update", {"sludgex": bool(getattr(strat, "sludgex_auto", False)), "triplex": bool(new_val)}, room=cid)
+
+    return jsonify({"status": "success", "triplex_auto": new_val})
+
+
+# ---------------- JOKERJOE: kidgambleX route (ADDED BACKEND) ---------------- #
+@app.route("/kidgamblex", methods=["POST"])
+def kidgamblex_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    data = request.json or {}
+
+    try:
+        stake = float(data.get("stake", state.get("auto_stake", 1.0)))
+        if stake <= 0:
+            stake = 1.0
+    except Exception:
+        stake = 1.0
+
+    symbol = data.get("symbol", state.get("current_symbol", "R_25"))
+
+    strat = state["strategies"].get("JOKERJOE")
+    if not strat or not hasattr(strat, "get_top_digits"):
+        return jsonify({"status": "error", "message": "JOKERJOE strategy not available"}), 400
+
+    digits = strat.get_top_digits(n=3)
+    if not digits:
+        return jsonify({"status": "error", "message": "Need 100 ticks before kidgambleX can select top digits."}), 400
+
+    placed = 0
+    for d in digits:
+        ok, _msg = send_buy(cid, "MATCHES", stake, symbol, int(d))
+        if ok:
+            placed += 1
+        time.sleep(0.12)
+
+    return jsonify({"status": "success", "digits": digits, "placed": placed})
 
 
 # ---------------- MANUAL TRADING ROUTES ---------------- #

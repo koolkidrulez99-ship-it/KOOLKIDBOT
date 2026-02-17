@@ -374,6 +374,17 @@
     <div class="card" id="digitAnalysisPanel">
         <h3>📊 100 TICK DIGIT ANALYSIS</h3>
         <div class="digit-grid" id="digitGrid"></div>
+
+        <!-- NEW: DIFFERS ANALYSIS (JOKERJOE ONLY) -->
+        <div id="differsAnalysisBox" style="display:none; margin-top:16px; padding:12px; background:#0f172a; border:1px solid #334155; border-radius:12px;">
+            <div style="font-weight:bold; color:#f59e0b; margin-bottom:8px;">❌ DIFFERS ANALYSIS (≤ 10%)</div>
+
+            <div style="font-size:12px; color:#cbd5e1; margin-bottom:10px;">
+                Green digits are low-frequency digits (10% or lower). Gold digits are “golden” after being absent for 20 ticks and then printing again.
+            </div>
+
+            <div id="differsDigitsRow" style="display:flex; flex-wrap:wrap; gap:8px;"></div>
+        </div>
     </div>
 
     <!-- MANUAL TRADING & AUTO -->
@@ -439,7 +450,6 @@
 
         <!-- KOOLKID QUICK FIRE BUTTONS -->
         <div id="koolkidButtons" style="margin-top:12px;">
-            <!-- UNDER = ORANGE, OVER = DEEP BLUE -->
             <button style="background:#f97316; width:100%;" onclick="take3('UNDER')">🔥 TAKE 3 UNDER NOW</button>
             <button style="background:#1d4ed8; width:100%;" onclick="take3('OVER')">🔥 TAKE 3 OVER NOW</button>
 
@@ -452,9 +462,23 @@
             <button style="background:#a855f7; width:100%;" onclick="trade('MATCHES')">✅ DIGIT MATCHES</button>
             <button style="background:#f59e0b; width:100%;" onclick="trade('DIFFERS')">❌ DIGIT DIFFERS</button>
 
-            <button style="background:#a855f7; width:100%;" onclick="take3('MATCHES')">🔥 TAKE 3 MATCHES NOW</button>
-            <button style="background:#f59e0b; width:100%;" onclick="take3('DIFFERS')">🔥 TAKE 3 DIFFERS NOW</button>
+            <!-- kidgambleX (replaces TAKE 3 MATCHES NOW) -->
+            <button style="background:#a855f7; width:100%;" onclick="kidgambleX()">🎲 kidgambleX</button>
+            <div style="margin-top:6px; margin-bottom:10px; font-size:12px; color:#cbd5e1; text-align:center;">
+                This button places three DIGIT MATCHES trades on the three highest-percentage digits. For professional use only. Use at your own risk.
+            </div>
 
+            <!-- sludgeX auto mode (toggle) -->
+            <button id="sludgeXBtn" style="background:#1e293b; width:100%;" onclick="toggleSludgeXAuto()">
+                sludgeX AUTO: OFF
+            </button>
+
+            <!-- tripleX auto mode (toggle) ✅ ADDED -->
+            <button id="tripleXBtn" style="background:#1e293b; width:100%;" onclick="toggleTripleXAuto()">
+                tripleX AUTO: OFF
+            </button>
+
+            <button style="background:#f59e0b; width:100%;" onclick="take3('DIFFERS')">🔥 TAKE 3 DIFFERS NOW</button>
             <button style="background:#f59e0b; width:100%;" onclick="burst4('DIFFERS')">⚡ BURST 4 DIFFERS FAST</button>
         </div>
 
@@ -568,6 +592,10 @@ const slInput = document.getElementById("sl");
 const digitPopup = document.getElementById("digitPopup");
 const popupTitle = document.getElementById("popupTitle");
 
+// NEW: differs analysis container
+const differsAnalysisBox = document.getElementById("differsAnalysisBox");
+const differsDigitsRow = document.getElementById("differsDigitsRow");
+
 // NEW: auto barrier popup for KIDRACKS / KOOLKIDSPEED
 const autoBarrierPopup = document.getElementById("autoBarrierPopup");
 const autoBarrierTitle = document.getElementById("autoBarrierTitle");
@@ -672,7 +700,6 @@ function showAutoBarrierPopup(mode){
         autoBarrierTitle.innerText = "Set Barrier (0-9)";
     }
 
-    // default to current manual barrier or 5
     autoBarrierInput.value = barrierInput.value || 5;
 
     autoBarrierPopup.style.left = "50%";
@@ -697,7 +724,6 @@ autoBarrierConfirm.addEventListener("click", async ()=>{
         val = 5;
     }
 
-    // Only set the barrier for the chosen mode, then toggle that mode ON
     try{
         if(currentAutoBarrierMode === "KIDRACKS"){
             await fetch("/set_kidracks_settings", {
@@ -802,6 +828,7 @@ function setProfile(profile){
 
         confidencePanel.style.display = "block";
         digitAnalysisPanel.style.display = "block";
+        differsAnalysisBox.style.display = "none";
 
         koolkidButtons.style.display = "block";
         jokerjoeButtons.style.display = "none";
@@ -815,6 +842,7 @@ function setProfile(profile){
 
         confidencePanel.style.display = "none";
         digitAnalysisPanel.style.display = "block";
+        differsAnalysisBox.style.display = "block";
 
         koolkidButtons.style.display = "none";
         jokerjoeButtons.style.display = "block";
@@ -828,6 +856,7 @@ function setProfile(profile){
 
         confidencePanel.style.display = "none";
         digitAnalysisPanel.style.display = "none";
+        differsAnalysisBox.style.display = "none";
 
         koolkidButtons.style.display = "none";
         jokerjoeButtons.style.display = "none";
@@ -883,8 +912,10 @@ async function disconnect(){
     historyDiv.innerHTML = `<p style="text-align:center; color:#64748b;">No trades yet</p>`;
     hidePopup();
 
+    differsDigitsRow.innerHTML = "";
+
     // reset auto mode buttons
-    updateAutoModeButtons({kidracks:false, koolkidspeed:false, koolluck:false});
+    updateAutoModeButtons({kidracks:false, koolkidspeed:false, koolluck:false, sludgex:false, triplex:false});
 
     showToast("🔌 Disconnected", "error");
 }
@@ -976,7 +1007,7 @@ function updateAutoModeButtons(modes){
     const speedBtn = document.getElementById("koolkidspeedBtn");
     const luckBtn = document.getElementById("koolluckBtn");
 
-    if(modes.kidracks !== undefined){
+    if(modes.kidracks !== undefined && kidBtn){
         if(modes.kidracks){
             kidBtn.innerText = "KIDRACKS AUTO TRADE: ON";
             kidBtn.style.background = "#22c55e";
@@ -986,7 +1017,7 @@ function updateAutoModeButtons(modes){
         }
     }
 
-    if(modes.koolkidspeed !== undefined){
+    if(modes.koolkidspeed !== undefined && speedBtn){
         if(modes.koolkidspeed){
             speedBtn.innerText = "KOOLKIDSPEED AUTO: ON";
             speedBtn.style.background = "#38bdf8";
@@ -996,13 +1027,37 @@ function updateAutoModeButtons(modes){
         }
     }
 
-    if(modes.koolluck !== undefined){
+    if(modes.koolluck !== undefined && luckBtn){
         if(modes.koolluck){
             luckBtn.innerText = "KOOL🍀KID LUCK: ON";
             luckBtn.style.background = "#22c55e";
         }else{
             luckBtn.innerText = "KOOL🍀KID LUCK: OFF";
             luckBtn.style.background = "#1e293b";
+        }
+    }
+
+    // JOKERJOE sludgeX toggle button
+    const sludgeBtn = document.getElementById("sludgeXBtn");
+    if(modes.sludgex !== undefined && sludgeBtn){
+        if(modes.sludgex){
+            sludgeBtn.innerText = "sludgeX AUTO: ON";
+            sludgeBtn.style.background = "#a855f7";
+        }else{
+            sludgeBtn.innerText = "sludgeX AUTO: OFF";
+            sludgeBtn.style.background = "#1e293b";
+        }
+    }
+
+    // JOKERJOE tripleX toggle button ✅ ADDED
+    const tripBtn = document.getElementById("tripleXBtn");
+    if(modes.triplex !== undefined && tripBtn){
+        if(modes.triplex){
+            tripBtn.innerText = "tripleX AUTO: ON";
+            tripBtn.style.background = "#22c55e";
+        }else{
+            tripBtn.innerText = "tripleX AUTO: OFF";
+            tripBtn.style.background = "#1e293b";
         }
     }
 }
@@ -1043,6 +1098,57 @@ async function toggleKoolluckAuto(){
     const data = await res.json();
     updateAutoModeButtons({koolluck: data.koolluck_auto});
     showToast("KOOL🍀KID LUCK: " + (data.koolluck_auto ? "ON" : "OFF"), data.koolluck_auto ? "success" : "error");
+}
+
+// ================== JOKERJOE sludgeX TOGGLE ==================
+async function toggleSludgeXAuto(){
+    const res = await fetch("/toggle_sludgex_auto", {method:"POST"});
+    const data = await res.json();
+
+    if(data.status === "success"){
+        updateAutoModeButtons({sludgex: data.sludgex_auto});
+        showToast("sludgeX AUTO: " + (data.sludgex_auto ? "ON" : "OFF"), data.sludgex_auto ? "success" : "error");
+    }else{
+        showToast(data.message || "sludgeX toggle failed", "error");
+    }
+}
+
+// ================== JOKERJOE tripleX TOGGLE ✅ ADDED ==================
+async function toggleTripleXAuto(){
+    const res = await fetch("/toggle_triplex_auto", {method:"POST"});
+    const data = await res.json();
+
+    if(data.status === "success"){
+        updateAutoModeButtons({triplex: data.triplex_auto});
+        showToast("tripleX AUTO: " + (data.triplex_auto ? "ON" : "OFF"), data.triplex_auto ? "success" : "error");
+    }else{
+        showToast(data.message || "tripleX toggle failed", "error");
+    }
+}
+
+// ================== kidgambleX (one-click) ==================
+async function kidgambleX(){
+    const stake = stakeInput.value;
+    const symbol = document.getElementById("symbol").value;
+
+    try{
+        const res = await fetch("/kidgamblex", {
+            method:"POST",
+            headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({ stake, symbol })
+        });
+
+        const data = await res.json();
+
+        if(data.status === "success"){
+            showToast("🎲 kidgambleX sent on digits: " + (data.digits || []).join(", "), "warn");
+        }else{
+            showToast(data.message || "kidgambleX failed", "error");
+        }
+    }catch(e){
+        console.error(e);
+        showToast("kidgambleX request error", "error");
+    }
 }
 
 // ================== TRADE FUNCTIONS ==================
@@ -1142,6 +1248,54 @@ socket.on("tick", (data)=>{
     }
 });
 
+function renderDiffersAnalysis(da){
+    if(!da){
+        differsDigitsRow.innerHTML = "";
+        return;
+    }
+
+    const green = da.green_digits || [];
+    const golden = da.golden_digits || [];
+
+    // Render gold first, then green (excluding duplicates)
+    const all = [];
+    golden.forEach(d => all.push({digit:d, type:"gold"}));
+    green.forEach(d => {
+        if(!golden.includes(d)) all.push({digit:d, type:"green"});
+    });
+
+    if(all.length === 0){
+        differsDigitsRow.innerHTML = `<div style="color:#64748b; font-size:12px;">No low-frequency digits detected yet.</div>`;
+        return;
+    }
+
+    differsDigitsRow.innerHTML = "";
+    all.forEach(item=>{
+        const div = document.createElement("div");
+        div.style.padding = "8px 10px";
+        div.style.borderRadius = "10px";
+        div.style.fontWeight = "bold";
+        div.style.border = "1px solid #334155";
+        div.style.minWidth = "44px";
+        div.style.textAlign = "center";
+
+        if(item.type === "gold"){
+            div.style.background = "linear-gradient(135deg,#facc15,#f59e0b)";
+            div.style.color = "#0b1220";
+            div.style.boxShadow = "0 0 14px rgba(250,204,21,0.35)";
+            div.title = "Golden differs: absent for 20 ticks, then printed again (≤10%).";
+        }else{
+            div.style.background = "rgba(34,197,94,0.15)";
+            div.style.color = "#22c55e";
+            div.style.boxShadow = "0 0 12px rgba(34,197,94,0.20)";
+            div.title = "Low-frequency differs digit (≤10%).";
+        }
+
+        div.innerText = item.digit;
+        differsDigitsRow.appendChild(div);
+    });
+}
+
 socket.on("digit_analysis", (data)=>{
     if(data.percentages){
         for(let i=0;i<10;i++){
@@ -1149,6 +1303,21 @@ socket.on("digit_analysis", (data)=>{
             if(p){
                 p.innerText = (data.percentages[i] ?? 0) + "%";
             }
+        }
+    }
+
+    // JOKERJOE differs analysis display
+    if(activeProfile === "JOKERJOE" && data.differs_analysis){
+        renderDiffersAnalysis(data.differs_analysis);
+    }
+
+    // Keep sludgeX + tripleX buttons in sync if strategy sends auto modes
+    if(data.auto_modes){
+        if(data.auto_modes.sludgex !== undefined){
+            updateAutoModeButtons({sludgex: data.auto_modes.sludgex});
+        }
+        if(data.auto_modes.triplex !== undefined){
+            updateAutoModeButtons({triplex: data.auto_modes.triplex});
         }
     }
 
@@ -1202,6 +1371,14 @@ socket.on("stats_update", (data)=>{
     }else{
         btn.innerText = "AUTO OFF";
         btn.style.background = "#38bdf8";
+    }
+
+    // Keep tripleX in sync from stats payload too (optional but safe)
+    if(data.triplex_auto !== undefined){
+        updateAutoModeButtons({triplex: data.triplex_auto});
+    }
+    if(data.sludgex_auto !== undefined){
+        updateAutoModeButtons({sludgex: data.sludgex_auto});
     }
 });
 
