@@ -1,0 +1,117 @@
+<div class="card">
+  <h3 style="margin-top:0;">🃏 JOKERJOE CONTROL PANEL</h3>
+
+  <div style="display:grid; grid-template-columns: 1.15fr 1.85fr; gap:14px; align-items:start;">
+    <!-- LEFT -->
+    <div>
+      <div style="background:#0f172a; border:1px solid #334155; border-radius:12px; padding:12px;">
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; align-items:center;">
+          <div>
+            <div style="color:#94a3b8; font-size:12px;">Stake</div>
+            <input id="stake" type="number" min="0.35" step="0.01" value="1" style="width:100%;">
+          </div>
+          <div>
+            <div style="color:#94a3b8; font-size:12px;">Barrier</div>
+            <input id="barrier" type="number" min="0" max="9" step="1" value="5" style="width:100%;">
+          </div>
+        </div>
+
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-top:10px;">
+          <div>
+            <div style="color:#94a3b8; font-size:12px;">Take Profit (TP)</div>
+            <input id="tp" type="number" step="0.01" value="0" style="width:100%;">
+          </div>
+          <div>
+            <div style="color:#94a3b8; font-size:12px;">Stop Loss (SL)</div>
+            <input id="sl" type="number" step="0.01" value="0" style="width:100%;">
+          </div>
+        </div>
+
+        <button onclick="manualTP()" style="width:100%; margin-top:10px; height:46px; background:linear-gradient(90deg,#16a34a,#22c55e); border-radius:12px;">
+          SET TP
+        </button>
+
+        <button id="autoSlBtn" onclick="toggleAutoSL()" style="width:100%; margin-top:8px; height:46px; background:#facc15; color:#0b1220; border-radius:12px;">
+          AUTO SL: ON
+        </button>
+
+        <button onclick="manualSL()" style="width:100%; margin-top:8px; height:46px; background:linear-gradient(90deg,#fb7185,#ef4444); border-radius:12px;">
+          SET SL
+        </button>
+      </div>
+
+      <div id="differsAnalysisBox" style="margin-top:12px; background:#0f172a; border:1px solid #334155; border-radius:12px; padding:12px;">
+        <div style="font-weight:bold; margin-bottom:8px;">🎰 DIFFERS ANALYSIS</div>
+        <div id="differsDigitsRow" style="display:flex; flex-wrap:wrap; gap:8px;"></div>
+      </div>
+    </div>
+
+    <!-- RIGHT -->
+    <div>
+      <div style="background:#0f172a; border:1px solid #334155; border-radius:12px; padding:12px;">
+        <div style="font-weight:bold; margin-bottom:8px;">🔢 Digit Analysis</div>
+        <div id="digitGrid" class="digit-grid"></div>
+      </div>
+
+      <div style="margin-top:10px; display:flex; flex-direction:column; gap:8px;">
+        <button onclick="trade('MATCHES')" style="width:100%; height:46px; background:#a855f7;">DIGIT MATCHES</button>
+        <button onclick="trade('DIFFERS')" style="width:100%; height:46px; background:#f59e0b;">DIGIT DIFFERS</button>
+
+        <div id="insta5Wrap" style="margin-top:2px;">
+          <button id="insta5Btn" onclick="insta5()" style="width:100%; height:46px; background:#7c3aed;">
+            INSTA 5 ON 5
+          </button>
+        </div>
+
+        <button onclick="kidgambleX()" style="width:100%; height:46px; background:#1e293b;">🎲 kidgambleX</button>
+
+        <button id="sludgeXBtn" onclick="toggleSludgeXAuto()" style="width:100%; height:46px; background:#1e293b;">sludgeX AUTO: OFF</button>
+        <button id="tripleXBtn" onclick="toggleTripleXAuto()" style="width:100%; height:46px; background:#1e293b;">tripleX AUTO: OFF</button>
+        <button id="kidXBtn" onclick="toggleKidXAuto()" style="width:100%; height:46px; background:#ef4444;">kidX: OFF</button>
+        <button id="multiGBtn" onclick="toggleMultiGAuto()" style="width:100%; height:46px; background:#ef4444;">MultiG: OFF</button>
+
+        <button id="autoBtn" onclick="toggleAuto()" style="width:100%; height:52px; background:#38bdf8;">
+          AUTO OFF
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
+    <h3 style="margin:0;">📚 TRADE HISTORY</h3>
+    <button onclick="clearProfileHistory()" style="background:#fb7185;">Clear History</button>
+  </div>
+
+  <!-- ✅ MultiG countdown inside trade history -->
+  <div id="multigCountdownRow" style="display:none; margin-top:10px; background:#0f172a; border:1px solid #334155; border-radius:12px; padding:10px; color:#facc15; font-weight:bold;">
+    ⏳ MultiG queued: Digit <span id="multigDigit">-</span> in <span id="multigSecs">0</span>s
+  </div>
+
+  <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:10px; margin-top:12px;">
+    <div style="background:#0f172a; border:1px solid #334155; border-radius:12px; padding:12px; text-align:center;">
+      <div style="color:#94a3b8; font-size:12px;">Total Trades</div>
+      <div id="profileTotalTrades" style="font-size:22px; font-weight:bold;">0</div>
+    </div>
+    <div style="background:#0f172a; border:1px solid #334155; border-radius:12px; padding:12px; text-align:center;">
+      <div style="color:#94a3b8; font-size:12px;">Wins</div>
+      <div id="profileWins" style="font-size:22px; font-weight:bold; color:#22c55e;">0</div>
+    </div>
+    <div style="background:#0f172a; border:1px solid #334155; border-radius:12px; padding:12px; text-align:center;">
+      <div style="color:#94a3b8; font-size:12px;">Losses</div>
+      <div id="profileLosses" style="font-size:22px; font-weight:bold; color:#ef4444;">0</div>
+    </div>
+    <div style="background:#0f172a; border:1px solid #334155; border-radius:12px; padding:12px; text-align:center;">
+      <div style="color:#94a3b8; font-size:12px;">Win Rate</div>
+      <div style="font-size:18px; font-weight:bold; color:#38bdf8;">
+        <span id="profileWinRate">0%</span>
+        <div style="font-size:12px; color:#94a3b8;">Loss Rate: <span id="profileLossRate">0%</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="profileTradeList" style="margin-top:14px;">
+    <div style="text-align:center; color:#64748b; padding:20px;">No trades yet</div>
+  </div>
+</div>

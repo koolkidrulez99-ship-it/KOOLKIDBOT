@@ -14,19 +14,16 @@
         margin:0;
         padding:20px;
     }
-
     .container{
         max-width:1100px;
         margin:auto;
         padding:20px;
     }
-
     h1{
         text-align:center;
         color:#38bdf8;
         text-shadow:0 0 20px #38bdf8;
     }
-
     .card{
         background:#111827;
         padding:20px;
@@ -35,7 +32,6 @@
         box-shadow:0 0 25px rgba(0,0,0,0.6);
         position:relative;
     }
-
     button{
         padding:10px 20px;
         margin:5px;
@@ -47,7 +43,6 @@
         color:white;
     }
     button:hover{transform:scale(1.05);}
-
     input, select{
         padding:8px;
         margin:5px;
@@ -56,11 +51,9 @@
         background:#1f2937;
         color:white;
     }
-
     .green{color:#22c55e;}
     .red{color:#ef4444;}
     .blue{color:#38bdf8;}
-
     .digit-stream{
         font-size:22px;
         letter-spacing:5px;
@@ -72,12 +65,6 @@
         max-height:60px;
         overflow:hidden;
     }
-
-    .history-box{
-        max-height:200px;
-        overflow-y:auto;
-    }
-
     .profile-btn {
         font-size: 1.5rem;
         padding: 15px 30px;
@@ -86,14 +73,11 @@
         font-weight: bold;
         transition: 0.3s;
     }
-
     .koolkid-btn {background: #38bdf8; box-shadow: 0 0 20px #38bdf8;}
     .jokerjoe-btn {background: #a855f7; box-shadow: 0 0 20px #a855f7;}
     .human-btn {background: #22c55e; box-shadow: 0 0 20px #22c55e;}
-
     .profile-btn.active {transform: scale(1.05); border: 2px solid white;}
     .profile-btn:not(.active) {opacity: 0.7;}
-
     .tick-box{
         width:80px;
         height:60px;
@@ -106,7 +90,6 @@
         font-weight:bold;
         box-shadow:0 0 15px rgba(56,189,248,0.7);
     }
-
     .pnl-box{
         width:160px;
         height:60px;
@@ -119,21 +102,18 @@
         background:#0f172a;
         border:2px solid #334155;
     }
-
     .confidence-wrap{
         margin-top:15px;
         display:grid;
         grid-template-columns: repeat(2, 1fr);
         gap:10px;
     }
-
     .conf-item{
         background:#0f172a;
         padding:12px;
         border-radius:12px;
         border:1px solid #334155;
     }
-
     .conf-bar-bg{
         width:100%;
         background:#1f2937;
@@ -142,21 +122,18 @@
         margin-top:6px;
         height:18px;
     }
-
     .conf-bar-fill{
         height:18px;
         width:0%;
         background:linear-gradient(90deg,#ef4444,#facc15,#22c55e);
         transition:0.3s;
     }
-
     .digit-grid{
         display:grid;
         grid-template-columns: repeat(5, 1fr);
         gap: 10px;
         margin-top: 15px;
     }
-
     .digit-cell{
         background:#1f2937;
         padding:10px;
@@ -167,49 +144,11 @@
         cursor:pointer;
         user-select:none;
     }
-
     .digit-cell.flash{
         border-color:#ef4444;
         box-shadow:0 0 18px #ef4444;
         transform:scale(1.05);
     }
-
-    .trash-btn{
-        float:right;
-        cursor:pointer;
-        font-size:20px;
-        padding:5px 10px;
-        border-radius:8px;
-        background:#ef4444;
-    }
-
-    .rate-row{
-        display:flex;
-        gap:12px;
-        flex-wrap:wrap;
-        margin-bottom:12px;
-    }
-    .rate-box{
-        flex:1;
-        min-width:210px;
-        background:#0f172a;
-        border:1px solid #334155;
-        border-radius:12px;
-        padding:12px;
-        display:flex;
-        justify-content:space-between;
-        align-items:center;
-        font-weight:bold;
-    }
-    .rate-win{
-        border-color:#22c55e;
-        box-shadow:0 0 14px rgba(34,197,94,0.25);
-    }
-    .rate-loss{
-        border-color:#ef4444;
-        box-shadow:0 0 14px rgba(239,68,68,0.25);
-    }
-
     .digit-popup{
         position:fixed;
         z-index:9999;
@@ -236,14 +175,13 @@
         position:fixed;
         top:15px;
         right:15px;
-        z-index:99999;
+        z-index:999999; /* raised */
         display:flex;
         flex-direction:column;
         gap:10px;
-        width:280px;
+        width:300px;
         pointer-events:none;
     }
-
     .toast{
         background:#111827;
         border:1px solid #334155;
@@ -257,18 +195,16 @@
         transition:0.35s;
         pointer-events:none;
     }
-
     .toast.show{
         opacity:1;
         transform:translateX(0px);
     }
-
     .toast.success{border-color:#22c55e; color:#22c55e;}
     .toast.error{border-color:#ef4444; color:#ef4444;}
     .toast.warn{border-color:#facc15; color:#facc15;}
     .toast.info{border-color:#38bdf8; color:#38bdf8;}
 
-    /* =================== HOW TO USE PANEL =================== */
+    /* =================== HOW TO USE PANEL (KEEP NEW) =================== */
     .api-grid{
         display:flex;
         gap:15px;
@@ -328,6 +264,53 @@
         color:#94a3b8;
         margin-left:6px;
     }
+
+    /* ===== TRADE HISTORY ITEMS (KEEP NEW STYLE) ===== */
+    .trade-item {
+        background:#0f172a;
+        border-radius:12px;
+        padding:12px;
+        border-left:6px solid;
+        display:flex;
+        flex-direction:column;
+        gap:6px;
+        font-size:14px;
+        margin-bottom:8px;
+    }
+    .trade-item.win { border-left-color:#22c55e; }
+    .trade-item.loss { border-left-color:#ef4444; }
+    .trade-row {
+        display:flex;
+        flex-wrap:wrap;
+        justify-content:space-between;
+        align-items:center;
+    }
+    .trade-type {
+        font-weight:bold;
+        background:#1f2937;
+        padding:2px 10px;
+        border-radius:20px;
+        font-size:13px;
+    }
+    .trade-profit {
+        font-weight:bold;
+        font-size:15px;
+    }
+    .trade-profit.win { color:#22c55e; }
+    .trade-profit.loss { color:#ef4444; }
+    .trade-detail {
+        display:flex;
+        gap:15px;
+        color:#94a3b8;
+        font-size:13px;
+    }
+    .exit-digit {
+        background:#1e293b;
+        padding:2px 8px;
+        border-radius:16px;
+        color:#facc15;
+        font-weight:bold;
+    }
 </style>
 </head>
 
@@ -353,7 +336,6 @@
     <div class="card">
         <h3>🔌 API CONNECTION</h3>
 
-        <!-- NEW: two-column layout with right-side How To Use -->
         <div class="api-grid">
             <div class="api-left">
                 <input id="token" placeholder="Enter API Token" type="password" style="width:40%;">
@@ -373,9 +355,7 @@
                     </div>
                     <button id="howtoToggleBtn" onclick="toggleHowTo()">HIDE</button>
                 </div>
-                <div class="howto-body" id="howtoBody">
-                    <!-- filled by JS depending on profile -->
-                </div>
+                <div class="howto-body" id="howtoBody"></div>
             </div>
         </div>
     </div>
@@ -420,187 +400,8 @@
         <div class="digit-stream" id="digitStream">-</div>
     </div>
 
-    <!-- KOOLKID CONFIDENCE -->
-    <div class="card" id="confidencePanel">
-        <h3>📊 KOOLKID CONFIDENCE BARS</h3>
-
-        <div class="confidence-wrap">
-            <div class="conf-item">
-                <div>OVER 1: <span id="confOver1Text">0</span>%</div>
-                <div class="conf-bar-bg"><div id="confOver1" class="conf-bar-fill"></div></div>
-            </div>
-
-            <div class="conf-item">
-                <div>OVER 2: <span id="confOver2Text">0</span>%</div>
-                <div class="conf-bar-bg"><div id="confOver2" class="conf-bar-fill"></div></div>
-            </div>
-
-            <div class="conf-item">
-                <div>UNDER 8: <span id="confUnder8Text">0</span>%</div>
-                <div class="conf-bar-bg"><div id="confUnder8" class="conf-bar-fill"></div></div>
-            </div>
-
-            <div class="conf-item">
-                <div>UNDER 9: <span id="confUnder9Text">0</span>%</div>
-                <div class="conf-bar-bg"><div id="confUnder9" class="conf-bar-fill"></div></div>
-            </div>
-        </div>
-    </div>
-
-    <!-- DIGIT ANALYSIS -->
-    <div class="card" id="digitAnalysisPanel">
-        <h3>📊 100 TICK DIGIT ANALYSIS</h3>
-        <div class="digit-grid" id="digitGrid"></div>
-
-        <!-- DIFFERS ANALYSIS (JOKERJOE ONLY) -->
-        <div id="differsAnalysisBox" style="display:none; margin-top:16px; padding:12px; background:#0f172a; border:1px solid #334155; border-radius:12px;">
-            <!-- CHANGED: name + icon -->
-            <div style="font-weight:bold; color:#f59e0b; margin-bottom:8px;">📊 DIFFERS ANALYSIS</div>
-
-            <!-- (kept internal tooltips on digits; removed paragraph description per your request) -->
-            <div id="differsDigitsRow" style="display:flex; flex-wrap:wrap; gap:8px;"></div>
-        </div>
-    </div>
-
-    <!-- MANUAL TRADING & AUTO -->
-    <div class="card">
-        <h3>🎮 MANUAL & AUTO TRADE</h3>
-
-        <div style="display:flex; gap:14px; flex-wrap:wrap; align-items:flex-end;">
-            <div style="flex:1; min-width:220px;">
-                <div style="color:#94a3b8; font-size:13px; margin-left:6px;">Stake</div>
-                <input id="stake" type="number" value="1" min="0.35" step="0.35" style="width:100%;">
-            </div>
-
-            <div style="flex:1; min-width:220px;">
-                <div style="color:#94a3b8; font-size:13px; margin-left:6px;">Barrier</div>
-                <input id="barrier" type="number" value="5" min="0" max="9" style="width:100%;">
-            </div>
-        </div>
-
-        <!-- TP/SL -->
-        <div style="display:flex; gap:14px; flex-wrap:wrap; align-items:flex-end; margin-top:10px;">
-            <div style="flex:1; min-width:220px;">
-                <div style="color:#94a3b8; font-size:13px; margin-left:6px;">Take Profit (TP)</div>
-                <input id="tp" type="number" value="0" step="0.1" style="width:100%;">
-            </div>
-
-            <div style="flex:1; min-width:220px;">
-                <div style="color:#94a3b8; font-size:13px; margin-left:6px;">Stop Loss (SL)</div>
-                <input id="sl" type="number" value="0" step="0.1" style="width:100%;">
-            </div>
-        </div>
-
-        <div style="margin-top:8px;">
-            <button id="autoSlBtn" onclick="toggleAutoSL()" style="background:#facc15; width:100%;">
-                AUTO SL: ON
-            </button>
-        </div>
-
-        <div style="margin-top:8px; display:flex; gap:10px; flex-wrap:wrap;">
-            <button onclick="manualTP()" style="background:#22c55e; flex:1;">SET TP</button>
-            <button onclick="manualSL()" style="background:#ef4444; flex:1;">SET SL</button>
-        </div>
-
-        <!-- JOKERJOE: INSTA 5 (DIRECTLY ABOVE MASTER AUTO) -->
-        <div id="insta5Wrap" style="margin-top:10px; display:none;">
-            <button id="insta5Btn" onclick="insta5()" style="background:#a855f7; width:100%;">INSTA 5 ON 5</button>
-        </div>
-
-        <!-- MASTER AUTO -->
-        <div style="margin-top:10px;">
-            <button id="autoBtn" onclick="toggleAuto()" style="background:#38bdf8; width:100%;">AUTO OFF</button>
-        </div>
-
-        <!-- KOOLKID AUTO MODES -->
-        <div id="koolkidAutos" style="margin-top:12px;">
-            <button id="kidracksBtn" style="background:#1e293b; width:100%;" onclick="toggleKidracksAuto()">
-                KIDRACKS AUTO TRADE: OFF
-            </button>
-            <button id="koolkidspeedBtn" style="background:#1e293b; width:100%;" onclick="toggleKoolkidspeedAuto()">
-                KOOLKIDSPEED AUTO: OFF
-            </button>
-            <button id="koolluckBtn" style="background:#1e293b; width:100%;" onclick="toggleKoolluckAuto()">
-                KOOL🍀KID LUCK: OFF
-            </button>
-        </div>
-
-        <!-- KOOLKID QUICK FIRE BUTTONS -->
-        <div id="koolkidButtons" style="margin-top:12px;">
-            <button style="background:#f97316; width:100%;" onclick="take3('UNDER')">🔥 TAKE 3 UNDER NOW</button>
-            <button style="background:#1d4ed8; width:100%;" onclick="take3('OVER')">🔥 TAKE 3 OVER NOW</button>
-
-            <button style="background:#f97316; width:100%;" onclick="burst4('UNDER')">⚡ BURST 4 UNDER FAST</button>
-            <button style="background:#1d4ed8; width:100%;" onclick="burst4('OVER')">⚡ BURST 4 OVER FAST</button>
-        </div>
-
-        <!-- JOKERJOE BUTTONS -->
-        <div id="jokerjoeButtons" style="margin-top:12px; display:none;">
-            <button style="background:#a855f7; width:100%;" onclick="trade('MATCHES')">✅ DIGIT MATCHES</button>
-            <button style="background:#f59e0b; width:100%;" onclick="trade('DIFFERS')">❌ DIGIT DIFFERS</button>
-
-            <!-- kidgambleX -->
-            <button style="background:#a855f7; width:100%;" onclick="kidgambleX()">🎲 kidgambleX</button>
-
-            <!-- sludgeX auto mode -->
-            <button id="sludgeXBtn" style="background:#1e293b; width:100%;" onclick="toggleSludgeXAuto()">
-                sludgeX AUTO: OFF
-            </button>
-
-            <!-- tripleX auto mode -->
-            <button id="tripleXBtn" style="background:#1e293b; width:100%;" onclick="toggleTripleXAuto()">
-                tripleX AUTO: OFF
-            </button>
-
-            <!-- kidX auto mode -->
-            <button id="kidXBtn" style="background:#ef4444; width:100%;" onclick="toggleKidXAuto()">
-                kidX: OFF
-            </button>
-
-            <!-- MultiG auto mode -->
-            <button id="multiGBtn" style="background:#ef4444; width:100%;" onclick="toggleMultiGAuto()">
-                MultiG: OFF
-            </button>
-
-            <button style="background:#f59e0b; width:100%;" onclick="take3('DIFFERS')">🔥 TAKE 3 DIFFERS NOW</button>
-            <button style="background:#f59e0b; width:100%;" onclick="burst4('DIFFERS')">⚡ BURST 4 DIFFERS FAST</button>
-        </div>
-
-    </div>
-
-    <!-- TRADE HISTORY -->
-    <div class="card">
-        <h3>
-            📜 TRADE HISTORY
-            <span class="trash-btn" onclick="clearHistory()">🗑️</span>
-        </h3>
-
-        <div class="rate-row">
-            <div class="rate-box rate-win">
-                <span>Win Rate</span>
-                <span style="color:#22c55e;"><span id="winrate">0</span>%</span>
-            </div>
-            <div class="rate-box rate-loss">
-                <span>Loss Rate</span>
-                <span style="color:#ef4444;"><span id="loserate">0</span>%</span>
-            </div>
-        </div>
-
-        <div class="rate-row" style="margin-top:-4px;">
-            <div class="rate-box">
-                <span>Wins</span>
-                <span style="color:#22c55e;"><span id="wins">0</span></span>
-            </div>
-            <div class="rate-box">
-                <span>Losses</span>
-                <span style="color:#ef4444;"><span id="losses">0</span></span>
-            </div>
-        </div>
-
-        <div id="history" class="history-box">
-            <p style="text-align:center; color:#64748b;">No trades yet</p>
-        </div>
-    </div>
+    <!-- PROFILE UI LOADS HERE -->
+    <div id="profileContainer"></div>
 
 </div>
 
@@ -611,7 +412,7 @@
     <button id="popupBtn2" style="background:#22c55e;" onclick="popupTrade('UNDER')">TAKE UNDER</button>
 </div>
 
-<!-- AUTO BARRIER POPUP (ONLY FOR KIDRACKS / KOOLKIDSPEED) -->
+<!-- AUTO BARRIER POPUP -->
 <div id="autoBarrierPopup" class="digit-popup" style="display:none;">
     <h4 id="autoBarrierTitle">Set Barrier</h4>
     <input id="autoBarrierInput" type="number" min="0" max="9"
@@ -637,50 +438,103 @@ const netPnlBox = document.getElementById("netPnlBox");
 const lastDigitBox = document.getElementById("lastDigitBox");
 const tickCountEl = document.getElementById("tickCount");
 const digitStream = document.getElementById("digitStream");
-const digitGrid = document.getElementById("digitGrid");
 
-const winsEl = document.getElementById("wins");
-const lossesEl = document.getElementById("losses");
-const winrateEl = document.getElementById("winrate");
-const loserateEl = document.getElementById("loserate");
-
-const historyDiv = document.getElementById("history");
 const accountDashboard = document.getElementById("accountDashboard");
-
 const profileTitle = document.getElementById("profileTitle");
 
-const confidencePanel = document.getElementById("confidencePanel");
-const digitAnalysisPanel = document.getElementById("digitAnalysisPanel");
+// -------------------- Trade store (FIX: history persists across switching) --------------------
+const tradeStore = { KOOLKID: [], JOKERJOE: [], HUMAN: [] };
 
-const koolkidButtons = document.getElementById("koolkidButtons");
-const jokerjoeButtons = document.getElementById("jokerjoeButtons");
-const koolkidAutos = document.getElementById("koolkidAutos");
+function renderTradeList(profile){
+    const list = document.getElementById("profileTradeList");
+    if(!list) return;
+
+    const arr = tradeStore[profile] || [];
+    if(arr.length === 0){
+        list.innerHTML = '<div style="text-align:center; color:#64748b; padding:20px;">No trades yet</div>';
+        return;
+    }
+
+    list.innerHTML = "";
+    arr.slice().reverse().forEach(t => {
+        const item = buildTradeItem(t);
+        list.appendChild(item);
+    });
+}
+
+function buildTradeItem(trade){
+    const result = (trade.result || "LOSS").toUpperCase();
+    const profit = typeof trade.profit === 'number' ? trade.profit : (trade.profit_value || 0);
+    const typeRaw = trade.type || trade.contract_type || "UNKNOWN";
+    const barrier = (trade.barrier !== undefined && trade.barrier !== null) ? trade.barrier : "";
+    const type = (barrier !== "" ? `${typeRaw} ${barrier}` : typeRaw);
+    const stake = trade.stake || trade.buy_price || 0;
+
+    // ✅ EXIT DIGIT FIX: supports exit_digit injected by backend
+    const exitDigit = (trade.exitDigit !== undefined && trade.exitDigit !== null)
+        ? trade.exitDigit
+        : ((trade.exit_digit !== undefined && trade.exit_digit !== null) ? trade.exit_digit : "?");
+
+    const time = trade.time || new Date().toLocaleTimeString();
+
+    const item = document.createElement('div');
+    item.className = `trade-item ${result.toLowerCase()}`;
+
+    const profitDisplay = (result === 'WIN' ? '+' : '-') + '$' + Math.abs(profit).toFixed(2);
+
+    item.innerHTML = `
+        <div class="trade-row">
+            <span class="trade-type">${type}</span>
+            <span class="trade-profit ${result.toLowerCase()}">${profitDisplay}</span>
+        </div>
+        <div class="trade-row">
+            <span style="color:#94a3b8;">Stake: $${Number(stake).toFixed(2)}</span>
+            <span class="exit-digit">Exit: ${exitDigit}</span>
+        </div>
+        <div class="trade-detail">
+            <span>${time}</span>
+        </div>
+    `;
+    return item;
+}
+
+function pushTradeToStore(trade){
+    const p = (trade.profile || activeProfile || "KOOLKID").toUpperCase();
+    if(!tradeStore[p]) tradeStore[p] = [];
+    tradeStore[p].push(trade);
+    if(tradeStore[p].length > 250) tradeStore[p].shift();
+}
+
+// Dynamic profile elements (loaded from modular HTML)
+let stakeInput;
+let barrierInput;
+let tpInput;
+let slInput;
+let digitGrid;
+
+// differs analysis (OLD UI style)
+let differsAnalysisBox;
+let differsDigitsRow;
+
+// Insta5
+let insta5Wrap;
+let insta5Btn;
 
 // Confidence bars
-const confOver1 = document.getElementById("confOver1");
-const confOver2 = document.getElementById("confOver2");
-const confUnder8 = document.getElementById("confUnder8");
-const confUnder9 = document.getElementById("confUnder9");
+let confOver1;
+let confOver2;
+let confUnder8;
+let confUnder9;
 
-const confOver1Text = document.getElementById("confOver1Text");
-const confOver2Text = document.getElementById("confOver2Text");
-const confUnder8Text = document.getElementById("confUnder8Text");
-const confUnder9Text = document.getElementById("confUnder9Text");
-
-const barrierInput = document.getElementById("barrier");
-const stakeInput = document.getElementById("stake");
-
-const tpInput = document.getElementById("tp");
-const slInput = document.getElementById("sl");
+let confOver1Text;
+let confOver2Text;
+let confUnder8Text;
+let confUnder9Text;
 
 const digitPopup = document.getElementById("digitPopup");
 const popupTitle = document.getElementById("popupTitle");
 
-// differs analysis
-const differsAnalysisBox = document.getElementById("differsAnalysisBox");
-const differsDigitsRow = document.getElementById("differsDigitsRow");
-
-// auto barrier popup for KIDRACKS / KOOLKIDSPEED
+// auto barrier popup
 const autoBarrierPopup = document.getElementById("autoBarrierPopup");
 const autoBarrierTitle = document.getElementById("autoBarrierTitle");
 const autoBarrierInput = document.getElementById("autoBarrierInput");
@@ -688,76 +542,130 @@ const autoBarrierConfirm = document.getElementById("autoBarrierConfirm");
 const autoBarrierCancel = document.getElementById("autoBarrierCancel");
 let currentAutoBarrierMode = null;
 
-// JokerJoe new buttons
-const insta5Wrap = document.getElementById("insta5Wrap");
-const insta5Btn = document.getElementById("insta5Btn");
-
-// How To Use elements
-const howtoPanel = document.getElementById("howToUsePanel");
+// How To Use (KEEP NEW)
 const howtoBody = document.getElementById("howtoBody");
 const howtoBadge = document.getElementById("howtoModeBadge");
 const howtoToggleBtn = document.getElementById("howtoToggleBtn");
 let howtoVisible = true;
 
-// ================== HOW TO USE CONTENT ==================
-function getHowToHTMLForProfile(profile){
-    if(profile === "KOOLKID"){
+// ================== PROFILE UI LOADER ==================
+async function loadProfileUI(profile){
+    let file = "koolkid.html";
+    if(profile === "KOOLKID") file = "koolkid.html";
+    if(profile === "JOKERJOE") file = "jokerjoe.html";
+    if(profile === "HUMAN") file = "human.html";
+
+    const res = await fetch(`/static/components/${file}`);
+    const html = await res.text();
+
+    document.getElementById("profileContainer").innerHTML = html;
+
+    refreshDynamicElements();
+    initDigitGrid();
+    refreshHowTo();
+    updateInsta5Label();
+    syncAutoStake();
+    sendRiskControls();
+
+    // IMPORTANT FIX: re-render correct profile history after UI swaps
+    renderTradeList(activeProfile);
+}
+
+// ================== REFRESH DYNAMIC ELEMENTS ==================
+function refreshDynamicElements(){
+    stakeInput = document.getElementById("stake");
+    barrierInput = document.getElementById("barrier");
+
+    tpInput = document.getElementById("tp");
+    slInput = document.getElementById("sl");
+
+    digitGrid = document.getElementById("digitGrid");
+
+    differsAnalysisBox = document.getElementById("differsAnalysisBox");
+    differsDigitsRow = document.getElementById("differsDigitsRow");
+
+    insta5Wrap = document.getElementById("insta5Wrap");
+    insta5Btn = document.getElementById("insta5Btn");
+
+    confOver1 = document.getElementById("confOver1");
+    confOver2 = document.getElementById("confOver2");
+    confUnder8 = document.getElementById("confUnder8");
+    confUnder9 = document.getElementById("confUnder9");
+
+    confOver1Text = document.getElementById("confOver1Text");
+    confOver2Text = document.getElementById("confOver2Text");
+    confUnder8Text = document.getElementById("confUnder8Text");
+    confUnder9Text = document.getElementById("confUnder9Text");
+
+    if(stakeInput){
+        stakeInput.addEventListener("change", syncAutoStake);
+        stakeInput.addEventListener("blur", syncAutoStake);
+    }
+
+    if(barrierInput){
+        barrierInput.addEventListener("change", updateInsta5Label);
+        barrierInput.addEventListener("blur", updateInsta5Label);
+    }
+
+    const btn = document.getElementById("autoSlBtn");
+    if(btn){
+        btn.innerText = autoSL ? "AUTO SL: ON" : "AUTO SL: OFF";
+        btn.style.background = autoSL ? "#facc15" : "#64748b";
+    }
+}
+
+// ================== HOW TO USE (KEEP NEW EXACTLY) ==================
+function getHowToHTMLForProfile(profile) {
+    if (profile === "KOOLKID") {
         return `
             <div style="color:#94a3b8; margin-bottom:8px;">
-                Simple guide for KOOLKID buttons. No strategy details.
+                Welcome to KOOLKID mode – designed for digit-based trading.
             </div>
             <ul>
-                <li><b>Digit Grid:</b> tap a digit to set your barrier and open quick actions.</li>
-                <li><b>TAKE OVER / TAKE UNDER (popup):</b> places a trade using the digit you clicked.</li>
-                <li><b>Stake:</b> your trade amount.</li>
-                <li><b>Barrier:</b> the digit you are trading on.</li>
-                <li><b>AUTO SL:</b> toggles automatic stop-loss behavior.</li>
-                <li><b>SET TP / SET SL:</b> updates your profit target and stop limit.</li>
-                <li><b>MASTER AUTO:</b> turns automated modes on/off (if your server supports them).</li>
-                <li><b>KIDRACKS AUTO:</b> an auto mode that can run after the analysis warms up.</li>
-                <li><b>KOOLKIDSPEED AUTO:</b> a faster auto mode option (server-controlled).</li>
-                <li><b>KOOL🍀KID LUCK:</b> a luck-based toggle (server-controlled).</li>
-                <li><b>TAKE 3 UNDER / TAKE 3 OVER:</b> sends 3 quick trades using current settings.</li>
-                <li><b>BURST 4 UNDER / BURST 4 OVER:</b> sends 4 quick trades fast using current settings.</li>
-                <li><b>Confidence Bars:</b> a visual helper showing current confidence values.</li>
+                <li><b>Digit Grid:</b> Click any digit (0–9) to set it as your barrier and open a popup with quick trade options.</li>
+                <li><b>Stake:</b> Your trade amount in USD. Minimum 0.35.</li>
+                <li><b>Barrier:</b> The digit you are trading on (0–9). Can be set manually or by clicking the grid.</li>
+                <li><b>TAKE 3 UNDER / OVER:</b> Places three consecutive trades of the selected type.</li>
+                <li><b>BURST 4 UNDER / OVER:</b> Places four quick trades of the selected type.</li>
+                <li><b>KIDRACKS AUTO:</b> Automated mode that triggers trades based on the selected barrier. Click once to set barrier, again to toggle on/off.</li>
+                <li><b>KOOLKIDSPEED AUTO:</b> Faster automated mode with barrier selection.</li>
+                <li><b>KOOL🍀KID LUCK:</b> Cycles through a preset sequence of trades each time the relevant digit appears.</li>
+                <li><b>Master Auto:</b> Global on/off for all automated modes.</li>
+                <li><b>TP/SL:</b> Set take-profit and stop-loss levels (in USD). AUTO SL toggles automatic stop-loss.</li>
             </ul>
         `;
     }
-
-    if(profile === "JOKERJOE"){
+    if (profile === "JOKERJOE") {
         return `
             <div style="color:#94a3b8; margin-bottom:8px;">
-                Simple guide for JOKERJOE buttons. No strategy details.
+                JOKERJOE mode – for advanced digit strategies.
             </div>
             <ul>
-                <li><b>Digit Grid:</b> tap a digit to set your barrier and open quick actions.</li>
-                <li><b>TAKE MATCH / TAKE DIFFER (popup):</b> places a trade using the digit you clicked.</li>
-                <li><b>DIGIT MATCHES:</b> manual trade using the selected barrier.</li>
-                <li><b>DIGIT DIFFERS:</b> manual trade using the selected barrier.</li>
-                <li><b>INSTA 5:</b> places 5 trades instantly on the selected barrier.</li>
-                <li><b>kidgambleX:</b> places trades on top digits based on the current 100-tick analysis.</li>
-                <li><b>sludgeX AUTO:</b> toggles an automated mode (server-controlled).</li>
-                <li><b>tripleX AUTO:</b> toggles an automated mode (server-controlled).</li>
-                <li><b>kidX:</b> auto mode that uses selected barrier and requires MASTER AUTO (starts after 100 ticks).</li>
-                <li><b>MultiG:</b> auto mode that queues a trade and shows a countdown in history (starts after 100 ticks).</li>
-                <li><b>TAKE 3 DIFFERS:</b> sends 3 quick DIFFERS trades.</li>
-                <li><b>BURST 4 DIFFERS:</b> sends 4 quick DIFFERS trades fast.</li>
-                <li><b>Differs Analysis:</b> highlights low-frequency and special digits as they appear.</li>
+                <li><b>Digit Grid:</b> Click a digit to set your barrier and open a popup for MATCHES/DIFFERS trades.</li>
+                <li><b>DIGIT MATCHES:</b> Manual trade betting the next digit equals your barrier.</li>
+                <li><b>DIGIT DIFFERS:</b> Manual trade betting the next digit is not your barrier.</li>
+                <li><b>INSTA 5:</b> Places five DIFFERS trades instantly on the current barrier.</li>
+                <li><b>kidgambleX:</b> Automatically selects the three most frequent digits and places MATCHES trades on them. (One-click execution)</li>
+                <li><b>sludgeX AUTO:</b> Automated DIFFERS trades on a set of digits when conditions are met.</li>
+                <li><b>tripleX AUTO:</b> Rotates through a sequence of digits, placing a DIFFERS trade each time the target digit appears.</li>
+                <li><b>kidX:</b> Waits for the selected barrier digit to appear, then places three DIFFERS trades over the next five ticks.</li>
+                <li><b>MultiG:</b> Queues a digit with a low appearance rate, holds for 30 seconds, then places a DIFFERS trade if the digit remains rare.</li>
+                <li><b>Master Auto:</b> Enables/disables sludgeX, tripleX, and kidX (MultiG works independently).</li>
             </ul>
+            <div style="margin-top:8px; font-size:11px; color:#ef4444; text-align:center;">
+                ⚠️ For professional use only
+            </div>
         `;
     }
-
-    // HUMAN
     return `
         <div style="color:#94a3b8; margin-bottom:8px;">
-            Simple guide for HUMAN mode. No strategy details.
+            HUMAN mode – multiplier trading with order block logic.
         </div>
         <ul>
-            <li><b>Stake:</b> your trade amount.</li>
-            <li><b>TP / SL:</b> set your take-profit and stop-loss limits.</li>
-            <li><b>AUTO SL:</b> toggles automatic stop-loss behavior.</li>
-            <li><b>Digit Grid:</b> hidden in this mode (as configured).</li>
-            <li><b>Use this mode:</b> for manual control and monitoring.</li>
+            <li><b>Stake:</b> Your trade amount.</li>
+            <li><b>TP / SL:</b> Set take-profit and stop-loss in USD. AUTO SL toggles automatic stop-loss.</li>
+            <li><b>humanX (Order Block Trade):</b> One-click execution of the order block strategy. It waits for a valid setup (breakout, retrace, confirmation) before placing a multiplier trade.</li>
+            <li><b>Chart:</b> Displays the last 24 hours of 1-hour candles, with horizontal lines for the current range high/low. Updates live.</li>
         </ul>
     `;
 }
@@ -778,7 +686,7 @@ function toggleHowTo(){
     }
 }
 
-// ================== TOAST FUNCTION ==================
+// ================== TOAST ==================
 function showToast(message, type="info"){
     const container = document.getElementById("toastContainer");
 
@@ -798,6 +706,8 @@ function showToast(message, type="info"){
 
 // ================== DIGIT GRID ==================
 function initDigitGrid(){
+    if(!digitGrid) return;
+
     digitGrid.innerHTML = "";
     for(let i=0;i<10;i++){
         const div = document.createElement("div");
@@ -811,14 +721,16 @@ function initDigitGrid(){
         digitGrid.appendChild(div);
     }
 }
-initDigitGrid();
 
 function updateInsta5Label(){
+    if(!insta5Btn || !barrierInput) return;
     const b = parseInt(barrierInput.value || "5", 10);
     insta5Btn.innerText = `INSTA 5 ON ${isNaN(b) ? 5 : b}`;
 }
 
 function onDigitClicked(digit, ev){
+    if(!barrierInput) return;
+
     barrierInput.value = digit;
     lastClickedDigit = digit;
     updateInsta5Label();
@@ -846,13 +758,19 @@ function onDigitClicked(digit, ev){
         btn2.setAttribute("onclick", 'popupTrade("DIFFERS")');
     }
 
+    if(activeProfile === "HUMAN"){
+        btn1.innerText = "TAKE BUY";
+        btn2.innerText = "TAKE SELL";
+        btn1.style.background = "#22c55e";
+        btn2.style.background = "#ef4444";
+        btn1.setAttribute("onclick", 'popupTrade("BUY")');
+        btn2.setAttribute("onclick", 'popupTrade("SELL")');
+    }
+
     digitPopup.style.left = (ev.clientX + 12) + "px";
     digitPopup.style.top  = (ev.clientY + 12) + "px";
     digitPopup.style.display = "block";
 }
-
-barrierInput.addEventListener("change", updateInsta5Label);
-barrierInput.addEventListener("blur", updateInsta5Label);
 
 function hidePopup(){
     digitPopup.style.display = "none";
@@ -872,9 +790,10 @@ async function popupTrade(type){
     hidePopup();
 }
 
-// ================== AUTO BARRIER POPUP HELPERS ==================
+// ================== AUTO BARRIER POPUP ==================
 function showAutoBarrierPopup(mode){
     currentAutoBarrierMode = mode;
+
     if(mode === "KIDRACKS"){
         autoBarrierTitle.innerText = "Set KidRacks Barrier (0-9)";
     }else if(mode === "KOOLKIDSPEED"){
@@ -883,7 +802,7 @@ function showAutoBarrierPopup(mode){
         autoBarrierTitle.innerText = "Set Barrier (0-9)";
     }
 
-    autoBarrierInput.value = barrierInput.value || 5;
+    autoBarrierInput.value = barrierInput ? barrierInput.value : 5;
 
     autoBarrierPopup.style.left = "50%";
     autoBarrierPopup.style.top = "50%";
@@ -903,9 +822,7 @@ autoBarrierConfirm.addEventListener("click", async ()=>{
     }
 
     let val = parseInt(autoBarrierInput.value || "5", 10);
-    if(isNaN(val) || val < 0 || val > 9){
-        val = 5;
-    }
+    if(isNaN(val) || val < 0 || val > 9) val = 5;
 
     try{
         if(currentAutoBarrierMode === "KIDRACKS"){
@@ -953,7 +870,6 @@ function loadMarketList(){
         {value:"R_50", label:"Volatility 50"},
         {value:"R_75", label:"Volatility 75"},
         {value:"R_100", label:"Volatility 100"},
-
         {value:"1HZ10V", label:"Volatility 10 (1s)"},
         {value:"1HZ15V", label:"Volatility 15 (1s)"},
         {value:"1HZ25V", label:"Volatility 25 (1s)"},
@@ -962,17 +878,24 @@ function loadMarketList(){
         {value:"1HZ75V", label:"Volatility 75 (1s)"},
         {value:"1HZ90V", label:"Volatility 90 (1s)"},
         {value:"1HZ100V", label:"Volatility 100 (1s)"},
-
         {value:"BOOM300N", label:"Boom 300"},
         {value:"BOOM500N", label:"Boom 500"},
         {value:"BOOM1000N", label:"Boom 1000"},
-
         {value:"CRASH300N", label:"Crash 300"},
         {value:"CRASH500N", label:"Crash 500"},
         {value:"CRASH1000N", label:"Crash 1000"},
-
         {value:"RDBULL", label:"Bull Market"},
         {value:"RDBEAR", label:"Bear Market"},
+        {value:"frxEURUSD", label:"EUR/USD"},
+        {value:"frxGBPUSD", label:"GBP/USD"},
+        {value:"frxUSDJPY", label:"USD/JPY"},
+        {value:"frxAUDUSD", label:"AUD/USD"},
+        {value:"frxUSDCAD", label:"USD/CAD"},
+        {value:"frxUSDCHF", label:"USD/CHF"},
+        {value:"frxNZDUSD", label:"NZD/USD"},
+        {value:"frxEURGBP", label:"EUR/GBP"},
+        {value:"frxEURJPY", label:"EUR/JPY"},
+        {value:"frxGBPJPY", label:"GBP/JPY"},
     ];
 
     markets.forEach(m=>{
@@ -997,7 +920,7 @@ document.getElementById("symbol").addEventListener("change", function(){
 });
 
 // ================== PROFILE ==================
-function setProfile(profile){
+async function setProfile(profile){
     activeProfile = profile;
 
     document.getElementById("koolkidBtn").classList.remove("active");
@@ -1008,50 +931,21 @@ function setProfile(profile){
         document.getElementById("koolkidBtn").classList.add("active");
         profileTitle.innerText = "KOOLKID MODE: OVER & UNDER";
         profileTitle.style.color = "#38bdf8";
-
-        confidencePanel.style.display = "block";
-        digitAnalysisPanel.style.display = "block";
-        differsAnalysisBox.style.display = "none";
-
-        koolkidButtons.style.display = "block";
-        jokerjoeButtons.style.display = "none";
-        koolkidAutos.style.display = "block";
-
-        insta5Wrap.style.display = "none";
     }
 
     if(profile === "JOKERJOE"){
         document.getElementById("jokerjoeBtn").classList.add("active");
         profileTitle.innerText = "JOKERJOE MODE: MATCHES & DIFFERS";
         profileTitle.style.color = "#a855f7";
-
-        confidencePanel.style.display = "none";
-        digitAnalysisPanel.style.display = "block";
-        differsAnalysisBox.style.display = "block";
-
-        koolkidButtons.style.display = "none";
-        jokerjoeButtons.style.display = "block";
-        koolkidAutos.style.display = "none";
-
-        insta5Wrap.style.display = "block";
-        updateInsta5Label();
     }
 
     if(profile === "HUMAN"){
         document.getElementById("humanBtn").classList.add("active");
-        profileTitle.innerText = "HUMAN MODE: MULTIPLIERS";
+        profileTitle.innerText = "HUMAN MODE: MULTIPLIERS + ORDER BLOCK";
         profileTitle.style.color = "#22c55e";
-
-        confidencePanel.style.display = "none";
-        digitAnalysisPanel.style.display = "none";
-        differsAnalysisBox.style.display = "none";
-
-        koolkidButtons.style.display = "none";
-        jokerjoeButtons.style.display = "none";
-        koolkidAutos.style.display = "none";
-
-        insta5Wrap.style.display = "none";
     }
+
+    await loadProfileUI(profile);
 
     fetch("/set_profile", {
         method:"POST",
@@ -1095,24 +989,34 @@ async function disconnect(){
         if(p) p.innerText = "0%";
     }
 
-    winsEl.innerText = "0";
-    lossesEl.innerText = "0";
-    winrateEl.innerText = "0";
-    loserateEl.innerText = "0";
-
-    historyDiv.innerHTML = `<p style="text-align:center; color:#64748b;">No trades yet</p>`;
     hidePopup();
-
-    differsDigitsRow.innerHTML = "";
+    if(differsDigitsRow) differsDigitsRow.innerHTML = "";
 
     updateAutoModeButtons({kidracks:false, koolkidspeed:false, koolluck:false, sludgex:false, triplex:false, kidx:false, multig:false});
+
+    const autoBtn = document.getElementById("autoBtn");
+    if(autoBtn){
+        autoBtn.innerText = "AUTO OFF";
+        autoBtn.style.background = "#38bdf8";
+    }
 
     showToast("🔌 Disconnected", "error");
 }
 
-async function clearHistory(){
-    await fetch("/clear_history", {method:"POST"});
-    showToast("🗑️ Trade History Cleared", "warn");
+// ================== PROFILE HISTORY CLEAR (FIXED ENDPOINT + per-profile) ==================
+async function clearProfileHistory(){
+    if (!activeProfile) return;
+
+    await fetch("/clear_profile_history", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({profile: activeProfile})
+    });
+
+    tradeStore[activeProfile] = [];
+    renderTradeList(activeProfile);
+
+    showToast(`🗑️ ${activeProfile} history cleared`, "warn");
 }
 
 // ================== MASTER AUTO ==================
@@ -1121,23 +1025,26 @@ async function toggleAuto(){
     const data = await res.json();
     const btn = document.getElementById("autoBtn");
 
-    if(data.auto_trade){
-        btn.innerText = "AUTO ON";
-        btn.style.background = "#22c55e";
-        showToast("🤖 MASTER AUTO ENABLED", "success");
-    }else{
-        btn.innerText = "AUTO OFF";
-        btn.style.background = "#38bdf8";
-        showToast("🛑 MASTER AUTO DISABLED", "error");
+    if(btn){
+        if(data.auto_trade){
+            btn.innerText = "AUTO ON";
+            btn.style.background = "#22c55e";
+            showToast("🤖 MASTER AUTO ENABLED", "success");
+        }else{
+            btn.innerText = "AUTO OFF";
+            btn.style.background = "#38bdf8";
+            showToast("🛑 MASTER AUTO DISABLED", "error");
+        }
     }
 }
 
 // ================== AUTO STAKE ==================
 async function syncAutoStake(){
+    if(!stakeInput) return;
+
     const stake = parseFloat(stakeInput.value || "1");
-    if(isNaN(stake) || stake <= 0){
-        return;
-    }
+    if(isNaN(stake) || stake <= 0) return;
+
     await fetch("/set_auto_stake", {
         method:"POST",
         headers:{"Content-Type":"application/json"},
@@ -1145,11 +1052,10 @@ async function syncAutoStake(){
     });
 }
 
-stakeInput.addEventListener("change", syncAutoStake);
-stakeInput.addEventListener("blur", syncAutoStake);
-
 // ================== TP / SL ==================
 async function sendRiskControls(){
+    if(!tpInput || !slInput) return;
+
     const tp = parseFloat(tpInput.value || "0");
     const sl = parseFloat(slInput.value || "0");
 
@@ -1167,6 +1073,7 @@ async function sendRiskControls(){
 async function toggleAutoSL(){
     autoSL = !autoSL;
     const btn = document.getElementById("autoSlBtn");
+    if(!btn) return;
 
     if(autoSL){
         btn.innerText = "AUTO SL: ON";
@@ -1183,15 +1090,15 @@ async function toggleAutoSL(){
 
 async function manualTP(){
     await sendRiskControls();
-    showToast("🎯 TP Updated: $" + tpInput.value, "success");
+    showToast("🎯 TP Updated: $" + (tpInput ? tpInput.value : 0), "success");
 }
 
 async function manualSL(){
     await sendRiskControls();
-    showToast("🛑 SL Updated: $" + slInput.value, "error");
+    showToast("🛑 SL Updated: $" + (slInput ? slInput.value : 0), "error");
 }
 
-// ================== KOOLKID AUTO MODE BUTTON HELPERS ==================
+// ================== AUTO MODE BUTTON HELPERS ==================
 function updateAutoModeButtons(modes){
     const kidBtn = document.getElementById("kidracksBtn");
     const speedBtn = document.getElementById("koolkidspeedBtn");
@@ -1227,7 +1134,6 @@ function updateAutoModeButtons(modes){
         }
     }
 
-    // JOKERJOE sludgeX
     const sludgeBtn = document.getElementById("sludgeXBtn");
     if(modes.sludgex !== undefined && sludgeBtn){
         if(modes.sludgex){
@@ -1239,7 +1145,6 @@ function updateAutoModeButtons(modes){
         }
     }
 
-    // JOKERJOE tripleX
     const tripBtn = document.getElementById("tripleXBtn");
     if(modes.triplex !== undefined && tripBtn){
         if(modes.triplex){
@@ -1251,7 +1156,6 @@ function updateAutoModeButtons(modes){
         }
     }
 
-    // JOKERJOE kidX (RED OFF / BLUE ON)
     const kidXBtn = document.getElementById("kidXBtn");
     if(modes.kidx !== undefined && kidXBtn){
         if(modes.kidx){
@@ -1263,7 +1167,6 @@ function updateAutoModeButtons(modes){
         }
     }
 
-    // JOKERJOE MultiG (RED OFF / BLUE ON)
     const multiGBtn = document.getElementById("multiGBtn");
     if(modes.multig !== undefined && multiGBtn){
         if(modes.multig){
@@ -1276,9 +1179,11 @@ function updateAutoModeButtons(modes){
     }
 }
 
-// When clicking KIDRACKS button:
+// ================== KOOLKID AUTO TOGGLES ==================
 async function toggleKidracksAuto(){
     const kidBtn = document.getElementById("kidracksBtn");
+    if(!kidBtn) return;
+
     const isOn = kidBtn.innerText.includes("ON");
 
     if(isOn){
@@ -1293,6 +1198,8 @@ async function toggleKidracksAuto(){
 
 async function toggleKoolkidspeedAuto(){
     const speedBtn = document.getElementById("koolkidspeedBtn");
+    if(!speedBtn) return;
+
     const isOn = speedBtn.innerText.includes("ON");
 
     if(isOn){
@@ -1312,7 +1219,7 @@ async function toggleKoolluckAuto(){
     showToast("KOOL🍀KID LUCK: " + (data.koolluck_auto ? "ON" : "OFF"), data.koolluck_auto ? "success" : "error");
 }
 
-// ================== JOKERJOE sludgeX TOGGLE ==================
+// ================== JOKERJOE AUTO TOGGLES ==================
 async function toggleSludgeXAuto(){
     const res = await fetch("/toggle_sludgex_auto", {method:"POST"});
     const data = await res.json();
@@ -1325,7 +1232,6 @@ async function toggleSludgeXAuto(){
     }
 }
 
-// ================== JOKERJOE tripleX TOGGLE ==================
 async function toggleTripleXAuto(){
     const res = await fetch("/toggle_triplex_auto", {method:"POST"});
     const data = await res.json();
@@ -1338,8 +1244,9 @@ async function toggleTripleXAuto(){
     }
 }
 
-// ================== JOKERJOE kidX TOGGLE ==================
 async function toggleKidXAuto(){
+    if(!barrierInput) return;
+
     const barrier = parseInt(barrierInput.value || "5", 10);
 
     const res = await fetch("/toggle_kidx_auto", {
@@ -1351,13 +1258,12 @@ async function toggleKidXAuto(){
     const data = await res.json();
     if(data.status === "success"){
         updateAutoModeButtons({kidx: data.kidx_auto});
-        showToast("kidX: " + (data.kidx_auto ? "ON" : "OFF") + " @ barrier " + (data.barrier ?? barrier), data.kidx_auto ? "success" : "error");
+        showToast("kidX: " + (data.kidx_auto ? "ON" : "OFF"), data.kidx_auto ? "success" : "error");
     }else{
         showToast(data.message || "kidX toggle failed", "error");
     }
 }
 
-// ================== JOKERJOE MultiG TOGGLE ==================
 async function toggleMultiGAuto(){
     const res = await fetch("/toggle_multig_auto", {method:"POST"});
     const data = await res.json();
@@ -1372,6 +1278,8 @@ async function toggleMultiGAuto(){
 
 // ================== JOKERJOE INSTA 5 ==================
 async function insta5(){
+    if(!stakeInput || !barrierInput) return;
+
     const stake = stakeInput.value;
     const symbol = document.getElementById("symbol").value;
     const barrier = parseInt(barrierInput.value || "5", 10);
@@ -1385,7 +1293,7 @@ async function insta5(){
 
         const data = await res.json();
         if(data.status === "success"){
-            showToast("⚡ INSTA 5 SENT ON " + (data.barrier ?? barrier) + " (placed " + (data.placed||0) + ")", "warn");
+            showToast("⚡ INSTA 5 SENT", "warn");
         }else{
             showToast(data.message || "INSTA 5 failed", "error");
         }
@@ -1395,8 +1303,10 @@ async function insta5(){
     }
 }
 
-// ================== kidgambleX (one-click) ==================
+// ================== kidgambleX ==================
 async function kidgambleX(){
+    if(!stakeInput) return;
+
     const stake = stakeInput.value;
     const symbol = document.getElementById("symbol").value;
 
@@ -1410,7 +1320,7 @@ async function kidgambleX(){
         const data = await res.json();
 
         if(data.status === "success"){
-            showToast("🎲 kidgambleX sent on digits: " + (data.digits || []).join(", "), "warn");
+            showToast("🎲 kidgambleX sent", "warn");
         }else{
             showToast(data.message || "kidgambleX failed", "error");
         }
@@ -1422,6 +1332,8 @@ async function kidgambleX(){
 
 // ================== TRADE FUNCTIONS ==================
 async function trade(type, barrierOverride=null){
+    if(!stakeInput || !barrierInput) return;
+
     const stake = stakeInput.value;
     const symbol = document.getElementById("symbol").value;
     const barrier = barrierOverride !== null ? barrierOverride : barrierInput.value;
@@ -1434,6 +1346,8 @@ async function trade(type, barrierOverride=null){
 }
 
 async function take3(type){
+    if(!stakeInput || !barrierInput) return;
+
     const stake = stakeInput.value;
     const symbol = document.getElementById("symbol").value;
     const barrier = barrierInput.value;
@@ -1448,6 +1362,8 @@ async function take3(type){
 }
 
 async function burst4(type){
+    if(!stakeInput || !barrierInput) return;
+
     const stake = stakeInput.value;
     const symbol = document.getElementById("symbol").value;
     const barrier = barrierInput.value;
@@ -1461,63 +1377,21 @@ async function burst4(type){
     showToast("⚡ BURST 4 SENT (" + type + ")", "warn");
 }
 
-// ================== SOCKET EVENTS ==================
-socket.on("connection_status", (data)=>{
-    apiConnected = data.connected;
-
-    if(data.connected){
-        apiStatus.innerText = "Connected";
-        apiStatus.className = "green";
-        accountDashboard.style.display = "block";
-
-        showToast("✅ API AUTHORIZED", "success");
+// ================== HUMAN X BUTTON ==================
+async function humanX(){
+    const res = await fetch("/humanx_trade", {method:"POST"});
+    const data = await res.json();
+    if (data.status === "success") {
+        showToast("humanX trade placed", "success");
     } else {
-        apiStatus.innerText = "Not Connected";
-        apiStatus.className = "red";
-        accountDashboard.style.display = "none";
+        showToast(data.error || "No valid setup", "error");
     }
-});
+}
 
-socket.on("trade_placed", (_data)=>{
-    showToast("📌 TRADE PLACED", "info");
-});
-
-socket.on("history_cleared", ()=>{
-    winsEl.innerText = "0";
-    lossesEl.innerText = "0";
-    winrateEl.innerText = "0";
-    loserateEl.innerText = "0";
-    historyDiv.innerHTML = `<p style="text-align:center; color:#64748b;">No trades yet</p>`;
-});
-
-socket.on("balance_update", (data)=>{
-    balanceDisplay.innerText = Number(data.balance).toFixed(2);
-});
-
-socket.on("tick", (data)=>{
-    if(!apiConnected) return;
-
-    tickCountEl.innerText = data.tick_count;
-
-    digitBuffer.push(data.digit);
-    if(digitBuffer.length > 20) digitBuffer.shift();
-
-    digitStream.innerHTML = digitBuffer.join(" ");
-    lastDigitBox.innerText = data.digit;
-
-    for(let i=0;i<10;i++){
-        const cell = document.getElementById(`digit-${i}`);
-        cell.classList.remove("flash");
-    }
-
-    const activeCell = document.getElementById(`digit-${data.digit}`);
-    if(activeCell){
-        activeCell.classList.add("flash");
-        setTimeout(()=>activeCell.classList.remove("flash"), 250);
-    }
-});
-
+// ================== DIFFERS ANALYSIS (OLD UI STYLE) ==================
 function renderDiffersAnalysis(da){
+    if(!differsDigitsRow) return;
+
     if(!da){
         differsDigitsRow.innerHTML = "";
         return;
@@ -1564,33 +1438,65 @@ function renderDiffersAnalysis(da){
     });
 }
 
-// MultiG countdown in trade history
-function renderMultiGCountdown(pending){
-    const id = "multigCountdownLine";
-    const existing = document.getElementById(id);
-
-    if(!pending || !pending.active){
-        if(existing) existing.remove();
-        return;
-    }
-
-    const txt = `⏳ MultiG DIFFERS on ${pending.barrier} in ${pending.seconds_remaining}s`;
-    if(existing){
-        existing.innerText = txt;
-        return;
-    }
-
-    const p = document.createElement("p");
-    p.id = id;
-    p.style.color = "#38bdf8";
-    p.style.fontWeight = "bold";
-    p.innerText = txt;
-
-    if(historyDiv.innerText.includes("No trades")){
-        historyDiv.innerHTML = "";
-    }
-    historyDiv.prepend(p);
+function prettyType(t){
+    const x = (t || "").toUpperCase();
+    if(x === "OVER") return "OVER";
+    if(x === "UNDER") return "UNDER";
+    if(x === "MATCHES") return "MATCH";
+    if(x === "DIFFERS") return "DIFFER";
+    return t || "TRADE";
 }
+
+// ================== SOCKET EVENTS ==================
+socket.on("connection_status", (data)=>{
+    apiConnected = data.connected;
+
+    if(data.connected){
+        apiStatus.innerText = "Connected";
+        apiStatus.className = "green";
+        accountDashboard.style.display = "block";
+        showToast("✅ API AUTHORIZED", "success");
+    } else {
+        apiStatus.innerText = "Not Connected";
+        apiStatus.className = "red";
+        accountDashboard.style.display = "none";
+    }
+});
+
+socket.on("api_error", (data)=>{
+    showToast("API Error: " + (data.message || "Unknown error"), "error");
+});
+
+socket.on("auto_mode_update", (modes)=>{
+    updateAutoModeButtons(modes || {});
+});
+
+socket.on("balance_update", (data)=>{
+    balanceDisplay.innerText = Number(data.balance).toFixed(2);
+});
+
+socket.on("tick", (data)=>{
+    if(!apiConnected) return;
+
+    tickCountEl.innerText = data.tick_count;
+
+    digitBuffer.push(data.digit);
+    if(digitBuffer.length > 20) digitBuffer.shift();
+
+    digitStream.innerHTML = digitBuffer.join(" ");
+    lastDigitBox.innerText = data.digit;
+
+    for(let i=0;i<10;i++){
+        const cell = document.getElementById(`digit-${i}`);
+        if(cell) cell.classList.remove("flash");
+    }
+
+    const activeCell = document.getElementById(`digit-${data.digit}`);
+    if(activeCell){
+        activeCell.classList.add("flash");
+        setTimeout(()=>activeCell.classList.remove("flash"), 250);
+    }
+});
 
 socket.on("digit_analysis", (data)=>{
     if(data.percentages){
@@ -1604,86 +1510,103 @@ socket.on("digit_analysis", (data)=>{
 
     if(activeProfile === "JOKERJOE" && data.differs_analysis){
         renderDiffersAnalysis(data.differs_analysis);
-    }
-
-    if(activeProfile === "JOKERJOE" && data.multig_pending){
-        renderMultiGCountdown(data.multig_pending);
     }else{
-        renderMultiGCountdown(null);
-    }
-
-    if(data.auto_modes){
-        updateAutoModeButtons({
-            sludgex: data.auto_modes.sludgex,
-            triplex: data.auto_modes.triplex,
-            kidx: data.auto_modes.kidx,
-            multig: data.auto_modes.multig
-        });
+        if(differsDigitsRow) differsDigitsRow.innerHTML = "";
     }
 
     if(data.confidence && activeProfile === "KOOLKID"){
-        confOver1.style.width = data.confidence.over1 + "%";
-        confOver2.style.width = data.confidence.over2 + "%";
-        confUnder8.style.width = data.confidence.under8 + "%";
-        confUnder9.style.width = data.confidence.under9 + "%";
+        if(confOver1) confOver1.style.width = data.confidence.over1 + "%";
+        if(confOver2) confOver2.style.width = data.confidence.over2 + "%";
+        if(confUnder8) confUnder8.style.width = data.confidence.under8 + "%";
+        if(confUnder9) confUnder9.style.width = data.confidence.under9 + "%";
 
-        confOver1Text.innerText = data.confidence.over1;
-        confOver2Text.innerText = data.confidence.over2;
-        confUnder8Text.innerText = data.confidence.under8;
-        confUnder9Text.innerText = data.confidence.under9;
+        if(confOver1Text) confOver1Text.innerText = data.confidence.over1;
+        if(confOver2Text) confOver2Text.innerText = data.confidence.over2;
+        if(confUnder8Text) confUnder8Text.innerText = data.confidence.under8;
+        if(confUnder9Text) confUnder9Text.innerText = data.confidence.under9;
     }
+
+    // ✅ JOKERJOE MultiG countdown shown inside TRADE HISTORY
+    if(activeProfile === "JOKERJOE"){
+        const row = document.getElementById("multigCountdownRow");
+        if(row){
+            const mp = data.multig_pending;
+            if(mp && mp.active){
+                row.style.display = "block";
+                const dEl = document.getElementById("multigDigit");
+                const sEl = document.getElementById("multigSecs");
+                if(dEl) dEl.innerText = mp.barrier;
+                if(sEl) sEl.innerText = mp.seconds_remaining;
+            }else{
+                row.style.display = "none";
+            }
+        }
+    }
+});
+
+// HUMAN chart data
+socket.on("human_chart_data", (data)=>{
+    if(activeProfile !== "HUMAN") return;
+    if (window.updateHumanChart) window.updateHumanChart(data);
+});
+
+socket.on("trade_placed", (data)=>{
+    const t = prettyType(data.type);
+    const b = (data.barrier !== undefined && data.barrier !== null) ? ` ${data.barrier}` : "";
+    const s = (data.stake !== undefined && data.stake !== null) ? ` $${Number(data.stake).toFixed(2)}` : "";
+    showToast(`✅ ${t}${b} placed${s}`, "success");
 });
 
 socket.on("trade_result", (data)=>{
-    const p = document.createElement("p");
+    pushTradeToStore(data);
 
-    if(data.result === "WIN"){
-        p.style.color = "#22c55e";
-        showToast("🎯 WIN! +$" + data.profit, "success");
-    } else {
-        p.style.color = "#ef4444";
-        showToast("🛑 LOSS! -$" + Math.abs(data.profit), "error");
+    if((data.profile || activeProfile).toUpperCase() === activeProfile){
+        const list = document.getElementById("profileTradeList");
+        if(list){
+            if (list.children.length === 1 && list.children[0].innerText.includes('No trades')) {
+                list.innerHTML = '';
+            }
+            list.prepend(buildTradeItem(data));
+        }
     }
 
-    p.innerHTML = `${data.time} - ${data.result} (${data.profit})`;
-
-    if(historyDiv.innerText.includes("No trades")){
-        historyDiv.innerHTML = "";
+    const result = (data.result || "LOSS").toUpperCase();
+    const profit = typeof data.profit === "number" ? data.profit : (data.profit_value || 0);
+    if(result === "WIN"){
+        showToast(`🏆 WIN +$${Math.abs(profit).toFixed(2)}`, "success");
+    }else{
+        showToast(`❌ LOSS -$${Math.abs(profit).toFixed(2)}`, "error");
     }
-
-    historyDiv.prepend(p);
 });
 
 socket.on("stats_update", (data)=>{
-    winsEl.innerText = data.wins;
-    lossesEl.innerText = data.losses;
-    winrateEl.innerText = data.winrate;
-    loserateEl.innerText = data.loserate;
-
     const pnl = data.net_pnl || 0;
     netPnlBox.innerText = (pnl >= 0 ? "+$" : "-$") + Math.abs(pnl).toFixed(2);
     netPnlBox.style.color = pnl >= 0 ? "#22c55e" : "#ef4444";
 
     const btn = document.getElementById("autoBtn");
-    if(data.auto_trade){
-        btn.innerText = "AUTO ON";
-        btn.style.background = "#22c55e";
-    }else{
-        btn.innerText = "AUTO OFF";
-        btn.style.background = "#38bdf8";
+    if(btn){
+        if(data.auto_trade){
+            btn.innerText = "AUTO ON";
+            btn.style.background = "#22c55e";
+        }else{
+            btn.innerText = "AUTO OFF";
+            btn.style.background = "#38bdf8";
+        }
     }
-});
 
-socket.on("auto_mode_update", (modes)=>{
-    updateAutoModeButtons(modes);
+    const totalEl = document.getElementById("profileTotalTrades");
+    if (totalEl) {
+        totalEl.innerText = (data.wins + data.losses);
+        document.getElementById("profileWins").innerText = data.wins;
+        document.getElementById("profileLosses").innerText = data.losses;
+        document.getElementById("profileWinRate").innerText = data.winrate + "%";
+        document.getElementById("profileLossRate").innerText = (100 - data.winrate).toFixed(1) + "%";
+    }
 });
 
 // DEFAULT LOAD
 setProfile("KOOLKID");
-sendRiskControls();
-syncAutoStake();
-updateInsta5Label();
-refreshHowTo();
 </script>
 
 </body>

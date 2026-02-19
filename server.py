@@ -152,6 +152,42 @@ def extract_last_decimal_digit(price, pip_size=2):
         return 0
 
 
+# ✅ NEW: extract exit digit reliably from contract fields
+def extract_exit_digit_from_contract(contract: dict):
+    """
+    Deriv digit contracts often include:
+      - exit_tick_display_value (string)
+      - exit_tick (float)
+      - sell_spot / exit_spot (fallback)
+    We want the LAST decimal digit.
+    """
+    try:
+        val = contract.get("exit_tick_display_value")
+        if val is None or val == "":
+            val = contract.get("exit_tick")
+        if val is None or val == "":
+            val = contract.get("sell_spot") or contract.get("exit_spot")
+
+        if val is None or val == "":
+            return None
+
+        s = str(val)
+
+        if "." in s:
+            dec = s.split(".", 1)[1]
+            dec_digits = "".join(ch for ch in dec if ch.isdigit())
+            if not dec_digits:
+                return None
+            return int(dec_digits[-1])
+
+        digits = "".join(ch for ch in s if ch.isdigit())
+        if not digits:
+            return None
+        return int(digits[-1])
+    except Exception:
+        return None
+
+
 def login_required():
     return "user" in session
 
@@ -172,6 +208,10 @@ def get_client_id():
     return cid
 
 
+def _new_req_id():
+    return int(uuid.uuid4().int % 1000000000)
+
+
 def init_client(client_id):
     """
     Initialize a fresh client state.
@@ -188,6 +228,8 @@ def init_client(client_id):
         "balance": 0.0,
         "session_start_balance": None,
         "auto_stake": 1.0,
+        "req_meta": {},          # req_id -> meta
+        "contract_meta": {},     # contract_id -> meta
         "strategies": {
             "KOOLKID": KoolKidStrategy(),
             "JOKERJOE": JokerJoeStrategy(),
@@ -204,9 +246,6 @@ def get_client_state():
 
 
 def emit_jokerjoe_modes(cid, strat: JokerJoeStrategy):
-    """
-    Send updated JokerJoe auto mode toggles to UI.
-    """
     try:
         socketio.emit("auto_mode_update", {
             "sludgex": bool(getattr(strat, "sludgex_auto", False)),
@@ -227,7 +266,6 @@ def login():
 
         if verify_user(username, password):
             session["user"] = username
-            # new client_id for this session
             session["client_id"] = str(uuid.uuid4())
             init_client(session["client_id"])
             return redirect(url_for("index"))
@@ -289,7 +327,6 @@ def handle_connect():
         "balance": state["balance"]
     }, room=cid)
 
-    # sync jokerjoe toggles if user is on jokerjoe
     try:
         jj = state["strategies"].get("JOKERJOE")
         if jj:
@@ -305,7 +342,6 @@ def handle_connect():
 def index():
     if not login_required():
         return redirect(url_for("login"))
-
     return render_template("index.html", username=session.get("user"))
 
 
@@ -333,7 +369,18 @@ def send_buy(client_id, contract_type, stake, symbol, barrier):
 
     deriv_contract = contract_map[contract_type]
 
+    req_id = _new_req_id()
+    state["req_meta"][req_id] = {
+        "profile": state.get("active_profile", "KOOLKID"),
+        "type": contract_type,
+        "barrier": int(barrier),
+        "stake": float(stake),
+        "symbol": symbol,
+        "time": now_time()
+    }
+
     payload = {
+        "req_id": req_id,
         "buy": 1,
         "price": float(stake),
         "parameters": {
@@ -355,6 +402,51 @@ def send_buy(client_id, contract_type, stake, symbol, barrier):
         return False, str(e)
 
 
+# ---------------- MULTIPLIER ORDER (HUMANX) ---------------- #
+def place_multiplier_order(client_id, signal):
+    state = clients.get(client_id)
+    if not state or not state.get("ws_connected"):
+        return False, "Not connected"
+
+    ws = state["ws"]
+    stake = float(signal.get("stake", state.get("auto_stake", 1.0)))
+    multiplier = signal.get("multiplier", 50)
+    direction = signal.get("direction", "BUY")
+    sl = signal.get("sl")
+    tp = signal.get("tp")
+
+    req_id = _new_req_id()
+    state["req_meta"][req_id] = {
+        "profile": state.get("active_profile", "HUMAN"),
+        "type": f"MULT {direction}",
+        "barrier": None,
+        "stake": stake,
+        "symbol": state["current_symbol"],
+        "time": now_time()
+    }
+
+    payload = {
+        "req_id": req_id,
+        "buy": 1,
+        "price": stake,
+        "parameters": {
+            "amount": stake,
+            "basis": "stake",
+            "contract_type": "MULTIPLIER",
+            "currency": "USD",
+            "symbol": state["current_symbol"],
+            "multiplier": multiplier,
+            "take_profit": tp,
+            "stop_loss": sl,
+        }
+    }
+    try:
+        ws.send(json.dumps(payload))
+        return True, "Trade sent"
+    except Exception as e:
+        return False, str(e)
+
+
 # ---------------- AUTO TRADE ENGINE (PER CLIENT) ---------------- #
 def run_auto_trade(client_id, state):
     active_profile = state.get("active_profile", "KOOLKID")
@@ -364,13 +456,8 @@ def run_auto_trade(client_id, state):
     if not strategy:
         return
 
-    # NOTE: For JOKERJOE:
-    # - Master Auto toggles strategy.auto_trade and controls kidX + sludgeX + tripleX
-    # - MultiG is independent and returns signals through check_multig_signal()
-
     signals = None
 
-    # MultiG can run even if master auto is OFF, but only for JOKERJOE
     if active_profile == "JOKERJOE" and hasattr(strategy, "check_multig_signal"):
         try:
             multig_sig = strategy.check_multig_signal()
@@ -379,12 +466,10 @@ def run_auto_trade(client_id, state):
         except Exception:
             pass
 
-    # Master auto based signals (existing)
     if hasattr(strategy, "check_auto_trade_signal"):
         try:
             auto_sig = strategy.check_auto_trade_signal()
             if auto_sig:
-                # If we already have a MultiG signal, prefer MultiG (it has its own delay)
                 if not signals:
                     signals = auto_sig
         except Exception:
@@ -406,14 +491,6 @@ def run_auto_trade(client_id, state):
             ok, msg = send_buy(client_id, ctype, stake, symbol, barrier)
 
             if ok:
-                socketio.emit("trade_placed", {
-                    "type": ctype,
-                    "barrier": barrier,
-                    "stake": stake,
-                    "symbol": symbol,
-                    "mode": sig.get("mode", "")
-                }, room=client_id)
-
                 logger.info(f"[{client_id}] 🤖 AUTO TRADE SENT ({active_profile}): {ctype} barrier={barrier} stake={stake} mode={sig.get('mode')}")
             else:
                 logger.error(f"[{client_id}] ❌ AUTO TRADE FAILED: {msg}")
@@ -475,9 +552,36 @@ def handle_on_message(client_id, ws, message):
             process_tick(client_id, tick)
 
         if "buy" in data:
-            socketio.emit("trade_placed", data["buy"], room=client_id)
+            buy = data["buy"]
+            contract_id = buy.get("contract_id")
+            req_id = data.get("req_id")
 
-            contract_id = data["buy"].get("contract_id")
+            meta = None
+            if req_id and req_id in state["req_meta"]:
+                meta = state["req_meta"].pop(req_id, None)
+
+            if contract_id and meta:
+                state["contract_meta"][contract_id] = meta
+                socketio.emit("trade_placed", {
+                    "profile": meta.get("profile"),
+                    "type": meta.get("type"),
+                    "barrier": meta.get("barrier"),
+                    "stake": meta.get("stake"),
+                    "symbol": meta.get("symbol"),
+                    "time": meta.get("time"),
+                    "contract_id": contract_id
+                }, room=client_id)
+            else:
+                socketio.emit("trade_placed", {
+                    "profile": state.get("active_profile", "KOOLKID"),
+                    "type": "TRADE",
+                    "barrier": None,
+                    "stake": None,
+                    "symbol": state.get("current_symbol"),
+                    "time": now_time(),
+                    "contract_id": contract_id
+                }, room=client_id)
+
             if contract_id:
                 ws.send(json.dumps({
                     "proposal_open_contract": 1,
@@ -527,29 +631,27 @@ def process_tick(client_id, tick):
 
         run_auto_trade(client_id, state)
 
-        # If active profile is JokerJoe, keep auto buttons synced
         if state.get("active_profile") == "JOKERJOE":
             jj = state["strategies"].get("JOKERJOE")
             if jj:
                 emit_jokerjoe_modes(client_id, jj)
+
+        if state.get("active_profile") == "HUMAN":
+            strat = state["strategies"]["HUMAN"]
+            chart_data = strat.get_chart_data()
+            socketio.emit("human_chart_data", chart_data, room=client_id)
 
     except Exception as e:
         logger.error(f"[{client_id}] process_tick error: {e}")
 
 
 def _is_contract_settled_fast(contract: dict) -> bool:
-    """
-    Deriv contract settlement detection:
-    Many times 'status' becomes 'sold' before some flags.
-    For 1-tick contracts, we want to emit results as soon as possible.
-    """
     try:
         if contract.get("is_sold") or contract.get("is_settled"):
             return True
         status = (contract.get("status") or "").lower()
         if status in ("sold", "won", "lost", "settled"):
             return True
-        # Sometimes sell_price appears immediately
         if contract.get("sell_price") is not None and contract.get("sell_price") != "":
             return True
     except Exception:
@@ -575,7 +677,26 @@ def process_contract(client_id, contract):
         if strategy:
             strategy.on_contract(contract, state["balance"])
 
-        socketio.emit("trade_result", strategy.get_last_trade_entry() if strategy else {}, room=client_id)
+        contract_id = contract.get("contract_id")
+        meta = state["contract_meta"].pop(contract_id, None) if contract_id else None
+
+        entry = strategy.get_last_trade_entry() if strategy else {}
+        if meta:
+            entry.setdefault("profile", meta.get("profile"))
+            entry.setdefault("type", meta.get("type"))
+            entry.setdefault("barrier", meta.get("barrier"))
+            entry.setdefault("stake", meta.get("stake"))
+            entry.setdefault("symbol", meta.get("symbol"))
+            entry.setdefault("time", meta.get("time"))
+        else:
+            entry.setdefault("profile", state.get("active_profile", "KOOLKID"))
+
+        # ✅ EXIT DIGIT FIX: inject exit digit for history UI
+        exit_digit = extract_exit_digit_from_contract(contract)
+        if exit_digit is not None:
+            entry["exit_digit"] = exit_digit
+
+        socketio.emit("trade_result", entry, room=client_id)
         send_stats_update(client_id)
 
     except Exception as e:
@@ -589,7 +710,6 @@ def send_stats_update(client_id):
 
     strategies = state.get("strategies", {})
     strategy = strategies.get(state.get("active_profile", "KOOLKID"))
-
     if not strategy:
         return
 
@@ -720,6 +840,8 @@ def disconnect():
     state["api_token"] = ""
     state["balance"] = 0.0
     state["session_start_balance"] = None
+    state["req_meta"].clear()
+    state["contract_meta"].clear()
 
     for strat in state["strategies"].values():
         strat.reset()
@@ -731,21 +853,23 @@ def disconnect():
     return jsonify({"status": "disconnected"})
 
 
-@app.route("/clear_history", methods=["POST"])
-def clear_history():
+@app.route("/clear_profile_history", methods=["POST"])
+def clear_profile_history():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
 
     cid, state = get_client_state()
+    data = request.json or {}
+    profile = (data.get("profile") or state.get("active_profile") or "KOOLKID").upper()
 
-    strategies = state["strategies"]
-    strategy = strategies.get(state["active_profile"], None)
-    if strategy:
-        strategy.clear_history()
+    strat = state["strategies"].get(profile)
+    if strat:
+        strat.clear_history()
 
-    socketio.emit("history_cleared", room=cid)
-    send_stats_update(cid)
-    return jsonify({"status": "cleared"})
+    if profile == state.get("active_profile"):
+        send_stats_update(cid)
+
+    return jsonify({"status": "cleared", "profile": profile})
 
 
 @app.route("/set_profile", methods=["POST"])
@@ -763,7 +887,6 @@ def set_profile():
     socketio.emit("profile_update", {"profile": profile}, room=cid)
     send_stats_update(cid)
 
-    # sync jokerjoe toggles when switching to jokerjoe
     if profile == "JOKERJOE":
         jj = state["strategies"].get("JOKERJOE")
         if jj:
@@ -834,7 +957,6 @@ def toggle_auto():
     new_state = strategy.toggle_auto()
     send_stats_update(cid)
 
-    # sync modes (especially for JOKERJOE)
     if state.get("active_profile") == "JOKERJOE":
         jj = state["strategies"].get("JOKERJOE")
         if jj:
@@ -913,7 +1035,7 @@ def set_koolkidspeed_settings():
     return jsonify({"status": "success"})
 
 
-# ---------------- JOKERJOE: sludgeX toggle ---------------- #
+# ---------------- JOKERJOE toggles ---------------- #
 @app.route("/toggle_sludgex_auto", methods=["POST"])
 def toggle_sludgex_auto_route():
     if not login_required():
@@ -931,7 +1053,6 @@ def toggle_sludgex_auto_route():
     return jsonify({"status": "success", "sludgex_auto": new_val})
 
 
-# ---------------- JOKERJOE: tripleX toggle ---------------- #
 @app.route("/toggle_triplex_auto", methods=["POST"])
 def toggle_triplex_auto_route():
     if not login_required():
@@ -949,7 +1070,6 @@ def toggle_triplex_auto_route():
     return jsonify({"status": "success", "triplex_auto": new_val})
 
 
-# ---------------- JOKERJOE: kidX toggle (NEW) ---------------- #
 @app.route("/toggle_kidx_auto", methods=["POST"])
 def toggle_kidx_auto_route():
     if not login_required():
@@ -970,7 +1090,6 @@ def toggle_kidx_auto_route():
     return jsonify({"status": "success", "kidx_auto": bool(new_val), "barrier": barrier})
 
 
-# ---------------- JOKERJOE: MultiG toggle (NEW) ---------------- #
 @app.route("/toggle_multig_auto", methods=["POST"])
 def toggle_multig_auto_route():
     if not login_required():
@@ -988,7 +1107,6 @@ def toggle_multig_auto_route():
     return jsonify({"status": "success", "multig_auto": bool(new_val)})
 
 
-# ---------------- JOKERJOE: kidgambleX route ---------------- #
 @app.route("/kidgamblex", methods=["POST"])
 def kidgamblex_route():
     if not login_required():
@@ -1024,7 +1142,6 @@ def kidgamblex_route():
     return jsonify({"status": "success", "digits": digits, "placed": placed})
 
 
-# ---------------- JOKERJOE: INSTA 5 (MANUAL) ---------------- #
 @app.route("/insta5", methods=["POST"])
 def insta5_route():
     if not login_required():
@@ -1033,7 +1150,7 @@ def insta5_route():
     cid, state = get_client_state()
     data = request.json or {}
 
-    contract_type = "DIFFERS"  # as requested (JOKERJOE manual)
+    contract_type = "DIFFERS"
     try:
         stake = float(data.get("stake", state.get("auto_stake", 1.0)))
         if stake <= 0:
@@ -1054,7 +1171,6 @@ def insta5_route():
     return jsonify({"status": "success", "placed": placed, "barrier": barrier})
 
 
-# ---------------- MANUAL TRADING ROUTES ---------------- #
 @app.route("/manual_trade", methods=["POST"])
 def manual_trade():
     if not login_required():
@@ -1118,7 +1234,27 @@ def burst_4():
     return jsonify({"status": "success", "placed": placed})
 
 
-# ---------------- MAIN ENTRY ---------------- #
+@app.route("/humanx_trade", methods=["POST"])
+def humanx_trade():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    strat = state["strategies"].get("HUMAN")
+    if not strat:
+        return jsonify({"error": "Human strategy not loaded"}), 400
+
+    signal = strat.get_humanx_signal()
+    if not signal:
+        return jsonify({"error": "No valid setup at the moment"}), 400
+
+    ok, msg = place_multiplier_order(cid, signal)
+    if ok:
+        return jsonify({"status": "success", "signal": signal})
+    else:
+        return jsonify({"error": msg}), 500
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
 
@@ -1127,8 +1263,9 @@ if __name__ == "__main__":
 ║     🚀 KOOLKID AI BOT SERVER (TRUE MULTI-USER MODE)          ║
 ║     - Per-session client_id                                  ║
 ║     - Separate WS + state per browser/device                 ║
-║     - KIDRACKS / KOOLKIDSPEED / KOOL🍀KID LUCK               ║
-║     - JOKERJOE: sludgeX / tripleX / kidX / MultiG            ║
+║     - KOOLKID / JOKERJOE / HUMAN                             ║
+║     - ✅ Fixed toaster payloads                               ║
+║     - ✅ Per-profile clear history route                      ║
 ╚══════════════════════════════════════════════════════════════╝
     """)
 
