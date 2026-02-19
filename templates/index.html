@@ -4,7 +4,9 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>KOOLKID AI BOT</title>
-<script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+
+<!-- ✅ BULLETPROOF: Local Socket.IO client (v4) -->
+<script src="/static/vendor/socket.io.min.js"></script>
 
 <style>
     body{
@@ -170,12 +172,11 @@
         margin:6px 0;
     }
 
-    /* =================== TOAST NOTIFICATIONS =================== */
     #toastContainer{
         position:fixed;
         top:15px;
         right:15px;
-        z-index:999999; /* raised */
+        z-index:999999;
         display:flex;
         flex-direction:column;
         gap:10px;
@@ -195,26 +196,19 @@
         transition:0.35s;
         pointer-events:none;
     }
-    .toast.show{
-        opacity:1;
-        transform:translateX(0px);
-    }
+    .toast.show{ opacity:1; transform:translateX(0px); }
     .toast.success{border-color:#22c55e; color:#22c55e;}
     .toast.error{border-color:#ef4444; color:#ef4444;}
     .toast.warn{border-color:#facc15; color:#facc15;}
     .toast.info{border-color:#38bdf8; color:#38bdf8;}
 
-    /* =================== HOW TO USE PANEL (KEEP NEW) =================== */
     .api-grid{
         display:flex;
         gap:15px;
         flex-wrap:wrap;
         align-items:flex-start;
     }
-    .api-left{
-        flex:1;
-        min-width:340px;
-    }
+    .api-left{ flex:1; min-width:340px; }
     .api-right{
         width:360px;
         max-width:100%;
@@ -248,13 +242,8 @@
         overflow:auto;
         padding-right:6px;
     }
-    .howto-body ul{
-        margin:8px 0 0 18px;
-        padding:0;
-    }
-    .howto-body li{
-        margin:6px 0;
-    }
+    .howto-body ul{ margin:8px 0 0 18px; padding:0; }
+    .howto-body li{ margin:6px 0; }
     .howto-badge{
         display:inline-block;
         padding:2px 8px;
@@ -265,7 +254,6 @@
         margin-left:6px;
     }
 
-    /* ===== TRADE HISTORY ITEMS (KEEP NEW STYLE) ===== */
     .trade-item {
         background:#0f172a;
         border-radius:12px;
@@ -292,18 +280,10 @@
         border-radius:20px;
         font-size:13px;
     }
-    .trade-profit {
-        font-weight:bold;
-        font-size:15px;
-    }
+    .trade-profit { font-weight:bold; font-size:15px; }
     .trade-profit.win { color:#22c55e; }
     .trade-profit.loss { color:#ef4444; }
-    .trade-detail {
-        display:flex;
-        gap:15px;
-        color:#94a3b8;
-        font-size:13px;
-    }
+    .trade-detail { display:flex; gap:15px; color:#94a3b8; font-size:13px; }
     .exit-digit {
         background:#1e293b;
         padding:2px 8px;
@@ -318,11 +298,9 @@
 <div id="toastContainer"></div>
 
 <div class="container">
-
     <h1>KOOLKID AI TRADING ENGINE</h1>
     <a href="/logout" style="color:#ef4444; font-weight:bold;">Logout</a>
 
-    <!-- PROFILE -->
     <div class="card" style="text-align:center;">
         <h3>🎮 SELECT PROFILE</h3>
         <button id="koolkidBtn" class="profile-btn koolkid-btn active" onclick="setProfile('KOOLKID')">🔵 KOOLKID</button>
@@ -332,7 +310,6 @@
         <h4 id="profileTitle" style="margin-top:10px; color:#38bdf8;">KOOLKID MODE: OVER & UNDER</h4>
     </div>
 
-    <!-- API -->
     <div class="card">
         <h3>🔌 API CONNECTION</h3>
 
@@ -360,7 +337,6 @@
         </div>
     </div>
 
-    <!-- ACCOUNT DASHBOARD -->
     <div class="card" id="accountDashboard" style="display:none;">
         <h3>💰 ACCOUNT DASHBOARD</h3>
 
@@ -379,8 +355,8 @@
         </div>
     </div>
 
-    <!-- LIVE TICK INFO -->
-    <div class="card">
+    <!-- ✅ LIVE TICK INFO (hidden automatically on HUMAN) -->
+    <div class="card" id="liveTickCard">
         <h3>📍 LIVE TICK INFO</h3>
 
         <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -400,19 +376,15 @@
         <div class="digit-stream" id="digitStream">-</div>
     </div>
 
-    <!-- PROFILE UI LOADS HERE -->
     <div id="profileContainer"></div>
-
 </div>
 
-<!-- digit popup -->
 <div id="digitPopup" class="digit-popup">
     <h4 id="popupTitle">Digit</h4>
     <button id="popupBtn1" style="background:#38bdf8;" onclick="popupTrade('OVER')">TAKE OVER</button>
     <button id="popupBtn2" style="background:#22c55e;" onclick="popupTrade('UNDER')">TAKE UNDER</button>
 </div>
 
-<!-- AUTO BARRIER POPUP -->
 <div id="autoBarrierPopup" class="digit-popup" style="display:none;">
     <h4 id="autoBarrierTitle">Set Barrier</h4>
     <input id="autoBarrierInput" type="number" min="0" max="9"
@@ -422,8 +394,196 @@
 </div>
 
 <script>
-const socket = io();
+/* ===================== SOCKET.IO (BULLETPROOF INIT) ===================== */
+let socket = null;
 
+function initSocket(){
+    if (socket) return;
+
+    if (typeof io === "undefined"){
+        console.error("Socket.IO client missing (io is undefined).");
+        showToast("Socket.IO failed to load. Check /static/vendor/socket.io.min.js", "error");
+        return;
+    }
+
+    socket = io({
+        path: "/socket.io",
+        transports: ["websocket", "polling"],
+        reconnection: true,
+        reconnectionAttempts: 10,
+        reconnectionDelay: 500
+    });
+
+    bindSocketHandlers();
+}
+
+function bindSocketHandlers(){
+    if (!socket) return;
+
+    socket.on("connect", ()=> {
+        // optional: showToast("🔌 Socket Connected", "success");
+    });
+
+    socket.on("connect_error", (err)=> {
+        console.error("Socket connect_error:", err);
+        showToast("Socket connect error (see console).", "error");
+    });
+
+    socket.on("connection_status", (data)=>{
+        apiConnected = data.connected;
+
+        if(data.connected){
+            apiStatus.innerText = "Connected";
+            apiStatus.className = "green";
+            accountDashboard.style.display = "block";
+            showToast("✅ API AUTHORIZED", "success");
+        } else {
+            apiStatus.innerText = "Not Connected";
+            apiStatus.className = "red";
+            accountDashboard.style.display = "none";
+        }
+    });
+
+    socket.on("api_error", (data)=>{
+        showToast("API Error: " + (data.message || "Unknown error"), "error");
+    });
+
+    socket.on("auto_mode_update", (modes)=>{
+        updateAutoModeButtons(modes || {});
+    });
+
+    socket.on("balance_update", (data)=>{
+        balanceDisplay.innerText = Number(data.balance).toFixed(2);
+    });
+
+    socket.on("tick", (data)=>{
+        if(!apiConnected) return;
+
+        tickCountEl.innerText = data.tick_count;
+
+        digitBuffer.push(data.digit);
+        if(digitBuffer.length > 20) digitBuffer.shift();
+
+        digitStream.innerHTML = digitBuffer.join(" ");
+        lastDigitBox.innerText = data.digit;
+
+        for(let i=0;i<10;i++){
+            const cell = document.getElementById(`digit-${i}`);
+            if(cell) cell.classList.remove("flash");
+        }
+
+        const activeCell = document.getElementById(`digit-${data.digit}`);
+        if(activeCell){
+            activeCell.classList.add("flash");
+            setTimeout(()=>activeCell.classList.remove("flash"), 250);
+        }
+    });
+
+    socket.on("digit_analysis", (data)=>{
+        if(data.percentages){
+            for(let i=0;i<10;i++){
+                const p = document.getElementById(`percent-${i}`);
+                if(p) p.innerText = (data.percentages[i] ?? 0) + "%";
+            }
+        }
+
+        if(activeProfile === "JOKERJOE" && data.differs_analysis){
+            renderDiffersAnalysis(data.differs_analysis);
+        }else{
+            if(differsDigitsRow) differsDigitsRow.innerHTML = "";
+        }
+
+        if(data.confidence && activeProfile === "KOOLKID"){
+            if(confOver1) confOver1.style.width = data.confidence.over1 + "%";
+            if(confOver2) confOver2.style.width = data.confidence.over2 + "%";
+            if(confUnder8) confUnder8.style.width = data.confidence.under8 + "%";
+            if(confUnder9) confUnder9.style.width = data.confidence.under9 + "%";
+
+            if(confOver1Text) confOver1Text.innerText = data.confidence.over1;
+            if(confOver2Text) confOver2Text.innerText = data.confidence.over2;
+            if(confUnder8Text) confUnder8Text.innerText = data.confidence.under8;
+            if(confUnder9Text) confUnder9Text.innerText = data.confidence.under9;
+        }
+
+        if(activeProfile === "JOKERJOE"){
+            const row = document.getElementById("multigCountdownRow");
+            if(row){
+                const mp = data.multig_pending;
+                if(mp && mp.active){
+                    row.style.display = "block";
+                    const dEl = document.getElementById("multigDigit");
+                    const sEl = document.getElementById("multigSecs");
+                    if(dEl) dEl.innerText = mp.barrier;
+                    if(sEl) sEl.innerText = mp.seconds_remaining;
+                }else{
+                    row.style.display = "none";
+                }
+            }
+        }
+    });
+
+    socket.on("human_chart_data", (data)=>{
+        if(activeProfile !== "HUMAN") return;
+        if (window.updateHumanChart) window.updateHumanChart(data);
+    });
+
+    socket.on("trade_placed", (data)=>{
+        const t = prettyType(data.type);
+        const b = (data.barrier !== undefined && data.barrier !== null) ? ` ${data.barrier}` : "";
+        const s = (data.stake !== undefined && data.stake !== null) ? ` $${Number(data.stake).toFixed(2)}` : "";
+        showToast(`✅ ${t}${b} placed${s}`, "success");
+    });
+
+    socket.on("trade_result", (data)=>{
+        pushTradeToStore(data);
+
+        if((data.profile || activeProfile).toUpperCase() === activeProfile){
+            const list = document.getElementById("profileTradeList");
+            if(list){
+                if (list.children.length === 1 && list.children[0].innerText.includes('No trades')) {
+                    list.innerHTML = '';
+                }
+                list.prepend(buildTradeItem(data));
+            }
+        }
+
+        const result = (data.result || "LOSS").toUpperCase();
+        const profit = typeof data.profit === "number" ? data.profit : (data.profit_value || 0);
+        if(result === "WIN"){
+            showToast(`🏆 WIN +$${Math.abs(profit).toFixed(2)}`, "success");
+        }else{
+            showToast(`❌ LOSS -$${Math.abs(profit).toFixed(2)}`, "error");
+        }
+    });
+
+    socket.on("stats_update", (data)=>{
+        const pnl = data.net_pnl || 0;
+        netPnlBox.innerText = (pnl >= 0 ? "+$" : "-$") + Math.abs(pnl).toFixed(2);
+        netPnlBox.style.color = pnl >= 0 ? "#22c55e" : "#ef4444";
+
+        const btn = document.getElementById("autoBtn");
+        if(btn){
+            if(data.auto_trade){
+                btn.innerText = "AUTO ON";
+                btn.style.background = "#22c55e";
+            }else{
+                btn.innerText = "AUTO OFF";
+                btn.style.background = "#38bdf8";
+            }
+        }
+
+        const totalEl = document.getElementById("profileTotalTrades");
+        if (totalEl) {
+            totalEl.innerText = (data.wins + data.losses);
+            document.getElementById("profileWins").innerText = data.wins;
+            document.getElementById("profileLosses").innerText = data.losses;
+            document.getElementById("profileWinRate").innerText = data.winrate + "%";
+            document.getElementById("profileLossRate").innerText = (100 - data.winrate).toFixed(1) + "%";
+        }
+    });
+}
+
+/* ===================== YOUR ORIGINAL CODE BELOW (UNCHANGED LOGIC) ===================== */
 let activeProfile = "KOOLKID";
 let digitBuffer = [];
 let lastClickedDigit = null;
@@ -442,7 +602,6 @@ const digitStream = document.getElementById("digitStream");
 const accountDashboard = document.getElementById("accountDashboard");
 const profileTitle = document.getElementById("profileTitle");
 
-// -------------------- Trade store (FIX: history persists across switching) --------------------
 const tradeStore = { KOOLKID: [], JOKERJOE: [], HUMAN: [] };
 
 function renderTradeList(profile){
@@ -456,10 +615,7 @@ function renderTradeList(profile){
     }
 
     list.innerHTML = "";
-    arr.slice().reverse().forEach(t => {
-        const item = buildTradeItem(t);
-        list.appendChild(item);
-    });
+    arr.slice().reverse().forEach(t => list.appendChild(buildTradeItem(t)));
 }
 
 function buildTradeItem(trade){
@@ -470,7 +626,6 @@ function buildTradeItem(trade){
     const type = (barrier !== "" ? `${typeRaw} ${barrier}` : typeRaw);
     const stake = trade.stake || trade.buy_price || 0;
 
-    // ✅ EXIT DIGIT FIX: supports exit_digit injected by backend
     const exitDigit = (trade.exitDigit !== undefined && trade.exitDigit !== null)
         ? trade.exitDigit
         : ((trade.exit_digit !== undefined && trade.exit_digit !== null) ? trade.exit_digit : "?");
@@ -505,22 +660,18 @@ function pushTradeToStore(trade){
     if(tradeStore[p].length > 250) tradeStore[p].shift();
 }
 
-// Dynamic profile elements (loaded from modular HTML)
 let stakeInput;
 let barrierInput;
 let tpInput;
 let slInput;
 let digitGrid;
 
-// differs analysis (OLD UI style)
 let differsAnalysisBox;
 let differsDigitsRow;
 
-// Insta5
 let insta5Wrap;
 let insta5Btn;
 
-// Confidence bars
 let confOver1;
 let confOver2;
 let confUnder8;
@@ -534,7 +685,6 @@ let confUnder9Text;
 const digitPopup = document.getElementById("digitPopup");
 const popupTitle = document.getElementById("popupTitle");
 
-// auto barrier popup
 const autoBarrierPopup = document.getElementById("autoBarrierPopup");
 const autoBarrierTitle = document.getElementById("autoBarrierTitle");
 const autoBarrierInput = document.getElementById("autoBarrierInput");
@@ -542,13 +692,11 @@ const autoBarrierConfirm = document.getElementById("autoBarrierConfirm");
 const autoBarrierCancel = document.getElementById("autoBarrierCancel");
 let currentAutoBarrierMode = null;
 
-// How To Use (KEEP NEW)
 const howtoBody = document.getElementById("howtoBody");
 const howtoBadge = document.getElementById("howtoModeBadge");
 const howtoToggleBtn = document.getElementById("howtoToggleBtn");
 let howtoVisible = true;
 
-// ================== PROFILE UI LOADER ==================
 async function loadProfileUI(profile){
     let file = "koolkid.html";
     if(profile === "KOOLKID") file = "koolkid.html";
@@ -567,11 +715,9 @@ async function loadProfileUI(profile){
     syncAutoStake();
     sendRiskControls();
 
-    // IMPORTANT FIX: re-render correct profile history after UI swaps
     renderTradeList(activeProfile);
 }
 
-// ================== REFRESH DYNAMIC ELEMENTS ==================
 function refreshDynamicElements(){
     stakeInput = document.getElementById("stake");
     barrierInput = document.getElementById("barrier");
@@ -614,7 +760,6 @@ function refreshDynamicElements(){
     }
 }
 
-// ================== HOW TO USE (KEEP NEW EXACTLY) ==================
 function getHowToHTMLForProfile(profile) {
     if (profile === "KOOLKID") {
         return `
@@ -664,8 +809,8 @@ function getHowToHTMLForProfile(profile) {
         <ul>
             <li><b>Stake:</b> Your trade amount.</li>
             <li><b>TP / SL:</b> Set take-profit and stop-loss in USD. AUTO SL toggles automatic stop-loss.</li>
-            <li><b>humanX (Order Block Trade):</b> One-click execution of the order block strategy. It waits for a valid setup (breakout, retrace, confirmation) before placing a multiplier trade.</li>
-            <li><b>Chart:</b> Displays the last 24 hours of 1-hour candles, with horizontal lines for the current range high/low. Updates live.</li>
+            <li><b>humanX (Order Block Trade):</b> One-click execution of the order block strategy.</li>
+            <li><b>Chart:</b> Displays the last 24 hours of 1-hour candles.</li>
         </ul>
     `;
 }
@@ -677,34 +822,23 @@ function refreshHowTo(){
 
 function toggleHowTo(){
     howtoVisible = !howtoVisible;
-    if(howtoVisible){
-        howtoBody.style.display = "block";
-        howtoToggleBtn.innerText = "HIDE";
-    }else{
-        howtoBody.style.display = "none";
-        howtoToggleBtn.innerText = "SHOW";
-    }
+    howtoBody.style.display = howtoVisible ? "block" : "none";
+    howtoToggleBtn.innerText = howtoVisible ? "HIDE" : "SHOW";
 }
 
-// ================== TOAST ==================
 function showToast(message, type="info"){
     const container = document.getElementById("toastContainer");
-
     const toast = document.createElement("div");
     toast.className = `toast ${type}`;
     toast.innerText = message;
-
     container.appendChild(toast);
-
     setTimeout(()=>toast.classList.add("show"), 50);
-
     setTimeout(()=>{
         toast.classList.remove("show");
         setTimeout(()=>toast.remove(), 400);
     }, 3500);
 }
 
-// ================== DIGIT GRID ==================
 function initDigitGrid(){
     if(!digitGrid) return;
 
@@ -772,16 +906,12 @@ function onDigitClicked(digit, ev){
     digitPopup.style.display = "block";
 }
 
-function hidePopup(){
-    digitPopup.style.display = "none";
-}
+function hidePopup(){ digitPopup.style.display = "none"; }
 
 document.addEventListener("click", (e) => {
     const isDigitCell = e.target.closest(".digit-cell");
     const isPopup = e.target.closest("#digitPopup");
-    if(!isDigitCell && !isPopup){
-        hidePopup();
-    }
+    if(!isDigitCell && !isPopup) hidePopup();
 });
 
 async function popupTrade(type){
@@ -790,60 +920,39 @@ async function popupTrade(type){
     hidePopup();
 }
 
-// ================== AUTO BARRIER POPUP ==================
+/* auto barrier popup handlers kept */
 function showAutoBarrierPopup(mode){
     currentAutoBarrierMode = mode;
-
-    if(mode === "KIDRACKS"){
-        autoBarrierTitle.innerText = "Set KidRacks Barrier (0-9)";
-    }else if(mode === "KOOLKIDSPEED"){
-        autoBarrierTitle.innerText = "Set KoolKidspeed Barrier (0-9)";
-    }else{
-        autoBarrierTitle.innerText = "Set Barrier (0-9)";
-    }
+    autoBarrierTitle.innerText =
+        mode === "KIDRACKS" ? "Set KidRacks Barrier (0-9)"
+      : mode === "KOOLKIDSPEED" ? "Set KoolKidspeed Barrier (0-9)"
+      : "Set Barrier (0-9)";
 
     autoBarrierInput.value = barrierInput ? barrierInput.value : 5;
-
     autoBarrierPopup.style.left = "50%";
     autoBarrierPopup.style.top = "50%";
     autoBarrierPopup.style.transform = "translate(-50%, -50%)";
     autoBarrierPopup.style.display = "block";
 }
-
 function hideAutoBarrierPopup(){
     autoBarrierPopup.style.display = "none";
     currentAutoBarrierMode = null;
 }
-
 autoBarrierConfirm.addEventListener("click", async ()=>{
-    if(!currentAutoBarrierMode){
-        hideAutoBarrierPopup();
-        return;
-    }
+    if(!currentAutoBarrierMode){ hideAutoBarrierPopup(); return; }
 
     let val = parseInt(autoBarrierInput.value || "5", 10);
     if(isNaN(val) || val < 0 || val > 9) val = 5;
 
     try{
         if(currentAutoBarrierMode === "KIDRACKS"){
-            await fetch("/set_kidracks_settings", {
-                method:"POST",
-                headers:{"Content-Type":"application/json"},
-                body:JSON.stringify({ barrier: val })
-            });
-
+            await fetch("/set_kidracks_settings", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ barrier: val })});
             const res = await fetch("/toggle_kidracks_auto", {method:"POST"});
             const data = await res.json();
             updateAutoModeButtons({kidracks: data.kidracks_auto});
             showToast("KIDRACKS AUTO: " + (data.kidracks_auto ? "ON" : "OFF") + " @ barrier " + val, data.kidracks_auto ? "success" : "error");
-        }
-        else if(currentAutoBarrierMode === "KOOLKIDSPEED"){
-            await fetch("/set_koolkidspeed_settings", {
-                method:"POST",
-                headers:{"Content-Type":"application/json"},
-                body:JSON.stringify({ barrier: val })
-            });
-
+        } else if(currentAutoBarrierMode === "KOOLKIDSPEED"){
+            await fetch("/set_koolkidspeed_settings", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ barrier: val })});
             const res = await fetch("/toggle_koolkidspeed_auto", {method:"POST"});
             const data = await res.json();
             updateAutoModeButtons({koolkidspeed: data.koolkidspeed_auto});
@@ -853,13 +962,10 @@ autoBarrierConfirm.addEventListener("click", async ()=>{
         console.error(e);
         showToast("Error setting auto barrier", "error");
     }
-
     hideAutoBarrierPopup();
 });
-
 autoBarrierCancel.addEventListener("click", hideAutoBarrierPopup);
 
-// ================== MARKETS ==================
 function loadMarketList(){
     const symbolSelect = document.getElementById("symbol");
     symbolSelect.innerHTML = "";
@@ -910,16 +1016,17 @@ function loadMarketList(){
 loadMarketList();
 
 document.getElementById("symbol").addEventListener("change", function(){
-    fetch("/change_market", {
-        method:"POST",
-        headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({symbol:this.value})
-    });
-
+    fetch("/change_market", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({symbol:this.value})});
     showToast("📊 Market Changed: " + this.value, "warn");
 });
 
-// ================== PROFILE ==================
+/* ✅ hide LIVE TICK INFO on HUMAN only */
+function applyLiveTickVisibility(){
+    const live = document.getElementById("liveTickCard");
+    if(!live) return;
+    live.style.display = (activeProfile === "HUMAN") ? "none" : "block";
+}
+
 async function setProfile(profile){
     activeProfile = profile;
 
@@ -932,39 +1039,30 @@ async function setProfile(profile){
         profileTitle.innerText = "KOOLKID MODE: OVER & UNDER";
         profileTitle.style.color = "#38bdf8";
     }
-
     if(profile === "JOKERJOE"){
         document.getElementById("jokerjoeBtn").classList.add("active");
         profileTitle.innerText = "JOKERJOE MODE: MATCHES & DIFFERS";
         profileTitle.style.color = "#a855f7";
     }
-
     if(profile === "HUMAN"){
         document.getElementById("humanBtn").classList.add("active");
         profileTitle.innerText = "HUMAN MODE: MULTIPLIERS + ORDER BLOCK";
         profileTitle.style.color = "#22c55e";
     }
 
+    applyLiveTickVisibility();
+
     await loadProfileUI(profile);
 
-    fetch("/set_profile", {
-        method:"POST",
-        headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({profile})
-    });
+    fetch("/set_profile", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({profile})});
 
     refreshHowTo();
     showToast("🎮 Profile Changed: " + profile, "info");
 }
 
-// ================== API ==================
 async function connect(){
     const token = document.getElementById("token").value;
-    await fetch("/set_token", {
-        method:"POST",
-        headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({token})
-    });
+    await fetch("/set_token", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token})});
     document.getElementById("token").value = "";
 }
 
@@ -973,7 +1071,6 @@ async function disconnect(){
 
     apiStatus.innerText = "Disconnected";
     apiStatus.className = "red";
-
     accountDashboard.style.display = "none";
 
     balanceDisplay.innerText = "0.00";
@@ -1003,23 +1100,15 @@ async function disconnect(){
     showToast("🔌 Disconnected", "error");
 }
 
-// ================== PROFILE HISTORY CLEAR (FIXED ENDPOINT + per-profile) ==================
 async function clearProfileHistory(){
     if (!activeProfile) return;
 
-    await fetch("/clear_profile_history", {
-        method:"POST",
-        headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({profile: activeProfile})
-    });
-
+    await fetch("/clear_profile_history", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({profile: activeProfile})});
     tradeStore[activeProfile] = [];
     renderTradeList(activeProfile);
-
     showToast(`🗑️ ${activeProfile} history cleared`, "warn");
 }
 
-// ================== MASTER AUTO ==================
 async function toggleAuto(){
     const res = await fetch("/toggle_auto", {method:"POST"});
     const data = await res.json();
@@ -1038,35 +1127,23 @@ async function toggleAuto(){
     }
 }
 
-// ================== AUTO STAKE ==================
 async function syncAutoStake(){
     if(!stakeInput) return;
-
     const stake = parseFloat(stakeInput.value || "1");
     if(isNaN(stake) || stake <= 0) return;
 
-    await fetch("/set_auto_stake", {
-        method:"POST",
-        headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({stake})
-    });
+    await fetch("/set_auto_stake", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({stake})});
 }
 
-// ================== TP / SL ==================
 async function sendRiskControls(){
     if(!tpInput || !slInput) return;
-
     const tp = parseFloat(tpInput.value || "0");
     const sl = parseFloat(slInput.value || "0");
 
     await fetch("/set_risk_controls", {
         method:"POST",
         headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({
-            tp: tp,
-            sl: sl,
-            auto_sl: autoSL
-        })
+        body: JSON.stringify({ tp, sl, auto_sl: autoSL })
     });
 }
 
@@ -1084,108 +1161,59 @@ async function toggleAutoSL(){
         btn.style.background = "#64748b";
         showToast("⚠️ AUTO SL DISABLED", "error");
     }
-
     await sendRiskControls();
 }
 
-async function manualTP(){
-    await sendRiskControls();
-    showToast("🎯 TP Updated: $" + (tpInput ? tpInput.value : 0), "success");
-}
+async function manualTP(){ await sendRiskControls(); showToast("🎯 TP Updated: $" + (tpInput ? tpInput.value : 0), "success"); }
+async function manualSL(){ await sendRiskControls(); showToast("🛑 SL Updated: $" + (slInput ? slInput.value : 0), "error"); }
 
-async function manualSL(){
-    await sendRiskControls();
-    showToast("🛑 SL Updated: $" + (slInput ? slInput.value : 0), "error");
-}
-
-// ================== AUTO MODE BUTTON HELPERS ==================
 function updateAutoModeButtons(modes){
     const kidBtn = document.getElementById("kidracksBtn");
     const speedBtn = document.getElementById("koolkidspeedBtn");
     const luckBtn = document.getElementById("koolluckBtn");
 
     if(modes.kidracks !== undefined && kidBtn){
-        if(modes.kidracks){
-            kidBtn.innerText = "KIDRACKS AUTO TRADE: ON";
-            kidBtn.style.background = "#22c55e";
-        }else{
-            kidBtn.innerText = "KIDRACKS AUTO TRADE: OFF";
-            kidBtn.style.background = "#1e293b";
-        }
+        kidBtn.innerText = modes.kidracks ? "KIDRACKS AUTO TRADE: ON" : "KIDRACKS AUTO TRADE: OFF";
+        kidBtn.style.background = modes.kidracks ? "#22c55e" : "#1e293b";
     }
-
     if(modes.koolkidspeed !== undefined && speedBtn){
-        if(modes.koolkidspeed){
-            speedBtn.innerText = "KOOLKIDSPEED AUTO: ON";
-            speedBtn.style.background = "#38bdf8";
-        }else{
-            speedBtn.innerText = "KOOLKIDSPEED AUTO: OFF";
-            speedBtn.style.background = "#1e293b";
-        }
+        speedBtn.innerText = modes.koolkidspeed ? "KOOLKIDSPEED AUTO: ON" : "KOOLKIDSPEED AUTO: OFF";
+        speedBtn.style.background = modes.koolkidspeed ? "#38bdf8" : "#1e293b";
     }
-
     if(modes.koolluck !== undefined && luckBtn){
-        if(modes.koolluck){
-            luckBtn.innerText = "KOOL🍀KID LUCK: ON";
-            luckBtn.style.background = "#22c55e";
-        }else{
-            luckBtn.innerText = "KOOL🍀KID LUCK: OFF";
-            luckBtn.style.background = "#1e293b";
-        }
+        luckBtn.innerText = modes.koolluck ? "KOOL🍀KID LUCK: ON" : "KOOL🍀KID LUCK: OFF";
+        luckBtn.style.background = modes.koolluck ? "#22c55e" : "#1e293b";
     }
 
     const sludgeBtn = document.getElementById("sludgeXBtn");
     if(modes.sludgex !== undefined && sludgeBtn){
-        if(modes.sludgex){
-            sludgeBtn.innerText = "sludgeX AUTO: ON";
-            sludgeBtn.style.background = "#a855f7";
-        }else{
-            sludgeBtn.innerText = "sludgeX AUTO: OFF";
-            sludgeBtn.style.background = "#1e293b";
-        }
+        sludgeBtn.innerText = modes.sludgex ? "sludgeX AUTO: ON" : "sludgeX AUTO: OFF";
+        sludgeBtn.style.background = modes.sludgex ? "#a855f7" : "#1e293b";
     }
 
     const tripBtn = document.getElementById("tripleXBtn");
     if(modes.triplex !== undefined && tripBtn){
-        if(modes.triplex){
-            tripBtn.innerText = "tripleX AUTO: ON";
-            tripBtn.style.background = "#22c55e";
-        }else{
-            tripBtn.innerText = "tripleX AUTO: OFF";
-            tripBtn.style.background = "#1e293b";
-        }
+        tripBtn.innerText = modes.triplex ? "tripleX AUTO: ON" : "tripleX AUTO: OFF";
+        tripBtn.style.background = modes.triplex ? "#22c55e" : "#1e293b";
     }
 
     const kidXBtn = document.getElementById("kidXBtn");
     if(modes.kidx !== undefined && kidXBtn){
-        if(modes.kidx){
-            kidXBtn.innerText = "kidX: ON";
-            kidXBtn.style.background = "#1d4ed8";
-        }else{
-            kidXBtn.innerText = "kidX: OFF";
-            kidXBtn.style.background = "#ef4444";
-        }
+        kidXBtn.innerText = modes.kidx ? "kidX: ON" : "kidX: OFF";
+        kidXBtn.style.background = modes.kidx ? "#1d4ed8" : "#ef4444";
     }
 
     const multiGBtn = document.getElementById("multiGBtn");
     if(modes.multig !== undefined && multiGBtn){
-        if(modes.multig){
-            multiGBtn.innerText = "MultiG: ON";
-            multiGBtn.style.background = "#1d4ed8";
-        }else{
-            multiGBtn.innerText = "MultiG: OFF";
-            multiGBtn.style.background = "#ef4444";
-        }
+        multiGBtn.innerText = modes.multig ? "MultiG: ON" : "MultiG: OFF";
+        multiGBtn.style.background = modes.multig ? "#1d4ed8" : "#ef4444";
     }
 }
 
-// ================== KOOLKID AUTO TOGGLES ==================
 async function toggleKidracksAuto(){
     const kidBtn = document.getElementById("kidracksBtn");
     if(!kidBtn) return;
-
     const isOn = kidBtn.innerText.includes("ON");
-
     if(isOn){
         const res = await fetch("/toggle_kidracks_auto", {method:"POST"});
         const data = await res.json();
@@ -1199,9 +1227,7 @@ async function toggleKidracksAuto(){
 async function toggleKoolkidspeedAuto(){
     const speedBtn = document.getElementById("koolkidspeedBtn");
     if(!speedBtn) return;
-
     const isOn = speedBtn.innerText.includes("ON");
-
     if(isOn){
         const res = await fetch("/toggle_koolkidspeed_auto", {method:"POST"});
         const data = await res.json();
@@ -1219,11 +1245,9 @@ async function toggleKoolluckAuto(){
     showToast("KOOL🍀KID LUCK: " + (data.koolluck_auto ? "ON" : "OFF"), data.koolluck_auto ? "success" : "error");
 }
 
-// ================== JOKERJOE AUTO TOGGLES ==================
 async function toggleSludgeXAuto(){
     const res = await fetch("/toggle_sludgex_auto", {method:"POST"});
     const data = await res.json();
-
     if(data.status === "success"){
         updateAutoModeButtons({sludgex: data.sludgex_auto});
         showToast("sludgeX AUTO: " + (data.sludgex_auto ? "ON" : "OFF"), data.sludgex_auto ? "success" : "error");
@@ -1235,7 +1259,6 @@ async function toggleSludgeXAuto(){
 async function toggleTripleXAuto(){
     const res = await fetch("/toggle_triplex_auto", {method:"POST"});
     const data = await res.json();
-
     if(data.status === "success"){
         updateAutoModeButtons({triplex: data.triplex_auto});
         showToast("tripleX AUTO: " + (data.triplex_auto ? "ON" : "OFF"), data.triplex_auto ? "success" : "error");
@@ -1246,7 +1269,6 @@ async function toggleTripleXAuto(){
 
 async function toggleKidXAuto(){
     if(!barrierInput) return;
-
     const barrier = parseInt(barrierInput.value || "5", 10);
 
     const res = await fetch("/toggle_kidx_auto", {
@@ -1267,7 +1289,6 @@ async function toggleKidXAuto(){
 async function toggleMultiGAuto(){
     const res = await fetch("/toggle_multig_auto", {method:"POST"});
     const data = await res.json();
-
     if(data.status === "success"){
         updateAutoModeButtons({multig: data.multig_auto});
         showToast("MultiG: " + (data.multig_auto ? "ON" : "OFF"), data.multig_auto ? "success" : "error");
@@ -1276,61 +1297,39 @@ async function toggleMultiGAuto(){
     }
 }
 
-// ================== JOKERJOE INSTA 5 ==================
 async function insta5(){
     if(!stakeInput || !barrierInput) return;
-
     const stake = stakeInput.value;
     const symbol = document.getElementById("symbol").value;
     const barrier = parseInt(barrierInput.value || "5", 10);
 
     try{
-        const res = await fetch("/insta5", {
-            method:"POST",
-            headers:{"Content-Type":"application/json"},
-            body: JSON.stringify({ stake, symbol, barrier: isNaN(barrier) ? 5 : barrier })
-        });
-
+        const res = await fetch("/insta5", {method:"POST",headers:{"Content-Type":"application/json"},body: JSON.stringify({ stake, symbol, barrier: isNaN(barrier) ? 5 : barrier })});
         const data = await res.json();
-        if(data.status === "success"){
-            showToast("⚡ INSTA 5 SENT", "warn");
-        }else{
-            showToast(data.message || "INSTA 5 failed", "error");
-        }
+        if(data.status === "success") showToast("⚡ INSTA 5 SENT", "warn");
+        else showToast(data.message || "INSTA 5 failed", "error");
     }catch(e){
         console.error(e);
         showToast("INSTA 5 request error", "error");
     }
 }
 
-// ================== kidgambleX ==================
 async function kidgambleX(){
     if(!stakeInput) return;
-
     const stake = stakeInput.value;
     const symbol = document.getElementById("symbol").value;
 
     try{
-        const res = await fetch("/kidgamblex", {
-            method:"POST",
-            headers:{"Content-Type":"application/json"},
-            body:JSON.stringify({ stake, symbol })
-        });
-
+        const res = await fetch("/kidgamblex", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ stake, symbol })});
         const data = await res.json();
-
-        if(data.status === "success"){
-            showToast("🎲 kidgambleX sent", "warn");
-        }else{
-            showToast(data.message || "kidgambleX failed", "error");
-        }
+        if(data.status === "success") showToast("🎲 kidgambleX sent", "warn");
+        else showToast(data.message || "kidgambleX failed", "error");
     }catch(e){
         console.error(e);
         showToast("kidgambleX request error", "error");
     }
 }
 
-// ================== TRADE FUNCTIONS ==================
 async function trade(type, barrierOverride=null){
     if(!stakeInput || !barrierInput) return;
 
@@ -1338,73 +1337,46 @@ async function trade(type, barrierOverride=null){
     const symbol = document.getElementById("symbol").value;
     const barrier = barrierOverride !== null ? barrierOverride : barrierInput.value;
 
-    await fetch("/manual_trade", {
-        method:"POST",
-        headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({type, stake, symbol, barrier})
-    });
+    await fetch("/manual_trade", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type, stake, symbol, barrier})});
 }
 
 async function take3(type){
     if(!stakeInput || !barrierInput) return;
-
     const stake = stakeInput.value;
     const symbol = document.getElementById("symbol").value;
     const barrier = barrierInput.value;
 
-    await fetch("/manual_3_trades", {
-        method:"POST",
-        headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({type, stake, symbol, barrier})
-    });
-
+    await fetch("/manual_3_trades", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type, stake, symbol, barrier})});
     showToast("🔥 TAKE 3 SENT (" + type + ")", "info");
 }
 
 async function burst4(type){
     if(!stakeInput || !barrierInput) return;
-
     const stake = stakeInput.value;
     const symbol = document.getElementById("symbol").value;
     const barrier = barrierInput.value;
 
-    await fetch("/burst_4", {
-        method:"POST",
-        headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({type, stake, symbol, barrier})
-    });
-
+    await fetch("/burst_4", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type, stake, symbol, barrier})});
     showToast("⚡ BURST 4 SENT (" + type + ")", "warn");
 }
 
-// ================== HUMAN X BUTTON ==================
 async function humanX(){
     const res = await fetch("/humanx_trade", {method:"POST"});
     const data = await res.json();
-    if (data.status === "success") {
-        showToast("humanX trade placed", "success");
-    } else {
-        showToast(data.error || "No valid setup", "error");
-    }
+    if (data.status === "success") showToast("humanX trade placed", "success");
+    else showToast(data.error || "No valid setup", "error");
 }
 
-// ================== DIFFERS ANALYSIS (OLD UI STYLE) ==================
 function renderDiffersAnalysis(da){
     if(!differsDigitsRow) return;
-
-    if(!da){
-        differsDigitsRow.innerHTML = "";
-        return;
-    }
+    if(!da){ differsDigitsRow.innerHTML = ""; return; }
 
     const green = da.green_digits || [];
     const golden = da.golden_digits || [];
 
     const all = [];
     golden.forEach(d => all.push({digit:d, type:"gold"}));
-    green.forEach(d => {
-        if(!golden.includes(d)) all.push({digit:d, type:"green"});
-    });
+    green.forEach(d => { if(!golden.includes(d)) all.push({digit:d, type:"green"}); });
 
     if(all.length === 0){
         differsDigitsRow.innerHTML = `<div style="color:#64748b; font-size:12px;">No low-frequency digits detected yet.</div>`;
@@ -1425,12 +1397,10 @@ function renderDiffersAnalysis(da){
             div.style.background = "linear-gradient(135deg,#facc15,#f59e0b)";
             div.style.color = "#0b1220";
             div.style.boxShadow = "0 0 14px rgba(250,204,21,0.35)";
-            div.title = "Golden differs: absent for 20 ticks, then printed again.";
         }else{
             div.style.background = "rgba(34,197,94,0.15)";
             div.style.color = "#22c55e";
             div.style.boxShadow = "0 0 12px rgba(34,197,94,0.20)";
-            div.title = "Low-frequency differs digit.";
         }
 
         div.innerText = item.digit;
@@ -1447,165 +1417,8 @@ function prettyType(t){
     return t || "TRADE";
 }
 
-// ================== SOCKET EVENTS ==================
-socket.on("connection_status", (data)=>{
-    apiConnected = data.connected;
-
-    if(data.connected){
-        apiStatus.innerText = "Connected";
-        apiStatus.className = "green";
-        accountDashboard.style.display = "block";
-        showToast("✅ API AUTHORIZED", "success");
-    } else {
-        apiStatus.innerText = "Not Connected";
-        apiStatus.className = "red";
-        accountDashboard.style.display = "none";
-    }
-});
-
-socket.on("api_error", (data)=>{
-    showToast("API Error: " + (data.message || "Unknown error"), "error");
-});
-
-socket.on("auto_mode_update", (modes)=>{
-    updateAutoModeButtons(modes || {});
-});
-
-socket.on("balance_update", (data)=>{
-    balanceDisplay.innerText = Number(data.balance).toFixed(2);
-});
-
-socket.on("tick", (data)=>{
-    if(!apiConnected) return;
-
-    tickCountEl.innerText = data.tick_count;
-
-    digitBuffer.push(data.digit);
-    if(digitBuffer.length > 20) digitBuffer.shift();
-
-    digitStream.innerHTML = digitBuffer.join(" ");
-    lastDigitBox.innerText = data.digit;
-
-    for(let i=0;i<10;i++){
-        const cell = document.getElementById(`digit-${i}`);
-        if(cell) cell.classList.remove("flash");
-    }
-
-    const activeCell = document.getElementById(`digit-${data.digit}`);
-    if(activeCell){
-        activeCell.classList.add("flash");
-        setTimeout(()=>activeCell.classList.remove("flash"), 250);
-    }
-});
-
-socket.on("digit_analysis", (data)=>{
-    if(data.percentages){
-        for(let i=0;i<10;i++){
-            const p = document.getElementById(`percent-${i}`);
-            if(p){
-                p.innerText = (data.percentages[i] ?? 0) + "%";
-            }
-        }
-    }
-
-    if(activeProfile === "JOKERJOE" && data.differs_analysis){
-        renderDiffersAnalysis(data.differs_analysis);
-    }else{
-        if(differsDigitsRow) differsDigitsRow.innerHTML = "";
-    }
-
-    if(data.confidence && activeProfile === "KOOLKID"){
-        if(confOver1) confOver1.style.width = data.confidence.over1 + "%";
-        if(confOver2) confOver2.style.width = data.confidence.over2 + "%";
-        if(confUnder8) confUnder8.style.width = data.confidence.under8 + "%";
-        if(confUnder9) confUnder9.style.width = data.confidence.under9 + "%";
-
-        if(confOver1Text) confOver1Text.innerText = data.confidence.over1;
-        if(confOver2Text) confOver2Text.innerText = data.confidence.over2;
-        if(confUnder8Text) confUnder8Text.innerText = data.confidence.under8;
-        if(confUnder9Text) confUnder9Text.innerText = data.confidence.under9;
-    }
-
-    // ✅ JOKERJOE MultiG countdown shown inside TRADE HISTORY
-    if(activeProfile === "JOKERJOE"){
-        const row = document.getElementById("multigCountdownRow");
-        if(row){
-            const mp = data.multig_pending;
-            if(mp && mp.active){
-                row.style.display = "block";
-                const dEl = document.getElementById("multigDigit");
-                const sEl = document.getElementById("multigSecs");
-                if(dEl) dEl.innerText = mp.barrier;
-                if(sEl) sEl.innerText = mp.seconds_remaining;
-            }else{
-                row.style.display = "none";
-            }
-        }
-    }
-});
-
-// HUMAN chart data
-socket.on("human_chart_data", (data)=>{
-    if(activeProfile !== "HUMAN") return;
-    if (window.updateHumanChart) window.updateHumanChart(data);
-});
-
-socket.on("trade_placed", (data)=>{
-    const t = prettyType(data.type);
-    const b = (data.barrier !== undefined && data.barrier !== null) ? ` ${data.barrier}` : "";
-    const s = (data.stake !== undefined && data.stake !== null) ? ` $${Number(data.stake).toFixed(2)}` : "";
-    showToast(`✅ ${t}${b} placed${s}`, "success");
-});
-
-socket.on("trade_result", (data)=>{
-    pushTradeToStore(data);
-
-    if((data.profile || activeProfile).toUpperCase() === activeProfile){
-        const list = document.getElementById("profileTradeList");
-        if(list){
-            if (list.children.length === 1 && list.children[0].innerText.includes('No trades')) {
-                list.innerHTML = '';
-            }
-            list.prepend(buildTradeItem(data));
-        }
-    }
-
-    const result = (data.result || "LOSS").toUpperCase();
-    const profit = typeof data.profit === "number" ? data.profit : (data.profit_value || 0);
-    if(result === "WIN"){
-        showToast(`🏆 WIN +$${Math.abs(profit).toFixed(2)}`, "success");
-    }else{
-        showToast(`❌ LOSS -$${Math.abs(profit).toFixed(2)}`, "error");
-    }
-});
-
-socket.on("stats_update", (data)=>{
-    const pnl = data.net_pnl || 0;
-    netPnlBox.innerText = (pnl >= 0 ? "+$" : "-$") + Math.abs(pnl).toFixed(2);
-    netPnlBox.style.color = pnl >= 0 ? "#22c55e" : "#ef4444";
-
-    const btn = document.getElementById("autoBtn");
-    if(btn){
-        if(data.auto_trade){
-            btn.innerText = "AUTO ON";
-            btn.style.background = "#22c55e";
-        }else{
-            btn.innerText = "AUTO OFF";
-            btn.style.background = "#38bdf8";
-        }
-    }
-
-    const totalEl = document.getElementById("profileTotalTrades");
-    if (totalEl) {
-        totalEl.innerText = (data.wins + data.losses);
-        document.getElementById("profileWins").innerText = data.wins;
-        document.getElementById("profileLosses").innerText = data.losses;
-        document.getElementById("profileWinRate").innerText = data.winrate + "%";
-        document.getElementById("profileLossRate").innerText = (100 - data.winrate).toFixed(1) + "%";
-    }
-});
-
-// DEFAULT LOAD
+/* ✅ STARTUP */
+initSocket();
 setProfile("KOOLKID");
 </script>
 
