@@ -34,7 +34,7 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "Koolkid@12345")
 
 MAX_USERS = int(os.environ.get("MAX_USERS", "150"))
 
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading", manage_session=False)
 
 DERIV_WS = "wss://ws.derivws.com/websockets/v3?app_id=1089"
 
