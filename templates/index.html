@@ -16,16 +16,19 @@
         margin:0;
         padding:20px;
     }
+
     .container{
         max-width:1100px;
         margin:auto;
         padding:20px;
     }
+
     h1{
         text-align:center;
         color:#38bdf8;
         text-shadow:0 0 20px #38bdf8;
     }
+
     .card{
         background:#111827;
         padding:20px;
@@ -34,6 +37,7 @@
         box-shadow:0 0 25px rgba(0,0,0,0.6);
         position:relative;
     }
+
     button{
         padding:10px 20px;
         margin:5px;
@@ -45,6 +49,7 @@
         color:white;
     }
     button:hover{transform:scale(1.05);}
+
     input, select{
         padding:8px;
         margin:5px;
@@ -53,9 +58,11 @@
         background:#1f2937;
         color:white;
     }
+
     .green{color:#22c55e;}
     .red{color:#ef4444;}
     .blue{color:#38bdf8;}
+
     .digit-stream{
         font-size:22px;
         letter-spacing:5px;
@@ -67,6 +74,7 @@
         max-height:60px;
         overflow:hidden;
     }
+
     .profile-btn {
         font-size: 1.5rem;
         padding: 15px 30px;
@@ -80,6 +88,7 @@
     .human-btn {background: #22c55e; box-shadow: 0 0 20px #22c55e;}
     .profile-btn.active {transform: scale(1.05); border: 2px solid white;}
     .profile-btn:not(.active) {opacity: 0.7;}
+
     .tick-box{
         width:80px;
         height:60px;
@@ -92,6 +101,7 @@
         font-weight:bold;
         box-shadow:0 0 15px rgba(56,189,248,0.7);
     }
+
     .pnl-box{
         width:160px;
         height:60px;
@@ -104,6 +114,7 @@
         background:#0f172a;
         border:2px solid #334155;
     }
+
     .confidence-wrap{
         margin-top:15px;
         display:grid;
@@ -130,12 +141,14 @@
         background:linear-gradient(90deg,#ef4444,#facc15,#22c55e);
         transition:0.3s;
     }
+
     .digit-grid{
         display:grid;
         grid-template-columns: repeat(5, 1fr);
         gap: 10px;
         margin-top: 15px;
     }
+
     .digit-cell{
         background:#1f2937;
         padding:10px;
@@ -151,6 +164,7 @@
         box-shadow:0 0 18px #ef4444;
         transform:scale(1.05);
     }
+
     .digit-popup{
         position:fixed;
         z-index:9999;
@@ -172,6 +186,7 @@
         margin:6px 0;
     }
 
+    /* =================== TOAST NOTIFICATIONS =================== */
     #toastContainer{
         position:fixed;
         top:15px;
@@ -196,19 +211,26 @@
         transition:0.35s;
         pointer-events:none;
     }
-    .toast.show{ opacity:1; transform:translateX(0px); }
+    .toast.show{
+        opacity:1;
+        transform:translateX(0px);
+    }
     .toast.success{border-color:#22c55e; color:#22c55e;}
     .toast.error{border-color:#ef4444; color:#ef4444;}
     .toast.warn{border-color:#facc15; color:#facc15;}
     .toast.info{border-color:#38bdf8; color:#38bdf8;}
 
+    /* =================== HOW TO USE PANEL =================== */
     .api-grid{
         display:flex;
         gap:15px;
         flex-wrap:wrap;
         align-items:flex-start;
     }
-    .api-left{ flex:1; min-width:340px; }
+    .api-left{
+        flex:1;
+        min-width:340px;
+    }
     .api-right{
         width:360px;
         max-width:100%;
@@ -242,8 +264,13 @@
         overflow:auto;
         padding-right:6px;
     }
-    .howto-body ul{ margin:8px 0 0 18px; padding:0; }
-    .howto-body li{ margin:6px 0; }
+    .howto-body ul{
+        margin:8px 0 0 18px;
+        padding:0;
+    }
+    .howto-body li{
+        margin:6px 0;
+    }
     .howto-badge{
         display:inline-block;
         padding:2px 8px;
@@ -254,6 +281,7 @@
         margin-left:6px;
     }
 
+    /* ===== TRADE HISTORY ITEMS ===== */
     .trade-item {
         background:#0f172a;
         border-radius:12px;
@@ -267,6 +295,7 @@
     }
     .trade-item.win { border-left-color:#22c55e; }
     .trade-item.loss { border-left-color:#ef4444; }
+
     .trade-row {
         display:flex;
         flex-wrap:wrap;
@@ -280,10 +309,19 @@
         border-radius:20px;
         font-size:13px;
     }
-    .trade-profit { font-weight:bold; font-size:15px; }
+    .trade-profit {
+        font-weight:bold;
+        font-size:15px;
+    }
     .trade-profit.win { color:#22c55e; }
     .trade-profit.loss { color:#ef4444; }
-    .trade-detail { display:flex; gap:15px; color:#94a3b8; font-size:13px; }
+
+    .trade-detail {
+        display:flex;
+        gap:15px;
+        color:#94a3b8;
+        font-size:13px;
+    }
     .exit-digit {
         background:#1e293b;
         padding:2px 8px;
@@ -291,8 +329,69 @@
         color:#facc15;
         font-weight:bold;
     }
+
+    /* ✅ OPTION 3: Mobile layout patch */
+    @media (max-width: 900px) {
+
+        /* reduce padding on phones so it doesn't overflow */
+        body{
+            padding:10px !important;
+        }
+        .container{
+            padding:10px !important;
+        }
+
+        /* force any 2-column grids to become 1-column on phones */
+        .panelGrid,
+        .grid2,
+        .twoCol,
+        .control-grid,
+        .digit-layout {
+            grid-template-columns: 1fr !important;
+        }
+
+        /* cards fit phone width */
+        .card{
+            width:100% !important;
+            padding:14px !important;
+            overflow:hidden;
+        }
+
+        /* profile buttons become phone-friendly */
+        .profile-btn{
+            width:100%;
+            max-width:520px;
+            font-size:1.15rem;
+            padding:12px 16px;
+            margin:8px 0;
+        }
+
+        /* live tick info smaller on mobile (still visible) */
+        .digit-stream{
+            font-size:16px !important;
+            letter-spacing:3px !important;
+            max-height:52px !important;
+        }
+        .tick-box{
+            width:64px !important;
+            height:52px !important;
+            font-size:1.7rem !important;
+        }
+
+        /* toast fits on phones */
+        #toastContainer{
+            right:10px !important;
+            left:10px !important;
+            width:auto !important;
+        }
+
+        /* wide sections fit phone width */
+        #profileContainer,
+        .container{
+            max-width:100% !important;
+        }
+    }
 </style>
-</head>
 
 <body>
 <div id="toastContainer"></div>
