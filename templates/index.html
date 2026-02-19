@@ -9,388 +9,370 @@
 <script src="/static/vendor/socket.io.min.js"></script>
 
 <style>
-    body{
-        background:linear-gradient(135deg,#0f172a,#020617);
-        font-family:Arial, sans-serif;
-        color:white;
-        margin:0;
-        padding:20px;
+/* make sizing predictable so padding doesn't cause overflow */
+*, *::before, *::after { box-sizing: border-box; }
+
+body{
+    background:linear-gradient(135deg,#0f172a,#020617);
+    font-family:Arial, sans-serif;
+    color:white;
+    margin:0;
+    padding:20px;
+    overflow-x:hidden; /* prevents side-scroll if anything leaks */
+}
+
+.container{
+    max-width:1100px;
+    margin:auto;
+    padding:20px;
+}
+
+h1{
+    text-align:center;
+    color:#38bdf8;
+    text-shadow:0 0 20px #38bdf8;
+}
+
+.card{
+    background:#111827;
+    padding:20px;
+    border-radius:15px;
+    margin:15px 0;
+    box-shadow:0 0 25px rgba(0,0,0,0.6);
+    position:relative;
+}
+
+button{
+    padding:10px 20px;
+    margin:5px;
+    border:none;
+    border-radius:10px;
+    cursor:pointer;
+    font-weight:bold;
+    transition:0.2s;
+    color:white;
+}
+button:hover{transform:scale(1.05);}
+
+input, select{
+    padding:8px;
+    margin:5px;
+    border-radius:8px;
+    border:none;
+    background:#1f2937;
+    color:white;
+}
+
+.green{color:#22c55e;}
+.red{color:#ef4444;}
+.blue{color:#38bdf8;}
+
+.digit-stream{
+    font-size:22px;
+    letter-spacing:5px;
+    text-align:center;
+    padding:10px;
+    background:#0f172a;
+    border-radius:10px;
+    margin-top:10px;
+    max-height:60px;
+    overflow:hidden;
+}
+
+.profile-btn{
+    font-size:1.5rem;
+    padding:15px 30px;
+    margin:10px;
+    border-radius:15px;
+    font-weight:bold;
+    transition:0.3s;
+}
+.koolkid-btn{background:#38bdf8; box-shadow:0 0 20px #38bdf8;}
+.jokerjoe-btn{background:#a855f7; box-shadow:0 0 20px #a855f7;}
+.human-btn{background:#22c55e; box-shadow:0 0 20px #22c55e;}
+.profile-btn.active{transform:scale(1.05); border:2px solid white;}
+.profile-btn:not(.active){opacity:0.7;}
+
+.tick-box{
+    width:80px;
+    height:60px;
+    background:#1e3a8a;
+    border-radius:12px;
+    display:flex;
+    justify-content:center;
+    align-items:center;
+    font-size:2rem;
+    font-weight:bold;
+    box-shadow:0 0 15px rgba(56,189,248,0.7);
+}
+
+.pnl-box{
+    width:160px;
+    height:60px;
+    border-radius:12px;
+    display:flex;
+    justify-content:center;
+    align-items:center;
+    font-size:1.4rem;
+    font-weight:bold;
+    background:#0f172a;
+    border:2px solid #334155;
+}
+
+.confidence-wrap{
+    margin-top:15px;
+    display:grid;
+    grid-template-columns:repeat(2, 1fr);
+    gap:10px;
+}
+.conf-item{
+    background:#0f172a;
+    padding:12px;
+    border-radius:12px;
+    border:1px solid #334155;
+}
+.conf-bar-bg{
+    width:100%;
+    background:#1f2937;
+    border-radius:10px;
+    overflow:hidden;
+    margin-top:6px;
+    height:18px;
+}
+.conf-bar-fill{
+    height:18px;
+    width:0%;
+    background:linear-gradient(90deg,#ef4444,#facc15,#22c55e);
+    transition:0.3s;
+}
+
+.digit-grid{
+    display:grid;
+    grid-template-columns:repeat(5, 1fr);
+    gap:10px;
+    margin-top:15px;
+}
+.digit-cell{
+    background:#1f2937;
+    padding:10px;
+    border-radius:10px;
+    text-align:center;
+    border:2px solid #374151;
+    transition:0.2s;
+    cursor:pointer;
+    user-select:none;
+}
+.digit-cell.flash{
+    border-color:#ef4444;
+    box-shadow:0 0 18px #ef4444;
+    transform:scale(1.05);
+}
+
+.digit-popup{
+    position:fixed;
+    z-index:9999;
+    background:#111827;
+    border:1px solid #334155;
+    border-radius:12px;
+    box-shadow:0 0 25px rgba(0,0,0,0.6);
+    padding:10px;
+    display:none;
+    min-width:180px;
+}
+.digit-popup h4{
+    margin:0 0 8px 0;
+    color:#38bdf8;
+    font-size:14px;
+}
+.digit-popup button{
+    width:100%;
+    margin:6px 0;
+}
+
+/* =================== TOAST NOTIFICATIONS =================== */
+#toastContainer{
+    position:fixed;
+    top:15px;
+    right:15px;
+    z-index:999999;
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+    width:300px;
+    pointer-events:none;
+}
+.toast{
+    background:#111827;
+    border:1px solid #334155;
+    border-radius:12px;
+    padding:12px 14px;
+    box-shadow:0 0 25px rgba(0,0,0,0.7);
+    font-weight:bold;
+    font-size:14px;
+    opacity:0;
+    transform:translateX(40px);
+    transition:0.35s;
+    pointer-events:none;
+}
+.toast.show{ opacity:1; transform:translateX(0px); }
+.toast.success{border-color:#22c55e; color:#22c55e;}
+.toast.error{border-color:#ef4444; color:#ef4444;}
+.toast.warn{border-color:#facc15; color:#facc15;}
+.toast.info{border-color:#38bdf8; color:#38bdf8;}
+
+/* =================== HOW TO USE PANEL =================== */
+.api-grid{
+    display:flex;
+    gap:15px;
+    flex-wrap:wrap;
+    align-items:flex-start;
+}
+.api-left{
+    flex:1;
+    min-width:340px;
+}
+.api-right{
+    width:360px;
+    max-width:100%;
+    background:#0f172a;
+    border:1px solid #334155;
+    border-radius:12px;
+    padding:12px;
+    box-shadow:0 0 18px rgba(0,0,0,0.35);
+}
+.howto-title{
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    gap:10px;
+    font-weight:bold;
+    color:#38bdf8;
+    margin-bottom:8px;
+}
+.howto-title button{
+    padding:6px 10px;
+    border-radius:10px;
+    background:#1f2937;
+    color:#cbd5e1;
+    font-size:12px;
+}
+.howto-body{
+    font-size:12px;
+    color:#cbd5e1;
+    line-height:1.4;
+    max-height:260px;
+    overflow:auto;
+    padding-right:6px;
+}
+.howto-body ul{ margin:8px 0 0 18px; padding:0; }
+.howto-body li{ margin:6px 0; }
+.howto-badge{
+    display:inline-block;
+    padding:2px 8px;
+    border:1px solid #334155;
+    border-radius:999px;
+    font-size:11px;
+    color:#94a3b8;
+    margin-left:6px;
+}
+
+/* ===== TRADE HISTORY ITEMS ===== */
+.trade-item{
+    background:#0f172a;
+    border-radius:12px;
+    padding:12px;
+    border-left:6px solid;
+    display:flex;
+    flex-direction:column;
+    gap:6px;
+    font-size:14px;
+    margin-bottom:8px;
+}
+.trade-item.win{ border-left-color:#22c55e; }
+.trade-item.loss{ border-left-color:#ef4444; }
+
+.trade-row{
+    display:flex;
+    flex-wrap:wrap;
+    justify-content:space-between;
+    align-items:center;
+}
+.trade-type{
+    font-weight:bold;
+    background:#1f2937;
+    padding:2px 10px;
+    border-radius:20px;
+    font-size:13px;
+}
+.trade-profit{ font-weight:bold; font-size:15px; }
+.trade-profit.win{ color:#22c55e; }
+.trade-profit.loss{ color:#ef4444; }
+.trade-detail{ display:flex; gap:15px; color:#94a3b8; font-size:13px; }
+.exit-digit{
+    background:#1e293b;
+    padding:2px 8px;
+    border-radius:16px;
+    color:#facc15;
+    font-weight:bold;
+}
+
+/* ✅ Mobile centering + no side-scroll */
+@media (max-width: 900px){
+    body{ padding:10px !important; }
+    .container{ padding:10px !important; margin:0 auto !important; max-width:100% !important; }
+
+    /* stack your 2-column control grids */
+    .panelGrid,
+    .grid2,
+    .twoCol,
+    .control-grid,
+    .digit-layout{
+        grid-template-columns:1fr !important;
     }
 
-    .container{
-        max-width:1100px;
-        margin:auto;
-        padding:20px;
+    /* API section fits */
+    .api-grid{ flex-direction:column !important; }
+    .api-left{ min-width:0 !important; width:100% !important; }
+    .api-right{ width:100% !important; }
+
+    /* profile buttons centered */
+    .profile-btn{
+        width:100% !important;
+        max-width:420px !important;
+        display:block !important;
+        margin:10px auto !important;
+        font-size:1.15rem !important;
+        padding:12px 16px !important;
     }
 
-    h1{
-        text-align:center;
-        color:#38bdf8;
-        text-shadow:0 0 20px #38bdf8;
-    }
-
+    /* cards centered + no overflow */
     .card{
-        background:#111827;
-        padding:20px;
-        border-radius:15px;
-        margin:15px 0;
-        box-shadow:0 0 25px rgba(0,0,0,0.6);
-        position:relative;
+        width:100% !important;
+        margin-left:auto !important;
+        margin-right:auto !important;
+        padding:14px !important;
+        overflow:hidden !important;
     }
 
-    button{
-        padding:10px 20px;
-        margin:5px;
-        border:none;
-        border-radius:10px;
-        cursor:pointer;
-        font-weight:bold;
-        transition:0.2s;
-        color:white;
-    }
-    button:hover{transform:scale(1.05);}
-
-    input, select{
-        padding:8px;
-        margin:5px;
-        border-radius:8px;
-        border:none;
-        background:#1f2937;
-        color:white;
-    }
-
-    .green{color:#22c55e;}
-    .red{color:#ef4444;}
-    .blue{color:#38bdf8;}
-
+    /* live tick info smaller (still visible) */
     .digit-stream{
-        font-size:22px;
-        letter-spacing:5px;
-        text-align:center;
-        padding:10px;
-        background:#0f172a;
-        border-radius:10px;
-        margin-top:10px;
-        max-height:60px;
-        overflow:hidden;
+        font-size:16px !important;
+        letter-spacing:3px !important;
+        max-height:52px !important;
     }
-
-    .profile-btn {
-        font-size: 1.5rem;
-        padding: 15px 30px;
-        margin: 10px;
-        border-radius: 15px;
-        font-weight: bold;
-        transition: 0.3s;
-    }
-    .koolkid-btn {background: #38bdf8; box-shadow: 0 0 20px #38bdf8;}
-    .jokerjoe-btn {background: #a855f7; box-shadow: 0 0 20px #a855f7;}
-    .human-btn {background: #22c55e; box-shadow: 0 0 20px #22c55e;}
-    .profile-btn.active {transform: scale(1.05); border: 2px solid white;}
-    .profile-btn:not(.active) {opacity: 0.7;}
-
     .tick-box{
-        width:80px;
-        height:60px;
-        background:#1e3a8a;
-        border-radius:12px;
-        display:flex;
-        justify-content:center;
-        align-items:center;
-        font-size:2rem;
-        font-weight:bold;
-        box-shadow:0 0 15px rgba(56,189,248,0.7);
+        width:64px !important;
+        height:52px !important;
+        font-size:1.7rem !important;
     }
 
-    .pnl-box{
-        width:160px;
-        height:60px;
-        border-radius:12px;
-        display:flex;
-        justify-content:center;
-        align-items:center;
-        font-size:1.4rem;
-        font-weight:bold;
-        background:#0f172a;
-        border:2px solid #334155;
-    }
-
-    .confidence-wrap{
-        margin-top:15px;
-        display:grid;
-        grid-template-columns: repeat(2, 1fr);
-        gap:10px;
-    }
-    .conf-item{
-        background:#0f172a;
-        padding:12px;
-        border-radius:12px;
-        border:1px solid #334155;
-    }
-    .conf-bar-bg{
-        width:100%;
-        background:#1f2937;
-        border-radius:10px;
-        overflow:hidden;
-        margin-top:6px;
-        height:18px;
-    }
-    .conf-bar-fill{
-        height:18px;
-        width:0%;
-        background:linear-gradient(90deg,#ef4444,#facc15,#22c55e);
-        transition:0.3s;
-    }
-
-    .digit-grid{
-        display:grid;
-        grid-template-columns: repeat(5, 1fr);
-        gap: 10px;
-        margin-top: 15px;
-    }
-
-    .digit-cell{
-        background:#1f2937;
-        padding:10px;
-        border-radius:10px;
-        text-align:center;
-        border:2px solid #374151;
-        transition:0.2s;
-        cursor:pointer;
-        user-select:none;
-    }
-    .digit-cell.flash{
-        border-color:#ef4444;
-        box-shadow:0 0 18px #ef4444;
-        transform:scale(1.05);
-    }
-
-    .digit-popup{
-        position:fixed;
-        z-index:9999;
-        background:#111827;
-        border:1px solid #334155;
-        border-radius:12px;
-        box-shadow:0 0 25px rgba(0,0,0,0.6);
-        padding:10px;
-        display:none;
-        min-width:180px;
-    }
-    .digit-popup h4{
-        margin:0 0 8px 0;
-        color:#38bdf8;
-        font-size:14px;
-    }
-    .digit-popup button{
-        width:100%;
-        margin:6px 0;
-    }
-
-    /* =================== TOAST NOTIFICATIONS =================== */
+    /* toast fits phones */
     #toastContainer{
-        position:fixed;
-        top:15px;
-        right:15px;
-        z-index:999999;
-        display:flex;
-        flex-direction:column;
-        gap:10px;
-        width:300px;
-        pointer-events:none;
+        right:10px !important;
+        left:10px !important;
+        width:auto !important;
     }
-    .toast{
-        background:#111827;
-        border:1px solid #334155;
-        border-radius:12px;
-        padding:12px 14px;
-        box-shadow:0 0 25px rgba(0,0,0,0.7);
-        font-weight:bold;
-        font-size:14px;
-        opacity:0;
-        transform:translateX(40px);
-        transition:0.35s;
-        pointer-events:none;
-    }
-    .toast.show{
-        opacity:1;
-        transform:translateX(0px);
-    }
-    .toast.success{border-color:#22c55e; color:#22c55e;}
-    .toast.error{border-color:#ef4444; color:#ef4444;}
-    .toast.warn{border-color:#facc15; color:#facc15;}
-    .toast.info{border-color:#38bdf8; color:#38bdf8;}
-
-    /* =================== HOW TO USE PANEL =================== */
-    .api-grid{
-        display:flex;
-        gap:15px;
-        flex-wrap:wrap;
-        align-items:flex-start;
-    }
-    .api-left{
-        flex:1;
-        min-width:340px;
-    }
-    .api-right{
-        width:360px;
-        max-width:100%;
-        background:#0f172a;
-        border:1px solid #334155;
-        border-radius:12px;
-        padding:12px;
-        box-shadow:0 0 18px rgba(0,0,0,0.35);
-    }
-    .howto-title{
-        display:flex;
-        justify-content:space-between;
-        align-items:center;
-        gap:10px;
-        font-weight:bold;
-        color:#38bdf8;
-        margin-bottom:8px;
-    }
-    .howto-title button{
-        padding:6px 10px;
-        border-radius:10px;
-        background:#1f2937;
-        color:#cbd5e1;
-        font-size:12px;
-    }
-    .howto-body{
-        font-size:12px;
-        color:#cbd5e1;
-        line-height:1.4;
-        max-height:260px;
-        overflow:auto;
-        padding-right:6px;
-    }
-    .howto-body ul{
-        margin:8px 0 0 18px;
-        padding:0;
-    }
-    .howto-body li{
-        margin:6px 0;
-    }
-    .howto-badge{
-        display:inline-block;
-        padding:2px 8px;
-        border:1px solid #334155;
-        border-radius:999px;
-        font-size:11px;
-        color:#94a3b8;
-        margin-left:6px;
-    }
-
-    /* ===== TRADE HISTORY ITEMS ===== */
-    .trade-item {
-        background:#0f172a;
-        border-radius:12px;
-        padding:12px;
-        border-left:6px solid;
-        display:flex;
-        flex-direction:column;
-        gap:6px;
-        font-size:14px;
-        margin-bottom:8px;
-    }
-    .trade-item.win { border-left-color:#22c55e; }
-    .trade-item.loss { border-left-color:#ef4444; }
-
-    .trade-row {
-        display:flex;
-        flex-wrap:wrap;
-        justify-content:space-between;
-        align-items:center;
-    }
-    .trade-type {
-        font-weight:bold;
-        background:#1f2937;
-        padding:2px 10px;
-        border-radius:20px;
-        font-size:13px;
-    }
-    .trade-profit {
-        font-weight:bold;
-        font-size:15px;
-    }
-    .trade-profit.win { color:#22c55e; }
-    .trade-profit.loss { color:#ef4444; }
-
-    .trade-detail {
-        display:flex;
-        gap:15px;
-        color:#94a3b8;
-        font-size:13px;
-    }
-    .exit-digit {
-        background:#1e293b;
-        padding:2px 8px;
-        border-radius:16px;
-        color:#facc15;
-        font-weight:bold;
-    }
-
-    /* ✅ OPTION 3: Mobile layout patch */
-    @media (max-width: 900px) {
-
-        /* reduce padding on phones so it doesn't overflow */
-        body{
-            padding:10px !important;
-        }
-        .container{
-            padding:10px !important;
-        }
-
-        /* force any 2-column grids to become 1-column on phones */
-        .panelGrid,
-        .grid2,
-        .twoCol,
-        .control-grid,
-        .digit-layout {
-            grid-template-columns: 1fr !important;
-        }
-
-        /* cards fit phone width */
-        .card{
-            width:100% !important;
-            padding:14px !important;
-            overflow:hidden;
-        }
-
-        /* profile buttons become phone-friendly */
-        .profile-btn{
-            width:100%;
-            max-width:520px;
-            font-size:1.15rem;
-            padding:12px 16px;
-            margin:8px 0;
-        }
-
-        /* live tick info smaller on mobile (still visible) */
-        .digit-stream{
-            font-size:16px !important;
-            letter-spacing:3px !important;
-            max-height:52px !important;
-        }
-        .tick-box{
-            width:64px !important;
-            height:52px !important;
-            font-size:1.7rem !important;
-        }
-
-        /* toast fits on phones */
-        #toastContainer{
-            right:10px !important;
-            left:10px !important;
-            width:auto !important;
-        }
-
-        /* wide sections fit phone width */
-        #profileContainer,
-        .container{
-            max-width:100% !important;
-        }
-    }
+}
 </style>
 
 <body>
