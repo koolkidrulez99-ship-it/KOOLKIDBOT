@@ -212,6 +212,104 @@ def _new_req_id():
     return int(uuid.uuid4().int % 1000000000)
 
 
+def _force_autos_off(strategy_obj):
+    """
+    Bulletproof: if strategies store auto flags, force them OFF.
+    This is safe because we only set attrs that already exist.
+    """
+    if not strategy_obj:
+        return
+    try:
+        # Common "main auto" flag
+        if hasattr(strategy_obj, "auto_trade"):
+            setattr(strategy_obj, "auto_trade", False)
+
+        # KOOLKID modes (if present)
+        for attr in ("kidracks_auto", "koolkidspeed_auto", "koolluck_auto"):
+            if hasattr(strategy_obj, attr):
+                setattr(strategy_obj, attr, False)
+
+        # JOKERJOE modes (if present)
+        for attr in ("sludgex_auto", "triplex_auto", "kidx_auto", "multig_auto"):
+            if hasattr(strategy_obj, attr):
+                setattr(strategy_obj, attr, False)
+    except Exception:
+        pass
+
+
+def stop_client_everything(client_id, *, clear_token=True):
+    """
+    HARD STOP:
+    - kill deriv WS (and invalidate any old thread callbacks)
+    - disable all trading
+    - clear request/contract meta
+    - reset strategies + force autos off
+    - emit UI reset + disconnected
+    """
+    state = clients.get(client_id)
+    if not state:
+        return
+
+    # Invalidate any existing WS thread callbacks immediately
+    try:
+        state["ws_generation"] = int(state.get("ws_generation", 0)) + 1
+    except Exception:
+        state["ws_generation"] = 1
+
+    # Stop-event for any currently running WS thread
+    try:
+        ev = state.get("ws_stop_event")
+        if ev:
+            ev.set()
+    except Exception:
+        pass
+
+    # Disable trading right away
+    state["trading_enabled"] = False
+    state["ws_connected"] = False
+
+    if clear_token:
+        state["api_token"] = ""
+
+    # Close the websocket-client app if exists
+    ws = state.get("ws")
+    if ws:
+        try:
+            # websocket-client uses keep_running; setting false helps stop run_forever()
+            ws.keep_running = False
+        except Exception:
+            pass
+        try:
+            ws.close()
+        except Exception:
+            pass
+
+    state["ws"] = None
+    state["balance"] = 0.0
+    state["session_start_balance"] = None
+    state["req_meta"].clear()
+    state["contract_meta"].clear()
+
+    # Reset strategies + hard force autos off
+    try:
+        for strat in state["strategies"].values():
+            try:
+                strat.reset()
+            except Exception:
+                pass
+            _force_autos_off(strat)
+    except Exception:
+        pass
+
+    # Tell UI to reset + disconnected
+    try:
+        socketio.emit("connection_status", {"connected": False}, room=client_id)
+        socketio.emit("reset_ui", room=client_id)
+        send_stats_update(client_id)
+    except Exception:
+        pass
+
+
 def init_client(client_id):
     """
     Initialize a fresh client state.
@@ -223,6 +321,9 @@ def init_client(client_id):
         "api_token": "",
         "ws": None,
         "ws_connected": False,
+        "trading_enabled": False,      # ✅ hard gate
+        "ws_generation": 0,            # ✅ anti double-instance guard
+        "ws_stop_event": threading.Event(),
         "active_profile": "KOOLKID",
         "current_symbol": "R_25",
         "balance": 0.0,
@@ -301,12 +402,8 @@ def register():
 def logout():
     cid = session.pop("client_id", None)
     if cid and cid in clients:
-        state = clients.pop(cid, None)
-        if state and state.get("ws"):
-            try:
-                state["ws"].close()
-            except Exception:
-                pass
+        stop_client_everything(cid, clear_token=True)
+        clients.pop(cid, None)
 
     session.pop("user", None)
     return redirect(url_for("login"))
@@ -353,7 +450,11 @@ def send_buy(client_id, contract_type, stake, symbol, barrier):
 
     ws = state.get("ws")
     ws_connected = state.get("ws_connected", False)
+    trading_enabled = state.get("trading_enabled", False)
 
+    # ✅ HARD GATE
+    if not trading_enabled:
+        return False, "Trading disabled"
     if not ws_connected or not ws:
         return False, "Not connected"
 
@@ -405,10 +506,19 @@ def send_buy(client_id, contract_type, stake, symbol, barrier):
 # ---------------- MULTIPLIER ORDER (HUMANX) ---------------- #
 def place_multiplier_order(client_id, signal):
     state = clients.get(client_id)
-    if not state or not state.get("ws_connected"):
+    if not state:
+        return False, "No client state"
+
+    # ✅ HARD GATE
+    if not state.get("trading_enabled", False):
+        return False, "Trading disabled"
+    if not state.get("ws_connected", False):
         return False, "Not connected"
 
     ws = state["ws"]
+    if not ws:
+        return False, "Not connected"
+
     stake = float(signal.get("stake", state.get("auto_stake", 1.0)))
     multiplier = signal.get("multiplier", 50)
     direction = signal.get("direction", "BUY")
@@ -449,6 +559,12 @@ def place_multiplier_order(client_id, signal):
 
 # ---------------- AUTO TRADE ENGINE (PER CLIENT) ---------------- #
 def run_auto_trade(client_id, state):
+    # ✅ HARD GATE
+    if not state.get("trading_enabled", False):
+        return
+    if not state.get("ws_connected", False):
+        return
+
     active_profile = state.get("active_profile", "KOOLKID")
 
     strategies = state.get("strategies", {})
@@ -515,7 +631,10 @@ def handle_on_message(client_id, ws, message):
             return
 
         if "authorize" in data:
+            # ✅ Only mark connected + enable trading AFTER authorize confirms
             state["ws_connected"] = True
+            state["trading_enabled"] = True
+
             loginid = data["authorize"].get("loginid", "UNKNOWN")
             balance = float(data["authorize"].get("balance", 0))
 
@@ -629,6 +748,7 @@ def process_tick(client_id, tick):
         if strategy:
             socketio.emit("digit_analysis", strategy.get_ui_payload(), room=client_id)
 
+        # ✅ HARD GATE inside run_auto_trade (and checks above)
         run_auto_trade(client_id, state)
 
         if state.get("active_profile") == "JOKERJOE":
@@ -724,8 +844,8 @@ def handle_on_open(client_id, ws):
     if not state:
         return
 
-    logger.info(f"[{client_id}] 🔌 WebSocket Connected")
-    state["ws_connected"] = True
+    # ✅ DO NOT set ws_connected/trading_enabled here
+    logger.info(f"[{client_id}] 🔌 WebSocket Connected (socket open)")
 
     api_token = state.get("api_token")
     if api_token:
@@ -743,6 +863,7 @@ def handle_on_close(client_id, ws, code, msg):
         return
 
     state["ws_connected"] = False
+    state["trading_enabled"] = False
     logger.warning(f"[{client_id}] 🔌 WebSocket Disconnected")
     socketio.emit("connection_status", {"connected": False}, room=client_id)
 
@@ -752,23 +873,60 @@ def start_ws_for_client(client_id):
     if not state:
         return
 
+    # ✅ New generation every time we start
+    try:
+        state["ws_generation"] = int(state.get("ws_generation", 0)) + 1
+    except Exception:
+        state["ws_generation"] = 1
+
+    my_gen = state["ws_generation"]
+
+    # ✅ fresh stop event per run
+    ev = threading.Event()
+    state["ws_stop_event"] = ev
+
+    # close old ws if any
     old_ws = state.get("ws")
     if old_ws:
+        try:
+            old_ws.keep_running = False
+        except Exception:
+            pass
         try:
             old_ws.close()
         except Exception:
             pass
 
+    def _stale_or_stopped():
+        # Ignore callbacks from old threads or after stop
+        cur = clients.get(client_id)
+        if not cur:
+            return True
+        if cur.get("ws_generation") != my_gen:
+            return True
+        if ev.is_set():
+            return True
+        return False
+
     def _on_message(ws, message, cid=client_id):
+        if _stale_or_stopped():
+            return
         handle_on_message(cid, ws, message)
 
     def _on_open(ws, cid=client_id):
+        if _stale_or_stopped():
+            return
         handle_on_open(cid, ws)
 
     def _on_error(ws, error, cid=client_id):
+        if _stale_or_stopped():
+            return
         handle_on_error(cid, ws, error)
 
     def _on_close(ws, code, msg, cid=client_id):
+        # even if stale, it's fine to ignore
+        if _stale_or_stopped():
+            return
         handle_on_close(cid, ws, code, msg)
 
     ws_app = websocket.WebSocketApp(
@@ -780,7 +938,11 @@ def start_ws_for_client(client_id):
     )
 
     state["ws"] = ws_app
-    ws_app.run_forever(ping_interval=30)
+
+    try:
+        ws_app.run_forever(ping_interval=30)
+    except Exception as e:
+        logger.error(f"[{client_id}] run_forever error: {e}")
 
 
 # ---------------- BOT API ROUTES ---------------- #
@@ -790,10 +952,21 @@ def set_token():
         return jsonify({"error": "Unauthorized"}), 403
 
     cid, state = get_client_state()
-    token = request.json.get("token", "")
+    token = (request.json or {}).get("token", "")
+
+    # ✅ bulletproof: always hard-stop before starting a new WS
+    stop_client_everything(cid, clear_token=True)
+
+    # re-fetch state after stop (still exists)
+    state = clients.get(cid)
+    if not state:
+        init_client(cid)
+        state = clients[cid]
 
     state["api_token"] = token
     state["session_start_balance"] = None
+    state["ws_connected"] = False
+    state["trading_enabled"] = False  # will flip True after authorize
 
     t = threading.Thread(target=start_ws_for_client, args=(cid,), daemon=True)
     t.start()
@@ -809,7 +982,7 @@ def set_auto_stake():
     cid, state = get_client_state()
 
     try:
-        stake = float(request.json.get("stake", 1))
+        stake = float((request.json or {}).get("stake", 1))
         if stake <= 0:
             stake = 1.0
     except Exception:
@@ -826,30 +999,8 @@ def disconnect():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
 
-    cid, state = get_client_state()
-
-    ws = state.get("ws")
-    if ws:
-        try:
-            ws.close()
-        except Exception:
-            pass
-
-    state["ws"] = None
-    state["ws_connected"] = False
-    state["api_token"] = ""
-    state["balance"] = 0.0
-    state["session_start_balance"] = None
-    state["req_meta"].clear()
-    state["contract_meta"].clear()
-
-    for strat in state["strategies"].values():
-        strat.reset()
-
-    socketio.emit("connection_status", {"connected": False}, room=cid)
-    socketio.emit("reset_ui", room=cid)
-    send_stats_update(cid)
-
+    cid, _state = get_client_state()
+    stop_client_everything(cid, clear_token=True)
     return jsonify({"status": "disconnected"})
 
 
