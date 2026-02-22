@@ -34,6 +34,7 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "Koolkid@12345")
 
 MAX_USERS = int(os.environ.get("MAX_USERS", "150"))
 
+# NOTE: keep as you had it
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading", manage_session=False)
 
 DERIV_WS = "wss://ws.derivws.com/websockets/v3?app_id=1089"
@@ -45,6 +46,9 @@ DB_FILE = "users.db"
 # MULTI-CLIENT STATE
 # ==========================
 clients = {}
+
+# heartbeat timeout (10 minutes)
+HEARTBEAT_TIMEOUT_SEC = 10 * 60
 
 
 # ---------------- DATABASE SETUP ---------------- #
@@ -152,7 +156,6 @@ def extract_last_decimal_digit(price, pip_size=2):
         return 0
 
 
-# ✅ NEW: extract exit digit reliably from contract fields
 def extract_exit_digit_from_contract(contract: dict):
     """
     Deriv digit contracts often include:
@@ -212,102 +215,76 @@ def _new_req_id():
     return int(uuid.uuid4().int % 1000000000)
 
 
-def _force_autos_off(strategy_obj):
-    """
-    Bulletproof: if strategies store auto flags, force them OFF.
-    This is safe because we only set attrs that already exist.
-    """
-    if not strategy_obj:
-        return
-    try:
-        # Common "main auto" flag
-        if hasattr(strategy_obj, "auto_trade"):
-            setattr(strategy_obj, "auto_trade", False)
-
-        # KOOLKID modes (if present)
-        for attr in ("kidracks_auto", "koolkidspeed_auto", "koolluck_auto"):
-            if hasattr(strategy_obj, attr):
-                setattr(strategy_obj, attr, False)
-
-        # JOKERJOE modes (if present)
-        for attr in ("sludgex_auto", "triplex_auto", "kidx_auto", "multig_auto"):
-            if hasattr(strategy_obj, attr):
-                setattr(strategy_obj, attr, False)
-    except Exception:
-        pass
+def _touch_client(client_id):
+    st = clients.get(client_id)
+    if st:
+        st["last_seen"] = time.time()
 
 
-def stop_client_everything(client_id, *, clear_token=True):
+def _hard_stop_all_strategies(state):
     """
-    HARD STOP:
-    - kill deriv WS (and invalidate any old thread callbacks)
-    - disable all trading
-    - clear request/contract meta
-    - reset strategies + force autos off
-    - emit UI reset + disconnected
+    Your rule: when API disconnected -> everything stops (auto + memory).
+    We reset strategies and force all auto flags OFF safely.
     """
+    for strat in state.get("strategies", {}).values():
+        try:
+            strat.reset()
+        except Exception:
+            pass
+
+        # force common auto flags off
+        if hasattr(strat, "auto_trade"):
+            try:
+                strat.auto_trade = False
+            except Exception:
+                pass
+
+        # JokerJoe extra autos (safe)
+        for k in ("sludgex_auto", "triplex_auto", "kidx_auto", "multig_auto"):
+            if hasattr(strat, k):
+                try:
+                    setattr(strat, k, False)
+                except Exception:
+                    pass
+
+
+def disconnect_client(client_id, reason="manual", emit=True):
     state = clients.get(client_id)
     if not state:
         return
 
-    # Invalidate any existing WS thread callbacks immediately
-    try:
-        state["ws_generation"] = int(state.get("ws_generation", 0)) + 1
-    except Exception:
-        state["ws_generation"] = 1
+    logger.info(f"[{client_id}] 🔻 disconnect_client: reason={reason}")
 
-    # Stop-event for any currently running WS thread
+    # stop websocket
     try:
-        ev = state.get("ws_stop_event")
-        if ev:
-            ev.set()
+        state["ws_stop_event"].set()
     except Exception:
         pass
 
-    # Disable trading right away
-    state["trading_enabled"] = False
-    state["ws_connected"] = False
-
-    if clear_token:
-        state["api_token"] = ""
-
-    # Close the websocket-client app if exists
     ws = state.get("ws")
     if ws:
-        try:
-            # websocket-client uses keep_running; setting false helps stop run_forever()
-            ws.keep_running = False
-        except Exception:
-            pass
         try:
             ws.close()
         except Exception:
             pass
 
     state["ws"] = None
+    state["ws_connected"] = False
+    state["ws_transport_connected"] = False
+    state["api_token"] = ""
     state["balance"] = 0.0
     state["session_start_balance"] = None
     state["req_meta"].clear()
     state["contract_meta"].clear()
 
-    # Reset strategies + hard force autos off
-    try:
-        for strat in state["strategies"].values():
-            try:
-                strat.reset()
-            except Exception:
-                pass
-            _force_autos_off(strat)
-    except Exception:
-        pass
+    _hard_stop_all_strategies(state)
 
-    # Tell UI to reset + disconnected
-    try:
-        socketio.emit("connection_status", {"connected": False}, room=client_id)
+    if emit:
+        socketio.emit("connection_status", {"connected": False, "loginid": "UNKNOWN", "balance": 0.0}, room=client_id)
         socketio.emit("reset_ui", room=client_id)
+
+        # keep stats consistent for current profile (will show zeros)
         send_stats_update(client_id)
-    except Exception:
-        pass
 
 
 def init_client(client_id):
@@ -320,17 +297,23 @@ def init_client(client_id):
     clients[client_id] = {
         "api_token": "",
         "ws": None,
-        "ws_connected": False,
-        "trading_enabled": False,      # ✅ hard gate
-        "ws_generation": 0,            # ✅ anti double-instance guard
+        "ws_thread": None,
         "ws_stop_event": threading.Event(),
+        "ws_nonce": 0,  # prevents stale WS callbacks = "2 instances" bug
+        "ws_connected": False,  # AUTHORIZED
+        "ws_transport_connected": False,  # underlying transport open
         "active_profile": "KOOLKID",
         "current_symbol": "R_25",
+        "human_symbol": "R_25",
+        "tick_subs": {},
+        "humanx_auto": False,
+        "humanx_status_last": "Auto: OFF",
         "balance": 0.0,
         "session_start_balance": None,
         "auto_stake": 1.0,
         "req_meta": {},          # req_id -> meta
         "contract_meta": {},     # contract_id -> meta
+        "last_seen": time.time(),  # heartbeat (page open)
         "strategies": {
             "KOOLKID": KoolKidStrategy(),
             "JOKERJOE": JokerJoeStrategy(),
@@ -343,6 +326,7 @@ def get_client_state():
     cid = get_client_id()
     if cid not in clients:
         init_client(cid)
+    _touch_client(cid)
     return cid, clients[cid]
 
 
@@ -354,6 +338,98 @@ def emit_jokerjoe_modes(cid, strat: JokerJoeStrategy):
             "kidx": bool(getattr(strat, "kidx_auto", False)),
             "multig": bool(getattr(strat, "multig_auto", False)),
         }, room=cid)
+    except Exception:
+        pass
+
+
+def emit_profile_snapshot(cid):
+    """
+    When user switches profile, immediately push that profile’s latest UI payload.
+    """
+    state = clients.get(cid)
+    if not state:
+        return
+    prof = state.get("active_profile", "KOOLKID")
+    strat = state.get("strategies", {}).get(prof)
+
+    # digit analysis payload (KOOLKID/JOKERJOE)
+    try:
+        if strat and hasattr(strat, "get_ui_payload"):
+            socketio.emit("digit_analysis", strat.get_ui_payload(), room=cid)
+    except Exception:
+        pass
+
+    # human chart
+    try:
+        if prof == "HUMAN" and strat and hasattr(strat, "get_chart_data"):
+            socketio.emit("human_chart_data", strat.get_chart_data(), room=cid)
+    except Exception:
+        pass
+
+    send_stats_update(cid)
+
+    # JokerJoe modes
+    try:
+        if prof == "JOKERJOE" and strat:
+            emit_jokerjoe_modes(cid, strat)
+    except Exception:
+        pass
+
+
+
+def request_human_seed(client_id):
+    """
+    Fetch recent candles from Deriv so HUMAN chart renders immediately:
+      - 5M: last 2 hours (24 candles)
+      - 1H: last 24 hours (24 candles)
+    """
+    state = clients.get(client_id)
+    if not state:
+        return
+
+    ws = state.get("ws")
+    if not ws or not state.get("ws_connected"):
+        return
+
+    try:
+        state.setdefault("req_meta", {})
+        symbol = state.get("human_symbol") or state.get("current_symbol")
+
+        # 5M seed (2 hours)
+        req_id_5m = _new_req_id()
+        state["req_meta"][req_id_5m] = {
+            "kind": "human_5m_seed",
+            "time": now_time(),
+            "symbol": symbol
+        }
+        ws.send(json.dumps({
+            "ticks_history": symbol,
+            "style": "candles",
+            "count": 24,
+            "granularity": 300,
+            "end": "latest",
+            "start": 1,
+            "adjust_start_time": 1,
+            "req_id": req_id_5m
+        }))
+
+        # 1H seed (24 hours)
+        req_id_1h = _new_req_id()
+        state["req_meta"][req_id_1h] = {
+            "kind": "human_1h_seed",
+            "time": now_time(),
+            "symbol": symbol
+        }
+        ws.send(json.dumps({
+            "ticks_history": symbol,
+            "style": "candles",
+            "count": 24,
+            "granularity": 3600,
+            "end": "latest",
+            "start": 1,
+            "adjust_start_time": 1,
+            "req_id": req_id_1h
+        }))
     except Exception:
         pass
 
@@ -402,7 +478,8 @@ def register():
 def logout():
     cid = session.pop("client_id", None)
     if cid and cid in clients:
-        stop_client_everything(cid, clear_token=True)
+        # full cleanup on logout
+        disconnect_client(cid, reason="logout", emit=False)
         clients.pop(cid, None)
 
     session.pop("user", None)
@@ -424,14 +501,16 @@ def handle_connect():
         "balance": state["balance"]
     }, room=cid)
 
-    try:
-        jj = state["strategies"].get("JOKERJOE")
-        if jj:
-            emit_jokerjoe_modes(cid, jj)
-    except Exception:
-        pass
+    emit_profile_snapshot(cid)
 
-    send_stats_update(cid)
+
+@socketio.on("client_heartbeat")
+def client_heartbeat():
+    if not login_required():
+        return
+    cid, _state = get_client_state()
+    # get_client_state already touches last_seen
+    return
 
 
 # ---------------- BOT ROUTE (PROTECTED) ---------------- #
@@ -442,6 +521,15 @@ def index():
     return render_template("index.html", username=session.get("user"))
 
 
+# ---------------- HEARTBEAT ROUTE ---------------- #
+@app.route("/heartbeat", methods=["POST"])
+def heartbeat():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    cid, _state = get_client_state()
+    return jsonify({"status": "ok", "client_id": cid})
+
+
 # ---------------- DERIV BUY FUNCTION (PER CLIENT) ---------------- #
 def send_buy(client_id, contract_type, stake, symbol, barrier):
     state = clients.get(client_id)
@@ -450,11 +538,7 @@ def send_buy(client_id, contract_type, stake, symbol, barrier):
 
     ws = state.get("ws")
     ws_connected = state.get("ws_connected", False)
-    trading_enabled = state.get("trading_enabled", False)
 
-    # ✅ HARD GATE
-    if not trading_enabled:
-        return False, "Trading disabled"
     if not ws_connected or not ws:
         return False, "Not connected"
 
@@ -506,32 +590,34 @@ def send_buy(client_id, contract_type, stake, symbol, barrier):
 # ---------------- MULTIPLIER ORDER (HUMANX) ---------------- #
 def place_multiplier_order(client_id, signal):
     state = clients.get(client_id)
-    if not state:
-        return False, "No client state"
-
-    # ✅ HARD GATE
-    if not state.get("trading_enabled", False):
-        return False, "Trading disabled"
-    if not state.get("ws_connected", False):
+    if not state or not state.get("ws_connected"):
         return False, "Not connected"
 
     ws = state["ws"]
-    if not ws:
-        return False, "Not connected"
+
+    symbol_to_use = signal.get("symbol") or state.get("current_symbol")
+    profile_to_use = signal.get("profile") or state.get("active_profile", "HUMAN")
+
 
     stake = float(signal.get("stake", state.get("auto_stake", 1.0)))
-    multiplier = signal.get("multiplier", 50)
+    multiplier = int(signal.get("multiplier", 50))
     direction = signal.get("direction", "BUY")
     sl = signal.get("sl")
     tp = signal.get("tp")
 
+    # clamp multiplier to max 500
+    if multiplier < 1:
+        multiplier = 1
+    if multiplier > 500:
+        multiplier = 500
+
     req_id = _new_req_id()
     state["req_meta"][req_id] = {
-        "profile": state.get("active_profile", "HUMAN"),
+        "profile": profile_to_use,
         "type": f"MULT {direction}",
         "barrier": None,
         "stake": stake,
-        "symbol": state["current_symbol"],
+        "symbol": symbol_to_use,
         "time": now_time()
     }
 
@@ -544,7 +630,7 @@ def place_multiplier_order(client_id, signal):
             "basis": "stake",
             "contract_type": "MULTIPLIER",
             "currency": "USD",
-            "symbol": state["current_symbol"],
+            "symbol": symbol_to_use,
             "multiplier": multiplier,
             "take_profit": tp,
             "stop_loss": sl,
@@ -559,12 +645,6 @@ def place_multiplier_order(client_id, signal):
 
 # ---------------- AUTO TRADE ENGINE (PER CLIENT) ---------------- #
 def run_auto_trade(client_id, state):
-    # ✅ HARD GATE
-    if not state.get("trading_enabled", False):
-        return
-    if not state.get("ws_connected", False):
-        return
-
     active_profile = state.get("active_profile", "KOOLKID")
 
     strategies = state.get("strategies", {})
@@ -616,10 +696,12 @@ def run_auto_trade(client_id, state):
 
 
 # ---------------- WEBSOCKET HANDLERS (PER CLIENT) ---------------- #
-def handle_on_message(client_id, ws, message):
+def handle_on_message(client_id, ws, message, expected_nonce):
     state = clients.get(client_id)
     if not state:
         return
+    if state.get("ws_nonce") != expected_nonce:
+        return  # stale WS callback
 
     try:
         data = json.loads(message)
@@ -631,10 +713,8 @@ def handle_on_message(client_id, ws, message):
             return
 
         if "authorize" in data:
-            # ✅ Only mark connected + enable trading AFTER authorize confirms
+            # AUTHORIZED
             state["ws_connected"] = True
-            state["trading_enabled"] = True
-
             loginid = data["authorize"].get("loginid", "UNKNOWN")
             balance = float(data["authorize"].get("balance", 0))
 
@@ -652,10 +732,19 @@ def handle_on_message(client_id, ws, message):
             }, room=client_id)
 
             socketio.emit("balance_update", {"balance": balance}, room=client_id)
-            send_stats_update(client_id)
+            emit_profile_snapshot(client_id)
 
             ws.send(json.dumps({"ticks": state["current_symbol"], "subscribe": 1}))
+
+            # ✅ HUMAN runs its own market stream (independent)
+            human_sym = state.get("human_symbol") or state["current_symbol"]
+            if human_sym != state["current_symbol"]:
+                ws.send(json.dumps({"ticks": human_sym, "subscribe": 1}))
+
             ws.send(json.dumps({"balance": 1, "subscribe": 1}))
+
+            # seed HUMAN candles early so chart is ready instantly
+            request_human_seed(client_id)
 
         if "balance" in data:
             try:
@@ -666,8 +755,46 @@ def handle_on_message(client_id, ws, message):
             except Exception:
                 pass
 
+
+        if "candles" in data:
+            try:
+                raw = data.get("candles")
+                candles = raw.get("candles") if isinstance(raw, dict) else raw
+                if not isinstance(candles, list):
+                    candles = []
+
+                req_id = data.get("req_id")
+                meta = None
+                if req_id and req_id in state.get("req_meta", {}):
+                    meta = state["req_meta"].pop(req_id, None)
+
+                if meta and meta.get("kind") in ("human_5m_seed", "human_1h_seed"):
+                    strat = state.get("strategies", {}).get("HUMAN")
+
+                    if strat:
+                        if meta.get("kind") == "human_5m_seed" and hasattr(strat, "seed_5m_history"):
+                            strat.seed_5m_history(candles)
+                        if meta.get("kind") == "human_1h_seed" and hasattr(strat, "seed_1h_history"):
+                            strat.seed_1h_history(candles)
+
+                    # Push chart update immediately if user is on HUMAN profile
+                    if state.get("active_profile") == "HUMAN" and strat and hasattr(strat, "get_chart_data"):
+                        socketio.emit("human_chart_data", strat.get_chart_data(), room=client_id)
+            except Exception:
+                pass
+
+
         if "tick" in data:
             tick = data["tick"]
+            try:
+                sub = data.get("subscription") or {}
+                sub_id = sub.get("id")
+                sym = tick.get("symbol")
+                if sub_id and sym:
+                    state.setdefault("tick_subs", {})
+                    state["tick_subs"][sym] = sub_id
+            except Exception:
+                pass
             process_tick(client_id, tick)
 
         if "buy" in data:
@@ -716,6 +843,57 @@ def handle_on_message(client_id, ws, message):
         logger.error(f"[{client_id}] on_message error: {e}")
 
 
+# ---------------- HUMANX STATUS HELPERS ---------------- #
+def _compute_humanx_status(strat):
+    """Return a human-readable status string for HUMANX auto."""
+    try:
+        # Require TP/SL for true auto-close
+        tp = float(getattr(strat, "tp", 0.0) or 0.0)
+        sl = float(getattr(strat, "sl", 0.0) or 0.0)
+        if tp <= 0 or sl <= 0:
+            return "Auto: Set TP & SL"
+
+        rh = getattr(strat, "range_high", None)
+        rl = getattr(strat, "range_low", None)
+        if not rh or not rl:
+            return "Auto: Seeding Range"
+
+        bias = getattr(strat, "breakout_bias", None)
+        if not bias:
+            return "Auto: Waiting Breakout"
+
+        ob = getattr(strat, "order_block", None)
+        if not ob:
+            return "Auto: Waiting OB"
+
+        retrace = bool(getattr(strat, "retrace_happened", False))
+        if not retrace:
+            return "Auto: Waiting Retest"
+
+        fired = bool(getattr(strat, "signal_fired", False))
+        if not fired:
+            return "Auto: Waiting Confirmation"
+
+        return "Auto: Entry Triggered"
+    except Exception:
+        return "Auto: Armed"
+
+
+def _emit_humanx_status_if_changed(client_id, state, status):
+    """Emit humanx_auto_status only when the text changes (to reduce spam)."""
+    try:
+        enabled = bool(state.get("humanx_auto"))
+        if not enabled:
+            status = "Auto: OFF"
+        last = state.get("humanx_status_last")
+        if status != last:
+            state["humanx_status_last"] = status
+            socketio.emit("humanx_auto_status", {"enabled": enabled, "status": status}, room=client_id)
+    except Exception:
+        pass
+
+
+
 def process_tick(client_id, tick):
     state = clients.get(client_id)
     if not state:
@@ -725,44 +903,119 @@ def process_tick(client_id, tick):
         symbol = tick.get("symbol")
         price = tick.get("quote")
 
-        if symbol != state.get("current_symbol"):
+        main_symbol = state.get("current_symbol")
+        human_symbol = state.get("human_symbol") or main_symbol
+
+        is_main = (symbol == main_symbol)
+        is_human = (symbol == human_symbol)
+
+        # ignore ticks we don't care about
+        if not (is_main or is_human):
             return
 
         pip_size = tick.get("pip_size", 2)
-        digit = extract_last_decimal_digit(price, pip_size)
+        digit = extract_last_decimal_digit(price, pip_size) if is_main else None
+
+        # epoch for HUMAN candles
+        try:
+            ts = int(tick.get("epoch") or tick.get("timestamp") or tick.get("time") or 0)
+        except Exception:
+            ts = 0
 
         strategies = state.get("strategies", {})
-        strategy = strategies.get(state.get("active_profile", "KOOLKID"))
 
-        if strategy:
-            strategy.on_tick(tick, digit)
+        # ✅ Collect data for ALL profiles (background)
+        for name, strat in strategies.items():
+            try:
+                if name == "HUMAN":
+                    if not is_human:
+                        continue
+                    # HUMAN expects PRICE candles/OB logic
+                    strat.on_tick(tick, price, ts=ts if ts else None)
+
+                    # ✅ HUMANX AUTO (independent of active profile)
+                    if state.get("humanx_auto"):
+                        try:
+                            status = _compute_humanx_status(strat)
+                            _emit_humanx_status_if_changed(client_id, state, status)
+
+                            sig = strat.get_humanx_signal()
+                            if sig:
+                                # For Multipliers, TP/SL must be AMOUNTS, not price levels.
+                                tp_amt = float(getattr(strat, "tp", 0.0) or 0.0)
+                                sl_amt = float(getattr(strat, "sl", 0.0) or 0.0)
+
+                                sig2 = dict(sig)
+                                sig2["profile"] = "HUMAN"
+                                sig2["symbol"] = human_symbol
+                                if tp_amt > 0:
+                                    sig2["tp"] = tp_amt
+                                else:
+                                    sig2["tp"] = None
+                                if sl_amt > 0:
+                                    sig2["sl"] = sl_amt
+                                else:
+                                    sig2["sl"] = None
+
+                                if tp_amt <= 0 or sl_amt <= 0:
+                                    _emit_humanx_status_if_changed(client_id, state, "Auto: Set TP & SL")
+                                else:
+                                    ok, msg = place_multiplier_order(client_id, sig2)
+                                    if ok:
+                                        _emit_humanx_status_if_changed(client_id, state, "Auto: Trade Placed")
+                                    else:
+                                        _emit_humanx_status_if_changed(client_id, state, f"Auto: Error ({msg})")
+                        except Exception:
+                            pass
+                else:
+                    if not is_main:
+                        continue
+                    strat.on_tick(tick, digit)
+            except TypeError:
+                # fallback safety
+                try:
+                    if is_main:
+                        strat.on_tick(tick, digit)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        # Active strategy for UI only
+        active_profile = state.get("active_profile", "KOOLKID")
+        active_strategy = strategies.get(active_profile)
+
+        want_symbol = human_symbol if active_profile == "HUMAN" else main_symbol
+        if symbol != want_symbol:
+            return
 
         socketio.emit("tick", {
             "symbol": symbol,
-            "digit": digit,
+            "digit": digit if digit is not None else extract_last_decimal_digit(price, pip_size),
             "price": price,
-            "tick_count": strategy.tick_count if strategy else 0,
+            "tick_count": getattr(active_strategy, "tick_count", 0) if active_strategy else 0,
             "timestamp": now_time()
         }, room=client_id)
 
-        if strategy:
-            socketio.emit("digit_analysis", strategy.get_ui_payload(), room=client_id)
+        # Digit analysis only for KOOLKID/JOKERJOE style payloads
+        if active_strategy and hasattr(active_strategy, "get_ui_payload"):
+            socketio.emit("digit_analysis", active_strategy.get_ui_payload(), room=client_id)
 
-        # ✅ HARD GATE inside run_auto_trade (and checks above)
         run_auto_trade(client_id, state)
 
-        if state.get("active_profile") == "JOKERJOE":
-            jj = state["strategies"].get("JOKERJOE")
+        if active_profile == "JOKERJOE":
+            jj = strategies.get("JOKERJOE")
             if jj:
                 emit_jokerjoe_modes(client_id, jj)
 
-        if state.get("active_profile") == "HUMAN":
-            strat = state["strategies"]["HUMAN"]
-            chart_data = strat.get_chart_data()
-            socketio.emit("human_chart_data", chart_data, room=client_id)
+        if active_profile == "HUMAN":
+            strat = strategies.get("HUMAN")
+            if strat and hasattr(strat, "get_chart_data"):
+                socketio.emit("human_chart_data", strat.get_chart_data(), room=client_id)
 
     except Exception as e:
         logger.error(f"[{client_id}] process_tick error: {e}")
+
 
 
 def _is_contract_settled_fast(contract: dict) -> bool:
@@ -795,12 +1048,18 @@ def process_contract(client_id, contract):
         strategy = strategies.get(state.get("active_profile", "KOOLKID"))
 
         if strategy:
-            strategy.on_contract(contract, state["balance"])
+            try:
+                strategy.on_contract(contract, state["balance"])
+            except Exception:
+                pass
 
         contract_id = contract.get("contract_id")
         meta = state["contract_meta"].pop(contract_id, None) if contract_id else None
 
-        entry = strategy.get_last_trade_entry() if strategy else {}
+        entry = {}
+        if strategy and hasattr(strategy, "get_last_trade_entry"):
+            entry = strategy.get_last_trade_entry() or {}
+
         if meta:
             entry.setdefault("profile", meta.get("profile"))
             entry.setdefault("type", meta.get("type"))
@@ -811,7 +1070,6 @@ def process_contract(client_id, contract):
         else:
             entry.setdefault("profile", state.get("active_profile", "KOOLKID"))
 
-        # ✅ EXIT DIGIT FIX: inject exit digit for history UI
         exit_digit = extract_exit_digit_from_contract(contract)
         if exit_digit is not None:
             entry["exit_digit"] = exit_digit
@@ -830,7 +1088,7 @@ def send_stats_update(client_id):
 
     strategies = state.get("strategies", {})
     strategy = strategies.get(state.get("active_profile", "KOOLKID"))
-    if not strategy:
+    if not strategy or not hasattr(strategy, "get_stats_payload"):
         return
 
     payload = strategy.get_stats_payload(state.get("balance", 0.0), state.get("session_start_balance"))
@@ -839,33 +1097,43 @@ def send_stats_update(client_id):
     socketio.emit("stats_update", payload, room=client_id)
 
 
-def handle_on_open(client_id, ws):
+def handle_on_open(client_id, ws, expected_nonce):
     state = clients.get(client_id)
     if not state:
         return
+    if state.get("ws_nonce") != expected_nonce:
+        return
 
-    # ✅ DO NOT set ws_connected/trading_enabled here
-    logger.info(f"[{client_id}] 🔌 WebSocket Connected (socket open)")
+    logger.info(f"[{client_id}] 🔌 WebSocket transport connected")
+    state["ws_transport_connected"] = True
+    state["ws_connected"] = False  # IMPORTANT: not authorized yet
 
     api_token = state.get("api_token")
     if api_token:
         ws.send(json.dumps({"authorize": api_token}))
 
 
-def handle_on_error(client_id, ws, error):
+def handle_on_error(client_id, ws, error, expected_nonce):
+    state = clients.get(client_id)
+    if not state:
+        return
+    if state.get("ws_nonce") != expected_nonce:
+        return
     logger.error(f"[{client_id}] WebSocket Error: {error}")
     socketio.emit("api_error", {"message": str(error)}, room=client_id)
 
 
-def handle_on_close(client_id, ws, code, msg):
+def handle_on_close(client_id, ws, code, msg, expected_nonce):
     state = clients.get(client_id)
     if not state:
         return
+    if state.get("ws_nonce") != expected_nonce:
+        return
 
     state["ws_connected"] = False
-    state["trading_enabled"] = False
+    state["ws_transport_connected"] = False
     logger.warning(f"[{client_id}] 🔌 WebSocket Disconnected")
-    socketio.emit("connection_status", {"connected": False}, room=client_id)
+    socketio.emit("connection_status", {"connected": False, "loginid": "UNKNOWN", "balance": state.get("balance", 0.0)}, room=client_id)
 
 
 def start_ws_for_client(client_id):
@@ -873,61 +1141,43 @@ def start_ws_for_client(client_id):
     if not state:
         return
 
-    # ✅ New generation every time we start
+    # bump nonce -> invalidates older WS callbacks
+    state["ws_nonce"] = state.get("ws_nonce", 0) + 1
+    expected_nonce = state["ws_nonce"]
+
+    # stop old ws/thread
     try:
-        state["ws_generation"] = int(state.get("ws_generation", 0)) + 1
+        state["ws_stop_event"].set()
     except Exception:
-        state["ws_generation"] = 1
+        pass
 
-    my_gen = state["ws_generation"]
-
-    # ✅ fresh stop event per run
-    ev = threading.Event()
-    state["ws_stop_event"] = ev
-
-    # close old ws if any
     old_ws = state.get("ws")
     if old_ws:
-        try:
-            old_ws.keep_running = False
-        except Exception:
-            pass
         try:
             old_ws.close()
         except Exception:
             pass
 
-    def _stale_or_stopped():
-        # Ignore callbacks from old threads or after stop
-        cur = clients.get(client_id)
-        if not cur:
-            return True
-        if cur.get("ws_generation") != my_gen:
-            return True
-        if ev.is_set():
-            return True
-        return False
+    # new stop event for this run
+    state["ws_stop_event"] = threading.Event()
 
-    def _on_message(ws, message, cid=client_id):
-        if _stale_or_stopped():
+    def _on_message(ws, message, cid=client_id, nonce=expected_nonce):
+        if state["ws_stop_event"].is_set():
             return
-        handle_on_message(cid, ws, message)
+        handle_on_message(cid, ws, message, nonce)
 
-    def _on_open(ws, cid=client_id):
-        if _stale_or_stopped():
+    def _on_open(ws, cid=client_id, nonce=expected_nonce):
+        if state["ws_stop_event"].is_set():
             return
-        handle_on_open(cid, ws)
+        handle_on_open(cid, ws, nonce)
 
-    def _on_error(ws, error, cid=client_id):
-        if _stale_or_stopped():
+    def _on_error(ws, error, cid=client_id, nonce=expected_nonce):
+        if state["ws_stop_event"].is_set():
             return
-        handle_on_error(cid, ws, error)
+        handle_on_error(cid, ws, error, nonce)
 
-    def _on_close(ws, code, msg, cid=client_id):
-        # even if stale, it's fine to ignore
-        if _stale_or_stopped():
-            return
-        handle_on_close(cid, ws, code, msg)
+    def _on_close(ws, code, msg, cid=client_id, nonce=expected_nonce):
+        handle_on_close(cid, ws, code, msg, nonce)
 
     ws_app = websocket.WebSocketApp(
         DERIV_WS,
@@ -939,10 +1189,11 @@ def start_ws_for_client(client_id):
 
     state["ws"] = ws_app
 
+    # run until closed
     try:
-        ws_app.run_forever(ping_interval=30)
-    except Exception as e:
-        logger.error(f"[{client_id}] run_forever error: {e}")
+        ws_app.run_forever(ping_interval=30, ping_timeout=10)
+    except Exception:
+        pass
 
 
 # ---------------- BOT API ROUTES ---------------- #
@@ -954,21 +1205,24 @@ def set_token():
     cid, state = get_client_state()
     token = (request.json or {}).get("token", "")
 
-    # ✅ bulletproof: always hard-stop before starting a new WS
-    stop_client_everything(cid, clear_token=True)
-
-    # re-fetch state after stop (still exists)
-    state = clients.get(cid)
-    if not state:
-        init_client(cid)
-        state = clients[cid]
-
     state["api_token"] = token
     state["session_start_balance"] = None
-    state["ws_connected"] = False
-    state["trading_enabled"] = False  # will flip True after authorize
+
+    # start WS but avoid "2 instances" per browser session
+    t = state.get("ws_thread")
+    if t and t.is_alive():
+        try:
+            state["ws_stop_event"].set()
+        except Exception:
+            pass
+        try:
+            if state.get("ws"):
+                state["ws"].close()
+        except Exception:
+            pass
 
     t = threading.Thread(target=start_ws_for_client, args=(cid,), daemon=True)
+    state["ws_thread"] = t
     t.start()
 
     return jsonify({"status": "connecting"})
@@ -991,7 +1245,42 @@ def set_auto_stake():
     state["auto_stake"] = stake
     logger.info(f"[{cid}] 💰 AUTO STAKE UPDATED: {stake}")
 
+    # ✅ also sync stake into HUMAN strategy so humanX uses your stake input
+    try:
+        h = state["strategies"].get("HUMAN")
+        if h and hasattr(h, "stake"):
+            h.stake = float(stake)
+    except Exception:
+        pass
+
     return jsonify({"status": "success", "auto_stake": stake})
+
+
+@app.route("/set_human_multiplier", methods=["POST"])
+def set_human_multiplier():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    data = request.json or {}
+    try:
+        mult = int(data.get("multiplier", 50))
+    except Exception:
+        mult = 50
+
+    if mult < 1:
+        mult = 1
+    if mult > 500:
+        mult = 500
+
+    try:
+        h = state["strategies"].get("HUMAN")
+        if h and hasattr(h, "multiplier"):
+            h.multiplier = mult
+    except Exception:
+        pass
+
+    return jsonify({"status": "success", "multiplier": mult})
 
 
 @app.route("/disconnect", methods=["POST"])
@@ -1000,7 +1289,7 @@ def disconnect():
         return jsonify({"error": "Unauthorized"}), 403
 
     cid, _state = get_client_state()
-    stop_client_everything(cid, clear_token=True)
+    disconnect_client(cid, reason="client_disconnect", emit=True)
     return jsonify({"status": "disconnected"})
 
 
@@ -1014,7 +1303,7 @@ def clear_profile_history():
     profile = (data.get("profile") or state.get("active_profile") or "KOOLKID").upper()
 
     strat = state["strategies"].get(profile)
-    if strat:
+    if strat and hasattr(strat, "clear_history"):
         strat.clear_history()
 
     if profile == state.get("active_profile"):
@@ -1029,21 +1318,43 @@ def set_profile():
         return jsonify({"error": "Unauthorized"}), 403
 
     cid, state = get_client_state()
-    profile = request.json.get("profile", "KOOLKID")
+    profile = (request.json or {}).get("profile", "KOOLKID")
 
     if profile not in state["strategies"]:
         return jsonify({"error": "Invalid profile"}), 400
 
     state["active_profile"] = profile
-    socketio.emit("profile_update", {"profile": profile}, room=cid)
-    send_stats_update(cid)
+    socketio.emit("profile_update", {"profile": profile, "symbol": (state.get("human_symbol") if profile == "HUMAN" else state.get("current_symbol"))}, room=cid)
+    if profile == "HUMAN":
+        request_human_seed(cid)
+        try:
+            _emit_humanx_status_if_changed(cid, state, "Auto: OFF" if not state.get("humanx_auto") else state.get("humanx_status_last") or "Auto: Armed")
+        except Exception:
+            pass
+    emit_profile_snapshot(cid)
 
-    if profile == "JOKERJOE":
-        jj = state["strategies"].get("JOKERJOE")
-        if jj:
-            emit_jokerjoe_modes(cid, jj)
+    return jsonify({"status": "success", "profile": profile, "main_symbol": state.get("current_symbol"), "human_symbol": state.get("human_symbol") or state.get("current_symbol"), "symbol": (state.get("human_symbol") if profile == "HUMAN" else state.get("current_symbol")),
+        "humanx_auto": bool(state.get("humanx_auto")),
+        "humanx_status": state.get("humanx_status_last") or ("Auto: Armed" if state.get("humanx_auto") else "Auto: OFF")
+    })
 
-    return jsonify({"status": "success", "profile": profile})
+
+@app.route("/market_state", methods=["GET"])
+def market_state():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    prof = state.get("active_profile", "KOOLKID")
+    return jsonify({
+        "status": "success",
+        "profile": prof,
+        "main_symbol": state.get("current_symbol"),
+        "human_symbol": state.get("human_symbol") or state.get("current_symbol"),
+        "symbol": (state.get("human_symbol") if prof == "HUMAN" else state.get("current_symbol")),
+        "humanx_auto": bool(state.get("humanx_auto")),
+        "humanx_status": state.get("humanx_status_last") or ("Auto: Armed" if state.get("humanx_auto") else "Auto: OFF")
+    })
 
 
 @app.route("/change_market", methods=["POST"])
@@ -1052,27 +1363,89 @@ def change_market():
         return jsonify({"error": "Unauthorized"}), 403
 
     cid, state = get_client_state()
-    symbol = request.json.get("symbol")
+    symbol = (request.json or {}).get("symbol")
 
     if not symbol:
         return jsonify({"error": "No symbol provided"}), 400
 
+    old_symbol = state.get("current_symbol")
     state["current_symbol"] = symbol
 
-    strategy = state["strategies"].get(state["active_profile"])
-    if strategy:
-        strategy.reset_tick_analysis()
+    # ✅ reset analysis for MAIN profiles only (HUMAN is independent)
+    for name, strat in state.get("strategies", {}).items():
+        if name == "HUMAN":
+            continue
+        try:
+            if hasattr(strat, "reset_tick_analysis"):
+                strat.reset_tick_analysis()
+        except Exception:
+            pass
 
     ws = state.get("ws")
     if state.get("ws_connected") and ws:
         try:
-            ws.send(json.dumps({"forget_all": "ticks"}))
+            # best-effort unsubscribe old MAIN ticks (do not touch HUMAN)
+            old_id = (state.get("tick_subs") or {}).get(old_symbol)
+            if old_id:
+                ws.send(json.dumps({"forget": old_id}))
             ws.send(json.dumps({"ticks": state["current_symbol"], "subscribe": 1}))
         except Exception:
             pass
 
     socketio.emit("market_change", {"symbol": state["current_symbol"]}, room=cid)
-    return jsonify({"status": "success", "symbol": state["current_symbol"]})
+    return jsonify({
+        "status": "success",
+        "symbol": state["current_symbol"],
+        "main_symbol": state.get("current_symbol"),
+        "human_symbol": state.get("human_symbol") or state.get("current_symbol")
+    })
+
+
+@app.route("/change_human_market", methods=["POST"])
+def change_human_market():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    symbol = (request.json or {}).get("symbol")
+
+    if not symbol:
+        return jsonify({"error": "No symbol provided"}), 400
+
+    old_symbol = state.get("human_symbol") or state.get("current_symbol")
+    state["human_symbol"] = symbol
+
+    # reset HUMAN analysis only
+    strat = state.get("strategies", {}).get("HUMAN")
+    if strat:
+        try:
+            if hasattr(strat, "reset_tick_analysis"):
+                strat.reset_tick_analysis()
+            if hasattr(strat, "symbol"):
+                strat.symbol = symbol
+        except Exception:
+            pass
+
+    ws = state.get("ws")
+    if state.get("ws_connected") and ws:
+        try:
+            old_id = (state.get("tick_subs") or {}).get(old_symbol)
+            if old_id:
+                ws.send(json.dumps({"forget": old_id}))
+            ws.send(json.dumps({"ticks": symbol, "subscribe": 1}))
+        except Exception:
+            pass
+
+    # refresh HUMAN chart candles on HUMAN market change
+    request_human_seed(cid)
+
+    socketio.emit("human_market_change", {"symbol": symbol}, room=cid)
+    return jsonify({
+        "status": "success",
+        "symbol": symbol,
+        "main_symbol": state.get("current_symbol"),
+        "human_symbol": state.get("human_symbol") or state.get("current_symbol")
+    })
 
 
 @app.route("/set_risk_controls", methods=["POST"])
@@ -1081,8 +1454,7 @@ def set_risk_controls():
         return jsonify({"error": "Unauthorized"}), 403
 
     cid, state = get_client_state()
-
-    data = request.json
+    data = request.json or {}
     tp = float(data.get("tp", 0))
     sl = float(data.get("sl", 0))
     auto_sl = bool(data.get("auto_sl", True))
@@ -1102,7 +1474,7 @@ def toggle_auto():
     cid, state = get_client_state()
 
     strategy = state["strategies"].get(state["active_profile"])
-    if not strategy:
+    if not strategy or not hasattr(strategy, "toggle_auto"):
         return jsonify({"status": "error", "message": "No strategy loaded"}), 400
 
     new_state = strategy.toggle_auto()
@@ -1162,7 +1534,7 @@ def set_kidracks_settings():
         return jsonify({"error": "Unauthorized"}), 403
 
     cid, state = get_client_state()
-    data = request.json
+    data = request.json or {}
     barrier = int(data.get("barrier", 5))
 
     strat = state["strategies"].get("KOOLKID")
@@ -1177,7 +1549,7 @@ def set_koolkidspeed_settings():
         return jsonify({"error": "Unauthorized"}), 403
 
     cid, state = get_client_state()
-    data = request.json
+    data = request.json or {}
     barrier = int(data.get("barrier", 5))
 
     strat = state["strategies"].get("KOOLKID")
@@ -1328,7 +1700,7 @@ def manual_trade():
         return jsonify({"error": "Unauthorized"}), 403
 
     cid, state = get_client_state()
-    data = request.json
+    data = request.json or {}
 
     contract_type = data.get("type")
     stake = float(data.get("stake", 1))
@@ -1345,7 +1717,7 @@ def manual_3_trades():
         return jsonify({"error": "Unauthorized"}), 403
 
     cid, state = get_client_state()
-    data = request.json
+    data = request.json or {}
 
     contract_type = data.get("type")
     stake = float(data.get("stake", 1))
@@ -1368,7 +1740,7 @@ def burst_4():
         return jsonify({"error": "Unauthorized"}), 403
 
     cid, state = get_client_state()
-    data = request.json
+    data = request.json or {}
 
     contract_type = data.get("type")
     stake = float(data.get("stake", 1))
@@ -1383,6 +1755,34 @@ def burst_4():
         time.sleep(0.10)
 
     return jsonify({"status": "success", "placed": placed})
+
+
+@app.route("/toggle_humanx_auto", methods=["POST"])
+def toggle_humanx_auto():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    enabled = not bool(state.get("humanx_auto"))
+    state["humanx_auto"] = enabled
+
+    strat = state.get("strategies", {}).get("HUMAN")
+    if strat:
+        try:
+            strat.auto_trade = enabled
+        except Exception:
+            pass
+
+    status = "Auto: Armed" if enabled else "Auto: OFF"
+    state["humanx_status_last"] = status
+    socketio.emit("humanx_auto_status", {"enabled": enabled, "status": status}, room=cid)
+
+    return jsonify({
+        "status": "success",
+        "enabled": enabled,
+        "main_symbol": state.get("current_symbol"),
+        "human_symbol": state.get("human_symbol") or state.get("current_symbol")
+    })
 
 
 @app.route("/humanx_trade", methods=["POST"])
@@ -1406,6 +1806,22 @@ def humanx_trade():
         return jsonify({"error": msg}), 500
 
 
+# ---------------- HEARTBEAT SWEEPER ---------------- #
+def heartbeat_sweeper():
+    while True:
+        time.sleep(30)
+        now = time.time()
+        for cid, state in list(clients.items()):
+            # only enforce timeout if a token/WS is active
+            if state.get("api_token") or state.get("ws"):
+                last_seen = state.get("last_seen", now)
+                if (now - last_seen) > HEARTBEAT_TIMEOUT_SEC:
+                    disconnect_client(cid, reason="heartbeat_timeout", emit=True)
+
+
+threading.Thread(target=heartbeat_sweeper, daemon=True).start()
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
 
@@ -1415,8 +1831,9 @@ if __name__ == "__main__":
 ║     - Per-session client_id                                  ║
 ║     - Separate WS + state per browser/device                 ║
 ║     - KOOLKID / JOKERJOE / HUMAN                             ║
-║     - ✅ Fixed toaster payloads                               ║
-║     - ✅ Per-profile clear history route                      ║
+║     - ✅ HUMAN price feed fixed                              ║
+║     - ✅ all profiles collect data in background              ║
+║     - ✅ refresh/close forced disconnect + 10min timeout      ║
 ╚══════════════════════════════════════════════════════════════╝
     """)
 

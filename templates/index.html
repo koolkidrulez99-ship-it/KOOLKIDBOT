@@ -7,6 +7,7 @@
 
 <!-- ✅ BULLETPROOF: Local Socket.IO client (v4) -->
 <script src="/static/vendor/socket.io.min.js"></script>
+<script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
 
 <style>
 /* make sizing predictable so padding doesn't cause overflow */
@@ -373,6 +374,84 @@ input, select{
         width:auto !important;
     }
 }
+
+/* ===================== HUMAN CHART THEME + OVERLAYS ===================== */
+.tf-pill{
+    padding:6px 12px;
+    margin:0;
+    border-radius:999px;
+    border:1px solid #334155;
+    background:#0f172a;
+    color:#e5e7eb;
+    font-weight:bold;
+    cursor:pointer;
+    transition:0.15s;
+}
+.tf-pill:hover{transform:scale(1.03);}
+.tf-pill.active{
+    border-color:#38bdf8;
+    box-shadow:0 0 10px rgba(56,189,248,0.35);
+}
+#humanChart{ position:relative; background:#0b1220;}
+.human-chart-overlay{
+    position:absolute;
+    left:0; right:0; top:0; bottom:0;
+    pointer-events:none;
+}
+.human-range-box{
+    position:absolute;
+    border-radius:8px;
+}
+.human-range-box.new{
+    border:1px solid rgba(56,189,248,0.80);
+    background:rgba(56,189,248,0.12);
+}
+.human-range-box.prev{
+    border:1px dashed rgba(148,163,184,0.55);
+    background:rgba(148,163,184,0.08);
+}
+.human-range-label{
+    position:absolute;
+    padding:4px 8px;
+    border-radius:999px;
+    font-size:12px;
+    font-weight:bold;
+    letter-spacing:0.2px;
+    color:#e5e7eb;
+    background:rgba(15,23,42,0.85);
+    border:1px solid rgba(51,65,85,0.85);
+    white-space:nowrap;
+}
+.human-price-label{
+    position:absolute;
+    right:10px;
+    padding:4px 8px;
+    border-radius:8px;
+    font-size:12px;
+    font-weight:bold;
+    color:#e5e7eb;
+    background:rgba(15,23,42,0.85);
+    border:1px solid rgba(51,65,85,0.85);
+    white-space:nowrap;
+}
+.human-live-dot{
+    position:absolute;
+    width:10px;
+    height:10px;
+    border-radius:999px;
+    background:rgba(250,204,21,0.95);
+    box-shadow:0 0 10px rgba(250,204,21,0.55);
+}
+.human-live-text{
+    position:absolute;
+    font-size:12px;
+    font-weight:bold;
+    color:#facc15;
+    white-space:nowrap;
+    text-shadow:0 0 8px rgba(250,204,21,0.25);
+}
+/* =================== END HUMAN CHART THEME + OVERLAYS =================== */
+
 </style>
 
 <body>
@@ -478,6 +557,553 @@ input, select{
 /* ===================== SOCKET.IO (BULLETPROOF INIT) ===================== */
 let socket = null;
 
+/* ===================== HUMAN CHART (DARK RANGE BOXES + TF SWITCH) ===================== */
+let humanTF = "5M";
+let lastHumanChartPayload = null;
+
+let humanChart = null;
+let humanChartContainer = null;
+let humanCandleSeries = null;
+let humanRangeHighLine = null;
+let humanRangeLowLine = null;
+
+let humanBarSpacing = 8;
+
+let humanOverlay = null;
+let humanBoxNew = null;
+let humanBoxPrev = null;
+let humanLabelNew = null;
+let humanLabelPrev = null;
+let humanHighLabel = null;
+let humanLowLabel = null;
+let humanLiveDot = null;
+let humanLiveText = null;
+let humanOBBox = null;
+let humanOBLabel = null;
+
+function formatHumanPrice(p){
+    if(p === undefined || p === null || isNaN(Number(p))) return "—";
+    const n = Number(p);
+    // dynamic decimals (keeps forex looking right)
+    const s = String(p);
+    const hasDec = s.includes(".");
+    const dec = hasDec ? Math.min(6, Math.max(2, s.split(".")[1].length)) : 2;
+    return n.toFixed(dec);
+}
+
+function setHumanTF(tf){
+    humanTF = (tf === "1H") ? "1H" : "5M";
+    // button states (if present)
+    const b1 = document.getElementById("tfBtn1H");
+    const b5 = document.getElementById("tfBtn5M");
+    if(b1) b1.classList.toggle("active", humanTF === "1H");
+    if(b5) b5.classList.toggle("active", humanTF === "5M");
+
+    // re-render from last payload
+    if(lastHumanChartPayload){
+        updateHumanChart(lastHumanChartPayload);
+    }
+}
+
+function initHumanChartIfPresent(){
+    const el = document.getElementById("humanChart");
+    if(!el) return;
+
+    if(typeof LightweightCharts === "undefined") return;
+
+    // If already initialized on same container, do nothing.
+    if(humanChart && humanChartContainer === el) return;
+
+    // Remove old chart if any (safe)
+    try{ if(humanChart) humanChart.remove(); }catch(e){}
+
+    humanChartContainer = el;
+
+    humanChart = LightweightCharts.createChart(el, {
+        width: Math.floor(el.clientWidth || 600),
+        height: Math.floor(el.clientHeight || 300),
+        layout: { background: { type: "solid", color: "#0b1220" }, textColor: "#cbd5e1" },
+        grid: {
+            vertLines: { color: "rgba(148,163,184,0.08)" },
+            horzLines: { color: "rgba(148,163,184,0.08)" }
+        },
+        timeScale: {
+            borderColor: "rgba(148,163,184,0.20)",
+            timeVisible: true,
+            secondsVisible: false
+        },
+        rightPriceScale: { borderColor: "rgba(148,163,184,0.20)" },
+        crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+    });
+
+    humanCandleSeries = humanChart.addCandlestickSeries({
+        upColor: "#22c55e",
+        downColor: "#ef4444",
+        borderUpColor: "#22c55e",
+        borderDownColor: "#ef4444",
+        wickUpColor: "#22c55e",
+        wickDownColor: "#ef4444",
+    });
+
+    // small candles feel
+    humanBarSpacing = humanBarSpacing || 8;
+    try{ humanChart.timeScale().applyOptions({ barSpacing: humanBarSpacing }); }catch(e){}
+
+    // overlays (range boxes, labels)
+    ensureHumanOverlay();
+
+    // redraw overlays on zoom/pan
+    try{
+        humanChart.timeScale().subscribeVisibleTimeRangeChange(() => {
+            redrawHumanOverlays();
+        });
+    }catch(e){}
+
+    setTimeout(resizeHumanChart, 0);
+}
+
+function resizeHumanChart(){
+    if(!humanChart || !humanChartContainer) return;
+    const w = Math.floor(humanChartContainer.clientWidth || 0);
+    const h = Math.floor(humanChartContainer.clientHeight || 0);
+    if(w > 0 && h > 0){
+        try{ humanChart.applyOptions({ width: w, height: h }); }catch(e){}
+        redrawHumanOverlays();
+    }
+}
+
+
+function humanZoomIn(){
+    if(!humanChart) return;
+    humanBarSpacing = Math.min(25, (humanBarSpacing || 8) + 2);
+    try{ humanChart.timeScale().applyOptions({ barSpacing: humanBarSpacing }); }catch(e){}
+    try{ redrawHumanOverlays(); }catch(e){}
+}
+function humanZoomOut(){
+    if(!humanChart) return;
+    humanBarSpacing = Math.max(3, (humanBarSpacing || 8) - 2);
+    try{ humanChart.timeScale().applyOptions({ barSpacing: humanBarSpacing }); }catch(e){}
+    try{ redrawHumanOverlays(); }catch(e){}
+}
+function humanResetZoom(){
+    if(!humanChart) return;
+    humanBarSpacing = 8;
+    try{ humanChart.timeScale().applyOptions({ barSpacing: humanBarSpacing }); }catch(e){}
+    try{ redrawHumanOverlays(); }catch(e){}
+}
+
+function ensureHumanOverlay(){
+    if(!humanChartContainer) return;
+
+    // Make the container a positioning context (without changing HTML)
+    try{ humanChartContainer.style.position = "relative"; }catch(e){}
+
+    if(!humanOverlay){
+        humanOverlay = document.createElement("div");
+        humanOverlay.className = "human-chart-overlay";
+        humanChartContainer.appendChild(humanOverlay);
+
+        humanBoxPrev = document.createElement("div");
+        humanBoxPrev.className = "human-range-box prev";
+        humanOverlay.appendChild(humanBoxPrev);
+
+        humanBoxNew = document.createElement("div");
+        humanBoxNew.className = "human-range-box new";
+        humanOverlay.appendChild(humanBoxNew);
+
+        humanLabelPrev = document.createElement("div");
+        humanLabelPrev.className = "human-range-label";
+        humanLabelPrev.textContent = "Previous Hourly Range";
+        humanOverlay.appendChild(humanLabelPrev);
+
+        humanLabelNew = document.createElement("div");
+        humanLabelNew.className = "human-range-label";
+        humanLabelNew.textContent = "New Hourly Range";
+        humanOverlay.appendChild(humanLabelNew);
+
+        humanHighLabel = document.createElement("div");
+        humanHighLabel.className = "human-price-label";
+        humanOverlay.appendChild(humanHighLabel);
+
+        humanLowLabel = document.createElement("div");
+        humanLowLabel.className = "human-price-label";
+        humanOverlay.appendChild(humanLowLabel);
+
+        humanLiveDot = document.createElement("div");
+        humanLiveDot.className = "human-live-dot";
+        humanOverlay.appendChild(humanLiveDot);
+
+        humanLiveText = document.createElement("div");
+        humanLiveText.className = "human-live-text";
+        humanLiveText.textContent = "Live Tick";
+        humanOverlay.appendChild(humanLiveText);
+
+        humanOBBox = document.createElement("div");
+        humanOBBox.className = "human-range-box";
+        humanOBBox.style.borderRadius = "8px";
+        humanOverlay.appendChild(humanOBBox);
+
+        humanOBLabel = document.createElement("div");
+        humanOBLabel.className = "human-range-label";
+        humanOverlay.appendChild(humanOBLabel);
+    }
+}
+
+function _hideEl(el){
+    if(!el) return;
+    el.style.display = "none";
+}
+function _showEl(el){
+    if(!el) return;
+    el.style.display = "block";
+}
+
+function _setBox(box, left, top, width, height){
+    if(!box) return;
+    if([left, top, width, height].some(v => v === null || v === undefined || isNaN(v))) {
+        _hideEl(box); return;
+    }
+    if(width < 2 || height < 2){ _hideEl(box); return; }
+    box.style.display = "block";
+    box.style.left = `${Math.round(left)}px`;
+    box.style.top = `${Math.round(top)}px`;
+    box.style.width = `${Math.round(width)}px`;
+    box.style.height = `${Math.round(height)}px`;
+}
+
+function _setLabel(lbl, x, y, text){
+    if(!lbl) return;
+    if(x === null || y === null || x === undefined || y === undefined || isNaN(x) || isNaN(y)){
+        _hideEl(lbl); return;
+    }
+    lbl.style.display = "block";
+    lbl.textContent = text;
+    lbl.style.left = `${Math.round(x)}px`;
+    lbl.style.top = `${Math.round(y)}px`;
+}
+
+function _setPriceLabel(lbl, y, text){
+    if(!lbl) return;
+    if(y === null || y === undefined || isNaN(y)){
+        _hideEl(lbl); return;
+    }
+    lbl.style.display = "block";
+    lbl.textContent = text;
+    lbl.style.top = `${Math.round(y)}px`;
+}
+
+function updateHumanChart(payload){
+    initHumanChartIfPresent();
+    if(!humanChart || !humanCandleSeries) return;
+    if(!payload) return;
+
+    lastHumanChartPayload = payload;
+
+    // Choose dataset based on timeframe
+    let srcCandles = null;
+    if(humanTF === "1H"){
+        srcCandles = payload.candles_1h || payload.candles_1H || payload.candles1h || null;
+    }else{
+        srcCandles = payload.candles_5m || payload.candles_5M || payload.candles5m || payload.candles || null;
+    }
+
+    if(Array.isArray(srcCandles)){
+        const candles = srcCandles
+            .filter(c => c && c.time !== undefined)
+            .map(c => ({
+                time: Number(c.time), // epoch seconds
+                open: Number(c.open),
+                high: Number(c.high),
+                low: Number(c.low),
+                close: Number(c.close),
+            }))
+            .sort((a,b)=>a.time-b.time);
+
+        try{
+            humanCandleSeries.setData(candles);
+            humanChart.timeScale().fitContent();
+        }catch(e){}
+    }
+
+    // Remove old price lines safely
+    try{
+        if(humanRangeHighLine){ humanCandleSeries.removePriceLine(humanRangeHighLine); humanRangeHighLine = null; }
+        if(humanRangeLowLine){ humanCandleSeries.removePriceLine(humanRangeLowLine); humanRangeLowLine = null; }
+    }catch(e){}
+
+    // Previous 1H range lines (always)
+    try{
+        if(payload.range_high !== undefined && payload.range_high !== null && payload.range_high !== 0){
+            humanRangeHighLine = humanCandleSeries.createPriceLine({
+                price: Number(payload.range_high),
+                color: "rgba(56,189,248,0.95)",
+                lineWidth: 2,
+                lineStyle: LightweightCharts.LineStyle.Solid,
+                axisLabelVisible: true,
+                title: "Prev High",
+            });
+        }
+        if(payload.range_low !== undefined && payload.range_low !== null && payload.range_low !== 0){
+            humanRangeLowLine = humanCandleSeries.createPriceLine({
+                price: Number(payload.range_low),
+                color: "rgba(56,189,248,0.95)",
+                lineWidth: 2,
+                lineStyle: LightweightCharts.LineStyle.Solid,
+                axisLabelVisible: true,
+                title: "Prev Low",
+            });
+        }
+    }catch(e){}
+
+    // Update UI range + direction
+    try{
+        const prev = payload.prev_h1 || payload.prev_1h || null;
+        const prevHigh = (payload.range_high !== undefined && payload.range_high !== null) ? payload.range_high : (prev ? prev.high : null);
+        const prevLow = (payload.range_low !== undefined && payload.range_low !== null) ? payload.range_low : (prev ? prev.low : null);
+
+        const hiEl = document.getElementById("h1PrevHigh");
+        const loEl = document.getElementById("h1PrevLow");
+        const rgEl = document.getElementById("h1RangePts");
+        if(hiEl) hiEl.textContent = formatHumanPrice(prevHigh);
+        if(loEl) loEl.textContent = formatHumanPrice(prevLow);
+
+        if(rgEl && prevHigh !== null && prevLow !== null && !isNaN(Number(prevHigh)) && !isNaN(Number(prevLow))){
+            const pts = Number(prevHigh) - Number(prevLow);
+            rgEl.textContent = formatHumanPrice(pts);
+        }else if(rgEl){
+            rgEl.textContent = "—";
+        }
+
+        const badge = document.getElementById("h1DirectionBadge");
+        if(badge && prev){
+            const o = Number(prev.open), c = Number(prev.close);
+            if(c > o){
+                badge.textContent = "H1: BULLISH";
+                badge.style.background = "rgba(34,197,94,0.15)";
+                badge.style.border = "1px solid rgba(34,197,94,0.55)";
+                badge.style.color = "#22c55e";
+            }else if(c < o){
+                badge.textContent = "H1: BEARISH";
+                badge.style.background = "rgba(239,68,68,0.15)";
+                badge.style.border = "1px solid rgba(239,68,68,0.55)";
+                badge.style.color = "#ef4444";
+            }else{
+                badge.textContent = "H1: NEUTRAL";
+                badge.style.background = "rgba(148,163,184,0.12)";
+                badge.style.border = "1px solid rgba(148,163,184,0.35)";
+                badge.style.color = "#cbd5e1";
+            }
+        }else if(badge){
+            badge.textContent = "H1: —";
+            badge.style.background = "rgba(148,163,184,0.08)";
+            badge.style.border = "1px solid rgba(148,163,184,0.25)";
+            badge.style.color = "#cbd5e1";
+        }
+    }catch(e){}
+
+    // Ensure TF buttons reflect current state after profile load
+    try{
+        const b1 = document.getElementById("tfBtn1H");
+        const b5 = document.getElementById("tfBtn5M");
+        if(b1) b1.classList.toggle("active", humanTF === "1H");
+        if(b5) b5.classList.toggle("active", humanTF === "5M");
+    }catch(e){}
+
+    const ph = document.getElementById("chartPlaceholder");
+    if(ph) ph.style.display = "none";
+
+    redrawHumanOverlays();
+}
+
+function redrawHumanOverlays(){
+    if(!humanChart || !humanCandleSeries || !humanOverlay || !lastHumanChartPayload) return;
+
+    // Only show hourly range boxes on 5M view (matches your screenshot)
+    const showBoxes = (humanTF === "5M");
+
+    if(!showBoxes){
+        _hideEl(humanBoxPrev); _hideEl(humanBoxNew);
+        _hideEl(humanLabelPrev); _hideEl(humanLabelNew);
+        _hideEl(humanHighLabel); _hideEl(humanLowLabel);
+    }
+
+    const payload = lastHumanChartPayload;
+
+    // Use 5m candles (even if user is in 1H view we still compute live tick)
+    const candles5m = (payload.candles_5m || payload.candles_5M || payload.candles5m || payload.candles || []);
+    if(!Array.isArray(candles5m) || candles5m.length === 0){
+        _hideEl(humanLiveDot); _hideEl(humanLiveText);
+        _hideEl(humanOBBox); _hideEl(humanOBLabel);
+        return;
+    }
+
+    const cs = candles5m
+        .filter(c => c && c.time !== undefined)
+        .map(c => ({
+            time: Number(c.time),
+            open: Number(c.open),
+            high: Number(c.high),
+            low: Number(c.low),
+            close: Number(c.close),
+        }))
+        .sort((a,b)=>a.time-b.time);
+
+    const last = cs[cs.length - 1];
+    const lastTime = last.time;
+
+    // Hour buckets
+    const curHourStart = Math.floor(lastTime / 3600) * 3600;
+    const prevHourStart = curHourStart - 3600;
+    const curHourEnd = curHourStart + 3600;
+
+    const prevCandles = cs.filter(c => c.time >= prevHourStart && c.time < curHourStart);
+    const curCandles = cs.filter(c => c.time >= curHourStart && c.time < curHourEnd);
+
+    // Helpers
+    const xForTime = (t) => {
+        try{ return humanChart.timeScale().timeToCoordinate(t); }catch(e){ return null; }
+    };
+    const yForPrice = (p) => {
+        try{ return humanCandleSeries.priceToCoordinate(p); }catch(e){ return null; }
+    };
+
+    if(showBoxes && prevCandles.length >= 2){
+        const prevHigh = Math.max(...prevCandles.map(c => c.high));
+        const prevLow  = Math.min(...prevCandles.map(c => c.low));
+
+        const leftT = prevCandles[0].time;
+        const rightT = (curCandles.length ? curCandles[0].time : lastTime);
+
+        const x1 = xForTime(leftT);
+        const x2 = xForTime(rightT);
+
+        const y1 = yForPrice(prevHigh);
+        const y2 = yForPrice(prevLow);
+
+        if(x1 !== null && x2 !== null && y1 !== null && y2 !== null){
+            const left = Math.min(x1, x2);
+            const right = Math.max(x1, x2);
+            const top = Math.min(y1, y2);
+            const bottom = Math.max(y1, y2);
+            _setBox(humanBoxPrev, left, top, (right-left), (bottom-top));
+            _setLabel(humanLabelPrev, left + 10, bottom + 6, "Previous Hourly Range");
+        }else{
+            _hideEl(humanBoxPrev); _hideEl(humanLabelPrev);
+        }
+    }else{
+        _hideEl(humanBoxPrev); _hideEl(humanLabelPrev);
+    }
+
+    let curHigh = null, curLow = null;
+    if(showBoxes && curCandles.length >= 2){
+        curHigh = Math.max(...curCandles.map(c => c.high));
+        curLow  = Math.min(...curCandles.map(c => c.low));
+
+        const leftT = curCandles[0].time;
+        const rightT = lastTime;
+
+        const x1 = xForTime(leftT);
+        const x2 = xForTime(rightT);
+
+        const y1 = yForPrice(curHigh);
+        const y2 = yForPrice(curLow);
+
+        if(x1 !== null && x2 !== null && y1 !== null && y2 !== null){
+            const left = Math.min(x1, x2);
+            const right = Math.max(x1, x2) + 12; // little padding for the label
+            const top = Math.min(y1, y2);
+            const bottom = Math.max(y1, y2);
+            _setBox(humanBoxNew, left, top, (right-left), (bottom-top));
+            _setLabel(humanLabelNew, left + 10, top - 24, "New Hourly Range");
+
+            // High/Low labels on the right
+            _setPriceLabel(humanHighLabel, top - 12, `High  ${formatHumanPrice(curHigh)}`);
+            _setPriceLabel(humanLowLabel, bottom - 12, `Low   ${formatHumanPrice(curLow)}`);
+        }else{
+            _hideEl(humanBoxNew); _hideEl(humanLabelNew);
+            _hideEl(humanHighLabel); _hideEl(humanLowLabel);
+        }
+    }else{
+        _hideEl(humanBoxNew); _hideEl(humanLabelNew);
+        _hideEl(humanHighLabel); _hideEl(humanLowLabel);
+    }
+
+    // Live tick dot + label
+    try{
+        const px = xForTime(lastTime);
+        const py = yForPrice(Number(payload.current_price || last.close));
+        if(px !== null && py !== null){
+            _showEl(humanLiveDot);
+            humanLiveDot.style.left = `${Math.round(px - 5)}px`;
+            humanLiveDot.style.top = `${Math.round(py - 5)}px`;
+
+            _showEl(humanLiveText);
+            humanLiveText.style.left = `${Math.round(px + 10)}px`;
+            humanLiveText.style.top = `${Math.round(py - 10)}px`;
+        }else{
+            _hideEl(humanLiveDot); _hideEl(humanLiveText);
+        }
+    }catch(e){
+        _hideEl(humanLiveDot); _hideEl(humanLiveText);
+    }
+
+    // Order Block box (OB = current from backend)
+    try{
+        const ob = payload.order_block || null;
+        const bias = (payload.breakout_bias || payload.breakout || {}).bias || payload.breakout_bias || null;
+        const mitigated = !!payload.retrace_happened;
+
+        if(showBoxes && ob && ob.high !== undefined && ob.low !== undefined){
+            const obHigh = Number(ob.high);
+            const obLow  = Number(ob.low);
+
+            const obStart = Number(ob.start_ts || prevHourStart);
+            const obEndT = lastTime;
+
+            let x1 = xForTime(obStart);
+            let x2 = xForTime(obEndT);
+
+            if(x1 === null) x1 = 0;
+            if(x2 === null) x2 = humanChartContainer.clientWidth || 0;
+
+            const y1 = yForPrice(obHigh);
+            const y2 = yForPrice(obLow);
+
+            if(y1 !== null && y2 !== null){
+                const left = Math.min(x1, x2);
+                const right = Math.max(x1, x2);
+                const top = Math.min(y1, y2);
+                const bottom = Math.max(y1, y2);
+
+                const isBuy = String(bias).toUpperCase() === "BUY";
+                humanOBBox.style.display = "block";
+                humanOBBox.style.left = `${Math.round(left)}px`;
+                humanOBBox.style.top = `${Math.round(top)}px`;
+                humanOBBox.style.width = `${Math.round(Math.max(2, right-left))}px`;
+                humanOBBox.style.height = `${Math.round(Math.max(2, bottom-top))}px`;
+                humanOBBox.style.border = isBuy ? "1px solid rgba(34,197,94,0.75)" : "1px solid rgba(239,68,68,0.75)";
+                humanOBBox.style.background = isBuy ? "rgba(34,197,94,0.10)" : "rgba(239,68,68,0.10)";
+
+                const label = `OB (${isBuy ? "Bullish" : "Bearish"})` + (mitigated ? "  •  Mitigated ✅" : "");
+                _setLabel(humanOBLabel, left + 10, bottom + 28, label);
+            }else{
+                _hideEl(humanOBBox); _hideEl(humanOBLabel);
+            }
+        }else{
+            _hideEl(humanOBBox); _hideEl(humanOBLabel);
+        }
+    }catch(e){
+        _hideEl(humanOBBox); _hideEl(humanOBLabel);
+    }
+}
+
+window.updateHumanChart = updateHumanChart;
+window.setHumanTF = setHumanTF;
+window.initHumanChartIfPresent = initHumanChartIfPresent;
+window.addEventListener("resize", resizeHumanChart);
+/* =================== END HUMAN CHART (DARK RANGE BOXES + TF SWITCH) =================== */
+
+
 function initSocket(){
     if (socket) return;
 
@@ -494,6 +1120,18 @@ function initSocket(){
         reconnectionAttempts: 10,
         reconnectionDelay: 500
     });
+
+// Force server disconnect when page refreshes/closes
+window.addEventListener("beforeunload", () => {
+  try {
+    fetch("/disconnect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+      keepalive: true
+    });
+  } catch (e) {}
+});
 
     bindSocketHandlers();
 }
@@ -607,6 +1245,11 @@ function bindSocketHandlers(){
         if(activeProfile !== "HUMAN") return;
         if (window.updateHumanChart) window.updateHumanChart(data);
     });
+    socket.on("humanx_auto_status", (data)=>{
+        if(activeProfile !== "HUMAN") return;
+        updateHumanXUI(!!data.enabled, data.status);
+    });
+
 
     socket.on("trade_placed", (data)=>{
         const t = prettyType(data.type);
@@ -666,11 +1309,40 @@ function bindSocketHandlers(){
 
 /* ===================== YOUR ORIGINAL CODE BELOW (UNCHANGED LOGIC) ===================== */
 let activeProfile = "KOOLKID";
+let mainSymbol = null;
+let humanSymbol = null;
 let digitBuffer = [];
 let lastClickedDigit = null;
 let apiConnected = false;
 
 let autoSL = true;
+function syncSymbolDropdown(){
+    const sel = document.getElementById("symbol");
+    if(!sel) return;
+    if(activeProfile === "HUMAN"){
+        if(humanSymbol) sel.value = humanSymbol;
+    }else{
+        if(mainSymbol) sel.value = mainSymbol;
+    }
+}
+
+function updateHumanXUI(enabled, statusText){
+    const btn = document.getElementById("humanXBtn");
+    const status = document.getElementById("humanXStatus");
+    if(btn){
+        if(enabled){
+            btn.innerText = "⚡ humanX AUTO: ON";
+            btn.style.background = "#22c55e";
+        }else{
+            btn.innerText = "⚡ humanX AUTO: OFF";
+            btn.style.background = "#ef4444";
+        }
+    }
+    if(status){
+        status.innerText = statusText || (enabled ? "Auto: Armed" : "Auto: OFF");
+    }
+}
+
 
 const apiStatus = document.getElementById("apiStatus");
 const balanceDisplay = document.getElementById("balance");
@@ -1015,7 +1687,7 @@ function showAutoBarrierPopup(mode){
     autoBarrierPopup.style.transform = "translate(-50%, -50%)";
     autoBarrierPopup.style.display = "block";
 }
-function hideAutoBarrierPopup(){
+async function hideAutoBarrierPopup(){
     autoBarrierPopup.style.display = "none";
     currentAutoBarrierMode = null;
 }
@@ -1096,9 +1768,35 @@ function loadMarketList(){
 }
 loadMarketList();
 
-document.getElementById("symbol").addEventListener("change", function(){
-    fetch("/change_market", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({symbol:this.value})});
-    showToast("📊 Market Changed: " + this.value, "warn");
+(async ()=>{
+    try{
+        const res = await fetch("/market_state");
+        const data = await res.json();
+        if(data && data.status === "success"){
+            mainSymbol = data.main_symbol || mainSymbol;
+            humanSymbol = data.human_symbol || humanSymbol;
+            syncSymbolDropdown();
+            if(activeProfile === "HUMAN"){
+                updateHumanXUI(!!data.humanx_auto, data.humanx_status);
+            }
+        }
+    }catch(e){}
+})();
+
+
+document.getElementById("symbol").addEventListener("change", async function(){
+    try{
+        const sym = this.value;
+        const url = (activeProfile === "HUMAN") ? "/change_human_market" : "/change_market";
+        const res = await fetch(url, {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({symbol:sym})});
+        const data = await res.json();
+        mainSymbol = data.main_symbol || mainSymbol;
+        humanSymbol = data.human_symbol || humanSymbol;
+        syncSymbolDropdown();
+        showToast("📊 Market Changed: " + sym, "warn");
+    }catch(e){
+        showToast("Market change failed", "error");
+    }
 });
 
 /* ✅ hide LIVE TICK INFO on HUMAN only */
@@ -1110,6 +1808,8 @@ function applyLiveTickVisibility(){
 
 async function setProfile(profile){
     activeProfile = profile;
+
+    syncSymbolDropdown();
 
     document.getElementById("koolkidBtn").classList.remove("active");
     document.getElementById("jokerjoeBtn").classList.remove("active");
@@ -1135,7 +1835,16 @@ async function setProfile(profile){
 
     await loadProfileUI(profile);
 
-    fetch("/set_profile", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({profile})});
+    try{
+        const r = await fetch("/set_profile", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({profile})});
+        const j = await r.json();
+        mainSymbol = j.main_symbol || mainSymbol;
+        humanSymbol = j.human_symbol || humanSymbol;
+        syncSymbolDropdown();
+        if(profile === "HUMAN"){
+            updateHumanXUI(!!j.humanx_auto, j.humanx_status);
+        }
+    }catch(e){}
 
     refreshHowTo();
     showToast("🎮 Profile Changed: " + profile, "info");
@@ -1442,11 +2151,20 @@ async function burst4(type){
 }
 
 async function humanX(){
-    const res = await fetch("/humanx_trade", {method:"POST"});
-    const data = await res.json();
-    if (data.status === "success") showToast("humanX trade placed", "success");
-    else showToast(data.error || "No valid setup", "error");
+    try{
+        const res = await fetch("/toggle_humanx_auto", {method:"POST"});
+        const data = await res.json();
+        if(data.status === "success"){
+            updateHumanXUI(!!data.enabled, data.enabled ? "Auto: Armed" : "Auto: OFF");
+            showToast(data.enabled ? "⚡ humanX AUTO ON" : "⚡ humanX AUTO OFF", data.enabled ? "success" : "warn");
+        }else{
+            showToast(data.error || "Toggle failed", "error");
+        }
+    }catch(e){
+        showToast("Toggle failed", "error");
+    }
 }
+
 
 function renderDiffersAnalysis(da){
     if(!differsDigitsRow) return;

@@ -1,7 +1,7 @@
 # strategies/human.py
 from collections import deque
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 import time
 
 
@@ -25,6 +25,10 @@ class Candle:
 class HumanStrategy:
     """
     HUMAN (Multipliers) Strategy Engine with Order Block logic.
+
+    IMPORTANT:
+    Your server calls strategy.on_tick(tick, digit).
+    This strategy needs real PRICE for candles/OB logic, so we read it from tick["quote"].
     """
 
     def __init__(self):
@@ -152,6 +156,7 @@ class HumanStrategy:
         self.range_low = prev.low
         self.range_start_ts = prev.start_ts
         self.range_size = max(0.0, self.range_high - self.range_low)
+
         # Reset state for new range
         self.breakout_bias = None
         self.breakout_ts = None
@@ -177,23 +182,22 @@ class HumanStrategy:
             self._identify_order_block(direction="SELL")
 
     def _identify_order_block(self, direction):
-        # Find the last opposite 1h candle before breakout_ts
+        if not self.breakout_ts:
+            return
+
+        # Find the last opposite 1h candle before breakout hour
+        breakout_hour_start = self._floor_ts(self.breakout_ts, self.tf_1h)
+
         for candle in reversed(self.hist_1h):
-            if candle.start_ts >= self._floor_ts(self.breakout_ts, self.tf_1h):
+            if candle.start_ts >= breakout_hour_start:
                 continue
+
             if direction == "BUY" and candle.close < candle.open:
-                self.order_block = {
-                    "high": candle.high,
-                    "low": candle.low,
-                    "start_ts": candle.start_ts
-                }
+                self.order_block = {"high": candle.high, "low": candle.low, "start_ts": candle.start_ts}
                 break
+
             if direction == "SELL" and candle.close > candle.open:
-                self.order_block = {
-                    "high": candle.high,
-                    "low": candle.low,
-                    "start_ts": candle.start_ts
-                }
+                self.order_block = {"high": candle.high, "low": candle.low, "start_ts": candle.start_ts}
                 break
 
     def _check_retrace(self, price):
@@ -205,27 +209,33 @@ class HumanStrategy:
             self.retrace_price = price
 
     def _check_confirmation(self, price):
-        if not self.retrace_happened or self.signal_fired:
+        if not self.retrace_happened or self.signal_fired or not self.order_block:
             return None
+
         # Confirmation: price moves a tiny amount beyond the OB in breakout direction
         buffer = 0.0002  # small buffer (adjust for forex/indices)
+
         if self.breakout_bias == "BUY" and price > self.order_block["high"] + buffer:
             self.signal_fired = True
             return self._build_signal("BUY")
+
         if self.breakout_bias == "SELL" and price < self.order_block["low"] - buffer:
             self.signal_fired = True
             return self._build_signal("SELL")
+
         return None
 
     def _build_signal(self, direction):
         entry = self.last_price
         range_size = self.range_size if self.range_size else 0.001  # fallback
+
         if direction == "BUY":
             sl = self.order_block["low"] - 0.0002  # below OB
             tp = entry + range_size * 0.75
         else:
             sl = self.order_block["high"] + 0.0002  # above OB
             tp = entry - range_size * 0.75
+
         return {
             "direction": direction,
             "entry": entry,
@@ -237,29 +247,47 @@ class HumanStrategy:
         }
 
     def get_humanx_signal(self):
+        # Safety gate: if risk controls already hit, don't allow new signals
+        _hit = self.enforce_tp_sl()
+        if _hit:
+            return None
+
         if time.time() - self.last_signal_time < self.humanx_cooldown:
             return None
         if self.last_price is None:
             return None
+
         # Trigger checks using last known price
         self._check_breakout(self.last_price)
         self._check_retrace(self.last_price)
         signal = self._check_confirmation(self.last_price)
+
         if signal:
             self.last_signal_time = time.time()
+
         return signal
 
     # ----------------------------
     # Tick handling
     # ----------------------------
-    def on_tick(self, tick, price, ts: int = None):
+    def on_tick(self, tick, digit=None, ts: int = None):
+        """
+        Server calls: on_tick(tick, digit)
+        We ignore 'digit' and use tick['quote'] as PRICE for candles/OB logic.
+        """
+        # timestamp
         if ts is None:
             try:
                 ts = int(tick.get("epoch") or tick.get("timestamp") or tick.get("time"))
             except Exception:
                 ts = int(time.time())
 
-        price = float(price)
+        # price (Deriv tick uses "quote")
+        try:
+            price = float(tick.get("quote"))
+        except Exception:
+            # fallback: if quote missing, do nothing
+            return
 
         self.tick_count += 1
         self.last_price = price
@@ -279,14 +307,15 @@ class HumanStrategy:
             self.hist_1h.append(closed_1h)
             self._update_range_from_prev_1h()
 
-        # Order Block checks (will be used by get_humanx_signal)
-        # We don't automatically fire signals here; they are triggered by button.
+        # OB checks are triggered by get_humanx_signal() (button-driven)
 
     # ----------------------------
     # Contract handling
     # ----------------------------
     def on_contract(self, contract, balance):
-        if not (contract.get("is_sold") or contract.get("is_settled") or contract.get("status") in ("sold", "settled", "closed")):
+        status = (contract.get("status") or "").lower()
+
+        if not (contract.get("is_sold") or contract.get("is_settled") or status in ("sold", "settled", "closed", "won", "lost")):
             return
 
         profit = float(contract.get("profit", 0))
@@ -313,12 +342,14 @@ class HumanStrategy:
             "balance": round(float(balance), 2),
             "symbol": contract.get("underlying", self.symbol or ""),
         }
+
         self.trade_history.append(entry)
         if len(self.trade_history) > 200:
             self.trade_history.pop(0)
+
         self.last_trade_entry = entry
 
-        # After trade, reset state but keep range (allow new setup)
+        # After trade, reset OB state (allow new setup)
         self.breakout_bias = None
         self.order_block = None
         self.retrace_happened = False
@@ -333,29 +364,110 @@ class HumanStrategy:
         self.total_losses = 0
         self.total_profit = 0.0
         self.total_loss = 0.0
+        self.last_trade_entry = None
 
     # ----------------------------
     # Chart data
     # ----------------------------
+    def _parse_seed_candle(self, item: dict, tf_sec: int):
+        """Parse a Deriv candle dict into a Candle object (best-effort)."""
+        try:
+            ts = int(item.get("epoch") or item.get("timestamp") or item.get("time") or 0)
+            o = float(item.get("open"))
+            h = float(item.get("high"))
+            l = float(item.get("low"))
+            c = float(item.get("close"))
+            if not ts:
+                return None
+            return Candle(start_ts=ts, tf_sec=tf_sec, open=o, high=h, low=l, close=c)
+        except Exception:
+            return None
+
+    def seed_5m_history(self, candles: list):
+        """Seed recent 5M candles so the chart can render immediately."""
+        try:
+            self.hist_5m.clear()
+            self.cur_5m = None
+            if not isinstance(candles, list):
+                return
+            for item in candles:
+                c = self._parse_seed_candle(item, self.tf_5m)
+                if c:
+                    self.hist_5m.append(c)
+        except Exception:
+            pass
+
+    def seed_1h_history(self, candles: list):
+        """Seed recent 1H candles so we can compute Prev 1H range immediately."""
+        try:
+            self.hist_1h.clear()
+            self.cur_1h = None
+            if not isinstance(candles, list):
+                return
+            for item in candles:
+                c = self._parse_seed_candle(item, self.tf_1h)
+                if c:
+                    self.hist_1h.append(c)
+
+            # update Prev 1H range from last CLOSED 1H candle
+            self._update_range_from_prev_1h()
+        except Exception:
+            pass
+
     def get_chart_data(self):
-        candles = []
-        for c in list(self.hist_1h)[-24:]:  # last 24 hours
-            candles.append({
-                "time": c.start_ts,
-                "open": c.open,
-                "high": c.high,
-                "low": c.low,
-                "close": c.close
-            })
+        """Return payload for the frontend chart (5M + 1H) without touching trade logic."""
+        def to_dict(c: Candle):
+            return {
+                "time": int(c.start_ts),
+                "open": float(c.open),
+                "high": float(c.high),
+                "low": float(c.low),
+                "close": float(c.close),
+            }
+
+        # 5M candles (need at least last 2 hours for the "new vs previous hour" blocks)
+        all_5m = list(self.hist_5m)
+        if self.cur_5m:
+            all_5m.append(self.cur_5m)
+        all_5m = sorted(all_5m, key=lambda x: x.start_ts)
+
+        candles_5m = [to_dict(c) for c in all_5m[-24:]]  # 24 x 5m = 2 hours
+
+        # 1H candles for TF switch
+        all_1h = list(self.hist_1h)
+        if self.cur_1h:
+            all_1h.append(self.cur_1h)
+        all_1h = sorted(all_1h, key=lambda x: x.start_ts)
+        candles_1h = [to_dict(c) for c in all_1h[-24:]]  # last 24 hours (max)
+
+        # previous CLOSED 1H candle
+        prev_h1 = self.hist_1h[-1] if len(self.hist_1h) > 0 else None
+
         return {
-            "candles": candles,
-            "current_price": self.last_price,
-            "range_high": self.range_high,
-            "range_low": self.range_low
+            # keep backward-compat keys
+            "tf_sec": self.tf_5m,
+            "candles": candles_5m,
+            "current_price": self.last_price or 0,
+
+            # new keys
+            "candles_5m": candles_5m,
+            "candles_1h": candles_1h,
+            "prev_h1": to_dict(prev_h1) if prev_h1 else None,
+
+            # prev 1H range lines
+            "range_high": self.range_high or 0,
+            "range_low": self.range_low or 0,
+            "range_start_ts": self.range_start_ts or 0,
+
+            # OB + bias (OB = current as per your instruction)
+            "breakout_bias": self.breakout_bias,
+            "order_block": self.order_block,
+            "retrace_happened": self.retrace_happened,
         }
 
     # ----------------------------
     # Risk controls
+
     # ----------------------------
     def set_risk_controls(self, tp=0.0, sl=0.0, auto_sl=True):
         self.tp = float(tp)
@@ -372,7 +484,7 @@ class HumanStrategy:
         return None
 
     # ----------------------------
-    # UI payloads (unchanged)
+    # UI payloads
     # ----------------------------
     def get_ui_payload(self):
         return {

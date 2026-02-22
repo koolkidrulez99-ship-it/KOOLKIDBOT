@@ -23,6 +23,7 @@
         <button id="autoSlBtn" onclick="toggleAutoSL()" style="background:#facc15; width:100%;">
             AUTO SL: ON
         </button>
+        <div id="humanXStatus" style="margin-top:8px; text-align:center; color:#94a3b8; font-size:13px;">Auto: OFF</div>
     </div>
 
     <div style="margin-top:8px; display:flex; gap:10px; flex-wrap:wrap;">
@@ -31,12 +32,19 @@
     </div>
 
     <div style="margin-top:15px;">
-        <button id="humanXBtn" onclick="humanX()" style="background:#22c55e; width:100%; font-size:1.2rem; padding:12px;">
-            ⚡ humanX (Order Block Trade)
+        <button id="humanXBtn" onclick="humanX()" style="background:#ef4444; width:100%; font-size:1.2rem; padding:12px;">
+            ⚡ humanX AUTO: OFF
         </button>
     </div>
 
     <div style="margin-top:20px; background:#0f172a; border-radius:12px; padding:10px;">
+        
+        <div style="display:flex; justify-content:flex-end; gap:8px; margin-bottom:8px; flex-wrap:wrap;">
+            <button onclick="humanZoomOut()" style="background:#334155; padding:6px 12px; border-radius:10px;">−</button>
+            <button onclick="humanZoomIn()" style="background:#334155; padding:6px 12px; border-radius:10px;">+</button>
+            <button onclick="humanResetZoom()" style="background:#334155; padding:6px 12px; border-radius:10px;">Reset</button>
+        </div>
+
         <div id="humanChart" style="width:100%; height:300px;"></div>
         <div id="chartPlaceholder" style="text-align:center; color:#94a3b8; padding:10px; display:none;">
             Building 1-hour candles... please wait.
