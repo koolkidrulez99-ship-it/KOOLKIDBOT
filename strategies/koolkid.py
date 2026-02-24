@@ -540,70 +540,78 @@ class KoolKidStrategy(BaseStrategy):
 
 
     # ==============================
-    # MPull💰🤫 AUTO SIGNAL (Momentum Confirmation)
+    # MPull💰🤫 AUTO SIGNAL (Momentum Confirmation) — NEW OVERALL TREND VERSION
     # ==============================
     def check_mpull_signal(self):
         """
-        Strategy 5: The Momentum Confirmation
+        MPull💰🤫 — Momentum Confirmation (overall trend, not exact sequence)
 
-        - Track if last digits are trending higher or lower over 5 ticks
-          Example UP: 2-3-5-6-7 (strictly increasing)
-          Example DOWN: 7-6-5-3-2 (strictly decreasing)
+        Trend detection (last 5 digits):
+          - UP trend: mostly rising overall (3+ upward steps out of 4) AND last > first
+          - DOWN trend: mostly falling overall (3+ downward steps out of 4) AND last < first
 
-        - Wait for a SMALL PULLBACK on the NEXT tick:
-          UP trend -> next tick drops to 4 -> trade OVER 5
-          DOWN trend -> next tick rises to 5 -> trade UNDER 5
+        Pullback (next tick only):
+          - After UP trend: next tick must be 4 -> trade OVER 5
+          - After DOWN trend: next tick must be 5 -> trade UNDER 5
 
-        - MPull mode filter (self.mpull_mode):
-            BOTH (default): allow both OVER+UNDER
-            OVER: only allow OVER 5
-            UNDER: only allow UNDER 5
+        Mode filter:
+          self.mpull_mode in {"BOTH","OVER","UNDER"} controls allowed direction.
         """
-        d = self.last_tick_digit
+
+        d = getattr(self, "last_tick_digit", None)
         if d is None:
             return None
 
-        mode = (getattr(self, "mpull_mode", "BOTH") or "BOTH").upper().strip()
-        if mode not in ("BOTH", "OVER", "UNDER"):
-            mode = "BOTH"
-
-        # If waiting for pullback, it MUST occur on this tick (next-tick rule)
+        # 1) If we are waiting for pullback, it MUST be on this tick (next-tick rule)
         if getattr(self, "mpull_waiting_pullback", False):
-            self.mpull_waiting_pullback = False  # window closes now
+            self.mpull_waiting_pullback = False  # next-tick window closes now
 
-            # UP pullback must be exactly 4 -> OVER 5
-            if getattr(self, "mpull_dir", None) == "UP" and d == 4:
-                self.mpull_dir = None
+            direction = getattr(self, "mpull_dir", None)
+            mode = (getattr(self, "mpull_mode", "BOTH") or "BOTH").upper()
+
+            # UP trend pullback: 4 -> OVER 5
+            if direction == "UP" and d == 4:
                 if mode in ("BOTH", "OVER"):
+                    self.mpull_dir = None
                     return {"mode": "MPULL", "type": "OVER", "barrier": 5}
+                # mode blocks it
+                self.mpull_dir = None
                 return None
 
-            # DOWN pullback must be exactly 5 -> UNDER 5
-            if getattr(self, "mpull_dir", None) == "DOWN" and d == 5:
-                self.mpull_dir = None
+            # DOWN trend pullback: 5 -> UNDER 5
+            if direction == "DOWN" and d == 5:
                 if mode in ("BOTH", "UNDER"):
+                    self.mpull_dir = None
                     return {"mode": "MPULL", "type": "UNDER", "barrier": 5}
+                # mode blocks it
+                self.mpull_dir = None
                 return None
 
             # Pullback didn't match -> reset
             self.mpull_dir = None
             return None
 
-        # Not waiting yet: detect 5-tick momentum trend
-        buf = list(self.pattern_buffer)
+        # 2) Not waiting: detect overall momentum from last 5 digits
+        buf = list(getattr(self, "pattern_buffer", []))
         if len(buf) < 5:
             return None
 
-        last5 = buf[-5:]
+        last5 = buf[-5:]  # oldest -> newest
+        ups = 0
+        downs = 0
+        for i in range(1, 5):
+            if last5[i] > last5[i - 1]:
+                ups += 1
+            elif last5[i] < last5[i - 1]:
+                downs += 1
 
-        # Strict UP trend
-        if last5[0] < last5[1] < last5[2] < last5[3] < last5[4]:
+        # Require majority trend + net direction
+        if ups >= 3 and last5[-1] > last5[0]:
             self.mpull_dir = "UP"
             self.mpull_waiting_pullback = True
             return None
 
-        # Strict DOWN trend
-        if last5[0] > last5[1] > last5[2] > last5[3] > last5[4]:
+        if downs >= 3 and last5[-1] < last5[0]:
             self.mpull_dir = "DOWN"
             self.mpull_waiting_pullback = True
             return None
