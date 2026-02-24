@@ -6,8 +6,960 @@
 <title>KOOLKID AI BOT</title>
 
 <!-- ✅ BULLETPROOF: Local Socket.IO client (v4) -->
-<script src="/static/vendor/socket.io.min.js"></script>
-<script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+<script src="/static/vendor/socket.io.min.js">
+/* =========================================================
+   HUMAN CHART (Lightweight Charts) + Hourly Range Overlays
+   - Draws Previous Hourly Range + New Hourly Range boxes
+   - Adds working Zoom In/Out/Reset controls
+   - Supports Keep Alive frontend status + disconnect skip
+   ========================================================= */
+
+window.humanKeepAliveEnabled = window.humanKeepAliveEnabled || false;
+
+let humanChart = null;
+let humanCandleSeries = null;
+let humanChartContainer = null;
+
+let humanOverlay = null;
+let humanControls = null;
+
+let humanBoxPrev = null;
+let humanBoxNew = null;
+let humanLabelPrev = null;
+let humanLabelNew = null;
+let humanHighLabel = null;
+let humanLowLabel = null;
+
+let humanBarSpacing = 8;
+let humanAutoFit = true;
+let humanHasFitOnce = false;
+
+let lastHumanChartPayload = null;
+
+function _normSec(t){
+    const n = Number(t);
+    if(!isFinite(n)) return null;
+    // If ms epoch, convert to seconds
+    if(n > 1e12) return Math.floor(n/1000);
+    return Math.floor(n);
+}
+
+function _clamp(v, min, max){
+    if(v < min) return min;
+    if(v > max) return max;
+    return v;
+}
+
+function initHumanChartIfPresent(){
+    const el = document.getElementById("humanChart");
+    if(!el) return;
+    if(typeof LightweightCharts === "undefined") return;
+
+    // Already initialized on same element
+    if(humanChart && humanChartContainer === el) return;
+
+    // Remove old chart safely
+    try{ if(humanChart) humanChart.remove(); }catch(e){}
+
+    humanChartContainer = el;
+
+    // Make container a positioning context for overlays/controls
+    try{ humanChartContainer.style.position = "relative"; }catch(e){}
+
+    humanChart = LightweightCharts.createChart(el, {
+        width: Math.floor(el.clientWidth || 600),
+        height: Math.floor(el.clientHeight || 300),
+        layout: { background: { type: "solid", color: "#0b1220" }, textColor: "#cbd5e1" },
+        grid: {
+            vertLines: { color: "rgba(148,163,184,0.08)" },
+            horzLines: { color: "rgba(148,163,184,0.08)" }
+        },
+        timeScale: {
+            borderColor: "rgba(148,163,184,0.20)",
+            timeVisible: true,
+            secondsVisible: false
+        },
+        rightPriceScale: { borderColor: "rgba(148,163,184,0.20)" },
+        crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+    });
+
+    humanCandleSeries = humanChart.addCandlestickSeries({
+        upColor: "#22c55e",
+        downColor: "#ef4444",
+        borderUpColor: "#22c55e",
+        borderDownColor: "#ef4444",
+        wickUpColor: "#22c55e",
+        wickDownColor: "#ef4444",
+    });
+
+    // Small candles
+    humanBarSpacing = humanBarSpacing || 8;
+    try{ humanChart.timeScale().applyOptions({ barSpacing: humanBarSpacing }); }catch(e){}
+
+    ensureHumanOverlay();
+    ensureHumanControls();
+
+    // Re-draw overlays on zoom/pan
+    try{
+        humanChart.timeScale().subscribeVisibleTimeRangeChange(() => {
+            redrawHumanOverlays();
+        });
+    }catch(e){}
+
+    setTimeout(resizeHumanChart, 0);
+
+    // If we already have payload (profile swap), redraw it
+    if(lastHumanChartPayload){
+        try{ updateHumanChart(lastHumanChartPayload); }catch(e){}
+    }
+}
+
+function resizeHumanChart(){
+    if(!humanChart || !humanChartContainer) return;
+    const w = Math.floor(humanChartContainer.clientWidth || 0);
+    const h = Math.floor(humanChartContainer.clientHeight || 0);
+    if(w > 0 && h > 0){
+        try{ humanChart.applyOptions({ width: w, height: h }); }catch(e){}
+        redrawHumanOverlays();
+    }
+}
+
+window.addEventListener("resize", () => {
+    try{ resizeHumanChart(); }catch(e){}
+});
+
+function ensureHumanOverlay(){
+    if(!humanChartContainer) return;
+
+    if(!humanOverlay){
+        humanOverlay = document.createElement("div");
+        humanOverlay.className = "human-chart-overlay";
+        humanChartContainer.appendChild(humanOverlay);
+
+        humanBoxPrev = document.createElement("div");
+        humanBoxPrev.className = "human-range-box prev";
+        humanOverlay.appendChild(humanBoxPrev);
+
+        humanBoxNew = document.createElement("div");
+        humanBoxNew.className = "human-range-box new";
+        humanOverlay.appendChild(humanBoxNew);
+
+        humanLabelPrev = document.createElement("div");
+        humanLabelPrev.className = "human-range-label";
+        humanLabelPrev.textContent = "Previous Hourly Range";
+        humanOverlay.appendChild(humanLabelPrev);
+
+        humanLabelNew = document.createElement("div");
+        humanLabelNew.className = "human-range-label";
+        humanLabelNew.textContent = "New Hourly Range";
+        humanOverlay.appendChild(humanLabelNew);
+
+        humanHighLabel = document.createElement("div");
+        humanHighLabel.className = "human-price-label";
+        humanOverlay.appendChild(humanHighLabel);
+
+        humanLowLabel = document.createElement("div");
+        humanLowLabel.className = "human-price-label";
+        humanOverlay.appendChild(humanLowLabel);
+
+        _hideEl(humanBoxPrev); _hideEl(humanBoxNew);
+        _hideEl(humanLabelPrev); _hideEl(humanLabelNew);
+        _hideEl(humanHighLabel); _hideEl(humanLowLabel);
+    }
+}
+
+function ensureHumanControls(){
+    if(!humanChartContainer) return;
+
+    if(!humanControls){
+        humanControls = document.createElement("div");
+        humanControls.className = "human-chart-controls";
+        humanChartContainer.appendChild(humanControls);
+
+        const btnIn = document.createElement("button");
+        btnIn.textContent = "＋";
+        btnIn.title = "Zoom In";
+        btnIn.onclick = () => humanZoomIn();
+        humanControls.appendChild(btnIn);
+
+        const btnOut = document.createElement("button");
+        btnOut.textContent = "－";
+        btnOut.title = "Zoom Out";
+        btnOut.onclick = () => humanZoomOut();
+        humanControls.appendChild(btnOut);
+
+        const btnReset = document.createElement("button");
+        btnReset.textContent = "Reset";
+        btnReset.title = "Reset Zoom";
+        btnReset.onclick = () => humanResetZoom();
+        humanControls.appendChild(btnReset);
+    }
+}
+
+function humanZoomIn(){
+    if(!humanChart) return;
+    humanAutoFit = false;
+    humanBarSpacing = Math.min(30, (humanBarSpacing || 8) + 2);
+    try{ humanChart.timeScale().applyOptions({ barSpacing: humanBarSpacing }); }catch(e){}
+    redrawHumanOverlays();
+}
+
+function humanZoomOut(){
+    if(!humanChart) return;
+    humanAutoFit = false;
+    humanBarSpacing = Math.max(2, (humanBarSpacing || 8) - 2);
+    try{ humanChart.timeScale().applyOptions({ barSpacing: humanBarSpacing }); }catch(e){}
+    redrawHumanOverlays();
+}
+
+function humanResetZoom(){
+    if(!humanChart) return;
+    humanBarSpacing = 8;
+    humanAutoFit = true;
+    humanHasFitOnce = false;
+    try{ humanChart.timeScale().applyOptions({ barSpacing: humanBarSpacing }); }catch(e){}
+    try{ humanChart.timeScale().fitContent(); }catch(e){}
+    redrawHumanOverlays();
+}
+
+function _hideEl(el){ if(el) el.style.display = "none"; }
+function _showEl(el){ if(el) el.style.display = "block"; }
+
+function _setBox(box, left, top, width, height){
+    if(!box) return;
+    if([left, top, width, height].some(v => v === null || v === undefined || !isFinite(v))){
+        _hideEl(box); return;
+    }
+    if(width < 2 || height < 2){
+        _hideEl(box); return;
+    }
+    // Clamp into chart container bounds
+    const W = humanChartContainer ? humanChartContainer.clientWidth : 0;
+    const H = humanChartContainer ? humanChartContainer.clientHeight : 0;
+
+    const l = _clamp(left, 0, Math.max(0, W-2));
+    const t = _clamp(top, 0, Math.max(0, H-2));
+    const r = _clamp(left + width, 0, Math.max(0, W));
+    const b = _clamp(top + height, 0, Math.max(0, H));
+
+    box.style.display = "block";
+    box.style.left = `${Math.round(l)}px`;
+    box.style.top = `${Math.round(t)}px`;
+    box.style.width = `${Math.round(Math.max(2, r - l))}px`;
+    box.style.height = `${Math.round(Math.max(2, b - t))}px`;
+}
+
+function _setLabel(lbl, x, y, text){
+    if(!lbl) return;
+    if(x === null || y === null || x === undefined || y === undefined || !isFinite(x) || !isFinite(y)){
+        _hideEl(lbl); return;
+    }
+    const W = humanChartContainer ? humanChartContainer.clientWidth : 0;
+    const H = humanChartContainer ? humanChartContainer.clientHeight : 0;
+
+    const xx = _clamp(x, 6, Math.max(6, W - 160));
+    const yy = _clamp(y, 6, Math.max(6, H - 26));
+
+    lbl.style.display = "block";
+    lbl.textContent = text;
+    lbl.style.left = `${Math.round(xx)}px`;
+    lbl.style.top = `${Math.round(yy)}px`;
+}
+
+function _setPriceLabel(lbl, y, text){
+    if(!lbl) return;
+    if(y === null || y === undefined || !isFinite(y)){
+        _hideEl(lbl); return;
+    }
+    const H = humanChartContainer ? humanChartContainer.clientHeight : 0;
+    const yy = _clamp(y, 6, Math.max(6, H - 26));
+    lbl.style.display = "block";
+    lbl.textContent = text;
+    lbl.style.top = `${Math.round(yy)}px`;
+}
+
+function formatHumanPrice(v){
+    if(v === null || v === undefined) return "—";
+    const n = Number(v);
+    if(!isFinite(n)) return "—";
+    // Keep a sensible precision
+    if(n >= 1000) return n.toFixed(2);
+    if(n >= 1) return n.toFixed(3);
+    return n.toFixed(4);
+}
+
+function updateHumanChart(payload){
+    initHumanChartIfPresent();
+    if(!humanChart || !humanCandleSeries) return;
+    if(!payload) return;
+
+    lastHumanChartPayload = payload;
+
+    // Prefer 5M candles for HUMAN execution view
+    const src = payload.candles_5m || payload.candles_5M || payload.candles5m || payload.candles || null;
+
+    if(Array.isArray(src)){
+        const candles = src
+            .filter(c => c && c.time !== undefined)
+            .map(c => ({
+                time: _normSec(c.time),
+                open: Number(c.open),
+                high: Number(c.high),
+                low: Number(c.low),
+                close: Number(c.close),
+            }))
+            .filter(c => c.time !== null)
+            .sort((a,b)=>a.time-b.time);
+
+        try{
+            humanCandleSeries.setData(candles);
+            // IMPORTANT: Don't fit content every tick (breaks zoom).
+            if(humanAutoFit && !humanHasFitOnce){
+                humanChart.timeScale().fitContent();
+                humanHasFitOnce = true;
+            }
+        }catch(e){}
+    }
+
+    const ph = document.getElementById("chartPlaceholder");
+    if(ph) ph.style.display = "none";
+
+    redrawHumanOverlays();
+}
+
+window.updateHumanChart = updateHumanChart;
+
+function redrawHumanOverlays(){
+    if(!humanChart || !humanCandleSeries || !humanOverlay || !lastHumanChartPayload) return;
+
+    const payload = lastHumanChartPayload;
+    const src = payload.candles_5m || payload.candles_5M || payload.candles5m || payload.candles || [];
+    if(!Array.isArray(src) || src.length === 0){
+        _hideEl(humanBoxPrev); _hideEl(humanBoxNew);
+        _hideEl(humanLabelPrev); _hideEl(humanLabelNew);
+        _hideEl(humanHighLabel); _hideEl(humanLowLabel);
+        return;
+    }
+
+    const cs = src
+        .filter(c => c && c.time !== undefined)
+        .map(c => ({
+            time: _normSec(c.time),
+            open: Number(c.open),
+            high: Number(c.high),
+            low: Number(c.low),
+            close: Number(c.close),
+        }))
+        .filter(c => c.time !== null)
+        .sort((a,b)=>a.time-b.time);
+
+    if(cs.length === 0){
+        _hideEl(humanBoxPrev); _hideEl(humanBoxNew);
+        _hideEl(humanLabelPrev); _hideEl(humanLabelNew);
+        _hideEl(humanHighLabel); _hideEl(humanLowLabel);
+        return;
+    }
+
+    const last = cs[cs.length - 1];
+    const lastTime = last.time;
+
+    // Hour buckets (based on most recent candle)
+    const curHourStart = Math.floor(lastTime / 3600) * 3600;
+    const prevHourStart = curHourStart - 3600;
+    const curHourEnd = curHourStart + 3600;
+
+    const prevCandles = cs.filter(c => c.time >= prevHourStart && c.time < curHourStart);
+    const curCandles = cs.filter(c => c.time >= curHourStart && c.time < curHourEnd);
+
+    const xForTime = (t) => { try{ return humanChart.timeScale().timeToCoordinate(t); }catch(e){ return null; } };
+    const yForPrice = (p) => { try{ return humanCandleSeries.priceToCoordinate(p); }catch(e){ return null; } };
+
+    // =====================
+    // PREVIOUS HOUR BOX
+    // =====================
+    const prevHigh = (payload.range_high !== undefined && payload.range_high !== null && payload.range_high !== 0)
+        ? Number(payload.range_high)
+        : (prevCandles.length ? Math.max(...prevCandles.map(c => c.high)) : null);
+
+    const prevLow = (payload.range_low !== undefined && payload.range_low !== null && payload.range_low !== 0)
+        ? Number(payload.range_low)
+        : (prevCandles.length ? Math.min(...prevCandles.map(c => c.low)) : null);
+
+    if(prevHigh !== null && prevLow !== null && prevCandles.length){
+        const leftT = prevCandles[0].time;
+        const rightT = (curCandles.length ? curCandles[0].time : lastTime);
+
+        const x1 = xForTime(leftT);
+        const x2 = xForTime(rightT);
+        const y1 = yForPrice(prevHigh);
+        const y2 = yForPrice(prevLow);
+
+        if(x1 !== null && x2 !== null && y1 !== null && y2 !== null){
+            const left = Math.min(x1, x2);
+            const right = Math.max(x1, x2);
+            const top = Math.min(y1, y2);
+            const bottom = Math.max(y1, y2);
+
+            _setBox(humanBoxPrev, left, top, (right-left), (bottom-top));
+            _setLabel(humanLabelPrev, left + 10, bottom + 6, "Previous Hourly Range");
+        }else{
+            _hideEl(humanBoxPrev); _hideEl(humanLabelPrev);
+        }
+    }else{
+        _hideEl(humanBoxPrev); _hideEl(humanLabelPrev);
+    }
+
+    // =====================
+    // CURRENT (NEW) HOUR BOX
+    // =====================
+    const curHigh = (payload.current_high !== undefined && payload.current_high !== null && payload.current_high !== 0)
+        ? Number(payload.current_high)
+        : (curCandles.length ? Math.max(...curCandles.map(c => c.high)) : null);
+
+    const curLow = (payload.current_low !== undefined && payload.current_low !== null && payload.current_low !== 0)
+        ? Number(payload.current_low)
+        : (curCandles.length ? Math.min(...curCandles.map(c => c.low)) : null);
+
+    if(curHigh !== null && curLow !== null && curCandles.length){
+        const leftT = curCandles[0].time;
+        const rightT = lastTime;
+
+        const x1 = xForTime(leftT);
+        const x2 = xForTime(rightT);
+        const y1 = yForPrice(curHigh);
+        const y2 = yForPrice(curLow);
+
+        if(x1 !== null && x2 !== null && y1 !== null && y2 !== null){
+            const left = Math.min(x1, x2);
+            const right = Math.max(x1, x2) + 12;
+            const top = Math.min(y1, y2);
+            const bottom = Math.max(y1, y2);
+
+            _setBox(humanBoxNew, left, top, (right-left), (bottom-top));
+            _setLabel(humanLabelNew, left + 10, top - 24, "New Hourly Range");
+
+            _setPriceLabel(humanHighLabel, top - 12, `High  ${formatHumanPrice(curHigh)}`);
+            _setPriceLabel(humanLowLabel, bottom - 12, `Low   ${formatHumanPrice(curLow)}`);
+        }else{
+            _hideEl(humanBoxNew); _hideEl(humanLabelNew);
+            _hideEl(humanHighLabel); _hideEl(humanLowLabel);
+        }
+    }else{
+        _hideEl(humanBoxNew); _hideEl(humanLabelNew);
+        _hideEl(humanHighLabel); _hideEl(humanLowLabel);
+    }
+}
+
+// ============================
+// HUMAN Keep Alive (frontend)
+// ============================
+async function refreshHumanKeepAliveStatus(){
+    try{
+        const res = await fetch("/human_keep_alive_status", { method:"GET" });
+        const data = await res.json();
+        window.humanKeepAliveEnabled = !!(data && data.enabled);
+        const btn = document.getElementById("keepAliveBtn");
+        if(btn){
+            btn.textContent = window.humanKeepAliveEnabled ? "KEEP ALIVE: ON" : "KEEP ALIVE: OFF";
+            btn.style.background = window.humanKeepAliveEnabled ? "#22c55e" : "#334155";
+        }
+    }catch(e){}
+}
+
+async function toggleHumanKeepAlive(){
+    const next = !window.humanKeepAliveEnabled;
+    try{
+        const res = await fetch("/toggle_human_keep_alive", {
+            method:"POST",
+            headers: { "Content-Type":"application/json" },
+            body: JSON.stringify({ enabled: next })
+        });
+        const data = await res.json();
+        window.humanKeepAliveEnabled = !!(data && data.enabled);
+    }catch(e){}
+    try{ await refreshHumanKeepAliveStatus(); }catch(e){}
+}
+
+window.toggleHumanKeepAlive = toggleHumanKeepAlive;
+
+</script>
+<script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js">
+/* =========================================================
+   HUMAN CHART (Lightweight Charts) + Hourly Range Overlays
+   - Draws Previous Hourly Range + New Hourly Range boxes
+   - Adds working Zoom In/Out/Reset controls
+   - Supports Keep Alive frontend status + disconnect skip
+   ========================================================= */
+
+window.humanKeepAliveEnabled = window.humanKeepAliveEnabled || false;
+
+let humanChart = null;
+let humanCandleSeries = null;
+let humanChartContainer = null;
+
+let humanOverlay = null;
+let humanControls = null;
+
+let humanBoxPrev = null;
+let humanBoxNew = null;
+let humanLabelPrev = null;
+let humanLabelNew = null;
+let humanHighLabel = null;
+let humanLowLabel = null;
+
+let humanBarSpacing = 8;
+let humanAutoFit = true;
+let humanHasFitOnce = false;
+
+let lastHumanChartPayload = null;
+
+function _normSec(t){
+    const n = Number(t);
+    if(!isFinite(n)) return null;
+    // If ms epoch, convert to seconds
+    if(n > 1e12) return Math.floor(n/1000);
+    return Math.floor(n);
+}
+
+function _clamp(v, min, max){
+    if(v < min) return min;
+    if(v > max) return max;
+    return v;
+}
+
+function initHumanChartIfPresent(){
+    const el = document.getElementById("humanChart");
+    if(!el) return;
+    if(typeof LightweightCharts === "undefined") return;
+
+    // Already initialized on same element
+    if(humanChart && humanChartContainer === el) return;
+
+    // Remove old chart safely
+    try{ if(humanChart) humanChart.remove(); }catch(e){}
+
+    humanChartContainer = el;
+
+    // Make container a positioning context for overlays/controls
+    try{ humanChartContainer.style.position = "relative"; }catch(e){}
+
+    humanChart = LightweightCharts.createChart(el, {
+        width: Math.floor(el.clientWidth || 600),
+        height: Math.floor(el.clientHeight || 300),
+        layout: { background: { type: "solid", color: "#0b1220" }, textColor: "#cbd5e1" },
+        grid: {
+            vertLines: { color: "rgba(148,163,184,0.08)" },
+            horzLines: { color: "rgba(148,163,184,0.08)" }
+        },
+        timeScale: {
+            borderColor: "rgba(148,163,184,0.20)",
+            timeVisible: true,
+            secondsVisible: false
+        },
+        rightPriceScale: { borderColor: "rgba(148,163,184,0.20)" },
+        crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+    });
+
+    humanCandleSeries = humanChart.addCandlestickSeries({
+        upColor: "#22c55e",
+        downColor: "#ef4444",
+        borderUpColor: "#22c55e",
+        borderDownColor: "#ef4444",
+        wickUpColor: "#22c55e",
+        wickDownColor: "#ef4444",
+    });
+
+    // Small candles
+    humanBarSpacing = humanBarSpacing || 8;
+    try{ humanChart.timeScale().applyOptions({ barSpacing: humanBarSpacing }); }catch(e){}
+
+    ensureHumanOverlay();
+    ensureHumanControls();
+
+    // Re-draw overlays on zoom/pan
+    try{
+        humanChart.timeScale().subscribeVisibleTimeRangeChange(() => {
+            redrawHumanOverlays();
+        });
+    }catch(e){}
+
+    setTimeout(resizeHumanChart, 0);
+
+    // If we already have payload (profile swap), redraw it
+    if(lastHumanChartPayload){
+        try{ updateHumanChart(lastHumanChartPayload); }catch(e){}
+    }
+}
+
+function resizeHumanChart(){
+    if(!humanChart || !humanChartContainer) return;
+    const w = Math.floor(humanChartContainer.clientWidth || 0);
+    const h = Math.floor(humanChartContainer.clientHeight || 0);
+    if(w > 0 && h > 0){
+        try{ humanChart.applyOptions({ width: w, height: h }); }catch(e){}
+        redrawHumanOverlays();
+    }
+}
+
+window.addEventListener("resize", () => {
+    try{ resizeHumanChart(); }catch(e){}
+});
+
+function ensureHumanOverlay(){
+    if(!humanChartContainer) return;
+
+    if(!humanOverlay){
+        humanOverlay = document.createElement("div");
+        humanOverlay.className = "human-chart-overlay";
+        humanChartContainer.appendChild(humanOverlay);
+
+        humanBoxPrev = document.createElement("div");
+        humanBoxPrev.className = "human-range-box prev";
+        humanOverlay.appendChild(humanBoxPrev);
+
+        humanBoxNew = document.createElement("div");
+        humanBoxNew.className = "human-range-box new";
+        humanOverlay.appendChild(humanBoxNew);
+
+        humanLabelPrev = document.createElement("div");
+        humanLabelPrev.className = "human-range-label";
+        humanLabelPrev.textContent = "Previous Hourly Range";
+        humanOverlay.appendChild(humanLabelPrev);
+
+        humanLabelNew = document.createElement("div");
+        humanLabelNew.className = "human-range-label";
+        humanLabelNew.textContent = "New Hourly Range";
+        humanOverlay.appendChild(humanLabelNew);
+
+        humanHighLabel = document.createElement("div");
+        humanHighLabel.className = "human-price-label";
+        humanOverlay.appendChild(humanHighLabel);
+
+        humanLowLabel = document.createElement("div");
+        humanLowLabel.className = "human-price-label";
+        humanOverlay.appendChild(humanLowLabel);
+
+        _hideEl(humanBoxPrev); _hideEl(humanBoxNew);
+        _hideEl(humanLabelPrev); _hideEl(humanLabelNew);
+        _hideEl(humanHighLabel); _hideEl(humanLowLabel);
+    }
+}
+
+function ensureHumanControls(){
+    if(!humanChartContainer) return;
+
+    if(!humanControls){
+        humanControls = document.createElement("div");
+        humanControls.className = "human-chart-controls";
+        humanChartContainer.appendChild(humanControls);
+
+        const btnIn = document.createElement("button");
+        btnIn.textContent = "＋";
+        btnIn.title = "Zoom In";
+        btnIn.onclick = () => humanZoomIn();
+        humanControls.appendChild(btnIn);
+
+        const btnOut = document.createElement("button");
+        btnOut.textContent = "－";
+        btnOut.title = "Zoom Out";
+        btnOut.onclick = () => humanZoomOut();
+        humanControls.appendChild(btnOut);
+
+        const btnReset = document.createElement("button");
+        btnReset.textContent = "Reset";
+        btnReset.title = "Reset Zoom";
+        btnReset.onclick = () => humanResetZoom();
+        humanControls.appendChild(btnReset);
+    }
+}
+
+function humanZoomIn(){
+    if(!humanChart) return;
+    humanAutoFit = false;
+    humanBarSpacing = Math.min(30, (humanBarSpacing || 8) + 2);
+    try{ humanChart.timeScale().applyOptions({ barSpacing: humanBarSpacing }); }catch(e){}
+    redrawHumanOverlays();
+}
+
+function humanZoomOut(){
+    if(!humanChart) return;
+    humanAutoFit = false;
+    humanBarSpacing = Math.max(2, (humanBarSpacing || 8) - 2);
+    try{ humanChart.timeScale().applyOptions({ barSpacing: humanBarSpacing }); }catch(e){}
+    redrawHumanOverlays();
+}
+
+function humanResetZoom(){
+    if(!humanChart) return;
+    humanBarSpacing = 8;
+    humanAutoFit = true;
+    humanHasFitOnce = false;
+    try{ humanChart.timeScale().applyOptions({ barSpacing: humanBarSpacing }); }catch(e){}
+    try{ humanChart.timeScale().fitContent(); }catch(e){}
+    redrawHumanOverlays();
+}
+
+function _hideEl(el){ if(el) el.style.display = "none"; }
+function _showEl(el){ if(el) el.style.display = "block"; }
+
+function _setBox(box, left, top, width, height){
+    if(!box) return;
+    if([left, top, width, height].some(v => v === null || v === undefined || !isFinite(v))){
+        _hideEl(box); return;
+    }
+    if(width < 2 || height < 2){
+        _hideEl(box); return;
+    }
+    // Clamp into chart container bounds
+    const W = humanChartContainer ? humanChartContainer.clientWidth : 0;
+    const H = humanChartContainer ? humanChartContainer.clientHeight : 0;
+
+    const l = _clamp(left, 0, Math.max(0, W-2));
+    const t = _clamp(top, 0, Math.max(0, H-2));
+    const r = _clamp(left + width, 0, Math.max(0, W));
+    const b = _clamp(top + height, 0, Math.max(0, H));
+
+    box.style.display = "block";
+    box.style.left = `${Math.round(l)}px`;
+    box.style.top = `${Math.round(t)}px`;
+    box.style.width = `${Math.round(Math.max(2, r - l))}px`;
+    box.style.height = `${Math.round(Math.max(2, b - t))}px`;
+}
+
+function _setLabel(lbl, x, y, text){
+    if(!lbl) return;
+    if(x === null || y === null || x === undefined || y === undefined || !isFinite(x) || !isFinite(y)){
+        _hideEl(lbl); return;
+    }
+    const W = humanChartContainer ? humanChartContainer.clientWidth : 0;
+    const H = humanChartContainer ? humanChartContainer.clientHeight : 0;
+
+    const xx = _clamp(x, 6, Math.max(6, W - 160));
+    const yy = _clamp(y, 6, Math.max(6, H - 26));
+
+    lbl.style.display = "block";
+    lbl.textContent = text;
+    lbl.style.left = `${Math.round(xx)}px`;
+    lbl.style.top = `${Math.round(yy)}px`;
+}
+
+function _setPriceLabel(lbl, y, text){
+    if(!lbl) return;
+    if(y === null || y === undefined || !isFinite(y)){
+        _hideEl(lbl); return;
+    }
+    const H = humanChartContainer ? humanChartContainer.clientHeight : 0;
+    const yy = _clamp(y, 6, Math.max(6, H - 26));
+    lbl.style.display = "block";
+    lbl.textContent = text;
+    lbl.style.top = `${Math.round(yy)}px`;
+}
+
+function formatHumanPrice(v){
+    if(v === null || v === undefined) return "—";
+    const n = Number(v);
+    if(!isFinite(n)) return "—";
+    // Keep a sensible precision
+    if(n >= 1000) return n.toFixed(2);
+    if(n >= 1) return n.toFixed(3);
+    return n.toFixed(4);
+}
+
+function updateHumanChart(payload){
+    initHumanChartIfPresent();
+    if(!humanChart || !humanCandleSeries) return;
+    if(!payload) return;
+
+    lastHumanChartPayload = payload;
+
+    // Prefer 5M candles for HUMAN execution view
+    const src = payload.candles_5m || payload.candles_5M || payload.candles5m || payload.candles || null;
+
+    if(Array.isArray(src)){
+        const candles = src
+            .filter(c => c && c.time !== undefined)
+            .map(c => ({
+                time: _normSec(c.time),
+                open: Number(c.open),
+                high: Number(c.high),
+                low: Number(c.low),
+                close: Number(c.close),
+            }))
+            .filter(c => c.time !== null)
+            .sort((a,b)=>a.time-b.time);
+
+        try{
+            humanCandleSeries.setData(candles);
+            // IMPORTANT: Don't fit content every tick (breaks zoom).
+            if(humanAutoFit && !humanHasFitOnce){
+                humanChart.timeScale().fitContent();
+                humanHasFitOnce = true;
+            }
+        }catch(e){}
+    }
+
+    const ph = document.getElementById("chartPlaceholder");
+    if(ph) ph.style.display = "none";
+
+    redrawHumanOverlays();
+}
+
+window.updateHumanChart = updateHumanChart;
+
+function redrawHumanOverlays(){
+    if(!humanChart || !humanCandleSeries || !humanOverlay || !lastHumanChartPayload) return;
+
+    const payload = lastHumanChartPayload;
+    const src = payload.candles_5m || payload.candles_5M || payload.candles5m || payload.candles || [];
+    if(!Array.isArray(src) || src.length === 0){
+        _hideEl(humanBoxPrev); _hideEl(humanBoxNew);
+        _hideEl(humanLabelPrev); _hideEl(humanLabelNew);
+        _hideEl(humanHighLabel); _hideEl(humanLowLabel);
+        return;
+    }
+
+    const cs = src
+        .filter(c => c && c.time !== undefined)
+        .map(c => ({
+            time: _normSec(c.time),
+            open: Number(c.open),
+            high: Number(c.high),
+            low: Number(c.low),
+            close: Number(c.close),
+        }))
+        .filter(c => c.time !== null)
+        .sort((a,b)=>a.time-b.time);
+
+    if(cs.length === 0){
+        _hideEl(humanBoxPrev); _hideEl(humanBoxNew);
+        _hideEl(humanLabelPrev); _hideEl(humanLabelNew);
+        _hideEl(humanHighLabel); _hideEl(humanLowLabel);
+        return;
+    }
+
+    const last = cs[cs.length - 1];
+    const lastTime = last.time;
+
+    // Hour buckets (based on most recent candle)
+    const curHourStart = Math.floor(lastTime / 3600) * 3600;
+    const prevHourStart = curHourStart - 3600;
+    const curHourEnd = curHourStart + 3600;
+
+    const prevCandles = cs.filter(c => c.time >= prevHourStart && c.time < curHourStart);
+    const curCandles = cs.filter(c => c.time >= curHourStart && c.time < curHourEnd);
+
+    const xForTime = (t) => { try{ return humanChart.timeScale().timeToCoordinate(t); }catch(e){ return null; } };
+    const yForPrice = (p) => { try{ return humanCandleSeries.priceToCoordinate(p); }catch(e){ return null; } };
+
+    // =====================
+    // PREVIOUS HOUR BOX
+    // =====================
+    const prevHigh = (payload.range_high !== undefined && payload.range_high !== null && payload.range_high !== 0)
+        ? Number(payload.range_high)
+        : (prevCandles.length ? Math.max(...prevCandles.map(c => c.high)) : null);
+
+    const prevLow = (payload.range_low !== undefined && payload.range_low !== null && payload.range_low !== 0)
+        ? Number(payload.range_low)
+        : (prevCandles.length ? Math.min(...prevCandles.map(c => c.low)) : null);
+
+    if(prevHigh !== null && prevLow !== null && prevCandles.length){
+        const leftT = prevCandles[0].time;
+        const rightT = (curCandles.length ? curCandles[0].time : lastTime);
+
+        const x1 = xForTime(leftT);
+        const x2 = xForTime(rightT);
+        const y1 = yForPrice(prevHigh);
+        const y2 = yForPrice(prevLow);
+
+        if(x1 !== null && x2 !== null && y1 !== null && y2 !== null){
+            const left = Math.min(x1, x2);
+            const right = Math.max(x1, x2);
+            const top = Math.min(y1, y2);
+            const bottom = Math.max(y1, y2);
+
+            _setBox(humanBoxPrev, left, top, (right-left), (bottom-top));
+            _setLabel(humanLabelPrev, left + 10, bottom + 6, "Previous Hourly Range");
+        }else{
+            _hideEl(humanBoxPrev); _hideEl(humanLabelPrev);
+        }
+    }else{
+        _hideEl(humanBoxPrev); _hideEl(humanLabelPrev);
+    }
+
+    // =====================
+    // CURRENT (NEW) HOUR BOX
+    // =====================
+    const curHigh = (payload.current_high !== undefined && payload.current_high !== null && payload.current_high !== 0)
+        ? Number(payload.current_high)
+        : (curCandles.length ? Math.max(...curCandles.map(c => c.high)) : null);
+
+    const curLow = (payload.current_low !== undefined && payload.current_low !== null && payload.current_low !== 0)
+        ? Number(payload.current_low)
+        : (curCandles.length ? Math.min(...curCandles.map(c => c.low)) : null);
+
+    if(curHigh !== null && curLow !== null && curCandles.length){
+        const leftT = curCandles[0].time;
+        const rightT = lastTime;
+
+        const x1 = xForTime(leftT);
+        const x2 = xForTime(rightT);
+        const y1 = yForPrice(curHigh);
+        const y2 = yForPrice(curLow);
+
+        if(x1 !== null && x2 !== null && y1 !== null && y2 !== null){
+            const left = Math.min(x1, x2);
+            const right = Math.max(x1, x2) + 12;
+            const top = Math.min(y1, y2);
+            const bottom = Math.max(y1, y2);
+
+            _setBox(humanBoxNew, left, top, (right-left), (bottom-top));
+            _setLabel(humanLabelNew, left + 10, top - 24, "New Hourly Range");
+
+            _setPriceLabel(humanHighLabel, top - 12, `High  ${formatHumanPrice(curHigh)}`);
+            _setPriceLabel(humanLowLabel, bottom - 12, `Low   ${formatHumanPrice(curLow)}`);
+        }else{
+            _hideEl(humanBoxNew); _hideEl(humanLabelNew);
+            _hideEl(humanHighLabel); _hideEl(humanLowLabel);
+        }
+    }else{
+        _hideEl(humanBoxNew); _hideEl(humanLabelNew);
+        _hideEl(humanHighLabel); _hideEl(humanLowLabel);
+    }
+}
+
+// ============================
+// HUMAN Keep Alive (frontend)
+// ============================
+async function refreshHumanKeepAliveStatus(){
+    try{
+        const res = await fetch("/human_keep_alive_status", { method:"GET" });
+        const data = await res.json();
+        window.humanKeepAliveEnabled = !!(data && data.enabled);
+        const btn = document.getElementById("keepAliveBtn");
+        if(btn){
+            btn.textContent = window.humanKeepAliveEnabled ? "KEEP ALIVE: ON" : "KEEP ALIVE: OFF";
+            btn.style.background = window.humanKeepAliveEnabled ? "#22c55e" : "#334155";
+        }
+    }catch(e){}
+}
+
+async function toggleHumanKeepAlive(){
+    const next = !window.humanKeepAliveEnabled;
+    try{
+        const res = await fetch("/toggle_human_keep_alive", {
+            method:"POST",
+            headers: { "Content-Type":"application/json" },
+            body: JSON.stringify({ enabled: next })
+        });
+        const data = await res.json();
+        window.humanKeepAliveEnabled = !!(data && data.enabled);
+    }catch(e){}
+    try{ await refreshHumanKeepAliveStatus(); }catch(e){}
+}
+
+window.toggleHumanKeepAlive = toggleHumanKeepAlive;
+
+</script>
 
 <style>
 /* make sizing predictable so padding doesn't cause overflow */
@@ -375,28 +1327,14 @@ input, select{
     }
 }
 
-/* ===================== HUMAN CHART THEME + OVERLAYS ===================== */
-.tf-pill{
-    padding:6px 12px;
-    margin:0;
-    border-radius:999px;
-    border:1px solid #334155;
-    background:#0f172a;
-    color:#e5e7eb;
-    font-weight:bold;
-    cursor:pointer;
-    transition:0.15s;
-}
-.tf-pill:hover{transform:scale(1.03);}
-.tf-pill.active{
-    border-color:#38bdf8;
-    box-shadow:0 0 10px rgba(56,189,248,0.35);
-}
-#humanChart{ position:relative; background:#0b1220;}
+/* ===============================
+   HUMAN CHART OVERLAYS + CONTROLS
+   =============================== */
 .human-chart-overlay{
     position:absolute;
     left:0; right:0; top:0; bottom:0;
     pointer-events:none;
+    z-index:30;
 }
 .human-range-box{
     position:absolute;
@@ -412,9 +1350,9 @@ input, select{
 }
 .human-range-label{
     position:absolute;
-    padding:4px 8px;
+    padding:3px 8px;
     border-radius:999px;
-    font-size:12px;
+    font-size:11px;
     font-weight:bold;
     letter-spacing:0.2px;
     color:#e5e7eb;
@@ -425,32 +1363,34 @@ input, select{
 .human-price-label{
     position:absolute;
     right:10px;
-    padding:4px 8px;
+    padding:3px 8px;
     border-radius:8px;
-    font-size:12px;
+    font-size:11px;
     font-weight:bold;
     color:#e5e7eb;
     background:rgba(15,23,42,0.85);
     border:1px solid rgba(51,65,85,0.85);
     white-space:nowrap;
 }
-.human-live-dot{
+.human-chart-controls{
     position:absolute;
-    width:10px;
-    height:10px;
-    border-radius:999px;
-    background:rgba(250,204,21,0.95);
-    box-shadow:0 0 10px rgba(250,204,21,0.55);
+    top:10px;
+    right:10px;
+    z-index:40;
+    display:flex;
+    gap:8px;
+    pointer-events:auto;
 }
-.human-live-text{
-    position:absolute;
+.human-chart-controls button{
+    padding:6px 10px;
+    margin:0;
+    border-radius:10px;
     font-size:12px;
-    font-weight:bold;
-    color:#facc15;
-    white-space:nowrap;
-    text-shadow:0 0 8px rgba(250,204,21,0.25);
+    background:#1f2937;
+    border:1px solid rgba(51,65,85,0.9);
+    color:#e5e7eb;
 }
-/* =================== END HUMAN CHART THEME + OVERLAYS =================== */
+.human-chart-controls button:hover{ transform:scale(1.03); }
 
 </style>
 
@@ -557,553 +1497,6 @@ input, select{
 /* ===================== SOCKET.IO (BULLETPROOF INIT) ===================== */
 let socket = null;
 
-/* ===================== HUMAN CHART (DARK RANGE BOXES + TF SWITCH) ===================== */
-let humanTF = "5M";
-let lastHumanChartPayload = null;
-
-let humanChart = null;
-let humanChartContainer = null;
-let humanCandleSeries = null;
-let humanRangeHighLine = null;
-let humanRangeLowLine = null;
-
-let humanBarSpacing = 8;
-
-let humanOverlay = null;
-let humanBoxNew = null;
-let humanBoxPrev = null;
-let humanLabelNew = null;
-let humanLabelPrev = null;
-let humanHighLabel = null;
-let humanLowLabel = null;
-let humanLiveDot = null;
-let humanLiveText = null;
-let humanOBBox = null;
-let humanOBLabel = null;
-
-function formatHumanPrice(p){
-    if(p === undefined || p === null || isNaN(Number(p))) return "—";
-    const n = Number(p);
-    // dynamic decimals (keeps forex looking right)
-    const s = String(p);
-    const hasDec = s.includes(".");
-    const dec = hasDec ? Math.min(6, Math.max(2, s.split(".")[1].length)) : 2;
-    return n.toFixed(dec);
-}
-
-function setHumanTF(tf){
-    humanTF = (tf === "1H") ? "1H" : "5M";
-    // button states (if present)
-    const b1 = document.getElementById("tfBtn1H");
-    const b5 = document.getElementById("tfBtn5M");
-    if(b1) b1.classList.toggle("active", humanTF === "1H");
-    if(b5) b5.classList.toggle("active", humanTF === "5M");
-
-    // re-render from last payload
-    if(lastHumanChartPayload){
-        updateHumanChart(lastHumanChartPayload);
-    }
-}
-
-function initHumanChartIfPresent(){
-    const el = document.getElementById("humanChart");
-    if(!el) return;
-
-    if(typeof LightweightCharts === "undefined") return;
-
-    // If already initialized on same container, do nothing.
-    if(humanChart && humanChartContainer === el) return;
-
-    // Remove old chart if any (safe)
-    try{ if(humanChart) humanChart.remove(); }catch(e){}
-
-    humanChartContainer = el;
-
-    humanChart = LightweightCharts.createChart(el, {
-        width: Math.floor(el.clientWidth || 600),
-        height: Math.floor(el.clientHeight || 300),
-        layout: { background: { type: "solid", color: "#0b1220" }, textColor: "#cbd5e1" },
-        grid: {
-            vertLines: { color: "rgba(148,163,184,0.08)" },
-            horzLines: { color: "rgba(148,163,184,0.08)" }
-        },
-        timeScale: {
-            borderColor: "rgba(148,163,184,0.20)",
-            timeVisible: true,
-            secondsVisible: false
-        },
-        rightPriceScale: { borderColor: "rgba(148,163,184,0.20)" },
-        crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-    });
-
-    humanCandleSeries = humanChart.addCandlestickSeries({
-        upColor: "#22c55e",
-        downColor: "#ef4444",
-        borderUpColor: "#22c55e",
-        borderDownColor: "#ef4444",
-        wickUpColor: "#22c55e",
-        wickDownColor: "#ef4444",
-    });
-
-    // small candles feel
-    humanBarSpacing = humanBarSpacing || 8;
-    try{ humanChart.timeScale().applyOptions({ barSpacing: humanBarSpacing }); }catch(e){}
-
-    // overlays (range boxes, labels)
-    ensureHumanOverlay();
-
-    // redraw overlays on zoom/pan
-    try{
-        humanChart.timeScale().subscribeVisibleTimeRangeChange(() => {
-            redrawHumanOverlays();
-        });
-    }catch(e){}
-
-    setTimeout(resizeHumanChart, 0);
-}
-
-function resizeHumanChart(){
-    if(!humanChart || !humanChartContainer) return;
-    const w = Math.floor(humanChartContainer.clientWidth || 0);
-    const h = Math.floor(humanChartContainer.clientHeight || 0);
-    if(w > 0 && h > 0){
-        try{ humanChart.applyOptions({ width: w, height: h }); }catch(e){}
-        redrawHumanOverlays();
-    }
-}
-
-
-function humanZoomIn(){
-    if(!humanChart) return;
-    humanBarSpacing = Math.min(25, (humanBarSpacing || 8) + 2);
-    try{ humanChart.timeScale().applyOptions({ barSpacing: humanBarSpacing }); }catch(e){}
-    try{ redrawHumanOverlays(); }catch(e){}
-}
-function humanZoomOut(){
-    if(!humanChart) return;
-    humanBarSpacing = Math.max(3, (humanBarSpacing || 8) - 2);
-    try{ humanChart.timeScale().applyOptions({ barSpacing: humanBarSpacing }); }catch(e){}
-    try{ redrawHumanOverlays(); }catch(e){}
-}
-function humanResetZoom(){
-    if(!humanChart) return;
-    humanBarSpacing = 8;
-    try{ humanChart.timeScale().applyOptions({ barSpacing: humanBarSpacing }); }catch(e){}
-    try{ redrawHumanOverlays(); }catch(e){}
-}
-
-function ensureHumanOverlay(){
-    if(!humanChartContainer) return;
-
-    // Make the container a positioning context (without changing HTML)
-    try{ humanChartContainer.style.position = "relative"; }catch(e){}
-
-    if(!humanOverlay){
-        humanOverlay = document.createElement("div");
-        humanOverlay.className = "human-chart-overlay";
-        humanChartContainer.appendChild(humanOverlay);
-
-        humanBoxPrev = document.createElement("div");
-        humanBoxPrev.className = "human-range-box prev";
-        humanOverlay.appendChild(humanBoxPrev);
-
-        humanBoxNew = document.createElement("div");
-        humanBoxNew.className = "human-range-box new";
-        humanOverlay.appendChild(humanBoxNew);
-
-        humanLabelPrev = document.createElement("div");
-        humanLabelPrev.className = "human-range-label";
-        humanLabelPrev.textContent = "Previous Hourly Range";
-        humanOverlay.appendChild(humanLabelPrev);
-
-        humanLabelNew = document.createElement("div");
-        humanLabelNew.className = "human-range-label";
-        humanLabelNew.textContent = "New Hourly Range";
-        humanOverlay.appendChild(humanLabelNew);
-
-        humanHighLabel = document.createElement("div");
-        humanHighLabel.className = "human-price-label";
-        humanOverlay.appendChild(humanHighLabel);
-
-        humanLowLabel = document.createElement("div");
-        humanLowLabel.className = "human-price-label";
-        humanOverlay.appendChild(humanLowLabel);
-
-        humanLiveDot = document.createElement("div");
-        humanLiveDot.className = "human-live-dot";
-        humanOverlay.appendChild(humanLiveDot);
-
-        humanLiveText = document.createElement("div");
-        humanLiveText.className = "human-live-text";
-        humanLiveText.textContent = "Live Tick";
-        humanOverlay.appendChild(humanLiveText);
-
-        humanOBBox = document.createElement("div");
-        humanOBBox.className = "human-range-box";
-        humanOBBox.style.borderRadius = "8px";
-        humanOverlay.appendChild(humanOBBox);
-
-        humanOBLabel = document.createElement("div");
-        humanOBLabel.className = "human-range-label";
-        humanOverlay.appendChild(humanOBLabel);
-    }
-}
-
-function _hideEl(el){
-    if(!el) return;
-    el.style.display = "none";
-}
-function _showEl(el){
-    if(!el) return;
-    el.style.display = "block";
-}
-
-function _setBox(box, left, top, width, height){
-    if(!box) return;
-    if([left, top, width, height].some(v => v === null || v === undefined || isNaN(v))) {
-        _hideEl(box); return;
-    }
-    if(width < 2 || height < 2){ _hideEl(box); return; }
-    box.style.display = "block";
-    box.style.left = `${Math.round(left)}px`;
-    box.style.top = `${Math.round(top)}px`;
-    box.style.width = `${Math.round(width)}px`;
-    box.style.height = `${Math.round(height)}px`;
-}
-
-function _setLabel(lbl, x, y, text){
-    if(!lbl) return;
-    if(x === null || y === null || x === undefined || y === undefined || isNaN(x) || isNaN(y)){
-        _hideEl(lbl); return;
-    }
-    lbl.style.display = "block";
-    lbl.textContent = text;
-    lbl.style.left = `${Math.round(x)}px`;
-    lbl.style.top = `${Math.round(y)}px`;
-}
-
-function _setPriceLabel(lbl, y, text){
-    if(!lbl) return;
-    if(y === null || y === undefined || isNaN(y)){
-        _hideEl(lbl); return;
-    }
-    lbl.style.display = "block";
-    lbl.textContent = text;
-    lbl.style.top = `${Math.round(y)}px`;
-}
-
-function updateHumanChart(payload){
-    initHumanChartIfPresent();
-    if(!humanChart || !humanCandleSeries) return;
-    if(!payload) return;
-
-    lastHumanChartPayload = payload;
-
-    // Choose dataset based on timeframe
-    let srcCandles = null;
-    if(humanTF === "1H"){
-        srcCandles = payload.candles_1h || payload.candles_1H || payload.candles1h || null;
-    }else{
-        srcCandles = payload.candles_5m || payload.candles_5M || payload.candles5m || payload.candles || null;
-    }
-
-    if(Array.isArray(srcCandles)){
-        const candles = srcCandles
-            .filter(c => c && c.time !== undefined)
-            .map(c => ({
-                time: Number(c.time), // epoch seconds
-                open: Number(c.open),
-                high: Number(c.high),
-                low: Number(c.low),
-                close: Number(c.close),
-            }))
-            .sort((a,b)=>a.time-b.time);
-
-        try{
-            humanCandleSeries.setData(candles);
-            humanChart.timeScale().fitContent();
-        }catch(e){}
-    }
-
-    // Remove old price lines safely
-    try{
-        if(humanRangeHighLine){ humanCandleSeries.removePriceLine(humanRangeHighLine); humanRangeHighLine = null; }
-        if(humanRangeLowLine){ humanCandleSeries.removePriceLine(humanRangeLowLine); humanRangeLowLine = null; }
-    }catch(e){}
-
-    // Previous 1H range lines (always)
-    try{
-        if(payload.range_high !== undefined && payload.range_high !== null && payload.range_high !== 0){
-            humanRangeHighLine = humanCandleSeries.createPriceLine({
-                price: Number(payload.range_high),
-                color: "rgba(56,189,248,0.95)",
-                lineWidth: 2,
-                lineStyle: LightweightCharts.LineStyle.Solid,
-                axisLabelVisible: true,
-                title: "Prev High",
-            });
-        }
-        if(payload.range_low !== undefined && payload.range_low !== null && payload.range_low !== 0){
-            humanRangeLowLine = humanCandleSeries.createPriceLine({
-                price: Number(payload.range_low),
-                color: "rgba(56,189,248,0.95)",
-                lineWidth: 2,
-                lineStyle: LightweightCharts.LineStyle.Solid,
-                axisLabelVisible: true,
-                title: "Prev Low",
-            });
-        }
-    }catch(e){}
-
-    // Update UI range + direction
-    try{
-        const prev = payload.prev_h1 || payload.prev_1h || null;
-        const prevHigh = (payload.range_high !== undefined && payload.range_high !== null) ? payload.range_high : (prev ? prev.high : null);
-        const prevLow = (payload.range_low !== undefined && payload.range_low !== null) ? payload.range_low : (prev ? prev.low : null);
-
-        const hiEl = document.getElementById("h1PrevHigh");
-        const loEl = document.getElementById("h1PrevLow");
-        const rgEl = document.getElementById("h1RangePts");
-        if(hiEl) hiEl.textContent = formatHumanPrice(prevHigh);
-        if(loEl) loEl.textContent = formatHumanPrice(prevLow);
-
-        if(rgEl && prevHigh !== null && prevLow !== null && !isNaN(Number(prevHigh)) && !isNaN(Number(prevLow))){
-            const pts = Number(prevHigh) - Number(prevLow);
-            rgEl.textContent = formatHumanPrice(pts);
-        }else if(rgEl){
-            rgEl.textContent = "—";
-        }
-
-        const badge = document.getElementById("h1DirectionBadge");
-        if(badge && prev){
-            const o = Number(prev.open), c = Number(prev.close);
-            if(c > o){
-                badge.textContent = "H1: BULLISH";
-                badge.style.background = "rgba(34,197,94,0.15)";
-                badge.style.border = "1px solid rgba(34,197,94,0.55)";
-                badge.style.color = "#22c55e";
-            }else if(c < o){
-                badge.textContent = "H1: BEARISH";
-                badge.style.background = "rgba(239,68,68,0.15)";
-                badge.style.border = "1px solid rgba(239,68,68,0.55)";
-                badge.style.color = "#ef4444";
-            }else{
-                badge.textContent = "H1: NEUTRAL";
-                badge.style.background = "rgba(148,163,184,0.12)";
-                badge.style.border = "1px solid rgba(148,163,184,0.35)";
-                badge.style.color = "#cbd5e1";
-            }
-        }else if(badge){
-            badge.textContent = "H1: —";
-            badge.style.background = "rgba(148,163,184,0.08)";
-            badge.style.border = "1px solid rgba(148,163,184,0.25)";
-            badge.style.color = "#cbd5e1";
-        }
-    }catch(e){}
-
-    // Ensure TF buttons reflect current state after profile load
-    try{
-        const b1 = document.getElementById("tfBtn1H");
-        const b5 = document.getElementById("tfBtn5M");
-        if(b1) b1.classList.toggle("active", humanTF === "1H");
-        if(b5) b5.classList.toggle("active", humanTF === "5M");
-    }catch(e){}
-
-    const ph = document.getElementById("chartPlaceholder");
-    if(ph) ph.style.display = "none";
-
-    redrawHumanOverlays();
-}
-
-function redrawHumanOverlays(){
-    if(!humanChart || !humanCandleSeries || !humanOverlay || !lastHumanChartPayload) return;
-
-    // Only show hourly range boxes on 5M view (matches your screenshot)
-    const showBoxes = (humanTF === "5M");
-
-    if(!showBoxes){
-        _hideEl(humanBoxPrev); _hideEl(humanBoxNew);
-        _hideEl(humanLabelPrev); _hideEl(humanLabelNew);
-        _hideEl(humanHighLabel); _hideEl(humanLowLabel);
-    }
-
-    const payload = lastHumanChartPayload;
-
-    // Use 5m candles (even if user is in 1H view we still compute live tick)
-    const candles5m = (payload.candles_5m || payload.candles_5M || payload.candles5m || payload.candles || []);
-    if(!Array.isArray(candles5m) || candles5m.length === 0){
-        _hideEl(humanLiveDot); _hideEl(humanLiveText);
-        _hideEl(humanOBBox); _hideEl(humanOBLabel);
-        return;
-    }
-
-    const cs = candles5m
-        .filter(c => c && c.time !== undefined)
-        .map(c => ({
-            time: Number(c.time),
-            open: Number(c.open),
-            high: Number(c.high),
-            low: Number(c.low),
-            close: Number(c.close),
-        }))
-        .sort((a,b)=>a.time-b.time);
-
-    const last = cs[cs.length - 1];
-    const lastTime = last.time;
-
-    // Hour buckets
-    const curHourStart = Math.floor(lastTime / 3600) * 3600;
-    const prevHourStart = curHourStart - 3600;
-    const curHourEnd = curHourStart + 3600;
-
-    const prevCandles = cs.filter(c => c.time >= prevHourStart && c.time < curHourStart);
-    const curCandles = cs.filter(c => c.time >= curHourStart && c.time < curHourEnd);
-
-    // Helpers
-    const xForTime = (t) => {
-        try{ return humanChart.timeScale().timeToCoordinate(t); }catch(e){ return null; }
-    };
-    const yForPrice = (p) => {
-        try{ return humanCandleSeries.priceToCoordinate(p); }catch(e){ return null; }
-    };
-
-    if(showBoxes && prevCandles.length >= 2){
-        const prevHigh = Math.max(...prevCandles.map(c => c.high));
-        const prevLow  = Math.min(...prevCandles.map(c => c.low));
-
-        const leftT = prevCandles[0].time;
-        const rightT = (curCandles.length ? curCandles[0].time : lastTime);
-
-        const x1 = xForTime(leftT);
-        const x2 = xForTime(rightT);
-
-        const y1 = yForPrice(prevHigh);
-        const y2 = yForPrice(prevLow);
-
-        if(x1 !== null && x2 !== null && y1 !== null && y2 !== null){
-            const left = Math.min(x1, x2);
-            const right = Math.max(x1, x2);
-            const top = Math.min(y1, y2);
-            const bottom = Math.max(y1, y2);
-            _setBox(humanBoxPrev, left, top, (right-left), (bottom-top));
-            _setLabel(humanLabelPrev, left + 10, bottom + 6, "Previous Hourly Range");
-        }else{
-            _hideEl(humanBoxPrev); _hideEl(humanLabelPrev);
-        }
-    }else{
-        _hideEl(humanBoxPrev); _hideEl(humanLabelPrev);
-    }
-
-    let curHigh = null, curLow = null;
-    if(showBoxes && curCandles.length >= 2){
-        curHigh = Math.max(...curCandles.map(c => c.high));
-        curLow  = Math.min(...curCandles.map(c => c.low));
-
-        const leftT = curCandles[0].time;
-        const rightT = lastTime;
-
-        const x1 = xForTime(leftT);
-        const x2 = xForTime(rightT);
-
-        const y1 = yForPrice(curHigh);
-        const y2 = yForPrice(curLow);
-
-        if(x1 !== null && x2 !== null && y1 !== null && y2 !== null){
-            const left = Math.min(x1, x2);
-            const right = Math.max(x1, x2) + 12; // little padding for the label
-            const top = Math.min(y1, y2);
-            const bottom = Math.max(y1, y2);
-            _setBox(humanBoxNew, left, top, (right-left), (bottom-top));
-            _setLabel(humanLabelNew, left + 10, top - 24, "New Hourly Range");
-
-            // High/Low labels on the right
-            _setPriceLabel(humanHighLabel, top - 12, `High  ${formatHumanPrice(curHigh)}`);
-            _setPriceLabel(humanLowLabel, bottom - 12, `Low   ${formatHumanPrice(curLow)}`);
-        }else{
-            _hideEl(humanBoxNew); _hideEl(humanLabelNew);
-            _hideEl(humanHighLabel); _hideEl(humanLowLabel);
-        }
-    }else{
-        _hideEl(humanBoxNew); _hideEl(humanLabelNew);
-        _hideEl(humanHighLabel); _hideEl(humanLowLabel);
-    }
-
-    // Live tick dot + label
-    try{
-        const px = xForTime(lastTime);
-        const py = yForPrice(Number(payload.current_price || last.close));
-        if(px !== null && py !== null){
-            _showEl(humanLiveDot);
-            humanLiveDot.style.left = `${Math.round(px - 5)}px`;
-            humanLiveDot.style.top = `${Math.round(py - 5)}px`;
-
-            _showEl(humanLiveText);
-            humanLiveText.style.left = `${Math.round(px + 10)}px`;
-            humanLiveText.style.top = `${Math.round(py - 10)}px`;
-        }else{
-            _hideEl(humanLiveDot); _hideEl(humanLiveText);
-        }
-    }catch(e){
-        _hideEl(humanLiveDot); _hideEl(humanLiveText);
-    }
-
-    // Order Block box (OB = current from backend)
-    try{
-        const ob = payload.order_block || null;
-        const bias = (payload.breakout_bias || payload.breakout || {}).bias || payload.breakout_bias || null;
-        const mitigated = !!payload.retrace_happened;
-
-        if(showBoxes && ob && ob.high !== undefined && ob.low !== undefined){
-            const obHigh = Number(ob.high);
-            const obLow  = Number(ob.low);
-
-            const obStart = Number(ob.start_ts || prevHourStart);
-            const obEndT = lastTime;
-
-            let x1 = xForTime(obStart);
-            let x2 = xForTime(obEndT);
-
-            if(x1 === null) x1 = 0;
-            if(x2 === null) x2 = humanChartContainer.clientWidth || 0;
-
-            const y1 = yForPrice(obHigh);
-            const y2 = yForPrice(obLow);
-
-            if(y1 !== null && y2 !== null){
-                const left = Math.min(x1, x2);
-                const right = Math.max(x1, x2);
-                const top = Math.min(y1, y2);
-                const bottom = Math.max(y1, y2);
-
-                const isBuy = String(bias).toUpperCase() === "BUY";
-                humanOBBox.style.display = "block";
-                humanOBBox.style.left = `${Math.round(left)}px`;
-                humanOBBox.style.top = `${Math.round(top)}px`;
-                humanOBBox.style.width = `${Math.round(Math.max(2, right-left))}px`;
-                humanOBBox.style.height = `${Math.round(Math.max(2, bottom-top))}px`;
-                humanOBBox.style.border = isBuy ? "1px solid rgba(34,197,94,0.75)" : "1px solid rgba(239,68,68,0.75)";
-                humanOBBox.style.background = isBuy ? "rgba(34,197,94,0.10)" : "rgba(239,68,68,0.10)";
-
-                const label = `OB (${isBuy ? "Bullish" : "Bearish"})` + (mitigated ? "  •  Mitigated ✅" : "");
-                _setLabel(humanOBLabel, left + 10, bottom + 28, label);
-            }else{
-                _hideEl(humanOBBox); _hideEl(humanOBLabel);
-            }
-        }else{
-            _hideEl(humanOBBox); _hideEl(humanOBLabel);
-        }
-    }catch(e){
-        _hideEl(humanOBBox); _hideEl(humanOBLabel);
-    }
-}
-
-window.updateHumanChart = updateHumanChart;
-window.setHumanTF = setHumanTF;
-window.initHumanChartIfPresent = initHumanChartIfPresent;
-window.addEventListener("resize", resizeHumanChart);
-/* =================== END HUMAN CHART (DARK RANGE BOXES + TF SWITCH) =================== */
-
-
 function initSocket(){
     if (socket) return;
 
@@ -1121,18 +1514,11 @@ function initSocket(){
         reconnectionDelay: 500
     });
 
-// Force server disconnect when page refreshes/closes
-window.addEventListener("beforeunload", () => {
-  try {
-    fetch("/disconnect", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: "{}",
-      keepalive: true
+    // ==================== PATCH D: beforeunload with humanKeepAlive check ====================
+    window.addEventListener("beforeunload", () => {
+        if (humanKeepAlive) return;
+        fetch("/disconnect", { method: "POST", keepalive: true });
     });
-  } catch (e) {}
-});
-
     bindSocketHandlers();
 }
 
@@ -1239,17 +1625,22 @@ function bindSocketHandlers(){
                 }
             }
         }
+
+        // ==================== PATCH D: Update MPull mode and kidPairs trade count UI ====================
+        if(data.auto_settings && activeProfile === "KOOLKID"){
+            if(data.auto_settings.mpull_mode !== undefined){
+                updateMPullModeUI(data.auto_settings.mpull_mode);
+            }
+            if(data.auto_settings.kidpairs_trades_per_signal !== undefined){
+                updateKidPairsTradesUI(data.auto_settings.kidpairs_trades_per_signal);
+            }
+        }
     });
 
     socket.on("human_chart_data", (data)=>{
         if(activeProfile !== "HUMAN") return;
         if (window.updateHumanChart) window.updateHumanChart(data);
     });
-    socket.on("humanx_auto_status", (data)=>{
-        if(activeProfile !== "HUMAN") return;
-        updateHumanXUI(!!data.enabled, data.status);
-    });
-
 
     socket.on("trade_placed", (data)=>{
         const t = prettyType(data.type);
@@ -1305,44 +1696,27 @@ function bindSocketHandlers(){
             document.getElementById("profileLossRate").innerText = (100 - data.winrate).toFixed(1) + "%";
         }
     });
+
+    // ==================== PATCH A: risk_block_update toast ====================
+    socket.on("risk_block_update", (data)=>{
+        const p = (data.profile || "").toUpperCase();
+        const r = (data.reason || "").toUpperCase();
+
+        if(r === "TP HIT") showToast(`🎯 TP reached (${p}) — trading stopped`, "success");
+        if(r === "SL HIT") showToast(`🛑 SL reached (${p}) — trading stopped`, "error");
+    });
 }
 
 /* ===================== YOUR ORIGINAL CODE BELOW (UNCHANGED LOGIC) ===================== */
 let activeProfile = "KOOLKID";
-let mainSymbol = null;
-let humanSymbol = null;
 let digitBuffer = [];
 let lastClickedDigit = null;
 let apiConnected = false;
 
 let autoSL = true;
-function syncSymbolDropdown(){
-    const sel = document.getElementById("symbol");
-    if(!sel) return;
-    if(activeProfile === "HUMAN"){
-        if(humanSymbol) sel.value = humanSymbol;
-    }else{
-        if(mainSymbol) sel.value = mainSymbol;
-    }
-}
 
-function updateHumanXUI(enabled, statusText){
-    const btn = document.getElementById("humanXBtn");
-    const status = document.getElementById("humanXStatus");
-    if(btn){
-        if(enabled){
-            btn.innerText = "⚡ humanX AUTO: ON";
-            btn.style.background = "#22c55e";
-        }else{
-            btn.innerText = "⚡ humanX AUTO: OFF";
-            btn.style.background = "#ef4444";
-        }
-    }
-    if(status){
-        status.innerText = statusText || (enabled ? "Auto: Armed" : "Auto: OFF");
-    }
-}
-
+// ==================== PATCH B: new humanKeepAlive variable ====================
+let humanKeepAlive = false;
 
 const apiStatus = document.getElementById("apiStatus");
 const balanceDisplay = document.getElementById("balance");
@@ -1461,6 +1835,15 @@ async function loadProfileUI(profile){
 
     document.getElementById("profileContainer").innerHTML = html;
 
+
+    // HUMAN: init chart + pull Keep Alive status
+    if(profile === "HUMAN"){
+        setTimeout(() => {
+            try{ initHumanChartIfPresent(); }catch(e){}
+            try{ refreshHumanKeepAliveStatus(); }catch(e){}
+        }, 0);
+    }
+
     refreshDynamicElements();
     initDigitGrid();
     refreshHowTo();
@@ -1528,6 +1911,9 @@ function getHowToHTMLForProfile(profile) {
                 <li><b>KIDRACKS AUTO:</b> Automated mode that triggers trades based on the selected barrier. Click once to set barrier, again to toggle on/off.</li>
                 <li><b>KOOLKIDSPEED AUTO:</b> Faster automated mode with barrier selection.</li>
                 <li><b>KOOL🍀KID LUCK:</b> Cycles through a preset sequence of trades each time the relevant digit appears.</li>
+                <li><b>kidBagz💰🤑 AUTO:</b> New automated mode.</li>
+                <li><b>MPull💰🤫 AUTO:</b> New automated mode.</li>
+                <li><b>kidPairs🤓💯 AUTO:</b> New automated mode.</li>
                 <li><b>Master Auto:</b> Global on/off for all automated modes.</li>
                 <li><b>TP/SL:</b> Set take-profit and stop-loss levels (in USD). AUTO SL toggles automatic stop-loss.</li>
             </ul>
@@ -1768,35 +2154,9 @@ function loadMarketList(){
 }
 loadMarketList();
 
-(async ()=>{
-    try{
-        const res = await fetch("/market_state");
-        const data = await res.json();
-        if(data && data.status === "success"){
-            mainSymbol = data.main_symbol || mainSymbol;
-            humanSymbol = data.human_symbol || humanSymbol;
-            syncSymbolDropdown();
-            if(activeProfile === "HUMAN"){
-                updateHumanXUI(!!data.humanx_auto, data.humanx_status);
-            }
-        }
-    }catch(e){}
-})();
-
-
-document.getElementById("symbol").addEventListener("change", async function(){
-    try{
-        const sym = this.value;
-        const url = (activeProfile === "HUMAN") ? "/change_human_market" : "/change_market";
-        const res = await fetch(url, {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({symbol:sym})});
-        const data = await res.json();
-        mainSymbol = data.main_symbol || mainSymbol;
-        humanSymbol = data.human_symbol || humanSymbol;
-        syncSymbolDropdown();
-        showToast("📊 Market Changed: " + sym, "warn");
-    }catch(e){
-        showToast("Market change failed", "error");
-    }
+document.getElementById("symbol").addEventListener("change", function(){
+    fetch("/change_market", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({symbol:this.value})});
+    showToast("📊 Market Changed: " + this.value, "warn");
 });
 
 /* ✅ hide LIVE TICK INFO on HUMAN only */
@@ -1808,8 +2168,6 @@ function applyLiveTickVisibility(){
 
 async function setProfile(profile){
     activeProfile = profile;
-
-    syncSymbolDropdown();
 
     document.getElementById("koolkidBtn").classList.remove("active");
     document.getElementById("jokerjoeBtn").classList.remove("active");
@@ -1835,16 +2193,12 @@ async function setProfile(profile){
 
     await loadProfileUI(profile);
 
-    try{
-        const r = await fetch("/set_profile", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({profile})});
-        const j = await r.json();
-        mainSymbol = j.main_symbol || mainSymbol;
-        humanSymbol = j.human_symbol || humanSymbol;
-        syncSymbolDropdown();
-        if(profile === "HUMAN"){
-            updateHumanXUI(!!j.humanx_auto, j.humanx_status);
-        }
-    }catch(e){}
+    // ==================== PATCH C: refresh keep-alive UI when switching to HUMAN ====================
+    if(profile === "HUMAN"){
+        await refreshHumanKeepAliveUI();
+    }
+
+    fetch("/set_profile", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({profile})});
 
     refreshHowTo();
     showToast("🎮 Profile Changed: " + profile, "info");
@@ -1879,7 +2233,8 @@ async function disconnect(){
     hidePopup();
     if(differsDigitsRow) differsDigitsRow.innerHTML = "";
 
-    updateAutoModeButtons({kidracks:false, koolkidspeed:false, koolluck:false, sludgex:false, triplex:false, kidx:false, multig:false});
+    // PATCH A: update disconnect reset with new auto modes
+    updateAutoModeButtons({kidracks:false, koolkidspeed:false, kidbagz:false, mpull:false, koolluck:false, sludgex:false, triplex:false, kidx:false, multig:false, kidpairs:false});
 
     const autoBtn = document.getElementById("autoBtn");
     if(autoBtn){
@@ -1962,6 +2317,11 @@ function updateAutoModeButtons(modes){
     const speedBtn = document.getElementById("koolkidspeedBtn");
     const luckBtn = document.getElementById("koolluckBtn");
 
+    // ==================== PATCH A: add new button variables ====================
+    const bagzBtn = document.getElementById("kidBagzBtn");
+    const mpullBtn = document.getElementById("mpullBtn");
+    const kidPairsBtn = document.getElementById("kidPairsBtn");
+
     if(modes.kidracks !== undefined && kidBtn){
         kidBtn.innerText = modes.kidracks ? "KIDRACKS AUTO TRADE: ON" : "KIDRACKS AUTO TRADE: OFF";
         kidBtn.style.background = modes.kidracks ? "#22c55e" : "#1e293b";
@@ -1970,6 +2330,23 @@ function updateAutoModeButtons(modes){
         speedBtn.innerText = modes.koolkidspeed ? "KOOLKIDSPEED AUTO: ON" : "KOOLKIDSPEED AUTO: OFF";
         speedBtn.style.background = modes.koolkidspeed ? "#38bdf8" : "#1e293b";
     }
+
+    // ==================== PATCH A: handle kidbagz, mpull, kidpairs ====================
+    if(modes.kidbagz !== undefined && bagzBtn){
+        bagzBtn.innerText = modes.kidbagz ? "kidBagz💰🤑: ON" : "kidBagz💰🤑: OFF";
+        bagzBtn.style.background = modes.kidbagz ? "#22c55e" : "#1e293b";
+    }
+
+    if(modes.mpull !== undefined && mpullBtn){
+        mpullBtn.innerText = modes.mpull ? "MPull💰🤫: ON" : "MPull💰🤫: OFF";
+        mpullBtn.style.background = modes.mpull ? "#22c55e" : "#1e293b";
+    }
+
+    if(modes.kidpairs !== undefined && kidPairsBtn){
+        kidPairsBtn.innerText = modes.kidpairs ? "kidPairs🤓💯: ON" : "kidPairs🤓💯: OFF";
+        kidPairsBtn.style.background = modes.kidpairs ? "#22c55e" : "#1e293b";
+    }
+
     if(modes.koolluck !== undefined && luckBtn){
         luckBtn.innerText = modes.koolluck ? "KOOL🍀KID LUCK: ON" : "KOOL🍀KID LUCK: OFF";
         luckBtn.style.background = modes.koolluck ? "#22c55e" : "#1e293b";
@@ -1998,6 +2375,35 @@ function updateAutoModeButtons(modes){
         multiGBtn.innerText = modes.multig ? "MultiG: ON" : "MultiG: OFF";
         multiGBtn.style.background = modes.multig ? "#1d4ed8" : "#ef4444";
     }
+}
+
+// ==================== PATCH B: helper UI functions ====================
+function updateMPullModeUI(mode){
+    const both = document.getElementById("mpullModeBothBtn");
+    const over = document.getElementById("mpullModeOverBtn");
+    const under = document.getElementById("mpullModeUnderBtn");
+    if(!both || !over || !under) return;
+
+    const m = (mode || "BOTH").toUpperCase();
+    const onStyle = "#38bdf8";
+    const offStyle = "#1e293b";
+
+    both.style.background = (m === "BOTH") ? onStyle : offStyle;
+    over.style.background = (m === "OVER") ? onStyle : offStyle;
+    under.style.background = (m === "UNDER") ? onStyle : offStyle;
+}
+
+function updateKidPairsTradesUI(n){
+    const b1 = document.getElementById("kidPairs1Btn");
+    const b2 = document.getElementById("kidPairs2Btn");
+    if(!b1 || !b2) return;
+
+    const v = Number(n) === 2 ? 2 : 1;
+    const onStyle = "#38bdf8";
+    const offStyle = "#1e293b";
+
+    b1.style.background = (v === 1) ? onStyle : offStyle;
+    b2.style.background = (v === 2) ? onStyle : offStyle;
 }
 
 async function toggleKidracksAuto(){
@@ -2033,6 +2439,54 @@ async function toggleKoolluckAuto(){
     const data = await res.json();
     updateAutoModeButtons({koolluck: data.koolluck_auto});
     showToast("KOOL🍀KID LUCK: " + (data.koolluck_auto ? "ON" : "OFF"), data.koolluck_auto ? "success" : "error");
+}
+
+// ==================== PATCH C: new toggle functions ====================
+async function toggleKidBagzAuto(){
+    const res = await fetch("/toggle_kidbagz_auto", {method:"POST"});
+    const data = await res.json();
+    updateAutoModeButtons({kidbagz: data.kidbagz_auto});
+    showToast("kidBagz💰🤑: " + (data.kidbagz_auto ? "ON" : "OFF"), data.kidbagz_auto ? "success" : "error");
+}
+
+async function toggleMPullAuto(){
+    const res = await fetch("/toggle_mpull_auto", {method:"POST"});
+    const data = await res.json();
+    updateAutoModeButtons({mpull: data.mpull_auto});
+    showToast("MPull💰🤫: " + (data.mpull_auto ? "ON" : "OFF"), data.mpull_auto ? "success" : "error");
+}
+
+async function setMPullMode(mode){
+    const res = await fetch("/set_mpull_mode", {
+        method:"POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({mode})
+    });
+    const data = await res.json();
+    if(data && data.mpull_mode){
+        updateMPullModeUI(data.mpull_mode);
+        showToast("MPull mode: " + data.mpull_mode, "success");
+    }
+}
+
+async function toggleKidPairsAuto(){
+    const res = await fetch("/toggle_kidpairs_auto", {method:"POST"});
+    const data = await res.json();
+    updateAutoModeButtons({kidpairs: data.kidpairs_auto});
+    showToast("kidPairs🤓💯: " + (data.kidpairs_auto ? "ON" : "OFF"), data.kidpairs_auto ? "success" : "error");
+}
+
+async function setKidPairsTrades(n){
+    const res = await fetch("/set_kidpairs_trades", {
+        method:"POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({trades: n})
+    });
+    const data = await res.json();
+    if(data && data.kidpairs_trades_per_signal){
+        updateKidPairsTradesUI(data.kidpairs_trades_per_signal);
+        showToast("kidPairs trades: " + data.kidpairs_trades_per_signal, "success");
+    }
 }
 
 async function toggleSludgeXAuto(){
@@ -2151,20 +2605,11 @@ async function burst4(type){
 }
 
 async function humanX(){
-    try{
-        const res = await fetch("/toggle_humanx_auto", {method:"POST"});
-        const data = await res.json();
-        if(data.status === "success"){
-            updateHumanXUI(!!data.enabled, data.enabled ? "Auto: Armed" : "Auto: OFF");
-            showToast(data.enabled ? "⚡ humanX AUTO ON" : "⚡ humanX AUTO OFF", data.enabled ? "success" : "warn");
-        }else{
-            showToast(data.error || "Toggle failed", "error");
-        }
-    }catch(e){
-        showToast("Toggle failed", "error");
-    }
+    const res = await fetch("/humanx_trade", {method:"POST"});
+    const data = await res.json();
+    if (data.status === "success") showToast("humanX trade placed", "success");
+    else showToast(data.error || "No valid setup", "error");
 }
-
 
 function renderDiffersAnalysis(da){
     if(!differsDigitsRow) return;
@@ -2215,6 +2660,510 @@ function prettyType(t){
     if(x === "DIFFERS") return "DIFFER";
     return t || "TRADE";
 }
+
+// ==================== PATCH B: new keep-alive UI functions ====================
+async function refreshHumanKeepAliveUI(){
+    try{
+        const res = await fetch("/human_keep_alive_status");
+        const data = await res.json();
+        humanKeepAlive = !!data.enabled;
+        const btn = document.getElementById("keepAliveBtn");
+        if(btn){
+            btn.innerText = humanKeepAlive ? "KEEP ALIVE: ON" : "KEEP ALIVE: OFF";
+            btn.style.background = humanKeepAlive ? "#22c55e" : "#64748b";
+        }
+    }catch(e){}
+}
+
+async function toggleHumanKeepAlive(){
+    try{
+        const res = await fetch("/toggle_human_keep_alive", {method:"POST"});
+        const data = await res.json();
+        humanKeepAlive = !!data.enabled;
+        const btn = document.getElementById("keepAliveBtn");
+        if(btn){
+            btn.innerText = humanKeepAlive ? "KEEP ALIVE: ON" : "KEEP ALIVE: OFF";
+            btn.style.background = humanKeepAlive ? "#22c55e" : "#64748b";
+        }
+        showToast(humanKeepAlive ? "✅ HUMAN Keep Alive enabled" : "⚠️ HUMAN Keep Alive disabled", humanKeepAlive ? "success" : "warn");
+    }catch(e){}
+}
+
+window.toggleHumanKeepAlive = toggleHumanKeepAlive;
+
+// (Existing chart code remains below, unchanged)
+
+/* =========================================================
+   HUMAN CHART (Lightweight Charts) + Hourly Range Overlays
+   ========================================================= */
+
+window.humanKeepAliveEnabled = window.humanKeepAliveEnabled || false;
+
+let humanChart = null;
+let humanCandleSeries = null;
+let humanChartContainer = null;
+
+let humanOverlay = null;
+let humanControls = null;
+
+let humanBoxPrev = null;
+let humanBoxNew = null;
+let humanLabelPrev = null;
+let humanLabelNew = null;
+let humanHighLabel = null;
+let humanLowLabel = null;
+
+let humanBarSpacing = 8;
+let humanAutoFit = true;
+let humanHasFitOnce = false;
+
+let lastHumanChartPayload = null;
+
+function _normSec(t){
+    const n = Number(t);
+    if(!isFinite(n)) return null;
+    // If ms epoch, convert to seconds
+    if(n > 1e12) return Math.floor(n/1000);
+    return Math.floor(n);
+}
+
+function _clamp(v, min, max){
+    if(v < min) return min;
+    if(v > max) return max;
+    return v;
+}
+
+function initHumanChartIfPresent(){
+    const el = document.getElementById("humanChart");
+    if(!el) return;
+    if(typeof LightweightCharts === "undefined") return;
+
+    // Already initialized on same element
+    if(humanChart && humanChartContainer === el) return;
+
+    // Remove old chart safely
+    try{ if(humanChart) humanChart.remove(); }catch(e){}
+
+    humanChartContainer = el;
+
+    // Make container a positioning context for overlays/controls
+    try{ humanChartContainer.style.position = "relative"; }catch(e){}
+
+    humanChart = LightweightCharts.createChart(el, {
+        width: Math.floor(el.clientWidth || 600),
+        height: Math.floor(el.clientHeight || 300),
+        layout: { background: { type: "solid", color: "#0b1220" }, textColor: "#cbd5e1" },
+        grid: {
+            vertLines: { color: "rgba(148,163,184,0.08)" },
+            horzLines: { color: "rgba(148,163,184,0.08)" }
+        },
+        timeScale: {
+            borderColor: "rgba(148,163,184,0.20)",
+            timeVisible: true,
+            secondsVisible: false
+        },
+        rightPriceScale: { borderColor: "rgba(148,163,184,0.20)" },
+        crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+    });
+
+    humanCandleSeries = humanChart.addCandlestickSeries({
+        upColor: "#22c55e",
+        downColor: "#ef4444",
+        borderUpColor: "#22c55e",
+        borderDownColor: "#ef4444",
+        wickUpColor: "#22c55e",
+        wickDownColor: "#ef4444",
+    });
+
+    // Small candles
+    humanBarSpacing = humanBarSpacing || 8;
+    try{ humanChart.timeScale().applyOptions({ barSpacing: humanBarSpacing }); }catch(e){}
+
+    ensureHumanOverlay();
+    ensureHumanControls();
+
+    // Re-draw overlays on zoom/pan
+    try{
+        humanChart.timeScale().subscribeVisibleTimeRangeChange(() => {
+            redrawHumanOverlays();
+        });
+    }catch(e){}
+
+    setTimeout(resizeHumanChart, 0);
+
+    // If we already have payload (profile swap), redraw it
+    if(lastHumanChartPayload){
+        try{ updateHumanChart(lastHumanChartPayload); }catch(e){}
+    }
+}
+
+function resizeHumanChart(){
+    if(!humanChart || !humanChartContainer) return;
+    const w = Math.floor(humanChartContainer.clientWidth || 0);
+    const h = Math.floor(humanChartContainer.clientHeight || 0);
+    if(w > 0 && h > 0){
+        try{ humanChart.applyOptions({ width: w, height: h }); }catch(e){}
+        redrawHumanOverlays();
+    }
+}
+
+window.addEventListener("resize", () => {
+    try{ resizeHumanChart(); }catch(e){}
+});
+
+function ensureHumanOverlay(){
+    if(!humanChartContainer) return;
+
+    if(!humanOverlay){
+        humanOverlay = document.createElement("div");
+        humanOverlay.className = "human-chart-overlay";
+        humanChartContainer.appendChild(humanOverlay);
+
+        humanBoxPrev = document.createElement("div");
+        humanBoxPrev.className = "human-range-box prev";
+        humanOverlay.appendChild(humanBoxPrev);
+
+        humanBoxNew = document.createElement("div");
+        humanBoxNew.className = "human-range-box new";
+        humanOverlay.appendChild(humanBoxNew);
+
+        humanLabelPrev = document.createElement("div");
+        humanLabelPrev.className = "human-range-label";
+        humanLabelPrev.textContent = "Previous Hourly Range";
+        humanOverlay.appendChild(humanLabelPrev);
+
+        humanLabelNew = document.createElement("div");
+        humanLabelNew.className = "human-range-label";
+        humanLabelNew.textContent = "New Hourly Range";
+        humanOverlay.appendChild(humanLabelNew);
+
+        humanHighLabel = document.createElement("div");
+        humanHighLabel.className = "human-price-label";
+        humanOverlay.appendChild(humanHighLabel);
+
+        humanLowLabel = document.createElement("div");
+        humanLowLabel.className = "human-price-label";
+        humanOverlay.appendChild(humanLowLabel);
+
+        _hideEl(humanBoxPrev); _hideEl(humanBoxNew);
+        _hideEl(humanLabelPrev); _hideEl(humanLabelNew);
+        _hideEl(humanHighLabel); _hideEl(humanLowLabel);
+    }
+}
+
+function ensureHumanControls(){
+    if(!humanChartContainer) return;
+
+    if(!humanControls){
+        humanControls = document.createElement("div");
+        humanControls.className = "human-chart-controls";
+        humanChartContainer.appendChild(humanControls);
+
+        const btnIn = document.createElement("button");
+        btnIn.textContent = "＋";
+        btnIn.title = "Zoom In";
+        btnIn.onclick = () => humanZoomIn();
+        humanControls.appendChild(btnIn);
+
+        const btnOut = document.createElement("button");
+        btnOut.textContent = "－";
+        btnOut.title = "Zoom Out";
+        btnOut.onclick = () => humanZoomOut();
+        humanControls.appendChild(btnOut);
+
+        const btnReset = document.createElement("button");
+        btnReset.textContent = "Reset";
+        btnReset.title = "Reset Zoom";
+        btnReset.onclick = () => humanResetZoom();
+        humanControls.appendChild(btnReset);
+    }
+}
+
+function humanZoomIn(){
+    if(!humanChart) return;
+    humanAutoFit = false;
+    humanBarSpacing = Math.min(30, (humanBarSpacing || 8) + 2);
+    try{ humanChart.timeScale().applyOptions({ barSpacing: humanBarSpacing }); }catch(e){}
+    redrawHumanOverlays();
+}
+
+function humanZoomOut(){
+    if(!humanChart) return;
+    humanAutoFit = false;
+    humanBarSpacing = Math.max(2, (humanBarSpacing || 8) - 2);
+    try{ humanChart.timeScale().applyOptions({ barSpacing: humanBarSpacing }); }catch(e){}
+    redrawHumanOverlays();
+}
+
+function humanResetZoom(){
+    if(!humanChart) return;
+    humanBarSpacing = 8;
+    humanAutoFit = true;
+    humanHasFitOnce = false;
+    try{ humanChart.timeScale().applyOptions({ barSpacing: humanBarSpacing }); }catch(e){}
+    try{ humanChart.timeScale().fitContent(); }catch(e){}
+    redrawHumanOverlays();
+}
+
+function _hideEl(el){ if(el) el.style.display = "none"; }
+function _showEl(el){ if(el) el.style.display = "block"; }
+
+function _setBox(box, left, top, width, height){
+    if(!box) return;
+    if([left, top, width, height].some(v => v === null || v === undefined || !isFinite(v))){
+        _hideEl(box); return;
+    }
+    if(width < 2 || height < 2){
+        _hideEl(box); return;
+    }
+    // Clamp into chart container bounds
+    const W = humanChartContainer ? humanChartContainer.clientWidth : 0;
+    const H = humanChartContainer ? humanChartContainer.clientHeight : 0;
+
+    const l = _clamp(left, 0, Math.max(0, W-2));
+    const t = _clamp(top, 0, Math.max(0, H-2));
+    const r = _clamp(left + width, 0, Math.max(0, W));
+    const b = _clamp(top + height, 0, Math.max(0, H));
+
+    box.style.display = "block";
+    box.style.left = `${Math.round(l)}px`;
+    box.style.top = `${Math.round(t)}px`;
+    box.style.width = `${Math.round(Math.max(2, r - l))}px`;
+    box.style.height = `${Math.round(Math.max(2, b - t))}px`;
+}
+
+function _setLabel(lbl, x, y, text){
+    if(!lbl) return;
+    if(x === null || y === null || x === undefined || y === undefined || !isFinite(x) || !isFinite(y)){
+        _hideEl(lbl); return;
+    }
+    const W = humanChartContainer ? humanChartContainer.clientWidth : 0;
+    const H = humanChartContainer ? humanChartContainer.clientHeight : 0;
+
+    const xx = _clamp(x, 6, Math.max(6, W - 160));
+    const yy = _clamp(y, 6, Math.max(6, H - 26));
+
+    lbl.style.display = "block";
+    lbl.textContent = text;
+    lbl.style.left = `${Math.round(xx)}px`;
+    lbl.style.top = `${Math.round(yy)}px`;
+}
+
+function _setPriceLabel(lbl, y, text){
+    if(!lbl) return;
+    if(y === null || y === undefined || !isFinite(y)){
+        _hideEl(lbl); return;
+    }
+    const H = humanChartContainer ? humanChartContainer.clientHeight : 0;
+    const yy = _clamp(y, 6, Math.max(6, H - 26));
+    lbl.style.display = "block";
+    lbl.textContent = text;
+    lbl.style.top = `${Math.round(yy)}px`;
+}
+
+function formatHumanPrice(v){
+    if(v === null || v === undefined) return "—";
+    const n = Number(v);
+    if(!isFinite(n)) return "—";
+    // Keep a sensible precision
+    if(n >= 1000) return n.toFixed(2);
+    if(n >= 1) return n.toFixed(3);
+    return n.toFixed(4);
+}
+
+function updateHumanChart(payload){
+    initHumanChartIfPresent();
+    if(!humanChart || !humanCandleSeries) return;
+    if(!payload) return;
+
+    lastHumanChartPayload = payload;
+
+    // Prefer 5M candles for HUMAN execution view
+    const src = payload.candles_5m || payload.candles_5M || payload.candles5m || payload.candles || null;
+
+    if(Array.isArray(src)){
+        const candles = src
+            .filter(c => c && c.time !== undefined)
+            .map(c => ({
+                time: _normSec(c.time),
+                open: Number(c.open),
+                high: Number(c.high),
+                low: Number(c.low),
+                close: Number(c.close),
+            }))
+            .filter(c => c.time !== null)
+            .sort((a,b)=>a.time-b.time);
+
+        try{
+            humanCandleSeries.setData(candles);
+            // IMPORTANT: Don't fit content every tick (breaks zoom).
+            if(humanAutoFit && !humanHasFitOnce){
+                humanChart.timeScale().fitContent();
+                humanHasFitOnce = true;
+            }
+        }catch(e){}
+    }
+
+    const ph = document.getElementById("chartPlaceholder");
+    if(ph) ph.style.display = "none";
+
+    redrawHumanOverlays();
+}
+
+window.updateHumanChart = updateHumanChart;
+
+function redrawHumanOverlays(){
+    if(!humanChart || !humanCandleSeries || !humanOverlay || !lastHumanChartPayload) return;
+
+    const payload = lastHumanChartPayload;
+    const src = payload.candles_5m || payload.candles_5M || payload.candles5m || payload.candles || [];
+    if(!Array.isArray(src) || src.length === 0){
+        _hideEl(humanBoxPrev); _hideEl(humanBoxNew);
+        _hideEl(humanLabelPrev); _hideEl(humanLabelNew);
+        _hideEl(humanHighLabel); _hideEl(humanLowLabel);
+        return;
+    }
+
+    const cs = src
+        .filter(c => c && c.time !== undefined)
+        .map(c => ({
+            time: _normSec(c.time),
+            open: Number(c.open),
+            high: Number(c.high),
+            low: Number(c.low),
+            close: Number(c.close),
+        }))
+        .filter(c => c.time !== null)
+        .sort((a,b)=>a.time-b.time);
+
+    if(cs.length === 0){
+        _hideEl(humanBoxPrev); _hideEl(humanBoxNew);
+        _hideEl(humanLabelPrev); _hideEl(humanLabelNew);
+        _hideEl(humanHighLabel); _hideEl(humanLowLabel);
+        return;
+    }
+
+    const last = cs[cs.length - 1];
+    const lastTime = last.time;
+
+    // Hour buckets (based on most recent candle)
+    const curHourStart = Math.floor(lastTime / 3600) * 3600;
+    const prevHourStart = curHourStart - 3600;
+    const curHourEnd = curHourStart + 3600;
+
+    const prevCandles = cs.filter(c => c.time >= prevHourStart && c.time < curHourStart);
+    const curCandles = cs.filter(c => c.time >= curHourStart && c.time < curHourEnd);
+
+    const xForTime = (t) => { try{ return humanChart.timeScale().timeToCoordinate(t); }catch(e){ return null; } };
+    const yForPrice = (p) => { try{ return humanCandleSeries.priceToCoordinate(p); }catch(e){ return null; } };
+
+    // =====================
+    // PREVIOUS HOUR BOX
+    // =====================
+    const prevHigh = (payload.range_high !== undefined && payload.range_high !== null && payload.range_high !== 0)
+        ? Number(payload.range_high)
+        : (prevCandles.length ? Math.max(...prevCandles.map(c => c.high)) : null);
+
+    const prevLow = (payload.range_low !== undefined && payload.range_low !== null && payload.range_low !== 0)
+        ? Number(payload.range_low)
+        : (prevCandles.length ? Math.min(...prevCandles.map(c => c.low)) : null);
+
+    if(prevHigh !== null && prevLow !== null && prevCandles.length){
+        const leftT = prevCandles[0].time;
+        const rightT = (curCandles.length ? curCandles[0].time : lastTime);
+
+        const x1 = xForTime(leftT);
+        const x2 = xForTime(rightT);
+        const y1 = yForPrice(prevHigh);
+        const y2 = yForPrice(prevLow);
+
+        if(x1 !== null && x2 !== null && y1 !== null && y2 !== null){
+            const left = Math.min(x1, x2);
+            const right = Math.max(x1, x2);
+            const top = Math.min(y1, y2);
+            const bottom = Math.max(y1, y2);
+
+            _setBox(humanBoxPrev, left, top, (right-left), (bottom-top));
+            _setLabel(humanLabelPrev, left + 10, bottom + 6, "Previous Hourly Range");
+        }else{
+            _hideEl(humanBoxPrev); _hideEl(humanLabelPrev);
+        }
+    }else{
+        _hideEl(humanBoxPrev); _hideEl(humanLabelPrev);
+    }
+
+    // =====================
+    // CURRENT (NEW) HOUR BOX
+    // =====================
+    const curHigh = (payload.current_high !== undefined && payload.current_high !== null && payload.current_high !== 0)
+        ? Number(payload.current_high)
+        : (curCandles.length ? Math.max(...curCandles.map(c => c.high)) : null);
+
+    const curLow = (payload.current_low !== undefined && payload.current_low !== null && payload.current_low !== 0)
+        ? Number(payload.current_low)
+        : (curCandles.length ? Math.min(...curCandles.map(c => c.low)) : null);
+
+    if(curHigh !== null && curLow !== null && curCandles.length){
+        const leftT = curCandles[0].time;
+        const rightT = lastTime;
+
+        const x1 = xForTime(leftT);
+        const x2 = xForTime(rightT);
+        const y1 = yForPrice(curHigh);
+        const y2 = yForPrice(curLow);
+
+        if(x1 !== null && x2 !== null && y1 !== null && y2 !== null){
+            const left = Math.min(x1, x2);
+            const right = Math.max(x1, x2) + 12;
+            const top = Math.min(y1, y2);
+            const bottom = Math.max(y1, y2);
+
+            _setBox(humanBoxNew, left, top, (right-left), (bottom-top));
+            _setLabel(humanLabelNew, left + 10, top - 24, "New Hourly Range");
+
+            _setPriceLabel(humanHighLabel, top - 12, `High  ${formatHumanPrice(curHigh)}`);
+            _setPriceLabel(humanLowLabel, bottom - 12, `Low   ${formatHumanPrice(curLow)}`);
+        }else{
+            _hideEl(humanBoxNew); _hideEl(humanLabelNew);
+            _hideEl(humanHighLabel); _hideEl(humanLowLabel);
+        }
+    }else{
+        _hideEl(humanBoxNew); _hideEl(humanLabelNew);
+        _hideEl(humanHighLabel); _hideEl(humanLowLabel);
+    }
+}
+
+// ============================
+// HUMAN Keep Alive (frontend) – original functions (kept for backward compatibility)
+// ============================
+async function refreshHumanKeepAliveStatus(){
+    try{
+        const res = await fetch("/human_keep_alive_status", { method:"GET" });
+        const data = await res.json();
+        window.humanKeepAliveEnabled = !!(data && data.enabled);
+        const btn = document.getElementById("keepAliveBtn");
+        if(btn){
+            btn.textContent = window.humanKeepAliveEnabled ? "KEEP ALIVE: ON" : "KEEP ALIVE: OFF";
+            btn.style.background = window.humanKeepAliveEnabled ? "#22c55e" : "#334155";
+        }
+    }catch(e){}
+}
+
+async function toggleHumanKeepAliveOriginal(){
+    const next = !window.humanKeepAliveEnabled;
+    try{
+        const res = await fetch("/toggle_human_keep_alive", {
+            method:"POST",
+            headers: { "Content-Type":"application/json" },
+            body: JSON.stringify({ enabled: next })
+        });
+        const data = await res.json();
+        window.humanKeepAliveEnabled = !!(data && data.enabled);
+    }catch(e){}
+    try{ await refreshHumanKeepAliveStatus(); }catch(e){}
+}
+
+window.toggleHumanKeepAliveOriginal = toggleHumanKeepAliveOriginal;
 
 /* ✅ STARTUP */
 initSocket();

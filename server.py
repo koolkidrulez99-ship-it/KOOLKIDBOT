@@ -318,7 +318,9 @@ def init_client(client_id):
             "KOOLKID": KoolKidStrategy(),
             "JOKERJOE": JokerJoeStrategy(),
             "HUMAN": HumanStrategy()
-        }
+        },
+        # PATCH A: human_keep_alive flag
+        "human_keep_alive": False,
     }
 
 
@@ -542,6 +544,15 @@ def send_buy(client_id, contract_type, stake, symbol, barrier):
     if not ws_connected or not ws:
         return False, "Not connected"
 
+    # PATCH D: Block digit trades if profile session is TP/SL blocked
+    profile = state.get("active_profile", "KOOLKID")
+    strategy = state.get("strategies", {}).get(profile)
+
+    if strategy and hasattr(strategy, "enforce_tp_sl"):
+        strategy.enforce_tp_sl()
+        if getattr(strategy, "risk_block_reason", None):
+            return False, f"{strategy.risk_block_reason} (session limit reached)"
+
     contract_map = {
         "OVER": "DIGITOVER",
         "UNDER": "DIGITUNDER",
@@ -556,7 +567,7 @@ def send_buy(client_id, contract_type, stake, symbol, barrier):
 
     req_id = _new_req_id()
     state["req_meta"][req_id] = {
-        "profile": state.get("active_profile", "KOOLKID"),
+        "profile": profile,  # PATCH D: use the same profile variable
         "type": contract_type,
         "barrier": int(barrier),
         "stake": float(stake),
@@ -593,6 +604,14 @@ def place_multiplier_order(client_id, signal):
     if not state or not state.get("ws_connected"):
         return False, "Not connected"
 
+    # PATCH E: Block HUMAN multiplier trades if HUMAN session is TP/SL blocked
+    strategy = state.get("strategies", {}).get("HUMAN")
+
+    if strategy and hasattr(strategy, "enforce_tp_sl"):
+        strategy.enforce_tp_sl()
+        if getattr(strategy, "risk_block_reason", None):
+            return False, f"{strategy.risk_block_reason} (session limit reached)"
+
     ws = state["ws"]
 
     symbol_to_use = signal.get("symbol") or state.get("current_symbol")
@@ -613,7 +632,7 @@ def place_multiplier_order(client_id, signal):
 
     req_id = _new_req_id()
     state["req_meta"][req_id] = {
-        "profile": profile_to_use,
+        "profile": "HUMAN",  # PATCH E: set profile hard to HUMAN
         "type": f"MULT {direction}",
         "barrier": None,
         "stake": stake,
@@ -1044,17 +1063,30 @@ def process_contract(client_id, contract):
         profit = float(contract.get("profit", 0))
         state["balance"] = float(state.get("balance", 0.0)) + profit
 
-        strategies = state.get("strategies", {})
-        strategy = strategies.get(state.get("active_profile", "KOOLKID"))
-
-        if strategy:
-            try:
-                strategy.on_contract(contract, state["balance"])
-            except Exception:
-                pass
-
         contract_id = contract.get("contract_id")
         meta = state["contract_meta"].pop(contract_id, None) if contract_id else None
+
+        # PATCH F: Use the trade's real profile (not active_profile)
+        profile_for_contract = (meta.get("profile") if meta else None) or state.get("active_profile", "KOOLKID")
+
+        strategies = state.get("strategies", {})
+        strategy = strategies.get(profile_for_contract)
+        if not strategy:
+            return
+
+        # Remember previous block reason to detect changes
+        prev_block = getattr(strategy, "risk_block_reason", None)
+
+        # Update strategy with the contract result
+        strategy.on_contract(contract, state.get("balance", 0))
+
+        # If TP/SL just got hit, emit a risk block update
+        new_block = getattr(strategy, "risk_block_reason", None)
+        if new_block and new_block != prev_block:
+            socketio.emit("risk_block_update", {
+                "profile": profile_for_contract,
+                "reason": new_block
+            }, room=client_id)
 
         entry = {}
         if strategy and hasattr(strategy, "get_last_trade_entry"):
@@ -1068,7 +1100,7 @@ def process_contract(client_id, contract):
             entry.setdefault("symbol", meta.get("symbol"))
             entry.setdefault("time", meta.get("time"))
         else:
-            entry.setdefault("profile", state.get("active_profile", "KOOLKID"))
+            entry.setdefault("profile", profile_for_contract)
 
         exit_digit = extract_exit_digit_from_contract(contract)
         if exit_digit is not None:
@@ -1528,6 +1560,75 @@ def toggle_koolluck_auto_route():
     return jsonify({"status": "success", "koolluck_auto": state_val})
 
 
+# ==================== EXISTING kidbagz AND mpull ROUTES ====================
+@app.route("/toggle_kidbagz_auto", methods=["POST"])
+def toggle_kidbagz_auto_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    strat = state["strategies"].get("KOOLKID")
+    state_val = strat.toggle_kidbagz_auto()
+
+    socketio.emit("auto_mode_update", strat.get_ui_payload().get("auto_modes", {}), room=cid)
+    return jsonify({"status": "success", "kidbagz_auto": state_val})
+
+
+@app.route("/toggle_mpull_auto", methods=["POST"])
+def toggle_mpull_auto_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    strat = state["strategies"].get("KOOLKID")
+    state_val = strat.toggle_mpull_auto()
+
+    socketio.emit("auto_mode_update", strat.get_ui_payload().get("auto_modes", {}), room=cid)
+    return jsonify({"status": "success", "mpull_auto": state_val})
+
+
+# ==================== NEW ROUTES (kidPairs, MPull mode, kidPairs trades) ====================
+@app.route("/toggle_kidpairs_auto", methods=["POST"])
+def toggle_kidpairs_auto_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    strat = state["strategies"].get("KOOLKID")
+    state_val = strat.toggle_kidpairs_auto()
+
+    socketio.emit("auto_mode_update", strat.get_ui_payload().get("auto_modes", {}), room=cid)
+    return jsonify({"status": "success", "kidpairs_auto": state_val})
+
+
+@app.route("/set_mpull_mode", methods=["POST"])
+def set_mpull_mode_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    data = request.json or {}
+    mode = (data.get("mode") or "BOTH")
+    strat = state["strategies"].get("KOOLKID")
+    mode_val = strat.set_mpull_mode(mode)
+
+    return jsonify({"status": "success", "mpull_mode": mode_val})
+
+
+@app.route("/set_kidpairs_trades", methods=["POST"])
+def set_kidpairs_trades_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    data = request.json or {}
+    trades = data.get("trades", 1)
+    strat = state["strategies"].get("KOOLKID")
+    trades_val = strat.set_kidpairs_trades_per_signal(trades)
+
+    return jsonify({"status": "success", "kidpairs_trades_per_signal": trades_val})
+
+
 @app.route("/set_kidracks_settings", methods=["POST"])
 def set_kidracks_settings():
     if not login_required():
@@ -1806,12 +1907,35 @@ def humanx_trade():
         return jsonify({"error": msg}), 500
 
 
+# ---------------- KEEP-ALIVE ENDPOINTS (HUMAN ONLY) ---------------- #
+@app.route("/human_keep_alive_status", methods=["GET"])
+def human_keep_alive_status():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    _cid, state = get_client_state()
+    return jsonify({"enabled": bool(state.get("human_keep_alive", False))})
+
+
+@app.route("/toggle_human_keep_alive", methods=["POST"])
+def toggle_human_keep_alive():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    _cid, state = get_client_state()
+    state["human_keep_alive"] = not bool(state.get("human_keep_alive", False))
+    return jsonify({"enabled": bool(state["human_keep_alive"])})
+
+
 # ---------------- HEARTBEAT SWEEPER ---------------- #
 def heartbeat_sweeper():
     while True:
         time.sleep(30)
         now = time.time()
         for cid, state in list(clients.items()):
+            # PATCH C: Skip if keep-alive is enabled (HUMAN only)
+            if state.get("human_keep_alive"):
+                continue
             # only enforce timeout if a token/WS is active
             if state.get("api_token") or state.get("ws"):
                 last_seen = state.get("last_seen", now)

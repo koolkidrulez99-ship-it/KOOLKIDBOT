@@ -97,6 +97,9 @@ class HumanStrategy:
         self.auto_sl = True
         self.session_profit = 0.0
 
+        # Patch A: add risk_block_reason
+        self.risk_block_reason = None
+
     def reset_tick_analysis(self):
         keep_auto = self.auto_trade
         keep_symbol = self.symbol
@@ -333,6 +336,9 @@ class HumanStrategy:
 
         self.session_profit += profit
 
+        # Patch D: enforce TP/SL after updating session_profit
+        self.enforce_tp_sl()
+
         entry = {
             "time": self.now_time(),
             "result": result,
@@ -365,6 +371,9 @@ class HumanStrategy:
         self.total_profit = 0.0
         self.total_loss = 0.0
         self.last_trade_entry = None
+        # Patch B: reset session profit and block reason
+        self.session_profit = 0.0
+        self.risk_block_reason = None
 
     # ----------------------------
     # Chart data
@@ -467,20 +476,31 @@ class HumanStrategy:
 
     # ----------------------------
     # Risk controls
-
     # ----------------------------
     def set_risk_controls(self, tp=0.0, sl=0.0, auto_sl=True):
         self.tp = float(tp)
         self.sl = float(sl)
         self.auto_sl = bool(auto_sl)
 
+    # Patch C: add disable_all_autos
+    def disable_all_autos(self):
+        self.auto_trade = False
+
+    # Patch C: replace enforce_tp_sl with new version
     def enforce_tp_sl(self):
+        if getattr(self, "risk_block_reason", None):
+            return self.risk_block_reason
+
         if self.tp > 0 and self.session_profit >= self.tp:
-            self.auto_trade = False
-            return "TP HIT"
+            self.risk_block_reason = "TP HIT"
+            self.disable_all_autos()
+            return self.risk_block_reason
+
         if self.sl > 0 and self.session_profit <= -abs(self.sl):
-            self.auto_trade = False
-            return "SL HIT"
+            self.risk_block_reason = "SL HIT"
+            self.disable_all_autos()
+            return self.risk_block_reason
+
         return None
 
     # ----------------------------

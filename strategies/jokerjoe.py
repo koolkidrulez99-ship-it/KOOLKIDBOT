@@ -124,6 +124,13 @@ class JokerJoeStrategy:
         self.multig_last_cycle_time = 0.0
         self.multig_cycle_cooldown_seconds = 3.0  # small pause between cycles
 
+        # Patch A: Risk Controls (Session)
+        self.tp = 0.0
+        self.sl = 0.0
+        self.auto_sl = True
+        self.session_profit = 0.0
+        self.risk_block_reason = None
+
     def reset_tick_analysis(self):
         self.tick_count = 0
         self.tick_digits.clear()
@@ -159,6 +166,35 @@ class JokerJoeStrategy:
     def toggle_auto(self):
         self.auto_trade = not self.auto_trade
         return self.auto_trade
+
+    # Patch B: Add risk control methods
+    def set_risk_controls(self, tp=0.0, sl=0.0, auto_sl=True):
+        self.tp = float(tp)
+        self.sl = float(sl)
+        self.auto_sl = bool(auto_sl)
+
+    def disable_all_autos(self):
+        self.auto_trade = False
+        if hasattr(self, "sludgex_auto"): self.sludgex_auto = False
+        if hasattr(self, "triplex_auto"): self.triplex_auto = False
+        if hasattr(self, "kidx_auto"): self.kidx_auto = False
+        if hasattr(self, "multig_auto"): self.multig_auto = False
+
+    def enforce_tp_sl(self):
+        if getattr(self, "risk_block_reason", None):
+            return self.risk_block_reason
+
+        if self.tp > 0 and self.session_profit >= self.tp:
+            self.risk_block_reason = "TP HIT"
+            self.disable_all_autos()
+            return self.risk_block_reason
+
+        if self.sl > 0 and self.session_profit <= -abs(self.sl):
+            self.risk_block_reason = "SL HIT"
+            self.disable_all_autos()
+            return self.risk_block_reason
+
+        return None
 
     def toggle_sludgex_auto(self):
         self.sludgex_auto = not self.sludgex_auto
@@ -576,6 +612,10 @@ class JokerJoeStrategy:
             self.total_losses += 1
             self.total_loss += abs(profit)
 
+        # Patch C: track session profit and enforce TP/SL
+        self.session_profit += profit
+        self.enforce_tp_sl()
+
         entry = {
             "time": self.now_time(),
             "result": result,
@@ -601,6 +641,9 @@ class JokerJoeStrategy:
         self.total_losses = 0
         self.total_profit = 0.0
         self.total_loss = 0.0
+        # Patch D: reset session profit and risk_block_reason
+        self.session_profit = 0.0
+        self.risk_block_reason = None
 
     # ---------------------------
     # UI payloads

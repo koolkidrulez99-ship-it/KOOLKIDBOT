@@ -38,6 +38,9 @@ class BaseStrategy:
         # Barrier user selected
         self.selected_barrier = 5
 
+        # Patch A: add risk_block_reason
+        self.risk_block_reason = None
+
     def reset(self):
         self.tick_count = 0
         self.tick_digits.clear()
@@ -59,6 +62,9 @@ class BaseStrategy:
         self.session_profit = 0.0
         self.last_trade_time = 0
 
+        # Patch A: add risk_block_reason in reset
+        self.risk_block_reason = None
+
     def reset_tick_analysis(self):
         self.tick_count = 0
         self.tick_digits.clear()
@@ -73,6 +79,8 @@ class BaseStrategy:
         self.total_profit = 0.0
         self.total_loss = 0.0
         self.session_profit = 0.0
+        # Patch B: reset risk_block_reason in clear_history
+        self.risk_block_reason = None
 
     # ---------------- AUTO TOGGLES ---------------- #
     def toggle_auto(self):
@@ -118,21 +126,41 @@ class BaseStrategy:
             result[digit] = round(pct, 1)
         return result
 
+    # Patch C: add disable_all_autos helper
+    def disable_all_autos(self):
+        # Master autos
+        if hasattr(self, "auto_trade"): self.auto_trade = False
+
+        # Base "kidracks/koolspeed" autos
+        if hasattr(self, "auto_kidracks"): self.auto_kidracks = False
+        if hasattr(self, "auto_koolspeed"): self.auto_koolspeed = False
+
+        # KOOLKID's actual autos used in koolkid.py
+        if hasattr(self, "kidracks_auto"): self.kidracks_auto = False
+        if hasattr(self, "koolkidspeed_auto"): self.koolkidspeed_auto = False
+        if hasattr(self, "koolluck_auto"): self.koolluck_auto = False
+
+    # Patch D: replace enforce_tp_sl with new version
     def enforce_tp_sl(self):
         """
         Enforces TP/SL based on running session profit.
+        Sets risk_block_reason once so server can toast it once.
         """
+        # already blocked this session
+        if getattr(self, "risk_block_reason", None):
+            return self.risk_block_reason
+
         if self.tp > 0 and self.session_profit >= self.tp:
-            self.auto_trade = False
-            self.auto_kidracks = False
-            self.auto_koolspeed = False
-            return "TP HIT"
+            self.risk_block_reason = "TP HIT"
+            if hasattr(self, "disable_all_autos"):
+                self.disable_all_autos()
+            return self.risk_block_reason
 
         if self.sl > 0 and self.session_profit <= -abs(self.sl):
-            self.auto_trade = False
-            self.auto_kidracks = False
-            self.auto_koolspeed = False
-            return "SL HIT"
+            self.risk_block_reason = "SL HIT"
+            if hasattr(self, "disable_all_autos"):
+                self.disable_all_autos()
+            return self.risk_block_reason
 
         return None
 
