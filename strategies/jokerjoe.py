@@ -124,6 +124,19 @@ class JokerJoeStrategy:
         self.multig_last_cycle_time = 0.0
         self.multig_cycle_cooldown_seconds = 3.0  # small pause between cycles
 
+        # ---------------------------
+        # ⚡kidGx / 🤖AI AUTO-TRADING (NEW)
+        # ---------------------------
+        self.kidgx_auto = False
+        self.kidgx_barrier = 5
+        self.kidgx_contract_type = "DIFFERS"
+        self.kidgx_last_trade_time = 0.0
+        self.kidgx_cooldown_seconds = 0.0
+
+        self.ai_auto_trading = False
+        self.ai_last_trade_time = 0.0
+        self.ai_cooldown_seconds = 0.0
+
         # Patch A: Risk Controls (Session)
         self.tp = 0.0
         self.sl = 0.0
@@ -179,6 +192,8 @@ class JokerJoeStrategy:
         if hasattr(self, "triplex_auto"): self.triplex_auto = False
         if hasattr(self, "kidx_auto"): self.kidx_auto = False
         if hasattr(self, "multig_auto"): self.multig_auto = False
+        if hasattr(self, "kidgx_auto"): self.kidgx_auto = False
+        if hasattr(self, "ai_auto_trading"): self.ai_auto_trading = False
 
     def enforce_tp_sl(self):
         if getattr(self, "risk_block_reason", None):
@@ -239,6 +254,43 @@ class JokerJoeStrategy:
         self.multig_pending_due_time = None
 
         return self.multig_auto
+
+    # ---------------------------
+    # kidGx / AI toggles (NEW)
+    # ---------------------------
+    def toggle_kidgx_auto(self, barrier: int = None):
+        self.kidgx_auto = not self.kidgx_auto
+        if barrier is not None:
+            self.set_kidgx_barrier(barrier)
+        return self.kidgx_auto
+
+    def set_kidgx_barrier(self, barrier: int = 5):
+        try:
+            b = int(barrier)
+        except Exception:
+            b = 5
+        if b < 0:
+            b = 0
+        if b > 9:
+            b = 9
+        self.kidgx_barrier = b
+        return self.kidgx_barrier
+
+    def toggle_ai_auto_trading(self):
+        self.ai_auto_trading = not self.ai_auto_trading
+        return self.ai_auto_trading
+
+    def _kidgx_can_trade(self):
+        return (time.time() - float(getattr(self, "kidgx_last_trade_time", 0.0))) >= float(getattr(self, "kidgx_cooldown_seconds", 0.0))
+
+    def _kidgx_mark_trade(self):
+        self.kidgx_last_trade_time = time.time()
+
+    def _ai_can_trade(self):
+        return (time.time() - float(getattr(self, "ai_last_trade_time", 0.0))) >= float(getattr(self, "ai_cooldown_seconds", 0.0))
+
+    def _ai_mark_trade(self):
+        self.ai_last_trade_time = time.time()
 
     # ---------------------------
     # Percentages
@@ -531,52 +583,62 @@ class JokerJoeStrategy:
     # ---------------------------
     def check_auto_trade_signal(self):
         """
-        Master-auto based.
-        Priority:
-          1) kidX
-          2) sludgeX
-          3) tripleX
+        Combines independent fast modes (kidGx / AI) with existing master-auto logic.
         """
-        if not self.auto_trade:
+        signals = []
+
+        # ⚡kidGx (independent, super fast, selected barrier)
+        if getattr(self, "kidgx_auto", False) and self._kidgx_can_trade():
+            signals.append({
+                "mode": "KIDGX",
+                "type": str(getattr(self, "kidgx_contract_type", "DIFFERS") or "DIFFERS").upper(),
+                "barrier": int(5 if getattr(self, "kidgx_barrier", 5) is None else getattr(self, "kidgx_barrier", 5)),
+            })
+            self._kidgx_mark_trade()
+
+        # 🤖AI AUTO-TRADING (JOKERJOE) -> trade all current golden digits as DIFFERS
+        if getattr(self, "ai_auto_trading", False) and self._ai_can_trade():
+            golden_digits = sorted(list(getattr(self, "golden_ttl", {}).keys()))
+            if golden_digits:
+                for d in golden_digits:
+                    signals.append({"mode": "AI_AUTO_JOKERJOE", "type": "DIFFERS", "barrier": int(d)})
+                self._ai_mark_trade()
+
+        # Existing MASTER AUTO logic
+        if self.auto_trade:
+            # kidX first
+            sig = self._kidx_check_signal()
+            if sig:
+                signals.append(sig)
+            else:
+                # sludgeX
+                if self.sludgex_auto and self.tick_count >= 100:
+                    if self.sludgex_pending_digit is not None and self.sludgex_pending_start_tick is not None:
+                        if (self.tick_count - self.sludgex_pending_start_tick) > self.sludgex_pending_timeout_ticks:
+                            self.sludgex_pending_digit = None
+                            self.sludgex_pending_start_tick = None
+                        elif self.tick_count > self.sludgex_pending_start_tick and self.last_tick_digit is not None:
+                            if int(self.last_tick_digit) != int(self.sludgex_pending_digit):
+                                sig = {
+                                    "mode": "sludgeX",
+                                    "type": "DIFFERS",
+                                    "barrier": int(self.sludgex_pending_digit),
+                                }
+                                self.sludgex_pending_digit = None
+                                self.sludgex_pending_start_tick = None
+                                self.sludgex_last_trade_time = time.time()
+                                signals.append(sig)
+
+                # tripleX
+                sig = self._check_triplex_signal()
+                if sig:
+                    signals.append(sig)
+
+        if not signals:
             return None
-
-        # kidX first
-        sig = self._kidx_check_signal()
-        if sig:
-            return sig
-
-        # sludgeX
-        if self.sludgex_auto and self.tick_count >= 100:
-            if self.sludgex_pending_digit is not None and self.sludgex_pending_start_tick is not None:
-                if (self.tick_count - self.sludgex_pending_start_tick) > self.sludgex_pending_timeout_ticks:
-                    self.sludgex_pending_digit = None
-                    self.sludgex_pending_start_tick = None
-                    return None
-
-                if self.tick_count <= self.sludgex_pending_start_tick:
-                    return None
-
-                if self.last_tick_digit is None:
-                    return None
-
-                if int(self.last_tick_digit) != int(self.sludgex_pending_digit):
-                    sig = {
-                        "mode": "sludgeX",
-                        "type": "DIFFERS",
-                        "barrier": int(self.sludgex_pending_digit),
-                    }
-
-                    self.sludgex_pending_digit = None
-                    self.sludgex_pending_start_tick = None
-                    self.sludgex_last_trade_time = time.time()
-                    return sig
-
-        # tripleX
-        sig = self._check_triplex_signal()
-        if sig:
-            return sig
-
-        return None
+        if len(signals) == 1:
+            return signals[0]
+        return signals
 
     # ---------------------------
     # Tick & contract events
@@ -677,7 +739,13 @@ class JokerJoeStrategy:
                 "sludgex": self.sludgex_auto,
                 "triplex": self.triplex_auto,
                 "kidx": self.kidx_auto,
-                "multig": self.multig_auto
+                "multig": self.multig_auto,
+                "kidgx": self.kidgx_auto,
+                "ai_auto_trading": self.ai_auto_trading,
+            },
+
+            "auto_settings": {
+                "kidgx_barrier": int(5 if getattr(self, "kidgx_barrier", 5) is None else getattr(self, "kidgx_barrier", 5)),
             },
 
             "differs_analysis": {

@@ -7,6 +7,7 @@ import websocket
 import time
 import uuid
 import sqlite3
+import random  # PATCH 1A
 
 from flask import Flask, render_template, request, jsonify, redirect, url_for, session
 from flask_socketio import SocketIO, join_room
@@ -306,6 +307,35 @@ def init_client(client_id):
         "current_symbol": "R_25",
         "human_symbol": "R_25",
         "tick_subs": {},
+        # ==================== PATCH 1B: seqvix state ====================
+        "seqvix": {
+            "KOOLKID": {
+                "running": False, "total": 0, "endless": False, "done": 0,
+                "batch_size": 6, "sample_size": 30,
+                "remaining": [], "active_syms": set(),
+                "samples": {}, "ready_syms": set(),
+                "last_exec_ts": 0.0,
+                "config": {},
+                # ==================== PATCH 1A: new fields ====================
+                "owned_syms": set(),
+                "cooldown_until": 0.0,
+                "trades_per_market": 2,
+                "cooldown_sec": 5.0,
+            },
+            "JOKERJOE": {
+                "running": False, "total": 0, "endless": False, "done": 0,
+                "batch_size": 6, "sample_size": 30,
+                "remaining": [], "active_syms": set(),
+                "samples": {}, "ready_syms": set(),
+                "last_exec_ts": 0.0,
+                "config": {},
+                # ==================== PATCH 1A: new fields ====================
+                "owned_syms": set(),
+                "cooldown_until": 0.0,
+                "trades_per_market": 2,
+                "cooldown_sec": 5.0,
+            }
+        },
         "humanx_auto": False,
         "humanx_status_last": "Auto: OFF",
         "balance": 0.0,
@@ -339,6 +369,8 @@ def emit_jokerjoe_modes(cid, strat: JokerJoeStrategy):
             "triplex": bool(getattr(strat, "triplex_auto", False)),
             "kidx": bool(getattr(strat, "kidx_auto", False)),
             "multig": bool(getattr(strat, "multig_auto", False)),
+            "kidgx": bool(getattr(strat, "kidgx_auto", False)),
+            "ai_auto_trading": bool(getattr(strat, "ai_auto_trading", False)),
         }, room=cid)
     except Exception:
         pass
@@ -598,6 +630,71 @@ def send_buy(client_id, contract_type, stake, symbol, barrier):
         return False, str(e)
 
 
+# ==================== PATCH 1C: send_buy_with_profile ====================
+def send_buy_with_profile(client_id, profile, contract_type, stake, symbol, barrier):
+    state = clients.get(client_id)
+    if not state:
+        return False, "No client state"
+
+    ws = state.get("ws")
+    ws_connected = state.get("ws_connected", False)
+    if not ws_connected or not ws:
+        return False, "Not connected"
+
+    # Enforce TP/SL for that profile (if your strategy supports it)
+    strat = (state.get("strategies") or {}).get(profile)
+    if strat and hasattr(strat, "enforce_tp_sl"):
+        try:
+            strat.enforce_tp_sl()
+            if getattr(strat, "risk_block_reason", None):
+                return False, f"{strat.risk_block_reason} (session limit reached)"
+        except Exception:
+            pass
+
+    contract_map = {
+        "OVER": "DIGITOVER",
+        "UNDER": "DIGITUNDER",
+        "MATCHES": "DIGITMATCH",
+        "DIFFERS": "DIGITDIFF"
+    }
+    if contract_type not in contract_map:
+        return False, "Invalid contract type"
+
+    deriv_contract = contract_map[contract_type]
+
+    req_id = _new_req_id()
+    state["req_meta"][req_id] = {
+        "profile": profile,
+        "type": contract_type,
+        "barrier": int(barrier),
+        "stake": float(stake),
+        "symbol": symbol,
+        "time": now_time()
+    }
+
+    payload = {
+        "req_id": req_id,
+        "buy": 1,
+        "price": float(stake),
+        "parameters": {
+            "amount": float(stake),
+            "basis": "stake",
+            "contract_type": deriv_contract,
+            "currency": "USD",
+            "duration": 1,
+            "duration_unit": "t",
+            "symbol": symbol,
+            "barrier": int(barrier)
+        }
+    }
+
+    try:
+        ws.send(json.dumps(payload))
+        return True, "Trade sent"
+    except Exception as e:
+        return False, str(e)
+
+
 # ---------------- MULTIPLIER ORDER (HUMANX) ---------------- #
 def place_multiplier_order(client_id, signal):
     state = clients.get(client_id)
@@ -714,6 +811,294 @@ def run_auto_trade(client_id, state):
             logger.error(f"[{client_id}] Auto trade error: {e}")
 
 
+# ==================== PATCH 1D: Sequential VIX engine helpers ====================
+SEQVIX_MARKETS = [
+    "R_10", "R_25", "R_50", "R_75", "R_100",
+    "1HZ10V", "1HZ15V", "1HZ25V", "1HZ30V", "1HZ50V", "1HZ75V", "1HZ90V", "1HZ100V",
+    "RDBULL", "RDBEAR",
+]
+
+def _seqvix_emit_progress(client_id, state, profile, reason=None):
+    run = state["seqvix"][profile]
+    payload = {
+        "profile": profile,
+        "running": bool(run.get("running")),
+        "done": int(run.get("done", 0)),
+        "total": (None if run.get("endless") else int(run.get("total", 0))),
+    }
+    if reason:
+        payload["reason"] = reason
+    socketio.emit("seqvix_progress", payload, room=client_id)
+
+def _seqvix_forget_symbol(state, profile, sym):
+    """Only forget if this seqvix runner owns the symbol."""
+    run = state["seqvix"][profile]
+    if sym not in run.get("owned_syms", set()):
+        return  # not ours, don't touch
+    ws = state.get("ws")
+    if not ws or not state.get("ws_connected"):
+        return
+    sub_id = (state.get("tick_subs") or {}).get(sym)
+    if sub_id:
+        try:
+            ws.send(json.dumps({"forget": sub_id}))
+        except Exception:
+            pass
+    run["owned_syms"].discard(sym)
+
+def _seqvix_fill_batch(state, profile):
+    run = state["seqvix"][profile]
+    ws = state.get("ws")
+    if not ws or not state.get("ws_connected"):
+        return
+
+    while len(run["active_syms"]) < run["batch_size"]:
+        if not run["remaining"]:
+            if run.get("endless"):
+                run["remaining"] = SEQVIX_MARKETS.copy()
+                random.shuffle(run["remaining"])
+            else:
+                break
+
+        sym = run["remaining"].pop()
+        if sym in run["active_syms"]:
+            continue
+
+        # ==================== PATCH 1B: avoid duplicate subscriptions ====================
+        existing_sub_id = (state.get("tick_subs") or {}).get(sym)
+        if existing_sub_id:
+            # already subscribed elsewhere (main market or previous stream)
+            run["active_syms"].add(sym)
+            run["samples"][sym] = []
+            # do NOT add to owned_syms, do NOT subscribe again
+            continue
+
+        # otherwise subscribe and mark as owned by seqvix
+        run["active_syms"].add(sym)
+        run["samples"][sym] = []
+        run["owned_syms"].add(sym)
+        try:
+            ws.send(json.dumps({"ticks": sym, "subscribe": 1}))
+        except Exception:
+            pass
+
+def _pick_two_rarest_digits(sample):
+    counts = {d: 0 for d in range(10)}
+    for d in sample:
+        if d in counts:
+            counts[d] += 1
+    ordered = sorted(counts.items(), key=lambda kv: (kv[1], kv[0]))
+    return ordered[0][0], ordered[1][0]
+
+def stop_seqvix(state, client_id, profile, reason="stopped"):
+    run = state["seqvix"][profile]
+    if not run.get("running"):
+        return
+
+    # ==================== PATCH 1C: only forget owned symbols ====================
+    for sym in list(run.get("owned_syms", set())):
+        _seqvix_forget_symbol(state, profile, sym)
+
+    run["running"] = False
+    run["endless"] = False
+    run["total"] = 0
+    run["active_syms"] = set()
+    run["samples"] = {}
+    run["ready_syms"] = set()
+    run["remaining"] = []
+    run["last_exec_ts"] = 0.0
+    run["config"] = {}
+    run["owned_syms"] = set()
+    run["cooldown_until"] = 0.0
+
+    _seqvix_emit_progress(client_id, state, profile, reason=reason)
+
+def start_seqvix_jokerjoe(state, client_id, mode, trades_per_market=2):
+    run = state["seqvix"]["JOKERJOE"]
+    if run.get("running"):
+        stop_seqvix(state, client_id, "JOKERJOE", reason="restart")
+
+    # ==================== PATCH 1E: sanitize trades_per_market ====================
+    try:
+        tpm = int(trades_per_market)
+    except Exception:
+        tpm = 2
+    if tpm not in (1, 2):
+        tpm = 2
+
+    mode_str = str(mode).upper().strip()
+    endless = (mode_str == "ENDLESS")
+    total = 0
+    if not endless:
+        try:
+            total = int(mode_str)
+        except Exception:
+            total = 5
+        if total not in (5, 10):
+            total = 5
+
+    run.update({
+        "running": True, "endless": endless, "total": total, "done": 0,
+        "batch_size": 6, "sample_size": 30,
+        "remaining": SEQVIX_MARKETS.copy(),
+        "active_syms": set(), "samples": {}, "ready_syms": set(),
+        "last_exec_ts": 0.0, "config": {},
+        "owned_syms": set(), "cooldown_until": 0.0, "trades_per_market": tpm, "cooldown_sec": 5.0,
+    })
+    random.shuffle(run["remaining"])
+
+    _seqvix_fill_batch(state, "JOKERJOE")
+    _seqvix_emit_progress(client_id, state, "JOKERJOE")
+
+def start_seqvix_koolkid(state, client_id, contract_type, barrier, trades_per_market=2):
+    run = state["seqvix"]["KOOLKID"]
+    if run.get("running"):
+        stop_seqvix(state, client_id, "KOOLKID", reason="restart")
+
+    # ==================== PATCH 1E: sanitize trades_per_market ====================
+    try:
+        tpm = int(trades_per_market)
+    except Exception:
+        tpm = 2
+    if tpm not in (1, 2):
+        tpm = 2
+
+    ct = str(contract_type).upper().strip()
+    if ct not in ("OVER", "UNDER"):
+        ct = "OVER"
+    try:
+        b = int(barrier)
+    except Exception:
+        b = 1
+
+    run.update({
+        "running": True, "endless": False, "total": 10, "done": 0,
+        "batch_size": 6, "sample_size": 30,
+        "remaining": SEQVIX_MARKETS.copy(),
+        "active_syms": set(), "samples": {}, "ready_syms": set(),
+        "last_exec_ts": 0.0,
+        "config": {"contract_type": ct, "barrier": b},
+        "owned_syms": set(), "cooldown_until": 0.0, "trades_per_market": tpm, "cooldown_sec": 5.0,
+    })
+    random.shuffle(run["remaining"])
+
+    _seqvix_fill_batch(state, "KOOLKID")
+    _seqvix_emit_progress(client_id, state, "KOOLKID")
+
+def _seqvix_execute_one_market(client_id, state, profile, sym):
+    run = state["seqvix"][profile]
+    sample = run["samples"].get(sym, [])
+    if len(sample) < run["sample_size"]:
+        return False
+
+    stake = float(state.get("auto_stake", 1.0))
+    trade_count = int(run.get("trades_per_market", 2))
+
+    if profile == "JOKERJOE":
+        d1, d2 = _pick_two_rarest_digits(sample)
+        if trade_count == 1:
+            # only the rarest digit
+            ok1, _ = send_buy_with_profile(client_id, "JOKERJOE", "DIFFERS", stake, sym, d1)
+            return ok1
+        else:
+            ok1, _ = send_buy_with_profile(client_id, "JOKERJOE", "DIFFERS", stake, sym, d1)
+            ok2, _ = send_buy_with_profile(client_id, "JOKERJOE", "DIFFERS", stake, sym, d2)
+            return ok1 and ok2
+    else:
+        ct = run["config"].get("contract_type", "OVER")
+        barrier = int(run["config"].get("barrier", 1))
+        if trade_count == 1:
+            ok1, _ = send_buy_with_profile(client_id, "KOOLKID", ct, stake, sym, barrier)
+            return ok1
+        else:
+            ok1, _ = send_buy_with_profile(client_id, "KOOLKID", ct, stake, sym, barrier)
+            ok2, _ = send_buy_with_profile(client_id, "KOOLKID", ct, stake, sym, barrier)
+            return ok1 and ok2
+
+def process_seqvix_tick(client_id, tick):
+    state = clients.get(client_id)
+    if not state:
+        return
+
+    seqvix = state.get("seqvix") or {}
+    sym = tick.get("symbol")
+    if not sym:
+        return
+
+    active_profiles = [p for p in ("KOOLKID", "JOKERJOE") if seqvix.get(p, {}).get("running")]
+    if not active_profiles:
+        return
+
+    # digit from tick quote
+    try:
+        price = tick.get("quote")
+        pip_size = tick.get("pip_size", 2)
+        d = extract_last_decimal_digit(price, pip_size)
+    except Exception:
+        d = None
+    if d is None:
+        return
+
+    # update buffers
+    for profile in active_profiles:
+        run = seqvix[profile]
+        if sym not in run.get("active_syms", set()):
+            continue
+
+        buf = run["samples"].setdefault(sym, [])
+        if len(buf) < run["sample_size"]:
+            buf.append(int(d))
+
+        if len(buf) >= run["sample_size"]:
+            run["ready_syms"].add(sym)
+
+    # execute at most 1 market per tick per profile (rate limit) + cooldown
+    now = time.time()
+    for profile in active_profiles:
+        run = seqvix[profile]
+        if not run.get("running"):
+            continue
+
+        _seqvix_fill_batch(state, profile)
+
+        if (not run.get("endless")) and run.get("total", 0) and run.get("done", 0) >= run["total"]:
+            stop_seqvix(state, client_id, profile, reason="done")
+            continue
+
+        # ==================== PATCH 1D: cooldown check ====================
+        if now < float(run.get("cooldown_until", 0.0)):
+            continue
+
+        if now - float(run.get("last_exec_ts", 0.0)) < 0.15:
+            continue
+
+        ready = list(run.get("ready_syms", set()))
+        if not ready:
+            continue
+
+        chosen = random.choice(ready)
+        ok = _seqvix_execute_one_market(client_id, state, profile, chosen)
+        if not ok:
+            continue
+
+        # success => increment + cleanup that market
+        run["done"] += 1
+        run["last_exec_ts"] = now
+        # ==================== PATCH 1D: set cooldown ====================
+        run["cooldown_until"] = now + float(run.get("cooldown_sec", 5.0))
+
+        _seqvix_forget_symbol(state, profile, chosen)
+        run["ready_syms"].discard(chosen)
+        run["active_syms"].discard(chosen)
+        run["samples"].pop(chosen, None)
+
+        _seqvix_fill_batch(state, profile)
+        _seqvix_emit_progress(client_id, state, profile)
+
+        if (not run.get("endless")) and run.get("total", 0) and run.get("done", 0) >= run["total"]:
+            stop_seqvix(state, client_id, profile, reason="done")
+
+
 # ---------------- WEBSOCKET HANDLERS (PER CLIENT) ---------------- #
 def handle_on_message(client_id, ws, message, expected_nonce):
     state = clients.get(client_id)
@@ -814,6 +1199,8 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                     state["tick_subs"][sym] = sub_id
             except Exception:
                 pass
+            # ==================== PATCH 1E: hook process_seqvix_tick ====================
+            process_seqvix_tick(client_id, tick)
             process_tick(client_id, tick)
 
         if "buy" in data:
@@ -1766,6 +2153,168 @@ def kidgamblex_route():
     return jsonify({"status": "success", "digits": digits, "placed": placed})
 
 
+
+
+# ---------------- NEW FAST MODES / ANALYSIS ROUTES ---------------- #
+@app.route("/toggle_kidgx_auto", methods=["POST"])
+def toggle_kidgx_auto_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    data = request.json or {}
+    profile = (data.get("profile") or state.get("active_profile") or "KOOLKID").upper().strip()
+    if profile not in ("KOOLKID", "JOKERJOE"):
+        return jsonify({"status": "error", "message": "Invalid profile"}), 400
+
+    strat = state["strategies"].get(profile)
+    if not strat or not hasattr(strat, "toggle_kidgx_auto"):
+        return jsonify({"status": "error", "message": f"{profile} strategy not available"}), 400
+
+    barrier = data.get("barrier", None)
+    try:
+        if profile == "JOKERJOE":
+            new_val = strat.toggle_kidgx_auto(barrier=barrier)
+            if barrier is not None and hasattr(strat, "set_kidgx_barrier"):
+                strat.set_kidgx_barrier(barrier)
+        else:
+            new_val = strat.toggle_kidgx_auto()
+    except TypeError:
+        new_val = strat.toggle_kidgx_auto()
+
+    try:
+        socketio.emit("auto_mode_update", strat.get_ui_payload().get("auto_modes", {}), room=cid)
+        socketio.emit("digit_analysis", strat.get_ui_payload(), room=cid)
+    except Exception:
+        pass
+    if profile == "JOKERJOE":
+        try:
+            emit_jokerjoe_modes(cid, strat)
+        except Exception:
+            pass
+
+    payload = {"status": "success", "profile": profile, "kidgx_auto": bool(new_val)}
+    if profile == "JOKERJOE":
+        payload["barrier"] = int(5 if getattr(strat, "kidgx_barrier", 5) is None else getattr(strat, "kidgx_barrier", 5))
+    return jsonify(payload)
+
+
+@app.route("/set_kidgx_barrier", methods=["POST"])
+def set_kidgx_barrier_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    data = request.json or {}
+    strat = state["strategies"].get("JOKERJOE")
+    if not strat or not hasattr(strat, "set_kidgx_barrier"):
+        return jsonify({"status": "error", "message": "JOKERJOE strategy not available"}), 400
+
+    barrier = int(data.get("barrier", 5))
+    b = strat.set_kidgx_barrier(barrier)
+    try:
+        socketio.emit("digit_analysis", strat.get_ui_payload(), room=cid)
+        emit_jokerjoe_modes(cid, strat)
+    except Exception:
+        pass
+    return jsonify({"status": "success", "barrier": int(b)})
+
+
+@app.route("/toggle_barrier_analysis", methods=["POST"])
+def toggle_barrier_analysis_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    strat = state["strategies"].get("KOOLKID")
+    if not strat or not hasattr(strat, "toggle_barrier_analysis"):
+        return jsonify({"status": "error", "message": "KOOLKID strategy not available"}), 400
+
+    new_val = strat.toggle_barrier_analysis()
+    payload = strat.get_ui_payload()
+    socketio.emit("auto_mode_update", payload.get("auto_modes", {}), room=cid)
+    socketio.emit("digit_analysis", payload, room=cid)
+    return jsonify({"status": "success", "barrier_analysis": bool(new_val)})
+
+
+@app.route("/select_barrier_analysis_barrier", methods=["POST"])
+def select_barrier_analysis_barrier_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    data = request.json or {}
+    key = data.get("key") or "UNDER 9"
+    strat = state["strategies"].get("KOOLKID")
+    if not strat or not hasattr(strat, "select_barrier_analysis_barrier"):
+        return jsonify({"status": "error", "message": "KOOLKID strategy not available"}), 400
+
+    selected = strat.select_barrier_analysis_barrier(key)
+    payload = strat.get_ui_payload()
+    socketio.emit("digit_analysis", payload, room=cid)
+    return jsonify({"status": "success", "selected": selected})
+
+
+@app.route("/toggle_ai_auto_trading", methods=["POST"])
+def toggle_ai_auto_trading_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    data = request.json or {}
+    profile = (data.get("profile") or state.get("active_profile") or "KOOLKID").upper().strip()
+    if profile not in ("KOOLKID", "JOKERJOE"):
+        return jsonify({"status": "error", "message": "Invalid profile"}), 400
+
+    strat = state["strategies"].get(profile)
+    if not strat or not hasattr(strat, "toggle_ai_auto_trading"):
+        return jsonify({"status": "error", "message": f"{profile} strategy not available"}), 400
+
+    new_val = strat.toggle_ai_auto_trading()
+    try:
+        socketio.emit("auto_mode_update", strat.get_ui_payload().get("auto_modes", {}), room=cid)
+        socketio.emit("digit_analysis", strat.get_ui_payload(), room=cid)
+        if profile == "JOKERJOE":
+            emit_jokerjoe_modes(cid, strat)
+    except Exception:
+        pass
+    return jsonify({"status": "success", "profile": profile, "ai_auto_trading": bool(new_val)})
+
+
+@app.route("/toggle_mpull_all_digits_auto", methods=["POST"])
+def toggle_mpull_all_digits_auto_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    strat = state["strategies"].get("KOOLKID")
+    if not strat or not hasattr(strat, "toggle_mpull_all_digits_auto"):
+        return jsonify({"status": "error", "message": "KOOLKID strategy not available"}), 400
+
+    new_val = strat.toggle_mpull_all_digits_auto()
+    payload = strat.get_ui_payload()
+    socketio.emit("auto_mode_update", payload.get("auto_modes", {}), room=cid)
+    socketio.emit("digit_analysis", payload, room=cid)
+    return jsonify({"status": "success", "mpull_all_digits_auto": bool(new_val)})
+
+
+@app.route("/set_mpull_all_digits_selection", methods=["POST"])
+def set_mpull_all_digits_selection_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    data = request.json or {}
+    digits = data.get("digits") or []
+    strat = state["strategies"].get("KOOLKID")
+    if not strat or not hasattr(strat, "set_mpull_all_digits_selected_digits"):
+        return jsonify({"status": "error", "message": "KOOLKID strategy not available"}), 400
+
+    vals = strat.set_mpull_all_digits_selected_digits(digits)
+    payload = strat.get_ui_payload()
+    socketio.emit("digit_analysis", payload, room=cid)
+    return jsonify({"status": "success", "digits": vals})
+
 @app.route("/insta5", methods=["POST"])
 def insta5_route():
     if not login_required():
@@ -1905,6 +2454,73 @@ def humanx_trade():
         return jsonify({"status": "success", "signal": signal})
     else:
         return jsonify({"error": msg}), 500
+
+
+# ==================== PATCH 1F: SeqVIX endpoints ====================
+@app.route("/start_seqvix_jokerjoe", methods=["POST"])
+def start_seqvix_jokerjoe_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    if not state.get("ws_connected") or not state.get("ws"):
+        return jsonify({"error": "Not connected"}), 400
+
+    data = request.json or {}
+    mode = data.get("mode", "5")
+    trade_count = data.get("trade_count", 2)   # ==================== PATCH 1G ====================
+    start_seqvix_jokerjoe(state, cid, mode, trades_per_market=trade_count)
+    return jsonify({"status": "success"})
+
+@app.route("/stop_seqvix_jokerjoe", methods=["POST"])
+def stop_seqvix_jokerjoe_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    stop_seqvix(state, cid, "JOKERJOE", reason="stopped")
+    return jsonify({"status": "success"})
+
+@app.route("/start_seqvix_koolkid", methods=["POST"])
+def start_seqvix_koolkid_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    if not state.get("ws_connected") or not state.get("ws"):
+        return jsonify({"error": "Not connected"}), 400
+
+    data = request.json or {}
+    contract_type = data.get("contract_type", "OVER")
+    barrier = data.get("barrier", 1)
+    trade_count = data.get("trade_count", 2)   # ==================== PATCH 1G ====================
+    start_seqvix_koolkid(state, cid, contract_type, barrier, trades_per_market=trade_count)
+    return jsonify({"status": "success"})
+
+@app.route("/stop_seqvix_koolkid", methods=["POST"])
+def stop_seqvix_koolkid_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    stop_seqvix(state, cid, "KOOLKID", reason="stopped")
+    return jsonify({"status": "success"})
+
+@app.route("/seqvix_status", methods=["GET"])
+def seqvix_status_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    out = {}
+    for p in ("KOOLKID", "JOKERJOE"):
+        run = (state.get("seqvix") or {}).get(p) or {}
+        out[p] = {
+            "running": bool(run.get("running")),
+            "done": int(run.get("done", 0)),
+            "total": (None if run.get("endless") else int(run.get("total", 0))),
+        }
+    return jsonify(out)
 
 
 # ---------------- KEEP-ALIVE ENDPOINTS (HUMAN ONLY) ---------------- #

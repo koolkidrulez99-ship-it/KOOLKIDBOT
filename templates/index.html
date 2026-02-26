@@ -6,960 +6,9 @@
 <title>KOOLKID AI BOT</title>
 
 <!-- ✅ BULLETPROOF: Local Socket.IO client (v4) -->
-<script src="/static/vendor/socket.io.min.js">
-/* =========================================================
-   HUMAN CHART (Lightweight Charts) + Hourly Range Overlays
-   - Draws Previous Hourly Range + New Hourly Range boxes
-   - Adds working Zoom In/Out/Reset controls
-   - Supports Keep Alive frontend status + disconnect skip
-   ========================================================= */
+<script src="/static/vendor/socket.io.min.js"></script>
+<script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
 
-window.humanKeepAliveEnabled = window.humanKeepAliveEnabled || false;
-
-let humanChart = null;
-let humanCandleSeries = null;
-let humanChartContainer = null;
-
-let humanOverlay = null;
-let humanControls = null;
-
-let humanBoxPrev = null;
-let humanBoxNew = null;
-let humanLabelPrev = null;
-let humanLabelNew = null;
-let humanHighLabel = null;
-let humanLowLabel = null;
-
-let humanBarSpacing = 8;
-let humanAutoFit = true;
-let humanHasFitOnce = false;
-
-let lastHumanChartPayload = null;
-
-function _normSec(t){
-    const n = Number(t);
-    if(!isFinite(n)) return null;
-    // If ms epoch, convert to seconds
-    if(n > 1e12) return Math.floor(n/1000);
-    return Math.floor(n);
-}
-
-function _clamp(v, min, max){
-    if(v < min) return min;
-    if(v > max) return max;
-    return v;
-}
-
-function initHumanChartIfPresent(){
-    const el = document.getElementById("humanChart");
-    if(!el) return;
-    if(typeof LightweightCharts === "undefined") return;
-
-    // Already initialized on same element
-    if(humanChart && humanChartContainer === el) return;
-
-    // Remove old chart safely
-    try{ if(humanChart) humanChart.remove(); }catch(e){}
-
-    humanChartContainer = el;
-
-    // Make container a positioning context for overlays/controls
-    try{ humanChartContainer.style.position = "relative"; }catch(e){}
-
-    humanChart = LightweightCharts.createChart(el, {
-        width: Math.floor(el.clientWidth || 600),
-        height: Math.floor(el.clientHeight || 300),
-        layout: { background: { type: "solid", color: "#0b1220" }, textColor: "#cbd5e1" },
-        grid: {
-            vertLines: { color: "rgba(148,163,184,0.08)" },
-            horzLines: { color: "rgba(148,163,184,0.08)" }
-        },
-        timeScale: {
-            borderColor: "rgba(148,163,184,0.20)",
-            timeVisible: true,
-            secondsVisible: false
-        },
-        rightPriceScale: { borderColor: "rgba(148,163,184,0.20)" },
-        crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-    });
-
-    humanCandleSeries = humanChart.addCandlestickSeries({
-        upColor: "#22c55e",
-        downColor: "#ef4444",
-        borderUpColor: "#22c55e",
-        borderDownColor: "#ef4444",
-        wickUpColor: "#22c55e",
-        wickDownColor: "#ef4444",
-    });
-
-    // Small candles
-    humanBarSpacing = humanBarSpacing || 8;
-    try{ humanChart.timeScale().applyOptions({ barSpacing: humanBarSpacing }); }catch(e){}
-
-    ensureHumanOverlay();
-    ensureHumanControls();
-
-    // Re-draw overlays on zoom/pan
-    try{
-        humanChart.timeScale().subscribeVisibleTimeRangeChange(() => {
-            redrawHumanOverlays();
-        });
-    }catch(e){}
-
-    setTimeout(resizeHumanChart, 0);
-
-    // If we already have payload (profile swap), redraw it
-    if(lastHumanChartPayload){
-        try{ updateHumanChart(lastHumanChartPayload); }catch(e){}
-    }
-}
-
-function resizeHumanChart(){
-    if(!humanChart || !humanChartContainer) return;
-    const w = Math.floor(humanChartContainer.clientWidth || 0);
-    const h = Math.floor(humanChartContainer.clientHeight || 0);
-    if(w > 0 && h > 0){
-        try{ humanChart.applyOptions({ width: w, height: h }); }catch(e){}
-        redrawHumanOverlays();
-    }
-}
-
-window.addEventListener("resize", () => {
-    try{ resizeHumanChart(); }catch(e){}
-});
-
-function ensureHumanOverlay(){
-    if(!humanChartContainer) return;
-
-    if(!humanOverlay){
-        humanOverlay = document.createElement("div");
-        humanOverlay.className = "human-chart-overlay";
-        humanChartContainer.appendChild(humanOverlay);
-
-        humanBoxPrev = document.createElement("div");
-        humanBoxPrev.className = "human-range-box prev";
-        humanOverlay.appendChild(humanBoxPrev);
-
-        humanBoxNew = document.createElement("div");
-        humanBoxNew.className = "human-range-box new";
-        humanOverlay.appendChild(humanBoxNew);
-
-        humanLabelPrev = document.createElement("div");
-        humanLabelPrev.className = "human-range-label";
-        humanLabelPrev.textContent = "Previous Hourly Range";
-        humanOverlay.appendChild(humanLabelPrev);
-
-        humanLabelNew = document.createElement("div");
-        humanLabelNew.className = "human-range-label";
-        humanLabelNew.textContent = "New Hourly Range";
-        humanOverlay.appendChild(humanLabelNew);
-
-        humanHighLabel = document.createElement("div");
-        humanHighLabel.className = "human-price-label";
-        humanOverlay.appendChild(humanHighLabel);
-
-        humanLowLabel = document.createElement("div");
-        humanLowLabel.className = "human-price-label";
-        humanOverlay.appendChild(humanLowLabel);
-
-        _hideEl(humanBoxPrev); _hideEl(humanBoxNew);
-        _hideEl(humanLabelPrev); _hideEl(humanLabelNew);
-        _hideEl(humanHighLabel); _hideEl(humanLowLabel);
-    }
-}
-
-function ensureHumanControls(){
-    if(!humanChartContainer) return;
-
-    if(!humanControls){
-        humanControls = document.createElement("div");
-        humanControls.className = "human-chart-controls";
-        humanChartContainer.appendChild(humanControls);
-
-        const btnIn = document.createElement("button");
-        btnIn.textContent = "＋";
-        btnIn.title = "Zoom In";
-        btnIn.onclick = () => humanZoomIn();
-        humanControls.appendChild(btnIn);
-
-        const btnOut = document.createElement("button");
-        btnOut.textContent = "－";
-        btnOut.title = "Zoom Out";
-        btnOut.onclick = () => humanZoomOut();
-        humanControls.appendChild(btnOut);
-
-        const btnReset = document.createElement("button");
-        btnReset.textContent = "Reset";
-        btnReset.title = "Reset Zoom";
-        btnReset.onclick = () => humanResetZoom();
-        humanControls.appendChild(btnReset);
-    }
-}
-
-function humanZoomIn(){
-    if(!humanChart) return;
-    humanAutoFit = false;
-    humanBarSpacing = Math.min(30, (humanBarSpacing || 8) + 2);
-    try{ humanChart.timeScale().applyOptions({ barSpacing: humanBarSpacing }); }catch(e){}
-    redrawHumanOverlays();
-}
-
-function humanZoomOut(){
-    if(!humanChart) return;
-    humanAutoFit = false;
-    humanBarSpacing = Math.max(2, (humanBarSpacing || 8) - 2);
-    try{ humanChart.timeScale().applyOptions({ barSpacing: humanBarSpacing }); }catch(e){}
-    redrawHumanOverlays();
-}
-
-function humanResetZoom(){
-    if(!humanChart) return;
-    humanBarSpacing = 8;
-    humanAutoFit = true;
-    humanHasFitOnce = false;
-    try{ humanChart.timeScale().applyOptions({ barSpacing: humanBarSpacing }); }catch(e){}
-    try{ humanChart.timeScale().fitContent(); }catch(e){}
-    redrawHumanOverlays();
-}
-
-function _hideEl(el){ if(el) el.style.display = "none"; }
-function _showEl(el){ if(el) el.style.display = "block"; }
-
-function _setBox(box, left, top, width, height){
-    if(!box) return;
-    if([left, top, width, height].some(v => v === null || v === undefined || !isFinite(v))){
-        _hideEl(box); return;
-    }
-    if(width < 2 || height < 2){
-        _hideEl(box); return;
-    }
-    // Clamp into chart container bounds
-    const W = humanChartContainer ? humanChartContainer.clientWidth : 0;
-    const H = humanChartContainer ? humanChartContainer.clientHeight : 0;
-
-    const l = _clamp(left, 0, Math.max(0, W-2));
-    const t = _clamp(top, 0, Math.max(0, H-2));
-    const r = _clamp(left + width, 0, Math.max(0, W));
-    const b = _clamp(top + height, 0, Math.max(0, H));
-
-    box.style.display = "block";
-    box.style.left = `${Math.round(l)}px`;
-    box.style.top = `${Math.round(t)}px`;
-    box.style.width = `${Math.round(Math.max(2, r - l))}px`;
-    box.style.height = `${Math.round(Math.max(2, b - t))}px`;
-}
-
-function _setLabel(lbl, x, y, text){
-    if(!lbl) return;
-    if(x === null || y === null || x === undefined || y === undefined || !isFinite(x) || !isFinite(y)){
-        _hideEl(lbl); return;
-    }
-    const W = humanChartContainer ? humanChartContainer.clientWidth : 0;
-    const H = humanChartContainer ? humanChartContainer.clientHeight : 0;
-
-    const xx = _clamp(x, 6, Math.max(6, W - 160));
-    const yy = _clamp(y, 6, Math.max(6, H - 26));
-
-    lbl.style.display = "block";
-    lbl.textContent = text;
-    lbl.style.left = `${Math.round(xx)}px`;
-    lbl.style.top = `${Math.round(yy)}px`;
-}
-
-function _setPriceLabel(lbl, y, text){
-    if(!lbl) return;
-    if(y === null || y === undefined || !isFinite(y)){
-        _hideEl(lbl); return;
-    }
-    const H = humanChartContainer ? humanChartContainer.clientHeight : 0;
-    const yy = _clamp(y, 6, Math.max(6, H - 26));
-    lbl.style.display = "block";
-    lbl.textContent = text;
-    lbl.style.top = `${Math.round(yy)}px`;
-}
-
-function formatHumanPrice(v){
-    if(v === null || v === undefined) return "—";
-    const n = Number(v);
-    if(!isFinite(n)) return "—";
-    // Keep a sensible precision
-    if(n >= 1000) return n.toFixed(2);
-    if(n >= 1) return n.toFixed(3);
-    return n.toFixed(4);
-}
-
-function updateHumanChart(payload){
-    initHumanChartIfPresent();
-    if(!humanChart || !humanCandleSeries) return;
-    if(!payload) return;
-
-    lastHumanChartPayload = payload;
-
-    // Prefer 5M candles for HUMAN execution view
-    const src = payload.candles_5m || payload.candles_5M || payload.candles5m || payload.candles || null;
-
-    if(Array.isArray(src)){
-        const candles = src
-            .filter(c => c && c.time !== undefined)
-            .map(c => ({
-                time: _normSec(c.time),
-                open: Number(c.open),
-                high: Number(c.high),
-                low: Number(c.low),
-                close: Number(c.close),
-            }))
-            .filter(c => c.time !== null)
-            .sort((a,b)=>a.time-b.time);
-
-        try{
-            humanCandleSeries.setData(candles);
-            // IMPORTANT: Don't fit content every tick (breaks zoom).
-            if(humanAutoFit && !humanHasFitOnce){
-                humanChart.timeScale().fitContent();
-                humanHasFitOnce = true;
-            }
-        }catch(e){}
-    }
-
-    const ph = document.getElementById("chartPlaceholder");
-    if(ph) ph.style.display = "none";
-
-    redrawHumanOverlays();
-}
-
-window.updateHumanChart = updateHumanChart;
-
-function redrawHumanOverlays(){
-    if(!humanChart || !humanCandleSeries || !humanOverlay || !lastHumanChartPayload) return;
-
-    const payload = lastHumanChartPayload;
-    const src = payload.candles_5m || payload.candles_5M || payload.candles5m || payload.candles || [];
-    if(!Array.isArray(src) || src.length === 0){
-        _hideEl(humanBoxPrev); _hideEl(humanBoxNew);
-        _hideEl(humanLabelPrev); _hideEl(humanLabelNew);
-        _hideEl(humanHighLabel); _hideEl(humanLowLabel);
-        return;
-    }
-
-    const cs = src
-        .filter(c => c && c.time !== undefined)
-        .map(c => ({
-            time: _normSec(c.time),
-            open: Number(c.open),
-            high: Number(c.high),
-            low: Number(c.low),
-            close: Number(c.close),
-        }))
-        .filter(c => c.time !== null)
-        .sort((a,b)=>a.time-b.time);
-
-    if(cs.length === 0){
-        _hideEl(humanBoxPrev); _hideEl(humanBoxNew);
-        _hideEl(humanLabelPrev); _hideEl(humanLabelNew);
-        _hideEl(humanHighLabel); _hideEl(humanLowLabel);
-        return;
-    }
-
-    const last = cs[cs.length - 1];
-    const lastTime = last.time;
-
-    // Hour buckets (based on most recent candle)
-    const curHourStart = Math.floor(lastTime / 3600) * 3600;
-    const prevHourStart = curHourStart - 3600;
-    const curHourEnd = curHourStart + 3600;
-
-    const prevCandles = cs.filter(c => c.time >= prevHourStart && c.time < curHourStart);
-    const curCandles = cs.filter(c => c.time >= curHourStart && c.time < curHourEnd);
-
-    const xForTime = (t) => { try{ return humanChart.timeScale().timeToCoordinate(t); }catch(e){ return null; } };
-    const yForPrice = (p) => { try{ return humanCandleSeries.priceToCoordinate(p); }catch(e){ return null; } };
-
-    // =====================
-    // PREVIOUS HOUR BOX
-    // =====================
-    const prevHigh = (payload.range_high !== undefined && payload.range_high !== null && payload.range_high !== 0)
-        ? Number(payload.range_high)
-        : (prevCandles.length ? Math.max(...prevCandles.map(c => c.high)) : null);
-
-    const prevLow = (payload.range_low !== undefined && payload.range_low !== null && payload.range_low !== 0)
-        ? Number(payload.range_low)
-        : (prevCandles.length ? Math.min(...prevCandles.map(c => c.low)) : null);
-
-    if(prevHigh !== null && prevLow !== null && prevCandles.length){
-        const leftT = prevCandles[0].time;
-        const rightT = (curCandles.length ? curCandles[0].time : lastTime);
-
-        const x1 = xForTime(leftT);
-        const x2 = xForTime(rightT);
-        const y1 = yForPrice(prevHigh);
-        const y2 = yForPrice(prevLow);
-
-        if(x1 !== null && x2 !== null && y1 !== null && y2 !== null){
-            const left = Math.min(x1, x2);
-            const right = Math.max(x1, x2);
-            const top = Math.min(y1, y2);
-            const bottom = Math.max(y1, y2);
-
-            _setBox(humanBoxPrev, left, top, (right-left), (bottom-top));
-            _setLabel(humanLabelPrev, left + 10, bottom + 6, "Previous Hourly Range");
-        }else{
-            _hideEl(humanBoxPrev); _hideEl(humanLabelPrev);
-        }
-    }else{
-        _hideEl(humanBoxPrev); _hideEl(humanLabelPrev);
-    }
-
-    // =====================
-    // CURRENT (NEW) HOUR BOX
-    // =====================
-    const curHigh = (payload.current_high !== undefined && payload.current_high !== null && payload.current_high !== 0)
-        ? Number(payload.current_high)
-        : (curCandles.length ? Math.max(...curCandles.map(c => c.high)) : null);
-
-    const curLow = (payload.current_low !== undefined && payload.current_low !== null && payload.current_low !== 0)
-        ? Number(payload.current_low)
-        : (curCandles.length ? Math.min(...curCandles.map(c => c.low)) : null);
-
-    if(curHigh !== null && curLow !== null && curCandles.length){
-        const leftT = curCandles[0].time;
-        const rightT = lastTime;
-
-        const x1 = xForTime(leftT);
-        const x2 = xForTime(rightT);
-        const y1 = yForPrice(curHigh);
-        const y2 = yForPrice(curLow);
-
-        if(x1 !== null && x2 !== null && y1 !== null && y2 !== null){
-            const left = Math.min(x1, x2);
-            const right = Math.max(x1, x2) + 12;
-            const top = Math.min(y1, y2);
-            const bottom = Math.max(y1, y2);
-
-            _setBox(humanBoxNew, left, top, (right-left), (bottom-top));
-            _setLabel(humanLabelNew, left + 10, top - 24, "New Hourly Range");
-
-            _setPriceLabel(humanHighLabel, top - 12, `High  ${formatHumanPrice(curHigh)}`);
-            _setPriceLabel(humanLowLabel, bottom - 12, `Low   ${formatHumanPrice(curLow)}`);
-        }else{
-            _hideEl(humanBoxNew); _hideEl(humanLabelNew);
-            _hideEl(humanHighLabel); _hideEl(humanLowLabel);
-        }
-    }else{
-        _hideEl(humanBoxNew); _hideEl(humanLabelNew);
-        _hideEl(humanHighLabel); _hideEl(humanLowLabel);
-    }
-}
-
-// ============================
-// HUMAN Keep Alive (frontend)
-// ============================
-async function refreshHumanKeepAliveStatus(){
-    try{
-        const res = await fetch("/human_keep_alive_status", { method:"GET" });
-        const data = await res.json();
-        window.humanKeepAliveEnabled = !!(data && data.enabled);
-        const btn = document.getElementById("keepAliveBtn");
-        if(btn){
-            btn.textContent = window.humanKeepAliveEnabled ? "KEEP ALIVE: ON" : "KEEP ALIVE: OFF";
-            btn.style.background = window.humanKeepAliveEnabled ? "#22c55e" : "#334155";
-        }
-    }catch(e){}
-}
-
-async function toggleHumanKeepAlive(){
-    const next = !window.humanKeepAliveEnabled;
-    try{
-        const res = await fetch("/toggle_human_keep_alive", {
-            method:"POST",
-            headers: { "Content-Type":"application/json" },
-            body: JSON.stringify({ enabled: next })
-        });
-        const data = await res.json();
-        window.humanKeepAliveEnabled = !!(data && data.enabled);
-    }catch(e){}
-    try{ await refreshHumanKeepAliveStatus(); }catch(e){}
-}
-
-window.toggleHumanKeepAlive = toggleHumanKeepAlive;
-
-</script>
-<script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js">
-/* =========================================================
-   HUMAN CHART (Lightweight Charts) + Hourly Range Overlays
-   - Draws Previous Hourly Range + New Hourly Range boxes
-   - Adds working Zoom In/Out/Reset controls
-   - Supports Keep Alive frontend status + disconnect skip
-   ========================================================= */
-
-window.humanKeepAliveEnabled = window.humanKeepAliveEnabled || false;
-
-let humanChart = null;
-let humanCandleSeries = null;
-let humanChartContainer = null;
-
-let humanOverlay = null;
-let humanControls = null;
-
-let humanBoxPrev = null;
-let humanBoxNew = null;
-let humanLabelPrev = null;
-let humanLabelNew = null;
-let humanHighLabel = null;
-let humanLowLabel = null;
-
-let humanBarSpacing = 8;
-let humanAutoFit = true;
-let humanHasFitOnce = false;
-
-let lastHumanChartPayload = null;
-
-function _normSec(t){
-    const n = Number(t);
-    if(!isFinite(n)) return null;
-    // If ms epoch, convert to seconds
-    if(n > 1e12) return Math.floor(n/1000);
-    return Math.floor(n);
-}
-
-function _clamp(v, min, max){
-    if(v < min) return min;
-    if(v > max) return max;
-    return v;
-}
-
-function initHumanChartIfPresent(){
-    const el = document.getElementById("humanChart");
-    if(!el) return;
-    if(typeof LightweightCharts === "undefined") return;
-
-    // Already initialized on same element
-    if(humanChart && humanChartContainer === el) return;
-
-    // Remove old chart safely
-    try{ if(humanChart) humanChart.remove(); }catch(e){}
-
-    humanChartContainer = el;
-
-    // Make container a positioning context for overlays/controls
-    try{ humanChartContainer.style.position = "relative"; }catch(e){}
-
-    humanChart = LightweightCharts.createChart(el, {
-        width: Math.floor(el.clientWidth || 600),
-        height: Math.floor(el.clientHeight || 300),
-        layout: { background: { type: "solid", color: "#0b1220" }, textColor: "#cbd5e1" },
-        grid: {
-            vertLines: { color: "rgba(148,163,184,0.08)" },
-            horzLines: { color: "rgba(148,163,184,0.08)" }
-        },
-        timeScale: {
-            borderColor: "rgba(148,163,184,0.20)",
-            timeVisible: true,
-            secondsVisible: false
-        },
-        rightPriceScale: { borderColor: "rgba(148,163,184,0.20)" },
-        crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-    });
-
-    humanCandleSeries = humanChart.addCandlestickSeries({
-        upColor: "#22c55e",
-        downColor: "#ef4444",
-        borderUpColor: "#22c55e",
-        borderDownColor: "#ef4444",
-        wickUpColor: "#22c55e",
-        wickDownColor: "#ef4444",
-    });
-
-    // Small candles
-    humanBarSpacing = humanBarSpacing || 8;
-    try{ humanChart.timeScale().applyOptions({ barSpacing: humanBarSpacing }); }catch(e){}
-
-    ensureHumanOverlay();
-    ensureHumanControls();
-
-    // Re-draw overlays on zoom/pan
-    try{
-        humanChart.timeScale().subscribeVisibleTimeRangeChange(() => {
-            redrawHumanOverlays();
-        });
-    }catch(e){}
-
-    setTimeout(resizeHumanChart, 0);
-
-    // If we already have payload (profile swap), redraw it
-    if(lastHumanChartPayload){
-        try{ updateHumanChart(lastHumanChartPayload); }catch(e){}
-    }
-}
-
-function resizeHumanChart(){
-    if(!humanChart || !humanChartContainer) return;
-    const w = Math.floor(humanChartContainer.clientWidth || 0);
-    const h = Math.floor(humanChartContainer.clientHeight || 0);
-    if(w > 0 && h > 0){
-        try{ humanChart.applyOptions({ width: w, height: h }); }catch(e){}
-        redrawHumanOverlays();
-    }
-}
-
-window.addEventListener("resize", () => {
-    try{ resizeHumanChart(); }catch(e){}
-});
-
-function ensureHumanOverlay(){
-    if(!humanChartContainer) return;
-
-    if(!humanOverlay){
-        humanOverlay = document.createElement("div");
-        humanOverlay.className = "human-chart-overlay";
-        humanChartContainer.appendChild(humanOverlay);
-
-        humanBoxPrev = document.createElement("div");
-        humanBoxPrev.className = "human-range-box prev";
-        humanOverlay.appendChild(humanBoxPrev);
-
-        humanBoxNew = document.createElement("div");
-        humanBoxNew.className = "human-range-box new";
-        humanOverlay.appendChild(humanBoxNew);
-
-        humanLabelPrev = document.createElement("div");
-        humanLabelPrev.className = "human-range-label";
-        humanLabelPrev.textContent = "Previous Hourly Range";
-        humanOverlay.appendChild(humanLabelPrev);
-
-        humanLabelNew = document.createElement("div");
-        humanLabelNew.className = "human-range-label";
-        humanLabelNew.textContent = "New Hourly Range";
-        humanOverlay.appendChild(humanLabelNew);
-
-        humanHighLabel = document.createElement("div");
-        humanHighLabel.className = "human-price-label";
-        humanOverlay.appendChild(humanHighLabel);
-
-        humanLowLabel = document.createElement("div");
-        humanLowLabel.className = "human-price-label";
-        humanOverlay.appendChild(humanLowLabel);
-
-        _hideEl(humanBoxPrev); _hideEl(humanBoxNew);
-        _hideEl(humanLabelPrev); _hideEl(humanLabelNew);
-        _hideEl(humanHighLabel); _hideEl(humanLowLabel);
-    }
-}
-
-function ensureHumanControls(){
-    if(!humanChartContainer) return;
-
-    if(!humanControls){
-        humanControls = document.createElement("div");
-        humanControls.className = "human-chart-controls";
-        humanChartContainer.appendChild(humanControls);
-
-        const btnIn = document.createElement("button");
-        btnIn.textContent = "＋";
-        btnIn.title = "Zoom In";
-        btnIn.onclick = () => humanZoomIn();
-        humanControls.appendChild(btnIn);
-
-        const btnOut = document.createElement("button");
-        btnOut.textContent = "－";
-        btnOut.title = "Zoom Out";
-        btnOut.onclick = () => humanZoomOut();
-        humanControls.appendChild(btnOut);
-
-        const btnReset = document.createElement("button");
-        btnReset.textContent = "Reset";
-        btnReset.title = "Reset Zoom";
-        btnReset.onclick = () => humanResetZoom();
-        humanControls.appendChild(btnReset);
-    }
-}
-
-function humanZoomIn(){
-    if(!humanChart) return;
-    humanAutoFit = false;
-    humanBarSpacing = Math.min(30, (humanBarSpacing || 8) + 2);
-    try{ humanChart.timeScale().applyOptions({ barSpacing: humanBarSpacing }); }catch(e){}
-    redrawHumanOverlays();
-}
-
-function humanZoomOut(){
-    if(!humanChart) return;
-    humanAutoFit = false;
-    humanBarSpacing = Math.max(2, (humanBarSpacing || 8) - 2);
-    try{ humanChart.timeScale().applyOptions({ barSpacing: humanBarSpacing }); }catch(e){}
-    redrawHumanOverlays();
-}
-
-function humanResetZoom(){
-    if(!humanChart) return;
-    humanBarSpacing = 8;
-    humanAutoFit = true;
-    humanHasFitOnce = false;
-    try{ humanChart.timeScale().applyOptions({ barSpacing: humanBarSpacing }); }catch(e){}
-    try{ humanChart.timeScale().fitContent(); }catch(e){}
-    redrawHumanOverlays();
-}
-
-function _hideEl(el){ if(el) el.style.display = "none"; }
-function _showEl(el){ if(el) el.style.display = "block"; }
-
-function _setBox(box, left, top, width, height){
-    if(!box) return;
-    if([left, top, width, height].some(v => v === null || v === undefined || !isFinite(v))){
-        _hideEl(box); return;
-    }
-    if(width < 2 || height < 2){
-        _hideEl(box); return;
-    }
-    // Clamp into chart container bounds
-    const W = humanChartContainer ? humanChartContainer.clientWidth : 0;
-    const H = humanChartContainer ? humanChartContainer.clientHeight : 0;
-
-    const l = _clamp(left, 0, Math.max(0, W-2));
-    const t = _clamp(top, 0, Math.max(0, H-2));
-    const r = _clamp(left + width, 0, Math.max(0, W));
-    const b = _clamp(top + height, 0, Math.max(0, H));
-
-    box.style.display = "block";
-    box.style.left = `${Math.round(l)}px`;
-    box.style.top = `${Math.round(t)}px`;
-    box.style.width = `${Math.round(Math.max(2, r - l))}px`;
-    box.style.height = `${Math.round(Math.max(2, b - t))}px`;
-}
-
-function _setLabel(lbl, x, y, text){
-    if(!lbl) return;
-    if(x === null || y === null || x === undefined || y === undefined || !isFinite(x) || !isFinite(y)){
-        _hideEl(lbl); return;
-    }
-    const W = humanChartContainer ? humanChartContainer.clientWidth : 0;
-    const H = humanChartContainer ? humanChartContainer.clientHeight : 0;
-
-    const xx = _clamp(x, 6, Math.max(6, W - 160));
-    const yy = _clamp(y, 6, Math.max(6, H - 26));
-
-    lbl.style.display = "block";
-    lbl.textContent = text;
-    lbl.style.left = `${Math.round(xx)}px`;
-    lbl.style.top = `${Math.round(yy)}px`;
-}
-
-function _setPriceLabel(lbl, y, text){
-    if(!lbl) return;
-    if(y === null || y === undefined || !isFinite(y)){
-        _hideEl(lbl); return;
-    }
-    const H = humanChartContainer ? humanChartContainer.clientHeight : 0;
-    const yy = _clamp(y, 6, Math.max(6, H - 26));
-    lbl.style.display = "block";
-    lbl.textContent = text;
-    lbl.style.top = `${Math.round(yy)}px`;
-}
-
-function formatHumanPrice(v){
-    if(v === null || v === undefined) return "—";
-    const n = Number(v);
-    if(!isFinite(n)) return "—";
-    // Keep a sensible precision
-    if(n >= 1000) return n.toFixed(2);
-    if(n >= 1) return n.toFixed(3);
-    return n.toFixed(4);
-}
-
-function updateHumanChart(payload){
-    initHumanChartIfPresent();
-    if(!humanChart || !humanCandleSeries) return;
-    if(!payload) return;
-
-    lastHumanChartPayload = payload;
-
-    // Prefer 5M candles for HUMAN execution view
-    const src = payload.candles_5m || payload.candles_5M || payload.candles5m || payload.candles || null;
-
-    if(Array.isArray(src)){
-        const candles = src
-            .filter(c => c && c.time !== undefined)
-            .map(c => ({
-                time: _normSec(c.time),
-                open: Number(c.open),
-                high: Number(c.high),
-                low: Number(c.low),
-                close: Number(c.close),
-            }))
-            .filter(c => c.time !== null)
-            .sort((a,b)=>a.time-b.time);
-
-        try{
-            humanCandleSeries.setData(candles);
-            // IMPORTANT: Don't fit content every tick (breaks zoom).
-            if(humanAutoFit && !humanHasFitOnce){
-                humanChart.timeScale().fitContent();
-                humanHasFitOnce = true;
-            }
-        }catch(e){}
-    }
-
-    const ph = document.getElementById("chartPlaceholder");
-    if(ph) ph.style.display = "none";
-
-    redrawHumanOverlays();
-}
-
-window.updateHumanChart = updateHumanChart;
-
-function redrawHumanOverlays(){
-    if(!humanChart || !humanCandleSeries || !humanOverlay || !lastHumanChartPayload) return;
-
-    const payload = lastHumanChartPayload;
-    const src = payload.candles_5m || payload.candles_5M || payload.candles5m || payload.candles || [];
-    if(!Array.isArray(src) || src.length === 0){
-        _hideEl(humanBoxPrev); _hideEl(humanBoxNew);
-        _hideEl(humanLabelPrev); _hideEl(humanLabelNew);
-        _hideEl(humanHighLabel); _hideEl(humanLowLabel);
-        return;
-    }
-
-    const cs = src
-        .filter(c => c && c.time !== undefined)
-        .map(c => ({
-            time: _normSec(c.time),
-            open: Number(c.open),
-            high: Number(c.high),
-            low: Number(c.low),
-            close: Number(c.close),
-        }))
-        .filter(c => c.time !== null)
-        .sort((a,b)=>a.time-b.time);
-
-    if(cs.length === 0){
-        _hideEl(humanBoxPrev); _hideEl(humanBoxNew);
-        _hideEl(humanLabelPrev); _hideEl(humanLabelNew);
-        _hideEl(humanHighLabel); _hideEl(humanLowLabel);
-        return;
-    }
-
-    const last = cs[cs.length - 1];
-    const lastTime = last.time;
-
-    // Hour buckets (based on most recent candle)
-    const curHourStart = Math.floor(lastTime / 3600) * 3600;
-    const prevHourStart = curHourStart - 3600;
-    const curHourEnd = curHourStart + 3600;
-
-    const prevCandles = cs.filter(c => c.time >= prevHourStart && c.time < curHourStart);
-    const curCandles = cs.filter(c => c.time >= curHourStart && c.time < curHourEnd);
-
-    const xForTime = (t) => { try{ return humanChart.timeScale().timeToCoordinate(t); }catch(e){ return null; } };
-    const yForPrice = (p) => { try{ return humanCandleSeries.priceToCoordinate(p); }catch(e){ return null; } };
-
-    // =====================
-    // PREVIOUS HOUR BOX
-    // =====================
-    const prevHigh = (payload.range_high !== undefined && payload.range_high !== null && payload.range_high !== 0)
-        ? Number(payload.range_high)
-        : (prevCandles.length ? Math.max(...prevCandles.map(c => c.high)) : null);
-
-    const prevLow = (payload.range_low !== undefined && payload.range_low !== null && payload.range_low !== 0)
-        ? Number(payload.range_low)
-        : (prevCandles.length ? Math.min(...prevCandles.map(c => c.low)) : null);
-
-    if(prevHigh !== null && prevLow !== null && prevCandles.length){
-        const leftT = prevCandles[0].time;
-        const rightT = (curCandles.length ? curCandles[0].time : lastTime);
-
-        const x1 = xForTime(leftT);
-        const x2 = xForTime(rightT);
-        const y1 = yForPrice(prevHigh);
-        const y2 = yForPrice(prevLow);
-
-        if(x1 !== null && x2 !== null && y1 !== null && y2 !== null){
-            const left = Math.min(x1, x2);
-            const right = Math.max(x1, x2);
-            const top = Math.min(y1, y2);
-            const bottom = Math.max(y1, y2);
-
-            _setBox(humanBoxPrev, left, top, (right-left), (bottom-top));
-            _setLabel(humanLabelPrev, left + 10, bottom + 6, "Previous Hourly Range");
-        }else{
-            _hideEl(humanBoxPrev); _hideEl(humanLabelPrev);
-        }
-    }else{
-        _hideEl(humanBoxPrev); _hideEl(humanLabelPrev);
-    }
-
-    // =====================
-    // CURRENT (NEW) HOUR BOX
-    // =====================
-    const curHigh = (payload.current_high !== undefined && payload.current_high !== null && payload.current_high !== 0)
-        ? Number(payload.current_high)
-        : (curCandles.length ? Math.max(...curCandles.map(c => c.high)) : null);
-
-    const curLow = (payload.current_low !== undefined && payload.current_low !== null && payload.current_low !== 0)
-        ? Number(payload.current_low)
-        : (curCandles.length ? Math.min(...curCandles.map(c => c.low)) : null);
-
-    if(curHigh !== null && curLow !== null && curCandles.length){
-        const leftT = curCandles[0].time;
-        const rightT = lastTime;
-
-        const x1 = xForTime(leftT);
-        const x2 = xForTime(rightT);
-        const y1 = yForPrice(curHigh);
-        const y2 = yForPrice(curLow);
-
-        if(x1 !== null && x2 !== null && y1 !== null && y2 !== null){
-            const left = Math.min(x1, x2);
-            const right = Math.max(x1, x2) + 12;
-            const top = Math.min(y1, y2);
-            const bottom = Math.max(y1, y2);
-
-            _setBox(humanBoxNew, left, top, (right-left), (bottom-top));
-            _setLabel(humanLabelNew, left + 10, top - 24, "New Hourly Range");
-
-            _setPriceLabel(humanHighLabel, top - 12, `High  ${formatHumanPrice(curHigh)}`);
-            _setPriceLabel(humanLowLabel, bottom - 12, `Low   ${formatHumanPrice(curLow)}`);
-        }else{
-            _hideEl(humanBoxNew); _hideEl(humanLabelNew);
-            _hideEl(humanHighLabel); _hideEl(humanLowLabel);
-        }
-    }else{
-        _hideEl(humanBoxNew); _hideEl(humanLabelNew);
-        _hideEl(humanHighLabel); _hideEl(humanLowLabel);
-    }
-}
-
-// ============================
-// HUMAN Keep Alive (frontend)
-// ============================
-async function refreshHumanKeepAliveStatus(){
-    try{
-        const res = await fetch("/human_keep_alive_status", { method:"GET" });
-        const data = await res.json();
-        window.humanKeepAliveEnabled = !!(data && data.enabled);
-        const btn = document.getElementById("keepAliveBtn");
-        if(btn){
-            btn.textContent = window.humanKeepAliveEnabled ? "KEEP ALIVE: ON" : "KEEP ALIVE: OFF";
-            btn.style.background = window.humanKeepAliveEnabled ? "#22c55e" : "#334155";
-        }
-    }catch(e){}
-}
-
-async function toggleHumanKeepAlive(){
-    const next = !window.humanKeepAliveEnabled;
-    try{
-        const res = await fetch("/toggle_human_keep_alive", {
-            method:"POST",
-            headers: { "Content-Type":"application/json" },
-            body: JSON.stringify({ enabled: next })
-        });
-        const data = await res.json();
-        window.humanKeepAliveEnabled = !!(data && data.enabled);
-    }catch(e){}
-    try{ await refreshHumanKeepAliveStatus(); }catch(e){}
-}
-
-window.toggleHumanKeepAlive = toggleHumanKeepAlive;
-
-</script>
 
 <style>
 /* make sizing predictable so padding doesn't cause overflow */
@@ -1116,9 +165,16 @@ input, select{
     user-select:none;
 }
 .digit-cell.flash{
+    background:#b91c1c;
     border-color:#ef4444;
-    box-shadow:0 0 18px #ef4444;
-    transform:scale(1.05);
+    box-shadow:0 0 0 1px rgba(239,68,68,0.45) inset, 0 0 14px rgba(239,68,68,0.25);
+    transform:scale(1.03);
+}
+.digit-cell.flash > div:first-child{
+    color:#f8fafc !important;
+}
+.digit-cell.flash > div:last-child{
+    color:#fecaca !important;
 }
 
 .digit-popup{
@@ -1493,6 +549,40 @@ input, select{
     <button id="autoBarrierCancel" style="background:#ef4444; width:100%; margin-top:4px;">CANCEL</button>
 </div>
 
+<!-- ==================== PATCH 2A: SeqVIX popups (already present) ==================== -->
+<div id="seqVixJokerPopup" class="digit-popup" style="display:none;">
+  <h4>5*² sequential vix</h4>
+  <!-- ==================== PATCH 3A: 1/2 Trade selector for JOKERJOE ==================== -->
+  <div style="display:flex; gap:8px; margin-bottom:8px;">
+    <button id="seqVixJokerTrades1Btn" onclick="setSeqVixJokerTradesPerMarket(1)" style="flex:1; height:38px; background:#1e293b;">1 Trade</button>
+    <button id="seqVixJokerTrades2Btn" onclick="setSeqVixJokerTradesPerMarket(2)" style="flex:1; height:38px; background:#38bdf8; color:#0b1220;">2 Trades</button>
+  </div>
+  <button style="background:#22c55e; width:100%; margin-top:6px;" onclick="startSeqVixJokerjoe('5')">5 markets</button>
+  <button style="background:#22c55e; width:100%; margin-top:6px;" onclick="startSeqVixJokerjoe('10')">10 markets</button>
+  <button style="background:#22c55e; width:100%; margin-top:6px;" onclick="startSeqVixJokerjoe('ENDLESS')">Endless</button>
+  <button style="background:#ef4444; width:100%; margin-top:8px;" onclick="hideSeqVixPopups()">CANCEL</button>
+</div>
+
+<div id="seqVixKoolkidPopup" class="digit-popup" style="display:none;">
+  <h4>5*² sequential vix</h4>
+  <!-- ==================== PATCH 3B: 1/2 Trade selector for KOOLKID ==================== -->
+  <div style="display:flex; gap:8px; margin-bottom:8px;">
+    <button id="seqVixKoolkidTrades1Btn" onclick="setSeqVixKoolkidTradesPerMarket(1)" style="flex:1; height:38px; background:#1e293b;">1 Trade</button>
+    <button id="seqVixKoolkidTrades2Btn" onclick="setSeqVixKoolkidTradesPerMarket(2)" style="flex:1; height:38px; background:#38bdf8; color:#0b1220;">2 Trades</button>
+  </div>
+  <div style="font-size:12px; color:#94a3b8; margin-bottom:6px;">Choose contract (runs 10 markets)</div>
+
+  <button style="background:#22c55e; width:100%; margin-top:6px;" onclick="startSeqVixKoolkid('UNDER',7)">UNDER 7</button>
+  <button style="background:#22c55e; width:100%; margin-top:6px;" onclick="startSeqVixKoolkid('UNDER',8)">UNDER 8</button>
+  <button style="background:#22c55e; width:100%; margin-top:6px;" onclick="startSeqVixKoolkid('UNDER',9)">UNDER 9</button>
+
+  <button style="background:#38bdf8; width:100%; margin-top:10px;" onclick="startSeqVixKoolkid('OVER',0)">OVER 0</button>
+  <button style="background:#38bdf8; width:100%; margin-top:6px;" onclick="startSeqVixKoolkid('OVER',1)">OVER 1</button>
+  <button style="background:#38bdf8; width:100%; margin-top:6px;" onclick="startSeqVixKoolkid('OVER',2)">OVER 2</button>
+
+  <button style="background:#ef4444; width:100%; margin-top:10px;" onclick="hideSeqVixPopups()">CANCEL</button>
+</div>
+
 <script>
 /* ===================== SOCKET.IO (BULLETPROOF INIT) ===================== */
 let socket = null;
@@ -1705,6 +795,28 @@ function bindSocketHandlers(){
         if(r === "TP HIT") showToast(`🎯 TP reached (${p}) — trading stopped`, "success");
         if(r === "SL HIT") showToast(`🛑 SL reached (${p}) — trading stopped`, "error");
     });
+
+    // ==================== PATCH 2C: seqvix_progress listener ====================
+    socket.on("seqvix_progress", (data)=>{
+        if(!data || !data.profile) return;
+        const p = String(data.profile).toUpperCase();
+        const running = !!data.running;
+        const done = Number(data.done || 0);
+        const total = (data.total === null || data.total === undefined) ? null : Number(data.total);
+
+        if(p === "KOOLKID"){
+            seqVixState.KOOLKID.running = running;
+            seqVixState.KOOLKID.done = done;
+            seqVixState.KOOLKID.total = total ?? 10;
+            updateSeqVixUI("KOOLKID", running, done, seqVixState.KOOLKID.total);
+        }
+        if(p === "JOKERJOE"){
+            seqVixState.JOKERJOE.running = running;
+            seqVixState.JOKERJOE.done = done;
+            seqVixState.JOKERJOE.total = total; // null => ∞
+            updateSeqVixUI("JOKERJOE", running, done, total);
+        }
+    });
 }
 
 /* ===================== YOUR ORIGINAL CODE BELOW (UNCHANGED LOGIC) ===================== */
@@ -1824,7 +936,89 @@ const howtoBadge = document.getElementById("howtoModeBadge");
 const howtoToggleBtn = document.getElementById("howtoToggleBtn");
 let howtoVisible = true;
 
+
+/* =========================
+   PHASE 2 (profile JS loader)
+   - Loads empty/profile scripts safely (no break if missing)
+   - Lets profile files register hooks without editing index.html
+   ========================= */
+window.ProfileModules = window.ProfileModules || {};
+
+function registerProfileModule(name, mod){
+    try{
+        if(!name) return;
+        window.ProfileModules[String(name).toUpperCase()] = mod || {};
+    }catch(e){}
+}
+window.registerProfileModule = window.registerProfileModule || registerProfileModule;
+
+const __phase2ScriptLoaded = window.__phase2ScriptLoaded || (window.__phase2ScriptLoaded = {});
+let __phase2AppLoaded = !!window.__phase2AppLoaded;
+
+function loadScriptOncePhase2(src){
+    return new Promise((resolve) => {
+        try{
+            if(!src){ resolve(false); return; }
+            if(__phase2ScriptLoaded[src]){ resolve(true); return; }
+
+            const existing = document.querySelector(`script[data-phase2-src="${src}"]`);
+            if(existing){
+                __phase2ScriptLoaded[src] = true;
+                resolve(true);
+                return;
+            }
+
+            const s = document.createElement("script");
+            s.src = src;
+            s.async = false;
+            s.defer = true;
+            s.dataset.phase2Src = src;
+            s.onload = () => { __phase2ScriptLoaded[src] = true; resolve(true); };
+            s.onerror = () => { resolve(false); }; // fail-safe for empty/missing files
+            document.head.appendChild(s);
+        }catch(e){
+            resolve(false);
+        }
+    });
+}
+
+async function ensureAppScript(){
+    if(__phase2AppLoaded) return true;
+    await loadScriptOncePhase2("/static/js/app.js");
+    __phase2AppLoaded = true; // safe even if file is empty
+    window.__phase2AppLoaded = true;
+    return true;
+}
+
+async function ensureProfileModuleScript(profile){
+    const p = String(profile || "").toUpperCase();
+    await ensureAppScript();
+
+    if(p === "KOOLKID"){
+        await loadScriptOncePhase2("/static/js/profiles/koolkid.js");
+    }else if(p === "JOKERJOE"){
+        await loadScriptOncePhase2("/static/js/profiles/jokerjoe.js");
+    }else if(p === "HUMAN"){
+        await loadScriptOncePhase2("/static/js/profiles/human.js");
+    }
+    return true;
+}
+
+async function runProfileModuleHook(profile, hookName, payload){
+    try{
+        const p = String(profile || activeProfile || "").toUpperCase();
+        const mod = (window.ProfileModules || {})[p];
+        if(mod && typeof mod[hookName] === "function"){
+            return await mod[hookName](payload || {});
+        }
+    }catch(e){}
+    return null;
+}
+
+
 async function loadProfileUI(profile){
+    await ensureProfileModuleScript(profile);
+
     let file = "koolkid.html";
     if(profile === "KOOLKID") file = "koolkid.html";
     if(profile === "JOKERJOE") file = "jokerjoe.html";
@@ -1834,6 +1028,8 @@ async function loadProfileUI(profile){
     const html = await res.text();
 
     document.getElementById("profileContainer").innerHTML = html;
+
+    try{ await runProfileModuleHook(profile, "onMount", { profile, root: document.getElementById("profileContainer") }); }catch(e){}
 
 
     // HUMAN: init chart + pull Keep Alive status
@@ -1852,6 +1048,8 @@ async function loadProfileUI(profile){
     sendRiskControls();
 
     renderTradeList(activeProfile);
+
+    try{ await runProfileModuleHook(profile, "afterLoadProfileUI", { profile }); }catch(e){}
 }
 
 function refreshDynamicElements(){
@@ -1914,6 +1112,8 @@ function getHowToHTMLForProfile(profile) {
                 <li><b>kidBagz💰🤑 AUTO:</b> New automated mode.</li>
                 <li><b>MPull💰🤫 AUTO:</b> New automated mode.</li>
                 <li><b>kidPairs🤓💯 AUTO:</b> New automated mode.</li>
+                <!-- PATCH 2D: add SeqVIX description -->
+                <li><b>5*² sequential vix:</b> Rotates 10 random markets, places 2 trades per market, shows progress.</li>
                 <li><b>Master Auto:</b> Global on/off for all automated modes.</li>
                 <li><b>TP/SL:</b> Set take-profit and stop-loss levels (in USD). AUTO SL toggles automatic stop-loss.</li>
             </ul>
@@ -1934,6 +1134,8 @@ function getHowToHTMLForProfile(profile) {
                 <li><b>tripleX AUTO:</b> Rotates through a sequence of digits, placing a DIFFERS trade each time the target digit appears.</li>
                 <li><b>kidX:</b> Waits for the selected barrier digit to appear, then places three DIFFERS trades over the next five ticks.</li>
                 <li><b>MultiG:</b> Queues a digit with a low appearance rate, holds for 30 seconds, then places a DIFFERS trade if the digit remains rare.</li>
+                <!-- PATCH 2D: add SeqVIX description -->
+                <li><b>5*² sequential vix:</b> Rotates random markets, places 2 differs trades per market, shows progress.</li>
                 <li><b>Master Auto:</b> Enables/disables sludgeX, tripleX, and kidX (MultiG works independently).</li>
             </ul>
             <div style="margin-top:8px; font-size:11px; color:#ef4444; text-align:center;">
@@ -2105,6 +1307,147 @@ autoBarrierConfirm.addEventListener("click", async ()=>{
 });
 autoBarrierCancel.addEventListener("click", hideAutoBarrierPopup);
 
+// ==================== PATCH 2B: SeqVIX state and functions ====================
+let seqVixState = {
+  KOOLKID: { running:false, done:0, total:10 },
+  JOKERJOE: { running:false, done:0, total:0 }
+};
+
+// ==================== PATCH 2A (new): trade count state variables ====================
+let seqVixJokerTradesPerMarket = 2;   // default 2
+let seqVixKoolkidTradesPerMarket = 2; // default 2
+
+function hideSeqVixPopups(){
+  const a = document.getElementById("seqVixJokerPopup");
+  const b = document.getElementById("seqVixKoolkidPopup");
+  if(a) a.style.display = "none";
+  if(b) b.style.display = "none";
+}
+
+function showSeqVixPopup(profile){
+  hideSeqVixPopups();
+  const el = document.getElementById(profile === "JOKERJOE" ? "seqVixJokerPopup" : "seqVixKoolkidPopup");
+  if(!el) return;
+  el.style.left = "50%";
+  el.style.top = "50%";
+  el.style.transform = "translate(-50%, -50%)";
+  el.style.display = "block";
+
+  // ==================== PATCH 3C: reset trade count UI when popup opens ====================
+  if(profile === "JOKERJOE"){
+    updateSeqVixJokerTradesUI(seqVixJokerTradesPerMarket);
+  }
+  if(profile === "KOOLKID"){
+    updateSeqVixKoolkidTradesUI(seqVixKoolkidTradesPerMarket);
+  }
+}
+
+function updateSeqVixUI(profile, running, done, total){
+  const btnId = profile === "KOOLKID" ? "seqVixBtnKoolkid" : "seqVixBtnJokerjoe";
+  const progId = profile === "KOOLKID" ? "seqVixProgressKoolkid" : "seqVixProgressJokerjoe";
+
+  const btn = document.getElementById(btnId);
+  const prog = document.getElementById(progId);
+
+  const totalText = (total === null || total === undefined) ? "∞" : String(total);
+  if(prog){
+    prog.innerText = `Markets done: ${done} / ${totalText}`;
+  }
+  if(btn){
+    btn.innerText = running ? "5*² sequential vix: ON" : "5*² sequential vix: OFF";
+    btn.style.background = running ? "#22c55e" : "#1e293b";
+  }
+}
+
+// ==================== PATCH 2B (new): helper UI updaters for trade count ====================
+function updateSeqVixJokerTradesUI(n){
+  const b1 = document.getElementById("seqVixJokerTrades1Btn");
+  const b2 = document.getElementById("seqVixJokerTrades2Btn");
+  if(!b1 || !b2) return;
+  const v = Number(n) === 1 ? 1 : 2;
+  b1.style.background = (v === 1) ? "#38bdf8" : "#1e293b";
+  b2.style.background = (v === 2) ? "#38bdf8" : "#1e293b";
+}
+
+function updateSeqVixKoolkidTradesUI(n){
+  const b1 = document.getElementById("seqVixKoolkidTrades1Btn");
+  const b2 = document.getElementById("seqVixKoolkidTrades2Btn");
+  if(!b1 || !b2) return;
+  const v = Number(n) === 1 ? 1 : 2;
+  b1.style.background = (v === 1) ? "#38bdf8" : "#1e293b";
+  b2.style.background = (v === 2) ? "#38bdf8" : "#1e293b";
+}
+
+function setSeqVixJokerTradesPerMarket(n){
+  seqVixJokerTradesPerMarket = (Number(n) === 1 ? 1 : 2);
+  updateSeqVixJokerTradesUI(seqVixJokerTradesPerMarket);
+}
+
+function setSeqVixKoolkidTradesPerMarket(n){
+  seqVixKoolkidTradesPerMarket = (Number(n) === 1 ? 1 : 2);
+  updateSeqVixKoolkidTradesUI(seqVixKoolkidTradesPerMarket);
+}
+
+async function toggleSeqVixJokerjoe(){
+  if(seqVixState.JOKERJOE.running){
+    await fetch("/stop_seqvix_jokerjoe", {method:"POST"});
+    return;
+  }
+  showSeqVixPopup("JOKERJOE");
+}
+
+async function startSeqVixJokerjoe(mode){
+  hideSeqVixPopups();
+  await fetch("/start_seqvix_jokerjoe", {
+    method:"POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({
+      mode,
+      trade_count: seqVixJokerTradesPerMarket   // ==================== PATCH 2C ====================
+    })
+  });
+}
+
+async function toggleSeqVixKoolkid(){
+  if(seqVixState.KOOLKID.running){
+    await fetch("/stop_seqvix_koolkid", {method:"POST"});
+    return;
+  }
+  showSeqVixPopup("KOOLKID");
+}
+
+async function startSeqVixKoolkid(contract_type, barrier){
+  hideSeqVixPopups();
+  await fetch("/start_seqvix_koolkid", {
+    method:"POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({
+      contract_type,
+      barrier,
+      trade_count: seqVixKoolkidTradesPerMarket   // ==================== PATCH 2D ====================
+    })
+  });
+}
+
+async function refreshSeqVixStatus(){
+  try{
+    const res = await fetch("/seqvix_status");
+    const data = await res.json();
+    if(data && data.KOOLKID){
+      seqVixState.KOOLKID.running = !!data.KOOLKID.running;
+      seqVixState.KOOLKID.done = Number(data.KOOLKID.done||0);
+      seqVixState.KOOLKID.total = (data.KOOLKID.total === null ? null : Number(data.KOOLKID.total||10));
+      updateSeqVixUI("KOOLKID", seqVixState.KOOLKID.running, seqVixState.KOOLKID.done, seqVixState.KOOLKID.total);
+    }
+    if(data && data.JOKERJOE){
+      seqVixState.JOKERJOE.running = !!data.JOKERJOE.running;
+      seqVixState.JOKERJOE.done = Number(data.JOKERJOE.done||0);
+      seqVixState.JOKERJOE.total = (data.JOKERJOE.total === null ? null : Number(data.JOKERJOE.total||0));
+      updateSeqVixUI("JOKERJOE", seqVixState.JOKERJOE.running, seqVixState.JOKERJOE.done, seqVixState.JOKERJOE.total);
+    }
+  }catch(e){}
+}
+
 function loadMarketList(){
     const symbolSelect = document.getElementById("symbol");
     symbolSelect.innerHTML = "";
@@ -2168,6 +1511,7 @@ function applyLiveTickVisibility(){
 
 async function setProfile(profile){
     activeProfile = profile;
+    await ensureProfileModuleScript(profile);
 
     document.getElementById("koolkidBtn").classList.remove("active");
     document.getElementById("jokerjoeBtn").classList.remove("active");
@@ -2192,11 +1536,15 @@ async function setProfile(profile){
     applyLiveTickVisibility();
 
     await loadProfileUI(profile);
+    try{ await runProfileModuleHook(profile, "onActivate", { profile }); }catch(e){}
 
     // ==================== PATCH C: refresh keep-alive UI when switching to HUMAN ====================
     if(profile === "HUMAN"){
         await refreshHumanKeepAliveUI();
     }
+
+    // ==================== PATCH 2D: refresh SeqVIX status ====================
+    await refreshSeqVixStatus();
 
     fetch("/set_profile", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({profile})});
 
@@ -3167,7 +2515,10 @@ window.toggleHumanKeepAliveOriginal = toggleHumanKeepAliveOriginal;
 
 /* ✅ STARTUP */
 initSocket();
-setProfile("KOOLKID");
+(async () => {
+    try{ await ensureProfileModuleScript("KOOLKID"); }catch(e){}
+    setProfile("KOOLKID");
+})();
 </script>
 
 </body>

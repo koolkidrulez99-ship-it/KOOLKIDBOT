@@ -58,6 +58,31 @@ class KoolKidStrategy(BaseStrategy):
         self.mpull_waiting_pullback = False
         self.mpull_dir = None  # "UP" or "DOWN"
 
+        # ==================== NEW: kidGx / Barrier Analysis / AI / MPull ALL DIGITS ====================
+        self.kidgx_auto = False
+        self.kidgx_last_trade_time = 0.0
+        self.kidgx_cooldown_seconds = 0.0
+        self.ai_auto_trading = False
+        self.ai_last_trade_time = 0.0
+        self.ai_cooldown_seconds = 0.0
+
+        self.barrier_analysis_running = False
+        self.barrier_analysis_warm_target = 30
+        self.barrier_analysis_warm_count = 0
+        self.barrier_analysis_selected = "UNDER 9"
+
+        self.barrier_analysis_defs = [
+            ("OVER", 0), ("OVER", 1), ("OVER", 2), ("UNDER", 8), ("UNDER", 9)
+        ]
+        self.ai_extra_barrier_defs = [
+            ("OVER", 3), ("OVER", 4), ("OVER", 5), ("UNDER", 6), ("UNDER", 7)
+        ]
+        self.barrier_analysis_windows = {}
+
+        self.mpull_all_digits_auto = False
+        self.mpull_all_digits_selected_digits = set()
+        self.mpull_all_digits_last_trade_time = 0.0
+
         # 5 second delay between trades (your request)
         self.cooldown_seconds = 5.0
 
@@ -134,6 +159,20 @@ class KoolKidStrategy(BaseStrategy):
         self.mpull_waiting_pullback = False
         self.mpull_dir = None
 
+        self.kidgx_auto = False
+        self.kidgx_last_trade_time = 0.0
+        self.ai_auto_trading = False
+        self.ai_last_trade_time = 0.0
+
+        self.barrier_analysis_running = False
+        self.barrier_analysis_warm_count = 0
+        self.barrier_analysis_selected = "UNDER 9"
+        self.barrier_analysis_windows = {}
+
+        self.mpull_all_digits_auto = False
+        self.mpull_all_digits_selected_digits = set()
+        self.mpull_all_digits_last_trade_time = 0.0
+
         self.koolluck_current_sequence = None
         self.koolluck_step_index = 0
 
@@ -197,6 +236,163 @@ class KoolKidStrategy(BaseStrategy):
         self.kidpairs_trades_per_signal = n
         return self.kidpairs_trades_per_signal
 
+
+    def disable_all_autos(self):
+        try:
+            super().disable_all_autos()
+        except Exception:
+            pass
+        self.kidgx_auto = False
+        self.ai_auto_trading = False
+        self.mpull_all_digits_auto = False
+
+    # ==============================
+    # NEW FEATURE TOGGLES / SETTINGS
+    # ==============================
+    def toggle_kidgx_auto(self):
+        self.kidgx_auto = not self.kidgx_auto
+        return self.kidgx_auto
+
+    def toggle_ai_auto_trading(self):
+        self.ai_auto_trading = not self.ai_auto_trading
+        return self.ai_auto_trading
+
+    def toggle_barrier_analysis(self):
+        self.barrier_analysis_running = not self.barrier_analysis_running
+        if self.barrier_analysis_running:
+            self.barrier_analysis_warm_count = 0
+            self.barrier_analysis_windows = {}
+        return self.barrier_analysis_running
+
+    def toggle_mpull_all_digits_auto(self):
+        self.mpull_all_digits_auto = not self.mpull_all_digits_auto
+        if self.mpull_all_digits_auto:
+            self.mpull_auto = False
+        return self.mpull_all_digits_auto
+
+    def set_mpull_all_digits_selected_digits(self, digits):
+        cleaned = set()
+        for d in (digits or []):
+            try:
+                di = int(d)
+            except Exception:
+                continue
+            if 0 <= di <= 9:
+                cleaned.add(di)
+        self.mpull_all_digits_selected_digits = cleaned
+        return sorted(cleaned)
+
+    def select_barrier_analysis_barrier(self, key: str):
+        k = str(key or '').upper().strip()
+        valid = {self._barrier_key(t, b) for (t, b) in self.barrier_analysis_defs}
+        if k in valid:
+            self.barrier_analysis_selected = k
+        return self.barrier_analysis_selected
+
+    def _barrier_key(self, t, b):
+        return f"{str(t).upper()} {int(b)}"
+
+    def _ensure_barrier_analysis_windows(self):
+        if self.barrier_analysis_windows:
+            return
+        for t, b in list(self.barrier_analysis_defs) + list(self.ai_extra_barrier_defs):
+            self.barrier_analysis_windows[self._barrier_key(t, b)] = deque(maxlen=int(self.barrier_analysis_warm_target or 30))
+
+    def _eval_sim_win(self, t, barrier, digit):
+        try:
+            d = int(digit); b = int(barrier)
+        except Exception:
+            return 0
+        t = str(t).upper()
+        if t == 'OVER':
+            return 1 if d > b else 0
+        if t == 'UNDER':
+            return 1 if d < b else 0
+        return 0
+
+    def _record_barrier_analysis_tick(self, digit):
+        if not getattr(self, 'barrier_analysis_running', False):
+            return
+        self._ensure_barrier_analysis_windows()
+        if self.barrier_analysis_warm_count < int(self.barrier_analysis_warm_target or 30):
+            self.barrier_analysis_warm_count += 1
+        for key, winq in self.barrier_analysis_windows.items():
+            try:
+                t, btxt = key.split(); b = int(btxt)
+            except Exception:
+                continue
+            winq.append(self._eval_sim_win(t, b, digit))
+
+    def _analysis_pct(self, key):
+        q = (self.barrier_analysis_windows or {}).get(key)
+        if not q:
+            return 0.0
+        return round((sum(q) / max(1, len(q))) * 100.0, 1)
+
+    def _barrier_analysis_ready(self):
+        return bool(getattr(self, 'barrier_analysis_running', False) and int(getattr(self, 'barrier_analysis_warm_count', 0)) >= int(getattr(self, 'barrier_analysis_warm_target', 30)))
+
+    def _get_barrier_analysis_rows(self):
+        rows = []
+        for t, b in self.barrier_analysis_defs:
+            key = self._barrier_key(t, b)
+            pct = self._analysis_pct(key) if self._barrier_analysis_ready() else None
+            rows.append({
+                'key': key,
+                'type': t,
+                'barrier': int(b),
+                'wins_pct': pct,
+                'confidence_pct': pct,
+                'sample': len((self.barrier_analysis_windows or {}).get(key, []))
+            })
+        return rows
+
+    def _get_barrier_analysis_recommended(self):
+        if not self._barrier_analysis_ready():
+            return None
+        best = None
+        for row in self._get_barrier_analysis_rows():
+            pct = row.get('wins_pct')
+            if pct is None:
+                continue
+            if best is None or float(pct) > float(best.get('wins_pct', -1)):
+                best = row
+        return best
+
+    def _get_ai_candidate_defs(self):
+        return list(self.barrier_analysis_defs) + list(self.ai_extra_barrier_defs)
+
+    def _pick_best_ai_candidate(self):
+        if not self._barrier_analysis_ready():
+            return None
+        self._ensure_barrier_analysis_windows()
+        best = None
+        for t, b in self._get_ai_candidate_defs():
+            key = self._barrier_key(t, b)
+            pct = self._analysis_pct(key)
+            item = {'key': key, 'type': t, 'barrier': int(b), 'wins_pct': pct}
+            if best is None or float(item['wins_pct']) > float(best['wins_pct']):
+                best = item
+        return best
+
+    def can_trade_kidgx(self):
+        return (time.time() - float(getattr(self, 'kidgx_last_trade_time', 0.0))) >= float(getattr(self, 'kidgx_cooldown_seconds', 0.0))
+
+    def mark_kidgx_trade(self):
+        self.kidgx_last_trade_time = time.time()
+
+    def can_trade_ai_auto(self):
+        return (time.time() - float(getattr(self, 'ai_last_trade_time', 0.0))) >= float(getattr(self, 'ai_cooldown_seconds', 0.0))
+
+    def mark_ai_auto_trade(self):
+        self.ai_last_trade_time = time.time()
+
+    def can_trade_mpull_all_digits(self):
+        return (time.time() - float(getattr(self, 'mpull_all_digits_last_trade_time', 0.0))) >= float(getattr(self, 'cooldown_seconds', 5.0))
+
+    def mark_mpull_all_digits_trade(self):
+        self.mpull_all_digits_last_trade_time = time.time()
+
     # ==============================
     # CONFIDENCE BARS
     # ==============================
@@ -235,6 +431,7 @@ class KoolKidStrategy(BaseStrategy):
 
         self.pattern_buffer.append(digit)
         self.update_confidence_bars()
+        self._record_barrier_analysis_tick(digit)
 
     # ==============================
     # HELPERS
@@ -755,6 +952,42 @@ class KoolKidStrategy(BaseStrategy):
             if sig:
                 signals.append(sig)
 
+        # ⚡kidGx (super fast endless, linked to selected Barrier Analysis option)
+        if getattr(self, "kidgx_auto", False):
+            if self._barrier_analysis_ready() and self.can_trade_kidgx():
+                key = str(getattr(self, "barrier_analysis_selected", "UNDER 9"))
+                try:
+                    t, b = key.split()
+                    signals.append({"mode": "KIDGX", "type": str(t).upper(), "barrier": int(b)})
+                    self.mark_kidgx_trade()
+                except Exception:
+                    pass
+
+        # 🤖AI AUTO-TRADING (KOOLKID)
+        if getattr(self, "ai_auto_trading", False):
+            if self._barrier_analysis_ready() and self.can_trade_ai_auto():
+                best = self._pick_best_ai_candidate()
+                if best:
+                    signals.append({"mode": "AI_AUTO_KOOLKID", "type": best["type"], "barrier": int(best["barrier"])})
+                    self.mark_ai_auto_trade()
+
+        # MPull💰🤓 ALL DIGITS (uses MPull trigger, only fires on selected digits)
+        if getattr(self, "mpull_all_digits_auto", False):
+            if self.can_trade_mpull_all_digits():
+                selected = set(getattr(self, "mpull_all_digits_selected_digits", set()) or set())
+                base_sig = self.check_mpull_signal()
+                if base_sig and selected:
+                    d = int(getattr(self, "last_tick_digit", -1) or -1)
+                    mapped_sig = None
+                    if d in selected:
+                        if 1 <= d <= 5:
+                            mapped_sig = {"mode": "MPULL_ALL_DIGITS", "type": "OVER", "barrier": d}
+                        elif 6 <= d <= 9:
+                            mapped_sig = {"mode": "MPULL_ALL_DIGITS", "type": "UNDER", "barrier": d}
+                    if mapped_sig:
+                        signals.append(mapped_sig)
+                        self.mark_mpull_all_digits_trade()
+
         # -----------------------------------------
         # EXISTING MODES (keep your 100-tick gating)
         # -----------------------------------------
@@ -811,11 +1044,27 @@ class KoolKidStrategy(BaseStrategy):
                 "kidbagz": self.kidbagz_auto,
                 "mpull": self.mpull_auto,
                 "kidpairs": self.kidpairs_auto,
+                "kidgx": self.kidgx_auto,
+                "barrier_analysis": self.barrier_analysis_running,
+                "ai_auto_trading": self.ai_auto_trading,
+                "mpull_all_digits": self.mpull_all_digits_auto,
             },
             "auto_settings": {
                 "kidracks_barrier": self.kidracks_barrier,
                 "koolkidspeed_barrier": self.koolkidspeed_barrier,
                 "mpull_mode": self.mpull_mode,
                 "kidpairs_trades_per_signal": self.kidpairs_trades_per_signal,
+                "barrier_analysis_selected": self.barrier_analysis_selected,
+                "mpull_all_digits_selected_digits": sorted(list(self.mpull_all_digits_selected_digits)),
+            },
+            "barrier_analysis": {
+                "running": bool(self.barrier_analysis_running),
+                "progress": int(min(self.barrier_analysis_warm_count, self.barrier_analysis_warm_target)),
+                "target": int(self.barrier_analysis_warm_target),
+                "ready": bool(self._barrier_analysis_ready()),
+                "rows": self._get_barrier_analysis_rows(),
+                "recommended": self._get_barrier_analysis_recommended(),
+                "selected": self.barrier_analysis_selected,
+                "ai_recommended": self._pick_best_ai_candidate() if self._barrier_analysis_ready() else None,
             },
         }
