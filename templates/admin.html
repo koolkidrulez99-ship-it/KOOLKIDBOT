@@ -2,29 +2,59 @@
 <html>
 <head>
     <title>Admin Panel - KOOLKID BOT</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <style>
+        *{ box-sizing:border-box; }
         body{
             background:#0f172a;
             color:white;
-            font-family:Arial;
+            font-family:Arial, sans-serif;
             padding:20px;
+            margin:0;
         }
         h1{
             color:#38bdf8;
             text-shadow:0 0 15px #38bdf8;
+            margin:0 0 8px 0;
         }
-        table{
-            width:100%;
-            border-collapse:collapse;
-            margin-top:20px;
+        .topbar{
+            display:flex;
+            flex-wrap:wrap;
+            justify-content:space-between;
+            align-items:center;
+            gap:10px;
+            margin-bottom:16px;
         }
-        th, td{
-            border:1px solid #334155;
-            padding:10px;
-            text-align:left;
+        .grid{
+            display:grid;
+            grid-template-columns:1.15fr 1fr;
+            gap:16px;
         }
-        th{
+        .card{
             background:#111827;
+            border:1px solid #334155;
+            border-radius:14px;
+            padding:14px;
+            box-shadow:0 0 18px rgba(0,0,0,0.35);
+        }
+        .card h2{
+            margin:0 0 10px 0;
+            font-size:18px;
+            color:#f8fafc;
+        }
+        .actions{
+            display:flex;
+            gap:8px;
+            flex-wrap:wrap;
+            align-items:center;
+            margin-bottom:10px;
+        }
+        .actions select, .actions input{
+            background:#0f172a;
+            color:white;
+            border:1px solid #334155;
+            border-radius:10px;
+            padding:10px;
         }
         button{
             background:#ef4444;
@@ -35,67 +65,390 @@
             border-radius:8px;
             font-weight:bold;
         }
-        button:hover{
-            transform:scale(1.05);
-        }
-        a{
-            color:#facc15;
+        button:hover{ transform:scale(1.03); }
+        .btn-blue{ background:#2563eb; }
+        .btn-green{ background:#16a34a; }
+        .btn-gray{ background:#475569; }
+        .generated-key{
+            background:#0b1220;
+            border:1px dashed #334155;
+            border-radius:10px;
+            padding:10px;
             font-weight:bold;
+            color:#facc15;
+            word-break:break-all;
+            min-height:42px;
+            display:flex;
+            align-items:center;
+        }
+        table{
+            width:100%;
+            border-collapse:collapse;
+            margin-top:8px;
+        }
+        th, td{
+            border:1px solid #334155;
+            padding:8px 9px;
+            text-align:left;
+            font-size:13px;
+            vertical-align:top;
+        }
+        th{ background:#111827; position:sticky; top:0; }
+        .table-wrap{
+            max-height:420px;
+            overflow:auto;
+            border-radius:10px;
+            border:1px solid #334155;
+        }
+        .muted{ color:#94a3b8; font-size:12px; }
+        .pill{
+            display:inline-block;
+            border-radius:999px;
+            padding:2px 8px;
+            font-weight:bold;
+            font-size:12px;
+            border:1px solid #334155;
+            white-space:nowrap;
+        }
+        .pill.ok{ color:#22c55e; border-color:#166534; background:#052e16; }
+        .pill.warn{ color:#facc15; border-color:#854d0e; background:#422006; }
+        .pill.bad{ color:#ef4444; border-color:#7f1d1d; background:#450a0a; }
+        .pill.info{ color:#38bdf8; border-color:#0c4a6e; background:#082f49; }
+        a{ color:#facc15; font-weight:bold; text-decoration:none; }
+        .row-actions{
+            display:flex;
+            gap:6px;
+            flex-wrap:wrap;
+        }
+        .toolbar{
+            display:flex;
+            gap:8px;
+            flex-wrap:wrap;
+            align-items:center;
+            margin:8px 0 10px;
+        }
+        .toolbar input, .toolbar select{
+            background:#0f172a;
+            color:white;
+            border:1px solid #334155;
+            border-radius:10px;
+            padding:9px 10px;
+        }
+        .toolbar .grow{ flex:1; min-width:180px; }
+        .small-btn{ padding:6px 9px; font-size:12px; }
+        .mono{ font-family:monospace; }
+        @media (max-width: 980px){
+            .grid{ grid-template-columns:1fr; }
         }
     </style>
 </head>
 <body>
 
-<h1>🛡️ ADMIN PANEL - KOOLKID BOT</h1>
+<div class="topbar">
+    <div>
+        <h1>🛡️ ADMIN PANEL - KOOLKID BOT</h1>
+        <div class="muted">Logged in as <b>{{admin}}</b> • same login page, admin auto-detected by role</div>
+    </div>
+    <a href="/logout">Logout</a>
+</div>
 
-<p>Logged in as: <b>{{admin}}</b></p>
-<a href="/logout">Logout</a>
+<div class="grid">
+    <div class="card">
+        <h2>🔑 License Manager</h2>
+        <div class="actions">
+            <select id="licenseType">
+                <option value="monthly">1-Month License</option>
+                <option value="lifetime">Lifetime License</option>
+            </select>
+            <button class="btn-green" onclick="createLicense()">Create License Key</button>
+            <button class="btn-gray" onclick="copyGeneratedKey()">Copy Key</button>
+        </div>
+        <div id="generatedKey" class="generated-key">No key generated yet.</div>
+        <div class="muted" style="margin-top:8px;">
+            Monthly keys expire 30 days after first registration use. Lifetime keys never expire unless revoked.
+        </div>
 
-<table>
-    <tr>
-        <th>ID</th>
-        <th>Username</th>
-        <th>Email</th>
-        <th>Admin</th>
-        <th>Action</th>
-    </tr>
+        <h2 style="margin-top:16px;">📋 Licenses</h2>
 
-    {% for u in users %}
-    <tr>
-        <td>{{u[0]}}</td>
-        <td>{{u[1]}}</td>
-        <td>{{u[2]}}</td>
-        <td>{{u[3]}}</td>
-        <td>
-            {% if u[1] != "koolkidrulez" %}
-            <button onclick="deleteUser({{u[0]}})">Delete</button>
-            {% else %}
-            🔒 Protected
-            {% endif %}
-        </td>
-    </tr>
-    {% endfor %}
-</table>
+        <div class="toolbar">
+            <input id="licenseSearch" class="grow" type="text" placeholder="Search key / username" oninput="filterLicenseRows()">
+            <select id="licenseStatusFilter" onchange="filterLicenseRows()">
+                <option value="all">All Status</option>
+                <option value="unused">Unused</option>
+                <option value="used">Used</option>
+                <option value="expired">Expired</option>
+                <option value="revoked">Revoked</option>
+            </select>
+            <select id="licenseTypeFilter" onchange="filterLicenseRows()">
+                <option value="all">All Types</option>
+                <option value="monthly">Monthly</option>
+                <option value="lifetime">Lifetime</option>
+            </select>
+            <button class="btn-blue" onclick="copyUnusedKeys()">Copy Unused Keys</button>
+        </div>
+
+        <div class="table-wrap">
+            <table id="licensesTable">
+                <tr>
+                    <th>Key</th>
+                    <th>Type</th>
+                    <th>Status</th>
+                    <th>Used By</th>
+                    <th>Activated</th>
+                    <th>Expires</th>
+                    <th>Action</th>
+                </tr>
+                {% for l in licenses %}
+                <tr class="license-row" data-license-key="{{(l.license_key or '')|lower}}" data-type="{{(l.license_type or '')|lower}}" data-used-by="{{(l.used_by or '')|lower}}" data-status="{% if l.status|lower == 'revoked' %}revoked{% elif l.expired %}expired{% elif l.used_by %}used{% else %}unused{% endif %}">
+                    <td style="font-family:monospace;">{{l.license_key}}</td>
+                    <td>{{l.license_type}}</td>
+                    <td>
+                        {% if l.status|lower == "revoked" %}
+                            <span class="pill bad">revoked</span>
+                        {% elif l.expired %}
+                            <span class="pill warn">expired</span>
+                        {% elif l.used_by %}
+                            <span class="pill ok">used</span>
+                        {% else %}
+                            <span class="pill info">unused</span>
+                        {% endif %}
+                    </td>
+                    <td>{{l.used_by or "—"}}</td>
+                    <td>{{l.activated_at or "—"}}</td>
+                    <td>{{l.expires_at or "—"}}</td>
+                    <td>
+                        {% if l.status|lower != "revoked" %}
+                            <div class="row-actions">
+                                <button class="small-btn btn-gray" onclick="copyLicenseKey('{{l.license_key}}')">Copy</button>
+                                <button class="small-btn" onclick="revokeLicense('{{l.license_key}}')">Revoke</button>
+                            </div>
+                        {% else %}
+                            <button class="small-btn btn-gray" onclick="copyLicenseKey('{{l.license_key}}')">Copy</button>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </table>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>👥 Users</h2>
+        <div class="muted">Existing users are grandfathered and keep normal login without license key.</div>
+        <div class="toolbar">
+            <input id="userSearch" class="grow" type="text" placeholder="Search username / license key" oninput="filterUserRows()">
+            <select id="userRoleFilter" onchange="filterUserRows()">
+                <option value="all">All Roles</option>
+                <option value="admin">Admin</option>
+                <option value="grandfathered">Grandfathered</option>
+                <option value="licensed">Licensed</option>
+            </select>
+            <select id="userAccessFilter" onchange="filterUserRows()">
+                <option value="all">All Access</option>
+                <option value="active">ACTIVE</option>
+                <option value="blocked">BLOCKED</option>
+                <option value="grandfathered">GRANDFATHERED</option>
+                <option value="admin">ADMIN</option>
+            </select>
+        </div>
+        <div class="table-wrap" style="max-height:580px; margin-top:8px;">
+            <table id="usersTable">
+                <tr>
+                    <th>ID</th>
+                    <th>Username</th>
+                    <th>Role</th>
+                    <th>Access</th>
+                    <th>License Key</th>
+                    <th>Action</th>
+                </tr>
+                {% for u in users %}
+                <tr class="user-row" data-username="{{(u.username or '')|lower}}" data-license-key="{{(u.license_key or '')|lower}}" data-role="{% if u.role == 'admin' %}admin{% elif u.grandfathered %}grandfathered{% else %}licensed{% endif %}" data-access="{{(u.access or '')|lower}}">
+                    <td>{{u.id}}</td>
+                    <td>{{u.username}}</td>
+                    <td>
+                        {% if u.role == "admin" %}
+                            <span class="pill info">admin</span>
+                        {% elif u.grandfathered %}
+                            <span class="pill warn">grandfathered</span>
+                        {% else %}
+                            <span class="pill ok">licensed</span>
+                        {% endif %}
+                    </td>
+                    <td>{{u.access}}</td>
+                    <td style="font-family:monospace;">{{u.license_key or "—"}}</td>
+                    <td>
+                        {% if u.role != "admin" and u.username != admin_username %}
+                            <div class="row-actions">
+                                <button class="small-btn btn-blue" onclick="reassignUserLicense({{u.id}}, '{{u.username}}')">Reassign Key</button>
+                                <button class="small-btn btn-gray" onclick="resetUserLicense({{u.id}}, '{{u.username}}')">Reset Key</button>
+                                <button class="small-btn" onclick="deleteUser({{u.id}})">Delete</button>
+                            </div>
+                        {% else %}
+                            🔒 Protected
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </table>
+        </div>
+    </div>
+</div>
 
 <script>
-async function deleteUser(id){
-    if(!confirm("Delete this user?")) return;
-
-    const res = await fetch("/admin/delete_user", {
+async function postJSON(url, body){
+    const res = await fetch(url, {
         method:"POST",
         headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({user_id:id})
+        body: JSON.stringify(body || {})
     });
+    let data = {};
+    try { data = await res.json(); } catch(e){}
+    if(!res.ok){
+        throw new Error((data && (data.error || data.message)) || ("HTTP " + res.status));
+    }
+    return data;
+}
 
-    const data = await res.json();
-
-    if(data.status === "deleted"){
-        alert("User deleted");
-        location.reload();
-    }else{
-        alert("Error: " + (data.error || "unknown"));
+async function deleteUser(id){
+    if(!confirm("Delete this user?")) return;
+    try{
+        const data = await postJSON("/admin/delete_user", {user_id:id});
+        if(data.status === "deleted"){
+            alert("User deleted");
+            location.reload();
+        }else{
+            alert("Error: " + (data.error || "unknown"));
+        }
+    }catch(err){
+        alert("Error: " + (err.message || err));
     }
 }
+
+async function createLicense(){
+    const type = document.getElementById("licenseType").value;
+    try{
+        const data = await postJSON("/admin/license/create", {license_type:type});
+        document.getElementById("generatedKey").textContent = data.license_key || "No key returned";
+        alert((type === "monthly" ? "1-month" : "Lifetime") + " key created");
+        setTimeout(() => location.reload(), 350);
+    }catch(err){
+        alert("Error: " + (err.message || err));
+    }
+}
+
+async function revokeLicense(key){
+    if(!confirm("Revoke this license key?")) return;
+    try{
+        await postJSON("/admin/license/revoke", {license_key:key});
+        alert("License revoked");
+        location.reload();
+    }catch(err){
+        alert("Error: " + (err.message || err));
+    }
+}
+
+async function copyGeneratedKey(){
+    const el = document.getElementById("generatedKey");
+    const key = (el.textContent || "").trim();
+    if(!key || key === "No key generated yet."){
+        alert("Generate a key first");
+        return;
+    }
+    try{
+        await navigator.clipboard.writeText(key);
+        alert("Copied");
+    }catch(e){
+        alert("Copy failed");
+    }
+}
+
+
+function normalizeText(v){ return (v || '').toString().trim().toLowerCase(); }
+
+function filterLicenseRows(){
+    const q = normalizeText(document.getElementById('licenseSearch')?.value);
+    const status = normalizeText(document.getElementById('licenseStatusFilter')?.value || 'all');
+    const type = normalizeText(document.getElementById('licenseTypeFilter')?.value || 'all');
+    document.querySelectorAll('.license-row').forEach(row => {
+        const key = normalizeText(row.dataset.licenseKey);
+        const usedBy = normalizeText(row.dataset.usedBy);
+        const rowStatus = normalizeText(row.dataset.status);
+        const rowType = normalizeText(row.dataset.type);
+        const matchQ = !q || key.includes(q) || usedBy.includes(q);
+        const matchStatus = status === 'all' || rowStatus === status;
+        const matchType = type === 'all' || rowType === type;
+        row.style.display = (matchQ && matchStatus && matchType) ? '' : 'none';
+    });
+}
+
+function filterUserRows(){
+    const q = normalizeText(document.getElementById('userSearch')?.value);
+    const role = normalizeText(document.getElementById('userRoleFilter')?.value || 'all');
+    const access = normalizeText(document.getElementById('userAccessFilter')?.value || 'all');
+    document.querySelectorAll('.user-row').forEach(row => {
+        const username = normalizeText(row.dataset.username);
+        const key = normalizeText(row.dataset.licenseKey);
+        const rowRole = normalizeText(row.dataset.role);
+        const rowAccess = normalizeText(row.dataset.access);
+        const matchQ = !q || username.includes(q) || key.includes(q);
+        const matchRole = role === 'all' || rowRole === role;
+        const matchAccess = access === 'all' || rowAccess.includes(access);
+        row.style.display = (matchQ && matchRole && matchAccess) ? '' : 'none';
+    });
+}
+
+async function copyText(text, successMsg='Copied'){
+    try{
+        await navigator.clipboard.writeText(text);
+        alert(successMsg);
+    }catch(e){
+        alert('Copy failed');
+    }
+}
+
+async function copyLicenseKey(key){
+    if(!key) return;
+    await copyText(key, 'License key copied');
+}
+
+async function copyUnusedKeys(){
+    const rows = [...document.querySelectorAll('.license-row')].filter(r => r.style.display !== 'none' && normalizeText(r.dataset.status) === 'unused');
+    const keys = rows.map(r => (r.querySelector('td')?.innerText || '').trim()).filter(Boolean);
+    if(!keys.length){
+        alert('No visible unused keys to copy');
+        return;
+    }
+    await copyText(keys.join('\n'), `Copied ${keys.length} unused key(s)`);
+}
+
+async function resetUserLicense(id, username){
+    if(!confirm(`Reset/free license for ${username}? This does NOT delete the user.`)) return;
+    try{
+        const data = await postJSON('/admin/user/reset_license', {user_id:id});
+        alert(data.message || 'License reset');
+        location.reload();
+    }catch(err){
+        alert('Error: ' + (err.message || err));
+    }
+}
+
+async function reassignUserLicense(id, username){
+    const key = (prompt(`Enter NEW/UNUSED license key to assign to ${username}:`) || '').trim();
+    if(!key) return;
+    try{
+        const data = await postJSON('/admin/user/reassign_license', {user_id:id, license_key:key});
+        alert(data.message || 'License reassigned');
+        location.reload();
+    }catch(err){
+        alert('Error: ' + (err.message || err));
+    }
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+    filterLicenseRows();
+    filterUserRows();
+});
+
 </script>
 
 </body>

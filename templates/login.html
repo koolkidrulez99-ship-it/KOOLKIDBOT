@@ -13,20 +13,25 @@
       display:flex;
       justify-content:center;
       align-items:center;
-      height:100vh;
+      min-height:100vh;
       margin:0;
+      padding:16px;
+      box-sizing:border-box;
     }
     .card{
       background:#111827;
       padding:30px;
       border-radius:15px;
       width:380px;
+      max-width:100%;
       box-shadow:0 0 25px rgba(0,0,0,0.6);
       text-align:center;
+      box-sizing:border-box;
     }
     h2{
       color:#38bdf8;
       text-shadow:0 0 15px #38bdf8;
+      margin-top:0;
     }
     input{
       width:90%;
@@ -37,8 +42,42 @@
       background:#1f2937;
       color:white;
       font-size:15px;
+      box-sizing:border-box;
     }
-    button{
+    .password-wrap{
+      position:relative;
+      width:90%;
+      margin:10px auto 0 auto;
+    }
+    .password-wrap input{
+      width:100%;
+      margin:0;
+      padding-right:46px;
+    }
+    .toggle-eye{
+      position:absolute;
+      right:10px;
+      top:50%;
+      transform:translateY(-50%);
+      background:transparent;
+      border:none;
+      color:#cbd5e1;
+      cursor:pointer;
+      font-size:18px;
+      line-height:1;
+      padding:4px;
+      width:auto;
+      margin:0;
+    }
+    .toggle-eye:hover{
+      transform:translateY(-50%) scale(1.08);
+      color:white;
+    }
+    .toggle-eye:focus-visible{
+      outline:2px solid #38bdf8;
+      border-radius:6px;
+    }
+    .submit-btn{
       width:95%;
       padding:12px;
       margin-top:10px;
@@ -51,7 +90,7 @@
       font-size:16px;
       transition:0.2s;
     }
-    button:hover{
+    .submit-btn:hover{
       transform:scale(1.05);
     }
     .error{
@@ -64,6 +103,21 @@
       text-decoration:none;
       font-weight:bold;
     }
+    .auth-links{
+      margin-top:14px;
+      line-height:1.8;
+      font-size:14px;
+    }
+    .auth-links .divider{
+      color:#64748b;
+      margin:0 6px;
+      user-select:none;
+    }
+    @media (max-width:480px){
+      .card{padding:22px 16px; width:100%;}
+      input, .password-wrap{width:100%;}
+      .submit-btn{width:100%;}
+    }
   </style>
 </head>
 
@@ -73,17 +127,35 @@
 
     <form method="POST">
       <input type="text" name="username" placeholder="Username" required />
-      <input type="password" name="password" placeholder="Password" required />
-      <button type="submit">Login</button>
+      <div class="password-wrap">
+        <input type="password" id="loginPassword" name="password" placeholder="Password" required />
+        <button type="button" class="toggle-eye" aria-label="Show password" title="Show/Hide password" onclick="togglePassword()"> 👀</button>
+      </div>
+      <button type="submit" class="submit-btn">Login</button>
     </form>
 
     {% if error %}
       <p class="error">{{ error }}</p>
     {% endif %}
 
-    <p style="margin-top:15px;">
-      No account? <a href="/register">Register</a>
-    </p>
+    <div class="auth-links">
+      <div>
+        No account? <a href="/register">Register</a>
+      </div>
+      <div>
+        <a href="/forgot_password">Forgot Password</a>
+        <span class="divider">|</span>
+        <a href="/reset_password">Reset Password</a>
+      </div>
+    </div>
   </div>
+
+  <script>
+    function togglePassword(){
+      const input = document.getElementById('loginPassword');
+      if (!input) return;
+      input.type = input.type === 'password' ? 'text' : 'password';
+    }
+  </script>
 </body>
 </html>

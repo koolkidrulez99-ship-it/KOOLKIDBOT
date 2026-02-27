@@ -8,13 +8,15 @@ import time
 import uuid
 import sqlite3
 import random  # PATCH 1A
+import secrets
+import hashlib
 import re
 from collections import deque
 from decimal import Decimal, InvalidOperation
 
 from flask import Flask, render_template, request, jsonify, redirect, url_for, session
 from flask_socketio import SocketIO, join_room
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 from werkzeug.security import generate_password_hash, check_password_hash
 
@@ -69,9 +71,47 @@ USE_TRADE_QUEUE = str(os.environ.get("USE_TRADE_QUEUE", "0")).strip().lower() in
 ENFORCE_TRADE_INFLIGHT_LIMITS = str(os.environ.get("ENFORCE_TRADE_INFLIGHT_LIMITS", "0")).strip().lower() in ("1", "true", "yes", "on")
 
 
-# ---------------- DATABASE SETUP ---------------- #
-def init_db():
+
+# ---------------- DATABASE + LICENSE SETUP ---------------- #
+def _db_connect(row_factory=False):
     conn = sqlite3.connect(DB_FILE)
+    if row_factory:
+        conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _table_columns(conn, table_name):
+    cur = conn.cursor()
+    cur.execute(f"PRAGMA table_info({table_name})")
+    return {row[1] for row in cur.fetchall()}
+
+
+def _add_column_if_missing(conn, table_name, column_def):
+    col_name = column_def.split()[0]
+    cols = _table_columns(conn, table_name)
+    if col_name not in cols:
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_def}")
+
+
+def _utc_now_str():
+    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _parse_dt(value):
+    if not value:
+        return None
+    try:
+        return datetime.strptime(str(value), "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return None
+
+
+def normalize_license_key(key):
+    return str(key or "").strip().upper().replace(" ", "")
+
+
+def init_db():
+    conn = _db_connect()
     c = conn.cursor()
 
     c.execute("""
@@ -82,6 +122,52 @@ def init_db():
     )
     """)
 
+    # Migrate users table for licensing/admin roles (safe for existing installs)
+    _add_column_if_missing(conn, "users", "role TEXT DEFAULT 'user'")
+    _add_column_if_missing(conn, "users", "grandfathered INTEGER DEFAULT 1")
+    _add_column_if_missing(conn, "users", "license_key TEXT")
+    _add_column_if_missing(conn, "users", "license_exempt INTEGER DEFAULT 0")
+    _add_column_if_missing(conn, "users", "created_at TEXT")
+    _add_column_if_missing(conn, "users", "email TEXT")
+
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS licenses (
+        license_key TEXT PRIMARY KEY,
+        license_type TEXT NOT NULL,      -- 'monthly' | 'lifetime'
+        status TEXT NOT NULL DEFAULT 'active',  -- 'active' | 'revoked'
+        created_at TEXT NOT NULL,
+        activated_at TEXT,
+        expires_at TEXT,
+        used_by TEXT
+    )
+    """)
+
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS password_resets (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT NOT NULL,
+        token_hash TEXT UNIQUE NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        used_at TEXT,
+        FOREIGN KEY(username) REFERENCES users(username)
+    )
+    """)
+
+    try:
+        c.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_pwreset_username ON password_resets(username)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_pwreset_token_hash ON password_resets(token_hash)")
+    except Exception:
+        pass
+
+    # Backfill old users so they never need keys (your requirement)
+    now_s = _utc_now_str()
+    c.execute("UPDATE users SET role='user' WHERE role IS NULL OR TRIM(role)=''")
+    c.execute("UPDATE users SET grandfathered=1 WHERE grandfathered IS NULL")
+    c.execute("UPDATE users SET license_exempt=0 WHERE license_exempt IS NULL")
+    c.execute("UPDATE users SET created_at=? WHERE created_at IS NULL OR TRIM(created_at)=''", (now_s,))
+
     conn.commit()
     conn.close()
 
@@ -89,65 +175,538 @@ def init_db():
 def ensure_admin_user():
     """
     Auto-create admin so you never get locked out.
+    Admin is license-exempt and uses the same login page.
     """
-    conn = sqlite3.connect(DB_FILE)
+    conn = _db_connect(row_factory=True)
     c = conn.cursor()
 
-    c.execute("SELECT id FROM users WHERE username = ?", (ADMIN_USERNAME,))
+    c.execute("SELECT id FROM users WHERE lower(username) = lower(?)", (ADMIN_USERNAME,))
     exists = c.fetchone()
 
     if not exists:
         hashed_pw = generate_password_hash(ADMIN_PASSWORD)
-        c.execute("INSERT INTO users (username, password) VALUES (?, ?)", (ADMIN_USERNAME, hashed_pw))
+        c.execute(
+            """
+            INSERT INTO users (username, password, role, grandfathered, license_exempt, created_at)
+            VALUES (?, ?, 'admin', 1, 1, ?)
+            """,
+            (ADMIN_USERNAME, hashed_pw, _utc_now_str())
+        )
         conn.commit()
         print(f"✅ Admin account created automatically: {ADMIN_USERNAME}")
+    else:
+        # Ensure admin flags remain correct if upgrading an older DB
+        c.execute(
+            """
+            UPDATE users
+            SET role='admin',
+                grandfathered=1,
+                license_exempt=1,
+                created_at=COALESCE(created_at, ?)
+            WHERE lower(username) = lower(?)
+            """,
+            (_utc_now_str(), ADMIN_USERNAME)
+        )
+        conn.commit()
 
     conn.close()
 
 
 def get_user_count():
-    conn = sqlite3.connect(DB_FILE)
+    conn = _db_connect()
     c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM users")
+    c.execute("SELECT COUNT(*) FROM users WHERE lower(username) != lower(?)", (ADMIN_USERNAME,))
     count = c.fetchone()[0]
     conn.close()
     return count
 
 
-def create_user(username, password):
-    if username.lower() == ADMIN_USERNAME.lower():
+def _get_user_row(username):
+    conn = _db_connect(row_factory=True)
+    c = conn.cursor()
+    c.execute("SELECT * FROM users WHERE username = ?", (username,))
+    row = c.fetchone()
+    conn.close()
+    return row
+
+
+def _get_license_row(license_key):
+    key = normalize_license_key(license_key)
+    if not key:
+        return None
+    conn = _db_connect(row_factory=True)
+    c = conn.cursor()
+    c.execute("SELECT * FROM licenses WHERE license_key = ?", (key,))
+    row = c.fetchone()
+    conn.close()
+    return row
+
+
+def _license_is_expired(license_row):
+    if not license_row:
+        return True
+    if str(license_row["license_type"]).lower() == "lifetime":
+        return False
+    exp = _parse_dt(license_row["expires_at"])
+    if exp is None:
+        return False
+    return datetime.utcnow() > exp
+
+
+def check_user_license_access(user_row):
+    """
+    Returns (ok: bool, message: str)
+    - Admin and grandfathered users are allowed without keys.
+    - New users are checked against their linked license on login/use.
+    """
+    if not user_row:
+        return False, "User not found"
+
+    role = str(user_row["role"] or "user").lower()
+    if role == "admin":
+        return True, "admin"
+
+    if int(user_row["license_exempt"] or 0) == 1:
+        return True, "license_exempt"
+
+    if int(user_row["grandfathered"] or 0) == 1:
+        return True, "grandfathered"
+
+    linked_key = normalize_license_key(user_row["license_key"])
+    if not linked_key:
+        return False, "No license linked to this account. Contact admin."
+
+    lic = _get_license_row(linked_key)
+    if not lic:
+        return False, "Linked license key not found. Contact admin."
+
+    if str(lic["status"]).lower() == "revoked":
+        return False, "Your license was revoked. Contact admin."
+
+    if _license_is_expired(lic):
+        return False, "Your license has expired. Please renew."
+
+    return True, "active"
+
+
+def _validate_license_for_registration(conn, license_key):
+    key = normalize_license_key(license_key)
+    if not key:
+        return False, "License key is required"
+
+    c = conn.cursor()
+    c.execute("SELECT * FROM licenses WHERE license_key = ?", (key,))
+    row = c.fetchone()
+    if not row:
+        return False, "Invalid license key"
+
+    status = str(row["status"] or "").lower()
+    if status == "revoked":
+        return False, "This license key has been revoked"
+
+    used_by = (row["used_by"] or "").strip()
+    if used_by:
+        return False, "This license key has already been used"
+
+    ltype = str(row["license_type"] or "").lower()
+    if ltype not in ("monthly", "lifetime"):
+        return False, "Unsupported license key type"
+
+    return True, row
+
+
+def _consume_license_for_new_user(conn, license_key, username):
+    ok, row_or_msg = _validate_license_for_registration(conn, license_key)
+    if not ok:
+        return False, row_or_msg
+
+    row = row_or_msg
+    key = normalize_license_key(license_key)
+    now_dt = datetime.utcnow()
+    now_s = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    expires_at = None
+    if str(row["license_type"]).lower() == "monthly":
+        expires_at = (now_dt + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+
+    conn.execute(
+        """
+        UPDATE licenses
+           SET used_by = ?, activated_at = ?, expires_at = ?
+         WHERE license_key = ?
+        """,
+        (username, now_s, expires_at, key)
+    )
+    return True, key
+
+
+def create_user(username, password, license_key=None, *, role="user", grandfathered=0, license_exempt=0):
+    if username.lower() == ADMIN_USERNAME.lower() and str(role).lower() != "admin":
         return False, "Username is reserved"
 
-    if get_user_count() >= MAX_USERS:
+    if str(role).lower() != "admin" and get_user_count() >= MAX_USERS:
         return False, f"User limit reached ({MAX_USERS} max)"
 
-    conn = sqlite3.connect(DB_FILE)
+    conn = _db_connect(row_factory=True)
     c = conn.cursor()
-
     hashed_pw = generate_password_hash(password)
 
     try:
-        c.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, hashed_pw))
+        conn.execute("BEGIN")
+
+        linked_license_key = None
+        if str(role).lower() != "admin" and int(license_exempt or 0) != 1 and int(grandfathered or 0) != 1:
+            lic_ok, lic_result = _consume_license_for_new_user(conn, license_key, username)
+            if not lic_ok:
+                conn.rollback()
+                return False, lic_result
+            linked_license_key = lic_result
+
+        c.execute(
+            """
+            INSERT INTO users (username, password, role, grandfathered, license_key, license_exempt, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                username,
+                hashed_pw,
+                str(role or "user").lower(),
+                int(1 if grandfathered else 0),
+                linked_license_key,
+                int(1 if license_exempt else 0),
+                _utc_now_str()
+            )
+        )
         conn.commit()
         return True, "User created"
     except sqlite3.IntegrityError:
+        conn.rollback()
         return False, "Username already exists"
+    except Exception as e:
+        conn.rollback()
+        return False, f"Registration failed: {e}"
     finally:
         conn.close()
 
 
 def verify_user(username, password):
-    conn = sqlite3.connect(DB_FILE)
+    row = _get_user_row(username)
+    if not row:
+        return False
+    return check_password_hash(row["password"], password)
+
+
+
+def _validate_password_strength(password):
+    password = (password or "").strip()
+    if len(password) < 8:
+        return "Password must be at least 8 characters"
+    if password.isdigit() or password.isalpha():
+        return "Password must include letters and numbers"
+    return None
+
+
+def _find_user_for_reset(identifier):
+    identifier = (identifier or "").strip()
+    if not identifier:
+        return None
+
+    conn = _db_connect(row_factory=True)
     c = conn.cursor()
 
-    c.execute("SELECT password FROM users WHERE username = ?", (username,))
+    # username or email (email column is optional but migrated in init_db)
+    c.execute(
+        "SELECT * FROM users WHERE lower(username)=lower(?) OR lower(COALESCE(email,''))=lower(?) LIMIT 1",
+        (identifier, identifier)
+    )
+    row = c.fetchone()
+    conn.close()
+    return row
+
+
+def _hash_reset_token(token):
+    return hashlib.sha256(str(token).encode("utf-8")).hexdigest()
+
+
+def _create_password_reset_token(username, minutes_valid=30):
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = _hash_reset_token(raw_token)
+    now_dt = datetime.utcnow()
+    exp_dt = now_dt + timedelta(minutes=minutes_valid)
+    now_s = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+    exp_s = exp_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    conn = _db_connect()
+    c = conn.cursor()
+    try:
+        # Mark previous unused tokens as used so only newest link works
+        c.execute(
+            "UPDATE password_resets SET used_at=? WHERE username=? AND used_at IS NULL",
+            (now_s, username)
+        )
+        c.execute(
+            """
+            INSERT INTO password_resets (username, token_hash, created_at, expires_at, used_at)
+            VALUES (?, ?, ?, ?, NULL)
+            """,
+            (username, token_hash, now_s, exp_s)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return raw_token, exp_dt
+
+
+def _get_reset_token_record(raw_token):
+    token = (raw_token or "").strip()
+    if not token:
+        return None, "Missing reset token"
+
+    conn = _db_connect(row_factory=True)
+    c = conn.cursor()
+    c.execute(
+        "SELECT id, username, created_at, expires_at, used_at FROM password_resets WHERE token_hash=?",
+        (_hash_reset_token(token),)
+    )
     row = c.fetchone()
     conn.close()
 
     if not row:
-        return False
+        return None, "Invalid reset token"
 
-    return check_password_hash(row[0], password)
+    rec = {
+        "id": row["id"],
+        "username": row["username"],
+        "created_at": row["created_at"],
+        "expires_at": row["expires_at"],
+        "used_at": row["used_at"],
+    }
+
+    if rec["used_at"]:
+        return None, "This reset link has already been used"
+
+    exp_dt = _parse_dt(rec["expires_at"])
+    if exp_dt is None:
+        return None, "Reset token is invalid"
+    if datetime.utcnow() > exp_dt:
+        return None, "This reset link has expired"
+
+    return rec, None
+
+
+def _mark_reset_token_used(token_id):
+    conn = _db_connect()
+    c = conn.cursor()
+    c.execute(
+        "UPDATE password_resets SET used_at=? WHERE id=?",
+        (_utc_now_str(), token_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+def _update_user_password(username, new_password):
+    conn = _db_connect()
+    c = conn.cursor()
+    c.execute(
+        "UPDATE users SET password=? WHERE username=?",
+        (generate_password_hash(new_password), username)
+    )
+    ok = c.rowcount > 0
+    conn.commit()
+    conn.close()
+    return ok
+
+
+def _validate_reset_license_for_user(user_row, provided_license_key):
+    """Require the account's linked license key for self-service password reset.
+    Admin/license-exempt users are allowed without a key.
+    Grandfathered users with no linked key must contact admin.
+    """
+    if not user_row:
+        return False, "User not found"
+
+    role = str(user_row["role"] or "user").lower()
+    if role == "admin" or int(user_row["license_exempt"] or 0) == 1:
+        return True, None
+
+    linked_key = normalize_license_key(user_row["license_key"])
+    if not linked_key:
+        return False, "This account has no linked license key. Contact admin to reset password."
+
+    entered_key = normalize_license_key(provided_license_key)
+    if not entered_key:
+        return False, "License key is required for password reset"
+
+    if entered_key != linked_key:
+        return False, "License key does not match this account"
+
+    return True, None
+
+
+def _generate_license_key(license_type):
+    prefix = "KK-MTH" if str(license_type).lower() == "monthly" else "KK-LIFE"
+    # Example: KK-MTH-AB12-CD34-EF56
+    chunk = lambda: uuid.uuid4().hex[:4].upper()
+    return f"{prefix}-{chunk()}-{chunk()}-{chunk()}"
+
+
+def create_license_record(license_type):
+    ltype = str(license_type or "").strip().lower()
+    if ltype not in ("monthly", "lifetime"):
+        return False, "Invalid license type", None
+
+    conn = _db_connect(row_factory=True)
+    try:
+        conn.execute("BEGIN")
+        for _ in range(12):
+            key = _generate_license_key(ltype)
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO licenses (license_key, license_type, status, created_at)
+                    VALUES (?, ?, 'active', ?)
+                    """,
+                    (key, ltype, _utc_now_str())
+                )
+                conn.commit()
+                return True, "License created", key
+            except sqlite3.IntegrityError:
+                continue
+        conn.rollback()
+        return False, "Could not generate unique key", None
+    finally:
+        conn.close()
+
+
+def revoke_license_record(license_key):
+    key = normalize_license_key(license_key)
+    if not key:
+        return False, "License key required"
+    conn = _db_connect()
+    c = conn.cursor()
+    c.execute("UPDATE licenses SET status='revoked' WHERE license_key = ?", (key,))
+    conn.commit()
+    changed = c.rowcount
+    conn.close()
+    if changed <= 0:
+        return False, "License key not found"
+    return True, "revoked"
+
+
+def _reset_license_binding_for_user(conn, username):
+    # When deleting a user, free their non-revoked key for reuse (optional convenience).
+    conn.execute(
+        """
+        UPDATE licenses
+           SET used_by = NULL,
+               activated_at = NULL,
+               expires_at = CASE WHEN lower(license_type)='monthly' THEN NULL ELSE expires_at END
+         WHERE used_by = ?
+           AND lower(COALESCE(status, 'active')) != 'revoked'
+        """,
+        (username,)
+    )
+
+
+def delete_user_admin(user_id):
+    conn = _db_connect(row_factory=True)
+    c = conn.cursor()
+    c.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+    user = c.fetchone()
+    if not user:
+        conn.close()
+        return False, "User not found"
+
+    if str(user["role"] or "user").lower() == "admin" or str(user["username"]).lower() == ADMIN_USERNAME.lower():
+        conn.close()
+        return False, "Admin account is protected"
+
+    try:
+        conn.execute("BEGIN")
+        _reset_license_binding_for_user(conn, user["username"])
+        conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        conn.commit()
+        return True, "deleted"
+    except Exception as e:
+        conn.rollback()
+        return False, str(e)
+    finally:
+        conn.close()
+
+
+def _license_access_label_for_user_row(user_row):
+    ok, msg = check_user_license_access(user_row)
+    if ok:
+        if str(user_row["role"] or "").lower() == "admin":
+            return "ADMIN"
+        if int(user_row["license_exempt"] or 0) == 1:
+            return "EXEMPT"
+        if int(user_row["grandfathered"] or 0) == 1:
+            return "GRANDFATHERED"
+        return "ACTIVE"
+    return f"BLOCKED: {msg}"
+
+
+def get_admin_users_view():
+    conn = _db_connect(row_factory=True)
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT u.*
+          FROM users u
+         ORDER BY lower(u.username) ASC
+        """
+    )
+    rows = c.fetchall()
+    conn.close()
+
+    out = []
+    for r in rows:
+        out.append({
+            "id": r["id"],
+            "username": r["username"],
+            "role": str(r["role"] or "user").lower(),
+            "grandfathered": int(r["grandfathered"] or 0),
+            "license_key": r["license_key"] or "",
+            "license_exempt": int(r["license_exempt"] or 0),
+            "created_at": r["created_at"] or "",
+            "access": _license_access_label_for_user_row(r)
+        })
+    return out
+
+
+def get_admin_licenses_view():
+    conn = _db_connect(row_factory=True)
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT license_key, license_type, status, used_by, created_at, activated_at, expires_at
+          FROM licenses
+         ORDER BY datetime(created_at) DESC, license_key DESC
+        """
+    )
+    rows = c.fetchall()
+    conn.close()
+
+    out = []
+    for r in rows:
+        expired = False
+        if str(r["license_type"]).lower() == "monthly" and r["expires_at"]:
+            dt = _parse_dt(r["expires_at"])
+            expired = bool(dt and datetime.utcnow() > dt)
+        out.append({
+            "license_key": r["license_key"],
+            "license_type": r["license_type"],
+            "status": r["status"],
+            "used_by": r["used_by"] or "",
+            "created_at": r["created_at"] or "",
+            "activated_at": r["activated_at"] or "",
+            "expires_at": r["expires_at"] or "",
+            "expired": expired
+        })
+    return out
 
 
 # Initialize DB + Admin
@@ -391,12 +950,35 @@ def extract_exit_digit_from_contract(contract: dict):
         return None
 
 
+
 def login_required():
-    return "user" in session
+    username = session.get("user")
+    if not username:
+        return False
+
+    user_row = _get_user_row(username)
+    if not user_row:
+        return False
+
+    ok, _msg = check_user_license_access(user_row)
+    if not ok:
+        # Soft logout so protected routes fail safely if a license is revoked/expired.
+        session.pop("user", None)
+        session.pop("client_id", None)
+        session.pop("role", None)
+        return False
+
+    return True
 
 
 def is_admin():
-    return session.get("user", "").lower() == ADMIN_USERNAME.lower()
+    username = session.get("user", "")
+    if not username:
+        return False
+    user_row = _get_user_row(username)
+    if not user_row:
+        return False
+    return str(user_row["role"] or "").lower() == "admin" or username.lower() == ADMIN_USERNAME.lower()
 
 
 def get_client_id():
@@ -1047,6 +1629,7 @@ def request_human_seed(client_id):
 
 
 # ---------------- ROUTES (LOGIN SYSTEM) ---------------- #
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
@@ -1054,9 +1637,20 @@ def login():
         password = request.form.get("password", "").strip()
 
         if verify_user(username, password):
+            user_row = _get_user_row(username)
+            ok, reason = check_user_license_access(user_row)
+
+            if not ok:
+                return render_template("login.html", error=reason)
+
             session["user"] = username
+            session["role"] = str((user_row["role"] if user_row else "user") or "user").lower()
             session["client_id"] = str(uuid.uuid4())
             init_client(session["client_id"])
+
+            if session.get("role") == "admin":
+                return redirect(url_for("admin_panel"))
+
             return redirect(url_for("index"))
         else:
             return render_template("login.html", error="Invalid username or password")
@@ -1064,11 +1658,14 @@ def login():
     return render_template("login.html")
 
 
+
+
 @app.route("/register", methods=["GET", "POST"])
 def register():
     if request.method == "POST":
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "").strip()
+        license_key = request.form.get("license_key", "").strip()
 
         if len(password) < 8:
             return render_template("register.html", error="Password must be at least 8 characters")
@@ -1076,7 +1673,17 @@ def register():
         if password.isdigit() or password.isalpha():
             return render_template("register.html", error="Password must include letters and numbers")
 
-        ok, msg = create_user(username, password)
+        if not license_key:
+            return render_template("register.html", error="License key is required for new registrations")
+
+        ok, msg = create_user(
+            username,
+            password,
+            license_key=license_key,
+            role="user",
+            grandfathered=0,
+            license_exempt=0
+        )
 
         if ok:
             return redirect(url_for("login"))
@@ -1084,6 +1691,99 @@ def register():
             return render_template("register.html", error=msg)
 
     return render_template("register.html")
+
+
+
+
+
+@app.route("/forgot_password", methods=["GET", "POST"])
+def forgot_password():
+    if request.method == "POST":
+        identifier = (request.form.get("email") or "").strip()  # field name kept for compatibility
+        license_key = (request.form.get("license_key") or "").strip()
+
+        if not identifier:
+            return render_template("forgot_password.html", error="Enter your email or username", entered_email=identifier)
+
+        user_row = _find_user_for_reset(identifier)
+
+        # For privacy you could return generic success either way.
+        # Here we keep it user-friendly and tell them if no account was found.
+        if not user_row:
+            return render_template("forgot_password.html", error="No account found with that email/username", entered_email=identifier)
+
+        lic_ok, lic_err = _validate_reset_license_for_user(user_row, license_key)
+        if not lic_ok:
+            return render_template(
+                "forgot_password.html",
+                error=lic_err,
+                entered_email=identifier,
+                entered_license_key=license_key,
+            )
+
+        username = user_row["username"]
+        raw_token, exp_dt = _create_password_reset_token(username)
+        reset_link = url_for("reset_password", token=raw_token, _external=True)
+
+        success_msg = f"Reset link created for {username}. It expires in 30 minutes."
+        # If you later add email sending, keep the same token/link and send it here.
+        return render_template(
+            "forgot_password.html",
+            success=success_msg,
+            reset_link=reset_link,
+            entered_email=identifier,
+            entered_license_key=license_key,
+        )
+
+    return render_template("forgot_password.html")
+
+
+@app.route("/reset_password", methods=["GET", "POST"])
+@app.route("/reset_password/<token>", methods=["GET", "POST"])
+def reset_password(token=None):
+    token = (token or request.args.get("token") or request.form.get("token") or "").strip()
+
+    if request.method == "POST":
+        password = (request.form.get("password") or "").strip()
+        confirm_password = (request.form.get("confirm_password") or "").strip()
+        license_key = (request.form.get("license_key") or "").strip()
+
+        if not token:
+            return render_template("reset_password.html", error="Missing reset token", token="", entered_license_key=license_key)
+        if confirm_password != password:
+            return render_template("reset_password.html", error="Passwords do not match", token=token, entered_license_key=license_key)
+
+        pw_err = _validate_password_strength(password)
+        if pw_err:
+            return render_template("reset_password.html", error=pw_err, token=token, entered_license_key=license_key)
+
+        rec, err = _get_reset_token_record(token)
+        if err:
+            return render_template("reset_password.html", error=err, token=token, entered_license_key=license_key)
+
+        user_row = _get_user_row(rec["username"])
+        lic_ok, lic_err = _validate_reset_license_for_user(user_row, license_key)
+        if not lic_ok:
+            return render_template("reset_password.html", error=lic_err, token=token, entered_license_key=license_key)
+
+        if not _update_user_password(rec["username"], password):
+            return render_template("reset_password.html", error="Could not update password. Try again.", token=token, entered_license_key=license_key)
+
+        _mark_reset_token_used(rec["id"])
+        return render_template(
+            "reset_password.html",
+            success="Password reset successful. You can now log in with your new password.",
+            token=""
+        )
+
+    # GET request
+    if token:
+        rec, err = _get_reset_token_record(token)
+        if err:
+            return render_template("reset_password.html", error=err, token="")
+        return render_template("reset_password.html", token=token)
+
+    return render_template("reset_password.html", token="")
 
 
 @app.route("/logout")
@@ -1095,7 +1795,77 @@ def logout():
         clients.pop(cid, None)
 
     session.pop("user", None)
+    session.pop("role", None)
     return redirect(url_for("login"))
+
+
+@app.route("/admin")
+def admin_panel():
+    if not login_required():
+        return redirect(url_for("login"))
+    if not is_admin():
+        return redirect(url_for("index"))
+
+    users = get_admin_users_view()
+    licenses = get_admin_licenses_view()
+    return render_template(
+        "admin.html",
+        admin=session.get("user"),
+        admin_username=ADMIN_USERNAME,
+        users=users,
+        licenses=licenses
+    )
+
+
+@app.route("/admin/delete_user", methods=["POST"])
+def admin_delete_user():
+    if not login_required() or not is_admin():
+        return jsonify({"status": "error", "error": "Unauthorized"}), 403
+
+    data = request.get_json(silent=True) or {}
+    user_id = data.get("user_id")
+    if user_id is None:
+        user_id = request.form.get("user_id")
+
+    try:
+        user_id = int(user_id)
+    except Exception:
+        return jsonify({"status": "error", "error": "Invalid user_id"}), 400
+
+    ok, msg = delete_user_admin(user_id)
+    if ok:
+        return jsonify({"status": "deleted"})
+    return jsonify({"status": "error", "error": msg}), 400
+
+
+@app.route("/admin/license/create", methods=["POST"])
+def admin_create_license():
+    if not login_required() or not is_admin():
+        return jsonify({"status": "error", "error": "Unauthorized"}), 403
+
+    data = request.get_json(silent=True) or {}
+    license_type = (data.get("license_type") or request.form.get("license_type") or "").strip().lower()
+
+    ok, msg, key = create_license_record(license_type)
+    if not ok:
+        return jsonify({"status": "error", "error": msg}), 400
+
+    return jsonify({"status": "ok", "license_key": key, "license_type": license_type})
+
+
+@app.route("/admin/license/revoke", methods=["POST"])
+def admin_revoke_license():
+    if not login_required() or not is_admin():
+        return jsonify({"status": "error", "error": "Unauthorized"}), 403
+
+    data = request.get_json(silent=True) or {}
+    license_key = (data.get("license_key") or request.form.get("license_key") or "").strip()
+    ok, msg = revoke_license_record(license_key)
+    if not ok:
+        return jsonify({"status": "error", "error": msg}), 400
+
+    return jsonify({"status": "ok", "message": msg})
+
 
 
 # ---------------- SOCKET.IO CONNECT ---------------- #

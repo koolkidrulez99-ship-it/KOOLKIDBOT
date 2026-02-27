@@ -13,8 +13,9 @@
       display:flex;
       justify-content:center;
       align-items:center;
-      height:100vh;
+      min-height:100vh;
       margin:0;
+      padding:16px;
     }
     .card{
       background:#111827;
@@ -23,10 +24,18 @@
       width:380px;
       box-shadow:0 0 25px rgba(0,0,0,0.6);
       text-align:center;
+      border:1px solid #1f2937;
     }
     h2{
       color:#a855f7;
       text-shadow:0 0 15px #a855f7;
+      margin-top:0;
+    }
+    .muted{
+      color:#cbd5e1;
+      font-size:13px;
+      line-height:1.35;
+      margin:-4px 0 10px;
     }
     input{
       width:90%;
@@ -37,6 +46,10 @@
       background:#1f2937;
       color:white;
       font-size:15px;
+      outline:none;
+    }
+    input:focus{
+      box-shadow:0 0 0 2px rgba(168,85,247,0.35);
     }
     button{
       width:95%;
@@ -52,12 +65,17 @@
       transition:0.2s;
     }
     button:hover{
-      transform:scale(1.05);
+      transform:scale(1.03);
     }
     .error{
       color:#ef4444;
       font-weight:bold;
       margin-top:10px;
+    }
+    .tip{
+      margin-top:10px;
+      font-size:12px;
+      color:#93c5fd;
     }
     a{
       color:#38bdf8;
@@ -70,16 +88,20 @@
 <body>
   <div class="card">
     <h2>📝 Register</h2>
+    <p class="muted">New users need a valid license key to create an account.</p>
 
     <form method="POST">
       <input type="text" name="username" placeholder="Choose Username" required />
       <input type="password" name="password" placeholder="Choose Password" required />
+      <input type="text" name="license_key" placeholder="License Key (required)" required style="text-transform:uppercase;" />
       <button type="submit">Create Account</button>
     </form>
 
     {% if error %}
       <p class="error">{{ error }}</p>
     {% endif %}
+
+    <p class="tip">Monthly and Lifetime keys are created by admin.</p>
 
     <p style="margin-top:15px;">
       Already have an account? <a href="/login">Login</a>
