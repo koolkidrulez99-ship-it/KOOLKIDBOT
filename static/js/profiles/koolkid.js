@@ -66,6 +66,8 @@
 
     panelBtn.innerText = `Barrier Analysis: ${running ? "ON" : "OFF"}`;
     panelBtn.style.background = running ? "#22c55e" : "#1e293b";
+    rowsWrap.style.display = running ? "flex" : "none";
+    rec.style.display = running ? "block" : "none";
 
     if (!running) {
       prog.innerText = "Press Barrier Analysis to start";
@@ -175,28 +177,76 @@
     });
   }
 
+  function setKoolkidQuickPanelsState() {
+    const take3Wrap = document.getElementById("koolkidTake3Options");
+    const burst4Wrap = document.getElementById("koolkidBurst4Options");
+    const take3Parent = document.getElementById("koolkidTake3ParentBtn");
+    const burst4Parent = document.getElementById("koolkidBurst4ParentBtn");
+
+    if (take3Wrap) take3Wrap.style.display = "none";
+    if (burst4Wrap) burst4Wrap.style.display = "none";
+    if (take3Parent) take3Parent.innerText = "▶ Take 3 Trades";
+    if (burst4Parent) burst4Parent.innerText = "▶ Burst 4 Trades";
+  }
+
+  function toggleKoolkidPanel(panel) {
+    const take3Wrap = document.getElementById("koolkidTake3Options");
+    const burst4Wrap = document.getElementById("koolkidBurst4Options");
+    const take3Parent = document.getElementById("koolkidTake3ParentBtn");
+    const burst4Parent = document.getElementById("koolkidBurst4ParentBtn");
+
+    if (!take3Wrap || !burst4Wrap || !take3Parent || !burst4Parent) return;
+
+    const isTake3 = panel === "take3";
+    const targetWrap = isTake3 ? take3Wrap : burst4Wrap;
+    const otherWrap = isTake3 ? burst4Wrap : take3Wrap;
+    const targetBtn = isTake3 ? take3Parent : burst4Parent;
+    const otherBtn = isTake3 ? burst4Parent : take3Parent;
+    const targetOpen = targetWrap.style.display !== "none";
+
+    otherWrap.style.display = "none";
+    otherBtn.innerText = isTake3 ? "▶ Burst 4 Trades" : "▶ Take 3 Trades";
+
+    if (targetOpen) {
+      targetWrap.style.display = "none";
+      targetBtn.innerText = isTake3 ? "▶ Take 3 Trades" : "▶ Burst 4 Trades";
+    } else {
+      targetWrap.style.display = "flex";
+      targetBtn.innerText = isTake3 ? "▼ Take 3 Trades" : "▼ Burst 4 Trades";
+    }
+  }
+
+  window.toggleKoolkidTake3Options = function () { toggleKoolkidPanel("take3"); };
+  window.toggleKoolkidBurst4Options = function () { toggleKoolkidPanel("burst4"); };
+
   async function onMount() {
     try { App().ensureDigitClickPatchSoon && App().ensureDigitClickPatchSoon(); } catch (e) {}
     try { App().applyDigitSelectionUI && App().applyDigitSelectionUI(); } catch (e) {}
     bindSocketListeners();
     bindWindowEvents();
+    setKoolkidQuickPanelsState();
     setTimeout(syncSelectedDigitsToServer, 200);
   }
 
   async function onActivate() {
     try { App().applyDigitSelectionUI && App().applyDigitSelectionUI(); } catch (e) {}
     bindSocketListeners();
+    setKoolkidQuickPanelsState();
     setTimeout(syncSelectedDigitsToServer, 150);
   }
 
   async function afterLoadProfileUI() {
     try { App().applyDigitSelectionUI && App().applyDigitSelectionUI(); } catch (e) {}
     bindSocketListeners();
+    setKoolkidQuickPanelsState();
   }
 
   window.toggleBarrierAnalysis = async function () {
     const r = await postJSON("/toggle_barrier_analysis", {});
     if (r.data && r.data.status === "success") {
+      state.barrierAnalysis = Object.assign({}, state.barrierAnalysis || {}, { running: !!r.data.barrier_analysis });
+      if (!r.data.barrier_analysis) state.barrierAnalysis.ready = false;
+      renderBarrierAnalysis(state.barrierAnalysis);
       safeToast(`Barrier Analysis: ${r.data.barrier_analysis ? "ON" : "OFF"}`, r.data.barrier_analysis ? "success" : "error");
     } else {
       safeToast((r.data && r.data.message) || "Barrier Analysis failed", "error");
