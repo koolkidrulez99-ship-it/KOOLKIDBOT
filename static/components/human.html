@@ -1,3 +1,20 @@
+<style>
+.ui-group{background:#0f172a;border:1px solid #334155;border-radius:12px;overflow:hidden}
+.ui-group + .ui-group{margin-top:8px}
+.ui-group summary{cursor:pointer;list-style:none;padding:10px 12px;font-weight:700;color:#e2e8f0;display:flex;align-items:center;justify-content:space-between;gap:8px;background:#111827}
+.ui-group summary::-webkit-details-marker{display:none}
+.ui-group summary::after{content:'▾';font-size:12px;color:#94a3b8}
+.ui-group:not([open]) summary::after{content:'▸'}
+.ui-group-body{padding:10px;display:flex;flex-direction:column;gap:8px}
+.ui-primary-stack{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+.ui-note{font-size:12px;color:#94a3b8;margin-top:-2px}
+.ui-btn-grid-2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.ui-btn-grid-3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.ui-section-title{font-size:12px;color:#94a3b8;text-transform:uppercase;letter-spacing:.04em;margin:2px 2px 0}
+@media (max-width: 900px){
+  .ui-btn-grid-2,.ui-btn-grid-3{grid-template-columns:1fr}
+}
+</style>
 <div class="card">
     <h3>🧑 HUMAN MODE: MULTIPLIERS + ORDER BLOCK</h3>
 
@@ -19,38 +36,46 @@
         </div>
     </div>
 
-    <div style="margin-top:8px;">
-        <button id="autoSlBtn" onclick="toggleAutoSL()" style="background:#facc15; width:100%;">
-            AUTO SL: ON
-        </button>
-        <div id="humanXStatus" style="margin-top:8px; text-align:center; color:#94a3b8; font-size:13px;">Auto: OFF</div>
-    </div>
+    <div style="margin-top:8px;" class="ui-primary-stack">
+        <details class="ui-group" open>
+            <summary>🛡️ Risk Controls</summary>
+            <div class="ui-group-body">
+                <button id="autoSlBtn" onclick="toggleAutoSL()" style="background:#facc15; width:100%;">
+                    AUTO SL: ON
+                </button>
+                <button id="keepAliveBtn" onclick="toggleHumanKeepAlive()" style="background:#64748b; width:100%;">
+                    KEEP ALIVE: OFF
+                </button>
+                <div id="humanXStatus" style="text-align:center; color:#94a3b8; font-size:13px;">Auto: OFF</div>
+                <div class="ui-btn-grid-2">
+                    <button onclick="manualTP()" style="background:#22c55e; width:100%;">SET TP</button>
+                    <button onclick="manualSL()" style="background:#ef4444; width:100%;">SET SL</button>
+                </div>
+            </div>
+        </details>
 
-    <!-- NEW KEEP ALIVE BUTTON -->
-    <div style="margin-top:8px;">
-        <button id="keepAliveBtn" onclick="toggleHumanKeepAlive()" style="background:#64748b; width:100%;">
-            KEEP ALIVE: OFF
-        </button>
-    </div>
-
-    <div style="margin-top:8px; display:flex; gap:10px; flex-wrap:wrap;">
-        <button onclick="manualTP()" style="background:#22c55e; flex:1;">SET TP</button>
-        <button onclick="manualSL()" style="background:#ef4444; flex:1;">SET SL</button>
-    </div>
-
-    <div style="margin-top:15px;">
-        <button id="humanXBtn" onclick="humanX()" style="background:#ef4444; width:100%; font-size:1.2rem; padding:12px;">
-            ⚡ humanX AUTO: OFF
-        </button>
+        <details class="ui-group" open>
+            <summary>⚡ Trading Action</summary>
+            <div class="ui-group-body">
+                <button id="humanXBtn" onclick="humanX()" style="background:#ef4444; width:100%; font-size:1.2rem; padding:12px;">
+                    ⚡ humanX AUTO: OFF
+                </button>
+            </div>
+        </details>
     </div>
 
     <div style="margin-top:20px; background:#0f172a; border-radius:12px; padding:10px;">
         
-        <div style="display:flex; justify-content:flex-end; gap:8px; margin-bottom:8px; flex-wrap:wrap;">
-            <button onclick="humanZoomOut()" style="background:#334155; padding:6px 12px; border-radius:10px;">−</button>
-            <button onclick="humanZoomIn()" style="background:#334155; padding:6px 12px; border-radius:10px;">+</button>
-            <button onclick="humanResetZoom()" style="background:#334155; padding:6px 12px; border-radius:10px;">Reset</button>
-        </div>
+        <details class="ui-group" open style="margin-bottom:8px;">
+            <summary>📈 Chart Tools</summary>
+            <div class="ui-group-body">
+                <div class="ui-btn-grid-3">
+                    <button onclick="humanZoomOut()" style="background:#334155; padding:6px 12px; border-radius:10px;">−</button>
+                    <button onclick="humanZoomIn()" style="background:#334155; padding:6px 12px; border-radius:10px;">+</button>
+                    <button onclick="humanResetZoom()" style="background:#334155; padding:6px 12px; border-radius:10px;">Reset</button>
+                </div>
+            </div>
+        </details>
 
         <div id="humanChart" style="width:100%; height:300px;"></div>
         <div id="chartPlaceholder" style="text-align:center; color:#94a3b8; padding:10px; display:none;">

@@ -1,21 +1,21 @@
 <style>
+.ui-group{background:#0f172a;border:1px solid #334155;border-radius:12px;overflow:hidden}
+.ui-group + .ui-group{margin-top:8px}
+.ui-group summary{cursor:pointer;list-style:none;padding:10px 12px;font-weight:700;color:#e2e8f0;display:flex;align-items:center;justify-content:space-between;gap:8px;background:#111827}
+.ui-group summary::-webkit-details-marker{display:none}
+.ui-group summary::after{content:'▾';font-size:12px;color:#94a3b8}
+.ui-group:not([open]) summary::after{content:'▸'}
+.ui-group-body{padding:10px;display:flex;flex-direction:column;gap:8px}
+.ui-primary-stack{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+.ui-note{font-size:12px;color:#94a3b8;margin-top:-2px}
+.ui-btn-grid-2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.ui-btn-grid-3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.ui-section-title{font-size:12px;color:#94a3b8;text-transform:uppercase;letter-spacing:.04em;margin:2px 2px 0}
 @media (max-width: 900px){
-  #koolkidProfileUi .panelGrid{grid-template-columns:1fr !important; gap:10px !important;}
-  #koolkidProfileUi .card{padding:12px !important; overflow:hidden;}
-  #koolkidProfileUi button{height:auto !important; min-height:42px; padding:10px 12px !important; font-size:14px !important; line-height:1.2;}
-  #koolkidProfileUi input{font-size:16px !important;}
-  #koolkidProfileUi .digit-grid{gap:8px !important; margin-top:10px !important;}
-  #koolkidProfileUi .digit-cell{padding:8px !important;}
-  #koolkidProfileUi .koolkid-btn-stack{gap:7px !important;}
-  #koolkidProfileUi .koolkid-btn-row{flex-direction:column !important;}
-  #koolkidProfileUi .koolkid-history-grid{grid-template-columns:repeat(2, minmax(0,1fr)) !important; gap:8px !important;}
-  #koolkidProfileUi .koolkid-ba-head{flex-wrap:wrap; align-items:flex-start !important;}
-}
-@media (max-width: 520px){
-  #koolkidProfileUi .koolkid-history-grid{grid-template-columns:1fr !important;}
+  .ui-btn-grid-2,.ui-btn-grid-3{grid-template-columns:1fr}
 }
 </style>
-<div id="koolkidProfileUi"><div class="card">
+<div class="card">
   <h3 style="margin-top:0;">⚙️ KOOLKID CONTROL PANEL</h3>
 
 <div class="panelGrid" style="display:grid; grid-template-columns: 1.15fr 1.85fr; gap:14px; align-items:start;">
@@ -87,7 +87,7 @@
         </div>
 
         <div id="barrierAnalysisCard" style="margin-top:12px; background:#0f172a; border:1px solid #334155; border-radius:12px; padding:12px;">
-          <div class="koolkid-ba-head" style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px;">
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px;">
             <div style="font-weight:bold;">📈 Barrier Analysis</div>
             <button id="barrierAnalysisBtn" onclick="toggleBarrierAnalysis()" style="height:34px; min-width:110px; background:#1e293b;">Barrier Analysis: OFF</button>
           </div>
@@ -105,83 +105,97 @@
         <div id="digitGrid" class="digit-grid"></div>
       </div>
 
-      <div style="margin-top:10px; display:flex; flex-direction:column; gap:8px;" class="koolkid-btn-stack">
-        <button id="koolkidTake3ParentBtn" onclick="toggleKoolkidTake3Options()" style="width:100%; height:46px; background:#1e293b;">▶ Take 3 Trades</button>
-        <div id="koolkidTake3Options" style="display:none; flex-direction:column; gap:8px;">
-          <button onclick="take3('UNDER')" style="width:100%; height:46px; background:#f97316;">🔥 TAKE 3 UNDER NOW</button>
-          <button onclick="take3('OVER')" style="width:100%; height:46px; background:#1d4ed8;">🔥 TAKE 3 OVER NOW</button>
+      <div class="ui-primary-stack">
+        <div class="ui-btn-grid-2">
+          <button id="kidGxBtnKoolkid" onclick="toggleKidGxKoolkid()" style="width:100%; height:46px; background:#1e293b;">
+            ⚡kidGx
+          </button>
+          <button id="aiAutoTradingBtnKoolkid" onclick="toggleAIAutoTradingKoolkid()" style="width:100%; height:46px; background:#1e293b;">
+            🤖AI AUTO-TRADING: OFF
+          </button>
         </div>
-
-        <button id="koolkidBurst4ParentBtn" onclick="toggleKoolkidBurst4Options()" style="width:100%; height:46px; background:#1e293b;">▶ Burst 4 Trades</button>
-        <div id="koolkidBurst4Options" style="display:none; flex-direction:column; gap:8px;">
-          <button onclick="burst4('UNDER')" style="width:100%; height:46px; background:#f97316;">⚡ BURST 4 UNDER FAST</button>
-          <button onclick="burst4('OVER')" style="width:100%; height:46px; background:#1d4ed8;">⚡ BURST 4 OVER FAST</button>
-        </div>
-
-        <button id="kidracksBtn" onclick="toggleKidracksAuto()" style="width:100%; height:46px; background:#1e293b;">
-          KIDRACKS AUTO TRADE: OFF
-        </button>
-
-        <button id="koolkidspeedBtn" onclick="toggleKoolkidspeedAuto()" style="width:100%; height:46px; background:#1e293b;">
-          KOOLKIDSPEED AUTO: OFF
-        </button>
-
-        <!-- NEW BUTTON: kidBagz -->
-        <button id="kidBagzBtn" onclick="toggleKidBagzAuto()" style="width:100%; height:46px; background:#1e293b;">
-          kidBagz💰🤑: OFF
-        </button>
-
-        <!-- ==================== REPLACED MPull BUTTON WITH NEW UI BLOCK ==================== -->
-        <!-- NEW: MPull💰🤫 with mode switch -->
-        <button id="mpullBtn" onclick="toggleMPullAuto()" style="width:100%; height:46px; background:#1e293b;">
-          MPull💰🤫: OFF
-        </button>
-
-        <!-- ==================== PATCH: SeqVIX button and progress ==================== -->
-        <button id="seqVixBtnKoolkid" onclick="toggleSeqVixKoolkid()" style="width:100%; height:46px; background:#1e293b;">
-          5*² sequential vix: OFF
-        </button>
-        <div id="seqVixProgressKoolkid" style="margin-top:6px; font-size:12px; color:#94a3b8;">
-          Markets done: 0 / 10
-        </div>
-
-        <!-- MPull mode switch (default BOTH) -->
-        <div class="koolkid-btn-row" style="display:flex; gap:8px;">
-          <button id="mpullModeBothBtn" onclick="setMPullMode('BOTH')" style="flex:1; height:38px; background:#38bdf8; color:#0b1220;">BOTH</button>
-          <button id="mpullModeOverBtn" onclick="setMPullMode('OVER')" style="flex:1; height:38px; background:#1e293b;">OVER 5 ONLY</button>
-          <button id="mpullModeUnderBtn" onclick="setMPullMode('UNDER')" style="flex:1; height:38px; background:#1e293b;">UNDER 5 ONLY</button>
-        </div>
-
-        <button id="kidGxBtnKoolkid" onclick="toggleKidGxKoolkid()" style="width:100%; height:46px; background:#1e293b;">
-          ⚡kidGx
-        </button>
-
-        <button id="mpullAllDigitsBtn" onclick="toggleMPullAllDigitsAuto()" style="width:100%; height:46px; background:#1e293b;">
-          MPull💰🤓 ALL DIGITS: OFF
-        </button>
-
-        <button id="aiAutoTradingBtnKoolkid" onclick="toggleAIAutoTradingKoolkid()" style="width:100%; height:46px; background:#1e293b;">
-          🤖AI AUTO-TRADING: OFF
-        </button>
-
-        <!-- NEW: kidPairs🤓💯 -->
-        <button id="kidPairsBtn" onclick="toggleKidPairsAuto()" style="width:100%; height:46px; background:#1e293b;">
-          kidPairs🤓💯: OFF
-        </button>
-
-        <div class="koolkid-btn-row" style="display:flex; gap:8px;">
-          <button id="kidPairs1Btn" onclick="setKidPairsTrades(1)" style="flex:1; height:38px; background:#38bdf8; color:#0b1220;">1 Trade</button>
-          <button id="kidPairs2Btn" onclick="setKidPairsTrades(2)" style="flex:1; height:38px; background:#1e293b;">2 Trades</button>
-        </div>
-        <!-- ==================== END REPLACEMENT ==================== -->
-
-        <button id="koolluckBtn" onclick="toggleKoolluckAuto()" style="width:100%; height:46px; background:#1e293b;">
-          KOOL🍀KID LUCK: OFF
-        </button>
 
         <button id="autoBtn" onclick="toggleAuto()" style="width:100%; height:52px; background:#38bdf8;">
           AUTO OFF
         </button>
+
+        <details class="ui-group" open>
+          <summary>⚡ Quick Burst Trades</summary>
+          <div class="ui-group-body">
+            <div class="ui-btn-grid-2">
+              <button onclick="take3('UNDER')" style="width:100%; height:46px; background:#f97316;">🔥 TAKE 3 UNDER NOW</button>
+              <button onclick="take3('OVER')" style="width:100%; height:46px; background:#1d4ed8;">🔥 TAKE 3 OVER NOW</button>
+            </div>
+            <div class="ui-btn-grid-2">
+              <button onclick="burst4('UNDER')" style="width:100%; height:46px; background:#f97316;">⚡ BURST 4 UNDER FAST</button>
+              <button onclick="burst4('OVER')" style="width:100%; height:46px; background:#1d4ed8;">⚡ BURST 4 OVER FAST</button>
+            </div>
+          </div>
+        </details>
+
+        <details class="ui-group" open>
+          <summary>🤖 Auto Strategies</summary>
+          <div class="ui-group-body">
+            <button id="kidracksBtn" onclick="toggleKidracksAuto()" style="width:100%; height:46px; background:#1e293b;">
+              KIDRACKS AUTO TRADE: OFF
+            </button>
+
+            <button id="koolkidspeedBtn" onclick="toggleKoolkidspeedAuto()" style="width:100%; height:46px; background:#1e293b;">
+              KOOLKIDSPEED AUTO: OFF
+            </button>
+
+            <!-- NEW BUTTON: kidBagz -->
+            <button id="kidBagzBtn" onclick="toggleKidBagzAuto()" style="width:100%; height:46px; background:#1e293b;">
+              kidBagz💰🤑: OFF
+            </button>
+
+            <!-- NEW: kidPairs🤓💯 -->
+            <button id="kidPairsBtn" onclick="toggleKidPairsAuto()" style="width:100%; height:46px; background:#1e293b;">
+              kidPairs🤓💯: OFF
+            </button>
+
+            <div class="ui-btn-grid-2">
+              <button id="kidPairs1Btn" onclick="setKidPairsTrades(1)" style="flex:1; height:38px; background:#38bdf8; color:#0b1220;">1 Trade</button>
+              <button id="kidPairs2Btn" onclick="setKidPairsTrades(2)" style="flex:1; height:38px; background:#1e293b;">2 Trades</button>
+            </div>
+
+            <button id="koolluckBtn" onclick="toggleKoolluckAuto()" style="width:100%; height:46px; background:#1e293b;">
+              KOOL🍀KID LUCK: OFF
+            </button>
+          </div>
+        </details>
+
+        <details class="ui-group">
+          <summary>🧠 MPull & Advanced Tools</summary>
+          <div class="ui-group-body">
+            <!-- ==================== REPLACED MPull BUTTON WITH NEW UI BLOCK ==================== -->
+            <!-- NEW: MPull💰🤫 with mode switch -->
+            <button id="mpullBtn" onclick="toggleMPullAuto()" style="width:100%; height:46px; background:#1e293b;">
+              MPull💰🤫: OFF
+            </button>
+
+            <!-- MPull mode switch (default BOTH) -->
+            <div class="ui-btn-grid-3">
+              <button id="mpullModeBothBtn" onclick="setMPullMode('BOTH')" style="height:38px; background:#38bdf8; color:#0b1220;">BOTH</button>
+              <button id="mpullModeOverBtn" onclick="setMPullMode('OVER')" style="height:38px; background:#1e293b;">OVER 5 ONLY</button>
+              <button id="mpullModeUnderBtn" onclick="setMPullMode('UNDER')" style="height:38px; background:#1e293b;">UNDER 5 ONLY</button>
+            </div>
+
+            <button id="mpullAllDigitsBtn" onclick="toggleMPullAllDigitsAuto()" style="width:100%; height:46px; background:#1e293b;">
+              MPull💰🤓 ALL DIGITS: OFF
+            </button>
+
+            <!-- ==================== PATCH: SeqVIX button and progress ==================== -->
+            <button id="seqVixBtnKoolkid" onclick="toggleSeqVixKoolkid()" style="width:100%; height:46px; background:#1e293b;">
+              5*² sequential vix: OFF
+            </button>
+            <div id="seqVixProgressKoolkid" class="ui-note">
+              Markets done: 0 / 10
+            </div>
+            <!-- ==================== END REPLACEMENT ==================== -->
+          </div>
+        </details>
+      </div>
       </div>
     </div>
   </div>
@@ -193,7 +207,7 @@
     <button onclick="clearProfileHistory()" style="background:#fb7185;">Clear History</button>
   </div>
 
-  <div class="koolkid-history-grid" style="display:grid; grid-template-columns: repeat(4, 1fr); gap:10px; margin-top:12px;">
+  <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:10px; margin-top:12px;">
     <div style="background:#0f172a; border:1px solid #334155; border-radius:12px; padding:12px; text-align:center;">
       <div style="color:#94a3b8; font-size:12px;">Total Trades</div>
       <div id="profileTotalTrades" style="font-size:22px; font-weight:bold;">0</div>
@@ -218,5 +232,4 @@
   <div id="profileTradeList" style="margin-top:14px;">
     <div style="text-align:center; color:#64748b; padding:20px;">No trades yet</div>
   </div>
-</div>
 </div>
