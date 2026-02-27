@@ -8,7 +8,6 @@ import time
 import uuid
 import sqlite3
 import random  # PATCH 1A
-from collections import deque
 
 from flask import Flask, render_template, request, jsonify, redirect, url_for, session
 from flask_socketio import SocketIO, join_room
@@ -51,16 +50,6 @@ clients = {}
 
 # heartbeat timeout (10 minutes)
 HEARTBEAT_TIMEOUT_SEC = 10 * 60
-
-# ==========================
-# EXECUTION HARDENING (FAST MODES)
-# ==========================
-TRADE_QUEUE_MIN_GAP_SEC = float(os.environ.get("TRADE_QUEUE_MIN_GAP_SEC", "0.12"))
-TRADE_BACKOFF_SEC = float(os.environ.get("TRADE_BACKOFF_SEC", "1.0"))
-TRADE_DUP_WINDOW_SEC = float(os.environ.get("TRADE_DUP_WINDOW_SEC", "0.10"))
-MAX_TRADE_QUEUE_SIZE = int(os.environ.get("MAX_TRADE_QUEUE_SIZE", "300"))
-MAX_INFLIGHT_PER_PROFILE = int(os.environ.get("MAX_INFLIGHT_PER_PROFILE", "8"))
-MAX_INFLIGHT_PER_MARKET = int(os.environ.get("MAX_INFLIGHT_PER_MARKET", "3"))
 
 
 # ---------------- DATABASE SETUP ---------------- #
@@ -260,314 +249,6 @@ def _hard_stop_all_strategies(state):
                     pass
 
 
-def _ws_send_json(state, payload):
-    """Thread-safe WebSocket send helper."""
-    ws = state.get("ws") if state else None
-    if not ws:
-        return False
-    lock = state.get("ws_send_lock")
-    try:
-        if lock:
-            with lock:
-                ws.send(json.dumps(payload))
-        else:
-            ws.send(json.dumps(payload))
-        return True
-    except Exception:
-        return False
-
-
-def _trade_slot_key_market(profile, symbol):
-    return f"{str(profile).upper()}::{symbol}"
-
-
-def _reserve_trade_slot(state, profile, symbol):
-    profile = str(profile or "KOOLKID").upper()
-    symbol = str(symbol or "")
-    profile_counts = state.setdefault("trade_slots_profile", {})
-    market_counts = state.setdefault("trade_slots_market", {})
-    p_count = int(profile_counts.get(profile, 0))
-    m_key = _trade_slot_key_market(profile, symbol)
-    m_count = int(market_counts.get(m_key, 0))
-
-    if p_count >= MAX_INFLIGHT_PER_PROFILE:
-        return False, f"{profile} in-flight limit reached"
-    if m_count >= MAX_INFLIGHT_PER_MARKET:
-        return False, f"{profile} {symbol} in-flight limit reached"
-
-    profile_counts[profile] = p_count + 1
-    market_counts[m_key] = m_count + 1
-    return True, "reserved"
-
-
-def _release_trade_slot(state, profile, symbol):
-    try:
-        profile = str(profile or "KOOLKID").upper()
-        symbol = str(symbol or "")
-        profile_counts = state.setdefault("trade_slots_profile", {})
-        market_counts = state.setdefault("trade_slots_market", {})
-
-        if profile in profile_counts:
-            profile_counts[profile] = max(0, int(profile_counts.get(profile, 0)) - 1)
-            if profile_counts[profile] <= 0:
-                profile_counts.pop(profile, None)
-
-        m_key = _trade_slot_key_market(profile, symbol)
-        if m_key in market_counts:
-            market_counts[m_key] = max(0, int(market_counts.get(m_key, 0)) - 1)
-            if market_counts[m_key] <= 0:
-                market_counts.pop(m_key, None)
-    except Exception:
-        pass
-
-
-def _release_pending_req_slot(state, req_id, release_slot=True):
-    pending = (state.get("pending_req_slots") or {}).pop(req_id, None)
-    if pending and release_slot:
-        _release_trade_slot(state, pending.get("profile"), pending.get("symbol"))
-    return pending
-
-
-def _move_pending_req_slot_to_contract(state, req_id, contract_id):
-    if not req_id or not contract_id:
-        return
-    pending = _release_pending_req_slot(state, req_id, release_slot=False)
-    if pending:
-        state.setdefault("active_contract_slots", {})[contract_id] = pending
-
-
-def _release_contract_slot(state, contract_id, fallback_profile=None, fallback_symbol=None):
-    slot = (state.get("active_contract_slots") or {}).pop(contract_id, None)
-    if slot:
-        _release_trade_slot(state, slot.get("profile"), slot.get("symbol"))
-    elif fallback_profile and fallback_symbol:
-        _release_trade_slot(state, fallback_profile, fallback_symbol)
-
-
-def _forget_contract_subscription(state, contract_id):
-    try:
-        sub_id = (state.get("contract_subs") or {}).pop(contract_id, None)
-        if sub_id and state.get("ws_connected") and state.get("ws"):
-            _ws_send_json(state, {"forget": sub_id})
-    except Exception:
-        pass
-
-
-def _bump_trade_backoff(state, seconds=TRADE_BACKOFF_SEC):
-    try:
-        now = time.time()
-        state["trade_backoff_until"] = max(float(state.get("trade_backoff_until", 0.0)), now + float(seconds))
-    except Exception:
-        pass
-
-
-def _clear_trade_runtime_state(state, clear_queue=True):
-    try:
-        if clear_queue and state.get("trade_queue") is not None:
-            lock = state.get("trade_queue_lock")
-            if lock:
-                with lock:
-                    state["trade_queue"].clear()
-            else:
-                state["trade_queue"].clear()
-        state.setdefault("pending_req_slots", {}).clear()
-        state.setdefault("active_contract_slots", {}).clear()
-        state.setdefault("contract_subs", {}).clear()
-        state.setdefault("trade_slots_profile", {}).clear()
-        state.setdefault("trade_slots_market", {}).clear()
-        state.setdefault("last_trade_fingerprint_ts", {}).clear()
-        state["trade_backoff_until"] = 0.0
-        state["trade_last_send_ts"] = 0.0
-        ev = state.get("trade_queue_event")
-        if ev:
-            ev.set()
-    except Exception:
-        pass
-
-
-def _build_buy_queue_fingerprint(meta, params):
-    try:
-        profile = str((meta or {}).get("profile") or "")
-        symbol = str((meta or {}).get("symbol") or "")
-        ctype = str((meta or {}).get("type") or "")
-        barrier = (meta or {}).get("barrier")
-        d_contract = str((params or {}).get("contract_type") or "")
-        return f"{profile}|{symbol}|{ctype}|{barrier}|{d_contract}"
-    except Exception:
-        return str(uuid.uuid4())
-
-
-def _trade_worker_loop(client_id):
-    while True:
-        state = clients.get(client_id)
-        if not state:
-            return
-
-        stop_ev = state.get("trade_worker_stop_event")
-        if stop_ev and stop_ev.is_set():
-            return
-
-        ev = state.get("trade_queue_event")
-        if ev:
-            ev.wait(0.25)
-            ev.clear()
-        else:
-            time.sleep(0.25)
-
-        while True:
-            state = clients.get(client_id)
-            if not state:
-                return
-            stop_ev = state.get("trade_worker_stop_event")
-            if stop_ev and stop_ev.is_set():
-                return
-
-            q_lock = state.get("trade_queue_lock")
-            if q_lock:
-                with q_lock:
-                    item = state["trade_queue"][0] if state.get("trade_queue") else None
-            else:
-                item = state["trade_queue"][0] if state.get("trade_queue") else None
-
-            if not item:
-                break
-
-            now = time.time()
-            if now < float(state.get("trade_backoff_until", 0.0)):
-                time.sleep(min(0.15, max(0.02, float(state.get("trade_backoff_until", 0.0)) - now)))
-                continue
-
-            min_gap = float(TRADE_QUEUE_MIN_GAP_SEC)
-            last_send = float(state.get("trade_last_send_ts", 0.0))
-            if now - last_send < min_gap:
-                time.sleep(max(0.01, min_gap - (now - last_send)))
-                continue
-
-            if not state.get("ws_connected") or not state.get("ws"):
-                time.sleep(0.10)
-                break
-
-            meta = dict(item.get("meta") or {})
-            params = dict(item.get("parameters") or {})
-            profile = str(meta.get("profile") or item.get("profile") or "KOOLKID").upper()
-            symbol = meta.get("symbol") or params.get("symbol")
-            fp = item.get("fingerprint") or _build_buy_queue_fingerprint(meta, params)
-
-            last_fp_ts = float((state.get("last_trade_fingerprint_ts") or {}).get(fp, 0.0))
-            if now - last_fp_ts < float(TRADE_DUP_WINDOW_SEC):
-                logger.warning(f"[{client_id}] ⚠️ Duplicate trade request dropped ({profile} {symbol})")
-                if q_lock:
-                    with q_lock:
-                        if state.get("trade_queue"):
-                            state["trade_queue"].popleft()
-                else:
-                    if state.get("trade_queue"):
-                        state["trade_queue"].popleft()
-                continue
-
-            ok_slot, slot_msg = _reserve_trade_slot(state, profile, symbol)
-            if not ok_slot:
-                time.sleep(0.05)
-                continue
-
-            # Pop only after slot reservation succeeds
-            if q_lock:
-                with q_lock:
-                    if not state.get("trade_queue"):
-                        _release_trade_slot(state, profile, symbol)
-                        continue
-                    item = state["trade_queue"].popleft()
-            else:
-                if not state.get("trade_queue"):
-                    _release_trade_slot(state, profile, symbol)
-                    continue
-                item = state["trade_queue"].popleft()
-
-            meta = dict(item.get("meta") or {})
-            params = dict(item.get("parameters") or {})
-            stake = float(item.get("stake", meta.get("stake", 1.0)))
-            req_id = _new_req_id()
-            meta["profile"] = profile
-            meta["symbol"] = meta.get("symbol") or params.get("symbol")
-
-            state.setdefault("req_meta", {})[req_id] = meta
-            state.setdefault("pending_req_slots", {})[req_id] = {"profile": profile, "symbol": meta.get("symbol")}
-
-            payload = {
-                "req_id": req_id,
-                "buy": 1,
-                "price": stake,
-                "parameters": params
-            }
-
-            sent = _ws_send_json(state, payload)
-            if sent:
-                state["trade_last_send_ts"] = time.time()
-                state.setdefault("last_trade_fingerprint_ts", {})[item.get("fingerprint") or fp] = state["trade_last_send_ts"]
-            else:
-                state.get("req_meta", {}).pop(req_id, None)
-                _release_pending_req_slot(state, req_id, release_slot=True)
-                _bump_trade_backoff(state, seconds=max(0.5, TRADE_BACKOFF_SEC))
-                logger.error(f"[{client_id}] ❌ Queue send failed ({profile} {meta.get('symbol')})")
-                time.sleep(0.05)
-
-
-def _ensure_trade_worker(client_id, state):
-    t = state.get("trade_worker_thread")
-    if t and t.is_alive():
-        return
-    try:
-        stop_ev = state.get("trade_worker_stop_event")
-        if stop_ev:
-            stop_ev.clear()
-    except Exception:
-        pass
-    t = threading.Thread(target=_trade_worker_loop, args=(client_id,), daemon=True)
-    state["trade_worker_thread"] = t
-    t.start()
-
-
-def _queue_buy_order(client_id, profile, meta, parameters):
-    state = clients.get(client_id)
-    if not state:
-        return False, "No client state"
-    if not state.get("ws_connected") or not state.get("ws"):
-        return False, "Not connected"
-
-    try:
-        stake = float((meta or {}).get("stake", 1.0))
-    except Exception:
-        stake = 1.0
-
-    item = {
-        "profile": str(profile or (meta or {}).get("profile") or "KOOLKID").upper(),
-        "stake": stake,
-        "meta": dict(meta or {}),
-        "parameters": dict(parameters or {}),
-    }
-    item["fingerprint"] = _build_buy_queue_fingerprint(item["meta"], item["parameters"])
-
-    q_lock = state.get("trade_queue_lock")
-    if q_lock:
-        with q_lock:
-            q = state.setdefault("trade_queue", deque())
-            if len(q) >= MAX_TRADE_QUEUE_SIZE:
-                return False, "Trade queue full"
-            q.append(item)
-    else:
-        q = state.setdefault("trade_queue", deque())
-        if len(q) >= MAX_TRADE_QUEUE_SIZE:
-            return False, "Trade queue full"
-        q.append(item)
-
-    _ensure_trade_worker(client_id, state)
-    ev = state.get("trade_queue_event")
-    if ev:
-        ev.set()
-
-    return True, "Trade queued"
-
-
 def disconnect_client(client_id, reason="manual", emit=True):
     state = clients.get(client_id)
     if not state:
@@ -596,7 +277,6 @@ def disconnect_client(client_id, reason="manual", emit=True):
     state["session_start_balance"] = None
     state["req_meta"].clear()
     state["contract_meta"].clear()
-    _clear_trade_runtime_state(state, clear_queue=True)
 
     _hard_stop_all_strategies(state)
 
@@ -631,29 +311,41 @@ def init_client(client_id):
         "seqvix": {
             "KOOLKID": {
                 "running": False, "total": 0, "endless": False, "done": 0,
-                "batch_size": 6, "sample_size": 30,
+                "batch_size": 10, "sample_size": 30,
                 "remaining": [], "active_syms": set(),
                 "samples": {}, "ready_syms": set(),
+                "sample_tick_counts": {}, "last_score_tick": {},
                 "last_exec_ts": 0.0,
                 "config": {},
                 # ==================== PATCH 1A: new fields ====================
                 "owned_syms": set(),
-                "cooldown_until": 0.0,
+                "market_cooldowns": {},
                 "trades_per_market": 2,
                 "cooldown_sec": 5.0,
+                "refresh_every_ticks": 2,
+                "pending_market": None,
+                "pending_due_ts": 0.0,
+                "pending_trades_left": 0,
+                "pending_meta": {},
             },
             "JOKERJOE": {
                 "running": False, "total": 0, "endless": False, "done": 0,
-                "batch_size": 6, "sample_size": 30,
+                "batch_size": 10, "sample_size": 30,
                 "remaining": [], "active_syms": set(),
                 "samples": {}, "ready_syms": set(),
+                "sample_tick_counts": {}, "last_score_tick": {},
                 "last_exec_ts": 0.0,
                 "config": {},
                 # ==================== PATCH 1A: new fields ====================
                 "owned_syms": set(),
-                "cooldown_until": 0.0,
+                "market_cooldowns": {},
                 "trades_per_market": 2,
                 "cooldown_sec": 5.0,
+                "refresh_every_ticks": 2,
+                "pending_market": None,
+                "pending_due_ts": 0.0,
+                "pending_trades_left": 0,
+                "pending_meta": {},
             }
         },
         "humanx_auto": False,
@@ -663,20 +355,6 @@ def init_client(client_id):
         "auto_stake": 1.0,
         "req_meta": {},          # req_id -> meta
         "contract_meta": {},     # contract_id -> meta
-        "contract_subs": {},     # contract_id -> subscription id (proposal_open_contract)
-        "pending_req_slots": {}, # req_id -> {profile, symbol}
-        "active_contract_slots": {}, # contract_id -> {profile, symbol}
-        "trade_slots_profile": {},
-        "trade_slots_market": {},
-        "trade_last_send_ts": 0.0,
-        "trade_backoff_until": 0.0,
-        "last_trade_fingerprint_ts": {},
-        "trade_queue": deque(),
-        "trade_queue_lock": threading.Lock(),
-        "trade_queue_event": threading.Event(),
-        "trade_worker_thread": None,
-        "trade_worker_stop_event": threading.Event(),
-        "ws_send_lock": threading.Lock(),
         "last_seen": time.time(),  # heartbeat (page open)
         "strategies": {
             "KOOLKID": KoolKidStrategy(),
@@ -930,8 +608,10 @@ def send_buy(client_id, contract_type, stake, symbol, barrier):
         return False, "Invalid contract type"
 
     deriv_contract = contract_map[contract_type]
-    meta = {
-        "profile": profile,
+
+    req_id = _new_req_id()
+    state["req_meta"][req_id] = {
+        "profile": profile,  # PATCH D: use the same profile variable
         "type": contract_type,
         "barrier": int(barrier),
         "stake": float(stake),
@@ -939,18 +619,27 @@ def send_buy(client_id, contract_type, stake, symbol, barrier):
         "time": now_time()
     }
 
-    parameters = {
-        "amount": float(stake),
-        "basis": "stake",
-        "contract_type": deriv_contract,
-        "currency": "USD",
-        "duration": 1,
-        "duration_unit": "t",
-        "symbol": symbol,
-        "barrier": int(barrier)
+    payload = {
+        "req_id": req_id,
+        "buy": 1,
+        "price": float(stake),
+        "parameters": {
+            "amount": float(stake),
+            "basis": "stake",
+            "contract_type": deriv_contract,
+            "currency": "USD",
+            "duration": 1,
+            "duration_unit": "t",
+            "symbol": symbol,
+            "barrier": int(barrier)
+        }
     }
 
-    return _queue_buy_order(client_id, profile, meta, parameters)
+    try:
+        ws.send(json.dumps(payload))
+        return True, "Trade sent"
+    except Exception as e:
+        return False, str(e)
 
 
 # ==================== PATCH 1C: send_buy_with_profile ====================
@@ -984,7 +673,9 @@ def send_buy_with_profile(client_id, profile, contract_type, stake, symbol, barr
         return False, "Invalid contract type"
 
     deriv_contract = contract_map[contract_type]
-    meta = {
+
+    req_id = _new_req_id()
+    state["req_meta"][req_id] = {
         "profile": profile,
         "type": contract_type,
         "barrier": int(barrier),
@@ -993,18 +684,27 @@ def send_buy_with_profile(client_id, profile, contract_type, stake, symbol, barr
         "time": now_time()
     }
 
-    parameters = {
-        "amount": float(stake),
-        "basis": "stake",
-        "contract_type": deriv_contract,
-        "currency": "USD",
-        "duration": 1,
-        "duration_unit": "t",
-        "symbol": symbol,
-        "barrier": int(barrier)
+    payload = {
+        "req_id": req_id,
+        "buy": 1,
+        "price": float(stake),
+        "parameters": {
+            "amount": float(stake),
+            "basis": "stake",
+            "contract_type": deriv_contract,
+            "currency": "USD",
+            "duration": 1,
+            "duration_unit": "t",
+            "symbol": symbol,
+            "barrier": int(barrier)
+        }
     }
 
-    return _queue_buy_order(client_id, profile, meta, parameters)
+    try:
+        ws.send(json.dumps(payload))
+        return True, "Trade sent"
+    except Exception as e:
+        return False, str(e)
 
 
 # ---------------- MULTIPLIER ORDER (HUMANX) ---------------- #
@@ -1038,7 +738,9 @@ def place_multiplier_order(client_id, signal):
         multiplier = 1
     if multiplier > 500:
         multiplier = 500
-    meta = {
+
+    req_id = _new_req_id()
+    state["req_meta"][req_id] = {
         "profile": "HUMAN",  # PATCH E: set profile hard to HUMAN
         "type": f"MULT {direction}",
         "barrier": None,
@@ -1047,18 +749,26 @@ def place_multiplier_order(client_id, signal):
         "time": now_time()
     }
 
-    parameters = {
-        "amount": stake,
-        "basis": "stake",
-        "contract_type": "MULTIPLIER",
-        "currency": "USD",
-        "symbol": symbol_to_use,
-        "multiplier": multiplier,
-        "take_profit": tp,
-        "stop_loss": sl,
+    payload = {
+        "req_id": req_id,
+        "buy": 1,
+        "price": stake,
+        "parameters": {
+            "amount": stake,
+            "basis": "stake",
+            "contract_type": "MULTIPLIER",
+            "currency": "USD",
+            "symbol": symbol_to_use,
+            "multiplier": multiplier,
+            "take_profit": tp,
+            "stop_loss": sl,
+        }
     }
-
-    return _queue_buy_order(client_id, profile_to_use, meta, parameters)
+    try:
+        ws.send(json.dumps(payload))
+        return True, "Trade sent"
+    except Exception as e:
+        return False, str(e)
 
 
 # ---------------- AUTO TRADE ENGINE (PER CLIENT) ---------------- #
@@ -1127,6 +837,9 @@ def _seqvix_emit_progress(client_id, state, profile, reason=None):
         "running": bool(run.get("running")),
         "done": int(run.get("done", 0)),
         "total": (None if run.get("endless") else int(run.get("total", 0))),
+        "active_count": len(run.get("active_syms", set())),
+        "ready_count": len(run.get("ready_syms", set())),
+        "pending_market": run.get("pending_market"),
     }
     if reason:
         payload["reason"] = reason
@@ -1172,12 +885,16 @@ def _seqvix_fill_batch(state, profile):
             # already subscribed elsewhere (main market or previous stream)
             run["active_syms"].add(sym)
             run["samples"][sym] = []
+            run.setdefault("sample_tick_counts", {})[sym] = 0
+            run.setdefault("last_score_tick", {}).pop(sym, None)
             # do NOT add to owned_syms, do NOT subscribe again
             continue
 
         # otherwise subscribe and mark as owned by seqvix
         run["active_syms"].add(sym)
         run["samples"][sym] = []
+        run.setdefault("sample_tick_counts", {})[sym] = 0
+        run.setdefault("last_score_tick", {}).pop(sym, None)
         run["owned_syms"].add(sym)
         try:
             ws.send(json.dumps({"ticks": sym, "subscribe": 1}))
@@ -1191,6 +908,111 @@ def _pick_two_rarest_digits(sample):
             counts[d] += 1
     ordered = sorted(counts.items(), key=lambda kv: (kv[1], kv[0]))
     return ordered[0][0], ordered[1][0]
+
+
+def _seqvix_pick_jokerjoe_lowest_differs(sample):
+    counts = {d: 0 for d in range(10)}
+    n = max(1, len(sample))
+    for d in sample:
+        if d in counts:
+            counts[d] += 1
+    best_digit = 0
+    best_pct = None
+    for d in range(10):
+        differs_pct = ((n - counts[d]) / n) * 100.0
+        if best_pct is None or differs_pct < best_pct or (abs(differs_pct - best_pct) < 1e-9 and d < best_digit):
+            best_pct = differs_pct
+            best_digit = d
+    return best_digit, float(best_pct if best_pct is not None else 0.0)
+
+
+def _seqvix_koolkid_barrier_pct(sample, contract_type, barrier):
+    n = max(1, len(sample))
+    ct = str(contract_type).upper().strip()
+    b = int(barrier)
+    if ct == "UNDER":
+        wins = sum(1 for d in sample if int(d) < b)
+    else:
+        wins = sum(1 for d in sample if int(d) > b)
+    return (wins / n) * 100.0
+
+
+def _seqvix_pick_market(state, profile):
+    run = state["seqvix"][profile]
+    now = time.time()
+    refresh_every = max(1, int(run.get("refresh_every_ticks", 2)))
+    sample_size = int(run.get("sample_size", 30))
+    active = set(run.get("active_syms", set()))
+    ready = []
+    for sym in list(active):
+        sample = run.get("samples", {}).get(sym) or []
+        if len(sample) < sample_size:
+            continue
+        if now < float((run.get("market_cooldowns") or {}).get(sym, 0.0)):
+            continue
+        tick_count = int((run.get("sample_tick_counts") or {}).get(sym, 0))
+        last_score_tick = int((run.get("last_score_tick") or {}).get(sym, -999999))
+        if last_score_tick >= 0 and (tick_count - last_score_tick) < refresh_every:
+            continue
+        ready.append(sym)
+
+    if not ready:
+        return None
+
+    chosen_sym = None
+    chosen_meta = None
+
+    if profile == "JOKERJOE":
+        for sym in ready:
+            sample = run["samples"].get(sym, [])
+            digit, pct = _seqvix_pick_jokerjoe_lowest_differs(sample)
+            meta = {"digit": int(digit), "score_pct": float(pct), "metric": "lowest_differs_pct"}
+            if (
+                chosen_meta is None
+                or meta["score_pct"] < chosen_meta["score_pct"]
+                or (abs(meta["score_pct"] - chosen_meta["score_pct"]) < 1e-9 and sym < chosen_sym)
+            ):
+                chosen_sym = sym
+                chosen_meta = meta
+    else:
+        ct = (run.get("config") or {}).get("contract_type", "OVER")
+        barrier = int((run.get("config") or {}).get("barrier", 1))
+        for sym in ready:
+            sample = run["samples"].get(sym, [])
+            pct = _seqvix_koolkid_barrier_pct(sample, ct, barrier)
+            # KOOLKID uses the same "lowest %" style selection across markets, but trades only selected barrier.
+            meta = {"score_pct": float(pct), "metric": f"{ct}_{barrier}_pct"}
+            if (
+                chosen_meta is None
+                or meta["score_pct"] < chosen_meta["score_pct"]
+                or (abs(meta["score_pct"] - chosen_meta["score_pct"]) < 1e-9 and sym < chosen_sym)
+            ):
+                chosen_sym = sym
+                chosen_meta = meta
+
+    if chosen_sym:
+        run.setdefault("last_score_tick", {})[chosen_sym] = int((run.get("sample_tick_counts") or {}).get(chosen_sym, 0))
+        return {"symbol": chosen_sym, "meta": chosen_meta or {}}
+    return None
+
+
+def _seqvix_mark_market_complete(client_id, state, profile, sym):
+    run = state["seqvix"][profile]
+    run["done"] = int(run.get("done", 0)) + 1
+
+    _seqvix_forget_symbol(state, profile, sym)
+    run.get("ready_syms", set()).discard(sym)
+    run.get("active_syms", set()).discard(sym)
+    run.get("samples", {}).pop(sym, None)
+    run.get("sample_tick_counts", {}).pop(sym, None)
+    run.get("last_score_tick", {}).pop(sym, None)
+
+    _seqvix_fill_batch(state, profile)
+    _seqvix_emit_progress(client_id, state, profile)
+
+    if (not run.get("endless")) and run.get("total", 0) and run.get("done", 0) >= run["total"]:
+        stop_seqvix(state, client_id, profile, reason="done")
+
 
 def stop_seqvix(state, client_id, profile, reason="stopped"):
     run = state["seqvix"][profile]
@@ -1207,13 +1029,20 @@ def stop_seqvix(state, client_id, profile, reason="stopped"):
     run["active_syms"] = set()
     run["samples"] = {}
     run["ready_syms"] = set()
+    run["sample_tick_counts"] = {}
+    run["last_score_tick"] = {}
     run["remaining"] = []
     run["last_exec_ts"] = 0.0
     run["config"] = {}
     run["owned_syms"] = set()
-    run["cooldown_until"] = 0.0
+    run["market_cooldowns"] = {}
+    run["pending_market"] = None
+    run["pending_due_ts"] = 0.0
+    run["pending_trades_left"] = 0
+    run["pending_meta"] = {}
 
     _seqvix_emit_progress(client_id, state, profile, reason=reason)
+
 
 def start_seqvix_jokerjoe(state, client_id, mode, trades_per_market=2):
     run = state["seqvix"]["JOKERJOE"]
@@ -1241,16 +1070,20 @@ def start_seqvix_jokerjoe(state, client_id, mode, trades_per_market=2):
 
     run.update({
         "running": True, "endless": endless, "total": total, "done": 0,
-        "batch_size": 6, "sample_size": 30,
+        "batch_size": 10, "sample_size": 30,
         "remaining": SEQVIX_MARKETS.copy(),
         "active_syms": set(), "samples": {}, "ready_syms": set(),
+        "sample_tick_counts": {}, "last_score_tick": {},
         "last_exec_ts": 0.0, "config": {},
-        "owned_syms": set(), "cooldown_until": 0.0, "trades_per_market": tpm, "cooldown_sec": 5.0,
+        "owned_syms": set(), "market_cooldowns": {}, "trades_per_market": tpm, "cooldown_sec": 5.0,
+        "refresh_every_ticks": 2,
+        "pending_market": None, "pending_due_ts": 0.0, "pending_trades_left": 0, "pending_meta": {},
     })
     random.shuffle(run["remaining"])
 
     _seqvix_fill_batch(state, "JOKERJOE")
     _seqvix_emit_progress(client_id, state, "JOKERJOE")
+
 
 def start_seqvix_koolkid(state, client_id, contract_type, barrier, trades_per_market=2):
     run = state["seqvix"]["KOOLKID"]
@@ -1275,47 +1108,47 @@ def start_seqvix_koolkid(state, client_id, contract_type, barrier, trades_per_ma
 
     run.update({
         "running": True, "endless": False, "total": 10, "done": 0,
-        "batch_size": 6, "sample_size": 30,
+        "batch_size": 10, "sample_size": 30,
         "remaining": SEQVIX_MARKETS.copy(),
         "active_syms": set(), "samples": {}, "ready_syms": set(),
+        "sample_tick_counts": {}, "last_score_tick": {},
         "last_exec_ts": 0.0,
         "config": {"contract_type": ct, "barrier": b},
-        "owned_syms": set(), "cooldown_until": 0.0, "trades_per_market": tpm, "cooldown_sec": 5.0,
+        "owned_syms": set(), "market_cooldowns": {}, "trades_per_market": tpm, "cooldown_sec": 5.0,
+        "refresh_every_ticks": 2,
+        "pending_market": None, "pending_due_ts": 0.0, "pending_trades_left": 0, "pending_meta": {},
     })
     random.shuffle(run["remaining"])
 
     _seqvix_fill_batch(state, "KOOLKID")
     _seqvix_emit_progress(client_id, state, "KOOLKID")
 
-def _seqvix_execute_one_market(client_id, state, profile, sym):
+
+def _seqvix_execute_one_market(client_id, state, profile, sym, forced_meta=None):
     run = state["seqvix"][profile]
     sample = run["samples"].get(sym, [])
     if len(sample) < run["sample_size"]:
-        return False
+        return False, None
 
     stake = float(state.get("auto_stake", 1.0))
-    trade_count = int(run.get("trades_per_market", 2))
+    meta = dict(forced_meta or {})
 
     if profile == "JOKERJOE":
-        d1, d2 = _pick_two_rarest_digits(sample)
-        if trade_count == 1:
-            # only the rarest digit
-            ok1, _ = send_buy_with_profile(client_id, "JOKERJOE", "DIFFERS", stake, sym, d1)
-            return ok1
-        else:
-            ok1, _ = send_buy_with_profile(client_id, "JOKERJOE", "DIFFERS", stake, sym, d1)
-            ok2, _ = send_buy_with_profile(client_id, "JOKERJOE", "DIFFERS", stake, sym, d2)
-            return ok1 and ok2
+        if "digit" not in meta:
+            d, pct = _seqvix_pick_jokerjoe_lowest_differs(sample)
+            meta["digit"] = int(d)
+            meta.setdefault("score_pct", float(pct))
+            meta.setdefault("metric", "lowest_differs_pct")
+        ok1, _ = send_buy_with_profile(client_id, "JOKERJOE", "DIFFERS", stake, sym, int(meta["digit"]))
+        return bool(ok1), meta
     else:
         ct = run["config"].get("contract_type", "OVER")
         barrier = int(run["config"].get("barrier", 1))
-        if trade_count == 1:
-            ok1, _ = send_buy_with_profile(client_id, "KOOLKID", ct, stake, sym, barrier)
-            return ok1
-        else:
-            ok1, _ = send_buy_with_profile(client_id, "KOOLKID", ct, stake, sym, barrier)
-            ok2, _ = send_buy_with_profile(client_id, "KOOLKID", ct, stake, sym, barrier)
-            return ok1 and ok2
+        if "score_pct" not in meta:
+            meta["score_pct"] = float(_seqvix_koolkid_barrier_pct(sample, ct, barrier))
+            meta.setdefault("metric", f"{ct}_{barrier}_pct")
+        ok1, _ = send_buy_with_profile(client_id, "KOOLKID", ct, stake, sym, barrier)
+        return bool(ok1), meta
 
 def process_seqvix_tick(client_id, tick):
     state = clients.get(client_id)
@@ -1341,20 +1174,24 @@ def process_seqvix_tick(client_id, tick):
     if d is None:
         return
 
-    # update buffers
+    # update rolling buffers continuously (after warmup too)
     for profile in active_profiles:
         run = seqvix[profile]
         if sym not in run.get("active_syms", set()):
             continue
 
-        buf = run["samples"].setdefault(sym, [])
-        if len(buf) < run["sample_size"]:
-            buf.append(int(d))
+        buf = run.setdefault("samples", {}).setdefault(sym, [])
+        buf.append(int(d))
+        sample_size = int(run.get("sample_size", 30))
+        if len(buf) > sample_size:
+            del buf[:-sample_size]
 
-        if len(buf) >= run["sample_size"]:
-            run["ready_syms"].add(sym)
+        tick_counts = run.setdefault("sample_tick_counts", {})
+        tick_counts[sym] = int(tick_counts.get(sym, 0)) + 1
 
-    # execute at most 1 market per tick per profile (rate limit) + cooldown
+        if len(buf) >= sample_size:
+            run.setdefault("ready_syms", set()).add(sym)
+
     now = time.time()
     for profile in active_profiles:
         run = seqvix[profile]
@@ -1367,38 +1204,73 @@ def process_seqvix_tick(client_id, tick):
             stop_seqvix(state, client_id, profile, reason="done")
             continue
 
-        # ==================== PATCH 1D: cooldown check ====================
-        if now < float(run.get("cooldown_until", 0.0)):
-            continue
-
+        # small rate-limit guard only (NO global cooldown; cooldown is per-market)
         if now - float(run.get("last_exec_ts", 0.0)) < 0.15:
             continue
 
-        ready = list(run.get("ready_syms", set()))
-        if not ready:
+        pending_market = run.get("pending_market")
+        pending_left = int(run.get("pending_trades_left", 0) or 0)
+        if pending_market and pending_left > 0:
+            if now < float(run.get("pending_due_ts", 0.0)):
+                continue
+            if pending_market not in run.get("active_syms", set()):
+                # market disappeared; cancel pending sequence safely
+                run["pending_market"] = None
+                run["pending_due_ts"] = 0.0
+                run["pending_trades_left"] = 0
+                run["pending_meta"] = {}
+                continue
+
+            ok, used_meta = _seqvix_execute_one_market(
+                client_id, state, profile, pending_market, forced_meta=(run.get("pending_meta") or {})
+            )
+            if not ok:
+                continue
+
+            run["last_exec_ts"] = now
+            run.setdefault("market_cooldowns", {})[pending_market] = now + float(run.get("cooldown_sec", 5.0))
+            run["pending_meta"] = dict(used_meta or run.get("pending_meta") or {})
+            run["pending_trades_left"] = max(0, pending_left - 1)
+
+            if run["pending_trades_left"] > 0:
+                run["pending_due_ts"] = now + float(run.get("cooldown_sec", 5.0))
+                _seqvix_emit_progress(client_id, state, profile)
+                continue
+
+            # sequence complete on same market, then switch
+            finished_sym = pending_market
+            run["pending_market"] = None
+            run["pending_due_ts"] = 0.0
+            run["pending_trades_left"] = 0
+            run["pending_meta"] = {}
+            _seqvix_mark_market_complete(client_id, state, profile, finished_sym)
             continue
 
-        chosen = random.choice(ready)
-        ok = _seqvix_execute_one_market(client_id, state, profile, chosen)
+        picked = _seqvix_pick_market(state, profile)
+        if not picked:
+            continue
+
+        chosen = picked["symbol"]
+        chosen_meta = dict(picked.get("meta") or {})
+        ok, used_meta = _seqvix_execute_one_market(client_id, state, profile, chosen, forced_meta=chosen_meta)
         if not ok:
             continue
 
-        # success => increment + cleanup that market
-        run["done"] += 1
         run["last_exec_ts"] = now
-        # ==================== PATCH 1D: set cooldown ====================
-        run["cooldown_until"] = now + float(run.get("cooldown_sec", 5.0))
+        run.setdefault("market_cooldowns", {})[chosen] = now + float(run.get("cooldown_sec", 5.0))
 
-        _seqvix_forget_symbol(state, profile, chosen)
-        run["ready_syms"].discard(chosen)
-        run["active_syms"].discard(chosen)
-        run["samples"].pop(chosen, None)
+        trade_count = int(run.get("trades_per_market", 2) or 2)
+        if trade_count <= 1:
+            _seqvix_mark_market_complete(client_id, state, profile, chosen)
+            continue
 
-        _seqvix_fill_batch(state, profile)
+        # Hold same market for second trade, then switch
+        run["pending_market"] = chosen
+        run["pending_trades_left"] = max(0, trade_count - 1)
+        run["pending_due_ts"] = now + float(run.get("cooldown_sec", 5.0))
+        run["pending_meta"] = dict(used_meta or chosen_meta or {})
         _seqvix_emit_progress(client_id, state, profile)
 
-        if (not run.get("endless")) and run.get("total", 0) and run.get("done", 0) >= run["total"]:
-            stop_seqvix(state, client_id, profile, reason="done")
 
 
 # ---------------- WEBSOCKET HANDLERS (PER CLIENT) ---------------- #
@@ -1414,12 +1286,6 @@ def handle_on_message(client_id, ws, message, expected_nonce):
 
         if "error" in data:
             msg = data["error"].get("message", "Unknown API Error")
-            req_id = data.get("req_id")
-            if req_id is not None and req_id in (state.get("pending_req_slots") or {}):
-                _release_pending_req_slot(state, req_id, release_slot=True)
-                state.get("req_meta", {}).pop(req_id, None)
-            # Back off the execution layer briefly on API errors (helps fast-mode bursts recover).
-            _bump_trade_backoff(state, seconds=TRADE_BACKOFF_SEC)
             logger.error(f"[{client_id}] API Error: {msg}")
             socketio.emit("api_error", {"message": msg}, room=client_id)
             return
@@ -1522,7 +1388,6 @@ def handle_on_message(client_id, ws, message, expected_nonce):
 
             if contract_id and meta:
                 state["contract_meta"][contract_id] = meta
-                _move_pending_req_slot_to_contract(state, req_id, contract_id)
                 socketio.emit("trade_placed", {
                     "profile": meta.get("profile"),
                     "type": meta.get("type"),
@@ -1533,8 +1398,6 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                     "contract_id": contract_id
                 }, room=client_id)
             else:
-                if req_id is not None:
-                    _release_pending_req_slot(state, req_id, release_slot=True)
                 socketio.emit("trade_placed", {
                     "profile": state.get("active_profile", "KOOLKID"),
                     "type": "TRADE",
@@ -1546,22 +1409,14 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 }, room=client_id)
 
             if contract_id:
-                _ws_send_json(state, {
+                ws.send(json.dumps({
                     "proposal_open_contract": 1,
                     "contract_id": contract_id,
                     "subscribe": 1
-                })
+                }))
 
         if "proposal_open_contract" in data:
             contract = data["proposal_open_contract"]
-            try:
-                sub = data.get("subscription") or {}
-                sub_id = sub.get("id")
-                c_id = contract.get("contract_id")
-                if c_id and sub_id:
-                    state.setdefault("contract_subs", {})[c_id] = sub_id
-            except Exception:
-                pass
             process_contract(client_id, contract)
 
     except Exception as e:
@@ -1771,14 +1626,6 @@ def process_contract(client_id, contract):
 
         contract_id = contract.get("contract_id")
         meta = state["contract_meta"].pop(contract_id, None) if contract_id else None
-        if contract_id:
-            _forget_contract_subscription(state, contract_id)
-            _release_contract_slot(
-                state,
-                contract_id,
-                fallback_profile=(meta or {}).get("profile"),
-                fallback_symbol=(meta or {}).get("symbol"),
-            )
 
         # PATCH F: Use the trade's real profile (not active_profile)
         profile_for_contract = (meta.get("profile") if meta else None) or state.get("active_profile", "KOOLKID")
@@ -1856,7 +1703,7 @@ def handle_on_open(client_id, ws, expected_nonce):
 
     api_token = state.get("api_token")
     if api_token:
-        _ws_send_json(state, {"authorize": api_token})
+        ws.send(json.dumps({"authorize": api_token}))
 
 
 def handle_on_error(client_id, ws, error, expected_nonce):
@@ -1878,7 +1725,6 @@ def handle_on_close(client_id, ws, code, msg, expected_nonce):
 
     state["ws_connected"] = False
     state["ws_transport_connected"] = False
-    _clear_trade_runtime_state(state, clear_queue=True)
     logger.warning(f"[{client_id}] 🔌 WebSocket Disconnected")
     socketio.emit("connection_status", {"connected": False, "loginid": "UNKNOWN", "balance": state.get("balance", 0.0)}, room=client_id)
 
