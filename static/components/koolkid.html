@@ -89,12 +89,56 @@
         <div id="barrierAnalysisCard" style="margin-top:12px; background:#0f172a; border:1px solid #334155; border-radius:12px; padding:12px;">
           <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px;">
             <div style="font-weight:bold;">📈 Barrier Analysis</div>
-            <button id="barrierAnalysisBtn" onclick="toggleBarrierAnalysis()" style="height:34px; min-width:110px; background:#1e293b;">Barrier Analysis: OFF</button>
+            <button id="barrierAnalysisBtn" onclick="toggleBarrierAnalysis(); setTimeout(function(){ if (window.__syncBarrierAnalysisKoolkidVisibility) window.__syncBarrierAnalysisKoolkidVisibility(); }, 0);" style="height:34px; min-width:110px; background:#1e293b;">Barrier Analysis: OFF</button>
           </div>
           <div id="barrierAnalysisProgress" style="font-size:12px; color:#94a3b8; margin-bottom:8px;">Press Barrier Analysis to start</div>
-          <div id="barrierAnalysisRows" style="display:flex; flex-direction:column; gap:6px;"></div>
-          <div id="barrierAnalysisRecommended" style="margin-top:8px; font-size:12px; color:#cbd5e1;">Recommended: -</div>
+          <div id="barrierAnalysisDetails" style="display:none;">
+            <div id="barrierAnalysisRows" style="display:flex; flex-direction:column; gap:6px;"></div>
+            <div id="barrierAnalysisRecommended" style="margin-top:8px; font-size:12px; color:#cbd5e1;">Recommended: -</div>
+          </div>
         </div>
+<script>
+(function () {
+  function syncBarrierAnalysisKoolkidVisibility() {
+    var btn = document.getElementById('barrierAnalysisBtn');
+    var details = document.getElementById('barrierAnalysisDetails');
+    if (!btn || !details) return;
+    var label = (btn.textContent || '').toUpperCase();
+    var isOn = label.indexOf('ON') !== -1 && label.indexOf('OFF') === -1;
+    details.style.display = isOn ? 'block' : 'none';
+  }
+
+  window.__syncBarrierAnalysisKoolkidVisibility = syncBarrierAnalysisKoolkidVisibility;
+
+  function installBarrierAnalysisObserver() {
+    var btn = document.getElementById('barrierAnalysisBtn');
+    if (!btn) return false;
+
+    syncBarrierAnalysisKoolkidVisibility();
+
+    if (!btn.__barrierObsInstalled) {
+      btn.__barrierObsInstalled = true;
+      var mo = new MutationObserver(function () {
+        syncBarrierAnalysisKoolkidVisibility();
+      });
+      mo.observe(btn, { childList: true, subtree: true, characterData: true, attributes: true });
+      btn.addEventListener('click', function () {
+        setTimeout(syncBarrierAnalysisKoolkidVisibility, 0);
+        setTimeout(syncBarrierAnalysisKoolkidVisibility, 120);
+      });
+    }
+    return true;
+  }
+
+  if (!installBarrierAnalysisObserver()) {
+    var tries = 0;
+    var t = setInterval(function () {
+      tries += 1;
+      if (installBarrierAnalysisObserver() || tries > 20) clearInterval(t);
+    }, 200);
+  }
+})();
+</script>
       </div>
     </div>
 
@@ -144,12 +188,10 @@
               KOOLKIDSPEED AUTO: OFF
             </button>
 
-            <!-- NEW BUTTON: kidBagz -->
             <button id="kidBagzBtn" onclick="toggleKidBagzAuto()" style="width:100%; height:46px; background:#1e293b;">
               kidBagz💰🤑: OFF
             </button>
 
-            <!-- NEW: kidPairs🤓💯 -->
             <button id="kidPairsBtn" onclick="toggleKidPairsAuto()" style="width:100%; height:46px; background:#1e293b;">
               kidPairs🤓💯: OFF
             </button>
@@ -165,16 +207,30 @@
           </div>
         </details>
 
+        <details class="ui-group" open>
+          <summary>🧠 Advanced AI Modes</summary>
+          <div class="ui-group-body">
+            <div id="koolkidAdvancedAIModesCard" style="margin-top:8px; background:#0b1220; border:1px dashed #334155; border-radius:12px; padding:10px;">
+  <div style="font-weight:bold; margin-bottom:8px;">🧠 Advanced AI Modes</div>
+  <div style="display:grid; grid-template-columns:1fr; gap:8px;">
+    <button id="kidbrainBtnKoolkid" onclick="toggleKidbrainKoolkid()" style="width:100%; height:44px; background:#1e293b;">🤖 KIDBRAIN: OFF</button>
+    <button id="edgeBrainBtnKoolkid" onclick="toggleEdgeBrainKoolkid()" style="width:100%; height:44px; background:#1e293b;">🧠 EDGE BRAIN: OFF</button>
+    <button id="smartFlowBtnKoolkid" onclick="toggleSmartFlowKoolkid()" style="width:100%; height:44px; background:#1e293b;">🎯 SMART FLOW: OFF</button>
+    <button id="metaAiBtnKoolkid" onclick="toggleMetaAIKoolkid()" style="width:100%; height:44px; background:#1e293b;">⚡ META AI: OFF</button>
+    <button id="kidracksAiBtnKoolkid" onclick="toggleKidracksAIKoolkid()" style="width:100%; height:44px; background:#1e293b;">🤓 KIDRACKS AI: OFF</button>
+  </div>
+  <div id="metaBrainInfoKoolkid" style="margin-top:8px; font-size:12px; color:#94a3b8;">Meta: waiting for tick data...</div>
+</div>
+          </div>
+        </details>
+
         <details class="ui-group">
           <summary>🧠 MPull & Advanced Tools</summary>
           <div class="ui-group-body">
-            <!-- ==================== REPLACED MPull BUTTON WITH NEW UI BLOCK ==================== -->
-            <!-- NEW: MPull💰🤫 with mode switch -->
             <button id="mpullBtn" onclick="toggleMPullAuto()" style="width:100%; height:46px; background:#1e293b;">
               MPull💰🤫: OFF
             </button>
 
-            <!-- MPull mode switch (default BOTH) -->
             <div class="ui-btn-grid-3">
               <button id="mpullModeBothBtn" onclick="setMPullMode('BOTH')" style="height:38px; background:#38bdf8; color:#0b1220;">BOTH</button>
               <button id="mpullModeOverBtn" onclick="setMPullMode('OVER')" style="height:38px; background:#1e293b;">OVER 5 ONLY</button>
@@ -185,17 +241,14 @@
               MPull💰🤓 ALL DIGITS: OFF
             </button>
 
-            <!-- ==================== PATCH: SeqVIX button and progress ==================== -->
             <button id="seqVixBtnKoolkid" onclick="toggleSeqVixKoolkid()" style="width:100%; height:46px; background:#1e293b;">
               5*² sequential vix: OFF
             </button>
             <div id="seqVixProgressKoolkid" class="ui-note">
               Markets done: 0 / 10
             </div>
-            <!-- ==================== END REPLACEMENT ==================== -->
           </div>
         </details>
-      </div>
       </div>
     </div>
   </div>

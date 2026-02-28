@@ -52,6 +52,7 @@
     state.barrierAnalysis = data || state.barrierAnalysis || null;
     const panelBtn = document.getElementById("barrierAnalysisBtn");
     const prog = document.getElementById("barrierAnalysisProgress");
+    const detailsWrap = document.getElementById("barrierAnalysisDetails");
     const rowsWrap = document.getElementById("barrierAnalysisRows");
     const rec = document.getElementById("barrierAnalysisRecommended");
     const kidGxBtn = document.getElementById("kidGxBtnKoolkid");
@@ -66,8 +67,7 @@
 
     panelBtn.innerText = `Barrier Analysis: ${running ? "ON" : "OFF"}`;
     panelBtn.style.background = running ? "#22c55e" : "#1e293b";
-    rowsWrap.style.display = running ? "flex" : "none";
-    rec.style.display = running ? "block" : "none";
+    if (detailsWrap) detailsWrap.style.display = running ? "block" : "none";
 
     if (!running) {
       prog.innerText = "Press Barrier Analysis to start";
@@ -130,6 +130,36 @@
     }
   }
 
+
+function updateAdvancedAIModeButtons(modes, payload) {
+  const map = [
+    ["kidbrain", "kidbrainBtnKoolkid", "🤖 KIDBRAIN"],
+    ["edge_brain", "edgeBrainBtnKoolkid", "🧠 EDGE BRAIN"],
+    ["smart_flow", "smartFlowBtnKoolkid", "🎯 SMART FLOW"],
+    ["meta_ai", "metaAiBtnKoolkid", "⚡ META AI"],
+    ["kidracks_ai", "kidracksAiBtnKoolkid", "🤓 KIDRACKS AI"],
+  ];
+  map.forEach(([key, id, label]) => {
+    const btn = document.getElementById(id);
+    if (!btn || !(key in (state.autoModes || {}))) return;
+    const on = !!state.autoModes[key];
+    btn.innerText = `${label}: ${on ? "ON" : "OFF"}`;
+    btn.style.background = on ? "#22c55e" : "#1e293b";
+  });
+  const info = document.getElementById("metaBrainInfoKoolkid");
+  const meta = (payload && payload.meta_brain) || state.metaBrain;
+  if (payload && payload.meta_brain) state.metaBrain = payload.meta_brain;
+  if (info && meta) {
+    const conf = meta.confidence_pct !== undefined ? `${Number(meta.confidence_pct).toFixed(1)}%` : "-";
+    const gap = meta.edge_gap !== undefined ? Number(meta.edge_gap).toFixed(1) : "-";
+    const score = meta.market_score !== undefined ? Number(meta.market_score).toFixed(1) : "-";
+    const shadow = meta.shadow && typeof meta.shadow.live_winrate === "number"
+      ? ` • Shadow ${meta.shadow.live_winrate.toFixed(1)}%/${meta.shadow.alt_winrate.toFixed(1)}%`
+      : "";
+    info.innerText = `Regime: ${meta.regime || "-"} • Conf: ${conf} • Gap: ${gap} • Score: ${score}${shadow}`;
+  }
+}
+
   function updateModeButtonsFromPayload(modes, payload) {
     state.autoModes = Object.assign({}, state.autoModes || {}, modes || {});
     const kidGxBtn = document.getElementById("kidGxBtnKoolkid");
@@ -145,6 +175,7 @@
     }
     if (payload && payload.barrier_analysis) renderBarrierAnalysis(payload.barrier_analysis);
     else if (kidGxBtn) renderBarrierAnalysis(state.barrierAnalysis || { selected: "UNDER 9" });
+    updateAdvancedAIModeButtons(modes || {}, payload || null);
   }
 
   function bindSocketListeners() {
@@ -177,75 +208,30 @@
     });
   }
 
-  function setKoolkidQuickPanelsState() {
-    const take3Wrap = document.getElementById("koolkidTake3Options");
-    const burst4Wrap = document.getElementById("koolkidBurst4Options");
-    const take3Parent = document.getElementById("koolkidTake3ParentBtn");
-    const burst4Parent = document.getElementById("koolkidBurst4ParentBtn");
-
-    if (take3Wrap) take3Wrap.style.display = "none";
-    if (burst4Wrap) burst4Wrap.style.display = "none";
-    if (take3Parent) take3Parent.innerText = "▶ Take 3 Trades";
-    if (burst4Parent) burst4Parent.innerText = "▶ Burst 4 Trades";
-  }
-
-  function toggleKoolkidPanel(panel) {
-    const take3Wrap = document.getElementById("koolkidTake3Options");
-    const burst4Wrap = document.getElementById("koolkidBurst4Options");
-    const take3Parent = document.getElementById("koolkidTake3ParentBtn");
-    const burst4Parent = document.getElementById("koolkidBurst4ParentBtn");
-
-    if (!take3Wrap || !burst4Wrap || !take3Parent || !burst4Parent) return;
-
-    const isTake3 = panel === "take3";
-    const targetWrap = isTake3 ? take3Wrap : burst4Wrap;
-    const otherWrap = isTake3 ? burst4Wrap : take3Wrap;
-    const targetBtn = isTake3 ? take3Parent : burst4Parent;
-    const otherBtn = isTake3 ? burst4Parent : take3Parent;
-    const targetOpen = targetWrap.style.display !== "none";
-
-    otherWrap.style.display = "none";
-    otherBtn.innerText = isTake3 ? "▶ Burst 4 Trades" : "▶ Take 3 Trades";
-
-    if (targetOpen) {
-      targetWrap.style.display = "none";
-      targetBtn.innerText = isTake3 ? "▶ Take 3 Trades" : "▶ Burst 4 Trades";
-    } else {
-      targetWrap.style.display = "flex";
-      targetBtn.innerText = isTake3 ? "▼ Take 3 Trades" : "▼ Burst 4 Trades";
-    }
-  }
-
-  window.toggleKoolkidTake3Options = function () { toggleKoolkidPanel("take3"); };
-  window.toggleKoolkidBurst4Options = function () { toggleKoolkidPanel("burst4"); };
-
   async function onMount() {
     try { App().ensureDigitClickPatchSoon && App().ensureDigitClickPatchSoon(); } catch (e) {}
     try { App().applyDigitSelectionUI && App().applyDigitSelectionUI(); } catch (e) {}
     bindSocketListeners();
     bindWindowEvents();
-    setKoolkidQuickPanelsState();
     setTimeout(syncSelectedDigitsToServer, 200);
   }
 
   async function onActivate() {
     try { App().applyDigitSelectionUI && App().applyDigitSelectionUI(); } catch (e) {}
     bindSocketListeners();
-    setKoolkidQuickPanelsState();
     setTimeout(syncSelectedDigitsToServer, 150);
   }
 
   async function afterLoadProfileUI() {
     try { App().applyDigitSelectionUI && App().applyDigitSelectionUI(); } catch (e) {}
     bindSocketListeners();
-    setKoolkidQuickPanelsState();
   }
 
   window.toggleBarrierAnalysis = async function () {
     const r = await postJSON("/toggle_barrier_analysis", {});
     if (r.data && r.data.status === "success") {
-      state.barrierAnalysis = Object.assign({}, state.barrierAnalysis || {}, { running: !!r.data.barrier_analysis });
-      if (!r.data.barrier_analysis) state.barrierAnalysis.ready = false;
+      if (!state.barrierAnalysis || typeof state.barrierAnalysis !== "object") state.barrierAnalysis = {};
+      state.barrierAnalysis.running = !!r.data.barrier_analysis;
       renderBarrierAnalysis(state.barrierAnalysis);
       safeToast(`Barrier Analysis: ${r.data.barrier_analysis ? "ON" : "OFF"}`, r.data.barrier_analysis ? "success" : "error");
     } else {
@@ -296,6 +282,24 @@
       safeToast((r.data && r.data.message) || "MPull ALL DIGITS failed", "error");
     }
   };
+
+
+async function toggleAdvancedModeKoolkid(modeKey, label) {
+  const r = await postJSON("/toggle_named_ai_mode", { profile: "KOOLKID", mode_key: modeKey });
+  if (r.data && r.data.status === "success") {
+    if (r.data.auto_modes) state.autoModes = Object.assign({}, state.autoModes || {}, r.data.auto_modes);
+    updateModeButtonsFromPayload(r.data.auto_modes || { [modeKey]: !!r.data.enabled }, r.data.payload || null);
+    safeToast(`${label}: ${r.data.enabled ? "ON" : "OFF"}`, r.data.enabled ? "success" : "error");
+  } else {
+    safeToast((r.data && r.data.message) || `${label} failed`, "error");
+  }
+}
+
+window.toggleKidbrainKoolkid = function () { return toggleAdvancedModeKoolkid("kidbrain", "🤖 KIDBRAIN"); };
+window.toggleEdgeBrainKoolkid = function () { return toggleAdvancedModeKoolkid("edge_brain", "🧠 EDGE BRAIN"); };
+window.toggleSmartFlowKoolkid = function () { return toggleAdvancedModeKoolkid("smart_flow", "🎯 SMART FLOW"); };
+window.toggleMetaAIKoolkid = function () { return toggleAdvancedModeKoolkid("meta_ai", "⚡ META AI"); };
+window.toggleKidracksAIKoolkid = function () { return toggleAdvancedModeKoolkid("kidracks_ai", "🤓 KIDRACKS AI"); };
 
   if (typeof window.registerProfileModule === "function") {
     window.registerProfileModule(PROFILE, { onMount, afterLoadProfileUI, onActivate });

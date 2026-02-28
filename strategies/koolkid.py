@@ -1068,3 +1068,470 @@ class KoolKidStrategy(BaseStrategy):
                 "ai_recommended": self._pick_best_ai_candidate() if self._barrier_analysis_ready() else None,
             },
         }
+
+# ==================== ADVANCED NAMED AI MODES PATCH (non-destructive wrapper) ====================
+def _kk_adv_mode_keys():
+    return ("kidbrain", "edge_brain", "smart_flow", "meta_ai", "kidracks_ai")
+
+def _kk_adv_init_state(self):
+    self._adv_named_modes = {k: False for k in _kk_adv_mode_keys()}
+    self._adv_mode_last_trade = {k: 0.0 for k in _kk_adv_mode_keys()}
+    self._adv_loss_streak = 0
+    self._adv_win_streak = 0
+    self._adv_pause_until = 0.0
+    self._adv_last_regime = "WARMUP"
+    self._adv_shadow = {"live_wins": 0, "live_losses": 0, "alt_wins": 0, "alt_losses": 0, "sample": 0}
+    self._adv_shadow_live_pending = None
+    self._adv_shadow_alt_pending = None
+    self._adv_last_meta = {"regime": "WARMUP", "confidence_pct": 0.0, "edge_gap": 0.0, "market_score": 0.0, "consensus": 0}
+
+def _kk_toggle_named_ai_mode(self, mode_key):
+    mk = str(mode_key or "").strip().lower()
+    if mk not in _kk_adv_mode_keys():
+        raise ValueError(f"Invalid mode: {mode_key}")
+    self._adv_named_modes[mk] = not bool(self._adv_named_modes.get(mk, False))
+    # If META AI is turned on, keep independent but reset pause/shadow comparators for clean start
+    if self._adv_named_modes[mk]:
+        self._adv_mode_last_trade[mk] = 0.0
+    return bool(self._adv_named_modes[mk])
+
+def _kk_get_named_ai_modes_state(self):
+    return dict(getattr(self, "_adv_named_modes", {}) or {})
+
+def _kk_any_named_ai_mode_on(self):
+    modes = getattr(self, "_adv_named_modes", {}) or {}
+    return any(bool(v) for v in modes.values())
+
+def _kk_eval_contract_result(contract_type, barrier, digit):
+    try:
+        d = int(digit)
+        b = int(barrier)
+        ct = str(contract_type or "").upper()
+        if ct == "OVER":
+            return d > b
+        if ct == "UNDER":
+            return d < b
+        if ct == "DIFFERS":
+            return d != b
+        if ct == "MATCHES":
+            return d == b
+    except Exception:
+        return None
+    return None
+
+def _kk_adv_resolve_pending_shadow(self, digit):
+    for key in ("_adv_shadow_live_pending", "_adv_shadow_alt_pending"):
+        pred = getattr(self, key, None)
+        if not pred:
+            continue
+        res = _kk_eval_contract_result(pred.get("type"), pred.get("barrier"), digit)
+        if res is None:
+            setattr(self, key, None)
+            continue
+        shadow = getattr(self, "_adv_shadow", None) or {"live_wins":0,"live_losses":0,"alt_wins":0,"alt_losses":0,"sample":0}
+        if key.endswith("live_pending"):
+            if res: shadow["live_wins"] += 1
+            else: shadow["live_losses"] += 1
+        else:
+            if res: shadow["alt_wins"] += 1
+            else: shadow["alt_losses"] += 1
+        shadow["sample"] = int(shadow.get("sample", 0)) + 1
+        self._adv_shadow = shadow
+        setattr(self, key, None)
+
+def _kk_adv_snapshot(self):
+    tick_count = int(getattr(self, "tick_count", 0) or 0)
+    if tick_count < 100:
+        snap = {"regime":"WARMUP","confidence_pct":0.0,"edge_gap":0.0,"market_score":0.0,"consensus":0}
+        self._adv_last_meta = dict(snap)
+        return snap
+
+    # digit rarity and edge
+    pcts = [float(getattr(self, "digit_percentages", {}).get(i, 0.0)) for i in range(10)]
+    sorted_desc = sorted(pcts, reverse=True)
+    sorted_asc = sorted(pcts)
+    dominant_gap = (sorted_desc[0] - sorted_desc[1]) if len(sorted_desc) >= 2 else 0.0
+    rare_gap = (sorted_asc[1] - sorted_asc[0]) if len(sorted_asc) >= 2 else 0.0
+
+    conf = 0.0
+    edge_gap = 0.0
+    best_ai = None
+    second_ai_pct = None
+
+    try:
+        if hasattr(self, "_barrier_analysis_ready") and self._barrier_analysis_ready():
+            defs = list(self._get_ai_candidate_defs()) if hasattr(self, "_get_ai_candidate_defs") else []
+            rows = []
+            for t, b in defs:
+                key = self._barrier_key(t, b)
+                pct = float(self._analysis_pct(key))
+                rows.append((pct, str(t).upper(), int(b), key))
+            rows.sort(key=lambda x: (-x[0], x[2]))
+            if rows:
+                conf = float(rows[0][0])
+                best_ai = {"wins_pct": rows[0][0], "type": rows[0][1], "barrier": rows[0][2], "key": rows[0][3]}
+                if len(rows) > 1:
+                    second_ai_pct = float(rows[1][0])
+            edge_gap = conf - (second_ai_pct if second_ai_pct is not None else conf)
+        else:
+            conf = float(max(
+                getattr(self, "confidence_over1", 0),
+                getattr(self, "confidence_over2", 0),
+                getattr(self, "confidence_under8", 0),
+                getattr(self, "confidence_under9", 0)
+            ))
+            edge_gap = max(dominant_gap, rare_gap)
+    except Exception:
+        conf = float(max(
+            getattr(self, "confidence_over1", 0),
+            getattr(self, "confidence_over2", 0),
+            getattr(self, "confidence_under8", 0),
+            getattr(self, "confidence_under9", 0)
+        ))
+        edge_gap = max(dominant_gap, rare_gap)
+
+    # Sequence detector from last 5 digits
+    buf = list(getattr(self, "pattern_buffer", []) or [])
+    last5 = buf[-5:] if len(buf) >= 5 else []
+    has_over1_seq = (0 in last5 and 1 in last5)
+    has_under8_seq = (8 in last5 and 9 in last5)
+    sequence_bias = has_over1_seq or has_under8_seq
+
+    if conf >= 68 and edge_gap >= 4:
+        regime = "BARRIER_DOMINANT"
+    elif sequence_bias:
+        regime = "SEQUENCE"
+    elif max(dominant_gap, rare_gap) <= 2.0:
+        regime = "BALANCED"
+    else:
+        regime = "MIXED"
+
+    score = float(conf) + float(edge_gap * 1.5) - float(getattr(self, "_adv_loss_streak", 0) * 4)
+    if regime == "SEQUENCE":
+        score += 4.0
+    elif regime == "BARRIER_DOMINANT":
+        score += 6.0
+    if getattr(self, "_adv_pause_until", 0.0) > time.time():
+        score -= 12.0
+
+    snap = {
+        "regime": regime,
+        "confidence_pct": round(float(conf), 1),
+        "edge_gap": round(float(edge_gap), 1),
+        "market_score": round(float(score), 1),
+        "consensus": 0,
+        "_best_ai": best_ai,
+        "_has_over1_seq": bool(has_over1_seq),
+        "_has_under8_seq": bool(has_under8_seq),
+    }
+    self._adv_last_meta = dict({k:v for k,v in snap.items() if not k.startswith("_")})
+    self._adv_last_regime = regime
+    return snap
+
+def _kk_adv_pick_ai_signal(self):
+    try:
+        best = self._pick_best_ai_candidate() if hasattr(self, "_pick_best_ai_candidate") else None
+    except Exception:
+        best = None
+    if not best:
+        return None
+    return {"mode": "META_AI", "type": str(best["type"]).upper(), "barrier": int(best["barrier"])}
+
+def _kk_adv_pick_kidpairs_signal(self):
+    if not hasattr(self, "pattern_buffer"):
+        return None
+    buf = list(self.pattern_buffer)
+    if len(buf) < 5:
+        return None
+    last5 = buf[-5:]
+    over_ok = (0 in last5 and 1 in last5)
+    under_ok = (8 in last5 and 9 in last5)
+    if not over_ok and not under_ok:
+        return None
+    # choose stronger confidence side
+    over_score = float(getattr(self, "confidence_over1", 0)) + float(getattr(self, "confidence_over2", 0)) * 0.35
+    under_score = float(getattr(self, "confidence_under8", 0)) + float(getattr(self, "confidence_under9", 0)) * 0.35
+    if over_ok and (not under_ok or over_score >= under_score):
+        return {"mode": "SMART_FLOW", "type": "OVER", "barrier": 1}
+    return {"mode": "SMART_FLOW", "type": "UNDER", "barrier": 8}
+
+def _kk_adv_pick_kidracks_signal(self):
+    try:
+        if hasattr(self, "check_kidracks_signal"):
+            sig = self.check_kidracks_signal()
+            if sig:
+                sig = dict(sig)
+                sig["mode"] = "KIDRACKS_AI"
+                return sig
+    except Exception:
+        pass
+    # fallback: use selected kidracks barrier with family inference when barrier printed
+    try:
+        b = int(getattr(self, "kidracks_barrier", 5))
+        d = int(getattr(self, "last_tick_digit", -1))
+        if d != b:
+            return None
+        if b <= 4:
+            t = "OVER"
+        elif b >= 6:
+            t = "UNDER"
+        else:
+            low = sum(float(self.digit_percentages.get(i,0.0)) for i in range(0,5))
+            high = sum(float(self.digit_percentages.get(i,0.0)) for i in range(6,10))
+            t = "UNDER" if low < high else "OVER"
+        return {"mode":"KIDRACKS_AI","type":t,"barrier":b}
+    except Exception:
+        return None
+
+def _kk_adv_consensus(self, snap, ai_sig, seq_sig):
+    count = 0
+    if ai_sig and snap.get("confidence_pct", 0.0) >= 58.0:
+        count += 1
+    if seq_sig:
+        count += 1
+    # third vote from percentages side bias
+    try:
+        low = sum(float(self.digit_percentages.get(i, 0.0)) for i in range(0, 5))
+        high = sum(float(self.digit_percentages.get(i, 0.0)) for i in range(5, 10))
+        if ai_sig:
+            if ai_sig["type"] == "OVER" and low <= high + 3:
+                count += 1
+            elif ai_sig["type"] == "UNDER" and high <= low + 3:
+                count += 1
+        elif seq_sig:
+            if seq_sig["type"] == "OVER" and low <= high + 3:
+                count += 1
+            elif seq_sig["type"] == "UNDER" and high <= low + 3:
+                count += 1
+    except Exception:
+        pass
+    return count
+
+def _kk_adv_mode_cooldown(self, mode_key):
+    base = 5.0
+    if mode_key == "meta_ai":
+        base = 3.0
+    elif mode_key == "smart_flow":
+        base = 4.0
+    elif mode_key == "edge_brain":
+        base = 5.0
+    elif mode_key == "kidracks_ai":
+        base = float(getattr(self, "cooldown_seconds", 5.0))
+    # adaptive loss-based extension
+    loss_streak = int(getattr(self, "_adv_loss_streak", 0) or 0)
+    if loss_streak > 0:
+        base += min(10.0, loss_streak * 2.5)
+    return base
+
+def _kk_adv_can_trade(self, mode_key):
+    now = time.time()
+    if now < float(getattr(self, "_adv_pause_until", 0.0) or 0.0):
+        return False
+    last_t = float((getattr(self, "_adv_mode_last_trade", {}) or {}).get(mode_key, 0.0))
+    return (now - last_t) >= _kk_adv_mode_cooldown(self, mode_key)
+
+def _kk_adv_mark_trade(self, mode_key, signal, alt_signal=None):
+    now = time.time()
+    self._adv_mode_last_trade[mode_key] = now
+    if signal and isinstance(signal, dict):
+        self._adv_shadow_live_pending = {"type": signal.get("type"), "barrier": signal.get("barrier")}
+    if alt_signal and isinstance(alt_signal, dict):
+        self._adv_shadow_alt_pending = {"type": alt_signal.get("type"), "barrier": alt_signal.get("barrier")}
+    else:
+        self._adv_shadow_alt_pending = None
+
+def _kk_adv_build_signal_for_mode(self, mode_key):
+    if not _kk_adv_can_trade(self, mode_key):
+        return None
+
+    snap = _kk_adv_snapshot(self)
+    ai_sig = _kk_adv_pick_ai_signal(self)
+    seq_sig = _kk_adv_pick_kidpairs_signal(self)
+    racks_sig = _kk_adv_pick_kidracks_signal(self)
+
+    # normalize mode labels
+    def clone(sig, mode_name):
+        if not sig:
+            return None
+        out = dict(sig)
+        out["mode"] = mode_name
+        return out
+
+    if mode_key == "kidbrain":
+        chosen = None
+        if snap["regime"] == "SEQUENCE":
+            chosen = clone(seq_sig, "KIDBRAIN")
+            alt = clone(ai_sig, "KIDBRAIN_SHADOW")
+        elif snap["regime"] == "BARRIER_DOMINANT":
+            chosen = clone(ai_sig, "KIDBRAIN")
+            alt = clone(seq_sig or racks_sig, "KIDBRAIN_SHADOW")
+        elif snap["regime"] == "BALANCED":
+            chosen = clone(racks_sig or ai_sig, "KIDBRAIN")
+            alt = clone(seq_sig, "KIDBRAIN_SHADOW")
+        else:
+            chosen = clone(ai_sig if snap["confidence_pct"] >= 60 else None, "KIDBRAIN")
+            alt = clone(seq_sig, "KIDBRAIN_SHADOW")
+        if chosen:
+            _kk_adv_mark_trade(self, mode_key, chosen, alt)
+        return chosen
+
+    if mode_key == "edge_brain":
+        if ai_sig and snap["confidence_pct"] >= 63 and snap["edge_gap"] >= 4:
+            chosen = clone(ai_sig, "EDGE_BRAIN")
+            _kk_adv_mark_trade(self, mode_key, chosen, clone(seq_sig, "EDGE_BRAIN_SHADOW"))
+            return chosen
+        return None
+
+    if mode_key == "smart_flow":
+        consensus = _kk_adv_consensus(self, snap, ai_sig, seq_sig)
+        self._adv_last_meta["consensus"] = consensus
+        primary = ai_sig or seq_sig
+        if primary and consensus >= 2 and snap["confidence_pct"] >= 58:
+            chosen = clone(primary, "SMART_FLOW")
+            alt = clone(seq_sig if primary is ai_sig else ai_sig, "SMART_FLOW_SHADOW")
+            _kk_adv_mark_trade(self, mode_key, chosen, alt)
+            return chosen
+        return None
+
+    if mode_key == "meta_ai":
+        consensus = _kk_adv_consensus(self, snap, ai_sig, seq_sig)
+        self._adv_last_meta["consensus"] = consensus
+        if snap["confidence_pct"] < 60 or snap["edge_gap"] < 2:
+            return None
+        if snap["regime"] == "SEQUENCE" and seq_sig and consensus >= 2:
+            chosen = clone(seq_sig, "META_AI")
+        elif ai_sig and (consensus >= 2 or snap["confidence_pct"] >= 70):
+            chosen = clone(ai_sig, "META_AI")
+        elif racks_sig and snap["regime"] in ("BALANCED", "MIXED") and consensus >= 2:
+            chosen = clone(racks_sig, "META_AI")
+        else:
+            return None
+        alt = clone(ai_sig if chosen.get("type") != (ai_sig or {}).get("type") else seq_sig, "META_AI_SHADOW")
+        _kk_adv_mark_trade(self, mode_key, chosen, alt)
+        return chosen
+
+    if mode_key == "kidracks_ai":
+        if racks_sig and snap["confidence_pct"] >= 52:
+            chosen = clone(racks_sig, "KIDRACKS_AI")
+            _kk_adv_mark_trade(self, mode_key, chosen, clone(ai_sig, "KIDRACKS_AI_SHADOW"))
+            return chosen
+        return None
+
+    return None
+
+# --- wrappers ---
+_KK_ORIG_INIT = KoolKidStrategy.__init__
+_KK_ORIG_RESET = KoolKidStrategy.reset
+_KK_ORIG_ON_TICK = KoolKidStrategy.on_tick
+_KK_ORIG_ON_CONTRACT = KoolKidStrategy.on_contract
+_KK_ORIG_CHECK_AUTO = KoolKidStrategy.check_auto_trade_signal
+_KK_ORIG_GET_UI = KoolKidStrategy.get_ui_payload
+
+def _kk_init_wrapper(self, *args, **kwargs):
+    _KK_ORIG_INIT(self, *args, **kwargs)
+    _kk_adv_init_state(self)
+
+def _kk_reset_wrapper(self, *args, **kwargs):
+    res = _KK_ORIG_RESET(self, *args, **kwargs)
+    _kk_adv_init_state(self)
+    return res
+
+def _kk_on_tick_wrapper(self, tick, digit):
+    try:
+        _kk_adv_resolve_pending_shadow(self, int(digit))
+    except Exception:
+        pass
+    res = _KK_ORIG_ON_TICK(self, tick, digit)
+    try:
+        _kk_adv_snapshot(self)
+    except Exception:
+        pass
+    return res
+
+def _kk_on_contract_wrapper(self, contract, balance):
+    res = _KK_ORIG_ON_CONTRACT(self, contract, balance)
+    try:
+        profit = float(contract.get("profit", 0) or 0)
+        if profit > 0:
+            self._adv_win_streak = int(getattr(self, "_adv_win_streak", 0)) + 1
+            self._adv_loss_streak = 0
+        else:
+            self._adv_loss_streak = int(getattr(self, "_adv_loss_streak", 0)) + 1
+            self._adv_win_streak = 0
+            if self._adv_loss_streak >= 2:
+                self._adv_pause_until = max(float(getattr(self, "_adv_pause_until", 0.0) or 0.0), time.time() + min(20.0, 6.0 + self._adv_loss_streak * 2.0))
+    except Exception:
+        pass
+    return res
+
+def _kk_check_auto_wrapper(self):
+    orig = _KK_ORIG_CHECK_AUTO(self)
+    adv_signals = []
+    try:
+        modes = getattr(self, "_adv_named_modes", {}) or {}
+        for mk in _kk_adv_mode_keys():
+            if modes.get(mk):
+                sig = _kk_adv_build_signal_for_mode(self, mk)
+                if sig:
+                    adv_signals.append(sig)
+    except Exception:
+        pass
+
+    # merge with original result non-destructively
+    combined = []
+    if orig is None:
+        combined = []
+    elif isinstance(orig, list):
+        combined.extend(orig)
+    else:
+        combined.append(orig)
+    combined.extend(adv_signals)
+
+    if not combined:
+        return None
+    if len(combined) == 1:
+        return combined[0]
+    return combined
+
+def _kk_get_ui_wrapper(self):
+    payload = _KK_ORIG_GET_UI(self)
+    try:
+        payload = dict(payload or {})
+        payload.setdefault("auto_modes", {})
+        payload["auto_modes"].update(_kk_get_named_ai_modes_state(self))
+        snap = _kk_adv_snapshot(self)
+        shadow = dict(getattr(self, "_adv_shadow", {}) or {})
+        live_total = int(shadow.get("live_wins", 0)) + int(shadow.get("live_losses", 0))
+        alt_total = int(shadow.get("alt_wins", 0)) + int(shadow.get("alt_losses", 0))
+        if live_total > 0:
+            shadow["live_winrate"] = round((shadow.get("live_wins", 0) / live_total) * 100.0, 1)
+        else:
+            shadow["live_winrate"] = 0.0
+        if alt_total > 0:
+            shadow["alt_winrate"] = round((shadow.get("alt_wins", 0) / alt_total) * 100.0, 1)
+        else:
+            shadow["alt_winrate"] = 0.0
+        shadow["sample"] = int(shadow.get("sample", 0))
+        payload["meta_brain"] = {
+            "regime": snap.get("regime", "WARMUP"),
+            "confidence_pct": float(snap.get("confidence_pct", 0.0)),
+            "edge_gap": float(snap.get("edge_gap", 0.0)),
+            "market_score": float(snap.get("market_score", 0.0)),
+            "consensus": int(getattr(self, "_adv_last_meta", {}).get("consensus", 0)),
+            "loss_streak": int(getattr(self, "_adv_loss_streak", 0)),
+            "pause_until": float(getattr(self, "_adv_pause_until", 0.0)),
+            "shadow": shadow,
+        }
+    except Exception:
+        return payload
+    return payload
+
+# bind methods
+KoolKidStrategy.__init__ = _kk_init_wrapper
+KoolKidStrategy.reset = _kk_reset_wrapper
+KoolKidStrategy.on_tick = _kk_on_tick_wrapper
+KoolKidStrategy.on_contract = _kk_on_contract_wrapper
+KoolKidStrategy.check_auto_trade_signal = _kk_check_auto_wrapper
+KoolKidStrategy.get_ui_payload = _kk_get_ui_wrapper
+KoolKidStrategy.toggle_named_ai_mode = _kk_toggle_named_ai_mode
+KoolKidStrategy.get_named_ai_modes_state = _kk_get_named_ai_modes_state

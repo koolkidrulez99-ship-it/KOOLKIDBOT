@@ -35,7 +35,38 @@
       aiBtn.innerText = `🤖AI AUTO-TRADING: ${on ? "ON" : "OFF"}`;
       aiBtn.style.background = on ? "#22c55e" : "#1e293b";
     }
+    updateAdvancedAIModeButtonsJokerjoe();
   }
+
+
+function updateAdvancedAIModeButtonsJokerjoe(payload) {
+  const map = [
+    ["kidbrain", "kidbrainBtnJokerjoe", "🤖 KIDBRAIN"],
+    ["edge_brain", "edgeBrainBtnJokerjoe", "🧠 EDGE BRAIN"],
+    ["smart_flow", "smartFlowBtnJokerjoe", "🎯 SMART FLOW"],
+    ["meta_ai", "metaAiBtnJokerjoe", "⚡ META AI"],
+    ["kidracks_ai", "kidracksAiBtnJokerjoe", "🤓 KIDRACKS AI"],
+  ];
+  map.forEach(([key, id, label]) => {
+    const btn = document.getElementById(id);
+    if (!btn || !(key in (state.autoModes || {}))) return;
+    const on = !!state.autoModes[key];
+    btn.innerText = `${label}: ${on ? "ON" : "OFF"}`;
+    btn.style.background = on ? "#22c55e" : "#1e293b";
+  });
+  const info = document.getElementById("metaBrainInfoJokerjoe");
+  const meta = (payload && payload.meta_brain) || state.metaBrain;
+  if (payload && payload.meta_brain) state.metaBrain = payload.meta_brain;
+  if (info && meta) {
+    const conf = meta.confidence_pct !== undefined ? `${Number(meta.confidence_pct).toFixed(1)}%` : "-";
+    const gap = meta.edge_gap !== undefined ? Number(meta.edge_gap).toFixed(1) : "-";
+    const score = meta.market_score !== undefined ? Number(meta.market_score).toFixed(1) : "-";
+    const shadow = meta.shadow && typeof meta.shadow.live_winrate === "number"
+      ? ` • Shadow ${meta.shadow.live_winrate.toFixed(1)}%/${meta.shadow.alt_winrate.toFixed(1)}%`
+      : "";
+    info.innerText = `Regime: ${meta.regime || "-"} • Conf: ${conf} • Gap: ${gap} • Score: ${score}${shadow}`;
+  }
+}
 
   function bindSocketListeners() {
     try {
@@ -48,13 +79,16 @@
         if (!isActive() || !data) return;
         if (data.auto_modes) state.autoModes = Object.assign({}, state.autoModes, data.auto_modes);
         if (data.auto_settings && data.auto_settings.kidgx_barrier !== undefined) state.kidgxBarrier = Number(data.auto_settings.kidgx_barrier);
+        if (data.meta_brain) state.metaBrain = data.meta_brain;
         updateButtons();
+        updateAdvancedAIModeButtonsJokerjoe(data);
       });
 
       socket.on("auto_mode_update", (modes) => {
         if (!isActive()) return;
         state.autoModes = Object.assign({}, state.autoModes, modes || {});
         updateButtons();
+        updateAdvancedAIModeButtonsJokerjoe();
       });
     } catch (e) {}
   }
@@ -134,6 +168,26 @@
       safeToast((r.data && r.data.message) || "AI auto failed", "error");
     }
   };
+
+
+async function toggleAdvancedModeJokerjoe(modeKey, label) {
+  const r = await postJSON("/toggle_named_ai_mode", { profile: "JOKERJOE", mode_key: modeKey });
+  if (r.data && r.data.status === "success") {
+    if (r.data.auto_modes) state.autoModes = Object.assign({}, state.autoModes || {}, r.data.auto_modes);
+    if (r.data.payload && r.data.payload.meta_brain) state.metaBrain = r.data.payload.meta_brain;
+    updateButtons();
+    updateAdvancedAIModeButtonsJokerjoe(r.data.payload || null);
+    safeToast(`${label}: ${r.data.enabled ? "ON" : "OFF"}`, r.data.enabled ? "success" : "error");
+  } else {
+    safeToast((r.data && r.data.message) || `${label} failed`, "error");
+  }
+}
+
+window.toggleKidbrainJokerjoe = function () { return toggleAdvancedModeJokerjoe("kidbrain", "🤖 KIDBRAIN"); };
+window.toggleEdgeBrainJokerjoe = function () { return toggleAdvancedModeJokerjoe("edge_brain", "🧠 EDGE BRAIN"); };
+window.toggleSmartFlowJokerjoe = function () { return toggleAdvancedModeJokerjoe("smart_flow", "🎯 SMART FLOW"); };
+window.toggleMetaAIJokerjoe = function () { return toggleAdvancedModeJokerjoe("meta_ai", "⚡ META AI"); };
+window.toggleKidracksAIJokerjoe = function () { return toggleAdvancedModeJokerjoe("kidracks_ai", "🤓 KIDRACKS AI"); };
 
   if (typeof window.registerProfileModule === "function") {
     window.registerProfileModule(PROFILE, { onMount, afterLoadProfileUI, onActivate });

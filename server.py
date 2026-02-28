@@ -10,9 +10,6 @@ import sqlite3
 import random  # PATCH 1A
 import secrets
 import hashlib
-import re
-from collections import deque
-from decimal import Decimal, InvalidOperation
 
 from flask import Flask, render_template, request, jsonify, redirect, url_for, session
 from flask_socketio import SocketIO, join_room
@@ -45,8 +42,23 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading", manag
 
 DERIV_WS = "wss://ws.derivws.com/websockets/v3?app_id=1089"
 
-# DATABASE FILE
+# DATABASE FILE (SQLite fallback for laptop/local testing)
 DB_FILE = "users.db"
+
+# Render / production Postgres (persistent users across deploys/restarts)
+DATABASE_URL = (os.environ.get("DATABASE_URL") or "").strip()
+if DATABASE_URL.startswith("postgres://"):
+    # psycopg2 prefers postgresql://
+    DATABASE_URL = "postgresql://" + DATABASE_URL[len("postgres://"):]
+
+try:
+    import psycopg2
+except Exception:
+    psycopg2 = None
+
+DB_BACKEND = "postgres" if DATABASE_URL else "sqlite"
+if DB_BACKEND == "postgres" and psycopg2 is None:
+    raise RuntimeError("DATABASE_URL is set but psycopg2 is not installed. Add psycopg2-binary to requirements.txt")
 
 # ==========================
 # MULTI-CLIENT STATE
@@ -56,158 +68,152 @@ clients = {}
 # heartbeat timeout (10 minutes)
 HEARTBEAT_TIMEOUT_SEC = 10 * 60
 
-# ==========================
-# EXECUTION HARDENING (FAST MODES)
-# ==========================
-TRADE_QUEUE_MIN_GAP_SEC = float(os.environ.get("TRADE_QUEUE_MIN_GAP_SEC", "0.12"))
-TRADE_BACKOFF_SEC = float(os.environ.get("TRADE_BACKOFF_SEC", "1.0"))
-TRADE_DUP_WINDOW_SEC = float(os.environ.get("TRADE_DUP_WINDOW_SEC", "0.10"))
-MAX_TRADE_QUEUE_SIZE = int(os.environ.get("MAX_TRADE_QUEUE_SIZE", "300"))
-MAX_INFLIGHT_PER_PROFILE = int(os.environ.get("MAX_INFLIGHT_PER_PROFILE", "8"))
-MAX_INFLIGHT_PER_MARKET = int(os.environ.get("MAX_INFLIGHT_PER_MARKET", "3"))
 
-# User requested instant burst execution (no server-side queue pacing/caps).
-USE_TRADE_QUEUE = str(os.environ.get("USE_TRADE_QUEUE", "0")).strip().lower() in ("1", "true", "yes", "on")
-ENFORCE_TRADE_INFLIGHT_LIMITS = str(os.environ.get("ENFORCE_TRADE_INFLIGHT_LIMITS", "0")).strip().lower() in ("1", "true", "yes", "on")
+# ---------------- DATABASE SETUP (Postgres + SQLite fallback) ---------------- #
+def _db_is_postgres():
+    return DB_BACKEND == "postgres"
 
 
-
-# ---------------- DATABASE + LICENSE SETUP ---------------- #
-def _db_connect(row_factory=False):
+def _db_connect():
+    if _db_is_postgres():
+        # Render internal DATABASE_URL recommended for services in same region
+        return psycopg2.connect(DATABASE_URL)
     conn = sqlite3.connect(DB_FILE)
-    if row_factory:
-        conn.row_factory = sqlite3.Row
     return conn
 
 
-def _table_columns(conn, table_name):
-    cur = conn.cursor()
-    cur.execute(f"PRAGMA table_info({table_name})")
-    return {row[1] for row in cur.fetchall()}
+def _db_execute(cursor, sql, params=()):
+    if _db_is_postgres():
+        sql = sql.replace("?", "%s")
+    return cursor.execute(sql, params)
 
 
-def _add_column_if_missing(conn, table_name, column_def):
-    col_name = column_def.split()[0]
-    cols = _table_columns(conn, table_name)
-    if col_name not in cols:
-        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_def}")
+def _db_fetchone(cursor):
+    row = cursor.fetchone()
+    return row
 
 
-def _utc_now_str():
-    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-
-
-def _parse_dt(value):
-    if not value:
-        return None
+def _db_commit(conn):
     try:
-        return datetime.strptime(str(value), "%Y-%m-%d %H:%M:%S")
+        conn.commit()
     except Exception:
-        return None
+        pass
 
 
-def normalize_license_key(key):
-    return str(key or "").strip().upper().replace(" ", "")
+def _table_has_column_sqlite(conn, table_name, column_name):
+    c = conn.cursor()
+    c.execute(f"PRAGMA table_info({table_name})")
+    cols = {row[1] for row in c.fetchall()}
+    return column_name in cols
 
 
 def init_db():
     conn = _db_connect()
     c = conn.cursor()
 
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT UNIQUE NOT NULL,
-        password TEXT NOT NULL
-    )
-    """)
+    if _db_is_postgres():
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id BIGSERIAL PRIMARY KEY,
+            username TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL
+        )
+        """)
+    else:
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL
+        )
+        """)
 
-    # Migrate users table for licensing/admin roles (safe for existing installs)
-    _add_column_if_missing(conn, "users", "role TEXT DEFAULT 'user'")
-    _add_column_if_missing(conn, "users", "grandfathered INTEGER DEFAULT 1")
-    _add_column_if_missing(conn, "users", "license_key TEXT")
-    _add_column_if_missing(conn, "users", "license_exempt INTEGER DEFAULT 0")
-    _add_column_if_missing(conn, "users", "created_at TEXT")
-    _add_column_if_missing(conn, "users", "email TEXT")
+    _db_commit(conn)
+    conn.close()
 
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS licenses (
-        license_key TEXT PRIMARY KEY,
-        license_type TEXT NOT NULL,      -- 'monthly' | 'lifetime'
-        status TEXT NOT NULL DEFAULT 'active',  -- 'active' | 'revoked'
-        created_at TEXT NOT NULL,
-        activated_at TEXT,
-        expires_at TEXT,
-        used_by TEXT
-    )
-    """)
 
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS password_resets (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT NOT NULL,
-        token_hash TEXT UNIQUE NOT NULL,
-        created_at TEXT NOT NULL,
-        expires_at TEXT NOT NULL,
-        used_at TEXT,
-        FOREIGN KEY(username) REFERENCES users(username)
-    )
-    """)
+def _maybe_migrate_sqlite_users_to_postgres():
+    """
+    One-time safe migration path:
+    - Only runs when Postgres is active
+    - Imports any users from local SQLite users.db if it exists
+    - Uses ON CONFLICT DO NOTHING so restarts won't duplicate users
+    """
+    if not _db_is_postgres():
+        return
+
+    if not os.path.exists(DB_FILE):
+        return
 
     try:
-        c.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_pwreset_username ON password_resets(username)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_pwreset_token_hash ON password_resets(token_hash)")
-    except Exception:
-        pass
+        sqlite_conn = sqlite3.connect(DB_FILE)
+        sqlite_cur = sqlite_conn.cursor()
+        sqlite_cur.execute("SELECT username, password FROM users")
+        rows = sqlite_cur.fetchall()
+    except Exception as e:
+        logger.warning(f"SQLite -> Postgres migration skipped (read error): {e}")
+        try:
+            sqlite_conn.close()
+        except Exception:
+            pass
+        return
 
-    # Backfill old users so they never need keys (your requirement)
-    now_s = _utc_now_str()
-    c.execute("UPDATE users SET role='user' WHERE role IS NULL OR TRIM(role)=''")
-    c.execute("UPDATE users SET grandfathered=1 WHERE grandfathered IS NULL")
-    c.execute("UPDATE users SET license_exempt=0 WHERE license_exempt IS NULL")
-    c.execute("UPDATE users SET created_at=? WHERE created_at IS NULL OR TRIM(created_at)=''", (now_s,))
+    if not rows:
+        try:
+            sqlite_conn.close()
+        except Exception:
+            pass
+        return
 
-    conn.commit()
-    conn.close()
+    pg_conn = None
+    migrated = 0
+    try:
+        pg_conn = _db_connect()
+        pg_cur = pg_conn.cursor()
+        for username, password_hash in rows:
+            try:
+                pg_cur.execute(
+                    "INSERT INTO users (username, password) VALUES (%s, %s) ON CONFLICT (username) DO NOTHING",
+                    (username, password_hash)
+                )
+                # rowcount is 1 if inserted, 0 if conflict ignored
+                migrated += max(int(getattr(pg_cur, "rowcount", 0) or 0), 0)
+            except Exception as row_err:
+                logger.warning(f"Migration skipped user {username!r}: {row_err}")
+        pg_conn.commit()
+        if migrated:
+            logger.info(f"✅ Migrated {migrated} user(s) from SQLite ({DB_FILE}) to Postgres")
+        else:
+            logger.info("ℹ️ SQLite -> Postgres migration checked (no new users to import)")
+    except Exception as e:
+        logger.error(f"SQLite -> Postgres migration failed: {e}")
+    finally:
+        try:
+            sqlite_conn.close()
+        except Exception:
+            pass
+        try:
+            if pg_conn:
+                pg_conn.close()
+        except Exception:
+            pass
 
 
 def ensure_admin_user():
     """
     Auto-create admin so you never get locked out.
-    Admin is license-exempt and uses the same login page.
     """
-    conn = _db_connect(row_factory=True)
+    conn = _db_connect()
     c = conn.cursor()
 
-    c.execute("SELECT id FROM users WHERE lower(username) = lower(?)", (ADMIN_USERNAME,))
-    exists = c.fetchone()
+    _db_execute(c, "SELECT id FROM users WHERE username = ?", (ADMIN_USERNAME,))
+    exists = _db_fetchone(c)
 
     if not exists:
         hashed_pw = generate_password_hash(ADMIN_PASSWORD)
-        c.execute(
-            """
-            INSERT INTO users (username, password, role, grandfathered, license_exempt, created_at)
-            VALUES (?, ?, 'admin', 1, 1, ?)
-            """,
-            (ADMIN_USERNAME, hashed_pw, _utc_now_str())
-        )
-        conn.commit()
+        _db_execute(c, "INSERT INTO users (username, password) VALUES (?, ?)", (ADMIN_USERNAME, hashed_pw))
+        _db_commit(conn)
         print(f"✅ Admin account created automatically: {ADMIN_USERNAME}")
-    else:
-        # Ensure admin flags remain correct if upgrading an older DB
-        c.execute(
-            """
-            UPDATE users
-            SET role='admin',
-                grandfathered=1,
-                license_exempt=1,
-                created_at=COALESCE(created_at, ?)
-            WHERE lower(username) = lower(?)
-            """,
-            (_utc_now_str(), ADMIN_USERNAME)
-        )
-        conn.commit()
 
     conn.close()
 
@@ -215,502 +221,61 @@ def ensure_admin_user():
 def get_user_count():
     conn = _db_connect()
     c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM users WHERE lower(username) != lower(?)", (ADMIN_USERNAME,))
-    count = c.fetchone()[0]
+    _db_execute(c, "SELECT COUNT(*) FROM users")
+    row = _db_fetchone(c)
+    count = row[0] if row else 0
     conn.close()
-    return count
+    return int(count)
 
 
-def _get_user_row(username):
-    conn = _db_connect(row_factory=True)
-    c = conn.cursor()
-    c.execute("SELECT * FROM users WHERE username = ?", (username,))
-    row = c.fetchone()
-    conn.close()
-    return row
-
-
-def _get_license_row(license_key):
-    key = normalize_license_key(license_key)
-    if not key:
-        return None
-    conn = _db_connect(row_factory=True)
-    c = conn.cursor()
-    c.execute("SELECT * FROM licenses WHERE license_key = ?", (key,))
-    row = c.fetchone()
-    conn.close()
-    return row
-
-
-def _license_is_expired(license_row):
-    if not license_row:
-        return True
-    if str(license_row["license_type"]).lower() == "lifetime":
-        return False
-    exp = _parse_dt(license_row["expires_at"])
-    if exp is None:
-        return False
-    return datetime.utcnow() > exp
-
-
-def check_user_license_access(user_row):
-    """
-    Returns (ok: bool, message: str)
-    - Admin and grandfathered users are allowed without keys.
-    - New users are checked against their linked license on login/use.
-    """
-    if not user_row:
-        return False, "User not found"
-
-    role = str(user_row["role"] or "user").lower()
-    if role == "admin":
-        return True, "admin"
-
-    if int(user_row["license_exempt"] or 0) == 1:
-        return True, "license_exempt"
-
-    if int(user_row["grandfathered"] or 0) == 1:
-        return True, "grandfathered"
-
-    linked_key = normalize_license_key(user_row["license_key"])
-    if not linked_key:
-        return False, "No license linked to this account. Contact admin."
-
-    lic = _get_license_row(linked_key)
-    if not lic:
-        return False, "Linked license key not found. Contact admin."
-
-    if str(lic["status"]).lower() == "revoked":
-        return False, "Your license was revoked. Contact admin."
-
-    if _license_is_expired(lic):
-        return False, "Your license has expired. Please renew."
-
-    return True, "active"
-
-
-def _validate_license_for_registration(conn, license_key):
-    key = normalize_license_key(license_key)
-    if not key:
-        return False, "License key is required"
-
-    c = conn.cursor()
-    c.execute("SELECT * FROM licenses WHERE license_key = ?", (key,))
-    row = c.fetchone()
-    if not row:
-        return False, "Invalid license key"
-
-    status = str(row["status"] or "").lower()
-    if status == "revoked":
-        return False, "This license key has been revoked"
-
-    used_by = (row["used_by"] or "").strip()
-    if used_by:
-        return False, "This license key has already been used"
-
-    ltype = str(row["license_type"] or "").lower()
-    if ltype not in ("monthly", "lifetime"):
-        return False, "Unsupported license key type"
-
-    return True, row
-
-
-def _consume_license_for_new_user(conn, license_key, username):
-    ok, row_or_msg = _validate_license_for_registration(conn, license_key)
-    if not ok:
-        return False, row_or_msg
-
-    row = row_or_msg
-    key = normalize_license_key(license_key)
-    now_dt = datetime.utcnow()
-    now_s = now_dt.strftime("%Y-%m-%d %H:%M:%S")
-
-    expires_at = None
-    if str(row["license_type"]).lower() == "monthly":
-        expires_at = (now_dt + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
-
-    conn.execute(
-        """
-        UPDATE licenses
-           SET used_by = ?, activated_at = ?, expires_at = ?
-         WHERE license_key = ?
-        """,
-        (username, now_s, expires_at, key)
-    )
-    return True, key
-
-
-def create_user(username, password, license_key=None, *, role="user", grandfathered=0, license_exempt=0):
-    if username.lower() == ADMIN_USERNAME.lower() and str(role).lower() != "admin":
+def create_user(username, password):
+    if username.lower() == ADMIN_USERNAME.lower():
         return False, "Username is reserved"
 
-    if str(role).lower() != "admin" and get_user_count() >= MAX_USERS:
+    if get_user_count() >= MAX_USERS:
         return False, f"User limit reached ({MAX_USERS} max)"
 
-    conn = _db_connect(row_factory=True)
+    conn = _db_connect()
     c = conn.cursor()
+
     hashed_pw = generate_password_hash(password)
 
     try:
-        conn.execute("BEGIN")
-
-        linked_license_key = None
-        if str(role).lower() != "admin" and int(license_exempt or 0) != 1 and int(grandfathered or 0) != 1:
-            lic_ok, lic_result = _consume_license_for_new_user(conn, license_key, username)
-            if not lic_ok:
-                conn.rollback()
-                return False, lic_result
-            linked_license_key = lic_result
-
-        c.execute(
-            """
-            INSERT INTO users (username, password, role, grandfathered, license_key, license_exempt, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                username,
-                hashed_pw,
-                str(role or "user").lower(),
-                int(1 if grandfathered else 0),
-                linked_license_key,
-                int(1 if license_exempt else 0),
-                _utc_now_str()
-            )
-        )
-        conn.commit()
+        _db_execute(c, "INSERT INTO users (username, password) VALUES (?, ?)", (username, hashed_pw))
+        _db_commit(conn)
         return True, "User created"
-    except sqlite3.IntegrityError:
-        conn.rollback()
-        return False, "Username already exists"
     except Exception as e:
-        conn.rollback()
-        return False, f"Registration failed: {e}"
+        msg = str(e).lower()
+        # sqlite + postgres unique violations
+        if "unique" in msg or "duplicate" in msg:
+            return False, "Username already exists"
+        logger.error(f"create_user DB error: {e}")
+        return False, "Database error"
     finally:
         conn.close()
 
 
 def verify_user(username, password):
-    row = _get_user_row(username)
-    if not row:
-        return False
-    return check_password_hash(row["password"], password)
-
-
-
-def _validate_password_strength(password):
-    password = (password or "").strip()
-    if len(password) < 8:
-        return "Password must be at least 8 characters"
-    if password.isdigit() or password.isalpha():
-        return "Password must include letters and numbers"
-    return None
-
-
-def _find_user_for_reset(identifier):
-    identifier = (identifier or "").strip()
-    if not identifier:
-        return None
-
-    conn = _db_connect(row_factory=True)
-    c = conn.cursor()
-
-    # username or email (email column is optional but migrated in init_db)
-    c.execute(
-        "SELECT * FROM users WHERE lower(username)=lower(?) OR lower(COALESCE(email,''))=lower(?) LIMIT 1",
-        (identifier, identifier)
-    )
-    row = c.fetchone()
-    conn.close()
-    return row
-
-
-def _hash_reset_token(token):
-    return hashlib.sha256(str(token).encode("utf-8")).hexdigest()
-
-
-def _create_password_reset_token(username, minutes_valid=30):
-    raw_token = secrets.token_urlsafe(32)
-    token_hash = _hash_reset_token(raw_token)
-    now_dt = datetime.utcnow()
-    exp_dt = now_dt + timedelta(minutes=minutes_valid)
-    now_s = now_dt.strftime("%Y-%m-%d %H:%M:%S")
-    exp_s = exp_dt.strftime("%Y-%m-%d %H:%M:%S")
-
     conn = _db_connect()
     c = conn.cursor()
-    try:
-        # Mark previous unused tokens as used so only newest link works
-        c.execute(
-            "UPDATE password_resets SET used_at=? WHERE username=? AND used_at IS NULL",
-            (now_s, username)
-        )
-        c.execute(
-            """
-            INSERT INTO password_resets (username, token_hash, created_at, expires_at, used_at)
-            VALUES (?, ?, ?, ?, NULL)
-            """,
-            (username, token_hash, now_s, exp_s)
-        )
-        conn.commit()
-    finally:
-        conn.close()
 
-    return raw_token, exp_dt
-
-
-def _get_reset_token_record(raw_token):
-    token = (raw_token or "").strip()
-    if not token:
-        return None, "Missing reset token"
-
-    conn = _db_connect(row_factory=True)
-    c = conn.cursor()
-    c.execute(
-        "SELECT id, username, created_at, expires_at, used_at FROM password_resets WHERE token_hash=?",
-        (_hash_reset_token(token),)
-    )
-    row = c.fetchone()
+    _db_execute(c, "SELECT password FROM users WHERE username = ?", (username,))
+    row = _db_fetchone(c)
     conn.close()
 
     if not row:
-        return None, "Invalid reset token"
+        return False
 
-    rec = {
-        "id": row["id"],
-        "username": row["username"],
-        "created_at": row["created_at"],
-        "expires_at": row["expires_at"],
-        "used_at": row["used_at"],
-    }
-
-    if rec["used_at"]:
-        return None, "This reset link has already been used"
-
-    exp_dt = _parse_dt(rec["expires_at"])
-    if exp_dt is None:
-        return None, "Reset token is invalid"
-    if datetime.utcnow() > exp_dt:
-        return None, "This reset link has expired"
-
-    return rec, None
-
-
-def _mark_reset_token_used(token_id):
-    conn = _db_connect()
-    c = conn.cursor()
-    c.execute(
-        "UPDATE password_resets SET used_at=? WHERE id=?",
-        (_utc_now_str(), token_id)
-    )
-    conn.commit()
-    conn.close()
-
-
-def _update_user_password(username, new_password):
-    conn = _db_connect()
-    c = conn.cursor()
-    c.execute(
-        "UPDATE users SET password=? WHERE username=?",
-        (generate_password_hash(new_password), username)
-    )
-    ok = c.rowcount > 0
-    conn.commit()
-    conn.close()
-    return ok
-
-
-def _validate_reset_license_for_user(user_row, provided_license_key):
-    """Require the account's linked license key for self-service password reset.
-    Admin/license-exempt users are allowed without a key.
-    Grandfathered users with no linked key must contact admin.
-    """
-    if not user_row:
-        return False, "User not found"
-
-    role = str(user_row["role"] or "user").lower()
-    if role == "admin" or int(user_row["license_exempt"] or 0) == 1:
-        return True, None
-
-    linked_key = normalize_license_key(user_row["license_key"])
-    if not linked_key:
-        return False, "This account has no linked license key. Contact admin to reset password."
-
-    entered_key = normalize_license_key(provided_license_key)
-    if not entered_key:
-        return False, "License key is required for password reset"
-
-    if entered_key != linked_key:
-        return False, "License key does not match this account"
-
-    return True, None
-
-
-def _generate_license_key(license_type):
-    prefix = "KK-MTH" if str(license_type).lower() == "monthly" else "KK-LIFE"
-    # Example: KK-MTH-AB12-CD34-EF56
-    chunk = lambda: uuid.uuid4().hex[:4].upper()
-    return f"{prefix}-{chunk()}-{chunk()}-{chunk()}"
-
-
-def create_license_record(license_type):
-    ltype = str(license_type or "").strip().lower()
-    if ltype not in ("monthly", "lifetime"):
-        return False, "Invalid license type", None
-
-    conn = _db_connect(row_factory=True)
-    try:
-        conn.execute("BEGIN")
-        for _ in range(12):
-            key = _generate_license_key(ltype)
-            try:
-                conn.execute(
-                    """
-                    INSERT INTO licenses (license_key, license_type, status, created_at)
-                    VALUES (?, ?, 'active', ?)
-                    """,
-                    (key, ltype, _utc_now_str())
-                )
-                conn.commit()
-                return True, "License created", key
-            except sqlite3.IntegrityError:
-                continue
-        conn.rollback()
-        return False, "Could not generate unique key", None
-    finally:
-        conn.close()
-
-
-def revoke_license_record(license_key):
-    key = normalize_license_key(license_key)
-    if not key:
-        return False, "License key required"
-    conn = _db_connect()
-    c = conn.cursor()
-    c.execute("UPDATE licenses SET status='revoked' WHERE license_key = ?", (key,))
-    conn.commit()
-    changed = c.rowcount
-    conn.close()
-    if changed <= 0:
-        return False, "License key not found"
-    return True, "revoked"
-
-
-def _reset_license_binding_for_user(conn, username):
-    # When deleting a user, free their non-revoked key for reuse (optional convenience).
-    conn.execute(
-        """
-        UPDATE licenses
-           SET used_by = NULL,
-               activated_at = NULL,
-               expires_at = CASE WHEN lower(license_type)='monthly' THEN NULL ELSE expires_at END
-         WHERE used_by = ?
-           AND lower(COALESCE(status, 'active')) != 'revoked'
-        """,
-        (username,)
-    )
-
-
-def delete_user_admin(user_id):
-    conn = _db_connect(row_factory=True)
-    c = conn.cursor()
-    c.execute("SELECT * FROM users WHERE id = ?", (user_id,))
-    user = c.fetchone()
-    if not user:
-        conn.close()
-        return False, "User not found"
-
-    if str(user["role"] or "user").lower() == "admin" or str(user["username"]).lower() == ADMIN_USERNAME.lower():
-        conn.close()
-        return False, "Admin account is protected"
-
-    try:
-        conn.execute("BEGIN")
-        _reset_license_binding_for_user(conn, user["username"])
-        conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
-        conn.commit()
-        return True, "deleted"
-    except Exception as e:
-        conn.rollback()
-        return False, str(e)
-    finally:
-        conn.close()
-
-
-def _license_access_label_for_user_row(user_row):
-    ok, msg = check_user_license_access(user_row)
-    if ok:
-        if str(user_row["role"] or "").lower() == "admin":
-            return "ADMIN"
-        if int(user_row["license_exempt"] or 0) == 1:
-            return "EXEMPT"
-        if int(user_row["grandfathered"] or 0) == 1:
-            return "GRANDFATHERED"
-        return "ACTIVE"
-    return f"BLOCKED: {msg}"
-
-
-def get_admin_users_view():
-    conn = _db_connect(row_factory=True)
-    c = conn.cursor()
-    c.execute(
-        """
-        SELECT u.*
-          FROM users u
-         ORDER BY lower(u.username) ASC
-        """
-    )
-    rows = c.fetchall()
-    conn.close()
-
-    out = []
-    for r in rows:
-        out.append({
-            "id": r["id"],
-            "username": r["username"],
-            "role": str(r["role"] or "user").lower(),
-            "grandfathered": int(r["grandfathered"] or 0),
-            "license_key": r["license_key"] or "",
-            "license_exempt": int(r["license_exempt"] or 0),
-            "created_at": r["created_at"] or "",
-            "access": _license_access_label_for_user_row(r)
-        })
-    return out
-
-
-def get_admin_licenses_view():
-    conn = _db_connect(row_factory=True)
-    c = conn.cursor()
-    c.execute(
-        """
-        SELECT license_key, license_type, status, used_by, created_at, activated_at, expires_at
-          FROM licenses
-         ORDER BY datetime(created_at) DESC, license_key DESC
-        """
-    )
-    rows = c.fetchall()
-    conn.close()
-
-    out = []
-    for r in rows:
-        expired = False
-        if str(r["license_type"]).lower() == "monthly" and r["expires_at"]:
-            dt = _parse_dt(r["expires_at"])
-            expired = bool(dt and datetime.utcnow() > dt)
-        out.append({
-            "license_key": r["license_key"],
-            "license_type": r["license_type"],
-            "status": r["status"],
-            "used_by": r["used_by"] or "",
-            "created_at": r["created_at"] or "",
-            "activated_at": r["activated_at"] or "",
-            "expires_at": r["expires_at"] or "",
-            "expired": expired
-        })
-    return out
+    return check_password_hash(row[0], password)
 
 
 # Initialize DB + Admin
 init_db()
+if _db_is_postgres():
+    logger.info("🗄️ Storage mode: postgres (Render persistent)")
+    _maybe_migrate_sqlite_users_to_postgres()
+else:
+    logger.info(f"🗄️ Storage mode: sqlite fallback ({DB_FILE})")
 ensure_admin_user()
 
 
@@ -719,200 +284,18 @@ def now_time():
     return datetime.now().strftime("%H:%M:%S")
 
 
-def _safe_int(value, default=0):
-    try:
-        return int(value)
-    except Exception:
-        return default
-
-
-def _normalize_price_string(value):
-    if value is None:
-        return ""
-    s = str(value).strip()
-    if not s:
-        return ""
-    return s.replace(",", "")
-
-
-def _infer_pip_size_from_text(value):
-    s = _normalize_price_string(value)
-    if not s:
-        return None
-    if "." not in s:
-        return 0
-    dec = s.split(".", 1)[1]
-    dec_digits = "".join(ch for ch in dec if ch.isdigit())
-    return len(dec_digits)
-
-
-def _cache_symbol_pip_from_active_symbols(state, items):
-    """Cache symbol precision from active_symbols payload (best long-term source)."""
-    try:
-        if not state:
-            return
-        cache = state.setdefault("symbol_pip_sizes", {})
-        if not isinstance(items, list):
-            return
-        for it in items:
-            if not isinstance(it, dict):
-                continue
-            sym = it.get("symbol")
-            if not sym:
-                continue
-            raw = it.get("pip_size")
-            if raw in (None, ""):
-                raw = it.get("pip")
-            if raw in (None, ""):
-                raw = it.get("display_precision")
-            if raw in (None, ""):
-                continue
-            pip = _safe_int(raw, None)
-            if pip is None or pip < 0:
-                continue
-            cache[str(sym)] = int(pip)
-    except Exception:
-        pass
-
-
-def _enrich_tick_with_raw_quote_fields(raw_message, tick):
-    """Preserve exact quote text from raw websocket JSON to avoid any float/parsing ambiguity."""
-    try:
-        if not isinstance(tick, dict) or not isinstance(raw_message, str):
-            return
-        # Only inspect the tick object portion to avoid matching other payload sections.
-        m_tick = re.search(r'"tick"\s*:\s*\{(.*?)\}\s*(?:,|$)', raw_message, re.DOTALL)
-        if not m_tick:
-            return
-        body = m_tick.group(1)
-
-        m_quote = re.search(r'"quote"\s*:\s*([^,}]+)', body)
-        if m_quote:
-            qraw = m_quote.group(1).strip()
-            # strip JSON string quotes if present
-            if len(qraw) >= 2 and qraw[0] == '"' and qraw[-1] == '"':
-                qraw = qraw[1:-1]
-            tick["_quote_raw_text"] = qraw
-
-        m_pip = re.search(r'"pip_size"\s*:\s*([^,}]+)', body)
-        if m_pip:
-            praw = m_pip.group(1).strip()
-            if len(praw) >= 2 and praw[0] == '"' and praw[-1] == '"':
-                praw = praw[1:-1]
-            tick["_pip_size_raw_text"] = praw
-    except Exception:
-        pass
-
-
-def resolve_tick_pip_size(state, tick, default=2):
-    """Resolve pip_size robustly for a tick and cache it per symbol."""
-    try:
-        sym = (tick or {}).get("symbol")
-    except Exception:
-        sym = None
-
-    cache = {}
-    try:
-        if state is not None:
-            cache = state.setdefault("symbol_pip_sizes", {})
-    except Exception:
-        cache = {}
-
-    # 1) Explicit pip_size from raw tick payload (preserves exact text if present)
-    raw_pip = None
-    try:
-        raw_pip = (tick or {}).get("_pip_size_raw_text")
-    except Exception:
-        raw_pip = None
-    if raw_pip in (None, ""):
-        try:
-            raw_pip = (tick or {}).get("pip_size")
-        except Exception:
-            raw_pip = None
-
-    if raw_pip not in (None, ""):
-        pip = _safe_int(raw_pip, default)
-        if pip < 0:
-            pip = _safe_int(default, 2)
-        if sym:
-            cache[sym] = pip
-        return pip
-
-    # 2) Trusted cached per-symbol precision (e.g., active_symbols metadata)
-    if sym and sym in cache:
-        return _safe_int(cache.get(sym), default)
-
-    # 3) Infer from display/quote text if present (fallback only)
-    inferred = None
-    for key in ("quote_display_value", "_quote_raw_text", "quote"):
-        try:
-            inferred = _infer_pip_size_from_text((tick or {}).get(key))
-        except Exception:
-            inferred = None
-        if inferred is not None:
-            break
-
-    if inferred is not None and inferred >= 0:
-        if sym:
-            prev = cache.get(sym)
-            cache[sym] = max(int(prev), int(inferred)) if prev is not None else int(inferred)
-            return cache[sym]
-        return int(inferred)
-
-    return _safe_int(default, 2)
-
-
 def extract_last_decimal_digit(price, pip_size=2):
     try:
-        pip = _safe_int(pip_size, 2)
-        if pip < 0:
-            pip = 2
+        fmt = "{:0." + str(int(pip_size)) + "f}"
+        price_str = fmt.format(float(price))
 
-        s = _normalize_price_string(price)
-        if not s:
-            return 0
+        if "." not in price_str:
+            return int(price_str[-1])
 
-        # Avoid float(...) so we don't lose/round the true last digit.
-        d = Decimal(s)
-        if pip > 0:
-            q = Decimal("1").scaleb(-pip)  # 10^-pip
-            s = format(d.quantize(q), f".{pip}f")
-        else:
-            s = format(d.quantize(Decimal("1")), "f")
-
-        if "." not in s:
-            digits = "".join(ch for ch in s if ch.isdigit())
-            return int(digits[-1]) if digits else 0
-
-        dec_digits = "".join(ch for ch in s.split(".", 1)[1] if ch.isdigit())
-
-        if pip > 0:
-            dec_digits = dec_digits.ljust(pip, "0")
-            return int(dec_digits[pip - 1]) if len(dec_digits) >= pip else 0
-
-        int_digits = "".join(ch for ch in s.split(".", 1)[0] if ch.isdigit())
-        return int(int_digits[-1]) if int_digits else 0
-    except (InvalidOperation, ValueError):
-        return 0
+        decimal_part = price_str.split(".")[1]
+        return int(decimal_part[-1])
     except Exception:
         return 0
-
-
-def extract_last_digit_from_tick(state, tick, default_pip=2):
-    """Return (digit, pip_size_used) from a Deriv tick payload."""
-    try:
-        pip = resolve_tick_pip_size(state, tick, default=default_pip)
-        price_for_digit = None
-        if isinstance(tick, dict):
-            price_for_digit = tick.get("_quote_raw_text")
-            if price_for_digit in (None, ""):
-                price_for_digit = tick.get("quote_display_value")
-            if price_for_digit in (None, ""):
-                price_for_digit = tick.get("quote")
-        digit = extract_last_decimal_digit(price_for_digit, pip)
-        return digit, pip
-    except Exception:
-        return 0, _safe_int(default_pip, 2)
 
 
 def extract_exit_digit_from_contract(contract: dict):
@@ -950,35 +333,12 @@ def extract_exit_digit_from_contract(contract: dict):
         return None
 
 
-
 def login_required():
-    username = session.get("user")
-    if not username:
-        return False
-
-    user_row = _get_user_row(username)
-    if not user_row:
-        return False
-
-    ok, _msg = check_user_license_access(user_row)
-    if not ok:
-        # Soft logout so protected routes fail safely if a license is revoked/expired.
-        session.pop("user", None)
-        session.pop("client_id", None)
-        session.pop("role", None)
-        return False
-
-    return True
+    return "user" in session
 
 
 def is_admin():
-    username = session.get("user", "")
-    if not username:
-        return False
-    user_row = _get_user_row(username)
-    if not user_row:
-        return False
-    return str(user_row["role"] or "").lower() == "admin" or username.lower() == ADMIN_USERNAME.lower()
+    return session.get("user", "").lower() == ADMIN_USERNAME.lower()
 
 
 def get_client_id():
@@ -1030,369 +390,6 @@ def _hard_stop_all_strategies(state):
                     pass
 
 
-def _ws_send_json(state, payload):
-    """Thread-safe WebSocket send helper."""
-    ws = state.get("ws") if state else None
-    if not ws:
-        return False
-    lock = state.get("ws_send_lock")
-    try:
-        if lock:
-            with lock:
-                ws.send(json.dumps(payload))
-        else:
-            ws.send(json.dumps(payload))
-        return True
-    except Exception:
-        return False
-
-
-def _trade_slot_key_market(profile, symbol):
-    return f"{str(profile).upper()}::{symbol}"
-
-
-def _reserve_trade_slot(state, profile, symbol):
-    profile = str(profile or "KOOLKID").upper()
-    symbol = str(symbol or "")
-    profile_counts = state.setdefault("trade_slots_profile", {})
-    market_counts = state.setdefault("trade_slots_market", {})
-    p_count = int(profile_counts.get(profile, 0))
-    m_key = _trade_slot_key_market(profile, symbol)
-    m_count = int(market_counts.get(m_key, 0))
-
-    if ENFORCE_TRADE_INFLIGHT_LIMITS:
-        if p_count >= MAX_INFLIGHT_PER_PROFILE:
-            return False, f"{profile} in-flight limit reached"
-        if m_count >= MAX_INFLIGHT_PER_MARKET:
-            return False, f"{profile} {symbol} in-flight limit reached"
-
-    profile_counts[profile] = p_count + 1
-    market_counts[m_key] = m_count + 1
-    return True, "reserved"
-
-
-def _release_trade_slot(state, profile, symbol):
-    try:
-        profile = str(profile or "KOOLKID").upper()
-        symbol = str(symbol or "")
-        profile_counts = state.setdefault("trade_slots_profile", {})
-        market_counts = state.setdefault("trade_slots_market", {})
-
-        if profile in profile_counts:
-            profile_counts[profile] = max(0, int(profile_counts.get(profile, 0)) - 1)
-            if profile_counts[profile] <= 0:
-                profile_counts.pop(profile, None)
-
-        m_key = _trade_slot_key_market(profile, symbol)
-        if m_key in market_counts:
-            market_counts[m_key] = max(0, int(market_counts.get(m_key, 0)) - 1)
-            if market_counts[m_key] <= 0:
-                market_counts.pop(m_key, None)
-    except Exception:
-        pass
-
-
-def _release_pending_req_slot(state, req_id, release_slot=True):
-    pending = (state.get("pending_req_slots") or {}).pop(req_id, None)
-    if pending and release_slot:
-        _release_trade_slot(state, pending.get("profile"), pending.get("symbol"))
-    return pending
-
-
-def _move_pending_req_slot_to_contract(state, req_id, contract_id):
-    if not req_id or not contract_id:
-        return
-    pending = _release_pending_req_slot(state, req_id, release_slot=False)
-    if pending:
-        state.setdefault("active_contract_slots", {})[contract_id] = pending
-
-
-def _release_contract_slot(state, contract_id, fallback_profile=None, fallback_symbol=None):
-    slot = (state.get("active_contract_slots") or {}).pop(contract_id, None)
-    if slot:
-        _release_trade_slot(state, slot.get("profile"), slot.get("symbol"))
-    elif fallback_profile and fallback_symbol:
-        _release_trade_slot(state, fallback_profile, fallback_symbol)
-
-
-def _forget_contract_subscription(state, contract_id):
-    try:
-        sub_id = (state.get("contract_subs") or {}).pop(contract_id, None)
-        if sub_id and state.get("ws_connected") and state.get("ws"):
-            _ws_send_json(state, {"forget": sub_id})
-    except Exception:
-        pass
-
-
-def _bump_trade_backoff(state, seconds=TRADE_BACKOFF_SEC):
-    try:
-        now = time.time()
-        state["trade_backoff_until"] = max(float(state.get("trade_backoff_until", 0.0)), now + float(seconds))
-    except Exception:
-        pass
-
-
-def _clear_trade_runtime_state(state, clear_queue=True):
-    try:
-        if clear_queue and state.get("trade_queue") is not None:
-            lock = state.get("trade_queue_lock")
-            if lock:
-                with lock:
-                    state["trade_queue"].clear()
-            else:
-                state["trade_queue"].clear()
-        state.setdefault("pending_req_slots", {}).clear()
-        state.setdefault("active_contract_slots", {}).clear()
-        state.setdefault("contract_subs", {}).clear()
-        state.setdefault("trade_slots_profile", {}).clear()
-        state.setdefault("trade_slots_market", {}).clear()
-        state.setdefault("last_trade_fingerprint_ts", {}).clear()
-        state["trade_backoff_until"] = 0.0
-        state["trade_last_send_ts"] = 0.0
-        ev = state.get("trade_queue_event")
-        if ev:
-            ev.set()
-    except Exception:
-        pass
-
-
-def _build_buy_queue_fingerprint(meta, params):
-    try:
-        profile = str((meta or {}).get("profile") or "")
-        symbol = str((meta or {}).get("symbol") or "")
-        ctype = str((meta or {}).get("type") or "")
-        barrier = (meta or {}).get("barrier")
-        d_contract = str((params or {}).get("contract_type") or "")
-        return f"{profile}|{symbol}|{ctype}|{barrier}|{d_contract}"
-    except Exception:
-        return str(uuid.uuid4())
-
-
-def _trade_worker_loop(client_id):
-    while True:
-        state = clients.get(client_id)
-        if not state:
-            return
-
-        stop_ev = state.get("trade_worker_stop_event")
-        if stop_ev and stop_ev.is_set():
-            return
-
-        ev = state.get("trade_queue_event")
-        if ev:
-            ev.wait(0.25)
-            ev.clear()
-        else:
-            time.sleep(0.25)
-
-        while True:
-            state = clients.get(client_id)
-            if not state:
-                return
-            stop_ev = state.get("trade_worker_stop_event")
-            if stop_ev and stop_ev.is_set():
-                return
-
-            q_lock = state.get("trade_queue_lock")
-            if q_lock:
-                with q_lock:
-                    item = state["trade_queue"][0] if state.get("trade_queue") else None
-            else:
-                item = state["trade_queue"][0] if state.get("trade_queue") else None
-
-            if not item:
-                break
-
-            now = time.time()
-            if now < float(state.get("trade_backoff_until", 0.0)):
-                time.sleep(min(0.15, max(0.02, float(state.get("trade_backoff_until", 0.0)) - now)))
-                continue
-
-            min_gap = float(TRADE_QUEUE_MIN_GAP_SEC)
-            last_send = float(state.get("trade_last_send_ts", 0.0))
-            if now - last_send < min_gap:
-                time.sleep(max(0.01, min_gap - (now - last_send)))
-                continue
-
-            if not state.get("ws_connected") or not state.get("ws"):
-                time.sleep(0.10)
-                break
-
-            meta = dict(item.get("meta") or {})
-            params = dict(item.get("parameters") or {})
-            profile = str(meta.get("profile") or item.get("profile") or "KOOLKID").upper()
-            symbol = meta.get("symbol") or params.get("symbol")
-            fp = item.get("fingerprint") or _build_buy_queue_fingerprint(meta, params)
-
-            last_fp_ts = float((state.get("last_trade_fingerprint_ts") or {}).get(fp, 0.0))
-            if now - last_fp_ts < float(TRADE_DUP_WINDOW_SEC):
-                logger.warning(f"[{client_id}] ⚠️ Duplicate trade request dropped ({profile} {symbol})")
-                if q_lock:
-                    with q_lock:
-                        if state.get("trade_queue"):
-                            state["trade_queue"].popleft()
-                else:
-                    if state.get("trade_queue"):
-                        state["trade_queue"].popleft()
-                continue
-
-            ok_slot, slot_msg = _reserve_trade_slot(state, profile, symbol)
-            if not ok_slot:
-                time.sleep(0.05)
-                continue
-
-            # Pop only after slot reservation succeeds
-            if q_lock:
-                with q_lock:
-                    if not state.get("trade_queue"):
-                        _release_trade_slot(state, profile, symbol)
-                        continue
-                    item = state["trade_queue"].popleft()
-            else:
-                if not state.get("trade_queue"):
-                    _release_trade_slot(state, profile, symbol)
-                    continue
-                item = state["trade_queue"].popleft()
-
-            meta = dict(item.get("meta") or {})
-            params = dict(item.get("parameters") or {})
-            stake = float(item.get("stake", meta.get("stake", 1.0)))
-            req_id = _new_req_id()
-            meta["profile"] = profile
-            meta["symbol"] = meta.get("symbol") or params.get("symbol")
-
-            state.setdefault("req_meta", {})[req_id] = meta
-            state.setdefault("pending_req_slots", {})[req_id] = {"profile": profile, "symbol": meta.get("symbol")}
-
-            payload = {
-                "req_id": req_id,
-                "buy": 1,
-                "price": stake,
-                "parameters": params
-            }
-
-            sent = _ws_send_json(state, payload)
-            if sent:
-                state["trade_last_send_ts"] = time.time()
-                state.setdefault("last_trade_fingerprint_ts", {})[item.get("fingerprint") or fp] = state["trade_last_send_ts"]
-            else:
-                state.get("req_meta", {}).pop(req_id, None)
-                _release_pending_req_slot(state, req_id, release_slot=True)
-                _bump_trade_backoff(state, seconds=max(0.5, TRADE_BACKOFF_SEC))
-                logger.error(f"[{client_id}] ❌ Queue send failed ({profile} {meta.get('symbol')})")
-                time.sleep(0.05)
-
-
-def _ensure_trade_worker(client_id, state):
-    t = state.get("trade_worker_thread")
-    if t and t.is_alive():
-        return
-    try:
-        stop_ev = state.get("trade_worker_stop_event")
-        if stop_ev:
-            stop_ev.clear()
-    except Exception:
-        pass
-    t = threading.Thread(target=_trade_worker_loop, args=(client_id,), daemon=True)
-    state["trade_worker_thread"] = t
-    t.start()
-
-
-def _send_buy_order_now(client_id, profile, meta, parameters):
-    state = clients.get(client_id)
-    if not state:
-        return False, "No client state"
-    if not state.get("ws_connected") or not state.get("ws"):
-        return False, "Not connected"
-
-    now_ts = time.time()
-    if now_ts < float(state.get("trade_backoff_until", 0.0)):
-        return False, "Execution layer cooling down after API error"
-
-    try:
-        stake = float((meta or {}).get("stake", 1.0))
-    except Exception:
-        stake = 1.0
-
-    profile = str(profile or (meta or {}).get("profile") or "KOOLKID").upper()
-    meta = dict(meta or {})
-    params = dict(parameters or {})
-    symbol = meta.get("symbol") or params.get("symbol")
-    meta["profile"] = profile
-    if symbol is not None:
-        meta["symbol"] = symbol
-
-    ok_slot, slot_msg = _reserve_trade_slot(state, profile, symbol)
-    if not ok_slot:
-        return False, slot_msg
-
-    req_id = _new_req_id()
-    state.setdefault("req_meta", {})[req_id] = meta
-    state.setdefault("pending_req_slots", {})[req_id] = {"profile": profile, "symbol": symbol}
-
-    payload = {
-        "req_id": req_id,
-        "buy": 1,
-        "price": stake,
-        "parameters": params
-    }
-
-    sent = _ws_send_json(state, payload)
-    if sent:
-        state["trade_last_send_ts"] = time.time()
-        return True, "Trade sent"
-
-    state.get("req_meta", {}).pop(req_id, None)
-    _release_pending_req_slot(state, req_id, release_slot=True)
-    _bump_trade_backoff(state, seconds=max(0.5, TRADE_BACKOFF_SEC))
-    logger.error(f"[{client_id}] ❌ Direct send failed ({profile} {symbol})")
-    return False, "Send failed"
-
-
-def _queue_buy_order(client_id, profile, meta, parameters):
-    if not USE_TRADE_QUEUE:
-        return _send_buy_order_now(client_id, profile, meta, parameters)
-
-    state = clients.get(client_id)
-    if not state:
-        return False, "No client state"
-    if not state.get("ws_connected") or not state.get("ws"):
-        return False, "Not connected"
-
-    try:
-        stake = float((meta or {}).get("stake", 1.0))
-    except Exception:
-        stake = 1.0
-
-    item = {
-        "profile": str(profile or (meta or {}).get("profile") or "KOOLKID").upper(),
-        "stake": stake,
-        "meta": dict(meta or {}),
-        "parameters": dict(parameters or {}),
-    }
-    item["fingerprint"] = _build_buy_queue_fingerprint(item["meta"], item["parameters"])
-
-    q_lock = state.get("trade_queue_lock")
-    if q_lock:
-        with q_lock:
-            q = state.setdefault("trade_queue", deque())
-            if len(q) >= MAX_TRADE_QUEUE_SIZE:
-                return False, "Trade queue full"
-            q.append(item)
-    else:
-        q = state.setdefault("trade_queue", deque())
-        if len(q) >= MAX_TRADE_QUEUE_SIZE:
-            return False, "Trade queue full"
-        q.append(item)
-
-    _ensure_trade_worker(client_id, state)
-    ev = state.get("trade_queue_event")
-    if ev:
-        ev.set()
-
-    return True, "Trade queued"
-
-
 def disconnect_client(client_id, reason="manual", emit=True):
     state = clients.get(client_id)
     if not state:
@@ -1421,7 +418,6 @@ def disconnect_client(client_id, reason="manual", emit=True):
     state["session_start_balance"] = None
     state["req_meta"].clear()
     state["contract_meta"].clear()
-    _clear_trade_runtime_state(state, clear_queue=True)
 
     _hard_stop_all_strategies(state)
 
@@ -1452,7 +448,6 @@ def init_client(client_id):
         "current_symbol": "R_25",
         "human_symbol": "R_25",
         "tick_subs": {},
-        "symbol_pip_sizes": {},
         # ==================== PATCH 1B: seqvix state ====================
         "seqvix": {
             "KOOLKID": {
@@ -1489,20 +484,6 @@ def init_client(client_id):
         "auto_stake": 1.0,
         "req_meta": {},          # req_id -> meta
         "contract_meta": {},     # contract_id -> meta
-        "contract_subs": {},     # contract_id -> subscription id (proposal_open_contract)
-        "pending_req_slots": {}, # req_id -> {profile, symbol}
-        "active_contract_slots": {}, # contract_id -> {profile, symbol}
-        "trade_slots_profile": {},
-        "trade_slots_market": {},
-        "trade_last_send_ts": 0.0,
-        "trade_backoff_until": 0.0,
-        "last_trade_fingerprint_ts": {},
-        "trade_queue": deque(),
-        "trade_queue_lock": threading.Lock(),
-        "trade_queue_event": threading.Event(),
-        "trade_worker_thread": None,
-        "trade_worker_stop_event": threading.Event(),
-        "ws_send_lock": threading.Lock(),
         "last_seen": time.time(),  # heartbeat (page open)
         "strategies": {
             "KOOLKID": KoolKidStrategy(),
@@ -1629,7 +610,6 @@ def request_human_seed(client_id):
 
 
 # ---------------- ROUTES (LOGIN SYSTEM) ---------------- #
-
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
@@ -1637,20 +617,9 @@ def login():
         password = request.form.get("password", "").strip()
 
         if verify_user(username, password):
-            user_row = _get_user_row(username)
-            ok, reason = check_user_license_access(user_row)
-
-            if not ok:
-                return render_template("login.html", error=reason)
-
             session["user"] = username
-            session["role"] = str((user_row["role"] if user_row else "user") or "user").lower()
             session["client_id"] = str(uuid.uuid4())
             init_client(session["client_id"])
-
-            if session.get("role") == "admin":
-                return redirect(url_for("admin_panel"))
-
             return redirect(url_for("index"))
         else:
             return render_template("login.html", error="Invalid username or password")
@@ -1658,32 +627,18 @@ def login():
     return render_template("login.html")
 
 
-
-
 @app.route("/register", methods=["GET", "POST"])
 def register():
     if request.method == "POST":
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "").strip()
-        license_key = request.form.get("license_key", "").strip()
+        email = request.form.get("email", "").strip()
 
-        if len(password) < 8:
-            return render_template("register.html", error="Password must be at least 8 characters")
+        pw_err = _validate_password_strength(password)
+        if pw_err:
+            return render_template("register.html", error=pw_err)
 
-        if password.isdigit() or password.isalpha():
-            return render_template("register.html", error="Password must include letters and numbers")
-
-        if not license_key:
-            return render_template("register.html", error="License key is required for new registrations")
-
-        ok, msg = create_user(
-            username,
-            password,
-            license_key=license_key,
-            role="user",
-            grandfathered=0,
-            license_exempt=0
-        )
+        ok, msg = create_user(username, password, email=email)
 
         if ok:
             return redirect(url_for("login"))
@@ -1695,44 +650,26 @@ def register():
 
 
 
-
 @app.route("/forgot_password", methods=["GET", "POST"])
 def forgot_password():
     if request.method == "POST":
-        identifier = (request.form.get("email") or "").strip()  # field name kept for compatibility
-        license_key = (request.form.get("license_key") or "").strip()
-
+        identifier = (request.form.get("email") or "").strip()  # field name kept for template compatibility
         if not identifier:
-            return render_template("forgot_password.html", error="Enter your email or username", entered_email=identifier)
+            return render_template("forgot_password.html", error="Enter your email or username")
 
         user_row = _find_user_for_reset(identifier)
-
-        # For privacy you could return generic success either way.
-        # Here we keep it user-friendly and tell them if no account was found.
         if not user_row:
-            return render_template("forgot_password.html", error="No account found with that email/username", entered_email=identifier)
+            return render_template("forgot_password.html", error="No account found with that email or username")
 
-        lic_ok, lic_err = _validate_reset_license_for_user(user_row, license_key)
-        if not lic_ok:
-            return render_template(
-                "forgot_password.html",
-                error=lic_err,
-                entered_email=identifier,
-                entered_license_key=license_key,
-            )
-
-        username = user_row["username"]
-        raw_token, exp_dt = _create_password_reset_token(username)
+        username = user_row[0]
+        raw_token, _exp_dt = _create_password_reset_token(username, minutes_valid=30)
         reset_link = url_for("reset_password", token=raw_token, _external=True)
 
-        success_msg = f"Reset link created for {username}. It expires in 30 minutes."
-        # If you later add email sending, keep the same token/link and send it here.
+        # Works immediately even without SMTP configured by showing the link on-screen.
         return render_template(
             "forgot_password.html",
-            success=success_msg,
-            reset_link=reset_link,
-            entered_email=identifier,
-            entered_license_key=license_key,
+            success=f"Reset link created for {username}. It expires in 30 minutes.",
+            reset_link=reset_link
         )
 
     return render_template("forgot_password.html")
@@ -1746,28 +683,22 @@ def reset_password(token=None):
     if request.method == "POST":
         password = (request.form.get("password") or "").strip()
         confirm_password = (request.form.get("confirm_password") or "").strip()
-        license_key = (request.form.get("license_key") or "").strip()
 
         if not token:
-            return render_template("reset_password.html", error="Missing reset token", token="", entered_license_key=license_key)
-        if confirm_password != password:
-            return render_template("reset_password.html", error="Passwords do not match", token=token, entered_license_key=license_key)
+            return render_template("reset_password.html", error="Missing reset token", token="")
+        if password != confirm_password:
+            return render_template("reset_password.html", error="Passwords do not match", token=token)
 
         pw_err = _validate_password_strength(password)
         if pw_err:
-            return render_template("reset_password.html", error=pw_err, token=token, entered_license_key=license_key)
+            return render_template("reset_password.html", error=pw_err, token=token)
 
         rec, err = _get_reset_token_record(token)
         if err:
-            return render_template("reset_password.html", error=err, token=token, entered_license_key=license_key)
-
-        user_row = _get_user_row(rec["username"])
-        lic_ok, lic_err = _validate_reset_license_for_user(user_row, license_key)
-        if not lic_ok:
-            return render_template("reset_password.html", error=lic_err, token=token, entered_license_key=license_key)
+            return render_template("reset_password.html", error=err, token="")
 
         if not _update_user_password(rec["username"], password):
-            return render_template("reset_password.html", error="Could not update password. Try again.", token=token, entered_license_key=license_key)
+            return render_template("reset_password.html", error="Could not update password. Try again.", token=token)
 
         _mark_reset_token_used(rec["id"])
         return render_template(
@@ -1778,7 +709,7 @@ def reset_password(token=None):
 
     # GET request
     if token:
-        rec, err = _get_reset_token_record(token)
+        _rec, err = _get_reset_token_record(token)
         if err:
             return render_template("reset_password.html", error=err, token="")
         return render_template("reset_password.html", token=token)
@@ -1795,77 +726,7 @@ def logout():
         clients.pop(cid, None)
 
     session.pop("user", None)
-    session.pop("role", None)
     return redirect(url_for("login"))
-
-
-@app.route("/admin")
-def admin_panel():
-    if not login_required():
-        return redirect(url_for("login"))
-    if not is_admin():
-        return redirect(url_for("index"))
-
-    users = get_admin_users_view()
-    licenses = get_admin_licenses_view()
-    return render_template(
-        "admin.html",
-        admin=session.get("user"),
-        admin_username=ADMIN_USERNAME,
-        users=users,
-        licenses=licenses
-    )
-
-
-@app.route("/admin/delete_user", methods=["POST"])
-def admin_delete_user():
-    if not login_required() or not is_admin():
-        return jsonify({"status": "error", "error": "Unauthorized"}), 403
-
-    data = request.get_json(silent=True) or {}
-    user_id = data.get("user_id")
-    if user_id is None:
-        user_id = request.form.get("user_id")
-
-    try:
-        user_id = int(user_id)
-    except Exception:
-        return jsonify({"status": "error", "error": "Invalid user_id"}), 400
-
-    ok, msg = delete_user_admin(user_id)
-    if ok:
-        return jsonify({"status": "deleted"})
-    return jsonify({"status": "error", "error": msg}), 400
-
-
-@app.route("/admin/license/create", methods=["POST"])
-def admin_create_license():
-    if not login_required() or not is_admin():
-        return jsonify({"status": "error", "error": "Unauthorized"}), 403
-
-    data = request.get_json(silent=True) or {}
-    license_type = (data.get("license_type") or request.form.get("license_type") or "").strip().lower()
-
-    ok, msg, key = create_license_record(license_type)
-    if not ok:
-        return jsonify({"status": "error", "error": msg}), 400
-
-    return jsonify({"status": "ok", "license_key": key, "license_type": license_type})
-
-
-@app.route("/admin/license/revoke", methods=["POST"])
-def admin_revoke_license():
-    if not login_required() or not is_admin():
-        return jsonify({"status": "error", "error": "Unauthorized"}), 403
-
-    data = request.get_json(silent=True) or {}
-    license_key = (data.get("license_key") or request.form.get("license_key") or "").strip()
-    ok, msg = revoke_license_record(license_key)
-    if not ok:
-        return jsonify({"status": "error", "error": msg}), 400
-
-    return jsonify({"status": "ok", "message": msg})
-
 
 
 # ---------------- SOCKET.IO CONNECT ---------------- #
@@ -1944,8 +805,10 @@ def send_buy(client_id, contract_type, stake, symbol, barrier):
         return False, "Invalid contract type"
 
     deriv_contract = contract_map[contract_type]
-    meta = {
-        "profile": profile,
+
+    req_id = _new_req_id()
+    state["req_meta"][req_id] = {
+        "profile": profile,  # PATCH D: use the same profile variable
         "type": contract_type,
         "barrier": int(barrier),
         "stake": float(stake),
@@ -1953,18 +816,27 @@ def send_buy(client_id, contract_type, stake, symbol, barrier):
         "time": now_time()
     }
 
-    parameters = {
-        "amount": float(stake),
-        "basis": "stake",
-        "contract_type": deriv_contract,
-        "currency": "USD",
-        "duration": 1,
-        "duration_unit": "t",
-        "symbol": symbol,
-        "barrier": int(barrier)
+    payload = {
+        "req_id": req_id,
+        "buy": 1,
+        "price": float(stake),
+        "parameters": {
+            "amount": float(stake),
+            "basis": "stake",
+            "contract_type": deriv_contract,
+            "currency": "USD",
+            "duration": 1,
+            "duration_unit": "t",
+            "symbol": symbol,
+            "barrier": int(barrier)
+        }
     }
 
-    return _queue_buy_order(client_id, profile, meta, parameters)
+    try:
+        ws.send(json.dumps(payload))
+        return True, "Trade sent"
+    except Exception as e:
+        return False, str(e)
 
 
 # ==================== PATCH 1C: send_buy_with_profile ====================
@@ -1998,7 +870,9 @@ def send_buy_with_profile(client_id, profile, contract_type, stake, symbol, barr
         return False, "Invalid contract type"
 
     deriv_contract = contract_map[contract_type]
-    meta = {
+
+    req_id = _new_req_id()
+    state["req_meta"][req_id] = {
         "profile": profile,
         "type": contract_type,
         "barrier": int(barrier),
@@ -2007,18 +881,27 @@ def send_buy_with_profile(client_id, profile, contract_type, stake, symbol, barr
         "time": now_time()
     }
 
-    parameters = {
-        "amount": float(stake),
-        "basis": "stake",
-        "contract_type": deriv_contract,
-        "currency": "USD",
-        "duration": 1,
-        "duration_unit": "t",
-        "symbol": symbol,
-        "barrier": int(barrier)
+    payload = {
+        "req_id": req_id,
+        "buy": 1,
+        "price": float(stake),
+        "parameters": {
+            "amount": float(stake),
+            "basis": "stake",
+            "contract_type": deriv_contract,
+            "currency": "USD",
+            "duration": 1,
+            "duration_unit": "t",
+            "symbol": symbol,
+            "barrier": int(barrier)
+        }
     }
 
-    return _queue_buy_order(client_id, profile, meta, parameters)
+    try:
+        ws.send(json.dumps(payload))
+        return True, "Trade sent"
+    except Exception as e:
+        return False, str(e)
 
 
 # ---------------- MULTIPLIER ORDER (HUMANX) ---------------- #
@@ -2052,7 +935,9 @@ def place_multiplier_order(client_id, signal):
         multiplier = 1
     if multiplier > 500:
         multiplier = 500
-    meta = {
+
+    req_id = _new_req_id()
+    state["req_meta"][req_id] = {
         "profile": "HUMAN",  # PATCH E: set profile hard to HUMAN
         "type": f"MULT {direction}",
         "barrier": None,
@@ -2061,18 +946,26 @@ def place_multiplier_order(client_id, signal):
         "time": now_time()
     }
 
-    parameters = {
-        "amount": stake,
-        "basis": "stake",
-        "contract_type": "MULTIPLIER",
-        "currency": "USD",
-        "symbol": symbol_to_use,
-        "multiplier": multiplier,
-        "take_profit": tp,
-        "stop_loss": sl,
+    payload = {
+        "req_id": req_id,
+        "buy": 1,
+        "price": stake,
+        "parameters": {
+            "amount": stake,
+            "basis": "stake",
+            "contract_type": "MULTIPLIER",
+            "currency": "USD",
+            "symbol": symbol_to_use,
+            "multiplier": multiplier,
+            "take_profit": tp,
+            "stop_loss": sl,
+        }
     }
-
-    return _queue_buy_order(client_id, profile_to_use, meta, parameters)
+    try:
+        ws.send(json.dumps(payload))
+        return True, "Trade sent"
+    except Exception as e:
+        return False, str(e)
 
 
 # ---------------- AUTO TRADE ENGINE (PER CLIENT) ---------------- #
@@ -2345,9 +1238,11 @@ def process_seqvix_tick(client_id, tick):
     if not active_profiles:
         return
 
-    # digit from tick quote (robust precision + no float drift)
+    # digit from tick quote
     try:
-        d, _pip_size = extract_last_digit_from_tick(state, tick, default_pip=2)
+        price = tick.get("quote")
+        pip_size = tick.get("pip_size", 2)
+        d = extract_last_decimal_digit(price, pip_size)
     except Exception:
         d = None
     if d is None:
@@ -2426,12 +1321,6 @@ def handle_on_message(client_id, ws, message, expected_nonce):
 
         if "error" in data:
             msg = data["error"].get("message", "Unknown API Error")
-            req_id = data.get("req_id")
-            if req_id is not None and req_id in (state.get("pending_req_slots") or {}):
-                _release_pending_req_slot(state, req_id, release_slot=True)
-                state.get("req_meta", {}).pop(req_id, None)
-            # Back off the execution layer briefly on API errors (helps fast-mode bursts recover).
-            _bump_trade_backoff(state, seconds=TRADE_BACKOFF_SEC)
             logger.error(f"[{client_id}] API Error: {msg}")
             socketio.emit("api_error", {"message": msg}, room=client_id)
             return
@@ -2466,8 +1355,6 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 ws.send(json.dumps({"ticks": human_sym, "subscribe": 1}))
 
             ws.send(json.dumps({"balance": 1, "subscribe": 1}))
-            # Prime per-symbol precision cache so live last-digit stays correct.
-            ws.send(json.dumps({"active_symbols": "brief"}))
 
             # seed HUMAN candles early so chart is ready instantly
             request_human_seed(client_id)
@@ -2478,13 +1365,6 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 state["balance"] = balance
                 socketio.emit("balance_update", {"balance": balance}, room=client_id)
                 send_stats_update(client_id)
-            except Exception:
-                pass
-
-        if "active_symbols" in data:
-            try:
-                items = data.get("active_symbols") or []
-                _cache_symbol_pip_from_active_symbols(state, items)
             except Exception:
                 pass
 
@@ -2519,7 +1399,6 @@ def handle_on_message(client_id, ws, message, expected_nonce):
 
         if "tick" in data:
             tick = data["tick"]
-            _enrich_tick_with_raw_quote_fields(message, tick)
             try:
                 sub = data.get("subscription") or {}
                 sub_id = sub.get("id")
@@ -2527,10 +1406,6 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 if sub_id and sym:
                     state.setdefault("tick_subs", {})
                     state["tick_subs"][sym] = sub_id
-
-                # Cache precision so later ticks without pip_size still extract the right digit.
-                if sym:
-                    resolve_tick_pip_size(state, tick, default=2)
             except Exception:
                 pass
             # ==================== PATCH 1E: hook process_seqvix_tick ====================
@@ -2548,7 +1423,6 @@ def handle_on_message(client_id, ws, message, expected_nonce):
 
             if contract_id and meta:
                 state["contract_meta"][contract_id] = meta
-                _move_pending_req_slot_to_contract(state, req_id, contract_id)
                 socketio.emit("trade_placed", {
                     "profile": meta.get("profile"),
                     "type": meta.get("type"),
@@ -2559,8 +1433,6 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                     "contract_id": contract_id
                 }, room=client_id)
             else:
-                if req_id is not None:
-                    _release_pending_req_slot(state, req_id, release_slot=True)
                 socketio.emit("trade_placed", {
                     "profile": state.get("active_profile", "KOOLKID"),
                     "type": "TRADE",
@@ -2572,22 +1444,14 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 }, room=client_id)
 
             if contract_id:
-                _ws_send_json(state, {
+                ws.send(json.dumps({
                     "proposal_open_contract": 1,
                     "contract_id": contract_id,
                     "subscribe": 1
-                })
+                }))
 
         if "proposal_open_contract" in data:
             contract = data["proposal_open_contract"]
-            try:
-                sub = data.get("subscription") or {}
-                sub_id = sub.get("id")
-                c_id = contract.get("contract_id")
-                if c_id and sub_id:
-                    state.setdefault("contract_subs", {})[c_id] = sub_id
-            except Exception:
-                pass
             process_contract(client_id, contract)
 
     except Exception as e:
@@ -2664,8 +1528,8 @@ def process_tick(client_id, tick):
         if not (is_main or is_human):
             return
 
-        pip_size = resolve_tick_pip_size(state, tick, default=2)
-        digit = (extract_last_digit_from_tick(state, tick, default_pip=pip_size)[0]) if is_main else None
+        pip_size = tick.get("pip_size", 2)
+        digit = extract_last_decimal_digit(price, pip_size) if is_main else None
 
         # epoch for HUMAN candles
         try:
@@ -2797,14 +1661,6 @@ def process_contract(client_id, contract):
 
         contract_id = contract.get("contract_id")
         meta = state["contract_meta"].pop(contract_id, None) if contract_id else None
-        if contract_id:
-            _forget_contract_subscription(state, contract_id)
-            _release_contract_slot(
-                state,
-                contract_id,
-                fallback_profile=(meta or {}).get("profile"),
-                fallback_symbol=(meta or {}).get("symbol"),
-            )
 
         # PATCH F: Use the trade's real profile (not active_profile)
         profile_for_contract = (meta.get("profile") if meta else None) or state.get("active_profile", "KOOLKID")
@@ -2882,7 +1738,7 @@ def handle_on_open(client_id, ws, expected_nonce):
 
     api_token = state.get("api_token")
     if api_token:
-        _ws_send_json(state, {"authorize": api_token})
+        ws.send(json.dumps({"authorize": api_token}))
 
 
 def handle_on_error(client_id, ws, error, expected_nonce):
@@ -2904,7 +1760,6 @@ def handle_on_close(client_id, ws, code, msg, expected_nonce):
 
     state["ws_connected"] = False
     state["ws_transport_connected"] = False
-    _clear_trade_runtime_state(state, clear_queue=True)
     logger.warning(f"[{client_id}] 🔌 WebSocket Disconnected")
     socketio.emit("connection_status", {"connected": False, "loginid": "UNKNOWN", "balance": state.get("balance", 0.0)}, room=client_id)
 
@@ -3911,6 +2766,57 @@ def heartbeat_sweeper():
                 last_seen = state.get("last_seen", now)
                 if (now - last_seen) > HEARTBEAT_TIMEOUT_SEC:
                     disconnect_client(cid, reason="heartbeat_timeout", emit=True)
+
+
+
+@app.route("/toggle_named_ai_mode", methods=["POST"])
+def toggle_named_ai_mode_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    data = request.json or {}
+    profile = (data.get("profile") or state.get("active_profile") or "KOOLKID").upper().strip()
+    mode_key = str(data.get("mode_key") or "").strip().lower()
+
+    if profile not in ("KOOLKID", "JOKERJOE"):
+        return jsonify({"status": "error", "message": "Invalid profile"}), 400
+
+    strat = state["strategies"].get(profile)
+    if not strat or not hasattr(strat, "toggle_named_ai_mode"):
+        return jsonify({"status": "error", "message": f"{profile} strategy not available"}), 400
+
+    try:
+        enabled = bool(strat.toggle_named_ai_mode(mode_key))
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+
+    try:
+        payload = strat.get_ui_payload()
+    except Exception:
+        payload = {}
+    auto_modes = {}
+    try:
+        auto_modes = (payload or {}).get("auto_modes", {}) or {}
+    except Exception:
+        auto_modes = {}
+
+    try:
+        socketio.emit("auto_mode_update", auto_modes, room=cid)
+        socketio.emit("digit_analysis", payload, room=cid)
+        if profile == "JOKERJOE":
+            emit_jokerjoe_modes(cid, strat)
+    except Exception:
+        pass
+
+    return jsonify({
+        "status": "success",
+        "profile": profile,
+        "mode_key": mode_key,
+        "enabled": enabled,
+        "auto_modes": auto_modes,
+        "payload": payload,
+    })
 
 
 threading.Thread(target=heartbeat_sweeper, daemon=True).start()

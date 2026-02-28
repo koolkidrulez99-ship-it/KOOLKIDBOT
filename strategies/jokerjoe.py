@@ -782,3 +782,397 @@ class JokerJoeStrategy:
             "kidx_auto": self.kidx_auto,
             "multig_auto": self.multig_auto
         }
+
+# ==================== ADVANCED NAMED AI MODES PATCH (non-destructive wrapper) ====================
+def _jj_adv_mode_keys():
+    return ("kidbrain", "edge_brain", "smart_flow", "meta_ai", "kidracks_ai")
+
+def _jj_adv_init_state(self):
+    self._adv_named_modes = {k: False for k in _jj_adv_mode_keys()}
+    self._adv_mode_last_trade = {k: 0.0 for k in _jj_adv_mode_keys()}
+    self._adv_loss_streak = 0
+    self._adv_win_streak = 0
+    self._adv_pause_until = 0.0
+    self._adv_shadow = {"live_wins": 0, "live_losses": 0, "alt_wins": 0, "alt_losses": 0, "sample": 0}
+    self._adv_shadow_live_pending = None
+    self._adv_shadow_alt_pending = None
+    self._adv_last_meta = {"regime": "WARMUP", "confidence_pct": 0.0, "edge_gap": 0.0, "market_score": 0.0, "consensus": 0}
+
+def _jj_toggle_named_ai_mode(self, mode_key):
+    mk = str(mode_key or "").strip().lower()
+    if mk not in _jj_adv_mode_keys():
+        raise ValueError(f"Invalid mode: {mode_key}")
+    self._adv_named_modes[mk] = not bool(self._adv_named_modes.get(mk, False))
+    if self._adv_named_modes[mk]:
+        self._adv_mode_last_trade[mk] = 0.0
+    return bool(self._adv_named_modes[mk])
+
+def _jj_get_named_ai_modes_state(self):
+    return dict(getattr(self, "_adv_named_modes", {}) or {})
+
+def _jj_eval_contract_result(contract_type, barrier, digit):
+    try:
+        d = int(digit)
+        b = int(barrier)
+        ct = str(contract_type or "").upper()
+        if ct == "OVER":
+            return d > b
+        if ct == "UNDER":
+            return d < b
+        if ct == "DIFFERS":
+            return d != b
+        if ct == "MATCHES":
+            return d == b
+    except Exception:
+        return None
+    return None
+
+def _jj_adv_resolve_pending_shadow(self, digit):
+    for key in ("_adv_shadow_live_pending", "_adv_shadow_alt_pending"):
+        pred = getattr(self, key, None)
+        if not pred:
+            continue
+        res = _jj_eval_contract_result(pred.get("type"), pred.get("barrier"), digit)
+        if res is None:
+            setattr(self, key, None)
+            continue
+        shadow = getattr(self, "_adv_shadow", None) or {"live_wins":0,"live_losses":0,"alt_wins":0,"alt_losses":0,"sample":0}
+        if key.endswith("live_pending"):
+            if res: shadow["live_wins"] += 1
+            else: shadow["live_losses"] += 1
+        else:
+            if res: shadow["alt_wins"] += 1
+            else: shadow["alt_losses"] += 1
+        shadow["sample"] = int(shadow.get("sample", 0)) + 1
+        self._adv_shadow = shadow
+        setattr(self, key, None)
+
+def _jj_adv_snapshot(self):
+    if int(getattr(self, "tick_count", 0) or 0) < 100:
+        snap = {"regime":"WARMUP","confidence_pct":0.0,"edge_gap":0.0,"market_score":0.0,"consensus":0}
+        self._adv_last_meta = dict(snap)
+        return snap
+
+    pcts = [float(getattr(self, "digit_percentages", {}).get(i, 0.0)) for i in range(10)]
+    ranked_low = sorted([(pct, d) for d, pct in enumerate(pcts)], key=lambda x: (x[0], x[1]))
+    ranked_high = sorted([(pct, d) for d, pct in enumerate(pcts)], key=lambda x: (-x[0], x[1]))
+    lowest_pct, lowest_digit = ranked_low[0]
+    second_low_pct = ranked_low[1][0] if len(ranked_low) > 1 else lowest_pct
+    edge_gap = max(0.0, float(second_low_pct) - float(lowest_pct))  # for DIFFERS, larger gap on rare digit = stronger
+    golden_count = len(getattr(self, "golden_ttl", {}) or {})
+
+    seq_hint = False
+    try:
+        if getattr(self, "last_tick_digit", None) is not None and hasattr(self, "_current_triplex_step_digit"):
+            seq_hint = int(self.last_tick_digit) == int(self._current_triplex_step_digit())
+    except Exception:
+        seq_hint = False
+
+    confidence = min(95.0, (100.0 - float(lowest_pct)) * 0.65 + edge_gap * 4.0 + golden_count * 3.0)
+
+    if golden_count >= 2 and edge_gap >= 2.0:
+        regime = "BARRIER_DOMINANT"
+    elif seq_hint:
+        regime = "SEQUENCE"
+    elif edge_gap <= 1.5:
+        regime = "BALANCED"
+    else:
+        regime = "MIXED"
+
+    score = confidence + (edge_gap * 1.8) + (golden_count * 2.0) - (int(getattr(self, "_adv_loss_streak", 0)) * 4)
+    if regime == "SEQUENCE":
+        score += 4
+    if getattr(self, "_adv_pause_until", 0.0) > time.time():
+        score -= 12
+
+    snap = {
+        "regime": regime,
+        "confidence_pct": round(float(confidence), 1),
+        "edge_gap": round(float(edge_gap), 1),
+        "market_score": round(float(score), 1),
+        "consensus": 0,
+        "_lowest_digit": int(lowest_digit),
+        "_lowest_pct": float(lowest_pct),
+        "_golden_count": int(golden_count),
+        "_seq_hint": bool(seq_hint),
+    }
+    self._adv_last_meta = dict({k:v for k,v in snap.items() if not k.startswith("_")})
+    return snap
+
+def _jj_adv_multig_like(self):
+    # immediate rare-digit DIFFERS (faster variant than MultiG hold)
+    try:
+        ranked = sorted([(float(self.digit_percentages.get(d, 0.0)), d) for d in range(10)], key=lambda x: (x[0], x[1]))
+        if not ranked:
+            return None
+        pct, d = ranked[0]
+        if pct <= 12.0:
+            return {"mode": "EDGE_BRAIN", "type": "DIFFERS", "barrier": int(d)}
+    except Exception:
+        pass
+    return None
+
+def _jj_adv_golden_signal(self):
+    try:
+        golden_digits = sorted(list((getattr(self, "golden_ttl", {}) or {}).keys()))
+        if golden_digits:
+            # pick most recent visible golden (highest digit tie-break is arbitrary)
+            d = golden_digits[0]
+            return {"mode": "META_AI", "type": "DIFFERS", "barrier": int(d)}
+    except Exception:
+        pass
+    return None
+
+def _jj_adv_sequence_signal(self):
+    try:
+        if hasattr(self, "_current_triplex_step_digit"):
+            d = int(self._current_triplex_step_digit())
+            # when sequence step digit is near, prepare DIFFERS on next opportunity (independent)
+            return {"mode": "SMART_FLOW", "type": "DIFFERS", "barrier": d}
+    except Exception:
+        pass
+    return None
+
+def _jj_adv_consensus(self, snap, rare_sig, golden_sig, seq_sig):
+    count = 0
+    barrier = None
+    for sig in (rare_sig, golden_sig, seq_sig):
+        if sig and barrier is None:
+            barrier = int(sig.get("barrier", 0))
+    if rare_sig and snap.get("edge_gap", 0.0) >= 2.0:
+        count += 1
+    if golden_sig and int(snap.get("_golden_count", 0)) >= 1:
+        count += 1
+    if seq_sig and bool(snap.get("_seq_hint", False)):
+        count += 1
+    # extra vote if two or more sources point at same barrier
+    barriers = [int(sig["barrier"]) for sig in (rare_sig, golden_sig, seq_sig) if sig]
+    if barriers:
+        if max(barriers.count(b) for b in set(barriers)) >= 2:
+            count += 1
+    return count
+
+def _jj_adv_mode_cooldown(self, mode_key):
+    base = 3.0 if mode_key == "meta_ai" else 5.0
+    if mode_key == "smart_flow":
+        base = 4.0
+    if mode_key == "kidracks_ai":
+        base = 6.0
+    loss_streak = int(getattr(self, "_adv_loss_streak", 0) or 0)
+    if loss_streak > 0:
+        base += min(10.0, loss_streak * 2.0)
+    return base
+
+def _jj_adv_can_trade(self, mode_key):
+    now = time.time()
+    if now < float(getattr(self, "_adv_pause_until", 0.0) or 0.0):
+        return False
+    last_t = float((getattr(self, "_adv_mode_last_trade", {}) or {}).get(mode_key, 0.0))
+    return (now - last_t) >= _jj_adv_mode_cooldown(self, mode_key)
+
+def _jj_adv_mark_trade(self, mode_key, signal, alt_signal=None):
+    self._adv_mode_last_trade[mode_key] = time.time()
+    if signal:
+        self._adv_shadow_live_pending = {"type": signal.get("type"), "barrier": signal.get("barrier")}
+    if alt_signal:
+        self._adv_shadow_alt_pending = {"type": alt_signal.get("type"), "barrier": alt_signal.get("barrier")}
+    else:
+        self._adv_shadow_alt_pending = None
+
+def _jj_adv_build_signal_for_mode(self, mode_key):
+    if not _jj_adv_can_trade(self, mode_key):
+        return None
+    snap = _jj_adv_snapshot(self)
+    rare_sig = _jj_adv_multig_like(self)
+    golden_sig = _jj_adv_golden_signal(self)
+    seq_sig = _jj_adv_sequence_signal(self)
+
+    def clone(sig, mode_name):
+        if not sig:
+            return None
+        out = dict(sig)
+        out["mode"] = mode_name
+        return out
+
+    if mode_key == "kidbrain":
+        if snap["regime"] == "BARRIER_DOMINANT":
+            chosen = clone(golden_sig or rare_sig, "KIDBRAIN")
+            alt = clone(rare_sig if chosen and golden_sig else seq_sig, "KIDBRAIN_SHADOW")
+        elif snap["regime"] == "SEQUENCE":
+            chosen = clone(seq_sig or rare_sig, "KIDBRAIN")
+            alt = clone(golden_sig, "KIDBRAIN_SHADOW")
+        elif snap["regime"] == "BALANCED":
+            chosen = clone(rare_sig, "KIDBRAIN")
+            alt = clone(golden_sig, "KIDBRAIN_SHADOW")
+        else:
+            chosen = clone(golden_sig or rare_sig, "KIDBRAIN") if snap["confidence_pct"] >= 58 else None
+            alt = clone(seq_sig, "KIDBRAIN_SHADOW")
+        if chosen:
+            _jj_adv_mark_trade(self, mode_key, chosen, alt)
+        return chosen
+
+    if mode_key == "edge_brain":
+        if rare_sig and snap["edge_gap"] >= 2.0 and snap["confidence_pct"] >= 60:
+            chosen = clone(rare_sig, "EDGE_BRAIN")
+            _jj_adv_mark_trade(self, mode_key, chosen, clone(golden_sig, "EDGE_BRAIN_SHADOW"))
+            return chosen
+        return None
+
+    if mode_key == "smart_flow":
+        consensus = _jj_adv_consensus(self, snap, rare_sig, golden_sig, seq_sig)
+        self._adv_last_meta["consensus"] = consensus
+        primary = golden_sig or rare_sig or seq_sig
+        if primary and consensus >= 2 and snap["confidence_pct"] >= 58:
+            chosen = clone(primary, "SMART_FLOW")
+            alt = clone(rare_sig if primary is not rare_sig else golden_sig, "SMART_FLOW_SHADOW")
+            _jj_adv_mark_trade(self, mode_key, chosen, alt)
+            return chosen
+        return None
+
+    if mode_key == "meta_ai":
+        consensus = _jj_adv_consensus(self, snap, rare_sig, golden_sig, seq_sig)
+        self._adv_last_meta["consensus"] = consensus
+        if snap["confidence_pct"] < 60 or snap["edge_gap"] < 1.0:
+            return None
+        if snap["regime"] == "SEQUENCE" and seq_sig and consensus >= 2:
+            chosen = clone(seq_sig, "META_AI")
+        elif golden_sig and (consensus >= 2 or snap.get("_golden_count", 0) >= 2):
+            chosen = clone(golden_sig, "META_AI")
+        elif rare_sig and snap["edge_gap"] >= 2.5:
+            chosen = clone(rare_sig, "META_AI")
+        else:
+            return None
+        alt = clone(rare_sig if chosen.get("barrier") != (rare_sig or {}).get("barrier") else golden_sig, "META_AI_SHADOW")
+        _jj_adv_mark_trade(self, mode_key, chosen, alt)
+        return chosen
+
+    if mode_key == "kidracks_ai":
+        # "rack" here = strict rare-digit rack using stronger gap + touch filter
+        try:
+            if getattr(self, "last_tick_digit", None) is None:
+                return None
+            d = int(self.last_tick_digit)
+            pct = float(getattr(self, "digit_percentages", {}).get(d, 0.0))
+            if pct <= 10.0 and snap["edge_gap"] >= 1.5:
+                chosen = {"mode": "KIDRACKS_AI", "type": "DIFFERS", "barrier": d}
+                _jj_adv_mark_trade(self, mode_key, chosen, clone(golden_sig, "KIDRACKS_AI_SHADOW"))
+                return chosen
+        except Exception:
+            return None
+        return None
+
+    return None
+
+# wrappers
+_JJ_ORIG_RESET = JokerJoeStrategy.reset
+_JJ_ORIG_ON_TICK = JokerJoeStrategy.on_tick
+_JJ_ORIG_ON_CONTRACT = JokerJoeStrategy.on_contract
+_JJ_ORIG_CHECK_AUTO = JokerJoeStrategy.check_auto_trade_signal
+_JJ_ORIG_GET_UI = JokerJoeStrategy.get_ui_payload
+_JJ_ORIG_DISABLE_ALL = JokerJoeStrategy.disable_all_autos
+
+def _jj_reset_wrapper(self, *args, **kwargs):
+    res = _JJ_ORIG_RESET(self, *args, **kwargs)
+    _jj_adv_init_state(self)
+    return res
+
+def _jj_on_tick_wrapper(self, tick, digit):
+    try:
+        _jj_adv_resolve_pending_shadow(self, int(digit))
+    except Exception:
+        pass
+    res = _JJ_ORIG_ON_TICK(self, tick, digit)
+    try:
+        _jj_adv_snapshot(self)
+    except Exception:
+        pass
+    return res
+
+def _jj_on_contract_wrapper(self, contract, balance):
+    res = _JJ_ORIG_ON_CONTRACT(self, contract, balance)
+    try:
+        profit = float(contract.get("profit", 0) or 0)
+        if profit > 0:
+            self._adv_win_streak = int(getattr(self, "_adv_win_streak", 0)) + 1
+            self._adv_loss_streak = 0
+        else:
+            self._adv_loss_streak = int(getattr(self, "_adv_loss_streak", 0)) + 1
+            self._adv_win_streak = 0
+            if self._adv_loss_streak >= 2:
+                self._adv_pause_until = max(float(getattr(self, "_adv_pause_until", 0.0) or 0.0), time.time() + min(20.0, 6.0 + self._adv_loss_streak * 2.0))
+    except Exception:
+        pass
+    return res
+
+def _jj_disable_all_wrapper(self, *args, **kwargs):
+    res = _JJ_ORIG_DISABLE_ALL(self, *args, **kwargs)
+    try:
+        if hasattr(self, "_adv_named_modes"):
+            for k in list(self._adv_named_modes.keys()):
+                self._adv_named_modes[k] = False
+    except Exception:
+        pass
+    return res
+
+def _jj_check_auto_wrapper(self):
+    orig = _JJ_ORIG_CHECK_AUTO(self)
+    adv_signals = []
+    try:
+        modes = getattr(self, "_adv_named_modes", {}) or {}
+        for mk in _jj_adv_mode_keys():
+            if modes.get(mk):
+                sig = _jj_adv_build_signal_for_mode(self, mk)
+                if sig:
+                    adv_signals.append(sig)
+    except Exception:
+        pass
+
+    combined = []
+    if orig is None:
+        combined = []
+    elif isinstance(orig, list):
+        combined.extend(orig)
+    else:
+        combined.append(orig)
+    combined.extend(adv_signals)
+
+    if not combined:
+        return None
+    if len(combined) == 1:
+        return combined[0]
+    return combined
+
+def _jj_get_ui_wrapper(self):
+    payload = _JJ_ORIG_GET_UI(self)
+    try:
+        payload = dict(payload or {})
+        payload.setdefault("auto_modes", {})
+        payload["auto_modes"].update(_jj_get_named_ai_modes_state(self))
+        snap = _jj_adv_snapshot(self)
+        shadow = dict(getattr(self, "_adv_shadow", {}) or {})
+        live_total = int(shadow.get("live_wins", 0)) + int(shadow.get("live_losses", 0))
+        alt_total = int(shadow.get("alt_wins", 0)) + int(shadow.get("alt_losses", 0))
+        shadow["live_winrate"] = round((shadow.get("live_wins", 0) / live_total) * 100.0, 1) if live_total else 0.0
+        shadow["alt_winrate"] = round((shadow.get("alt_wins", 0) / alt_total) * 100.0, 1) if alt_total else 0.0
+        payload["meta_brain"] = {
+            "regime": snap.get("regime", "WARMUP"),
+            "confidence_pct": float(snap.get("confidence_pct", 0.0)),
+            "edge_gap": float(snap.get("edge_gap", 0.0)),
+            "market_score": float(snap.get("market_score", 0.0)),
+            "consensus": int(getattr(self, "_adv_last_meta", {}).get("consensus", 0)),
+            "loss_streak": int(getattr(self, "_adv_loss_streak", 0)),
+            "pause_until": float(getattr(self, "_adv_pause_until", 0.0)),
+            "shadow": shadow,
+        }
+    except Exception:
+        return payload
+    return payload
+
+JokerJoeStrategy.reset = _jj_reset_wrapper
+JokerJoeStrategy.on_tick = _jj_on_tick_wrapper
+JokerJoeStrategy.on_contract = _jj_on_contract_wrapper
+JokerJoeStrategy.disable_all_autos = _jj_disable_all_wrapper
+JokerJoeStrategy.check_auto_trade_signal = _jj_check_auto_wrapper
+JokerJoeStrategy.get_ui_payload = _jj_get_ui_wrapper
+JokerJoeStrategy.toggle_named_ai_mode = _jj_toggle_named_ai_mode
+JokerJoeStrategy.get_named_ai_modes_state = _jj_get_named_ai_modes_state
