@@ -1,90 +1,149 @@
-<style>
-.ui-group{background:#0f172a;border:1px solid #334155;border-radius:12px;overflow:hidden}
-.ui-group + .ui-group{margin-top:8px}
-.ui-group summary{cursor:pointer;list-style:none;padding:10px 12px;font-weight:700;color:#e2e8f0;display:flex;align-items:center;justify-content:space-between;gap:8px;background:#111827}
-.ui-group summary::-webkit-details-marker{display:none}
-.ui-group summary::after{content:'▾';font-size:12px;color:#94a3b8}
-.ui-group:not([open]) summary::after{content:'▸'}
-.ui-group-body{padding:10px;display:flex;flex-direction:column;gap:8px}
-.ui-primary-stack{display:flex;flex-direction:column;gap:8px;margin-top:10px}
-.ui-note{font-size:12px;color:#94a3b8;margin-top:-2px}
-.ui-btn-grid-2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-.ui-btn-grid-3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
-.ui-section-title{font-size:12px;color:#94a3b8;text-transform:uppercase;letter-spacing:.04em;margin:2px 2px 0}
-@media (max-width: 900px){
-  .ui-btn-grid-2,.ui-btn-grid-3{grid-template-columns:1fr}
-}
-</style>
-<div class="card">
-    <h3>🧑 HUMAN MODE: MULTIPLIERS + ORDER BLOCK</h3>
 
-    <div style="display:flex; gap:14px; flex-wrap:wrap; align-items:flex-end;">
-        <div style="flex:1; min-width:220px;">
-            <div style="color:#94a3b8; font-size:13px; margin-left:6px;">Stake</div>
-            <input id="stake" type="number" value="1" min="0.35" step="0.35" style="width:100%;">
+<div class="card" id="humanRiseFallCard">
+    <h3>🧠 HUMAN MODE: RISE / FALL SMART ASSIST</h3>
+
+    <div style="display:grid; grid-template-columns:1.3fr 1fr; gap:12px; align-items:stretch;">
+        <div style="background:#0f172a; border:1px solid #334155; border-radius:14px; padding:14px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+                <div>
+                    <div style="color:#94a3b8; font-size:12px;">Bias</div>
+                    <div id="humanRfBias" style="font-size:20px; font-weight:700;">NEUTRAL</div>
+                </div>
+                <div style="text-align:right;">
+                    <div style="color:#94a3b8; font-size:12px;">Confidence</div>
+                    <div id="humanRfConfidence" style="font-size:20px; font-weight:700; color:#38bdf8;">0.0%</div>
+                </div>
+            </div>
+
+            <div id="humanRfSignal" style="margin-top:12px; text-align:center; font-size:28px; font-weight:800; letter-spacing:0.5px; padding:14px; border-radius:12px; background:#111827; border:1px solid #334155;">
+                WAIT
+            </div>
+
+            <div id="humanRfReason" style="margin-top:10px; color:#94a3b8; font-size:13px; text-align:center;">
+                Waiting for signal...
+            </div>
+
+            <div style="margin-top:10px; display:flex; justify-content:center; gap:8px; flex-wrap:wrap;">
+                <span id="humanRfCooldown" style="padding:6px 10px; border-radius:999px; background:#1e293b; font-size:12px;">Cooldown: 0.0s</span>
+                <span id="humanRfEdgeGap" style="padding:6px 10px; border-radius:999px; background:#1e293b; font-size:12px;">Edge Gap: 0.0</span>
+                <span id="humanRfMarketState" style="padding:6px 10px; border-radius:999px; background:#1e293b; font-size:12px;">Market: Unknown</span>
+            </div>
+
+            <div style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap;">
+                <button onclick="humanRFTrade('AUTO')" style="background:#22c55e; flex:1; min-width:150px;">🎯 TAKE SIGNAL</button>
+                <button onclick="humanRFTrade('RISE')" style="background:#16a34a; flex:1; min-width:120px;">📈 RISE NOW</button>
+                <button onclick="humanRFTrade('FALL')" style="background:#dc2626; flex:1; min-width:120px;">📉 FALL NOW</button>
+            </div>
+        </div>
+
+        <div style="background:#0f172a; border:1px solid #334155; border-radius:14px; padding:14px;">
+            <div style="font-weight:700; margin-bottom:10px;">🎯 Smart Assist Controls</div>
+
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+                <button id="humanRfSmartBtn" onclick="toggleHumanRFSetting('smart_assist')" style="background:#1e293b;">Smart Assist: ON</button>
+                <button id="humanRfAutoBtn" onclick="toggleHumanRFSetting('auto_assist')" style="background:#1e293b;">Take Auto Trades: OFF</button>
+                <button id="humanRfBiasLockBtn" onclick="toggleHumanRFSetting('bias_lock')" style="background:#1e293b;">Bias Lock: OFF</button>
+                <button id="humanRfNoTradeBtn" onclick="toggleHumanRFSetting('no_trade_filter')" style="background:#1e293b;">No-Trade Filter: ON</button>
+                <button id="humanRfAdaptiveBtn" onclick="toggleHumanRFSetting('adaptive_cooldown')" style="background:#1e293b; grid-column: span 2;">Adaptive Cooldown: ON</button>
+            </div>
+
+            <div style="margin-top:12px; display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+                <div>
+                    <div style="color:#94a3b8; font-size:12px; margin-bottom:4px;">Rise/Fall Duration (ticks)</div>
+                    <input id="humanRfDuration" type="number" min="1" max="10" step="1" value="5" onchange="saveHumanRFSettings()" style="width:100%;">
+                    <div style="color:#64748b; font-size:11px; margin-top:4px;">Set any duration from 1–10 ticks</div>
+                </div>
+                <div>
+                    <div style="color:#94a3b8; font-size:12px; margin-bottom:4px;">Auto Threshold % (default 70%)</div>
+                    <input id="humanRfThreshold" type="number" min="1" max="100" step="1" value="70" onchange="saveHumanRFSettings()" style="width:100%;">
+                </div>
+            </div>
+
+            <div style="margin-top:12px;">
+                <button onclick="saveHumanRFSettings()" style="background:#3b82f6; width:100%;">💾 SAVE RISE/FALL SETTINGS</button>
+            </div>
+
+            <div style="margin-top:12px; color:#94a3b8; font-size:12px; line-height:1.35;">
+                <b>How it works:</b> HUMAN Smart Assist reads trend, momentum, pullback quality, trigger strength, and chop filters to output <b>READY</b>, <b>TAKE NOW</b>, <b>LATE</b>, or <b>WAIT</b> (with RISE/FALL direction context). Auto Assist only takes strong setups above your threshold.
+            </div>
         </div>
     </div>
 
-    <div style="display:flex; gap:14px; flex-wrap:wrap; align-items:flex-end; margin-top:10px;">
-        <div style="flex:1; min-width:220px;">
+    <div style="margin-top:12px; background:#0f172a; border-radius:14px; border:1px solid #334155; padding:12px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+            <div style="font-weight:700;">📊 Signal Breakdown</div>
+            <div id="humanRfStreaks" style="color:#94a3b8; font-size:12px;">Wins: 0 | Losses: 0 | Last: -</div>
+        </div>
+        <div style="display:grid; grid-template-columns: repeat(5, 1fr); gap:8px; margin-top:10px;">
+            <div style="background:#111827; border-radius:10px; padding:10px; text-align:center;">
+                <div style="color:#94a3b8; font-size:11px;">Trend</div>
+                <div id="humanRfScoreTrend" style="font-size:18px; font-weight:700;">0</div>
+            </div>
+            <div style="background:#111827; border-radius:10px; padding:10px; text-align:center;">
+                <div style="color:#94a3b8; font-size:11px;">Momentum</div>
+                <div id="humanRfScoreMomentum" style="font-size:18px; font-weight:700;">0</div>
+            </div>
+            <div style="background:#111827; border-radius:10px; padding:10px; text-align:center;">
+                <div style="color:#94a3b8; font-size:11px;">Pullback</div>
+                <div id="humanRfScorePullback" style="font-size:18px; font-weight:700;">0</div>
+            </div>
+            <div style="background:#111827; border-radius:10px; padding:10px; text-align:center;">
+                <div style="color:#94a3b8; font-size:11px;">Trigger</div>
+                <div id="humanRfScoreTrigger" style="font-size:18px; font-weight:700;">0</div>
+            </div>
+            <div style="background:#111827; border-radius:10px; padding:10px; text-align:center;">
+                <div style="color:#94a3b8; font-size:11px;">Clean</div>
+                <div id="humanRfScoreClean" style="font-size:18px; font-weight:700;">0</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+
+<div class="card">
+    <h3>💼 RISE / FALL EXECUTION SETTINGS</h3>
+
+    <div style="display:grid; grid-template-columns: repeat(3, minmax(180px, 1fr)); gap:12px; align-items:end;">
+        <div>
+            <div style="color:#94a3b8; font-size:13px; margin-left:6px;">Stake</div>
+            <input id="stake" type="number" value="1" min="0.35" step="0.01" style="width:100%;">
+            <button onclick="humanRFSetStake()" style="background:#3b82f6; width:100%; margin-top:8px;">💰 SET STAKE</button>
+        </div>
+        <div>
             <div style="color:#94a3b8; font-size:13px; margin-left:6px;">Take Profit (TP)</div>
             <input id="tp" type="number" value="0" step="0.1" style="width:100%;">
+            <button onclick="manualTP()" style="background:#22c55e; width:100%; margin-top:8px;">✅ SET TP</button>
         </div>
-        <div style="flex:1; min-width:220px;">
+        <div>
             <div style="color:#94a3b8; font-size:13px; margin-left:6px;">Stop Loss (SL)</div>
             <input id="sl" type="number" value="0" step="0.1" style="width:100%;">
+            <button onclick="manualSL()" style="background:#ef4444; width:100%; margin-top:8px;">🛑 SET SL</button>
         </div>
     </div>
 
-    <div style="margin-top:8px;" class="ui-primary-stack">
-        <details class="ui-group" open>
-            <summary>🛡️ Risk Controls</summary>
-            <div class="ui-group-body">
-                <button id="autoSlBtn" onclick="toggleAutoSL()" style="background:#facc15; width:100%;">
-                    AUTO SL: ON
-                </button>
-                <button id="keepAliveBtn" onclick="toggleHumanKeepAlive()" style="background:#64748b; width:100%;">
-                    KEEP ALIVE: OFF
-                </button>
-                <div id="humanXStatus" style="text-align:center; color:#94a3b8; font-size:13px;">Auto: OFF</div>
-                <div class="ui-btn-grid-2">
-                    <button onclick="manualTP()" style="background:#22c55e; width:100%;">SET TP</button>
-                    <button onclick="manualSL()" style="background:#ef4444; width:100%;">SET SL</button>
-                </div>
-            </div>
-        </details>
-
-        <details class="ui-group" open>
-            <summary>⚡ Trading Action</summary>
-            <div class="ui-group-body">
-                <button id="humanXBtn" onclick="humanX()" style="background:#ef4444; width:100%; font-size:1.2rem; padding:12px;">
-                    ⚡ humanX AUTO: OFF
-                </button>
-            </div>
-        </details>
+    <div style="margin-top:10px; display:flex; gap:10px; flex-wrap:wrap;">
+        <button id="autoSlBtn" onclick="toggleAutoSL()" style="background:#facc15; flex:1; min-width:220px;">AUTO SL: ON</button>
+        <button id="keepAliveBtn" onclick="toggleHumanKeepAlive()" style="background:#64748b; flex:1; min-width:220px;">KEEP ALIVE: OFF</button>
     </div>
 
-    <div style="margin-top:20px; background:#0f172a; border-radius:12px; padding:10px;">
-        
-        <details class="ui-group" open style="margin-bottom:8px;">
-            <summary>📈 Chart Tools</summary>
-            <div class="ui-group-body">
-                <div class="ui-btn-grid-3">
-                    <button onclick="humanZoomOut()" style="background:#334155; padding:6px 12px; border-radius:10px;">−</button>
-                    <button onclick="humanZoomIn()" style="background:#334155; padding:6px 12px; border-radius:10px;">+</button>
-                    <button onclick="humanResetZoom()" style="background:#334155; padding:6px 12px; border-radius:10px;">Reset</button>
-                </div>
-            </div>
-        </details>
+    <div style="margin-top:10px; color:#94a3b8; font-size:12px;">
+        These controls apply to HUMAN Rise/Fall manual trades and Auto Assist execution. Set your stake, optional TP/SL, and keep-alive before enabling auto trading.
+    </div>
+</div>
+
+<div class="card">
+    <h3>📈 HUMAN GRAPH</h3>
+    <div style="margin-top:8px; background:#0f172a; border-radius:12px; padding:10px;">
+        <div style="display:flex; justify-content:flex-end; gap:8px; margin-bottom:8px; flex-wrap:wrap;">
+            <button onclick="humanZoomOut()" style="background:#334155; padding:6px 12px; border-radius:10px;">−</button>
+            <button onclick="humanZoomIn()" style="background:#334155; padding:6px 12px; border-radius:10px;">+</button>
+            <button onclick="humanResetZoom()" style="background:#334155; padding:6px 12px; border-radius:10px;">Reset</button>
+        </div>
 
         <div id="humanChart" style="width:100%; height:300px;"></div>
         <div id="chartPlaceholder" style="text-align:center; color:#94a3b8; padding:10px; display:none;">
             Building 1-hour candles... please wait.
         </div>
-    </div>
-
-    <div style="margin-top:10px; text-align:center; color:#64748b;">
-        HUMAN MODE: Order Block strategy based on 1-hour range.
     </div>
 </div>
 

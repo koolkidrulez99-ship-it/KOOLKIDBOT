@@ -1,24 +1,299 @@
 (function () {
   const PROFILE = "HUMAN";
+  let pollTimer = null;
+  let cachedStatus = null;
+  let socketHooked = false;
 
   function getApp() {
     return window.BotApp || {};
   }
 
-  function bindUI(root) {
+  function byId(id){ return document.getElementById(id); }
+  function rootExists(){ return !!byId("humanRiseFallCard"); }
+
+  function clampNum(v, min, max, fallback){
+    let n = Number(v);
+    if(!Number.isFinite(n)) return fallback;
+    if(n < min) n = min;
+    if(n > max) n = max;
+    return n;
+  }
+
+  function setBtnState(btn, enabled, onText, offText, onColor, offColor){
+    if(!btn) return;
+    btn.textContent = enabled ? onText : offText;
+    btn.style.background = enabled ? (onColor || "#22c55e") : (offColor || "#1e293b");
+  }
+
+  function prettySignalStyles(signalEl, signalState, tradeDirection){
+    if(!signalEl) return;
+    const state = (signalState || "WAIT").toUpperCase();
+    const dir = (tradeDirection || "").toUpperCase();
+    const text = (dir && state !== "WAIT") ? `${state} • ${dir}` : state;
+    signalEl.textContent = text;
+
+    signalEl.style.color = "#e5e7eb";
+    signalEl.style.borderColor = "#334155";
+    signalEl.style.background = "#111827";
+
+    if(state === "TAKE NOW"){
+      const isRise = dir === "RISE";
+      signalEl.style.color = isRise ? "#22c55e" : (dir === "FALL" ? "#ef4444" : "#38bdf8");
+      signalEl.style.borderColor = isRise ? "rgba(34,197,94,0.35)" : (dir === "FALL" ? "rgba(239,68,68,0.35)" : "rgba(56,189,248,0.35)");
+      signalEl.style.background = isRise ? "rgba(34,197,94,0.10)" : (dir === "FALL" ? "rgba(239,68,68,0.10)" : "rgba(56,189,248,0.10)");
+    }else if(state === "READY"){
+      signalEl.style.color = "#38bdf8";
+      signalEl.style.borderColor = "rgba(56,189,248,0.28)";
+      signalEl.style.background = "rgba(56,189,248,0.08)";
+    }else if(state === "LATE"){
+      signalEl.style.color = "#f59e0b";
+      signalEl.style.borderColor = "rgba(245,158,11,0.28)";
+      signalEl.style.background = "rgba(245,158,11,0.08)";
+    }else{
+      signalEl.style.color = "#facc15";
+      signalEl.style.borderColor = "rgba(250,204,21,0.25)";
+      signalEl.style.background = "rgba(250,204,21,0.06)";
+    }
+  }
+
+  function renderHumanRFStatus(data){
+    if(!data || !rootExists()) return;
+    cachedStatus = data;
+
+    const bias = (data.bias || "NEUTRAL").toUpperCase();
+    const signal = (data.signal || "WAIT").toUpperCase();
+    const tradeDirection = (data.trade_direction || "").toUpperCase();
+    const confidence = Number(data.confidence || 0);
+    const reason = data.reason || "Waiting...";
+    const cooldown = Number(data.cooldown_sec || 0);
+    const edgeGap = Number(data.edge_gap || 0);
+    const flags = data.flags || {};
+    const settings = data.settings || {};
+    const comps = data.components || {};
+    const streaks = data.streaks || {};
+
+    const biasEl = byId("humanRfBias");
+    if(biasEl){
+      biasEl.textContent = bias;
+      biasEl.style.color = bias === "BULLISH" ? "#22c55e" : (bias === "BEARISH" ? "#ef4444" : "#facc15");
+    }
+
+    const confEl = byId("humanRfConfidence");
+    if(confEl) confEl.textContent = `${confidence.toFixed(1)}%`;
+
+    prettySignalStyles(byId("humanRfSignal"), signal, tradeDirection);
+
+    const reasonEl = byId("humanRfReason");
+    if(reasonEl){
+      const prefix = (tradeDirection && signal !== "WAIT") ? `${tradeDirection}: ` : "";
+      reasonEl.textContent = `${prefix}${reason}`;
+    }
+
+    const cdEl = byId("humanRfCooldown");
+    if(cdEl) cdEl.textContent = `Cooldown: ${cooldown.toFixed(1)}s`;
+
+    const edgeEl = byId("humanRfEdgeGap");
+    if(edgeEl) edgeEl.textContent = `Edge Gap: ${edgeGap.toFixed(1)}`;
+
+    const marketStateEl = byId("humanRfMarketState");
+    if(marketStateEl){
+      let stateText = "Watching";
+      if(flags.choppy) stateText = "Choppy";
+      else if(signal === "READY") stateText = "Setup Forming";
+      else if(signal === "TAKE NOW") stateText = "Entry Window";
+      else if(signal === "LATE") stateText = "Late Window";
+      else if(signal === "WAIT") stateText = "Watching";
+      marketStateEl.textContent = `Market: ${stateText}`;
+      marketStateEl.style.background = flags.choppy ? "rgba(239,68,68,0.12)" : (signal === "TAKE NOW" ? "rgba(34,197,94,0.12)" : (signal === "READY" ? "rgba(56,189,248,0.10)" : (signal === "LATE" ? "rgba(245,158,11,0.10)" : "rgba(30,41,59,1)")));
+    }
+
+    const streakEl = byId("humanRfStreaks");
+    if(streakEl){
+      streakEl.textContent = `Wins: ${streaks.wins || 0} | Losses: ${streaks.losses || 0} | Last: ${streaks.last_result || "-"}`;
+    }
+
+    if(byId("humanRfScoreTrend")) byId("humanRfScoreTrend").textContent = comps.trend ?? 0;
+    if(byId("humanRfScoreMomentum")) byId("humanRfScoreMomentum").textContent = comps.momentum ?? 0;
+    if(byId("humanRfScorePullback")) byId("humanRfScorePullback").textContent = comps.pullback ?? 0;
+    if(byId("humanRfScoreTrigger")) byId("humanRfScoreTrigger").textContent = comps.trigger ?? 0;
+    if(byId("humanRfScoreClean")) byId("humanRfScoreClean").textContent = comps.cleanliness ?? 0;
+
+    const durEl = byId("humanRfDuration");
+    if(durEl && settings.duration_ticks != null && String(durEl.value) !== String(settings.duration_ticks)){
+      durEl.value = String(settings.duration_ticks);
+    }
+    const thEl = byId("humanRfThreshold");
+    if(thEl && settings.conf_threshold != null && String(thEl.value) !== String(Math.round(Number(settings.conf_threshold)))){
+      thEl.value = String(Math.round(Number(settings.conf_threshold)));
+    }
+
+    setBtnState(byId("humanRfSmartBtn"), !!settings.smart_assist, "Smart Assist: ON", "Smart Assist: OFF", "#22c55e", "#334155");
+    setBtnState(byId("humanRfAutoBtn"), !!settings.auto_assist, "Take Auto Trades: ON", "Take Auto Trades: OFF", "#38bdf8", "#334155");
+    setBtnState(byId("humanRfBiasLockBtn"), !!settings.bias_lock, "Bias Lock: ON", "Bias Lock: OFF", "#a855f7", "#334155");
+    setBtnState(byId("humanRfNoTradeBtn"), !!settings.no_trade_filter, "No-Trade Filter: ON", "No-Trade Filter: OFF", "#f59e0b", "#334155");
+    setBtnState(byId("humanRfAdaptiveBtn"), !!settings.adaptive_cooldown, "Adaptive Cooldown: ON", "Adaptive Cooldown: OFF", "#14b8a6", "#334155");
+  }
+
+  async function fetchHumanRFStatus(){
+    if(!rootExists()) return;
+    try{
+      const res = await fetch("/human_rf_status");
+      if(!res.ok) return;
+      const data = await res.json();
+      renderHumanRFStatus(data);
+    }catch(e){
+      // silent
+    }
+  }
+
+  async function postJSON(url, body){
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {})
+    });
+    let data = {};
+    try { data = await res.json(); } catch(e) {}
+    if(!res.ok && data && data.error) throw new Error(data.error);
+    if(!res.ok && data && data.message) throw new Error(data.message);
+    if(!res.ok) throw new Error("Request failed");
+    return data;
+  }
+
+  async function saveHumanRFSettings(){
+    const durEl = byId("humanRfDuration");
+    const thEl = byId("humanRfThreshold");
+    const durationTicks = durEl ? clampNum(durEl.value || 5, 1, 10, 5) : 5;
+    const confThreshold = thEl ? clampNum(thEl.value || 70, 1, 100, 70) : 70;
+    if(durEl) durEl.value = String(durationTicks);
+    if(thEl) thEl.value = String(Math.round(confThreshold));
+    const body = {
+      duration_ticks: durationTicks,
+      conf_threshold: confThreshold
+    };
+    if(cachedStatus && cachedStatus.settings){
+      body.smart_assist = !!cachedStatus.settings.smart_assist;
+      body.auto_assist = !!cachedStatus.settings.auto_assist;
+      body.bias_lock = !!cachedStatus.settings.bias_lock;
+      body.no_trade_filter = !!cachedStatus.settings.no_trade_filter;
+      body.adaptive_cooldown = !!cachedStatus.settings.adaptive_cooldown;
+    }
+    try{
+      const data = await postJSON("/human_rf_settings", body);
+      if(data && data.rise_fall) renderHumanRFStatus(data.rise_fall);
+      if(typeof showToast === "function") showToast("🧠 HUMAN Rise/Fall settings saved", "success");
+    }catch(e){
+      if(typeof showToast === "function") showToast(e.message || "Failed to save Human RF settings", "error");
+    }
+  }
+
+  async function toggleHumanRFSetting(key){
+    const current = !!(cachedStatus && cachedStatus.settings && cachedStatus.settings[key]);
+    const durEl = byId("humanRfDuration");
+    const thEl = byId("humanRfThreshold");
+    const durationTicks = durEl ? clampNum(durEl.value || 5, 1, 10, 5) : 5;
+    const confThreshold = thEl ? clampNum(thEl.value || 70, 1, 100, 70) : 70;
+    if(durEl) durEl.value = String(durationTicks);
+    if(thEl) thEl.value = String(Math.round(confThreshold));
+    const body = {
+      duration_ticks: durationTicks,
+      conf_threshold: confThreshold
+    };
+    if(cachedStatus && cachedStatus.settings){
+      body.smart_assist = !!cachedStatus.settings.smart_assist;
+      body.auto_assist = !!cachedStatus.settings.auto_assist;
+      body.bias_lock = !!cachedStatus.settings.bias_lock;
+      body.no_trade_filter = !!cachedStatus.settings.no_trade_filter;
+      body.adaptive_cooldown = !!cachedStatus.settings.adaptive_cooldown;
+    }
+    body[key] = !current;
+    try{
+      const data = await postJSON("/human_rf_settings", body);
+      if(data && data.rise_fall) renderHumanRFStatus(data.rise_fall);
+      if(typeof showToast === "function"){
+        const label = key.replaceAll("_"," ");
+        showToast(`${label}: ${(!current) ? "ON" : "OFF"}`, (!current) ? "success" : "warn");
+      }
+    }catch(e){
+      if(typeof showToast === "function") showToast(e.message || "Toggle failed", "error");
+    }
+  }
+
+  async function humanRFTrade(direction){
+    try{
+      const stakeEl = byId("stake");
+      const durEl = byId("humanRfDuration");
+      const stakeVal = stakeEl ? clampNum(stakeEl.value || 1, 0.35, 1000000, 1) : 1;
+      const durationTicks = durEl ? clampNum(durEl.value || 5, 1, 10, 5) : 5;
+      if(stakeEl) stakeEl.value = String(stakeVal);
+      if(durEl) durEl.value = String(durationTicks);
+      const payload = {
+        direction: direction || "AUTO",
+        stake: stakeVal,
+        duration_ticks: durationTicks
+      };
+      const data = await postJSON("/human_rf_trade", payload);
+      if(typeof showToast === "function"){
+        const d = (data && data.signal && data.signal.direction) ? data.signal.direction : (direction || "AUTO");
+        showToast(`✅ HUMAN ${d} trade sent`, "success");
+      }
+      await fetchHumanRFStatus();
+    }catch(e){
+      if(typeof showToast === "function") showToast(e.message || "No valid setup", "error");
+    }
+  }
+
+  async function humanRFSetStake(){
+    try{
+      const stakeEl = byId("stake");
+      const stakeVal = stakeEl ? clampNum(stakeEl.value || 1, 0.35, 1000000, 1) : 1;
+      if(stakeEl) stakeEl.value = String(stakeVal);
+      const data = await postJSON("/set_auto_stake", { stake: stakeVal });
+      if(typeof showToast === "function") showToast(`💰 HUMAN stake set: ${Number(data.auto_stake || stakeVal).toFixed(2)}`, "success");
+    }catch(e){
+      if(typeof showToast === "function") showToast(e.message || "Failed to set stake", "error");
+    }
+  }
+
+  function startPolling(){
+    stopPolling();
+    fetchHumanRFStatus();
+    pollTimer = setInterval(() => {
+      if(!rootExists()) return;
+      fetchHumanRFStatus();
+    }, 1000);
+  }
+
+  function stopPolling(){
+    if(pollTimer){
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  }
+
+  function bindSocketIfPossible(){
+    if(socketHooked) return;
+    try{
+      if(typeof socket !== "undefined" && socket && typeof socket.on === "function"){
+        socket.on("human_rf_status", (payload) => {
+          if(rootExists()) renderHumanRFStatus(payload);
+        });
+        socketHooked = true;
+      }
+    }catch(e){}
+  }
+
+  function getAppHooks(){
     const App = getApp();
+    return App || {};
+  }
+
+  function bindUI(root) {
+    const App = getAppHooks();
     if (!root || !App.bindActionButtons) return;
 
-    App.bindActionButtons(root, async ({ action, btn, event }) => {
+    App.bindActionButtons(root, async ({ action }) => {
       switch (action) {
-        // ===== Add HUMAN-only buttons here later =====
-        // Suggested actions:
-        // case "human-chart-zoom-out":
-        // case "human-chart-reset":
-        // case "human-keepalive-toggle":
-        // case "humanx-auto-toggle":
-        // etc.
-
         default:
           break;
       }
@@ -26,23 +301,30 @@
   }
 
   async function onMount(payload) {
-    const root = payload && payload.root ? payload.root : document.getElementById("profileContainer");
+    const root = payload && payload.root ? payload.root : byId("profileContainer");
     bindUI(root);
+    bindSocketIfPossible();
 
-    // Keep this empty for now.
-    // Your index currently still initializes HUMAN chart/keepalive itself.
-    // Later we move that logic here.
+    // expose globals for inline onclick in human.html
+    window.humanRFTrade = humanRFTrade;
+    window.saveHumanRFSettings = saveHumanRFSettings;
+    window.toggleHumanRFSetting = toggleHumanRFSetting;
+    window.humanRFSetStake = humanRFSetStake;
+
+    // initial render/poll
+    startPolling();
   }
 
-  async function afterLoadProfileUI(payload) {
-    // Optional future move:
-    // if (typeof initHumanChartIfPresent === "function") initHumanChartIfPresent();
-    // if (typeof refreshHumanKeepAliveStatus === "function") refreshHumanKeepAliveStatus();
+  async function afterLoadProfileUI() {
+    bindSocketIfPossible();
+    startPolling();
   }
 
-  async function onActivate(payload) {
-    // Optional future move:
-    // if (typeof refreshHumanKeepAliveUI === "function") await refreshHumanKeepAliveUI();
+  async function onActivate() {
+    startPolling();
+    try{
+      if(typeof refreshHumanKeepAliveUI === "function") await refreshHumanKeepAliveUI();
+    }catch(e){}
   }
 
   if (typeof window.registerProfileModule === "function") {

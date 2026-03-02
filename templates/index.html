@@ -1098,54 +1098,62 @@ function getHowToHTMLForProfile(profile) {
     if (profile === "KOOLKID") {
         return `
             <div style="color:#94a3b8; margin-bottom:8px;">
-                KOOLKID mode – digit trading with manual tools, automated modes, and advanced smart modes.
+                Welcome to KOOLKID mode – designed for digit-based trading.
             </div>
             <ul>
-                <li><b>Barrier Analysis (NEW):</b> Toggles the live barrier-analysis panel on/off. When ON, it shows ranked barrier options with confidence percentages based on live simulation. Use it to monitor current barrier strength and quickly choose a barrier for supported auto modes. When OFF, the barrier list hides to keep the layout clean.</li>
-                <li><b>kidBagz💰🤑 AUTO (NEW):</b> Automated KOOLKID mode that watches live conditions and executes only when its internal setup rules line up. Use this when you want a hands-free mode without manually pressing the standard trade buttons.</li>
-                <li><b>MPull💰🤫 AUTO (NEW):</b> Momentum-style automated mode for KOOLKID. It reacts to your current KOOLKID settings and uses the stake/risk controls from the page. Think of it as a guided auto mode designed for quicker KOOLKID entries than manual tapping.</li>
-                <li><b>MPull Mode (BOTH / OVER 5 ONLY / UNDER 5 ONLY):</b> Filters how <b>MPull💰🤫 AUTO</b> is allowed to operate. <b>BOTH</b> allows the full MPull behavior, while the other two options restrict it to one side family only.</li>
-                <li><b>MPull💰🤓 ALL DIGITS (NEW):</b> Expanded MPull mode that works across selected digits instead of relying on one simple barrier workflow. Best used when you want broader digit participation while still keeping MPull-style automation active.</li>
-                <li><b>⚡kidGx (NEW):</b> Ultra-fast continuous mode. It is designed for rapid repeated execution while active, using the currently selected KOOLKID barrier source (for example, your chosen barrier from analysis/selection). Turn it off manually when you want it to stop.</li>
-                <li><b>🤖AI AUTO-TRADING (NEW):</b> KOOLKID advanced auto mode that combines multiple KOOLKID analysis layers before selecting opportunities. It includes a warm-up/analyzing phase and is intended to make smarter selections than a single-rule auto mode.</li>
-                <li><b>kidPairs🤓💯 AUTO (NEW):</b> Sequence-based automated mode with built-in signal timing and cooldown behavior. Use the <b>1 Trade</b> / <b>2 Trades</b> selector below it to control how many trades it executes per valid signal event.</li>
-                <li><b>5*² sequential vix (NEW):</b> Multi-market sequential runner for KOOLKID. It scans/rotates markets, trades sequentially (not all at once), and displays progress. Use the popup to choose contract type and trades-per-market before starting.</li>
-                <li><b>🤖 KIDBRAIN / 🧠 EDGE BRAIN / 🎯 SMART FLOW / ⚡ META AI / 🤓 KIDRACKS AI (NEW ADVANCED MODES):</b> These are advanced named AI modes (if enabled in your build). They are designed as higher-level decision helpers that layer market-state filtering, confidence checks, or smarter mode selection on top of your existing KOOLKID tools—without replacing your original buttons.</li>
-                <li><b>Master Auto:</b> Global on/off control for supported KOOLKID automated modes. Use this as your quick stop/start control after configuring individual auto buttons.</li>
-                <li><b>TP / SL + AUTO SL:</b> Risk controls used by manual and supported automated modes. Set these before turning on any auto button so the mode runs with your preferred account protection.</li>
+                <li><b>Digit Grid:</b> Click any digit (0–9) to set it as your barrier and open a popup with quick trade options.</li>
+                <li><b>Stake:</b> Your trade amount in USD. Minimum 0.35.</li>
+                <li><b>Barrier:</b> The digit you are trading on (0–9). Can be set manually or by clicking the grid.</li>
+                <li><b>TAKE 3 UNDER / OVER:</b> Places three consecutive trades of the selected type.</li>
+                <li><b>BURST 4 UNDER / OVER:</b> Places four quick trades of the selected type.</li>
+                <li><b>KIDRACKS AUTO:</b> Automated mode that triggers trades based on the selected barrier. Click once to set barrier, again to toggle on/off.</li>
+                <li><b>KOOLKIDSPEED AUTO:</b> Faster automated mode with barrier selection.</li>
+                <li><b>KOOL🍀KID LUCK:</b> Cycles through a preset sequence of trades each time the relevant digit appears.</li>
+                <li><b>kidBagz💰🤑 AUTO:</b> New automated mode.</li>
+                <li><b>MPull💰🤫 AUTO:</b> New automated mode.</li>
+                <li><b>kidPairs🤓💯 AUTO:</b> New automated mode.</li>
+                <!-- PATCH 2D: add SeqVIX description -->
+                <li><b>5*² sequential vix:</b> Rotates 10 random markets, places 2 trades per market, shows progress.</li>
+                <li><b>Master Auto:</b> Global on/off for all automated modes.</li>
+                <li><b>TP/SL:</b> Set take-profit and stop-loss levels (in USD). AUTO SL toggles automatic stop-loss.</li>
             </ul>
-            <div style="margin-top:8px; font-size:11px; color:#94a3b8;">
-                ℹ️ Descriptions above are operational guides only (how the buttons behave/when to use them) and intentionally do not expose private trigger formulas.
-            </div>
         `;
     }
     if (profile === "JOKERJOE") {
         return `
             <div style="color:#94a3b8; margin-bottom:8px;">
-                JOKERJOE mode – digit matches/differs tools with automated and sequential options.
+                JOKERJOE mode – for advanced digit strategies.
             </div>
             <ul>
-                <li><b>⚡kidGx (NEW, if shown):</b> Fast continuous JOKERJOE auto mode. It runs rapidly while active and uses the current JOKERJOE barrier/selection context. Turn it off manually to stop continuous execution.</li>
-                <li><b>🤖AI AUTO-TRADING (NEW, if shown):</b> JOKERJOE advanced automated mode that uses internal analysis before placing trades. This mode is intended to be a smarter hands-free option compared with single-rule auto modes.</li>
-                <li><b>5*² sequential vix (NEW):</b> Sequential multi-market JOKERJOE mode. Starts from the popup where you choose market count/endless and trades-per-market. It rotates markets and shows progress in the line under the button.</li>
-                <li><b>🤖 KIDBRAIN / 🧠 EDGE BRAIN / 🎯 SMART FLOW / ⚡ META AI / 🤓 KIDRACKS AI (NEW ADVANCED MODES):</b> If these appear in your JOKERJOE build, they act as higher-level smart-mode buttons that add filtering/decision layers over your existing JOKERJOE logic rather than replacing your core manual buttons.</li>
-                <li><b>sludgeX AUTO / tripleX AUTO / kidX / MultiG:</b> Existing JOKERJOE automated tools. Use these for your core automated workflows, then use the newer advanced buttons (if enabled) when you want extra filtering or smarter selection behavior.</li>
-                <li><b>Master Auto:</b> Main quick control for supported JOKERJOE autos after you configure the specific mode you want to run.</li>
+                <li><b>Digit Grid:</b> Click a digit to set your barrier and open a popup for MATCHES/DIFFERS trades.</li>
+                <li><b>DIGIT MATCHES:</b> Manual trade betting the next digit equals your barrier.</li>
+                <li><b>DIGIT DIFFERS:</b> Manual trade betting the next digit is not your barrier.</li>
+                <li><b>INSTA 5:</b> Places five DIFFERS trades instantly on the current barrier.</li>
+                <li><b>kidgambleX:</b> Automatically selects the three most frequent digits and places MATCHES trades on them. (One-click execution)</li>
+                <li><b>sludgeX AUTO:</b> Automated DIFFERS trades on a set of digits when conditions are met.</li>
+                <li><b>tripleX AUTO:</b> Rotates through a sequence of digits, placing a DIFFERS trade each time the target digit appears.</li>
+                <li><b>kidX:</b> Waits for the selected barrier digit to appear, then places three DIFFERS trades over the next five ticks.</li>
+                <li><b>MultiG:</b> Queues a digit with a low appearance rate, holds for 30 seconds, then places a DIFFERS trade if the digit remains rare.</li>
+                <!-- PATCH 2D: add SeqVIX description -->
+                <li><b>5*² sequential vix:</b> Rotates random markets, places 2 differs trades per market, shows progress.</li>
+                <li><b>Master Auto:</b> Enables/disables sludgeX, tripleX, and kidX (MultiG works independently).</li>
             </ul>
             <div style="margin-top:8px; font-size:11px; color:#ef4444; text-align:center;">
-                ⚠️ Use demo testing first when enabling any fast or automated mode.
+                ⚠️ For professional use only
             </div>
         `;
     }
     return `
         <div style="color:#94a3b8; margin-bottom:8px;">
-            HUMAN mode – multiplier trading with order block logic.
+            HUMAN mode – Rise/Fall Smart Assist with manual controls and optional auto trading for strong setups.
         </div>
         <ul>
-            <li><b>Stake:</b> Your trade amount.</li>
-            <li><b>TP / SL:</b> Set take-profit and stop-loss in USD. AUTO SL toggles automatic stop-loss.</li>
-            <li><b>humanX (Order Block Trade):</b> One-click execution of the order block strategy.</li>
-            <li><b>Chart:</b> Displays the last 24 hours of 1-hour candles.</li>
+            <li><b>🧠 Smart Assist:</b> Reads trend, momentum, pullback quality, and trigger strength to show <b>RISE / FALL / WAIT</b>.</li>
+            <li><b>Take Auto Trades:</b> Optional auto mode. When ON, it only places trades if confidence is at or above your selected threshold (default 70%).</li>
+            <li><b>Rise/Fall Duration:</b> User-settable from <b>1–10 ticks</b>.</li>
+            <li><b>Auto Threshold %:</b> Set your own confidence requirement for auto entries.</li>
+            <li><b>Stake / TP / SL:</b> Set stake, take-profit, and stop-loss for HUMAN Rise/Fall execution. AUTO SL applies your risk controls automatically.</li>
+            <li><b>Graph:</b> Keeps the HUMAN chart with zoom controls for visual context.</li>
         </ul>
     `;
 }
@@ -1523,7 +1531,7 @@ async function setProfile(profile){
     }
     if(profile === "HUMAN"){
         document.getElementById("humanBtn").classList.add("active");
-        profileTitle.innerText = "HUMAN MODE: MULTIPLIERS + ORDER BLOCK";
+        profileTitle.innerText = "HUMAN MODE: RISE/FALL SMART ASSIST";
         profileTitle.style.color = "#22c55e";
     }
 
