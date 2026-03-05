@@ -83,7 +83,15 @@
   }
 
   async function placeBatchManualTradesJokerjoe(contractType, digits) {
-    const jobs = (digits || []).map((d) => postJSON("/manual_trade", { type: contractType, barrier: Number(d) }));
+    const stakeEl = document.getElementById("stake");
+    let stake = Number(stakeEl && stakeEl.value);
+    if (!Number.isFinite(stake) || stake <= 0) stake = 1;
+
+    // Send stake with each manual trade so batch actions (MatchSniper 5x) respect the UI stake.
+    // Include both `stake` and `amount` for compatibility with different backend parsers.
+    const base = { type: contractType, stake, amount: stake };
+
+    const jobs = (digits || []).map((d) => postJSON("/manual_trade", Object.assign({}, base, { barrier: Number(d) })));
     const results = await Promise.allSettled(jobs);
     let placed = 0;
     const failed = [];

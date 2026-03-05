@@ -48,7 +48,6 @@ DB_FILE = "users.db"
 # Render / production Postgres (persistent users across deploys/restarts)
 DATABASE_URL = (os.environ.get("DATABASE_URL") or "").strip()
 if DATABASE_URL.startswith("postgres://"):
-    # psycopg2 prefers postgresql://
     DATABASE_URL = "postgresql://" + DATABASE_URL[len("postgres://"):]
 
 try:
@@ -69,16 +68,18 @@ clients = {}
 HEARTBEAT_TIMEOUT_SEC = 10 * 60
 
 
-# ---------------- DATABASE SETUP (Postgres + SQLite fallback) ---------------- #
+
+# ---------------- DATABASE + LICENSE/AUTH SETUP ---------------- #
 def _db_is_postgres():
     return DB_BACKEND == "postgres"
 
 
-def _db_connect():
+def _db_connect(row_factory=False):
     if _db_is_postgres():
-        # Render internal DATABASE_URL recommended for services in same region
         return psycopg2.connect(DATABASE_URL)
     conn = sqlite3.connect(DB_FILE)
+    if row_factory:
+        conn.row_factory = sqlite3.Row
     return conn
 
 
@@ -89,8 +90,7 @@ def _db_execute(cursor, sql, params=()):
 
 
 def _db_fetchone(cursor):
-    row = cursor.fetchone()
-    return row
+    return cursor.fetchone()
 
 
 def _db_commit(conn):
@@ -105,6 +105,106 @@ def _table_has_column_sqlite(conn, table_name, column_name):
     c.execute(f"PRAGMA table_info({table_name})")
     cols = {row[1] for row in c.fetchall()}
     return column_name in cols
+
+
+def _db_row_to_dict(cursor, row):
+    if row is None:
+        return None
+    try:
+        if hasattr(row, "keys"):
+            return {k: row[k] for k in row.keys()}
+    except Exception:
+        pass
+    try:
+        cols = [d[0] for d in (cursor.description or [])]
+        return {cols[i]: row[i] for i in range(min(len(cols), len(row)))}
+    except Exception:
+        return None
+
+
+def _db_fetchall_dicts(cursor):
+    rows = cursor.fetchall()
+    return [(_db_row_to_dict(cursor, r) or {}) for r in (rows or [])]
+
+
+def _utc_now_str():
+    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _parse_dt(value):
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    s = str(value).strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(s[:19], fmt)
+        except Exception:
+            pass
+    return None
+
+
+def normalize_license_key(key):
+    return str(key or "").strip().upper().replace(" ", "")
+
+
+def _db_add_user_column_if_missing(conn, column_name, column_def_sql):
+    if _db_is_postgres():
+        cur = conn.cursor()
+        cur.execute(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {column_name} {column_def_sql}")
+        return
+    if not _table_has_column_sqlite(conn, "users", column_name):
+        cur = conn.cursor()
+        cur.execute(f"ALTER TABLE users ADD COLUMN {column_name} {column_def_sql}")
+
+
+def _db_create_auth_tables(conn):
+    c = conn.cursor()
+    if _db_is_postgres():
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS licenses (
+            license_key TEXT PRIMARY KEY,
+            license_type TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TIMESTAMP NOT NULL,
+            activated_at TIMESTAMP NULL,
+            expires_at TIMESTAMP NULL,
+            used_by TEXT NULL
+        )
+        """)
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS password_resets (
+            id BIGSERIAL PRIMARY KEY,
+            username TEXT NOT NULL,
+            token_hash TEXT NOT NULL UNIQUE,
+            created_at TIMESTAMP NOT NULL,
+            expires_at TIMESTAMP NOT NULL,
+            used_at TIMESTAMP NULL
+        )
+        """)
+    else:
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS licenses (
+            license_key TEXT PRIMARY KEY,
+            license_type TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL,
+            activated_at TEXT,
+            expires_at TEXT,
+            used_by TEXT
+        )
+        """)
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS password_resets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            token_hash TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            used_at TEXT
+        )
+        """)
 
 
 def init_db():
@@ -128,125 +228,331 @@ def init_db():
         )
         """)
 
+    # Safe migrations for auth/license support
+    _db_add_user_column_if_missing(conn, "email", "TEXT")
+    _db_add_user_column_if_missing(conn, "role", "TEXT DEFAULT 'user'")
+    _db_add_user_column_if_missing(conn, "grandfathered", "INTEGER DEFAULT 1")
+    _db_add_user_column_if_missing(conn, "license_key", "TEXT")
+    _db_add_user_column_if_missing(conn, "license_exempt", "INTEGER DEFAULT 0")
+    _db_add_user_column_if_missing(conn, "created_at", "TEXT")
+
+    _db_create_auth_tables(conn)
+
+    now_s = _utc_now_str()
+    _db_execute(c, "UPDATE users SET role='user' WHERE role IS NULL OR TRIM(role)=''", ())
+    _db_execute(c, "UPDATE users SET grandfathered=1 WHERE grandfathered IS NULL", ())
+    _db_execute(c, "UPDATE users SET license_exempt=0 WHERE license_exempt IS NULL", ())
+    _db_execute(c, "UPDATE users SET created_at=? WHERE created_at IS NULL OR TRIM(created_at)=''", (now_s,))
     _db_commit(conn)
     conn.close()
 
 
 def _maybe_migrate_sqlite_users_to_postgres():
-    """
-    One-time safe migration path:
-    - Only runs when Postgres is active
-    - Imports any users from local SQLite users.db if it exists
-    - Uses ON CONFLICT DO NOTHING so restarts won't duplicate users
-    """
+    # One-time migration for Render deployment: import local SQLite rows if present
     if not _db_is_postgres():
         return
-
     if not os.path.exists(DB_FILE):
         return
-
     try:
-        sqlite_conn = sqlite3.connect(DB_FILE)
-        sqlite_cur = sqlite_conn.cursor()
-        sqlite_cur.execute("SELECT username, password FROM users")
-        rows = sqlite_cur.fetchall()
+        sconn = sqlite3.connect(DB_FILE)
+        sconn.row_factory = sqlite3.Row
+        scur = sconn.cursor()
+        scur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = {r["name"] for r in scur.fetchall()}
     except Exception as e:
-        logger.warning(f"SQLite -> Postgres migration skipped (read error): {e}")
+        logger.warning(f"SQLite -> Postgres migration skipped (open/read error): {e}")
         try:
-            sqlite_conn.close()
+            sconn.close()
         except Exception:
             pass
         return
 
-    if not rows:
-        try:
-            sqlite_conn.close()
-        except Exception:
-            pass
-        return
-
-    pg_conn = None
-    migrated = 0
+    pconn = None
     try:
-        pg_conn = _db_connect()
-        pg_cur = pg_conn.cursor()
-        for username, password_hash in rows:
-            try:
-                pg_cur.execute(
-                    "INSERT INTO users (username, password) VALUES (%s, %s) ON CONFLICT (username) DO NOTHING",
-                    (username, password_hash)
-                )
-                # rowcount is 1 if inserted, 0 if conflict ignored
-                migrated += max(int(getattr(pg_cur, "rowcount", 0) or 0), 0)
-            except Exception as row_err:
-                logger.warning(f"Migration skipped user {username!r}: {row_err}")
-        pg_conn.commit()
-        if migrated:
-            logger.info(f"✅ Migrated {migrated} user(s) from SQLite ({DB_FILE}) to Postgres")
-        else:
-            logger.info("ℹ️ SQLite -> Postgres migration checked (no new users to import)")
+        pconn = _db_connect()
+        pcur = pconn.cursor()
+        migrated_users = migrated_lic = migrated_resets = 0
+
+        if "users" in tables:
+            scur.execute("SELECT * FROM users")
+            for r in scur.fetchall():
+                rd = dict(r)
+                try:
+                    pcur.execute(
+                        """
+                        INSERT INTO users (username, password, email, role, grandfathered, license_key, license_exempt, created_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (username) DO NOTHING
+                        """,
+                        (
+                            rd.get("username"),
+                            rd.get("password"),
+                            rd.get("email"),
+                            rd.get("role") or "user",
+                            int(rd.get("grandfathered") if rd.get("grandfathered") is not None else 1),
+                            rd.get("license_key"),
+                            int(rd.get("license_exempt") if rd.get("license_exempt") is not None else 0),
+                            rd.get("created_at") or _utc_now_str(),
+                        ),
+                    )
+                    migrated_users += max(int(getattr(pcur, "rowcount", 0) or 0), 0)
+                except Exception as e_row:
+                    logger.warning(f"SQLite->PG user migrate skip {rd.get('username')!r}: {e_row}")
+
+        if "licenses" in tables:
+            scur.execute("SELECT * FROM licenses")
+            for r in scur.fetchall():
+                rd = dict(r)
+                key = normalize_license_key(rd.get("license_key"))
+                if not key:
+                    continue
+                try:
+                    pcur.execute(
+                        """
+                        INSERT INTO licenses (license_key, license_type, status, created_at, activated_at, expires_at, used_by)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (license_key) DO NOTHING
+                        """,
+                        (
+                            key,
+                            rd.get("license_type") or "monthly",
+                            rd.get("status") or "active",
+                            rd.get("created_at") or _utc_now_str(),
+                            rd.get("activated_at"),
+                            rd.get("expires_at"),
+                            rd.get("used_by"),
+                        ),
+                    )
+                    migrated_lic += max(int(getattr(pcur, "rowcount", 0) or 0), 0)
+                except Exception as e_row:
+                    logger.warning(f"SQLite->PG license migrate skip {key!r}: {e_row}")
+
+        if "password_resets" in tables:
+            scur.execute("SELECT * FROM password_resets")
+            for r in scur.fetchall():
+                rd = dict(r)
+                if not rd.get("token_hash"):
+                    continue
+                try:
+                    pcur.execute(
+                        """
+                        INSERT INTO password_resets (username, token_hash, created_at, expires_at, used_at)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (token_hash) DO NOTHING
+                        """,
+                        (
+                            rd.get("username"),
+                            rd.get("token_hash"),
+                            rd.get("created_at") or _utc_now_str(),
+                            rd.get("expires_at") or _utc_now_str(),
+                            rd.get("used_at"),
+                        ),
+                    )
+                    migrated_resets += max(int(getattr(pcur, "rowcount", 0) or 0), 0)
+                except Exception as e_row:
+                    logger.warning(f"SQLite->PG reset migrate skip: {e_row}")
+
+        pconn.commit()
+        logger.info(f"SQLite -> Postgres migration checked (users={migrated_users}, licenses={migrated_lic}, resets={migrated_resets})")
     except Exception as e:
         logger.error(f"SQLite -> Postgres migration failed: {e}")
     finally:
         try:
-            sqlite_conn.close()
+            sconn.close()
         except Exception:
             pass
         try:
-            if pg_conn:
-                pg_conn.close()
+            if pconn:
+                pconn.close()
         except Exception:
             pass
 
 
 def ensure_admin_user():
-    """
-    Auto-create admin so you never get locked out.
-    """
     conn = _db_connect()
     c = conn.cursor()
-
-    _db_execute(c, "SELECT id FROM users WHERE username = ?", (ADMIN_USERNAME,))
+    _db_execute(c, "SELECT id FROM users WHERE lower(username)=lower(?)", (ADMIN_USERNAME,))
     exists = _db_fetchone(c)
 
     if not exists:
         hashed_pw = generate_password_hash(ADMIN_PASSWORD)
-        _db_execute(c, "INSERT INTO users (username, password) VALUES (?, ?)", (ADMIN_USERNAME, hashed_pw))
+        _db_execute(
+            c,
+            """
+            INSERT INTO users (username, password, role, grandfathered, license_exempt, created_at)
+            VALUES (?, ?, 'admin', 1, 1, ?)
+            """,
+            (ADMIN_USERNAME, hashed_pw, _utc_now_str()),
+        )
         _db_commit(conn)
         print(f"✅ Admin account created automatically: {ADMIN_USERNAME}")
-
+    else:
+        _db_execute(
+            c,
+            """
+            UPDATE users SET role='admin', grandfathered=1, license_exempt=1,
+                   created_at=COALESCE(created_at, ?)
+             WHERE lower(username)=lower(?)
+            """,
+            (_utc_now_str(), ADMIN_USERNAME),
+        )
+        _db_commit(conn)
     conn.close()
 
 
 def get_user_count():
     conn = _db_connect()
     c = conn.cursor()
-    _db_execute(c, "SELECT COUNT(*) FROM users")
+    _db_execute(c, "SELECT COUNT(*) FROM users WHERE lower(username) != lower(?)", (ADMIN_USERNAME,))
     row = _db_fetchone(c)
-    count = row[0] if row else 0
     conn.close()
-    return int(count)
+    return int((row[0] if row else 0) or 0)
 
 
-def create_user(username, password):
-    if username.lower() == ADMIN_USERNAME.lower():
+def _get_user_row(username):
+    conn = _db_connect(row_factory=not _db_is_postgres())
+    c = conn.cursor()
+    _db_execute(c, "SELECT * FROM users WHERE username = ?", (username,))
+    row = _db_fetchone(c)
+    out = _db_row_to_dict(c, row)
+    conn.close()
+    return out
+
+
+def _get_license_row(license_key):
+    key = normalize_license_key(license_key)
+    if not key:
+        return None
+    conn = _db_connect(row_factory=not _db_is_postgres())
+    c = conn.cursor()
+    _db_execute(c, "SELECT * FROM licenses WHERE license_key = ?", (key,))
+    row = _db_fetchone(c)
+    out = _db_row_to_dict(c, row)
+    conn.close()
+    return out
+
+
+def _license_is_expired(license_row):
+    if not license_row:
+        return True
+    if str(license_row.get("license_type") or "").lower() == "lifetime":
+        return False
+    exp = _parse_dt(license_row.get("expires_at"))
+    if exp is None:
+        return False
+    return datetime.utcnow() > exp
+
+
+def check_user_license_access(user_row):
+    if not user_row:
+        return False, "User not found"
+    role = str(user_row.get("role") or "user").lower()
+    if role == "admin":
+        return True, "admin"
+    if int(user_row.get("license_exempt") or 0) == 1:
+        return True, "license_exempt"
+    if int(user_row.get("grandfathered") if user_row.get("grandfathered") is not None else 1) == 1:
+        return True, "grandfathered"
+
+    linked_key = normalize_license_key(user_row.get("license_key"))
+    if not linked_key:
+        return False, "No license linked to this account. Contact admin."
+    lic = _get_license_row(linked_key)
+    if not lic:
+        return False, "Linked license key not found. Contact admin."
+    if str(lic.get("status") or "").lower() == "revoked":
+        return False, "Your license was revoked. Contact admin."
+    if _license_is_expired(lic):
+        return False, "Your license has expired. Please renew."
+    return True, "active"
+
+
+def _validate_license_for_registration(conn, license_key):
+    key = normalize_license_key(license_key)
+    if not key:
+        return False, "License key is required"
+    c = conn.cursor()
+    _db_execute(c, "SELECT * FROM licenses WHERE license_key = ?", (key,))
+    rowd = _db_row_to_dict(c, _db_fetchone(c))
+    if not rowd:
+        return False, "Invalid license key"
+    if str(rowd.get("status") or "").lower() == "revoked":
+        return False, "This license key has been revoked"
+    if str(rowd.get("used_by") or "").strip():
+        return False, "This license key has already been used"
+    ltype = str(rowd.get("license_type") or "").lower()
+    if ltype not in ("monthly", "lifetime"):
+        return False, "Unsupported license key type"
+    return True, rowd
+
+
+def _consume_license_for_new_user(conn, license_key, username):
+    ok, row_or_msg = _validate_license_for_registration(conn, license_key)
+    if not ok:
+        return False, row_or_msg
+    rowd = row_or_msg
+    now_s = _utc_now_str()
+    expires_at = None
+    if str(rowd.get("license_type") or "").lower() == "monthly":
+        expires_at = (datetime.utcnow() + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+    c = conn.cursor()
+    _db_execute(
+        c,
+        "UPDATE licenses SET used_by=?, activated_at=?, expires_at=? WHERE license_key=?",
+        (username, now_s, expires_at, normalize_license_key(license_key)),
+    )
+    return True, normalize_license_key(license_key)
+
+
+def create_user(username, password, email=None, license_key=None, *, role="user", grandfathered=0, license_exempt=0):
+    username = (username or "").strip()
+    if not username:
+        return False, "Username is required"
+    if username.lower() == ADMIN_USERNAME.lower() and str(role).lower() != "admin":
         return False, "Username is reserved"
-
-    if get_user_count() >= MAX_USERS:
+    if str(role).lower() != "admin" and get_user_count() >= MAX_USERS:
         return False, f"User limit reached ({MAX_USERS} max)"
 
     conn = _db_connect()
     c = conn.cursor()
-
     hashed_pw = generate_password_hash(password)
-
     try:
-        _db_execute(c, "INSERT INTO users (username, password) VALUES (?, ?)", (username, hashed_pw))
+        linked_license_key = None
+        if str(role).lower() != "admin" and int(license_exempt or 0) != 1 and int(grandfathered or 0) != 1:
+            lic_ok, lic_result = _consume_license_for_new_user(conn, license_key, username)
+            if not lic_ok:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                return False, lic_result
+            linked_license_key = lic_result
+
+        _db_execute(
+            c,
+            """
+            INSERT INTO users (username, password, email, role, grandfathered, license_key, license_exempt, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                username,
+                hashed_pw,
+                (email or None),
+                str(role or "user").lower(),
+                int(1 if grandfathered else 0),
+                linked_license_key,
+                int(1 if license_exempt else 0),
+                _utc_now_str(),
+            ),
+        )
         _db_commit(conn)
         return True, "User created"
     except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         msg = str(e).lower()
-        # sqlite + postgres unique violations
         if "unique" in msg or "duplicate" in msg:
             return False, "Username already exists"
         logger.error(f"create_user DB error: {e}")
@@ -256,17 +562,314 @@ def create_user(username, password):
 
 
 def verify_user(username, password):
-    conn = _db_connect()
-    c = conn.cursor()
-
-    _db_execute(c, "SELECT password FROM users WHERE username = ?", (username,))
-    row = _db_fetchone(c)
-    conn.close()
-
+    row = _get_user_row(username)
     if not row:
         return False
+    try:
+        return check_password_hash(row.get("password", ""), password)
+    except Exception:
+        return False
 
-    return check_password_hash(row[0], password)
+
+def _validate_password_strength(password):
+    password = (password or "").strip()
+    if len(password) < 8:
+        return "Password must be at least 8 characters"
+    if password.isdigit() or password.isalpha():
+        return "Password must include letters and numbers"
+    return None
+
+
+def _find_user_for_reset(identifier):
+    identifier = (identifier or "").strip()
+    if not identifier:
+        return None
+    conn = _db_connect(row_factory=not _db_is_postgres())
+    c = conn.cursor()
+    _db_execute(c, "SELECT * FROM users WHERE lower(username)=lower(?) OR lower(COALESCE(email,''))=lower(?) LIMIT 1", (identifier, identifier))
+    row = _db_fetchone(c)
+    out = _db_row_to_dict(c, row)
+    conn.close()
+    return out
+
+
+def _hash_reset_token(token):
+    return hashlib.sha256(str(token).encode("utf-8")).hexdigest()
+
+
+def _create_password_reset_token(username, minutes_valid=30):
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = _hash_reset_token(raw_token)
+    now_dt = datetime.utcnow()
+    exp_dt = now_dt + timedelta(minutes=minutes_valid)
+    now_s = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+    exp_s = exp_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    conn = _db_connect()
+    c = conn.cursor()
+    _db_execute(c, "UPDATE password_resets SET used_at=? WHERE username=? AND used_at IS NULL", (now_s, username))
+    _db_execute(c, "INSERT INTO password_resets (username, token_hash, created_at, expires_at, used_at) VALUES (?, ?, ?, ?, NULL)",
+                (username, token_hash, now_s, exp_s))
+    _db_commit(conn)
+    conn.close()
+    return raw_token, exp_dt
+
+
+def _get_reset_token_record(raw_token):
+    token = (raw_token or "").strip()
+    if not token:
+        return None, "Missing reset token"
+
+    conn = _db_connect(row_factory=not _db_is_postgres())
+    c = conn.cursor()
+    _db_execute(c, "SELECT id, username, created_at, expires_at, used_at FROM password_resets WHERE token_hash=?", (_hash_reset_token(token),))
+    rec = _db_row_to_dict(c, _db_fetchone(c))
+    conn.close()
+
+    if not rec:
+        return None, "Invalid reset token"
+    if rec.get("used_at"):
+        return None, "This reset link has already been used"
+
+    exp_dt = _parse_dt(rec.get("expires_at"))
+    if exp_dt is None:
+        return None, "Reset token is invalid"
+    if datetime.utcnow() > exp_dt:
+        return None, "This reset link has expired"
+    return rec, None
+
+
+def _mark_reset_token_used(token_id):
+    conn = _db_connect()
+    c = conn.cursor()
+    _db_execute(c, "UPDATE password_resets SET used_at=? WHERE id=?", (_utc_now_str(), token_id))
+    _db_commit(conn)
+    conn.close()
+
+
+def _update_user_password(username, new_password):
+    conn = _db_connect()
+    c = conn.cursor()
+    _db_execute(c, "UPDATE users SET password=? WHERE username=?", (generate_password_hash(new_password), username))
+    ok = (getattr(c, "rowcount", 0) or 0) > 0
+    _db_commit(conn)
+    conn.close()
+    return bool(ok)
+
+
+def _validate_reset_license_for_user(user_row, provided_license_key):
+    if not user_row:
+        return False, "User not found"
+    role = str(user_row.get("role") or "user").lower()
+    if role == "admin" or int(user_row.get("license_exempt") or 0) == 1:
+        return True, None
+    linked_key = normalize_license_key(user_row.get("license_key"))
+    if not linked_key:
+        return False, "This account has no linked license key. Contact admin to reset password."
+    entered_key = normalize_license_key(provided_license_key)
+    if not entered_key:
+        return False, "License key is required for password reset"
+    if entered_key != linked_key:
+        return False, "License key does not match this account"
+    return True, None
+
+
+def _generate_license_key(license_type):
+    prefix = "KK-MTH" if str(license_type).lower() == "monthly" else "KK-LIFE"
+    chunk = lambda: uuid.uuid4().hex[:4].upper()
+    return f"{prefix}-{chunk()}-{chunk()}-{chunk()}"
+
+
+def create_license_record(license_type):
+    ltype = str(license_type or "").strip().lower()
+    if ltype not in ("monthly", "lifetime"):
+        return False, "Invalid license type", None
+    conn = _db_connect()
+    c = conn.cursor()
+    try:
+        for _ in range(20):
+            key = _generate_license_key(ltype)
+            try:
+                _db_execute(c, "INSERT INTO licenses (license_key, license_type, status, created_at) VALUES (?, ?, 'active', ?)", (key, ltype, _utc_now_str()))
+                _db_commit(conn)
+                return True, "License created", key
+            except Exception as e:
+                msg = str(e).lower()
+                if "unique" in msg or "duplicate" in msg:
+                    continue
+                raise
+        return False, "Failed to generate unique key", None
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False, str(e), None
+    finally:
+        conn.close()
+
+
+def revoke_license_record(license_key):
+    key = normalize_license_key(license_key)
+    if not key:
+        return False, "License key is required"
+    conn = _db_connect()
+    c = conn.cursor()
+    _db_execute(c, "UPDATE licenses SET status='revoked' WHERE license_key = ?", (key,))
+    changed = (getattr(c, "rowcount", 0) or 0)
+    _db_commit(conn)
+    conn.close()
+    if changed <= 0:
+        return False, "License key not found"
+    return True, "License revoked"
+
+
+def _reset_license_binding_for_user(conn, username):
+    c = conn.cursor()
+    _db_execute(c, "UPDATE licenses SET used_by=NULL, activated_at=NULL, expires_at=CASE WHEN lower(license_type)='monthly' THEN NULL ELSE expires_at END WHERE used_by=?", (username,))
+
+
+def admin_reset_user_license(username):
+    username = (username or "").strip()
+    if not username:
+        return False, "Username is required"
+    if username.lower() == ADMIN_USERNAME.lower():
+        return False, "Admin account is protected"
+    conn = _db_connect()
+    c = conn.cursor()
+    _db_execute(c, "SELECT username FROM users WHERE username = ?", (username,))
+    if not _db_fetchone(c):
+        conn.close()
+        return False, "User not found"
+    try:
+        _reset_license_binding_for_user(conn, username)
+        _db_execute(c, "UPDATE users SET license_key=NULL WHERE username=?", (username,))
+        _db_commit(conn)
+        return True, "User license key reset"
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False, str(e)
+    finally:
+        conn.close()
+
+
+def admin_reassign_user_license(username, license_key):
+    username = (username or "").strip()
+    key = normalize_license_key(license_key)
+    if not username or not key:
+        return False, "Username and license key are required"
+    if username.lower() == ADMIN_USERNAME.lower():
+        return False, "Admin account is protected"
+
+    conn = _db_connect(row_factory=not _db_is_postgres())
+    c = conn.cursor()
+    try:
+        _db_execute(c, "SELECT * FROM users WHERE username=?", (username,))
+        user_row = _db_row_to_dict(c, _db_fetchone(c))
+        if not user_row:
+            return False, "User not found"
+
+        _db_execute(c, "SELECT * FROM licenses WHERE license_key=?", (key,))
+        lic_row = _db_row_to_dict(c, _db_fetchone(c))
+        if not lic_row:
+            return False, "License key not found"
+        if str(lic_row.get("status") or "").lower() == "revoked":
+            return False, "License key is revoked"
+
+        used_by = str(lic_row.get("used_by") or "").strip()
+        if used_by and used_by.lower() != username.lower():
+            return False, "License key is already assigned to another user"
+
+        _reset_license_binding_for_user(conn, username)
+
+        now_s = _utc_now_str()
+        expires_at = lic_row.get("expires_at")
+        if str(lic_row.get("license_type") or "").lower() == "monthly":
+            expires_at = (datetime.utcnow() + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+
+        _db_execute(c, "UPDATE licenses SET used_by=?, activated_at=?, expires_at=? WHERE license_key=?", (username, now_s, expires_at, key))
+        _db_execute(c, "UPDATE users SET license_key=?, grandfathered=0, license_exempt=0 WHERE username=?", (key, username))
+        _db_commit(conn)
+        return True, "License key reassigned"
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False, str(e)
+    finally:
+        conn.close()
+
+
+def delete_user_admin(user_id):
+    try:
+        uid = int(user_id)
+    except Exception:
+        return False, "Invalid user ID"
+
+    conn = _db_connect(row_factory=not _db_is_postgres())
+    c = conn.cursor()
+    _db_execute(c, "SELECT * FROM users WHERE id=?", (uid,))
+    user_row = _db_row_to_dict(c, _db_fetchone(c))
+    if not user_row:
+        conn.close()
+        return False, "User not found"
+    if str(user_row.get("username") or "").lower() == ADMIN_USERNAME.lower():
+        conn.close()
+        return False, "Admin account is protected"
+
+    try:
+        _reset_license_binding_for_user(conn, user_row.get("username"))
+        _db_execute(c, "DELETE FROM password_resets WHERE username=?", (user_row.get("username"),))
+        _db_execute(c, "DELETE FROM users WHERE id=?", (uid,))
+        _db_commit(conn)
+        return True, "User deleted"
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False, str(e)
+    finally:
+        conn.close()
+
+
+def get_admin_users_view():
+    conn = _db_connect(row_factory=not _db_is_postgres())
+    c = conn.cursor()
+    _db_execute(c, "SELECT * FROM users ORDER BY id ASC")
+    rows = _db_fetchall_dicts(c)
+    conn.close()
+    out = []
+    for r in rows:
+        out.append({
+            "id": r.get("id"),
+            "username": r.get("username"),
+            "email": r.get("email") or "",
+            "role": (r.get("role") or "user"),
+            "grandfathered": int(r.get("grandfathered") if r.get("grandfathered") is not None else 1),
+            "license_key": r.get("license_key") or "",
+            "license_exempt": int(r.get("license_exempt") or 0),
+            "created_at": r.get("created_at") or "",
+            "access": check_user_license_access(r)[1],
+        })
+    return out
+
+
+def get_admin_users_view_legacy_tuples():
+    return [(u["id"], u["username"], u["email"], 1 if str(u["role"]).lower()=="admin" else 0) for u in get_admin_users_view()]
+
+
+def get_admin_licenses_view():
+    conn = _db_connect(row_factory=not _db_is_postgres())
+    c = conn.cursor()
+    _db_execute(c, "SELECT license_key, license_type, status, used_by, created_at, activated_at, expires_at FROM licenses ORDER BY created_at DESC, license_key DESC")
+    rows = _db_fetchall_dicts(c)
+    conn.close()
+    return rows
 
 
 # Initialize DB + Admin
@@ -334,11 +937,21 @@ def extract_exit_digit_from_contract(contract: dict):
 
 
 def login_required():
-    return "user" in session
+    username = session.get("user")
+    if not username:
+        return False
+    user_row = _get_user_row(username)
+    if not user_row:
+        return False
+    ok, _msg = check_user_license_access(user_row)
+    return bool(ok)
 
 
 def is_admin():
-    return session.get("user", "").lower() == ADMIN_USERNAME.lower()
+    if str(session.get("role") or "").lower() == "admin":
+        return True
+    user_row = _get_user_row(session.get("user"))
+    return bool(user_row and str(user_row.get("role") or "").lower() == "admin")
 
 
 def get_client_id():
@@ -477,8 +1090,6 @@ def init_client(client_id):
                 "cooldown_sec": 5.0,
             }
         },
-        "humanx_auto": False,
-        "humanx_status_last": "Auto: OFF",
         "human_rf_status_last": "WAIT",
         "balance": 0.0,
         "session_start_balance": None,
@@ -620,9 +1231,21 @@ def login():
         password = request.form.get("password", "").strip()
 
         if verify_user(username, password):
+            user_row = _get_user_row(username)
+            ok, reason = check_user_license_access(user_row)
+            if not ok:
+                session.pop("user", None)
+                session.pop("role", None)
+                return render_template("login.html", error=reason)
+
+            role = str((user_row or {}).get("role") or "user").lower()
             session["user"] = username
+            session["role"] = role
             session["client_id"] = str(uuid.uuid4())
             init_client(session["client_id"])
+
+            if role == "admin":
+                return redirect(url_for("admin_panel"))
             return redirect(url_for("index"))
         else:
             return render_template("login.html", error="Invalid username or password")
@@ -636,12 +1259,24 @@ def register():
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "").strip()
         email = request.form.get("email", "").strip()
+        license_key = request.form.get("license_key", "").strip()
 
         pw_err = _validate_password_strength(password)
         if pw_err:
             return render_template("register.html", error=pw_err)
 
-        ok, msg = create_user(username, password, email=email)
+        if not license_key:
+            return render_template("register.html", error="License key is required for new registrations")
+
+        ok, msg = create_user(
+            username,
+            password,
+            email=email,
+            license_key=license_key,
+            role="user",
+            grandfathered=0,
+            license_exempt=0
+        )
 
         if ok:
             return redirect(url_for("login"))
@@ -651,28 +1286,33 @@ def register():
     return render_template("register.html")
 
 
-
-
 @app.route("/forgot_password", methods=["GET", "POST"])
 def forgot_password():
     if request.method == "POST":
-        identifier = (request.form.get("email") or "").strip()  # field name kept for template compatibility
+        identifier = (request.form.get("email") or "").strip()  # template compatibility
+        license_key = (request.form.get("license_key") or "").strip()
+
         if not identifier:
-            return render_template("forgot_password.html", error="Enter your email or username")
+            return render_template("forgot_password.html", error="Enter your email or username", entered_email=identifier)
 
         user_row = _find_user_for_reset(identifier)
         if not user_row:
-            return render_template("forgot_password.html", error="No account found with that email or username")
+            return render_template("forgot_password.html", error="No account found with that email/username", entered_email=identifier)
 
-        username = user_row[0]
+        lic_ok, lic_err = _validate_reset_license_for_user(user_row, license_key)
+        if not lic_ok:
+            return render_template("forgot_password.html", error=lic_err, entered_email=identifier, entered_license_key=license_key)
+
+        username = user_row.get("username")
         raw_token, _exp_dt = _create_password_reset_token(username, minutes_valid=30)
         reset_link = url_for("reset_password", token=raw_token, _external=True)
 
-        # Works immediately even without SMTP configured by showing the link on-screen.
         return render_template(
             "forgot_password.html",
             success=f"Reset link created for {username}. It expires in 30 minutes.",
-            reset_link=reset_link
+            reset_link=reset_link,
+            entered_email=identifier,
+            entered_license_key=license_key
         )
 
     return render_template("forgot_password.html")
@@ -686,31 +1326,32 @@ def reset_password(token=None):
     if request.method == "POST":
         password = (request.form.get("password") or "").strip()
         confirm_password = (request.form.get("confirm_password") or "").strip()
+        license_key = (request.form.get("license_key") or "").strip()
 
         if not token:
-            return render_template("reset_password.html", error="Missing reset token", token="")
+            return render_template("reset_password.html", error="Missing reset token", token="", entered_license_key=license_key)
         if password != confirm_password:
-            return render_template("reset_password.html", error="Passwords do not match", token=token)
+            return render_template("reset_password.html", error="Passwords do not match", token=token, entered_license_key=license_key)
 
         pw_err = _validate_password_strength(password)
         if pw_err:
-            return render_template("reset_password.html", error=pw_err, token=token)
+            return render_template("reset_password.html", error=pw_err, token=token, entered_license_key=license_key)
 
         rec, err = _get_reset_token_record(token)
         if err:
-            return render_template("reset_password.html", error=err, token="")
+            return render_template("reset_password.html", error=err, token="", entered_license_key=license_key)
+
+        user_row = _get_user_row(rec["username"])
+        lic_ok, lic_err = _validate_reset_license_for_user(user_row, license_key)
+        if not lic_ok:
+            return render_template("reset_password.html", error=lic_err, token=token, entered_license_key=license_key)
 
         if not _update_user_password(rec["username"], password):
-            return render_template("reset_password.html", error="Could not update password. Try again.", token=token)
+            return render_template("reset_password.html", error="Could not update password. Try again.", token=token, entered_license_key=license_key)
 
         _mark_reset_token_used(rec["id"])
-        return render_template(
-            "reset_password.html",
-            success="Password reset successful. You can now log in with your new password.",
-            token=""
-        )
+        return render_template("reset_password.html", success="Password reset successful. You can now log in with your new password.", token="")
 
-    # GET request
     if token:
         _rec, err = _get_reset_token_record(token)
         if err:
@@ -724,12 +1365,98 @@ def reset_password(token=None):
 def logout():
     cid = session.pop("client_id", None)
     if cid and cid in clients:
-        # full cleanup on logout
         disconnect_client(cid, reason="logout", emit=False)
         clients.pop(cid, None)
 
     session.pop("user", None)
+    session.pop("role", None)
     return redirect(url_for("login"))
+
+
+@app.route("/admin")
+def admin_panel():
+    if not login_required():
+        return redirect(url_for("login"))
+    if not is_admin():
+        return redirect(url_for("index"))
+
+    return render_template(
+        "admin.html",
+        admin=session.get("user"),
+        admin_username=ADMIN_USERNAME,
+        users=get_admin_users_view_legacy_tuples(),  # current template compatibility
+        users_full=get_admin_users_view(),
+        licenses=get_admin_licenses_view()
+    )
+
+
+@app.route("/admin/delete_user", methods=["POST"])
+def admin_delete_user():
+    if not login_required() or not is_admin():
+        return jsonify({"status": "error", "error": "Unauthorized"}), 403
+
+    data = request.get_json(silent=True) or {}
+    user_id = data.get("user_id")
+    if user_id is None:
+        user_id = request.form.get("user_id")
+
+    ok, msg = delete_user_admin(user_id)
+    if ok:
+        return jsonify({"status": "deleted"})
+    return jsonify({"status": "error", "error": msg}), 400
+
+
+@app.route("/admin/license/create", methods=["POST"])
+def admin_create_license():
+    if not login_required() or not is_admin():
+        return jsonify({"status": "error", "error": "Unauthorized"}), 403
+
+    data = request.get_json(silent=True) or {}
+    license_type = (data.get("license_type") or request.form.get("license_type") or "").strip().lower()
+    ok, msg, key = create_license_record(license_type)
+    if not ok:
+        return jsonify({"status": "error", "error": msg}), 400
+    return jsonify({"status": "ok", "license_key": key, "license_type": license_type})
+
+
+@app.route("/admin/license/revoke", methods=["POST"])
+def admin_revoke_license():
+    if not login_required() or not is_admin():
+        return jsonify({"status": "error", "error": "Unauthorized"}), 403
+
+    data = request.get_json(silent=True) or {}
+    license_key = (data.get("license_key") or request.form.get("license_key") or "").strip()
+    ok, msg = revoke_license_record(license_key)
+    if not ok:
+        return jsonify({"status": "error", "error": msg}), 400
+    return jsonify({"status": "ok", "message": msg})
+
+
+@app.route("/admin/user/reset_key", methods=["POST"])
+def admin_user_reset_key():
+    if not login_required() or not is_admin():
+        return jsonify({"status": "error", "error": "Unauthorized"}), 403
+
+    data = request.get_json(silent=True) or {}
+    username = (data.get("username") or request.form.get("username") or "").strip()
+    ok, msg = admin_reset_user_license(username)
+    if not ok:
+        return jsonify({"status": "error", "error": msg}), 400
+    return jsonify({"status": "ok", "message": msg})
+
+
+@app.route("/admin/user/reassign_key", methods=["POST"])
+def admin_user_reassign_key():
+    if not login_required() or not is_admin():
+        return jsonify({"status": "error", "error": "Unauthorized"}), 403
+
+    data = request.get_json(silent=True) or {}
+    username = (data.get("username") or request.form.get("username") or "").strip()
+    license_key = (data.get("license_key") or request.form.get("license_key") or "").strip()
+    ok, msg = admin_reassign_user_license(username, license_key)
+    if not ok:
+        return jsonify({"status": "error", "error": msg}), 400
+    return jsonify({"status": "ok", "message": msg})
 
 
 # ---------------- SOCKET.IO CONNECT ---------------- #
@@ -764,6 +1491,8 @@ def client_heartbeat():
 def index():
     if not login_required():
         return redirect(url_for("login"))
+    if is_admin():
+        return redirect(url_for("admin_panel"))
     return render_template("index.html", username=session.get("user"))
 
 
@@ -907,70 +1636,6 @@ def send_buy_with_profile(client_id, profile, contract_type, stake, symbol, barr
         return False, str(e)
 
 
-# ---------------- MULTIPLIER ORDER (HUMANX) ---------------- #
-def place_multiplier_order(client_id, signal):
-    state = clients.get(client_id)
-    if not state or not state.get("ws_connected"):
-        return False, "Not connected"
-
-    # PATCH E: Block HUMAN multiplier trades if HUMAN session is TP/SL blocked
-    strategy = state.get("strategies", {}).get("HUMAN")
-
-    if strategy and hasattr(strategy, "enforce_tp_sl"):
-        strategy.enforce_tp_sl()
-        if getattr(strategy, "risk_block_reason", None):
-            return False, f"{strategy.risk_block_reason} (session limit reached)"
-
-    ws = state["ws"]
-
-    symbol_to_use = signal.get("symbol") or state.get("current_symbol")
-    profile_to_use = signal.get("profile") or state.get("active_profile", "HUMAN")
-
-
-    stake = float(signal.get("stake", state.get("auto_stake", 1.0)))
-    multiplier = int(signal.get("multiplier", 50))
-    direction = signal.get("direction", "BUY")
-    sl = signal.get("sl")
-    tp = signal.get("tp")
-
-    # clamp multiplier to max 500
-    if multiplier < 1:
-        multiplier = 1
-    if multiplier > 500:
-        multiplier = 500
-
-    req_id = _new_req_id()
-    state["req_meta"][req_id] = {
-        "profile": "HUMAN",  # PATCH E: set profile hard to HUMAN
-        "type": f"MULT {direction}",
-        "barrier": None,
-        "stake": stake,
-        "symbol": symbol_to_use,
-        "time": now_time()
-    }
-
-    payload = {
-        "req_id": req_id,
-        "buy": 1,
-        "price": stake,
-        "parameters": {
-            "amount": stake,
-            "basis": "stake",
-            "contract_type": "MULTIPLIER",
-            "currency": "USD",
-            "symbol": symbol_to_use,
-            "multiplier": multiplier,
-            "take_profit": tp,
-            "stop_loss": sl,
-        }
-    }
-    try:
-        ws.send(json.dumps(payload))
-        return True, "Trade sent"
-    except Exception as e:
-        return False, str(e)
-
-
 # ---------------- RISE/FALL ORDER (HUMAN Smart Assist) ---------------- #
 def place_risefall_order(client_id, signal):
     state = clients.get(client_id)
@@ -1034,7 +1699,6 @@ def place_risefall_order(client_id, signal):
         return True, "Trade sent"
     except Exception as e:
         return False, str(e)
-
 
 # ---------------- AUTO TRADE ENGINE (PER CLIENT) ---------------- #
 def run_auto_trade(client_id, state):
@@ -1526,56 +2190,6 @@ def handle_on_message(client_id, ws, message, expected_nonce):
         logger.error(f"[{client_id}] on_message error: {e}")
 
 
-# ---------------- HUMANX STATUS HELPERS ---------------- #
-def _compute_humanx_status(strat):
-    """Return a human-readable status string for HUMANX auto."""
-    try:
-        # Require TP/SL for true auto-close
-        tp = float(getattr(strat, "tp", 0.0) or 0.0)
-        sl = float(getattr(strat, "sl", 0.0) or 0.0)
-        if tp <= 0 or sl <= 0:
-            return "Auto: Set TP & SL"
-
-        rh = getattr(strat, "range_high", None)
-        rl = getattr(strat, "range_low", None)
-        if not rh or not rl:
-            return "Auto: Seeding Range"
-
-        bias = getattr(strat, "breakout_bias", None)
-        if not bias:
-            return "Auto: Waiting Breakout"
-
-        ob = getattr(strat, "order_block", None)
-        if not ob:
-            return "Auto: Waiting OB"
-
-        retrace = bool(getattr(strat, "retrace_happened", False))
-        if not retrace:
-            return "Auto: Waiting Retest"
-
-        fired = bool(getattr(strat, "signal_fired", False))
-        if not fired:
-            return "Auto: Waiting Confirmation"
-
-        return "Auto: Entry Triggered"
-    except Exception:
-        return "Auto: Armed"
-
-
-def _emit_humanx_status_if_changed(client_id, state, status):
-    """Emit humanx_auto_status only when the text changes (to reduce spam)."""
-    try:
-        enabled = bool(state.get("humanx_auto"))
-        if not enabled:
-            status = "Auto: OFF"
-        last = state.get("humanx_status_last")
-        if status != last:
-            state["humanx_status_last"] = status
-            socketio.emit("humanx_auto_status", {"enabled": enabled, "status": status}, room=client_id)
-    except Exception:
-        pass
-
-
 
 def process_tick(client_id, tick):
     state = clients.get(client_id)
@@ -1628,41 +2242,6 @@ def process_tick(client_id, tick):
                                     logger.warning(f"[{client_id}] HUMAN RF auto trade blocked: {_msg}")
                     except Exception:
                         pass
-
-                    # ✅ HUMANX AUTO (independent of active profile)
-                    if state.get("humanx_auto"):
-                        try:
-                            status = _compute_humanx_status(strat)
-                            _emit_humanx_status_if_changed(client_id, state, status)
-
-                            sig = strat.get_humanx_signal()
-                            if sig:
-                                # For Multipliers, TP/SL must be AMOUNTS, not price levels.
-                                tp_amt = float(getattr(strat, "tp", 0.0) or 0.0)
-                                sl_amt = float(getattr(strat, "sl", 0.0) or 0.0)
-
-                                sig2 = dict(sig)
-                                sig2["profile"] = "HUMAN"
-                                sig2["symbol"] = human_symbol
-                                if tp_amt > 0:
-                                    sig2["tp"] = tp_amt
-                                else:
-                                    sig2["tp"] = None
-                                if sl_amt > 0:
-                                    sig2["sl"] = sl_amt
-                                else:
-                                    sig2["sl"] = None
-
-                                if tp_amt <= 0 or sl_amt <= 0:
-                                    _emit_humanx_status_if_changed(client_id, state, "Auto: Set TP & SL")
-                                else:
-                                    ok, msg = place_multiplier_order(client_id, sig2)
-                                    if ok:
-                                        _emit_humanx_status_if_changed(client_id, state, "Auto: Trade Placed")
-                                    else:
-                                        _emit_humanx_status_if_changed(client_id, state, f"Auto: Error ({msg})")
-                        except Exception:
-                            pass
                 else:
                     if not is_main:
                         continue
@@ -1956,7 +2535,7 @@ def set_auto_stake():
     state["auto_stake"] = stake
     logger.info(f"[{cid}] 💰 AUTO STAKE UPDATED: {stake}")
 
-    # ✅ also sync stake into HUMAN strategy so humanX uses your stake input
+    # ✅ also sync stake into HUMAN strategy so manual/Rise-Fall uses your stake input
     try:
         h = state["strategies"].get("HUMAN")
         if h and hasattr(h, "stake"):
@@ -1965,33 +2544,6 @@ def set_auto_stake():
         pass
 
     return jsonify({"status": "success", "auto_stake": stake})
-
-
-@app.route("/set_human_multiplier", methods=["POST"])
-def set_human_multiplier():
-    if not login_required():
-        return jsonify({"error": "Unauthorized"}), 403
-
-    cid, state = get_client_state()
-    data = request.json or {}
-    try:
-        mult = int(data.get("multiplier", 50))
-    except Exception:
-        mult = 50
-
-    if mult < 1:
-        mult = 1
-    if mult > 500:
-        mult = 500
-
-    try:
-        h = state["strategies"].get("HUMAN")
-        if h and hasattr(h, "multiplier"):
-            h.multiplier = mult
-    except Exception:
-        pass
-
-    return jsonify({"status": "success", "multiplier": mult})
 
 
 @app.route("/disconnect", methods=["POST"])
@@ -2038,15 +2590,9 @@ def set_profile():
     socketio.emit("profile_update", {"profile": profile, "symbol": (state.get("human_symbol") if profile == "HUMAN" else state.get("current_symbol"))}, room=cid)
     if profile == "HUMAN":
         request_human_seed(cid)
-        try:
-            _emit_humanx_status_if_changed(cid, state, "Auto: OFF" if not state.get("humanx_auto") else state.get("humanx_status_last") or "Auto: Armed")
-        except Exception:
-            pass
     emit_profile_snapshot(cid)
 
     return jsonify({"status": "success", "profile": profile, "main_symbol": state.get("current_symbol"), "human_symbol": state.get("human_symbol") or state.get("current_symbol"), "symbol": (state.get("human_symbol") if profile == "HUMAN" else state.get("current_symbol")),
-        "humanx_auto": bool(state.get("humanx_auto")),
-        "humanx_status": state.get("humanx_status_last") or ("Auto: Armed" if state.get("humanx_auto") else "Auto: OFF")
     })
 
 
@@ -2063,8 +2609,6 @@ def market_state():
         "main_symbol": state.get("current_symbol"),
         "human_symbol": state.get("human_symbol") or state.get("current_symbol"),
         "symbol": (state.get("human_symbol") if prof == "HUMAN" else state.get("current_symbol")),
-        "humanx_auto": bool(state.get("humanx_auto")),
-        "humanx_status": state.get("humanx_status_last") or ("Auto: Armed" if state.get("humanx_auto") else "Auto: OFF")
     })
 
 
@@ -2335,6 +2879,167 @@ def set_koolkidspeed_settings():
     strat = state["strategies"].get("KOOLKID")
     strat.koolkidspeed_barrier = barrier
 
+    return jsonify({"status": "success"})
+
+
+# ---------------- ADVANCED AI MODE ALIAS ROUTES (UI compatibility) ---------------- #
+# These are lightweight aliases that map the "Advanced AI Modes" UI buttons
+# (Kid Brain / Edge Brain / Smart Flow / Metral / Kidricks AI) to the existing KOOLKID
+# auto-mode routes and strategy toggles.
+
+def _toggle_koolkid_advanced_alias(cid, state, *, method_name, base_key, alias_key):
+    """
+    Robust alias toggle:
+    1) Use the real KOOLKID strategy toggle method if it exists.
+    2) Fallback to directly toggling the boolean attr if the method is missing.
+    3) Never hard-fail the UI just because an older/newer strategy build renamed a helper.
+    """
+    strat = state.get("strategies", {}).get("KOOLKID")
+    if not strat:
+        return jsonify({"status": "error", "message": "KOOLKID strategy not available"}), 400
+
+    state_val = None
+    try:
+        fn = getattr(strat, method_name, None)
+        if callable(fn):
+            state_val = fn()
+        else:
+            # Fallback for strategy builds where route exists but helper method name is missing.
+            current = bool(getattr(strat, base_key, False))
+            state_val = (not current)
+            try:
+                setattr(strat, base_key, bool(state_val))
+            except Exception:
+                # last-resort UI-only fallback (keeps button from failing even if strategy uses slots)
+                alias_state = state.setdefault("advanced_ai_alias_modes", {})
+                alias_state[base_key] = bool(state_val)
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Failed to toggle {alias_key}: {e}"}), 500
+
+    # Build payload for auto_mode_update safely and include alias key(s) for UI compatibility
+    emit_payload = {}
+    try:
+        if hasattr(strat, "get_ui_payload"):
+            emit_payload = (strat.get_ui_payload() or {}).get("auto_modes", {}) or {}
+    except Exception:
+        emit_payload = {}
+
+    # Ensure the base and alias keys are both present in emitted payload
+    emit_payload = dict(emit_payload)
+    if state_val is None:
+        state_val = bool(emit_payload.get(base_key, False))
+    emit_payload[base_key] = bool(state_val)
+    emit_payload[alias_key] = bool(state_val)
+
+    try:
+        socketio.emit("auto_mode_update", emit_payload, room=cid)
+    except Exception:
+        pass
+
+    return jsonify({"status": "success", alias_key: bool(state_val), base_key: bool(state_val)})
+
+
+@app.route("/toggle_kidbrain_auto", methods=["GET", "POST"])
+def toggle_kidbrain_auto_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    return _toggle_koolkid_advanced_alias(
+        cid, state,
+        method_name="toggle_kidracks_auto",
+        base_key="kidracks_auto",
+        alias_key="kidbrain_auto",
+    )
+
+
+@app.route("/toggle_edgebrain_auto", methods=["GET", "POST"])
+def toggle_edgebrain_auto_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    return _toggle_koolkid_advanced_alias(
+        cid, state,
+        method_name="toggle_koolkidspeed_auto",
+        base_key="koolkidspeed_auto",
+        alias_key="edgebrain_auto",
+    )
+
+
+@app.route("/toggle_smartflow_auto", methods=["GET", "POST"])
+def toggle_smartflow_auto_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    return _toggle_koolkid_advanced_alias(
+        cid, state,
+        method_name="toggle_koolluck_auto",
+        base_key="koolluck_auto",
+        alias_key="smartflow_auto",
+    )
+
+
+@app.route("/toggle_metral_auto", methods=["GET", "POST"])
+def toggle_metral_auto_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    return _toggle_koolkid_advanced_alias(
+        cid, state,
+        method_name="toggle_kidbagz_auto",
+        base_key="kidbagz_auto",
+        alias_key="metral_auto",
+    )
+
+
+@app.route("/toggle_kidricks_ai_auto", methods=["GET", "POST"])
+def toggle_kidricks_ai_auto_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    return _toggle_koolkid_advanced_alias(
+        cid, state,
+        method_name="toggle_mpull_auto",
+        base_key="mpull_auto",
+        alias_key="kidricks_ai_auto",
+    )
+
+
+@app.route("/set_kidbrain_settings", methods=["GET", "POST"])
+def set_kidbrain_settings():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    data = request.get_json(silent=True) or request.form or {}
+    barrier = int(data.get("barrier", 5))
+
+    strat = state["strategies"].get("KOOLKID")
+    if not strat:
+        return jsonify({"status": "error", "message": "KOOLKID strategy not available"}), 400
+
+    strat.kidracks_barrier = barrier
+    return jsonify({"status": "success"})
+
+
+@app.route("/set_edgebrain_settings", methods=["GET", "POST"])
+def set_edgebrain_settings():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    data = request.get_json(silent=True) or request.form or {}
+    barrier = int(data.get("barrier", 5))
+
+    strat = state["strategies"].get("KOOLKID")
+    if not strat:
+        return jsonify({"status": "error", "message": "KOOLKID strategy not available"}), 400
+
+    strat.koolkidspeed_barrier = barrier
     return jsonify({"status": "success"})
 
 
@@ -2699,55 +3404,6 @@ def burst_4():
     return jsonify({"status": "success", "placed": placed})
 
 
-@app.route("/toggle_humanx_auto", methods=["POST"])
-def toggle_humanx_auto():
-    if not login_required():
-        return jsonify({"error": "Unauthorized"}), 403
-
-    cid, state = get_client_state()
-    enabled = not bool(state.get("humanx_auto"))
-    state["humanx_auto"] = enabled
-
-    strat = state.get("strategies", {}).get("HUMAN")
-    if strat:
-        try:
-            strat.auto_trade = enabled
-        except Exception:
-            pass
-
-    status = "Auto: Armed" if enabled else "Auto: OFF"
-    state["humanx_status_last"] = status
-    socketio.emit("humanx_auto_status", {"enabled": enabled, "status": status}, room=cid)
-
-    return jsonify({
-        "status": "success",
-        "enabled": enabled,
-        "main_symbol": state.get("current_symbol"),
-        "human_symbol": state.get("human_symbol") or state.get("current_symbol")
-    })
-
-
-@app.route("/humanx_trade", methods=["POST"])
-def humanx_trade():
-    if not login_required():
-        return jsonify({"error": "Unauthorized"}), 403
-
-    cid, state = get_client_state()
-    strat = state["strategies"].get("HUMAN")
-    if not strat:
-        return jsonify({"error": "Human strategy not loaded"}), 400
-
-    signal = strat.get_humanx_signal()
-    if not signal:
-        return jsonify({"error": "No valid setup at the moment"}), 400
-
-    ok, msg = place_multiplier_order(cid, signal)
-    if ok:
-        return jsonify({"status": "success", "signal": signal})
-    else:
-        return jsonify({"error": msg}), 500
-
-
 @app.route("/human_rf_status", methods=["GET"])
 def human_rf_status_route():
     if not login_required():
@@ -2937,7 +3593,6 @@ def heartbeat_sweeper():
                     disconnect_client(cid, reason="heartbeat_timeout", emit=True)
 
 
-
 @app.route("/toggle_named_ai_mode", methods=["POST"])
 def toggle_named_ai_mode_route():
     if not login_required():
@@ -2986,7 +3641,6 @@ def toggle_named_ai_mode_route():
         "auto_modes": auto_modes,
         "payload": payload,
     })
-
 
 threading.Thread(target=heartbeat_sweeper, daemon=True).start()
 

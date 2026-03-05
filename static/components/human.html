@@ -1,8 +1,119 @@
+<style id="humanProfileMobileStyles">
+#humanProfilePanel { width: 100%; }
+#humanProfilePanel * { box-sizing: border-box; }
+#humanProfilePanel .human-top-grid,
+#humanProfilePanel .human-rf-toggle-grid,
+#humanProfilePanel .human-rf-settings-grid,
+#humanProfilePanel .human-score-grid,
+#humanProfilePanel .human-exec-grid,
+#humanProfilePanel .human-history-stats {
+  min-width: 0;
+}
+#humanProfilePanel .human-rf-actions button,
+#humanProfilePanel .human-exec-toggle-row button {
+  min-width: 0 !important;
+}
+#humanProfilePanel .human-rf-pill-wrap {
+  align-items: stretch;
+}
+#humanProfilePanel .human-rf-pill-wrap > span {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+#humanProfilePanel #humanRfSignal {
+  line-height: 1.15;
+  word-break: break-word;
+}
+#humanProfilePanel #profileTradeList {
+  overflow-x: auto;
+}
+
+@media (max-width: 980px) {
+  #humanProfilePanel .human-top-grid {
+    grid-template-columns: 1fr !important;
+  }
+  #humanProfilePanel .human-exec-grid {
+    grid-template-columns: 1fr !important;
+  }
+  #humanProfilePanel .human-history-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+}
+
+@media (max-width: 720px) {
+  #humanProfilePanel .card {
+    padding: 12px !important;
+  }
+  #humanProfilePanel h3 {
+    font-size: 16px;
+    line-height: 1.25;
+  }
+  #humanProfilePanel #humanRfSignal {
+    font-size: 22px !important;
+    padding: 12px !important;
+  }
+  #humanProfilePanel #humanRfBias,
+  #humanProfilePanel #humanRfConfidence {
+    font-size: 18px !important;
+  }
+  #humanProfilePanel .human-rf-toggle-grid {
+    grid-template-columns: 1fr !important;
+  }
+  #humanProfilePanel #humanRfAdaptiveBtn {
+    grid-column: span 1 !important;
+  }
+  #humanProfilePanel .human-rf-settings-grid {
+    grid-template-columns: 1fr !important;
+  }
+  #humanProfilePanel .human-score-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+  #humanProfilePanel .human-history-header {
+    flex-wrap: wrap;
+    align-items: stretch !important;
+  }
+  #humanProfilePanel .human-history-header button {
+    width: 100%;
+  }
+  #humanProfilePanel .human-chart-toolbar {
+    justify-content: stretch !important;
+  }
+  #humanProfilePanel .human-chart-toolbar button {
+    flex: 1 1 0;
+  }
+  #humanProfilePanel #humanChart {
+    height: 240px !important;
+  }
+}
+
+@media (max-width: 520px) {
+  #humanProfilePanel .human-rf-actions button,
+  #humanProfilePanel .human-exec-toggle-row button {
+    width: 100%;
+    flex: 1 1 100% !important;
+  }
+  #humanProfilePanel .human-rf-pill-wrap > span {
+    width: 100%;
+    text-align: center;
+  }
+  #humanProfilePanel .human-score-grid,
+  #humanProfilePanel .human-history-stats {
+    grid-template-columns: 1fr !important;
+  }
+  #humanProfilePanel #humanRfSignal {
+    font-size: 20px !important;
+  }
+  #humanProfilePanel #humanChart {
+    height: 220px !important;
+  }
+}
+</style>
+<div id="humanProfilePanel">
 
 <div class="card" id="humanRiseFallCard">
     <h3>🧠 HUMAN MODE: RISE / FALL SMART ASSIST</h3>
 
-    <div style="display:grid; grid-template-columns:1.3fr 1fr; gap:12px; align-items:stretch;">
+    <div class="human-top-grid" style="display:grid; grid-template-columns:1.3fr 1fr; gap:12px; align-items:stretch;">
         <div style="background:#0f172a; border:1px solid #334155; border-radius:14px; padding:14px;">
             <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
                 <div>
@@ -23,13 +134,13 @@
                 Waiting for signal...
             </div>
 
-            <div style="margin-top:10px; display:flex; justify-content:center; gap:8px; flex-wrap:wrap;">
+            <div class="human-rf-pill-wrap" style="margin-top:10px; display:flex; justify-content:center; gap:8px; flex-wrap:wrap;">
                 <span id="humanRfCooldown" style="padding:6px 10px; border-radius:999px; background:#1e293b; font-size:12px;">Cooldown: 0.0s</span>
                 <span id="humanRfEdgeGap" style="padding:6px 10px; border-radius:999px; background:#1e293b; font-size:12px;">Edge Gap: 0.0</span>
                 <span id="humanRfMarketState" style="padding:6px 10px; border-radius:999px; background:#1e293b; font-size:12px;">Market: Unknown</span>
             </div>
 
-            <div style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap;">
+            <div class="human-rf-actions" style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap;">
                 <button onclick="humanRFTrade('AUTO')" style="background:#22c55e; flex:1; min-width:150px;">🎯 TAKE SIGNAL</button>
                 <button onclick="humanRFTrade('RISE')" style="background:#16a34a; flex:1; min-width:120px;">📈 RISE NOW</button>
                 <button onclick="humanRFTrade('FALL')" style="background:#dc2626; flex:1; min-width:120px;">📉 FALL NOW</button>
@@ -39,7 +150,7 @@
         <div style="background:#0f172a; border:1px solid #334155; border-radius:14px; padding:14px;">
             <div style="font-weight:700; margin-bottom:10px;">🎯 Smart Assist Controls</div>
 
-            <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+            <div class="human-rf-toggle-grid" style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
                 <button id="humanRfSmartBtn" onclick="toggleHumanRFSetting('smart_assist')" style="background:#1e293b;">Smart Assist: ON</button>
                 <button id="humanRfAutoBtn" onclick="toggleHumanRFSetting('auto_assist')" style="background:#1e293b;">Take Auto Trades: OFF</button>
                 <button id="humanRfBiasLockBtn" onclick="toggleHumanRFSetting('bias_lock')" style="background:#1e293b;">Bias Lock: OFF</button>
@@ -47,7 +158,7 @@
                 <button id="humanRfAdaptiveBtn" onclick="toggleHumanRFSetting('adaptive_cooldown')" style="background:#1e293b; grid-column: span 2;">Adaptive Cooldown: ON</button>
             </div>
 
-            <div style="margin-top:12px; display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+            <div class="human-rf-settings-grid" style="margin-top:12px; display:grid; grid-template-columns:1fr 1fr; gap:10px;">
                 <div>
                     <div style="color:#94a3b8; font-size:12px; margin-bottom:4px;">Rise/Fall Duration (ticks)</div>
                     <input id="humanRfDuration" type="number" min="1" max="10" step="1" value="5" onchange="saveHumanRFSettings()" style="width:100%;">
@@ -74,7 +185,7 @@
             <div style="font-weight:700;">📊 Signal Breakdown</div>
             <div id="humanRfStreaks" style="color:#94a3b8; font-size:12px;">Wins: 0 | Losses: 0 | Last: -</div>
         </div>
-        <div style="display:grid; grid-template-columns: repeat(5, 1fr); gap:8px; margin-top:10px;">
+        <div class="human-score-grid" style="display:grid; grid-template-columns: repeat(5, 1fr); gap:8px; margin-top:10px;">
             <div style="background:#111827; border-radius:10px; padding:10px; text-align:center;">
                 <div style="color:#94a3b8; font-size:11px;">Trend</div>
                 <div id="humanRfScoreTrend" style="font-size:18px; font-weight:700;">0</div>
@@ -103,7 +214,7 @@
 <div class="card">
     <h3>💼 RISE / FALL EXECUTION SETTINGS</h3>
 
-    <div style="display:grid; grid-template-columns: repeat(3, minmax(180px, 1fr)); gap:12px; align-items:end;">
+    <div class="human-exec-grid" style="display:grid; grid-template-columns: repeat(3, minmax(180px, 1fr)); gap:12px; align-items:end;">
         <div>
             <div style="color:#94a3b8; font-size:13px; margin-left:6px;">Stake</div>
             <input id="stake" type="number" value="1" min="0.35" step="0.01" style="width:100%;">
@@ -121,7 +232,7 @@
         </div>
     </div>
 
-    <div style="margin-top:10px; display:flex; gap:10px; flex-wrap:wrap;">
+    <div class="human-exec-toggle-row" style="margin-top:10px; display:flex; gap:10px; flex-wrap:wrap;">
         <button id="autoSlBtn" onclick="toggleAutoSL()" style="background:#facc15; flex:1; min-width:220px;">AUTO SL: ON</button>
         <button id="keepAliveBtn" onclick="toggleHumanKeepAlive()" style="background:#64748b; flex:1; min-width:220px;">KEEP ALIVE: OFF</button>
     </div>
@@ -134,7 +245,7 @@
 <div class="card">
     <h3>📈 HUMAN GRAPH</h3>
     <div style="margin-top:8px; background:#0f172a; border-radius:12px; padding:10px;">
-        <div style="display:flex; justify-content:flex-end; gap:8px; margin-bottom:8px; flex-wrap:wrap;">
+        <div class="human-chart-toolbar" style="display:flex; justify-content:flex-end; gap:8px; margin-bottom:8px; flex-wrap:wrap;">
             <button onclick="humanZoomOut()" style="background:#334155; padding:6px 12px; border-radius:10px;">−</button>
             <button onclick="humanZoomIn()" style="background:#334155; padding:6px 12px; border-radius:10px;">+</button>
             <button onclick="humanResetZoom()" style="background:#334155; padding:6px 12px; border-radius:10px;">Reset</button>
@@ -148,12 +259,12 @@
 </div>
 
 <div class="card">
-  <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
+  <div class="human-history-header" style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
     <h3 style="margin:0;">📚 TRADE HISTORY</h3>
     <button onclick="clearProfileHistory()" style="background:#fb7185;">Clear History</button>
   </div>
 
-  <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:10px; margin-top:12px;">
+  <div class="human-history-stats" style="display:grid; grid-template-columns: repeat(4, 1fr); gap:10px; margin-top:12px;">
     <div style="background:#0f172a; border:1px solid #334155; border-radius:12px; padding:12px; text-align:center;">
       <div style="color:#94a3b8; font-size:12px;">Total Trades</div>
       <div id="profileTotalTrades" style="font-size:22px; font-weight:bold;">0</div>
@@ -178,4 +289,5 @@
   <div id="profileTradeList" style="margin-top:14px;">
     <div style="text-align:center; color:#64748b; padding:20px;">No trades yet</div>
   </div>
+</div>
 </div>
