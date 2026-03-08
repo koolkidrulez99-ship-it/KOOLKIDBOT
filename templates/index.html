@@ -92,6 +92,7 @@ input, select{
 .koolkid-btn{background:#38bdf8; box-shadow:0 0 20px #38bdf8;}
 .jokerjoe-btn{background:#a855f7; box-shadow:0 0 20px #a855f7;}
 .human-btn{background:#22c55e; box-shadow:0 0 20px #22c55e;}
+.unchain-btn{background:#f59e0b; box-shadow:0 0 20px #f59e0b; color:#111827;}
 .profile-btn.active{transform:scale(1.05); border:2px solid white;}
 .profile-btn:not(.active){opacity:0.7;}
 
@@ -462,6 +463,7 @@ input, select{
         <button id="koolkidBtn" class="profile-btn koolkid-btn active" onclick="setProfile('KOOLKID')">🔵 KOOLKID</button>
         <button id="jokerjoeBtn" class="profile-btn jokerjoe-btn" onclick="setProfile('JOKERJOE')">🃏 JOKERJOE</button>
         <button id="humanBtn" class="profile-btn human-btn" onclick="setProfile('HUMAN')">🧑 HUMAN</button>
+        <button id="unchainBtn" class="profile-btn unchain-btn" onclick="setProfile('UNCHAIN')">⛓️ UNCHAIN</button>
 
         <h4 id="profileTitle" style="margin-top:10px; color:#38bdf8;">KOOLKID MODE: OVER & UNDER</h4>
     </div>
@@ -841,7 +843,7 @@ const digitStream = document.getElementById("digitStream");
 const accountDashboard = document.getElementById("accountDashboard");
 const profileTitle = document.getElementById("profileTitle");
 
-const tradeStore = { KOOLKID: [], JOKERJOE: [], HUMAN: [] };
+const tradeStore = { KOOLKID: [], JOKERJOE: [], HUMAN: [], UNCHAIN: [] };
 
 function renderTradeList(profile){
     const list = document.getElementById("profileTradeList");
@@ -1000,6 +1002,8 @@ async function ensureProfileModuleScript(profile){
         await loadScriptOncePhase2("/static/js/profiles/jokerjoe.js");
     }else if(p === "HUMAN"){
         await loadScriptOncePhase2("/static/js/profiles/human.js");
+    }else if(p === "UNCHAIN"){
+        await loadScriptOncePhase2("/static/js/profiles/unchain.js");
     }
     return true;
 }
@@ -1023,6 +1027,7 @@ async function loadProfileUI(profile){
     if(profile === "KOOLKID") file = "koolkid.html";
     if(profile === "JOKERJOE") file = "jokerjoe.html";
     if(profile === "HUMAN") file = "human.html";
+    if(profile === "UNCHAIN") file = "unchain.html";
 
     const res = await fetch(`/static/components/${file}`);
     const html = await res.text();
@@ -1141,6 +1146,23 @@ function getHowToHTMLForProfile(profile) {
             <div style="margin-top:8px; font-size:11px; color:#ef4444; text-align:center;">
                 ⚠️ For professional use only
             </div>
+        `;
+    }
+    if (profile === "UNCHAIN") {
+        return `
+            <div style="color:#94a3b8; margin-bottom:8px;">
+                UNCHAIN mode – accumulator chain timing with AUTO/MANUAL entries, crash-risk analysis, and tick-based exits.
+            </div>
+            <ul>
+                <li><b>Analysis:</b> Tracks live market ticks, crash events, growth per tick, and chop/crash risk.</li>
+                <li><b>AUTO mode:</b> Waits for strong UNCHAIN setup and enters automatically when confidence meets your threshold.</li>
+                <li><b>MANUAL mode:</b> Lets you trigger entry when the setup is ready and close by exact exit ticks (or Sell Now).</li>
+                <li><b>Growth Rate:</b> Sets the accumulator growth rate percentage (shown in the panel).</li>
+                <li><b>Exit Ticks:</b> Manual target number of ticks before requesting close.</li>
+                <li><b>Early Exit:</b> Optional safety exit when chop/crash risk becomes dangerous before target ticks.</li>
+                <li><b>Popup:</b> Active trade popup shows contract info, live P/L, tick progress, and Sell Now button.</li>
+                <li><b>Stake / TP / SL:</b> Uses your main stake plus profile risk controls.</li>
+            </ul>
         `;
     }
     return `
@@ -1504,11 +1526,11 @@ document.getElementById("symbol").addEventListener("change", function(){
     showToast("📊 Market Changed: " + this.value, "warn");
 });
 
-/* ✅ hide LIVE TICK INFO on HUMAN only */
+/* ✅ hide LIVE TICK INFO on HUMAN and UNCHAIN */
 function applyLiveTickVisibility(){
     const live = document.getElementById("liveTickCard");
     if(!live) return;
-    live.style.display = (activeProfile === "HUMAN") ? "none" : "block";
+    live.style.display = (activeProfile === "HUMAN" || activeProfile === "UNCHAIN") ? "none" : "block";
 }
 
 async function setProfile(profile){
@@ -1518,6 +1540,7 @@ async function setProfile(profile){
     document.getElementById("koolkidBtn").classList.remove("active");
     document.getElementById("jokerjoeBtn").classList.remove("active");
     document.getElementById("humanBtn").classList.remove("active");
+    const __unchainBtn = document.getElementById("unchainBtn"); if(__unchainBtn) __unchainBtn.classList.remove("active");
 
     if(profile === "KOOLKID"){
         document.getElementById("koolkidBtn").classList.add("active");
@@ -1533,6 +1556,12 @@ async function setProfile(profile){
         document.getElementById("humanBtn").classList.add("active");
         profileTitle.innerText = "HUMAN MODE: RISE/FALL SMART ASSIST";
         profileTitle.style.color = "#22c55e";
+    }
+    if(profile === "UNCHAIN"){
+        const btn = document.getElementById("unchainBtn");
+        if(btn) btn.classList.add("active");
+        profileTitle.innerText = "UNCHAIN MODE: ACCU CHAIN / MANUAL EXIT";
+        profileTitle.style.color = "#f59e0b";
     }
 
     applyLiveTickVisibility();
@@ -1598,10 +1627,35 @@ async function disconnect(){
 async function clearProfileHistory(){
     if (!activeProfile) return;
 
-    await fetch("/clear_profile_history", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({profile: activeProfile})});
+    const res = await fetch("/clear_profile_history", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({profile: activeProfile})});
+    let data = null;
+    try{ data = await res.json(); }catch(e){}
+
     tradeStore[activeProfile] = [];
     renderTradeList(activeProfile);
-    showToast(`🗑️ ${activeProfile} history cleared`, "warn");
+
+    if((activeProfile || "").toUpperCase() === "UNCHAIN"){
+        const totalEl = document.getElementById("profileTotalTrades");
+        const winsEl = document.getElementById("profileWins");
+        const lossesEl = document.getElementById("profileLosses");
+        const winRateEl = document.getElementById("profileWinRate");
+        const lossRateEl = document.getElementById("profileLossRate");
+        if(totalEl) totalEl.innerText = "0";
+        if(winsEl) winsEl.innerText = "0";
+        if(lossesEl) lossesEl.innerText = "0";
+        if(winRateEl) winRateEl.innerText = "0%";
+        if(lossRateEl) lossRateEl.innerText = "0%";
+        if(netPnlBox){
+            netPnlBox.innerText = "$0.00";
+            netPnlBox.style.color = "white";
+        }
+    }
+
+    if(res.ok && data && data.status === "cleared"){
+        showToast(`🗑️ ${activeProfile} history cleared`, "warn");
+    }else{
+        showToast((data && (data.error || data.message)) || `🗑️ ${activeProfile} history cleared`, res.ok ? "warn" : "error");
+    }
 }
 
 async function toggleAuto(){

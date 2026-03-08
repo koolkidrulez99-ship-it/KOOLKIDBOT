@@ -11,7 +11,7 @@ import random  # PATCH 1A
 import secrets
 import hashlib
 
-from flask import Flask, render_template, request, jsonify, redirect, url_for, session
+from flask import Flask, render_template, request, jsonify, redirect, url_for, session, send_file
 from flask_socketio import SocketIO, join_room
 from datetime import datetime, timedelta
 import logging
@@ -21,6 +21,19 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from strategies.koolkid import KoolKidStrategy
 from strategies.jokerjoe import JokerJoeStrategy
 from strategies.human import HumanStrategy
+try:
+    from strategies.unchain import UnchainStrategy
+except Exception:
+    import importlib.util
+    _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    _UNCHAIN_FALLBACK = os.path.join(_BASE_DIR, "unchain_fix_round3_patch", "strategies", "unchain.py")
+    if os.path.exists(_UNCHAIN_FALLBACK):
+        _spec = importlib.util.spec_from_file_location("unchain_fallback_strategy", _UNCHAIN_FALLBACK)
+        _mod = importlib.util.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)
+        UnchainStrategy = _mod.UnchainStrategy
+    else:
+        raise
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -1091,6 +1104,22 @@ def init_client(client_id):
             }
         },
         "human_rf_status_last": "WAIT",
+        "unchain_hl": {
+            "higher_stake": 1.0,
+            "lower_stake": 1.0,
+            "higher_barrier": "0.12",
+            "lower_barrier": "-0.12",
+            "duration": 5,
+            "duration_unit": "t",
+            "tp": 0.0,
+            "sl": 0.0,
+            "auto_sl": True,
+            "active_contracts": {},
+            "last_action": "Ready",
+            "last_result": None,
+            "stats": {"wins": 0, "losses": 0, "net_pnl": 0.0},
+            "risk_block_reason": None,
+        },
         "balance": 0.0,
         "session_start_balance": None,
         "auto_stake": 1.0,
@@ -1100,7 +1129,8 @@ def init_client(client_id):
         "strategies": {
             "KOOLKID": KoolKidStrategy(),
             "JOKERJOE": JokerJoeStrategy(),
-            "HUMAN": HumanStrategy()
+            "HUMAN": HumanStrategy(),
+            "UNCHAIN": UnchainStrategy()
         },
         # PATCH A: human_keep_alive flag
         "human_keep_alive": False,
@@ -1143,6 +1173,13 @@ def emit_profile_snapshot(cid):
     try:
         if strat and hasattr(strat, "get_ui_payload"):
             socketio.emit("digit_analysis", strat.get_ui_payload(), room=cid)
+    except Exception:
+        pass
+
+    # UNCHAIN status snapshot
+    try:
+        if prof == "UNCHAIN":
+            socketio.emit("unchain_status", _unchain_payload_response(state), room=cid)
     except Exception:
         pass
 
@@ -1486,6 +1523,35 @@ def client_heartbeat():
     return
 
 
+@app.route("/static/components/unchain.html")
+def unchain_component_alias():
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(base_dir, "unchain.html"),
+        os.path.join(base_dir, "static", "components", "unchain.html"),
+        os.path.join(base_dir, "unchain_fix_round3_patch", "static", "components", "unchain.html"),
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            return send_file(p)
+    return ("UNCHAIN component not found", 404)
+
+
+@app.route("/static/js/profiles/unchain.js")
+def unchain_js_alias():
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(base_dir, "unchain.js"),
+        os.path.join(base_dir, "static", "js", "profiles", "unchain.js"),
+        os.path.join(base_dir, "unchain_fix_round3_patch", "static", "js", "profiles", "unchain.js"),
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            return send_file(p)
+    return ("UNCHAIN profile JS not found", 404)
+
+
+
 # ---------------- BOT ROUTE (PROTECTED) ---------------- #
 @app.route("/")
 def index():
@@ -1700,6 +1766,431 @@ def place_risefall_order(client_id, signal):
     except Exception as e:
         return False, str(e)
 
+
+def _default_unchain_hl_state():
+    return {
+        "higher_stake": 1.0,
+        "lower_stake": 1.0,
+        "higher_barrier": "0.12",
+        "lower_barrier": "-0.12",
+        "duration": 5,
+        "duration_unit": "t",
+        "tp": 0.0,
+        "sl": 0.0,
+        "auto_sl": True,
+        "active_contracts": {},
+        "last_action": "Ready",
+        "last_result": None,
+        "stats": {"wins": 0, "losses": 0, "net_pnl": 0.0},
+        "risk_block_reason": None,
+    }
+
+
+def _ensure_unchain_hl_state(state):
+    base = _default_unchain_hl_state()
+    cur = state.setdefault("unchain_hl", {}) or {}
+    for k, v in base.items():
+        if k not in cur:
+            cur[k] = v.copy() if isinstance(v, dict) else v
+    if not isinstance(cur.get("active_contracts"), dict):
+        cur["active_contracts"] = {}
+    if not isinstance(cur.get("stats"), dict):
+        cur["stats"] = {"wins": 0, "losses": 0, "net_pnl": 0.0}
+    cur.setdefault("risk_block_reason", None)
+    state["unchain_hl"] = cur
+    return cur
+
+
+def _clean_unchain_duration_unit(value):
+    unit = str(value or "t").strip().lower()
+    return unit if unit in ("t", "s", "m") else "t"
+
+
+def _format_unchain_barrier(raw_value, side, duration_unit):
+    raw = str(raw_value if raw_value is not None else "").strip()
+    if not raw:
+        raise ValueError("Barrier is required")
+
+    # Higher/Lower uses the contract side to decide the direction.
+    # If the user does not type a sign, keep the barrier as a positive offset
+    # for BOTH sides (same behavior users see in the Deriv UI).
+    user_typed_sign = raw.startswith(("+", "-"))
+    numeric = float(raw) if user_typed_sign else abs(float(raw))
+
+    unit = _clean_unchain_duration_unit(duration_unit)
+    if not user_typed_sign and unit in ("t", "s", "m"):
+        out = f"+{numeric:.10f}".rstrip("0").rstrip(".")
+    else:
+        out = f"{numeric:.10f}".rstrip("0").rstrip(".")
+    return out or "0"
+
+
+def _check_unchain_hl_risk_block(state):
+    u = _ensure_unchain_hl_state(state)
+    net_pnl = float(((u.get("stats") or {}).get("net_pnl", 0.0)) or 0.0)
+    auto_sl = bool(u.get("auto_sl", True))
+    if not auto_sl:
+        u["risk_block_reason"] = None
+        return None
+    try:
+        tp = float(u.get("tp", 0) or 0)
+    except Exception:
+        tp = 0.0
+    try:
+        sl = float(u.get("sl", 0) or 0)
+    except Exception:
+        sl = 0.0
+    reason = None
+    if tp > 0 and net_pnl >= tp:
+        reason = f"UNCHAIN TP reached (+${net_pnl:.2f})"
+    elif sl > 0 and net_pnl <= -abs(sl):
+        reason = f"UNCHAIN SL reached (${net_pnl:.2f})"
+    u["risk_block_reason"] = reason
+    return reason
+
+
+def _upsert_unchain_active_contract(state, contract_id, meta=None, contract=None, status=None):
+    u = _ensure_unchain_hl_state(state)
+    cid_key = str(contract_id)
+    active = u.setdefault("active_contracts", {})
+    entry = active.get(cid_key, {})
+    meta = meta or (state.get("contract_meta") or {}).get(contract_id) or (state.get("contract_meta") or {}).get(str(contract_id)) or {}
+    contract = contract or {}
+    entry["contract_id"] = contract_id
+    entry["profile"] = "UNCHAIN"
+    entry["type"] = (meta.get("type") or entry.get("type") or "TRADE").upper()
+    entry["side"] = entry["type"]
+    entry["symbol"] = meta.get("symbol") or contract.get("underlying") or contract.get("symbol") or state.get("current_symbol")
+    entry["barrier"] = meta.get("barrier", entry.get("barrier"))
+    try:
+        entry["stake"] = float(meta.get("stake", entry.get("stake", contract.get("buy_price") or 0)) or 0)
+    except Exception:
+        entry["stake"] = entry.get("stake", 0)
+    entry["duration"] = meta.get("duration", entry.get("duration"))
+    entry["duration_unit"] = meta.get("duration_unit", entry.get("duration_unit"))
+    entry["time"] = meta.get("time") or entry.get("time") or now_time()
+    entry["status"] = status or entry.get("status") or "OPEN"
+    try:
+        if contract.get("profit") is not None:
+            entry["open_profit"] = float(contract.get("profit") or 0)
+    except Exception:
+        pass
+    if contract:
+        entry["contract_status"] = contract.get("status") or entry.get("contract_status")
+        entry["is_sold"] = bool(contract.get("is_sold"))
+    entry["updated_at"] = now_time()
+    active[cid_key] = entry
+    u["last_action"] = f"{entry['type']} active on {entry['symbol']}"
+    return entry
+
+
+def _finalize_unchain_contract(state, contract, meta=None):
+    u = _ensure_unchain_hl_state(state)
+    contract_id = contract.get("contract_id")
+    active = u.setdefault("active_contracts", {})
+    active_entry = active.pop(str(contract_id), None) or {}
+    meta = meta or {}
+    profit = float(contract.get("profit", 0) or 0)
+    result = "WIN" if profit > 0 else "LOSS"
+    entry = {
+        "profile": "UNCHAIN",
+        "type": (meta.get("type") or active_entry.get("type") or "TRADE").upper(),
+        "barrier": meta.get("barrier", active_entry.get("barrier")),
+        "stake": meta.get("stake", active_entry.get("stake")),
+        "symbol": meta.get("symbol") or active_entry.get("symbol") or state.get("current_symbol"),
+        "time": meta.get("time") or active_entry.get("time") or now_time(),
+        "profit": profit,
+        "profit_value": profit,
+        "result": result,
+        "contract_id": contract_id,
+        "duration": meta.get("duration", active_entry.get("duration")),
+        "duration_unit": meta.get("duration_unit", active_entry.get("duration_unit")),
+    }
+    stats = u.setdefault("stats", {"wins": 0, "losses": 0, "net_pnl": 0.0})
+    if profit > 0:
+        stats["wins"] = int(stats.get("wins", 0) or 0) + 1
+    else:
+        stats["losses"] = int(stats.get("losses", 0) or 0) + 1
+    stats["net_pnl"] = float(stats.get("net_pnl", 0.0) or 0.0) + profit
+    u["last_result"] = entry
+    u["last_action"] = f"{entry['type']} {result} on {entry['symbol']} ({profit:+.2f})"
+    _check_unchain_hl_risk_block(state)
+    return entry
+
+
+def _unchain_payload_response(state):
+    u = _ensure_unchain_hl_state(state)
+    _check_unchain_hl_risk_block(state)
+    active_contracts = list((u.get("active_contracts") or {}).values())
+    active_contracts.sort(key=lambda x: str(x.get("contract_id") or ""))
+    stats = u.get("stats") or {"wins": 0, "losses": 0, "net_pnl": 0.0}
+
+    bias_payload = {
+        "status": "LOADING ANALYZER…",
+        "higher_pct": 50.0,
+        "lower_pct": 50.0,
+        "strength": "Building",
+        "reasons": ["Waiting for data"],
+        "lookback": 0,
+        "summary": "Gathering enough recent ticks to score Higher vs Lower.",
+    }
+    try:
+        strat = (state.get("strategies") or {}).get("UNCHAIN")
+        if strat and hasattr(strat, "get_bias_payload"):
+            bias_payload = strat.get_bias_payload({
+                "higher_barrier": u.get("higher_barrier", "0.12"),
+                "lower_barrier": u.get("lower_barrier", "-0.12"),
+                "duration": int(u.get("duration", 5) or 5),
+                "duration_unit": _clean_unchain_duration_unit(u.get("duration_unit", "t")),
+            }) or bias_payload
+    except Exception:
+        pass
+
+    return {
+        "profile": "UNCHAIN",
+        "unchain": {
+            "higher_stake": float(u.get("higher_stake", 1.0) or 1.0),
+            "lower_stake": float(u.get("lower_stake", 1.0) or 1.0),
+            "higher_barrier": u.get("higher_barrier", "0.12"),
+            "lower_barrier": u.get("lower_barrier", "-0.12"),
+            "duration": int(u.get("duration", 5) or 5),
+            "duration_unit": _clean_unchain_duration_unit(u.get("duration_unit", "t")),
+            "tp": float(u.get("tp", 0) or 0),
+            "sl": float(u.get("sl", 0) or 0),
+            "auto_sl": bool(u.get("auto_sl", True)),
+            "risk_block_reason": u.get("risk_block_reason"),
+            "active_contracts": active_contracts,
+            "active_count": len(active_contracts),
+            "last_action": u.get("last_action") or "Ready",
+            "last_result": u.get("last_result"),
+            "bias": bias_payload,
+            "stats": {
+                "wins": int(stats.get("wins", 0) or 0),
+                "losses": int(stats.get("losses", 0) or 0),
+                "net_pnl": float(stats.get("net_pnl", 0.0) or 0.0),
+            },
+        },
+        "auto_stake": float(state.get("auto_stake", 1.0) or 1.0),
+        "symbol": state.get("current_symbol", "R_25"),
+        "main_symbol": state.get("current_symbol", "R_25"),
+        "human_symbol": state.get("human_symbol") or state.get("current_symbol", "R_25"),
+        "active_profile": state.get("active_profile", "KOOLKID"),
+        "ws_connected": bool(state.get("ws_connected")),
+    }
+
+
+def _send_unchain_hl_trade(client_id, *, side, stake, symbol, barrier, duration, duration_unit):
+    state = clients.get(client_id)
+    if not state:
+        return False, "No client state"
+    ws = state.get("ws")
+    if not state.get("ws_connected") or not ws:
+        return False, "Not connected"
+    risk_block = _check_unchain_hl_risk_block(state)
+    if risk_block:
+        return False, risk_block
+    side = str(side or "").upper()
+    if side not in ("HIGHER", "LOWER"):
+        return False, "Invalid UNCHAIN side"
+    try:
+        stake = float(stake)
+    except Exception:
+        return False, "Invalid stake"
+    if stake <= 0:
+        return False, "Stake must be greater than 0"
+    try:
+        duration = int(duration)
+    except Exception:
+        return False, "Invalid duration"
+    duration = max(1, min(999, duration))
+    duration_unit = _clean_unchain_duration_unit(duration_unit)
+    try:
+        barrier_value = _format_unchain_barrier(barrier, side, duration_unit)
+    except Exception as e:
+        return False, str(e)
+    req_id = _new_req_id()
+    req_meta = {
+        "profile": "UNCHAIN",
+        "type": side,
+        "barrier": barrier_value,
+        "stake": float(stake),
+        "symbol": symbol,
+        "time": now_time(),
+        "duration": int(duration),
+        "duration_unit": duration_unit,
+        "deriv_contract_type": {"HIGHER": "CALL", "LOWER": "PUT"}[side],
+    }
+    state.setdefault("req_meta", {})[req_id] = req_meta
+    deriv_contract = {"HIGHER": "CALL", "LOWER": "PUT"}[side]
+    payload = {
+        "req_id": req_id,
+        "buy": 1,
+        "price": float(stake),
+        "parameters": {
+            "amount": float(stake),
+            "basis": "stake",
+            "contract_type": deriv_contract,
+            "currency": "USD",
+            "duration": int(duration),
+            "duration_unit": duration_unit,
+            "symbol": symbol,
+            "barrier": barrier_value,
+        }
+    }
+    try:
+        ws.send(json.dumps(payload))
+        u = _ensure_unchain_hl_state(state)
+        u["last_action"] = f"{side} request sent on {symbol}"
+        return True, f"{side} trade sent"
+    except Exception as e:
+        try:
+            state.get("req_meta", {}).pop(req_id, None)
+        except Exception:
+            pass
+        return False, str(e)
+
+
+def _send_unchain_buy(client_id, *, stake, symbol, growth_rate, mode="AUTO", exit_ticks=5):
+    state = clients.get(client_id)
+    if not state:
+        return False, "No client state"
+
+    ws = state.get("ws")
+    if not state.get("ws_connected") or not ws:
+        return False, "Not connected"
+
+    strat = (state.get("strategies") or {}).get("UNCHAIN")
+    if not strat:
+        return False, "UNCHAIN strategy not loaded"
+
+    if hasattr(strat, "enforce_tp_sl"):
+        try:
+            strat.enforce_tp_sl()
+            if getattr(strat, "risk_block_reason", None):
+                return False, f"{strat.risk_block_reason} (session limit reached)"
+        except Exception:
+            pass
+
+    try:
+        stake = float(stake)
+    except Exception:
+        stake = float(state.get("auto_stake", 1.0) or 1.0)
+    if stake <= 0:
+        stake = 1.0
+
+    try:
+        growth_rate = float(growth_rate)
+    except Exception:
+        growth_rate = float(getattr(strat, "growth_rate", 0.02) or 0.02)
+    # strategy stores growth in decimal (0.01 - 0.05)
+    growth_rate = max(0.01, min(0.05, growth_rate))
+
+    try:
+        exit_ticks = int(exit_ticks or 5)
+    except Exception:
+        exit_ticks = 5
+    exit_ticks = max(1, min(50, exit_ticks))
+
+    req_id = _new_req_id()
+    req_meta = {
+        "profile": "UNCHAIN",
+        "type": "ACCU",
+        "barrier": None,
+        "stake": float(stake),
+        "symbol": symbol,
+        "time": now_time(),
+        "mode": str(mode).upper(),
+        "exit_ticks": int(exit_ticks),
+        "growth_rate": float(growth_rate),
+    }
+    state.setdefault("req_meta", {})[req_id] = req_meta
+
+    # mark pending in strategy immediately to prevent duplicate entries before buy ack
+    try:
+        if hasattr(strat, "on_trade_request_sent"):
+            strat.on_trade_request_sent(mode=req_meta["mode"], exit_ticks=exit_ticks, manual=(req_meta["mode"] == "MANUAL"), stake=stake)
+    except Exception:
+        pass
+
+    payload = {
+        "req_id": req_id,
+        "buy": 1,
+        "price": float(stake),
+        "parameters": {
+            "amount": float(stake),
+            "basis": "stake",
+            "contract_type": "ACCU",
+            "currency": "USD",
+            "growth_rate": float(growth_rate),
+            "symbol": symbol,
+        }
+    }
+
+    try:
+        ws.send(json.dumps(payload))
+        return True, "UNCHAIN trade sent"
+    except Exception as e:
+        # best effort rollback pending flag if send failed before Deriv receives it
+        try:
+            if getattr(strat, "pending_trade_request", False):
+                strat.pending_trade_request = False
+        except Exception:
+            pass
+        try:
+            state.get("req_meta", {}).pop(req_id, None)
+        except Exception:
+            pass
+        return False, str(e)
+
+
+def _request_sell_contract(client_id, contract_id):
+    state = clients.get(client_id)
+    if not state:
+        return False, "No client state"
+    ws = state.get("ws")
+    if not state.get("ws_connected") or not ws:
+        return False, "Not connected"
+    try:
+        ws.send(json.dumps({"sell": int(contract_id), "price": 0}))
+        return True, "Sell request sent"
+    except Exception as e:
+        return False, str(e)
+
+
+def _maybe_unchain_exit_on_tick(client_id, state):
+    try:
+        strat = (state.get("strategies") or {}).get("UNCHAIN")
+        if not strat or not hasattr(strat, "should_request_exit"):
+            return
+        exit_req = strat.should_request_exit(getattr(strat, "tick_count", 0))
+        if not exit_req:
+            return
+        cid = exit_req.get("contract_id")
+        if not cid:
+            return
+        reason = exit_req.get("reason") or "tick_exit"
+        # mark first to avoid duplicate requests on fast ticks
+        try:
+            if hasattr(strat, "mark_exit_requested"):
+                strat.mark_exit_requested(reason)
+        except Exception:
+            pass
+        ok, msg = _request_sell_contract(client_id, cid)
+        if not ok:
+            try:
+                # clear only if send failed
+                strat.exit_requested = False
+                strat.exit_requested_reason = None
+            except Exception:
+                pass
+            logger.warning(f"[{client_id}] UNCHAIN sell request failed: {msg}")
+        else:
+            if state.get("active_profile") == "UNCHAIN":
+                socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
+    except Exception as e:
+        logger.error(f"[{client_id}] UNCHAIN exit-on-tick error: {e}")
+
+
 # ---------------- AUTO TRADE ENGINE (PER CLIENT) ---------------- #
 def run_auto_trade(client_id, state):
     active_profile = state.get("active_profile", "KOOLKID")
@@ -1741,7 +2232,21 @@ def run_auto_trade(client_id, state):
             symbol = state.get("current_symbol", "R_25")
             stake = float(state.get("auto_stake", 1.0))
 
-            ok, msg = send_buy(client_id, ctype, stake, symbol, barrier)
+            if active_profile == "UNCHAIN" or str(ctype).upper() == "ACCU":
+                un = (state.get("strategies") or {}).get("UNCHAIN")
+                growth_rate = sig.get("growth_rate", getattr(un, "growth_rate", 0.02) if un else 0.02)
+                exit_ticks = sig.get("exit_ticks", getattr(un, "auto_exit_ticks", 5) if un else 5)
+                mode = sig.get("mode", "AUTO")
+                ok, msg = _send_unchain_buy(
+                    client_id,
+                    stake=stake,
+                    symbol=symbol,
+                    growth_rate=growth_rate,
+                    mode=mode,
+                    exit_ticks=exit_ticks,
+                )
+            else:
+                ok, msg = send_buy(client_id, ctype, stake, symbol, barrier)
 
             if ok:
                 logger.info(f"[{client_id}] 🤖 AUTO TRADE SENT ({active_profile}): {ctype} barrier={barrier} stake={stake} mode={sig.get('mode')}")
@@ -2155,6 +2660,21 @@ def handle_on_message(client_id, ws, message, expected_nonce):
 
             if contract_id and meta:
                 state["contract_meta"][contract_id] = meta
+                try:
+                    if (meta.get("profile") or "").upper() == "UNCHAIN":
+                        _upsert_unchain_active_contract(state, contract_id, meta=meta, status="OPEN")
+                        us = (state.get("strategies") or {}).get("UNCHAIN")
+                        if us and hasattr(us, "on_contract_opened") and str(meta.get("type") or "").upper() == "ACCU":
+                            us.on_contract_opened(
+                                contract_id=contract_id,
+                                entry_tick_seq=getattr(us, "tick_count", 0),
+                                mode=meta.get("mode", "AUTO"),
+                                target_exit_ticks=meta.get("exit_ticks"),
+                                symbol=meta.get("symbol") or state.get("current_symbol"),
+                                stake=meta.get("stake"),
+                            )
+                except Exception:
+                    pass
                 socketio.emit("trade_placed", {
                     "profile": meta.get("profile"),
                     "type": meta.get("type"),
@@ -2184,6 +2704,23 @@ def handle_on_message(client_id, ws, message, expected_nonce):
 
         if "proposal_open_contract" in data:
             contract = data["proposal_open_contract"]
+
+            # UNCHAIN live open-contract updates
+            try:
+                cid_val = contract.get("contract_id")
+                meta_for_contract = (state.get("contract_meta") or {}).get(cid_val) if cid_val else None
+                if meta_for_contract and (meta_for_contract.get("profile") or "").upper() == "UNCHAIN":
+                    _upsert_unchain_active_contract(state, cid_val, meta=meta_for_contract, contract=contract, status="OPEN")
+                un = (state.get("strategies") or {}).get("UNCHAIN")
+                if un and hasattr(un, "on_open_contract"):
+                    if ((meta_for_contract and (meta_for_contract.get("profile") or "").upper() == "UNCHAIN" and str(meta_for_contract.get("type") or "").upper() == "ACCU")
+                        or (getattr(un, "active_contract_id", None) and cid_val and int(getattr(un, "active_contract_id")) == int(cid_val))):
+                        un.on_open_contract(contract)
+                if state.get("active_profile") == "UNCHAIN":
+                    socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
+            except Exception:
+                pass
+
             process_contract(client_id, contract)
 
     except Exception as e:
@@ -2256,6 +2793,10 @@ def process_tick(client_id, tick):
             except Exception:
                 pass
 
+        # UNCHAIN precise exit-by-ticks / early-exit checks run in background on main market ticks
+        if is_main:
+            _maybe_unchain_exit_on_tick(client_id, state)
+
         # Active strategy for UI only
         active_profile = state.get("active_profile", "KOOLKID")
         active_strategy = strategies.get(active_profile)
@@ -2277,6 +2818,9 @@ def process_tick(client_id, tick):
             socketio.emit("digit_analysis", active_strategy.get_ui_payload(), room=client_id)
 
         run_auto_trade(client_id, state)
+
+        if active_profile == "UNCHAIN":
+            socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
 
         if active_profile == "JOKERJOE":
             jj = strategies.get("JOKERJOE")
@@ -2318,53 +2862,47 @@ def process_contract(client_id, contract):
         if not _is_contract_settled_fast(contract):
             return
 
-        profit = float(contract.get("profit", 0))
+        profit = float(contract.get("profit", 0) or 0)
         state["balance"] = float(state.get("balance", 0.0)) + profit
 
         contract_id = contract.get("contract_id")
         meta = state["contract_meta"].pop(contract_id, None) if contract_id else None
-
-        # PATCH F: Use the trade's real profile (not active_profile)
         profile_for_contract = (meta.get("profile") if meta else None) or state.get("active_profile", "KOOLKID")
-
-        strategies = state.get("strategies", {})
-        strategy = strategies.get(profile_for_contract)
-        if not strategy:
-            return
-
-        # Remember previous block reason to detect changes
-        prev_block = getattr(strategy, "risk_block_reason", None)
-
-        # Update strategy with the contract result
-        strategy.on_contract(contract, state.get("balance", 0))
-
-        # If TP/SL just got hit, emit a risk block update
-        new_block = getattr(strategy, "risk_block_reason", None)
-        if new_block and new_block != prev_block:
-            socketio.emit("risk_block_update", {
-                "profile": profile_for_contract,
-                "reason": new_block
-            }, room=client_id)
-
         entry = {}
-        if strategy and hasattr(strategy, "get_last_trade_entry"):
-            entry = strategy.get_last_trade_entry() or {}
 
-        if meta:
-            entry.setdefault("profile", meta.get("profile"))
-            entry.setdefault("type", meta.get("type"))
-            entry.setdefault("barrier", meta.get("barrier"))
-            entry.setdefault("stake", meta.get("stake"))
-            entry.setdefault("symbol", meta.get("symbol"))
-            entry.setdefault("time", meta.get("time"))
+        if profile_for_contract == "UNCHAIN":
+            entry = _finalize_unchain_contract(state, contract, meta=meta)
         else:
-            entry.setdefault("profile", profile_for_contract)
-
-        exit_digit = extract_exit_digit_from_contract(contract)
-        if exit_digit is not None:
-            entry["exit_digit"] = exit_digit
+            strategies = state.get("strategies", {})
+            strategy = strategies.get(profile_for_contract)
+            if not strategy:
+                return
+            prev_block = getattr(strategy, "risk_block_reason", None)
+            strategy.on_contract(contract, state.get("balance", 0))
+            new_block = getattr(strategy, "risk_block_reason", None)
+            if new_block and new_block != prev_block:
+                socketio.emit("risk_block_update", {
+                    "profile": profile_for_contract,
+                    "reason": new_block
+                }, room=client_id)
+            if strategy and hasattr(strategy, "get_last_trade_entry"):
+                entry = strategy.get_last_trade_entry() or {}
+            if meta:
+                entry.setdefault("profile", meta.get("profile"))
+                entry.setdefault("type", meta.get("type"))
+                entry.setdefault("barrier", meta.get("barrier"))
+                entry.setdefault("stake", meta.get("stake"))
+                entry.setdefault("symbol", meta.get("symbol"))
+                entry.setdefault("time", meta.get("time"))
+            else:
+                entry.setdefault("profile", profile_for_contract)
+            exit_digit = extract_exit_digit_from_contract(contract)
+            if exit_digit is not None:
+                entry["exit_digit"] = exit_digit
 
         socketio.emit("trade_result", entry, room=client_id)
+        if state.get("active_profile") == "UNCHAIN":
+            socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
         send_stats_update(client_id)
 
     except Exception as e:
@@ -2376,14 +2914,32 @@ def send_stats_update(client_id):
     if not state:
         return
 
+    active_profile = state.get("active_profile", "KOOLKID")
+    if active_profile == "UNCHAIN":
+        u = _ensure_unchain_hl_state(state)
+        stats = u.get("stats") or {}
+        wins = int(stats.get("wins", 0) or 0)
+        losses = int(stats.get("losses", 0) or 0)
+        total = wins + losses
+        winrate = round((wins / total) * 100, 1) if total else 0.0
+        payload = {
+            "profile": "UNCHAIN",
+            "wins": wins,
+            "losses": losses,
+            "winrate": winrate,
+            "net_pnl": float(stats.get("net_pnl", 0.0) or 0.0),
+            "auto_trade": False,
+        }
+        socketio.emit("stats_update", payload, room=client_id)
+        return
+
     strategies = state.get("strategies", {})
-    strategy = strategies.get(state.get("active_profile", "KOOLKID"))
+    strategy = strategies.get(active_profile)
     if not strategy or not hasattr(strategy, "get_stats_payload"):
         return
 
     payload = strategy.get_stats_payload(state.get("balance", 0.0), state.get("session_start_balance"))
-    payload["profile"] = state.get("active_profile", "KOOLKID")
-
+    payload["profile"] = active_profile
     socketio.emit("stats_update", payload, room=client_id)
 
 
@@ -2569,10 +3125,19 @@ def clear_profile_history():
     if strat and hasattr(strat, "clear_history"):
         strat.clear_history()
 
+    if profile == "UNCHAIN":
+        u = _ensure_unchain_hl_state(state)
+        u["stats"] = {"wins": 0, "losses": 0, "net_pnl": 0.0}
+        u["last_result"] = None
+        u["last_action"] = "Ready"
+        u["risk_block_reason"] = None
+
     if profile == state.get("active_profile"):
         send_stats_update(cid)
+        if profile == "UNCHAIN":
+            socketio.emit("unchain_status", _unchain_payload_response(state), room=cid)
 
-    return jsonify({"status": "cleared", "profile": profile})
+    return jsonify({"status": "cleared", "profile": profile, "payload": (_unchain_payload_response(state) if profile == "UNCHAIN" else None)})
 
 
 @app.route("/set_profile", methods=["POST"])
@@ -3402,6 +3967,203 @@ def burst_4():
         time.sleep(0.10)
 
     return jsonify({"status": "success", "placed": placed})
+
+
+
+@app.route("/unchain_status", methods=["GET"])
+def unchain_status_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    _cid, state = get_client_state()
+    return jsonify(_unchain_payload_response(state))
+
+
+@app.route("/unchain_settings", methods=["POST"])
+def unchain_settings_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    cid, state = get_client_state()
+    u = _ensure_unchain_hl_state(state)
+    data = request.json or {}
+    try:
+        if "higher_stake" in data:
+            u["higher_stake"] = max(0.35, float(data.get("higher_stake") or 0.35))
+            if "lower_stake" not in data:
+                u["lower_stake"] = u["higher_stake"]
+        if "lower_stake" in data:
+            u["lower_stake"] = max(0.35, float(data.get("lower_stake") or 0.35))
+        if "higher_barrier" in data:
+            u["higher_barrier"] = str(data.get("higher_barrier") or "0.12").strip()
+        if "lower_barrier" in data:
+            u["lower_barrier"] = str(data.get("lower_barrier") or "-0.12").strip()
+        if "duration" in data:
+            u["duration"] = max(1, min(999, int(data.get("duration") or 1)))
+        if "duration_unit" in data:
+            u["duration_unit"] = _clean_unchain_duration_unit(data.get("duration_unit"))
+        if "tp" in data:
+            u["tp"] = max(0.0, float(data.get("tp") or 0))
+        if "sl" in data:
+            u["sl"] = max(0.0, float(data.get("sl") or 0))
+        if "auto_sl" in data:
+            u["auto_sl"] = bool(data.get("auto_sl"))
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+    u["last_action"] = "UNCHAIN settings saved"
+    _check_unchain_hl_risk_block(state)
+    payload = _unchain_payload_response(state)
+    if state.get("active_profile") == "UNCHAIN":
+        socketio.emit("unchain_status", payload, room=cid)
+        socketio.emit("digit_analysis", payload, room=cid)
+        send_stats_update(cid)
+    return jsonify(payload)
+
+
+@app.route("/unchain_trade", methods=["POST"])
+def unchain_trade_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    cid, state = get_client_state()
+    u = _ensure_unchain_hl_state(state)
+    data = request.json or {}
+    side = str(data.get("side") or "").upper()
+    symbol = data.get("symbol") or state.get("current_symbol", "R_25")
+    duration = data.get("duration", u.get("duration", 5))
+    duration_unit = data.get("duration_unit", u.get("duration_unit", "t"))
+    plan = []
+    if side == "HIGHER":
+        plan.append(("HIGHER", data.get("higher_stake", u.get("higher_stake", 1.0)), data.get("higher_barrier", u.get("higher_barrier", "0.12"))))
+    elif side == "LOWER":
+        plan.append(("LOWER", data.get("lower_stake", u.get("lower_stake", 1.0)), data.get("lower_barrier", u.get("lower_barrier", "-0.12"))))
+    elif side == "BOTH":
+        plan.append(("HIGHER", data.get("higher_stake", u.get("higher_stake", 1.0)), data.get("higher_barrier", u.get("higher_barrier", "0.12"))))
+        plan.append(("LOWER", data.get("lower_stake", u.get("lower_stake", 1.0)), data.get("lower_barrier", u.get("lower_barrier", "-0.12"))))
+    else:
+        return jsonify({"status": "error", "message": "Invalid side. Use HIGHER, LOWER, or BOTH.", "payload": _unchain_payload_response(state)}), 400
+    placed = []
+    for trade_side, stake, barrier in plan:
+        ok, msg = _send_unchain_hl_trade(
+            cid,
+            side=trade_side,
+            stake=stake,
+            symbol=symbol,
+            barrier=barrier,
+            duration=duration,
+            duration_unit=duration_unit,
+        )
+        if not ok:
+            payload = _unchain_payload_response(state)
+            if state.get("active_profile") == "UNCHAIN":
+                socketio.emit("unchain_status", payload, room=cid)
+            return jsonify({"status": "error", "message": msg, "payload": payload, "placed": placed}), 400
+        placed.append(trade_side)
+    u["last_action"] = f"Sent {' + '.join(placed)} on {symbol}"
+    payload = _unchain_payload_response(state)
+    if state.get("active_profile") == "UNCHAIN":
+        socketio.emit("unchain_status", payload, room=cid)
+    return jsonify({"status": "success", "message": f"Sent {' + '.join(placed)}", "payload": payload, "placed": placed})
+
+
+@app.route("/toggle_unchain_auto", methods=["POST"])
+def toggle_unchain_auto_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    _cid, state = get_client_state()
+    payload = _unchain_payload_response(state)
+    return jsonify({"status": "error", "message": "UNCHAIN auto is removed in this build. Use Higher, Lower, or Both.", "auto_enabled": False, "payload": payload}), 400
+
+
+@app.route("/unchain_stop", methods=["POST"])
+def unchain_stop_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    cid, state = get_client_state()
+    u = _ensure_unchain_hl_state(state)
+    active_ids = list((u.get("active_contracts") or {}).keys())
+    closed = []
+    failed = []
+    for contract_id in active_ids:
+        ok, msg = _request_sell_contract(cid, contract_id)
+        if ok:
+            closed.append(str(contract_id))
+        else:
+            failed.append({"contract_id": str(contract_id), "error": msg})
+    if closed:
+        u["last_action"] = f"Close requested for {len(closed)} UNCHAIN trade(s)"
+    elif failed:
+        u["last_action"] = "Close request failed"
+    else:
+        u["last_action"] = "No active UNCHAIN trades"
+    payload = _unchain_payload_response(state)
+    if state.get("active_profile") == "UNCHAIN":
+        socketio.emit("unchain_status", payload, room=cid)
+        socketio.emit("digit_analysis", payload, room=cid)
+    send_stats_update(cid)
+    return jsonify({
+        "status": "success" if closed or not failed else "error",
+        "message": f"Close requested for {len(closed)} trade(s)" if closed else ("No active UNCHAIN trades" if not failed else "Some close requests failed"),
+        "closed": closed,
+        "failed": failed,
+        "payload": payload,
+    })
+
+
+@app.route("/unchain_manual_enter", methods=["POST"])
+def unchain_manual_enter_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    cid, state = get_client_state()
+    data = request.json or {}
+    side = str(data.get("side") or "HIGHER").upper()
+    u = _ensure_unchain_hl_state(state)
+    if side not in ("HIGHER", "LOWER"):
+        side = "HIGHER"
+    ok, msg = _send_unchain_hl_trade(
+        cid,
+        side=side,
+        stake=data.get("stake", u.get("higher_stake" if side == "HIGHER" else "lower_stake", 1.0)),
+        symbol=state.get("current_symbol", "R_25"),
+        barrier=data.get("barrier", u.get("higher_barrier" if side == "HIGHER" else "lower_barrier", "0.12" if side == "HIGHER" else "-0.12")),
+        duration=data.get("duration", u.get("duration", 5)),
+        duration_unit=data.get("duration_unit", u.get("duration_unit", "t")),
+    )
+    payload = _unchain_payload_response(state)
+    if state.get("active_profile") == "UNCHAIN":
+        socketio.emit("unchain_status", payload, room=cid)
+    if ok:
+        return jsonify({"status": "success", "message": f"UNCHAIN {side} entry sent", "payload": payload})
+    return jsonify({"status": "error", "message": msg, "payload": payload}), 400
+
+
+@app.route("/unchain_close_now", methods=["POST"])
+def unchain_close_now_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    cid, state = get_client_state()
+    u = _ensure_unchain_hl_state(state)
+    active_ids = list((u.get("active_contracts") or {}).keys())
+    if not active_ids:
+        return jsonify({"status": "error", "message": "No active UNCHAIN trade", "payload": _unchain_payload_response(state)}), 400
+    closed = []
+    failed = []
+    for contract_id in active_ids:
+        ok, msg = _request_sell_contract(cid, contract_id)
+        if ok:
+            closed.append(str(contract_id))
+        else:
+            failed.append({"contract_id": str(contract_id), "error": msg})
+    if closed:
+        u["last_action"] = f"Sell requested for {len(closed)} UNCHAIN trade(s)"
+    payload = _unchain_payload_response(state)
+    if state.get("active_profile") == "UNCHAIN":
+        socketio.emit("unchain_status", payload, room=cid)
+        socketio.emit("digit_analysis", payload, room=cid)
+    return jsonify({
+        "status": "success" if closed else "error",
+        "message": f"Sell request sent for {len(closed)} trade(s)" if closed else (failed[0]["error"] if failed else "No active UNCHAIN trade"),
+        "closed": closed,
+        "failed": failed,
+        "payload": payload,
+    }), (200 if closed else 500)
 
 
 @app.route("/human_rf_status", methods=["GET"])

@@ -1,0 +1,567 @@
+<div id="unchainRoot" class="unchain-profile">
+  <style>
+    .unchain-profile{
+      --bg-1:#0b1220;
+      --bg-2:#0f172a;
+      --bg-3:#111827;
+      --line:#1f2937;
+      --line-2:#334155;
+      --text:#f8fafc;
+      --muted:#94a3b8;
+      --green:#22c55e;
+      --red:#ef4444;
+      --blue:#38bdf8;
+      --amber:#f59e0b;
+      --violet:#7c3aed;
+      color:var(--text);
+    }
+    .unchain-profile *{box-sizing:border-box;}
+    .unchain-profile .card{
+      width:100%;
+      overflow:hidden;
+    }
+    .unchain-profile .unchain-chip{
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      gap:6px;
+      padding:8px 12px;
+      border-radius:999px;
+      border:1px solid var(--line-2);
+      background:#1e293b;
+      color:#e2e8f0;
+      font-size:12px;
+      font-weight:700;
+      text-align:center;
+      max-width:100%;
+      word-break:break-word;
+    }
+    .unchain-profile .unchain-label{
+      font-size:12px;
+      color:var(--muted);
+      font-weight:700;
+    }
+    .unchain-profile .unchain-grid{
+      display:grid;
+      grid-template-columns:repeat(3,minmax(0,1fr));
+      gap:12px;
+    }
+    .unchain-profile .unchain-mini-grid{
+      display:grid;
+      grid-template-columns:repeat(4,minmax(0,1fr));
+      gap:10px;
+    }
+    .unchain-profile .unchain-history-grid{
+      display:grid;
+      grid-template-columns:repeat(4,minmax(0,1fr));
+      gap:10px;
+      margin-top:12px;
+    }
+    .unchain-profile .unchain-kpi{
+      background:var(--bg-1);
+      border:1px solid var(--line);
+      border-radius:14px;
+      padding:12px;
+      min-width:0;
+    }
+    .unchain-profile .unchain-kpi .k{
+      font-size:11px;
+      color:var(--muted);
+      margin-bottom:6px;
+    }
+    .unchain-profile .unchain-kpi .v{
+      font-size:1.08rem;
+      font-weight:800;
+      color:var(--text);
+      line-height:1.2;
+      overflow-wrap:anywhere;
+    }
+    .unchain-profile .unchain-side{
+      border:1px solid var(--line);
+      border-radius:16px;
+      padding:14px;
+      background:var(--bg-2);
+      min-width:0;
+    }
+    .unchain-profile .unchain-side h4{
+      margin:0 0 12px 0;
+      line-height:1.25;
+    }
+    .unchain-profile .unchain-row{
+      display:flex;
+      flex-wrap:wrap;
+      gap:8px;
+      align-items:center;
+      min-width:0;
+    }
+    .unchain-profile .unchain-row > *{
+      min-width:0;
+    }
+    .unchain-profile .unchain-active-list{
+      display:grid;
+      gap:8px;
+    }
+    .unchain-profile .unchain-active-item{
+      background:var(--bg-1);
+      border:1px solid var(--line);
+      border-radius:14px;
+      padding:12px;
+      min-width:0;
+    }
+    .unchain-profile .unchain-active-item .top{
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      gap:8px;
+      flex-wrap:wrap;
+    }
+    .unchain-profile .unchain-empty{
+      color:var(--muted);
+      font-size:13px;
+      padding:12px;
+      border:1px dashed var(--line-2);
+      border-radius:14px;
+      background:var(--bg-1);
+      text-align:center;
+    }
+    .unchain-profile input,
+    .unchain-profile select,
+    .unchain-profile button{
+      font:inherit;
+      border-radius:12px;
+      min-height:44px;
+    }
+    .unchain-profile input,
+    .unchain-profile select{
+      background:var(--bg-3);
+      border:1px solid var(--line-2);
+      color:#fff;
+      padding:10px 12px;
+      max-width:100%;
+    }
+    .unchain-profile button{
+      border:0;
+      color:#fff;
+      padding:10px 14px;
+      font-weight:800;
+      cursor:pointer;
+      max-width:100%;
+      white-space:normal;
+      word-break:break-word;
+      text-align:center;
+    }
+    .unchain-profile .unchain-header{
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      gap:12px;
+      flex-wrap:wrap;
+    }
+    .unchain-profile .unchain-sub{
+      color:var(--muted);
+      font-size:13px;
+      margin-top:4px;
+    }
+    .unchain-profile .unchain-field{
+      display:grid;
+      gap:6px;
+      flex:1 1 140px;
+      min-width:0;
+    }
+    .unchain-profile .unchain-field.is-compact{
+      flex:0 1 120px;
+    }
+    .unchain-profile .unchain-field-grid-2{
+      display:grid;
+      grid-template-columns:repeat(2,minmax(0,1fr));
+      gap:10px;
+      min-width:0;
+    }
+    .unchain-profile .unchain-side--duration{
+      background:linear-gradient(180deg, rgba(56,189,248,0.08), rgba(15,23,42,0.95));
+      border-color:rgba(56,189,248,0.28);
+    }
+    .unchain-profile .unchain-side--duration .unchain-field-grid-2{
+      margin-top:2px;
+    }
+    .unchain-profile .unchain-side--duration .unchain-field input,
+    .unchain-profile .unchain-side--duration .unchain-field select{
+      min-height:50px;
+      border-color:rgba(56,189,248,0.22);
+      box-shadow:inset 0 1px 0 rgba(255,255,255,0.03);
+    }
+    .unchain-profile .unchain-side--duration .unchain-field input:focus,
+    .unchain-profile .unchain-side--duration .unchain-field select:focus{
+      outline:none;
+      border-color:rgba(56,189,248,0.7);
+      box-shadow:0 0 0 3px rgba(56,189,248,0.16);
+    }
+    .unchain-profile .unchain-btn-row{
+      display:flex;
+      flex-wrap:wrap;
+      gap:8px;
+      align-items:stretch;
+    }
+    .unchain-profile .unchain-btn-row > button{
+      flex:1 1 170px;
+    }
+    .unchain-profile .unchain-btn-row--compact{
+      display:grid;
+      grid-template-columns:repeat(2,minmax(0,1fr));
+      gap:10px;
+      margin-top:12px;
+    }
+    .unchain-profile .unchain-btn-row--compact > button{
+      width:100%;
+      min-height:48px;
+      box-shadow:0 10px 24px rgba(2,6,23,0.28);
+    }
+    .unchain-profile .unchain-btn-row--compact > button:first-child{
+      grid-column:1 / -1;
+    }
+    .unchain-profile .unchain-trade-list{
+      margin-top:14px;
+      display:grid;
+      gap:10px;
+    }
+    .unchain-profile .unchain-history-card{
+      background:var(--bg-2);
+      border:1px solid var(--line-2);
+      border-radius:14px;
+      padding:12px;
+      min-width:0;
+    }
+    .unchain-profile .unchain-history-card .top{
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      gap:8px;
+      flex-wrap:wrap;
+      margin-bottom:8px;
+    }
+    .unchain-profile .unchain-history-meta{
+      display:grid;
+      grid-template-columns:repeat(4,minmax(0,1fr));
+      gap:8px;
+    }
+    .unchain-profile .unchain-history-meta > div{
+      min-width:0;
+      background:var(--bg-1);
+      border:1px solid var(--line);
+      border-radius:12px;
+      padding:8px;
+    }
+    .unchain-profile .unchain-history-meta .meta-k{
+      color:var(--muted);
+      font-size:11px;
+      margin-bottom:4px;
+    }
+    .unchain-profile .unchain-history-meta .meta-v{
+      font-weight:800;
+      overflow-wrap:anywhere;
+    }
+
+
+    .unchain-profile .unchain-bias-grid{
+      display:grid;
+      grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);
+      gap:12px;
+      align-items:stretch;
+    }
+    .unchain-profile .unchain-bias-main{
+      border:1px solid rgba(56,189,248,0.24);
+      border-radius:16px;
+      padding:14px;
+      background:linear-gradient(180deg, rgba(14,165,233,0.10), rgba(15,23,42,0.96));
+      min-width:0;
+    }
+    .unchain-profile .unchain-bias-headline{
+      font-size:1.08rem;
+      font-weight:900;
+      line-height:1.25;
+      margin-bottom:8px;
+      overflow-wrap:anywhere;
+    }
+    .unchain-profile .unchain-bias-sub{
+      color:var(--muted);
+      font-size:12px;
+      line-height:1.45;
+    }
+    .unchain-profile .unchain-bias-stats{
+      display:grid;
+      grid-template-columns:repeat(3,minmax(0,1fr));
+      gap:10px;
+      min-width:0;
+    }
+    .unchain-profile .unchain-bias-stat{
+      background:var(--bg-1);
+      border:1px solid var(--line);
+      border-radius:14px;
+      padding:12px;
+      min-width:0;
+    }
+    .unchain-profile .unchain-bias-stat .k{
+      color:var(--muted);
+      font-size:11px;
+      margin-bottom:6px;
+    }
+    .unchain-profile .unchain-bias-stat .v{
+      font-size:1.06rem;
+      font-weight:900;
+      overflow-wrap:anywhere;
+    }
+    .unchain-profile .unchain-bias-reasons{
+      display:flex;
+      flex-wrap:wrap;
+      gap:8px;
+      margin-top:12px;
+    }
+    .unchain-profile .unchain-reason-chip{
+      display:inline-flex;
+      align-items:center;
+      padding:7px 10px;
+      border-radius:999px;
+      border:1px solid rgba(148,163,184,0.24);
+      background:rgba(15,23,42,0.82);
+      color:#e2e8f0;
+      font-size:12px;
+      font-weight:700;
+      line-height:1.2;
+      max-width:100%;
+      overflow-wrap:anywhere;
+    }
+
+    @media (max-width: 980px){
+      .unchain-profile .unchain-grid{grid-template-columns:1fr 1fr;}
+      .unchain-profile .unchain-mini-grid{grid-template-columns:1fr 1fr;}
+      .unchain-profile .unchain-history-grid{grid-template-columns:1fr 1fr;}
+      .unchain-profile .unchain-history-meta{grid-template-columns:1fr 1fr;}
+      .unchain-profile .unchain-bias-grid{grid-template-columns:1fr;}
+      .unchain-profile .unchain-bias-stats{grid-template-columns:repeat(3,minmax(0,1fr));}
+    }
+
+    @media (max-width: 700px){
+      .unchain-profile .card{padding:12px;}
+      .unchain-profile .unchain-grid,
+      .unchain-profile .unchain-mini-grid,
+      .unchain-profile .unchain-history-grid,
+      .unchain-profile .unchain-history-meta,
+      .unchain-profile .unchain-bias-grid,
+      .unchain-profile .unchain-bias-stats{
+        grid-template-columns:1fr;
+      }
+      .unchain-profile .unchain-header{
+        align-items:flex-start;
+      }
+      .unchain-profile .unchain-chip{
+        width:100%;
+      }
+      .unchain-profile .unchain-row{
+        display:grid;
+        grid-template-columns:1fr;
+        align-items:stretch;
+      }
+      .unchain-profile .unchain-field,
+      .unchain-profile .unchain-field.is-compact{
+        flex:1 1 auto;
+      }
+      .unchain-profile .unchain-field-grid-2,
+      .unchain-profile .unchain-btn-row--compact{
+        grid-template-columns:1fr;
+      }
+      .unchain-profile .unchain-row input,
+      .unchain-profile .unchain-row select,
+      .unchain-profile .unchain-row button,
+      .unchain-profile .unchain-btn-row > button{
+        width:100%;
+      }
+      .unchain-profile .unchain-btn-row{
+        display:grid;
+        grid-template-columns:1fr;
+      }
+      .unchain-profile h3{
+        font-size:1.05rem;
+        line-height:1.3;
+      }
+      .unchain-profile .unchain-kpi .v{
+        font-size:1rem;
+      }
+    }
+  </style>
+
+  <div class="card" style="border:1px solid rgba(245,158,11,0.25);background:linear-gradient(180deg,#0b1220,#111827);">
+    <div class="unchain-header">
+      <div style="min-width:0;">
+        <h3 style="margin:0;color:#f59e0b;">⛓️ UNCHAIN — Higher / Lower Desk</h3>
+        <div class="unchain-sub">Separate Higher and Lower stakes, separate barriers, one shared duration, and quick one-side or both-side execution.</div>
+      </div>
+      <div id="unchainStatusChip" class="unchain-chip">READY</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="unchain-mini-grid">
+      <div class="unchain-kpi"><div class="k">Net P&amp;L</div><div class="v" id="unchainNetPnl">$0.00</div></div>
+      <div class="unchain-kpi"><div class="k">Wins / Losses</div><div class="v" id="unchainWinLoss">0 / 0</div></div>
+      <div class="unchain-kpi"><div class="k">Active Trades</div><div class="v" id="unchainActiveCount">0</div></div>
+      <div class="unchain-kpi"><div class="k">Last Result</div><div class="v" id="unchainLastResult">—</div></div>
+    </div>
+  </div>
+
+
+  <div class="card">
+    <div class="unchain-header" style="margin-bottom:12px;">
+      <div>
+        <h3 style="margin:0;">🧠 Higher / Lower Bias Analyzer</h3>
+        <div class="unchain-sub">Display only. Reads recent market flow and your current UNCHAIN setup.</div>
+      </div>
+    </div>
+
+    <div class="unchain-bias-grid">
+      <div class="unchain-bias-main">
+        <div id="unchainBiasHeadline" class="unchain-bias-headline" style="color:#e2e8f0;">LOADING ANALYZER…</div>
+        <div id="unchainBiasSub" class="unchain-bias-sub">Gathering enough recent ticks to score Higher vs Lower.</div>
+        <div id="unchainBiasReasons" class="unchain-bias-reasons">
+          <span class="unchain-reason-chip">Waiting for data</span>
+        </div>
+      </div>
+
+      <div class="unchain-bias-stats">
+        <div class="unchain-bias-stat">
+          <div class="k">Higher Score</div>
+          <div id="unchainHigherBiasPct" class="v" style="color:#22c55e;">50.0%</div>
+        </div>
+        <div class="unchain-bias-stat">
+          <div class="k">Lower Score</div>
+          <div id="unchainLowerBiasPct" class="v" style="color:#ef4444;">50.0%</div>
+        </div>
+        <div class="unchain-bias-stat">
+          <div class="k">Strength</div>
+          <div id="unchainBiasStrength" class="v" style="color:#38bdf8;">Building</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0;">🎛️ UNCHAIN Controls</h3>
+    <div class="unchain-grid">
+      <div class="unchain-side">
+        <h4 style="color:#22c55e;">📈 Higher Setup</h4>
+        <div class="unchain-row">
+          <div class="unchain-field is-compact">
+            <label class="unchain-label" for="unchainHigherStake">Higher Stake</label>
+            <input id="unchainHigherStake" type="number" min="0.35" step="0.01" value="1.00">
+          </div>
+        </div>
+        <div class="unchain-row" style="margin-top:10px;">
+          <div class="unchain-field is-compact">
+            <label class="unchain-label" for="unchainHigherBarrier">Higher Barrier</label>
+            <input id="unchainHigherBarrier" type="text" value="0.12">
+          </div>
+        </div>
+        <div style="margin-top:8px;color:#94a3b8;font-size:12px;">For short durations this is sent as a positive relative barrier.</div>
+      </div>
+
+      <div class="unchain-side">
+        <h4 style="color:#ef4444;">📉 Lower Setup</h4>
+        <div class="unchain-row">
+          <div class="unchain-field is-compact">
+            <label class="unchain-label" for="unchainLowerStake">Lower Stake</label>
+            <input id="unchainLowerStake" type="number" min="0.35" step="0.01" value="1.00">
+          </div>
+        </div>
+        <div class="unchain-row" style="margin-top:10px;">
+          <div class="unchain-field is-compact">
+            <label class="unchain-label" for="unchainLowerBarrier">Lower Barrier</label>
+            <input id="unchainLowerBarrier" type="text" value="-0.12">
+          </div>
+        </div>
+        <div style="margin-top:8px;color:#94a3b8;font-size:12px;">For short durations this is sent as a negative relative barrier.</div>
+      </div>
+
+      <div class="unchain-side unchain-side--duration">
+        <h4 style="color:#38bdf8;">⏱️ Shared Duration</h4>
+        <div class="unchain-field-grid-2">
+          <div class="unchain-field">
+            <label class="unchain-label" for="unchainDuration">Duration</label>
+            <input id="unchainDuration" type="number" min="1" step="1" value="5">
+          </div>
+          <div class="unchain-field">
+            <label class="unchain-label" for="unchainDurationUnit">Unit</label>
+            <select id="unchainDurationUnit">
+              <option value="t" selected>Ticks</option>
+              <option value="s">Seconds</option>
+              <option value="m">Minutes</option>
+            </select>
+          </div>
+        </div>
+        <div class="unchain-field-grid-2" style="margin-top:10px;">
+          <div class="unchain-field">
+            <label class="unchain-label" for="unchainTp">TP</label>
+            <input id="unchainTp" type="number" min="0" step="0.01" value="0">
+          </div>
+          <div class="unchain-field">
+            <label class="unchain-label" for="unchainSl">SL</label>
+            <input id="unchainSl" type="number" min="0" step="0.01" value="0">
+          </div>
+        </div>
+        <div class="unchain-btn-row--compact">
+          <button id="unchainAutoSlBtn" data-action="unchain-toggle-autosl" style="background:#eab308;color:#111827;">AUTO SL: ON</button>
+          <button data-action="unchain-save-settings" style="background:#06b6d4;">💾 Save</button>
+          <button data-action="unchain-refresh" style="background:#64748b;">🔄 Refresh</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0;">🚀 Execute</h3>
+    <div class="unchain-btn-row">
+      <button data-action="unchain-trade-higher" style="background:#22c55e;">📈 HIGHER</button>
+      <button data-action="unchain-trade-lower" style="background:#ef4444;">📉 LOWER</button>
+      <button data-action="unchain-trade-both" style="background:#f59e0b;color:#111827;">⚖️ BOTH</button>
+      <button data-action="unchain-close-all" style="background:#7c3aed;">💸 CLOSE UNCHAIN TRADES</button>
+    </div>
+    <div id="unchainRiskBlock" style="display:none;margin-top:10px;padding:10px;border-radius:12px;background:#7f1d1d;color:#fecaca;border:1px solid #ef4444;"></div>
+    <div style="margin-top:10px;color:#94a3b8;font-size:12px;">Both sends one Higher contract and one Lower contract using the current saved values.</div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0;">📌 Active UNCHAIN Trades</h3>
+    <div id="unchainActiveTrades" class="unchain-active-list"><div class="unchain-empty">No active UNCHAIN trades.</div></div>
+  </div>
+
+  <div class="card">
+    <div class="unchain-header">
+      <h3 style="margin:0;">📚 TRADE HISTORY</h3>
+      <button onclick="clearProfileHistory()" style="background:#fb7185;">Clear History</button>
+    </div>
+
+    <div class="unchain-history-grid">
+      <div class="unchain-kpi" style="text-align:center;">
+        <div class="k">Total Trades</div>
+        <div id="profileTotalTrades" class="v">0</div>
+      </div>
+      <div class="unchain-kpi" style="text-align:center;">
+        <div class="k">Wins</div>
+        <div id="profileWins" class="v" style="color:#22c55e;">0</div>
+      </div>
+      <div class="unchain-kpi" style="text-align:center;">
+        <div class="k">Losses</div>
+        <div id="profileLosses" class="v" style="color:#ef4444;">0</div>
+      </div>
+      <div class="unchain-kpi" style="text-align:center;">
+        <div class="k">Win Rate</div>
+        <div class="v" style="font-size:1rem;color:#38bdf8;">
+          <span id="profileWinRate">0%</span>
+          <div style="font-size:12px;color:#94a3b8;margin-top:4px;">Loss Rate: <span id="profileLossRate">0%</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="profileTradeList" class="unchain-trade-list">
+      <div class="unchain-empty">No trades yet</div>
+    </div>
+  </div>
+</div>

@@ -1,6 +1,6 @@
 (function () {
   const PROFILE = "JOKERJOE";
-  const state = { lastSocket: null, socketBound: false, autoModes: {}, kidgxBarrier: 5, matchesAnalysisOn: false, matchesLastKey: "", matchesObserverBound: false, matchSniperOn: false, matchSniperCooldownUntil: 0, matchSniperActiveDigit: null, matchSniperConsumed: false, matchSniperBusy: false, matchesSnapshot: null, matchesSorted: [], matchSniper5xOn: false, matchSniper5xCooldownUntil: 0, matchSniper5xBusy: false, matchSniper5xLastTopKey: "", aiAutoModeChoice: "golden_digits", aiAutoLowestLocalOn: false, aiAutoModalOpen: false, aiLowestLastTickCount: 0, aiLowestTouches: {}, aiLowestArmed: null, aiLowestBatchActive: false, aiLowestBatchPending: 0, aiLowestBatchBarrier: null, aiLowestBatchProfit: 0, aiLowestCooldownUntil: 0, aiLowestSubmitting: false, aiLowestRecoveryDeficit: 0, aiLowestRecoveryOnly: false };
+  const state = { lastSocket: null, socketBound: false, autoModes: {}, kidgxBarrier: 5, matchesAnalysisOn: false, matchesLastKey: "", matchesObserverBound: false, matchSniperOn: false, matchSniperCooldownUntil: 0, matchSniperActiveDigit: null, matchSniperConsumed: false, matchSniperBusy: false, matchesSnapshot: null, matchesSorted: [], matchSniper5xOn: false, matchSniper5xCooldownUntil: 0, matchSniper5xBusy: false, matchSniper5xLastTopKey: "", aiAutoModeChoice: "golden_digits", aiAutoLowestTradeCountChoice: 5, aiAutoLowestLocalOn: false, aiAutoModalOpen: false, aiLowestLastTickCount: 0, aiLowestTouches: {}, aiLowestArmed: null, aiLowestBatchActive: false, aiLowestBatchPending: 0, aiLowestBatchBarrier: null, aiLowestBatchProfit: 0, aiLowestCooldownUntil: 0, aiLowestSubmitting: false, aiLowestRecoveryDeficit: 0, aiLowestRecoveryOnly: false };
 
   function App() { return window.BotApp || {}; }
   function isActive() { try { return typeof activeProfile !== "undefined" && activeProfile === PROFILE; } catch (e) { return false; } }
@@ -16,6 +16,10 @@
 
   function normalizeAIAutoModeJokerjoe(mode) {
     return String(mode || "golden_digits").toLowerCase() === "lowest_pct" ? "lowest_pct" : "golden_digits";
+  }
+
+  function normalizeAIAutoLowestTradeCountJokerjoe(count) {
+    return Number(count) === 1 ? 1 : 5;
   }
 
   function isAIAutoOnJokerjoe() {
@@ -56,15 +60,22 @@
 
   function updateAIAutoModeModalUiJokerjoe() {
     const mode = normalizeAIAutoModeJokerjoe(state.aiAutoModeChoice);
+    const lowestCount = normalizeAIAutoLowestTradeCountJokerjoe(state.aiAutoLowestTradeCountChoice);
     const goldenBtn = getEl("aiAutoGoldenBtnJokerjoe");
     const lowestBtn = getEl("aiAutoLowestBtnJokerjoe");
+    const lowestWrap = getEl("aiAutoLowestTradeOptionsWrapJokerjoe");
+    const lowest5Btn = getEl("aiAutoLowest5TradesBtnJokerjoe");
+    const lowest1Btn = getEl("aiAutoLowest1TradeBtnJokerjoe");
     const status = getEl("aiAutoModeModalStatusJokerjoe");
     if (goldenBtn) goldenBtn.style.background = mode === "golden_digits" ? "#22c55e" : "#1e293b";
     if (lowestBtn) lowestBtn.style.background = mode === "lowest_pct" ? "#22c55e" : "#1e293b";
+    if (lowestWrap) lowestWrap.style.display = mode === "lowest_pct" ? "grid" : "none";
+    if (lowest5Btn) lowest5Btn.style.background = mode === "lowest_pct" && lowestCount === 5 ? "#22c55e" : "#1e293b";
+    if (lowest1Btn) lowest1Btn.style.background = mode === "lowest_pct" && lowestCount === 1 ? "#22c55e" : "#1e293b";
     if (status) {
       if (mode === "lowest_pct") {
         const rec = state.aiLowestRecoveryOnly ? ` • Recovery ON ($${Number(state.aiLowestRecoveryDeficit || 0).toFixed(2)} left)` : "";
-        status.innerText = `Lowest % mode (DIFFERS): touch → move-away → next tick • exact 5 trades • 10s cooldown${rec}`;
+        status.innerText = `Lowest % mode (DIFFERS): touch → move-away → next tick • ${lowestCount} trade${lowestCount === 1 ? "" : "s"} • 10s cooldown${rec}`;
       } else {
         status.innerText = "Golden Digits mode: existing backend AI AUTO logic";
       }
@@ -103,11 +114,19 @@
     return { placed, failed };
   }
 
+  function getManualStakeValueJokerjoe() {
+    const stakeEl = document.getElementById("stake");
+    let stake = Number(stakeEl && stakeEl.value);
+    if (!Number.isFinite(stake) || stake <= 0) stake = 1;
+    return stake;
+  }
+
   async function placeExactFiveDiffersBatchJokerjoe(digit) {
     let totalPlaced = 0;
     let attempts = 0;
     try {
-      const r = await postJSON("/insta5", { barrier: Number(digit) });
+      const stake = getManualStakeValueJokerjoe();
+      const r = await postJSON("/insta5", { barrier: Number(digit), stake, amount: stake });
       totalPlaced = Math.max(0, Number(r && r.data && r.data.placed) || 0);
     } catch (e) {}
 
@@ -115,7 +134,8 @@
       attempts += 1;
       const missing = 5 - totalPlaced;
       const jobs = [];
-      for (let i = 0; i < missing; i++) jobs.push(postJSON("/manual_trade", { type: "DIFFERS", barrier: Number(digit) }));
+      const stake = getManualStakeValueJokerjoe();
+      for (let i = 0; i < missing; i++) jobs.push(postJSON("/manual_trade", { type: "DIFFERS", barrier: Number(digit), stake, amount: stake }));
       const rs = await Promise.allSettled(jobs);
       let add = 0;
       rs.forEach((x) => {
@@ -127,23 +147,38 @@
     return { placed: totalPlaced, exact: totalPlaced === 5 };
   }
 
+  async function placeOneDiffersTradeJokerjoe(digit) {
+    try {
+      const stake = getManualStakeValueJokerjoe();
+      const r = await postJSON("/manual_trade", { type: "DIFFERS", barrier: Number(digit), stake, amount: stake });
+      const ok = !!(r && r.data && r.data.status === "success");
+      return { placed: ok ? 1 : 0, exact: ok };
+    } catch (e) {
+      return { placed: 0, exact: false };
+    }
+  }
+
   async function fireAIAutoLowestBatchJokerjoe(digit, pct) {
     if (state.aiLowestSubmitting || state.aiLowestBatchActive) return;
     state.aiLowestSubmitting = true;
     const d = Number(digit);
+    const tradeCount = normalizeAIAutoLowestTradeCountJokerjoe(state.aiAutoLowestTradeCountChoice);
     try {
-      const r = await placeExactFiveDiffersBatchJokerjoe(d);
+      const r = tradeCount === 1
+        ? await placeOneDiffersTradeJokerjoe(d)
+        : await placeExactFiveDiffersBatchJokerjoe(d);
+
       if (r && r.exact) {
         state.aiLowestBatchActive = true;
-        state.aiLowestBatchPending = 5;
+        state.aiLowestBatchPending = tradeCount;
         state.aiLowestBatchBarrier = d;
         state.aiLowestBatchProfit = 0;
-        safeToast(`🤖AI Lowest % batch: 5/5 DIFFERS on ${d}${Number.isFinite(Number(pct)) ? ` (${Number(pct).toFixed(1)}%)` : ""}`, "success");
+        safeToast(`🤖AI Lowest % batch: ${tradeCount}/${tradeCount} DIFFERS on ${d}${Number.isFinite(Number(pct)) ? ` (${Number(pct).toFixed(1)}%)` : ""}`, "success");
       } else {
         state.aiLowestBatchActive = false;
         state.aiLowestBatchPending = 0;
         state.aiLowestBatchBarrier = null;
-        safeToast(`🤖AI Lowest % exact batch failed (${r && r.placed ? r.placed : 0}/5)`, "error");
+        safeToast(`🤖AI Lowest % exact batch failed (${r && r.placed ? r.placed : 0}/${tradeCount})`, "error");
       }
     } catch (e) {
       safeToast("🤖AI Lowest % batch failed", "error");
@@ -901,7 +936,8 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
       state.aiAutoLowestLocalOn = true;
       closeAIAutoModeModalJokerjoe();
       updateButtons();
-      safeToast("🤖AI AUTO-TRADING: ON (Lowest % mode)", "success");
+      const lowestCount = normalizeAIAutoLowestTradeCountJokerjoe(state.aiAutoLowestTradeCountChoice);
+      safeToast(`🤖AI AUTO-TRADING: ON (Lowest % mode • ${lowestCount} trade${lowestCount === 1 ? "" : "s"})`, "success");
       return;
     }
 
@@ -920,6 +956,18 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     closeAIAutoModeModalJokerjoe();
     updateButtons();
     safeToast("🤖AI AUTO-TRADING: ON (Golden Digits)", "success");
+  };
+
+  window.openAIAutoLowestTradeCountOptionsJokerjoe = function () {
+    state.aiAutoModeChoice = "lowest_pct";
+    updateAIAutoModeModalUiJokerjoe();
+  };
+
+  window.selectAIAutoLowestTradeCountJokerjoe = async function (count) {
+    state.aiAutoLowestTradeCountChoice = normalizeAIAutoLowestTradeCountJokerjoe(count);
+    state.aiAutoModeChoice = "lowest_pct";
+    updateAIAutoModeModalUiJokerjoe();
+    return window.selectAIAutoModeJokerjoe("lowest_pct");
   };
 
   window.closeAIAutoModeModalJokerjoe = function () {
