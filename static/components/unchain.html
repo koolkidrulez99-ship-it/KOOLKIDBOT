@@ -356,11 +356,16 @@
       .unchain-profile .card{padding:12px;}
       .unchain-profile .unchain-grid,
       .unchain-profile .unchain-mini-grid,
-      .unchain-profile .unchain-history-grid,
       .unchain-profile .unchain-history-meta,
       .unchain-profile .unchain-bias-grid,
       .unchain-profile .unchain-bias-stats{
         grid-template-columns:1fr;
+      }
+      .unchain-profile .unchain-history-grid{
+        grid-template-columns:repeat(4,minmax(0,1fr));
+      }
+      .unchain-profile .unchain-history-grid > *{
+        min-width:0;
       }
       .unchain-profile .unchain-header{
         align-items:flex-start;

@@ -1858,14 +1858,24 @@ def _entry_is_open_for_ui(entry):
     if not isinstance(entry, dict):
         return False
     try:
-        if entry.get("is_sold"):
+        if entry.get("is_sold") or entry.get("is_settled") or entry.get("is_expired"):
             return False
         for key in ("status", "contract_status"):
             status = str(entry.get(key) or "").strip().lower()
-            if status in ("sold", "won", "lost", "settled", "closed", "expired"):
+            if status in ("sold", "won", "lost", "settled", "closed", "expired", "cancelled"):
                 return False
         if entry.get("sell_price") not in (None, ""):
             return False
+        expiry_raw = entry.get("date_expiry")
+        if expiry_raw in (None, ""):
+            expiry_raw = entry.get("expiry_time")
+        if expiry_raw not in (None, ""):
+            try:
+                expiry_ts = int(float(expiry_raw))
+            except Exception:
+                expiry_ts = None
+            if expiry_ts and expiry_ts <= int(time.time()) and str(entry.get("is_valid_to_sell", "")).strip() in ("0", "false", "False"):
+                return False
     except Exception:
         return True
     return True
@@ -1924,6 +1934,16 @@ def _upsert_unchain_active_contract(state, contract_id, meta=None, contract=None
     if contract:
         entry["contract_status"] = contract.get("status") or entry.get("contract_status")
         entry["is_sold"] = bool(contract.get("is_sold"))
+        entry["is_settled"] = bool(contract.get("is_settled"))
+        entry["is_expired"] = bool(contract.get("is_expired"))
+        entry["is_valid_to_sell"] = contract.get("is_valid_to_sell", entry.get("is_valid_to_sell"))
+        if contract.get("sell_price") not in (None, ""):
+            entry["sell_price"] = contract.get("sell_price")
+        expiry_val = contract.get("date_expiry")
+        if expiry_val in (None, ""):
+            expiry_val = contract.get("expiry_time")
+        if expiry_val not in (None, ""):
+            entry["date_expiry"] = expiry_val
     entry["updated_at"] = now_time()
     active[cid_key] = entry
     u["last_action"] = f"{entry['type']} active on {entry['symbol']}"
@@ -2917,8 +2937,12 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 cid_val = contract.get("contract_id")
                 meta_for_contract = (state.get("contract_meta") or {}).get(cid_val) if cid_val else (state.get("contract_meta") or {}).get(str(cid_val))
                 unchain_known = _is_unchain_contract_known(state, cid_val, meta=meta_for_contract)
-                if unchain_known and not _is_contract_settled_fast(contract):
-                    _upsert_unchain_active_contract(state, cid_val, meta=meta_for_contract, contract=contract, status="OPEN")
+                if unchain_known:
+                    if _is_contract_settled_fast(contract):
+                        # Mark as closed right away so stale active cards disappear even before final finalize runs.
+                        _upsert_unchain_active_contract(state, cid_val, meta=meta_for_contract, contract=contract, status=(contract.get("status") or "CLOSED"))
+                    else:
+                        _upsert_unchain_active_contract(state, cid_val, meta=meta_for_contract, contract=contract, status="OPEN")
                 un = (state.get("strategies") or {}).get("UNCHAIN")
                 if un and hasattr(un, "on_open_contract"):
                     if ((meta_for_contract and (meta_for_contract.get("profile") or "").upper() == "UNCHAIN" and str(meta_for_contract.get("type") or "").upper() == "ACCU")
@@ -3116,7 +3140,8 @@ def process_contract(client_id, contract):
         socketio.emit("trade_result", entry, room=client_id)
         if profile_for_contract == "UNCHAIN":
             _run_unchain_auto_both(client_id, state)
-        if state.get("active_profile") == "UNCHAIN":
+            socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
+        elif state.get("active_profile") == "UNCHAIN":
             socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
         send_stats_update(client_id)
 
