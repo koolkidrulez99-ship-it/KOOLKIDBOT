@@ -1831,16 +1831,118 @@ def _format_unchain_barrier(raw_value, side, duration_unit):
     return out or "0"
 
 
+def _normalize_contract_id(contract_id):
+    if contract_id is None:
+        return None
+    try:
+        s = str(contract_id).strip()
+    except Exception:
+        return None
+    if not s:
+        return None
+    try:
+        f = float(s)
+        if f.is_integer():
+            s = str(int(f))
+    except Exception:
+        pass
+    return s
+
+
+def _peek_contract_meta(state, contract_id):
+    meta_map = state.get("contract_meta") or {}
+    norm = _normalize_contract_id(contract_id)
+    candidates = [contract_id, norm, str(contract_id) if contract_id is not None else None]
+    if norm and norm.isdigit():
+        try:
+            candidates.append(int(norm))
+        except Exception:
+            pass
+    for key in candidates:
+        if key is None:
+            continue
+        if key in meta_map:
+            return meta_map.get(key)
+    return None
+
+
+def _get_unchain_active_entry(state, contract_id):
+    u = _ensure_unchain_hl_state(state)
+    active = u.get("active_contracts") or {}
+    norm = _normalize_contract_id(contract_id)
+    for key in (norm, str(contract_id) if contract_id is not None else None, contract_id):
+        if key is None:
+            continue
+        key = str(key)
+        if key in active:
+            return active.get(key)
+    return None
+
+
+def _remove_unchain_active_contract(state, contract_id):
+    u = _ensure_unchain_hl_state(state)
+    active = u.setdefault("active_contracts", {})
+    removed = None
+    norm = _normalize_contract_id(contract_id)
+    for key in (norm, str(contract_id) if contract_id is not None else None, contract_id):
+        if key is None:
+            continue
+        key = str(key)
+        if key in active:
+            removed = active.pop(key, None) or removed
+    return removed
+
+
+def _get_processed_unchain_contracts(state):
+    seen = state.setdefault("_processed_unchain_contracts", set())
+    if not isinstance(seen, set):
+        try:
+            seen = set(seen)
+        except Exception:
+            seen = set()
+        state["_processed_unchain_contracts"] = seen
+    return seen
+
+
+def _mark_unchain_contract_processed(state, contract_id):
+    norm = _normalize_contract_id(contract_id)
+    if not norm:
+        return
+    seen = _get_processed_unchain_contracts(state)
+    seen.add(norm)
+    if len(seen) > 2000:
+        while len(seen) > 1500:
+            try:
+                seen.pop()
+            except Exception:
+                break
+
+
+def _is_unchain_contract_processed(state, contract_id):
+    norm = _normalize_contract_id(contract_id)
+    return bool(norm and norm in _get_processed_unchain_contracts(state))
+
+
 def _pull_contract_meta(state, contract_id):
     meta_map = state.get("contract_meta") or {}
     if contract_id is None:
         return None
-    for key in (contract_id, str(contract_id), int(contract_id) if str(contract_id).isdigit() else None):
+    found = None
+    norm = _normalize_contract_id(contract_id)
+    candidates = [contract_id, norm, str(contract_id) if contract_id is not None else None]
+    if norm and norm.isdigit():
+        try:
+            candidates.append(int(norm))
+        except Exception:
+            pass
+    for key in candidates:
         if key is None:
             continue
         if key in meta_map:
-            return meta_map.pop(key, None)
-    return None
+            value = meta_map.pop(key, None)
+            if value is not None and found is None:
+                found = value
+    return found
 
 
 def _is_unchain_contract_known(state, contract_id, meta=None):
@@ -1849,33 +1951,26 @@ def _is_unchain_contract_known(state, contract_id, meta=None):
             return True
     except Exception:
         pass
+    norm = _normalize_contract_id(contract_id)
+    if norm and _is_unchain_contract_processed(state, norm):
+        return True
     u = _ensure_unchain_hl_state(state)
     active = u.get("active_contracts") or {}
-    return str(contract_id) in active if contract_id is not None else False
+    return (str(contract_id) in active or (norm in active if norm else False)) if contract_id is not None else False
 
 
 def _entry_is_open_for_ui(entry):
     if not isinstance(entry, dict):
         return False
     try:
-        if entry.get("is_sold") or entry.get("is_settled") or entry.get("is_expired"):
+        if entry.get("is_sold"):
             return False
         for key in ("status", "contract_status"):
             status = str(entry.get(key) or "").strip().lower()
-            if status in ("sold", "won", "lost", "settled", "closed", "expired", "cancelled"):
+            if status in ("sold", "won", "lost", "settled", "closed", "expired"):
                 return False
         if entry.get("sell_price") not in (None, ""):
             return False
-        expiry_raw = entry.get("date_expiry")
-        if expiry_raw in (None, ""):
-            expiry_raw = entry.get("expiry_time")
-        if expiry_raw not in (None, ""):
-            try:
-                expiry_ts = int(float(expiry_raw))
-            except Exception:
-                expiry_ts = None
-            if expiry_ts and expiry_ts <= int(time.time()) and str(entry.get("is_valid_to_sell", "")).strip() in ("0", "false", "False"):
-                return False
     except Exception:
         return True
     return True
@@ -1907,10 +2002,10 @@ def _check_unchain_hl_risk_block(state):
 
 def _upsert_unchain_active_contract(state, contract_id, meta=None, contract=None, status=None):
     u = _ensure_unchain_hl_state(state)
-    cid_key = str(contract_id)
+    cid_key = _normalize_contract_id(contract_id) or str(contract_id)
     active = u.setdefault("active_contracts", {})
     entry = active.get(cid_key, {})
-    meta = meta or (state.get("contract_meta") or {}).get(contract_id) or (state.get("contract_meta") or {}).get(str(contract_id)) or {}
+    meta = meta or _peek_contract_meta(state, contract_id) or {}
     contract = contract or {}
     entry["contract_id"] = contract_id
     entry["profile"] = "UNCHAIN"
@@ -1925,7 +2020,10 @@ def _upsert_unchain_active_contract(state, contract_id, meta=None, contract=None
     entry["duration"] = meta.get("duration", entry.get("duration"))
     entry["duration_unit"] = meta.get("duration_unit", entry.get("duration_unit"))
     entry["time"] = meta.get("time") or entry.get("time") or now_time()
-    entry["status"] = status or entry.get("status") or "OPEN"
+    entry_status = status or contract.get("status") or entry.get("status") or "OPEN"
+    if contract.get("is_sold"):
+        entry_status = "SOLD"
+    entry["status"] = entry_status
     try:
         if contract.get("profit") is not None:
             entry["open_profit"] = float(contract.get("profit") or 0)
@@ -1934,16 +2032,12 @@ def _upsert_unchain_active_contract(state, contract_id, meta=None, contract=None
     if contract:
         entry["contract_status"] = contract.get("status") or entry.get("contract_status")
         entry["is_sold"] = bool(contract.get("is_sold"))
-        entry["is_settled"] = bool(contract.get("is_settled"))
-        entry["is_expired"] = bool(contract.get("is_expired"))
-        entry["is_valid_to_sell"] = contract.get("is_valid_to_sell", entry.get("is_valid_to_sell"))
         if contract.get("sell_price") not in (None, ""):
             entry["sell_price"] = contract.get("sell_price")
-        expiry_val = contract.get("date_expiry")
-        if expiry_val in (None, ""):
-            expiry_val = contract.get("expiry_time")
-        if expiry_val not in (None, ""):
-            entry["date_expiry"] = expiry_val
+        if contract.get("buy_price") not in (None, ""):
+            entry["buy_price"] = contract.get("buy_price")
+        if contract.get("is_valid_to_sell") is not None:
+            entry["is_valid_to_sell"] = bool(contract.get("is_valid_to_sell"))
     entry["updated_at"] = now_time()
     active[cid_key] = entry
     u["last_action"] = f"{entry['type']} active on {entry['symbol']}"
@@ -1953,8 +2047,7 @@ def _upsert_unchain_active_contract(state, contract_id, meta=None, contract=None
 def _finalize_unchain_contract(state, contract, meta=None):
     u = _ensure_unchain_hl_state(state)
     contract_id = contract.get("contract_id")
-    active = u.setdefault("active_contracts", {})
-    active_entry = active.pop(str(contract_id), None) or {}
+    active_entry = _remove_unchain_active_contract(state, contract_id) or {}
     meta = meta or {}
     profit = float(contract.get("profit", 0) or 0)
     result = "WIN" if profit > 0 else "LOSS"
@@ -2378,6 +2471,10 @@ def _request_sell_contract(client_id, contract_id):
     if not state.get("ws_connected") or not ws:
         return False, "Not connected"
     try:
+        active_entry = _get_unchain_active_entry(state, contract_id)
+        if active_entry is not None:
+            active_entry["status"] = "CLOSE REQUESTED"
+            active_entry["updated_at"] = now_time()
         ws.send(json.dumps({"sell": int(contract_id), "price": 0}))
         return True, "Sell request sent"
     except Exception as e:
@@ -2887,6 +2984,10 @@ def handle_on_message(client_id, ws, message, expected_nonce):
 
             if contract_id and meta:
                 state["contract_meta"][contract_id] = meta
+                state["contract_meta"][str(contract_id)] = meta
+                norm_contract_id = _normalize_contract_id(contract_id)
+                if norm_contract_id:
+                    state["contract_meta"][norm_contract_id] = meta
                 try:
                     if (meta.get("profile") or "").upper() == "UNCHAIN":
                         _upsert_unchain_active_contract(state, contract_id, meta=meta, status="OPEN")
@@ -2929,20 +3030,75 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                     "subscribe": 1
                 }))
 
+        if "sell" in data:
+            try:
+                sell_info = data.get("sell") or {}
+                echo_req = data.get("echo_req") or {}
+                cid_val = sell_info.get("contract_id") or echo_req.get("sell")
+                meta_for_contract = _peek_contract_meta(state, cid_val)
+                if _is_unchain_contract_known(state, cid_val, meta=meta_for_contract):
+                    active_entry = _get_unchain_active_entry(state, cid_val) or {}
+                    sold_for_raw = sell_info.get("sold_for")
+                    if sold_for_raw in (None, ""):
+                        sold_for_raw = sell_info.get("sell_price")
+                    profit_raw = sell_info.get("profit")
+                    buy_price_raw = sell_info.get("buy_price")
+                    if buy_price_raw in (None, ""):
+                        buy_price_raw = active_entry.get("stake")
+
+                    if sold_for_raw not in (None, "") or profit_raw not in (None, ""):
+                        try:
+                            sold_for = float(sold_for_raw or 0)
+                        except Exception:
+                            sold_for = 0.0
+                        try:
+                            buy_price = float(buy_price_raw or 0)
+                        except Exception:
+                            buy_price = 0.0
+                        try:
+                            profit_value = float(profit_raw) if profit_raw not in (None, "") else (sold_for - buy_price)
+                        except Exception:
+                            profit_value = sold_for - buy_price
+
+                        synthetic_contract = {
+                            "contract_id": cid_val,
+                            "status": "sold",
+                            "is_sold": True,
+                            "sell_price": sold_for,
+                            "buy_price": buy_price,
+                            "profit": profit_value,
+                        }
+                        process_contract(client_id, synthetic_contract)
+                    else:
+                        _upsert_unchain_active_contract(
+                            state,
+                            cid_val,
+                            meta=meta_for_contract,
+                            contract={"contract_id": cid_val, "status": "CLOSE REQUESTED"},
+                            status="CLOSE REQUESTED",
+                        )
+                        try:
+                            ws.send(json.dumps({
+                                "proposal_open_contract": 1,
+                                "contract_id": int(float(cid_val)),
+                            }))
+                        except Exception:
+                            pass
+                    if state.get("active_profile") == "UNCHAIN":
+                        socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
+            except Exception:
+                pass
+
         if "proposal_open_contract" in data:
             contract = data["proposal_open_contract"]
 
             # UNCHAIN live open-contract updates
             try:
                 cid_val = contract.get("contract_id")
-                meta_for_contract = (state.get("contract_meta") or {}).get(cid_val) if cid_val else (state.get("contract_meta") or {}).get(str(cid_val))
+                meta_for_contract = _peek_contract_meta(state, cid_val)
                 unchain_known = _is_unchain_contract_known(state, cid_val, meta=meta_for_contract)
-                if unchain_known:
-                    if _is_contract_settled_fast(contract):
-                        # Mark as closed right away so stale active cards disappear even before final finalize runs.
-                        _upsert_unchain_active_contract(state, cid_val, meta=meta_for_contract, contract=contract, status=(contract.get("status") or "CLOSED"))
-                    else:
-                        _upsert_unchain_active_contract(state, cid_val, meta=meta_for_contract, contract=contract, status="OPEN")
+                if unchain_known and not _is_contract_settled_fast(contract):
+                    _upsert_unchain_active_contract(state, cid_val, meta=meta_for_contract, contract=contract, status="OPEN")
                 un = (state.get("strategies") or {}).get("UNCHAIN")
                 if un and hasattr(un, "on_open_contract"):
                     if ((meta_for_contract and (meta_for_contract.get("profile") or "").upper() == "UNCHAIN" and str(meta_for_contract.get("type") or "").upper() == "ACCU")
@@ -3078,7 +3234,8 @@ def _is_contract_settled_fast(contract: dict) -> bool:
         if contract.get("is_sold") or contract.get("is_settled"):
             return True
         status = (contract.get("status") or "").lower()
-        if status in ("sold", "won", "lost", "settled"):
+        # Deriv can report settled contracts under several terminal states.
+        if status in ("sold", "won", "lost", "settled", "closed", "expired", "cancelled", "canceled"):
             return True
         if contract.get("sell_price") is not None and contract.get("sell_price") != "":
             return True
@@ -3100,6 +3257,13 @@ def process_contract(client_id, contract):
         state["balance"] = float(state.get("balance", 0.0)) + profit
 
         contract_id = contract.get("contract_id")
+        if _is_unchain_contract_processed(state, contract_id):
+            _remove_unchain_active_contract(state, contract_id)
+            _pull_contract_meta(state, contract_id)
+            if state.get("active_profile") == "UNCHAIN":
+                socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
+            return
+
         meta = _pull_contract_meta(state, contract_id) if contract_id is not None else None
         if _is_unchain_contract_known(state, contract_id, meta=meta):
             profile_for_contract = "UNCHAIN"
@@ -3109,6 +3273,7 @@ def process_contract(client_id, contract):
 
         if profile_for_contract == "UNCHAIN":
             entry = _finalize_unchain_contract(state, contract, meta=meta)
+            _mark_unchain_contract_processed(state, contract_id)
         else:
             strategies = state.get("strategies", {})
             strategy = strategies.get(profile_for_contract)
@@ -3140,8 +3305,7 @@ def process_contract(client_id, contract):
         socketio.emit("trade_result", entry, room=client_id)
         if profile_for_contract == "UNCHAIN":
             _run_unchain_auto_both(client_id, state)
-            socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
-        elif state.get("active_profile") == "UNCHAIN":
+        if state.get("active_profile") == "UNCHAIN":
             socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
         send_stats_update(client_id)
 
