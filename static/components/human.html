@@ -25,8 +25,20 @@
   word-break: break-word;
 }
 #humanProfilePanel #profileTradeList {
-  overflow-x: auto;
+  margin-top: 14px;
+  height: 360px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  padding-right: 6px;
+  scrollbar-width: thin;
+  scrollbar-color: #475569 transparent;
 }
+#humanProfilePanel #profileTradeList::-webkit-scrollbar { width: 8px; }
+#humanProfilePanel #profileTradeList::-webkit-scrollbar-track { background: transparent; }
+#humanProfilePanel #profileTradeList::-webkit-scrollbar-thumb { background: #334155; border-radius: 999px; }
 
 @media (max-width: 980px) {
   #humanProfilePanel .human-top-grid {
@@ -84,6 +96,9 @@
   #humanProfilePanel #humanChart {
     height: 240px !important;
   }
+  #humanProfilePanel #profileTradeList {
+    height: 300px;
+  }
 }
 
 @media (max-width: 520px) {
@@ -105,6 +120,9 @@
   }
   #humanProfilePanel #humanChart {
     height: 220px !important;
+  }
+  #humanProfilePanel #profileTradeList {
+    height: 260px;
   }
 }
 </style>

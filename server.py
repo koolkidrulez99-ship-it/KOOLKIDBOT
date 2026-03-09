@@ -1778,6 +1778,12 @@ def _default_unchain_hl_state():
         "tp": 0.0,
         "sl": 0.0,
         "auto_sl": True,
+        "auto_both_enabled": False,
+        "auto_both_cooldown": 3,
+        "auto_start_threshold": 60.0,
+        "auto_pair_active": False,
+        "auto_next_fire_at": 0.0,
+        "auto_last_cycle_closed_at": 0.0,
         "active_contracts": {},
         "last_action": "Ready",
         "last_result": None,
@@ -1823,6 +1829,46 @@ def _format_unchain_barrier(raw_value, side, duration_unit):
     else:
         out = f"{numeric:.10f}".rstrip("0").rstrip(".")
     return out or "0"
+
+
+def _pull_contract_meta(state, contract_id):
+    meta_map = state.get("contract_meta") or {}
+    if contract_id is None:
+        return None
+    for key in (contract_id, str(contract_id), int(contract_id) if str(contract_id).isdigit() else None):
+        if key is None:
+            continue
+        if key in meta_map:
+            return meta_map.pop(key, None)
+    return None
+
+
+def _is_unchain_contract_known(state, contract_id, meta=None):
+    try:
+        if meta and str((meta.get("profile") or "")).upper() == "UNCHAIN":
+            return True
+    except Exception:
+        pass
+    u = _ensure_unchain_hl_state(state)
+    active = u.get("active_contracts") or {}
+    return str(contract_id) in active if contract_id is not None else False
+
+
+def _entry_is_open_for_ui(entry):
+    if not isinstance(entry, dict):
+        return False
+    try:
+        if entry.get("is_sold"):
+            return False
+        for key in ("status", "contract_status"):
+            status = str(entry.get(key) or "").strip().lower()
+            if status in ("sold", "won", "lost", "settled", "closed", "expired"):
+                return False
+        if entry.get("sell_price") not in (None, ""):
+            return False
+    except Exception:
+        return True
+    return True
 
 
 def _check_unchain_hl_risk_block(state):
@@ -1918,13 +1964,14 @@ def _finalize_unchain_contract(state, contract, meta=None):
     return entry
 
 
-def _unchain_payload_response(state):
+def _get_open_unchain_active_entries(state):
     u = _ensure_unchain_hl_state(state)
-    _check_unchain_hl_risk_block(state)
-    active_contracts = list((u.get("active_contracts") or {}).values())
-    active_contracts.sort(key=lambda x: str(x.get("contract_id") or ""))
-    stats = u.get("stats") or {"wins": 0, "losses": 0, "net_pnl": 0.0}
+    active_map = u.get("active_contracts") or {}
+    return [entry for entry in active_map.values() if _entry_is_open_for_ui(entry)]
 
+
+def _get_unchain_bias_payload(state, u=None):
+    u = u or _ensure_unchain_hl_state(state)
     bias_payload = {
         "status": "LOADING ANALYZER…",
         "higher_pct": 50.0,
@@ -1945,6 +1992,161 @@ def _unchain_payload_response(state):
             }) or bias_payload
     except Exception:
         pass
+    return bias_payload
+
+
+def _get_unchain_auto_gate(state, u=None):
+    u = u or _ensure_unchain_hl_state(state)
+    threshold = float(u.get("auto_start_threshold", 60.0) or 60.0)
+    bias_payload = _get_unchain_bias_payload(state, u)
+    try:
+        higher_pct = float(bias_payload.get("higher_pct", 0.0) or 0.0)
+    except Exception:
+        higher_pct = 0.0
+    try:
+        lower_pct = float(bias_payload.get("lower_pct", 0.0) or 0.0)
+    except Exception:
+        lower_pct = 0.0
+
+    ready = (higher_pct >= threshold) or (lower_pct >= threshold)
+    favored_side = None
+    favored_pct = max(higher_pct, lower_pct)
+    if favored_pct >= threshold:
+        favored_side = "HIGHER" if higher_pct >= lower_pct else "LOWER"
+
+    return {
+        "ready": bool(ready),
+        "threshold": threshold,
+        "higher_pct": higher_pct,
+        "lower_pct": lower_pct,
+        "favored_side": favored_side,
+        "bias": bias_payload,
+    }
+
+
+def _get_unchain_auto_status(state, u=None, active_count=None):
+    u = u or _ensure_unchain_hl_state(state)
+    if not u:
+        return {"label": "OFF", "cooldown_remaining": 0.0}
+    enabled = bool(u.get("auto_both_enabled"))
+    if active_count is None:
+        active_count = len([v for v in (u.get("active_contracts") or {}).values() if _entry_is_open_for_ui(v)])
+    if not enabled:
+        return {"label": "OFF", "cooldown_remaining": 0.0}
+    if active_count > 0 or bool(u.get("auto_pair_active")):
+        return {"label": "RUNNING", "cooldown_remaining": 0.0}
+    now_ts = time.time()
+    next_fire_at = float(u.get("auto_next_fire_at") or 0.0)
+    cooldown_remaining = max(0.0, next_fire_at - now_ts)
+    if cooldown_remaining > 0:
+        return {"label": "COOLDOWN", "cooldown_remaining": cooldown_remaining}
+    gate = _get_unchain_auto_gate(state, u)
+    if not gate.get("ready"):
+        threshold = gate.get("threshold", 60.0)
+        return {
+            "label": f"WAITING {int(threshold)}%",
+            "cooldown_remaining": 0.0,
+            "threshold": threshold,
+            "higher_pct": float(gate.get("higher_pct", 0.0) or 0.0),
+            "lower_pct": float(gate.get("lower_pct", 0.0) or 0.0),
+        }
+    return {"label": "ARMED", "cooldown_remaining": 0.0}
+
+
+def _run_unchain_auto_both(client_id, state):
+    u = _ensure_unchain_hl_state(state)
+    if not bool(u.get("auto_both_enabled")):
+        return False
+    if not state.get("ws_connected") or not state.get("ws"):
+        return False
+
+    cooldown = max(0, int(u.get("auto_both_cooldown", 3) or 3))
+    open_entries = _get_open_unchain_active_entries(state)
+    active_count = len(open_entries)
+    now_ts = time.time()
+
+    if active_count > 0:
+        u["auto_pair_active"] = True
+        return False
+
+    if bool(u.get("auto_pair_active")):
+        u["auto_pair_active"] = False
+        u["auto_last_cycle_closed_at"] = now_ts
+        u["auto_next_fire_at"] = now_ts + cooldown
+        u["last_action"] = f"AUTO BOTH cooldown {cooldown}s"
+        return False
+
+    next_fire_at = float(u.get("auto_next_fire_at") or 0.0)
+    if next_fire_at and now_ts < next_fire_at:
+        return False
+
+    gate = _get_unchain_auto_gate(state, u)
+    if not gate.get("ready"):
+        threshold = float(gate.get("threshold", 60.0) or 60.0)
+        higher_pct = float(gate.get("higher_pct", 0.0) or 0.0)
+        lower_pct = float(gate.get("lower_pct", 0.0) or 0.0)
+        u["last_action"] = f"AUTO BOTH waiting • Higher {higher_pct:.1f}% / Lower {lower_pct:.1f}% • need {threshold:.0f}%"
+        if state.get("active_profile") == "UNCHAIN":
+            socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
+        return False
+
+    symbol = state.get("current_symbol", "R_25")
+    plan = [
+        ("HIGHER", u.get("higher_stake", 1.0), u.get("higher_barrier", "0.12")),
+        ("LOWER", u.get("lower_stake", 1.0), u.get("lower_barrier", "-0.12")),
+    ]
+    placed = []
+    errors = []
+    for side, stake, barrier in plan:
+        ok, msg = _send_unchain_hl_trade(
+            client_id,
+            side=side,
+            stake=stake,
+            symbol=symbol,
+            barrier=barrier,
+            duration=u.get("duration", 5),
+            duration_unit=u.get("duration_unit", "t"),
+        )
+        if ok:
+            placed.append(side)
+        else:
+            errors.append(f"{side}: {msg}")
+
+    if placed:
+        u["auto_pair_active"] = True
+        u["auto_next_fire_at"] = 0.0
+        if len(placed) == 2:
+            u["last_action"] = f"AUTO BOTH pair sent on {symbol}"
+        else:
+            u["last_action"] = f"AUTO BOTH partial send ({' + '.join(placed)})"
+    else:
+        u["auto_pair_active"] = False
+        u["auto_next_fire_at"] = now_ts + cooldown
+        if errors:
+            u["last_action"] = f"AUTO BOTH retry in {cooldown}s • {errors[0]}"
+
+    if state.get("active_profile") == "UNCHAIN":
+        socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
+    return bool(placed)
+
+
+def _unchain_payload_response(state):
+    u = _ensure_unchain_hl_state(state)
+    _check_unchain_hl_risk_block(state)
+    active_map = u.get("active_contracts") or {}
+    cleaned_active = {}
+    for key, entry in list(active_map.items()):
+        if _entry_is_open_for_ui(entry):
+            cleaned_active[str(key)] = entry
+    if len(cleaned_active) != len(active_map):
+        u["active_contracts"] = cleaned_active
+        active_map = cleaned_active
+    active_contracts = list(active_map.values())
+    active_contracts.sort(key=lambda x: str(x.get("contract_id") or ""))
+    stats = u.get("stats") or {"wins": 0, "losses": 0, "net_pnl": 0.0}
+
+    bias_payload = _get_unchain_bias_payload(state, u)
+    auto_meta = _get_unchain_auto_status(state, u, active_count=len(active_contracts))
 
     return {
         "profile": "UNCHAIN",
@@ -1958,6 +2160,11 @@ def _unchain_payload_response(state):
             "tp": float(u.get("tp", 0) or 0),
             "sl": float(u.get("sl", 0) or 0),
             "auto_sl": bool(u.get("auto_sl", True)),
+            "auto_both_enabled": bool(u.get("auto_both_enabled", False)),
+            "auto_both_cooldown": max(0, int(u.get("auto_both_cooldown", 3) or 3)),
+            "auto_status": auto_meta.get("label", "OFF"),
+            "auto_cooldown_remaining": float(auto_meta.get("cooldown_remaining", 0.0) or 0.0),
+            "auto_start_threshold": float(u.get("auto_start_threshold", 60.0) or 60.0),
             "risk_block_reason": u.get("risk_block_reason"),
             "active_contracts": active_contracts,
             "active_count": len(active_contracts),
@@ -2708,8 +2915,9 @@ def handle_on_message(client_id, ws, message, expected_nonce):
             # UNCHAIN live open-contract updates
             try:
                 cid_val = contract.get("contract_id")
-                meta_for_contract = (state.get("contract_meta") or {}).get(cid_val) if cid_val else None
-                if meta_for_contract and (meta_for_contract.get("profile") or "").upper() == "UNCHAIN":
+                meta_for_contract = (state.get("contract_meta") or {}).get(cid_val) if cid_val else (state.get("contract_meta") or {}).get(str(cid_val))
+                unchain_known = _is_unchain_contract_known(state, cid_val, meta=meta_for_contract)
+                if unchain_known and not _is_contract_settled_fast(contract):
                     _upsert_unchain_active_contract(state, cid_val, meta=meta_for_contract, contract=contract, status="OPEN")
                 un = (state.get("strategies") or {}).get("UNCHAIN")
                 if un and hasattr(un, "on_open_contract"):
@@ -2818,6 +3026,8 @@ def process_tick(client_id, tick):
             socketio.emit("digit_analysis", active_strategy.get_ui_payload(), room=client_id)
 
         run_auto_trade(client_id, state)
+        if is_main:
+            _run_unchain_auto_both(client_id, state)
 
         if active_profile == "UNCHAIN":
             socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
@@ -2866,8 +3076,11 @@ def process_contract(client_id, contract):
         state["balance"] = float(state.get("balance", 0.0)) + profit
 
         contract_id = contract.get("contract_id")
-        meta = state["contract_meta"].pop(contract_id, None) if contract_id else None
-        profile_for_contract = (meta.get("profile") if meta else None) or state.get("active_profile", "KOOLKID")
+        meta = _pull_contract_meta(state, contract_id) if contract_id is not None else None
+        if _is_unchain_contract_known(state, contract_id, meta=meta):
+            profile_for_contract = "UNCHAIN"
+        else:
+            profile_for_contract = (meta.get("profile") if meta else None) or state.get("active_profile", "KOOLKID")
         entry = {}
 
         if profile_for_contract == "UNCHAIN":
@@ -2901,6 +3114,8 @@ def process_contract(client_id, contract):
                 entry["exit_digit"] = exit_digit
 
         socketio.emit("trade_result", entry, room=client_id)
+        if profile_for_contract == "UNCHAIN":
+            _run_unchain_auto_both(client_id, state)
         if state.get("active_profile") == "UNCHAIN":
             socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
         send_stats_update(client_id)
@@ -2928,7 +3143,7 @@ def send_stats_update(client_id):
             "losses": losses,
             "winrate": winrate,
             "net_pnl": float(stats.get("net_pnl", 0.0) or 0.0),
-            "auto_trade": False,
+            "auto_trade": bool(u.get("auto_both_enabled", False)),
         }
         socketio.emit("stats_update", payload, room=client_id)
         return
@@ -4067,9 +4282,50 @@ def unchain_trade_route():
 def toggle_unchain_auto_route():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
-    _cid, state = get_client_state()
+    cid, state = get_client_state()
+    u = _ensure_unchain_hl_state(state)
+    data = request.json or {}
+    requested = data.get("enabled")
+    if requested is None:
+        u["auto_both_enabled"] = not bool(u.get("auto_both_enabled"))
+    else:
+        u["auto_both_enabled"] = bool(requested)
+
+    u["auto_both_cooldown"] = 3
+    active_count = len(_get_open_unchain_active_entries(state))
+    if u["auto_both_enabled"]:
+        if active_count > 0:
+            u["auto_pair_active"] = True
+            u["auto_next_fire_at"] = 0.0
+            u["last_action"] = "AUTO BOTH armed • waiting for current pair to finish"
+        else:
+            u["auto_pair_active"] = False
+            u["auto_next_fire_at"] = time.time()
+            gate = _get_unchain_auto_gate(state, u)
+            if gate.get("ready"):
+                u["last_action"] = "AUTO BOTH armed"
+            else:
+                threshold = float(gate.get("threshold", 60.0) or 60.0)
+                higher_pct = float(gate.get("higher_pct", 0.0) or 0.0)
+                lower_pct = float(gate.get("lower_pct", 0.0) or 0.0)
+                u["last_action"] = f"AUTO BOTH armed • waiting for {threshold:.0f}% bias (H {higher_pct:.1f}% / L {lower_pct:.1f}%)"
+        _run_unchain_auto_both(cid, state)
+        message = "UNCHAIN AUTO BOTH ON"
+    else:
+        u["auto_pair_active"] = False
+        u["auto_next_fire_at"] = 0.0
+        u["last_action"] = "AUTO BOTH OFF"
+        message = "UNCHAIN AUTO BOTH OFF"
+
     payload = _unchain_payload_response(state)
-    return jsonify({"status": "error", "message": "UNCHAIN auto is removed in this build. Use Higher, Lower, or Both.", "auto_enabled": False, "payload": payload}), 400
+    if state.get("active_profile") == "UNCHAIN":
+        socketio.emit("unchain_status", payload, room=cid)
+    return jsonify({
+        "status": "success",
+        "message": message,
+        "auto_enabled": bool(u.get("auto_both_enabled")),
+        "payload": payload,
+    })
 
 
 @app.route("/unchain_stop", methods=["POST"])
@@ -4078,6 +4334,9 @@ def unchain_stop_route():
         return jsonify({"error": "Unauthorized"}), 403
     cid, state = get_client_state()
     u = _ensure_unchain_hl_state(state)
+    u["auto_both_enabled"] = False
+    u["auto_pair_active"] = False
+    u["auto_next_fire_at"] = 0.0
     active_ids = list((u.get("active_contracts") or {}).keys())
     closed = []
     failed = []

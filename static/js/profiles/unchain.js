@@ -171,10 +171,54 @@
     }
   }
 
+
+  function renderAutoBoth(un) {
+    const btn = el("unchainAutoBothBtn");
+    const meta = el("unchainAutoBothMeta");
+    if (!btn && !meta) return;
+    const enabled = !!(un && un.auto_both_enabled);
+    const status = String((un && un.auto_status) || (enabled ? "ARMED" : "OFF")).toUpperCase();
+    const cooldown = Math.max(0, Number((un && un.auto_cooldown_remaining) || 0));
+
+    if (btn) {
+      const label = enabled ? `🤖 AUTO BOTH: ON • ${status}` : "🤖 AUTO BOTH: OFF";
+      btn.innerText = label;
+      btn.style.background = enabled ? "#06b6d4" : "#0ea5e9";
+      btn.style.color = "#fff";
+    }
+
+    if (meta) {
+      let text = "Auto Both repeats Higher + Lower together, waits for both to finish, then uses a 3s cooldown before the next pair.";
+      if (enabled) {
+        if (status === "RUNNING") {
+          text = "AUTO BOTH is running. It is waiting for the current Higher + Lower pair to fully finish before the 3s cooldown starts.";
+        } else if (status === "COOLDOWN") {
+          text = `AUTO BOTH cooldown: ${cooldown.toFixed(1)}s remaining before the next Higher + Lower pair.`;
+        } else if (status.startsWith("WAITING")) {
+          const threshold = Number((un && un.auto_start_threshold) || 60);
+          const bias = (un && un.bias) || {};
+          const hp = Number(bias.higher_pct || 0);
+          const lp = Number(bias.lower_pct || 0);
+          text = `AUTO BOTH is armed but waiting for a good market. It will start only when Higher or Lower reaches ${threshold.toFixed(0)}% (now H ${hp.toFixed(1)}% / L ${lp.toFixed(1)}%).`;
+        } else {
+          text = "AUTO BOTH is armed and ready to send the next Higher + Lower pair using your saved UNCHAIN values.";
+        }
+      }
+      meta.innerText = text;
+    }
+  }
+
   function renderActiveTrades(un) {
     const wrap = el("unchainActiveTrades");
     if (!wrap) return;
-    const items = Array.isArray(un && un.active_contracts) ? un.active_contracts : [];
+    const rawItems = Array.isArray(un && un.active_contracts) ? un.active_contracts : [];
+    const items = rawItems.filter((item) => {
+      if (!item || typeof item !== "object") return false;
+      if (item.is_sold) return false;
+      const status = String(item.status || "").toLowerCase();
+      const contractStatus = String(item.contract_status || "").toLowerCase();
+      return ![status, contractStatus].some((v) => ["sold", "won", "lost", "settled", "closed", "expired"].includes(v));
+    });
     if (!items.length) {
       wrap.innerHTML = '<div class="unchain-empty">No active UNCHAIN trades.</div>';
       return;
@@ -249,6 +293,7 @@
     fillForm(un, !!(opts && opts.forceForm));
     renderStatusChip(un, payload);
     renderRiskBlock(un);
+    renderAutoBoth(un);
     const stats = (un && un.stats) || {};
     const net = Number(stats.net_pnl || 0);
     setText("unchainNetPnl", `${net >= 0 ? "+" : "-"}$${Math.abs(net).toFixed(2)}`);
@@ -322,6 +367,19 @@
     }
   }
 
+  async function toggleAutoBoth() {
+    await saveSettings(false);
+    const current = !!(state.lastPayload && state.lastPayload.unchain && state.lastPayload.unchain.auto_both_enabled);
+    const r = await postJSON("/toggle_unchain_auto", { enabled: !current });
+    if (r.ok && r.data) {
+      if (r.data.payload) renderPayload(r.data.payload, { forceForm: true });
+      toast(r.data.message || (!current ? "UNCHAIN AUTO BOTH ON" : "UNCHAIN AUTO BOTH OFF"), !current ? "success" : "warn");
+    } else {
+      toast((r.data && (r.data.message || r.data.error)) || "Failed to toggle UNCHAIN AUTO BOTH", "error");
+      if (r.data && r.data.payload) renderPayload(r.data.payload);
+    }
+  }
+
   async function handleAction(action) {
     switch (action) {
       case "unchain-toggle-autosl":
@@ -342,6 +400,9 @@
         break;
       case "unchain-trade-both":
         await sendTrade("BOTH");
+        break;
+      case "unchain-toggle-auto-both":
+        await toggleAutoBoth();
         break;
       case "unchain-close-all":
         await closeAll();

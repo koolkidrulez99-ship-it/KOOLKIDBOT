@@ -14,6 +14,14 @@
 @media (max-width: 900px){
   .ui-btn-grid-2,.ui-btn-grid-3{grid-template-columns:1fr}
 }
+
+#profileTradeList{height:360px;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;touch-action:pan-y;padding-right:6px;scrollbar-width:thin;scrollbar-color:#475569 transparent}
+#profileTradeList::-webkit-scrollbar{width:8px}
+#profileTradeList::-webkit-scrollbar-track{background:transparent}
+#profileTradeList::-webkit-scrollbar-thumb{background:#334155;border-radius:999px}
+@media (max-width: 900px){
+  #profileTradeList{height:300px}
+}
 </style>
 <div class="card">
   <h3 style="margin-top:0;">⚙️ KOOLKID CONTROL PANEL</h3>

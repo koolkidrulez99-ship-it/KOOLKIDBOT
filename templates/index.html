@@ -449,6 +449,212 @@ input, select{
 }
 .human-chart-controls button:hover{ transform:scale(1.03); }
 
+
+/* ===== 2026 shell refresh ===== */
+:root{
+  --shell-bg-a:#050816;
+  --shell-bg-b:#0b1225;
+  --shell-card:rgba(10,17,35,0.86);
+  --shell-card-2:rgba(15,23,42,0.92);
+  --shell-line:rgba(148,163,184,0.18);
+  --shell-line-strong:rgba(148,163,184,0.28);
+  --shell-text:#f8fafc;
+  --shell-muted:#94a3b8;
+  --shell-shadow:0 24px 60px rgba(2,6,23,0.45);
+}
+body{
+  min-height:100vh;
+  background:
+    radial-gradient(circle at top left, rgba(56,189,248,0.18), transparent 28%),
+    radial-gradient(circle at top right, rgba(168,85,247,0.14), transparent 26%),
+    radial-gradient(circle at bottom center, rgba(34,197,94,0.12), transparent 24%),
+    linear-gradient(180deg,var(--shell-bg-a),var(--shell-bg-b));
+  color:var(--shell-text);
+}
+.container{
+  max-width:1280px;
+  padding:22px 18px 44px;
+}
+.container > h1{
+  margin:0;
+  font-size:clamp(1.9rem,3.4vw,3rem);
+  letter-spacing:.06em;
+  text-transform:uppercase;
+}
+.container > a[href="/logout"]{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:8px;
+  padding:10px 16px;
+  border-radius:999px;
+  background:rgba(239,68,68,0.14);
+  border:1px solid rgba(239,68,68,0.35);
+  text-decoration:none;
+  margin:14px 0 8px;
+}
+.card{
+  background:linear-gradient(180deg,var(--shell-card),var(--shell-card-2));
+  border:1px solid var(--shell-line);
+  box-shadow:var(--shell-shadow);
+  border-radius:24px;
+  backdrop-filter:blur(14px);
+}
+button{
+  border:1px solid rgba(255,255,255,0.08);
+  box-shadow:0 14px 28px rgba(2,6,23,0.22);
+}
+button:hover{transform:translateY(-1px) scale(1.01);filter:brightness(1.04);}
+input, select{
+  background:rgba(15,23,42,0.9);
+  border:1px solid var(--shell-line-strong);
+  min-height:46px;
+  padding:10px 12px;
+}
+input:focus, select:focus{
+  outline:none;
+  border-color:rgba(56,189,248,0.62);
+  box-shadow:0 0 0 3px rgba(56,189,248,0.16);
+}
+.container > .card:first-of-type{
+  position:relative;
+  overflow:hidden;
+}
+.container > .card:first-of-type::before{
+  content:"Control center";
+  position:absolute;
+  top:16px;
+  right:18px;
+  font-size:11px;
+  text-transform:uppercase;
+  letter-spacing:.14em;
+  color:rgba(148,163,184,0.72);
+}
+.profile-btn{
+  min-width:220px;
+  border:1px solid rgba(255,255,255,0.18);
+  box-shadow:0 18px 34px rgba(2,6,23,0.34);
+}
+.profile-btn.active{
+  border-color:rgba(255,255,255,0.88);
+  box-shadow:0 0 0 1px rgba(255,255,255,0.2), 0 16px 34px rgba(2,6,23,0.44);
+}
+#profileTitle{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:8px;
+  padding:10px 16px;
+  border-radius:999px;
+  background:rgba(15,23,42,0.76);
+  border:1px solid var(--shell-line-strong);
+}
+.api-grid{
+  display:grid;
+  grid-template-columns:1.15fr .85fr;
+  gap:14px;
+  align-items:start;
+}
+.api-left,
+.api-right{
+  background:rgba(5,10,25,0.3);
+  border:1px solid rgba(148,163,184,0.12);
+  border-radius:20px;
+  padding:16px;
+}
+.api-left{
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  gap:10px;
+}
+.api-left > p{
+  width:100%;
+  margin:4px 0 0;
+}
+.api-left #symbol{min-width:190px;}
+.howto-title{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  font-weight:800;
+}
+.howto-title button{
+  margin:0;
+  min-width:88px;
+  background:linear-gradient(135deg,#0ea5e9,#2563eb);
+}
+.howto-body{
+  margin-top:14px;
+  padding:14px;
+  border-radius:18px;
+  background:rgba(2,6,23,0.45);
+  border:1px solid rgba(148,163,184,0.12);
+}
+.howto-body strong, .howto-body b{color:#f8fafc;}
+.howto-body .howto-lead{
+  color:#cbd5e1;
+  font-size:13px;
+  margin-bottom:10px;
+  line-height:1.5;
+}
+.howto-body ul{margin:0 0 0 18px;padding:0;display:grid;gap:8px;}
+.howto-body li{line-height:1.45; color:#cbd5e1;}
+.howto-badge{
+  margin-left:8px;
+  padding:6px 10px;
+  border-radius:999px;
+  background:rgba(56,189,248,0.14);
+  border:1px solid rgba(56,189,248,0.24);
+  color:#e0f2fe;
+}
+#accountDashboard > div,
+#liveTickCard > div:first-of-type{
+  gap:18px !important;
+}
+.pnl-box,
+.tick-box{
+  background:linear-gradient(180deg,rgba(15,23,42,0.95),rgba(2,6,23,0.95));
+  border:1px solid rgba(148,163,184,0.18);
+  box-shadow:0 16px 34px rgba(2,6,23,0.28);
+}
+.digit-stream{
+  background:rgba(2,6,23,0.5);
+  border:1px solid rgba(148,163,184,0.12);
+}
+@media (max-width: 980px){
+  .api-grid{grid-template-columns:1fr;}
+  .api-left{display:grid;grid-template-columns:1fr 1fr;}
+  .api-left input#token{width:100% !important;grid-column:1 / -1;}
+  .api-left > button,
+  .api-left > select{width:100%;margin:0;}
+  .profile-btn{min-width:calc(50% - 18px);font-size:1.08rem;padding:14px 12px;margin:6px;}
+}
+@media (max-width: 720px){
+  body{padding:10px;}
+  .container{padding:12px 8px 96px;}
+  .card{padding:14px; border-radius:20px;}
+  .container > h1{text-align:left;}
+  .container > .card:first-of-type{padding-top:18px;}
+  .container > .card:first-of-type::before{top:12px;right:14px;}
+  .profile-btn{min-width:calc(50% - 12px);width:calc(50% - 12px);font-size:.98rem;margin:4px;}
+  #profileTitle{width:100%;margin-top:10px;}
+  .api-left{grid-template-columns:1fr;}
+  .api-left #symbol{min-width:0; width:100%;}
+  #toastContainer{left:10px; right:10px; width:auto;}
+  #accountDashboard > div,
+  #liveTickCard > div:first-of-type{flex-direction:column; align-items:stretch !important;}
+  .pnl-box, .tick-box{width:100%;}
+  .digit-stream{font-size:18px; letter-spacing:3px;}
+}
+@media (max-width: 520px){
+  .container > a[href="/logout"]{width:100%;}
+  .profile-btn{width:100%; min-width:0; margin:5px 0;}
+  .howto-title{flex-direction:column; align-items:flex-start;}
+  .howto-title button{width:100%;}
+}
+
 </style>
 
 <body>
@@ -488,7 +694,7 @@ input, select{
                         📘 HOW TO USE
                         <span class="howto-badge" id="howtoModeBadge">KOOLKID</span>
                     </div>
-                    <button id="howtoToggleBtn" onclick="toggleHowTo()">HIDE</button>
+                    <button id="howtoToggleBtn" onclick="toggleHowTo()">SHOW</button>
                 </div>
                 <div class="howto-body" id="howtoBody"></div>
             </div>
@@ -936,7 +1142,7 @@ let currentAutoBarrierMode = null;
 const howtoBody = document.getElementById("howtoBody");
 const howtoBadge = document.getElementById("howtoModeBadge");
 const howtoToggleBtn = document.getElementById("howtoToggleBtn");
-let howtoVisible = true;
+let howtoVisible = false;
 
 
 /* =========================
@@ -1102,80 +1308,56 @@ function refreshDynamicElements(){
 function getHowToHTMLForProfile(profile) {
     if (profile === "KOOLKID") {
         return `
-            <div style="color:#94a3b8; margin-bottom:8px;">
-                Welcome to KOOLKID mode – designed for digit-based trading.
+            <div class="howto-lead">
+                KOOLKID is your fast digit-control profile. Set the stake and barrier first, then use the digit grid, confidence bars, and automation blocks to decide whether you want manual entries or assisted execution.
             </div>
             <ul>
-                <li><b>Digit Grid:</b> Click any digit (0–9) to set it as your barrier and open a popup with quick trade options.</li>
-                <li><b>Stake:</b> Your trade amount in USD. Minimum 0.35.</li>
-                <li><b>Barrier:</b> The digit you are trading on (0–9). Can be set manually or by clicking the grid.</li>
-                <li><b>TAKE 3 UNDER / OVER:</b> Places three consecutive trades of the selected type.</li>
-                <li><b>BURST 4 UNDER / OVER:</b> Places four quick trades of the selected type.</li>
-                <li><b>KIDRACKS AUTO:</b> Automated mode that triggers trades based on the selected barrier. Click once to set barrier, again to toggle on/off.</li>
-                <li><b>KOOLKIDSPEED AUTO:</b> Faster automated mode with barrier selection.</li>
-                <li><b>KOOL🍀KID LUCK:</b> Cycles through a preset sequence of trades each time the relevant digit appears.</li>
-                <li><b>kidBagz💰🤑 AUTO:</b> New automated mode.</li>
-                <li><b>MPull💰🤫 AUTO:</b> New automated mode.</li>
-                <li><b>kidPairs🤓💯 AUTO:</b> New automated mode.</li>
-                <!-- PATCH 2D: add SeqVIX description -->
-                <li><b>5*² sequential vix:</b> Rotates 10 random markets, places 2 trades per market, shows progress.</li>
-                <li><b>Master Auto:</b> Global on/off for all automated modes.</li>
-                <li><b>TP/SL:</b> Set take-profit and stop-loss levels (in USD). AUTO SL toggles automatic stop-loss.</li>
+                <li><b>Quick start:</b> set <b>Stake</b>, choose a <b>Barrier</b>, then tap a digit or use the main trade buttons for your entry style.</li>
+                <li><b>Digit Grid:</b> the grid is your fastest way to pick a barrier. When a digit is selected, KOOLKID uses that number for related manual and auto tools.</li>
+                <li><b>Confidence Bars + Barrier Analysis:</b> use them as your live read before turning on fast modes. Higher percentages mean the recent market is favouring that side more often.</li>
+                <li><b>Main buttons:</b> quick buttons like Take 3, Burst 4, kidGx, AI Auto-Trading, DUAL 2x, and the other strategy blocks all keep using your saved inputs unless that specific mode has its own selector.</li>
+                <li><b>Risk controls:</b> <b>TP</b>, <b>SL</b>, and <b>AUTO SL</b> protect the profile at session level, while the trade history panel helps you check how the mode is performing.</li>
             </ul>
         `;
     }
     if (profile === "JOKERJOE") {
         return `
-            <div style="color:#94a3b8; margin-bottom:8px;">
-                JOKERJOE mode – for advanced digit strategies.
+            <div class="howto-lead">
+                JOKERJOE is your advanced digit workstation. It is built for manual MATCHES/DIFFERS entries, layered auto modes, and deeper analysis before you let the profile fire on its own.
             </div>
             <ul>
-                <li><b>Digit Grid:</b> Click a digit to set your barrier and open a popup for MATCHES/DIFFERS trades.</li>
-                <li><b>DIGIT MATCHES:</b> Manual trade betting the next digit equals your barrier.</li>
-                <li><b>DIGIT DIFFERS:</b> Manual trade betting the next digit is not your barrier.</li>
-                <li><b>INSTA 5:</b> Places five DIFFERS trades instantly on the current barrier.</li>
-                <li><b>kidgambleX:</b> Automatically selects the three most frequent digits and places MATCHES trades on them. (One-click execution)</li>
-                <li><b>sludgeX AUTO:</b> Automated DIFFERS trades on a set of digits when conditions are met.</li>
-                <li><b>tripleX AUTO:</b> Rotates through a sequence of digits, placing a DIFFERS trade each time the target digit appears.</li>
-                <li><b>kidX:</b> Waits for the selected barrier digit to appear, then places three DIFFERS trades over the next five ticks.</li>
-                <li><b>MultiG:</b> Queues a digit with a low appearance rate, holds for 30 seconds, then places a DIFFERS trade if the digit remains rare.</li>
-                <!-- PATCH 2D: add SeqVIX description -->
-                <li><b>5*² sequential vix:</b> Rotates random markets, places 2 differs trades per market, shows progress.</li>
-                <li><b>Master Auto:</b> Enables/disables sludgeX, tripleX, and kidX (MultiG works independently).</li>
+                <li><b>Quick start:</b> set <b>Stake</b> and <b>Barrier</b>, then use the digit grid or the quick-trade buttons for <b>MATCHES</b> and <b>DIFFERS</b>.</li>
+                <li><b>Analysis panels:</b> the <b>Differs</b>, <b>Matches</b>, and sequential panels help you see which digits are strongest before using auto modes.</li>
+                <li><b>Auto strategies:</b> tools like <b>sludgeX</b>, <b>tripleX</b>, <b>kidX</b>, <b>MultiG</b>, and the AI blocks each read the market differently, so keep an eye on their status text before stacking modes.</li>
+                <li><b>Fast tools:</b> <b>INSTA 5</b>, <b>kidgambleX</b>, advanced AI modes, and sequential options are best used after the analysis boxes have warmed up and the digit edge looks clear.</li>
+                <li><b>Risk controls:</b> save your <b>TP</b>, <b>SL</b>, and <b>AUTO SL</b> first so even aggressive modes still respect your session limits.</li>
             </ul>
-            <div style="margin-top:8px; font-size:11px; color:#ef4444; text-align:center;">
-                ⚠️ For professional use only
-            </div>
         `;
     }
     if (profile === "UNCHAIN") {
         return `
-            <div style="color:#94a3b8; margin-bottom:8px;">
-                UNCHAIN mode – accumulator chain timing with AUTO/MANUAL entries, crash-risk analysis, and tick-based exits.
+            <div class="howto-lead">
+                UNCHAIN is now your <b>Higher / Lower</b> profile. It lets you save separate settings for each side, review live bias before entering, and repeat the same setup faster without rebuilding it each time.
             </div>
             <ul>
-                <li><b>Analysis:</b> Tracks live market ticks, crash events, growth per tick, and chop/crash risk.</li>
-                <li><b>AUTO mode:</b> Waits for strong UNCHAIN setup and enters automatically when confidence meets your threshold.</li>
-                <li><b>MANUAL mode:</b> Lets you trigger entry when the setup is ready and close by exact exit ticks (or Sell Now).</li>
-                <li><b>Growth Rate:</b> Sets the accumulator growth rate percentage (shown in the panel).</li>
-                <li><b>Exit Ticks:</b> Manual target number of ticks before requesting close.</li>
-                <li><b>Early Exit:</b> Optional safety exit when chop/crash risk becomes dangerous before target ticks.</li>
-                <li><b>Popup:</b> Active trade popup shows contract info, live P/L, tick progress, and Sell Now button.</li>
-                <li><b>Stake / TP / SL:</b> Uses your main stake plus profile risk controls.</li>
+                <li><b>Separate sides:</b> set an independent <b>Higher stake</b>, <b>Lower stake</b>, <b>Higher barrier</b>, and <b>Lower barrier</b> so both sides can be tuned differently.</li>
+                <li><b>Shared duration:</b> one duration control drives both sides, and you can switch the unit between <b>ticks</b>, <b>seconds</b>, and <b>minutes</b>.</li>
+                <li><b>Execution:</b> use <b>HIGHER</b>, <b>LOWER</b>, or <b>BOTH</b> for manual entries. <b>AUTO BOTH</b> keeps repeating the same pair after a finished cycle when your start conditions are met.</li>
+                <li><b>Bias display:</b> watch the <b>Higher %</b>, <b>Lower %</b>, strength tag, and reason chips. A strong reading helps you decide whether the market is favouring one side enough before entry.</li>
+                <li><b>Protection + tracking:</b> <b>TP</b>, <b>SL</b>, <b>AUTO SL</b>, active trades, and trade history work together so you can see open exposure and session performance in one place.</li>
             </ul>
         `;
     }
     return `
-        <div style="color:#94a3b8; margin-bottom:8px;">
-            HUMAN mode – Rise/Fall Smart Assist with manual controls and optional auto trading for strong setups.
+        <div class="howto-lead">
+            HUMAN is your rise / fall assistant. It reads the short-term market for you, shows the current bias, and can stay manual or help with filtered auto entries.
         </div>
         <ul>
-            <li><b>🧠 Smart Assist:</b> Reads trend, momentum, pullback quality, and trigger strength to show <b>RISE / FALL / WAIT</b>.</li>
-            <li><b>Take Auto Trades:</b> Optional auto mode. When ON, it only places trades if confidence is at or above your selected threshold (default 70%).</li>
-            <li><b>Rise/Fall Duration:</b> User-settable from <b>1–10 ticks</b>.</li>
-            <li><b>Auto Threshold %:</b> Set your own confidence requirement for auto entries.</li>
-            <li><b>Stake / TP / SL:</b> Set stake, take-profit, and stop-loss for HUMAN Rise/Fall execution. AUTO SL applies your risk controls automatically.</li>
-            <li><b>Graph:</b> Keeps the HUMAN chart with zoom controls for visual context.</li>
+            <li><b>Quick start:</b> choose your <b>stake</b>, set the <b>duration</b>, then watch the signal box for <b>RISE</b>, <b>FALL</b>, or <b>WAIT</b>.</li>
+            <li><b>Smart Assist:</b> the bias, confidence, reason text, and score breakdown tell you whether momentum, trend, pullback quality, and trigger strength are lining up.</li>
+            <li><b>Auto controls:</b> <b>Take Auto Trades</b> only enters when confidence clears your threshold, so keep the threshold realistic for the market you are trading.</li>
+            <li><b>Chart + context:</b> the chart and signal breakdown help you see whether the current move still looks clean or is already becoming late.</li>
+            <li><b>Risk controls:</b> set <b>TP</b>, <b>SL</b>, and <b>AUTO SL</b> before you let HUMAN assist with execution.</li>
         </ul>
     `;
 }
@@ -1183,6 +1365,8 @@ function getHowToHTMLForProfile(profile) {
 function refreshHowTo(){
     howtoBadge.innerText = activeProfile;
     howtoBody.innerHTML = getHowToHTMLForProfile(activeProfile);
+    howtoBody.style.display = howtoVisible ? "block" : "none";
+    howtoToggleBtn.innerText = howtoVisible ? "HIDE" : "SHOW";
 }
 
 function toggleHowTo(){
@@ -1526,7 +1710,7 @@ document.getElementById("symbol").addEventListener("change", function(){
     showToast("📊 Market Changed: " + this.value, "warn");
 });
 
-/* ✅ hide LIVE TICK INFO on HUMAN and UNCHAIN */
+/* ✅ hide LIVE TICK INFO on HUMAN + UNCHAIN */
 function applyLiveTickVisibility(){
     const live = document.getElementById("liveTickCard");
     if(!live) return;
@@ -1560,7 +1744,7 @@ async function setProfile(profile){
     if(profile === "UNCHAIN"){
         const btn = document.getElementById("unchainBtn");
         if(btn) btn.classList.add("active");
-        profileTitle.innerText = "UNCHAIN MODE: ACCU CHAIN / MANUAL EXIT";
+        profileTitle.innerText = "UNCHAIN MODE: HIGHER OR LOWER";
         profileTitle.style.color = "#f59e0b";
     }
 
@@ -1627,35 +1811,10 @@ async function disconnect(){
 async function clearProfileHistory(){
     if (!activeProfile) return;
 
-    const res = await fetch("/clear_profile_history", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({profile: activeProfile})});
-    let data = null;
-    try{ data = await res.json(); }catch(e){}
-
+    await fetch("/clear_profile_history", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({profile: activeProfile})});
     tradeStore[activeProfile] = [];
     renderTradeList(activeProfile);
-
-    if((activeProfile || "").toUpperCase() === "UNCHAIN"){
-        const totalEl = document.getElementById("profileTotalTrades");
-        const winsEl = document.getElementById("profileWins");
-        const lossesEl = document.getElementById("profileLosses");
-        const winRateEl = document.getElementById("profileWinRate");
-        const lossRateEl = document.getElementById("profileLossRate");
-        if(totalEl) totalEl.innerText = "0";
-        if(winsEl) winsEl.innerText = "0";
-        if(lossesEl) lossesEl.innerText = "0";
-        if(winRateEl) winRateEl.innerText = "0%";
-        if(lossRateEl) lossRateEl.innerText = "0%";
-        if(netPnlBox){
-            netPnlBox.innerText = "$0.00";
-            netPnlBox.style.color = "white";
-        }
-    }
-
-    if(res.ok && data && data.status === "cleared"){
-        showToast(`🗑️ ${activeProfile} history cleared`, "warn");
-    }else{
-        showToast((data && (data.error || data.message)) || `🗑️ ${activeProfile} history cleared`, res.ok ? "warn" : "error");
-    }
+    showToast(`🗑️ ${activeProfile} history cleared`, "warn");
 }
 
 async function toggleAuto(){

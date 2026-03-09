@@ -26,6 +26,14 @@
   .ui-btn-grid-2,.ui-btn-grid-3{grid-template-columns:1fr}
 }
 
+#jokerjoeProfileUi #profileTradeList{height:360px;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;touch-action:pan-y;padding-right:6px;scrollbar-width:thin;scrollbar-color:#475569 transparent}
+#jokerjoeProfileUi #profileTradeList::-webkit-scrollbar{width:8px}
+#jokerjoeProfileUi #profileTradeList::-webkit-scrollbar-track{background:transparent}
+#jokerjoeProfileUi #profileTradeList::-webkit-scrollbar-thumb{background:#334155;border-radius:999px}
+@media (max-width: 900px){
+  #jokerjoeProfileUi #profileTradeList{height:300px}
+}
+
 </style>
 <div id="jokerjoeProfileUi"><div class="card">
   <h3 style="margin-top:0;">🃏 JOKERJOE CONTROL PANEL</h3>

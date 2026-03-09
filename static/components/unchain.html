@@ -223,7 +223,18 @@
       margin-top:14px;
       display:grid;
       gap:10px;
+      height:360px;
+      overflow-y:auto;
+      overscroll-behavior:contain;
+      -webkit-overflow-scrolling:touch;
+      touch-action:pan-y;
+      padding-right:6px;
+      scrollbar-width:thin;
+      scrollbar-color:#475569 transparent;
     }
+    .unchain-profile .unchain-trade-list::-webkit-scrollbar{width:8px;}
+    .unchain-profile .unchain-trade-list::-webkit-scrollbar-track{background:transparent;}
+    .unchain-profile .unchain-trade-list::-webkit-scrollbar-thumb{background:#334155;border-radius:999px;}
     .unchain-profile .unchain-history-card{
       background:var(--bg-2);
       border:1px solid var(--line-2);
@@ -336,6 +347,7 @@
       .unchain-profile .unchain-mini-grid{grid-template-columns:1fr 1fr;}
       .unchain-profile .unchain-history-grid{grid-template-columns:1fr 1fr;}
       .unchain-profile .unchain-history-meta{grid-template-columns:1fr 1fr;}
+      .unchain-profile .unchain-trade-list{height:300px;}
       .unchain-profile .unchain-bias-grid{grid-template-columns:1fr;}
       .unchain-profile .unchain-bias-stats{grid-template-columns:repeat(3,minmax(0,1fr));}
     }
@@ -518,11 +530,13 @@
   <div class="card">
     <h3 style="margin-top:0;">🚀 Execute</h3>
     <div class="unchain-btn-row">
+      <button id="unchainAutoBothBtn" data-action="unchain-toggle-auto-both" style="background:#0ea5e9;">🤖 AUTO BOTH: OFF</button>
       <button data-action="unchain-trade-higher" style="background:#22c55e;">📈 HIGHER</button>
       <button data-action="unchain-trade-lower" style="background:#ef4444;">📉 LOWER</button>
       <button data-action="unchain-trade-both" style="background:#f59e0b;color:#111827;">⚖️ BOTH</button>
       <button data-action="unchain-close-all" style="background:#7c3aed;">💸 CLOSE UNCHAIN TRADES</button>
     </div>
+    <div id="unchainAutoBothMeta" style="margin-top:10px;color:#94a3b8;font-size:12px;">Auto Both repeats Higher + Lower together, waits for both to finish, then uses a 3s cooldown before the next pair.</div>
     <div id="unchainRiskBlock" style="display:none;margin-top:10px;padding:10px;border-radius:12px;background:#7f1d1d;color:#fecaca;border:1px solid #ef4444;"></div>
     <div style="margin-top:10px;color:#94a3b8;font-size:12px;">Both sends one Higher contract and one Lower contract using the current saved values.</div>
   </div>
