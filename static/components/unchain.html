@@ -342,6 +342,72 @@
       overflow-wrap:anywhere;
     }
 
+
+    .unchain-profile .unchain-market-chart-wrap{
+      margin-top:12px;
+      border:1px solid var(--line);
+      border-radius:18px;
+      background:linear-gradient(180deg, rgba(15,23,42,0.98), rgba(2,6,23,0.94));
+      padding:10px;
+    }
+    .unchain-profile .unchain-market-chart-svg{
+      width:100%;
+      height:250px;
+      display:block;
+    }
+    .unchain-profile .unchain-market-chart-footer{
+      display:flex;
+      flex-wrap:wrap;
+      justify-content:space-between;
+      gap:10px;
+      margin-top:10px;
+      align-items:center;
+    }
+    .unchain-profile .unchain-market-legend{
+      display:flex;
+      flex-wrap:wrap;
+      gap:12px;
+      align-items:center;
+    }
+    .unchain-profile .unchain-market-legend .item{
+      display:inline-flex;
+      align-items:center;
+      gap:6px;
+      color:#cbd5e1;
+      font-size:12px;
+      font-weight:700;
+    }
+    .unchain-profile .unchain-market-legend .swatch{
+      width:12px;
+      height:12px;
+      border-radius:999px;
+      display:inline-block;
+    }
+    .unchain-profile .unchain-market-status{
+      display:inline-flex;
+      align-items:center;
+      gap:8px;
+      padding:9px 14px;
+      border-radius:999px;
+      background:#1e293b;
+      border:1px solid rgba(148,163,184,0.2);
+      font-weight:900;
+      font-size:12px;
+      letter-spacing:0.02em;
+    }
+    .unchain-profile .unchain-market-status .dot{
+      width:10px;
+      height:10px;
+      border-radius:999px;
+      background:#38bdf8;
+      box-shadow:0 0 0 4px rgba(56,189,248,0.18);
+      flex:0 0 auto;
+    }
+    .unchain-profile .unchain-market-chart-note{
+      color:#94a3b8;
+      font-size:12px;
+    }
+
     @media (max-width: 980px){
       .unchain-profile .unchain-grid{grid-template-columns:1fr 1fr;}
       .unchain-profile .unchain-mini-grid{grid-template-columns:1fr 1fr;}
@@ -350,22 +416,19 @@
       .unchain-profile .unchain-trade-list{height:300px;}
       .unchain-profile .unchain-bias-grid{grid-template-columns:1fr;}
       .unchain-profile .unchain-bias-stats{grid-template-columns:repeat(3,minmax(0,1fr));}
+      .unchain-profile .unchain-market-chart-svg{height:220px;}
+      .unchain-profile .unchain-market-chart-footer{align-items:flex-start;}
     }
 
     @media (max-width: 700px){
       .unchain-profile .card{padding:12px;}
       .unchain-profile .unchain-grid,
       .unchain-profile .unchain-mini-grid,
+      .unchain-profile .unchain-history-grid,
       .unchain-profile .unchain-history-meta,
       .unchain-profile .unchain-bias-grid,
       .unchain-profile .unchain-bias-stats{
         grid-template-columns:1fr;
-      }
-      .unchain-profile .unchain-history-grid{
-        grid-template-columns:repeat(4,minmax(0,1fr));
-      }
-      .unchain-profile .unchain-history-grid > *{
-        min-width:0;
       }
       .unchain-profile .unchain-header{
         align-items:flex-start;
@@ -460,6 +523,30 @@
     </div>
   </div>
 
+
+  <div class="card">
+    <div class="unchain-header" style="margin-bottom:12px;">
+      <div>
+        <h3 style="margin:0;">📈 Live Market vs Barriers</h3>
+        <div class="unchain-sub">A lightweight live price chart with your Higher and Lower barriers and the shaded middle zone between them.</div>
+      </div>
+      <div id="unchainBarrierZoneState" class="unchain-market-status"><span class="dot"></span><span>WAITING FOR LIVE PRICE</span></div>
+    </div>
+    <div class="unchain-market-chart-wrap">
+      <svg id="unchainBarrierMarketChart" class="unchain-market-chart-svg" viewBox="0 0 760 260" preserveAspectRatio="none" aria-label="UNCHAIN live market barrier chart"></svg>
+      <div class="unchain-market-chart-footer">
+        <div class="unchain-market-legend">
+          <span class="item"><span class="swatch" style="background:#38bdf8;"></span>Market</span>
+          <span class="item"><span class="swatch" style="background:#22c55e;"></span>Higher barrier</span>
+          <span class="item"><span class="swatch" style="background:#ef4444;"></span>Lower barrier</span>
+          <span class="item"><span class="swatch" style="background:rgba(245,158,11,0.7);"></span>Middle zone</span>
+        </div>
+        <div id="unchainBarrierChartStats" class="unchain-market-chart-note">Waiting for live market price…</div>
+      </div>
+      <div id="unchainBarrierChartMeta" class="unchain-market-chart-note" style="margin-top:8px;">The chart will show when price is inside the middle zone or moves above/below it.</div>
+    </div>
+  </div>
+
   <div class="card">
     <h3 style="margin-top:0;">🎛️ UNCHAIN Controls</h3>
     <div class="unchain-grid">
@@ -547,7 +634,10 @@
   </div>
 
   <div class="card">
-    <h3 style="margin-top:0;">📌 Active UNCHAIN Trades</h3>
+    <div class="unchain-header" style="margin-bottom:8px;">
+      <h3 style="margin:0;">📌 Active UNCHAIN Trades</h3>
+      <button data-action="unchain-clear-active" style="background:#f97316;color:#111827;">🧹 Clear Active</button>
+    </div>
     <div id="unchainActiveTrades" class="unchain-active-list"><div class="unchain-empty">No active UNCHAIN trades.</div></div>
   </div>
 

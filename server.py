@@ -51,7 +51,14 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "Koolkid@12345")
 MAX_USERS = int(os.environ.get("MAX_USERS", "150"))
 
 # NOTE: keep as you had it
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading", manage_session=False)
+socketio = SocketIO(
+    app,
+    cors_allowed_origins="*",
+    async_mode="threading",
+    manage_session=False,
+    ping_interval=25,
+    ping_timeout=60,
+)
 
 DERIV_WS = "wss://ws.derivws.com/websockets/v3?app_id=1089"
 
@@ -4612,6 +4619,42 @@ def unchain_close_now_route():
         "failed": failed,
         "payload": payload,
     }), (200 if closed else 500)
+
+
+@app.route("/unchain_clear_active", methods=["POST"])
+def unchain_clear_active_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    cid, state = get_client_state()
+    u = _ensure_unchain_hl_state(state)
+    active_ids = list((u.get("active_contracts") or {}).keys())
+    cleared = []
+    if active_ids:
+        for contract_id in active_ids:
+            cleared.append(str(contract_id))
+            try:
+                _mark_unchain_contract_processed(state, contract_id)
+            except Exception:
+                pass
+            try:
+                _pull_contract_meta(state, contract_id)
+            except Exception:
+                pass
+        u["active_contracts"] = {}
+        u["auto_pair_active"] = False
+        u["last_action"] = f"Manually cleared {len(cleared)} UNCHAIN trade(s)"
+    else:
+        u["last_action"] = "No active UNCHAIN trades to clear"
+    payload = _unchain_payload_response(state)
+    if state.get("active_profile") == "UNCHAIN":
+        socketio.emit("unchain_status", payload, room=cid)
+        socketio.emit("digit_analysis", payload, room=cid)
+    return jsonify({
+        "status": "success",
+        "message": u.get("last_action"),
+        "cleared": cleared,
+        "payload": payload,
+    })
 
 
 @app.route("/human_rf_status", methods=["GET"])

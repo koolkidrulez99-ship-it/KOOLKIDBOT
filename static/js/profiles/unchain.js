@@ -8,6 +8,7 @@
     lastPayload: null,
     dirtyFields: new Set(),
     isSaving: false,
+    marketChart: { history: [], basePrice: null, lastPrice: null, lastSymbol: null, maxPoints: 72 },
   };
 
   const FORM_FIELDS = [
@@ -90,6 +91,175 @@
       sl: readNumber("unchainSl", 0),
       auto_sl: !!state.auto_sl,
     };
+  }
+
+
+  function num(v, d) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : d;
+  }
+
+  function escapeHtml(v) {
+    return String(v == null ? "" : v)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function formatBarrierNumber(v) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return "—";
+    return `${n >= 0 ? "+" : ""}${n.toFixed(2)}`;
+  }
+
+  function getBarrierInputs(un) {
+    const higher = num((un && un.higher_barrier) != null ? un.higher_barrier : readText("unchainHigherBarrier", "0.12"), 0.12);
+    const lower = num((un && un.lower_barrier) != null ? un.lower_barrier : readText("unchainLowerBarrier", "-0.12"), -0.12);
+    return {
+      higher,
+      lower,
+      top: Math.max(higher, lower),
+      bottom: Math.min(higher, lower),
+    };
+  }
+
+  function resetBarrierChartBase(price, symbol) {
+    const p = Number(price);
+    if (!Number.isFinite(p)) return;
+    state.marketChart.basePrice = p;
+    state.marketChart.lastPrice = p;
+    state.marketChart.lastSymbol = symbol || state.marketChart.lastSymbol || null;
+    state.marketChart.history = [{ price: p, offset: 0, t: Date.now() }];
+  }
+
+  function pushBarrierChartPrice(price, symbol) {
+    const p = Number(price);
+    if (!Number.isFinite(p)) return;
+    const s = symbol || state.marketChart.lastSymbol || null;
+    if (state.marketChart.basePrice == null || (s && state.marketChart.lastSymbol && s !== state.marketChart.lastSymbol)) {
+      resetBarrierChartBase(p, s);
+    }
+    state.marketChart.lastSymbol = s || state.marketChart.lastSymbol;
+    state.marketChart.lastPrice = p;
+    if (state.marketChart.basePrice == null) state.marketChart.basePrice = p;
+    state.marketChart.history.push({ price: p, offset: p - state.marketChart.basePrice, t: Date.now() });
+    if (state.marketChart.history.length > state.marketChart.maxPoints) {
+      state.marketChart.history = state.marketChart.history.slice(-state.marketChart.maxPoints);
+      if (state.marketChart.history.length) {
+        state.marketChart.basePrice = state.marketChart.history[0].price;
+        state.marketChart.history = state.marketChart.history.map((point) => ({
+          price: point.price,
+          offset: point.price - state.marketChart.basePrice,
+          t: point.t,
+        }));
+      }
+    }
+  }
+
+  function setBarrierZoneStatus(text, tone) {
+    const box = el("unchainBarrierZoneState");
+    if (!box) return;
+    let bg = "#1e293b";
+    let fg = "#e2e8f0";
+    let dot = "#38bdf8";
+    if (tone === "above") { bg = "rgba(34,197,94,0.16)"; fg = "#bbf7d0"; dot = "#22c55e"; }
+    else if (tone === "below") { bg = "rgba(239,68,68,0.16)"; fg = "#fecaca"; dot = "#ef4444"; }
+    else if (tone === "middle") { bg = "rgba(245,158,11,0.18)"; fg = "#fde68a"; dot = "#f59e0b"; }
+    else if (tone === "wait") { bg = "rgba(148,163,184,0.16)"; fg = "#e2e8f0"; dot = "#38bdf8"; }
+    box.style.background = bg;
+    box.style.color = fg;
+    box.style.borderColor = "rgba(148,163,184,0.22)";
+    box.innerHTML = `<span class="dot" style="background:${dot};box-shadow:0 0 0 4px ${tone === "above" ? "rgba(34,197,94,0.18)" : tone === "below" ? "rgba(239,68,68,0.18)" : tone === "middle" ? "rgba(245,158,11,0.20)" : "rgba(56,189,248,0.18)"};"></span><span>${escapeHtml(text)}</span>`;
+  }
+
+  function renderBarrierMarketChart(un, payload) {
+    const svg = el("unchainBarrierMarketChart");
+    if (!svg) return;
+
+    const liveCandidate = num(payload && (payload.price != null ? payload.price : payload.quote), null);
+    if (Number.isFinite(liveCandidate)) pushBarrierChartPrice(liveCandidate, payload && payload.symbol);
+
+    const barriers = getBarrierInputs(un || {});
+    const higher = barriers.higher;
+    const lower = barriers.lower;
+    const topBarrier = barriers.top;
+    const bottomBarrier = barriers.bottom;
+    const history = Array.isArray(state.marketChart.history) ? state.marketChart.history : [];
+    const stats = el("unchainBarrierChartStats");
+    const meta = el("unchainBarrierChartMeta");
+
+    if (!history.length) {
+      svg.innerHTML = `<rect x="0" y="0" width="760" height="260" rx="18" fill="#020617"></rect><text x="380" y="132" text-anchor="middle" fill="#94a3b8" font-size="15" font-weight="700">Waiting for live market price…</text>`;
+      if (stats) stats.innerText = `Higher ${formatBarrierNumber(higher)} • Lower ${formatBarrierNumber(lower)} • Middle zone ${Math.abs(topBarrier - bottomBarrier).toFixed(2)} wide`;
+      if (meta) meta.innerText = "Live market line will appear here and show when price is inside the middle zone or breaks above/below it.";
+      setBarrierZoneStatus("WAITING FOR LIVE PRICE", "wait");
+      return;
+    }
+
+    const width = 760, height = 260, left = 16, right = width - 16, top = 18, bottom = height - 28;
+    const chartW = right - left, chartH = bottom - top;
+    const offsets = history.map((p) => Number(p.offset || 0));
+    const currentOffset = offsets[offsets.length - 1] || 0;
+    const latestPrice = history[history.length - 1].price;
+    const basePrice = state.marketChart.basePrice;
+    const rangeMax = Math.max(0.18, ...offsets.map((v) => Math.abs(v)), Math.abs(higher), Math.abs(lower)) * 1.18;
+    const toY = (value) => top + (rangeMax - value) / (rangeMax * 2) * chartH;
+    const toX = (index) => left + (history.length <= 1 ? chartW : (index / (history.length - 1)) * chartW);
+    const polyline = offsets.map((value, index) => `${toX(index).toFixed(1)},${toY(value).toFixed(1)}`).join(" ");
+    const gridVals = [-rangeMax, -rangeMax / 2, 0, rangeMax / 2, rangeMax];
+    const grid = gridVals.map((value) => {
+      const y = toY(value);
+      return `<line x1="${left}" y1="${y.toFixed(1)}" x2="${right}" y2="${y.toFixed(1)}" stroke="rgba(148,163,184,${value === 0 ? 0.28 : 0.12})" stroke-width="${value === 0 ? 1.4 : 1}" stroke-dasharray="${value === 0 ? "0" : "5 6"}"></line><text x="${right - 4}" y="${(y - 6).toFixed(1)}" text-anchor="end" fill="#64748b" font-size="10">${formatBarrierNumber(value)}</text>`;
+    }).join("");
+
+    const higherY = toY(higher);
+    const lowerY = toY(lower);
+    const zoneTopY = toY(topBarrier);
+    const zoneBottomY = toY(bottomBarrier);
+    const lineColor = currentOffset >= 0 ? "#38bdf8" : "#c084fc";
+    const direction = offsets.length > 1 ? (offsets[offsets.length - 1] - offsets[Math.max(0, offsets.length - 2)]) : 0;
+
+    let zoneText = "IN MIDDLE ZONE";
+    let tone = "middle";
+    if (currentOffset > topBarrier) { zoneText = "ABOVE HIGHER BARRIER"; tone = "above"; }
+    else if (currentOffset < bottomBarrier) { zoneText = "BELOW LOWER BARRIER"; tone = "below"; }
+    setBarrierZoneStatus(zoneText, tone);
+
+    if (stats) {
+      const widthValue = Math.abs(topBarrier - bottomBarrier);
+      stats.innerText = `Base ${Number(basePrice).toFixed(2)} • Live ${Number(latestPrice).toFixed(2)} • Offset ${formatBarrierNumber(currentOffset)} • Middle zone ${widthValue.toFixed(2)} wide`;
+    }
+    if (meta) {
+      meta.innerText = "The chart uses the first visible tick as the current base. Barrier lines are drawn from that same base so you can see when price is inside the middle zone or breaks out.";
+    }
+
+    const latestX = toX(history.length - 1);
+    const latestY = toY(currentOffset);
+    const areaPath = `${left},${bottom} ${polyline} ${right},${bottom}`;
+    const arrow = direction >= 0 ? "▲" : "▼";
+
+    svg.innerHTML = `
+      <defs>
+        <linearGradient id="unchainLineFill" x1="0" x2="0" y1="0" y2="1">
+          <stop offset="0%" stop-color="rgba(56,189,248,0.26)"></stop>
+          <stop offset="100%" stop-color="rgba(56,189,248,0.03)"></stop>
+        </linearGradient>
+      </defs>
+      <rect x="0" y="0" width="${width}" height="${height}" rx="18" fill="#020617"></rect>
+      <rect x="${left}" y="${zoneTopY.toFixed(1)}" width="${chartW}" height="${Math.max(2, zoneBottomY - zoneTopY).toFixed(1)}" fill="rgba(245,158,11,0.12)" stroke="rgba(245,158,11,0.22)" stroke-dasharray="8 7"></rect>
+      ${grid}
+      <line x1="${left}" y1="${higherY.toFixed(1)}" x2="${right}" y2="${higherY.toFixed(1)}" stroke="#22c55e" stroke-width="2.4"></line>
+      <line x1="${left}" y1="${lowerY.toFixed(1)}" x2="${right}" y2="${lowerY.toFixed(1)}" stroke="#ef4444" stroke-width="2.4"></line>
+      <polygon points="${areaPath}" fill="url(#unchainLineFill)"></polygon>
+      <polyline points="${polyline}" fill="none" stroke="${lineColor}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></polyline>
+      <circle cx="${latestX.toFixed(1)}" cy="${latestY.toFixed(1)}" r="5.5" fill="${lineColor}" stroke="#e2e8f0" stroke-width="1.5"></circle>
+      <text x="${left + 6}" y="${Math.max(16, higherY - 8).toFixed(1)}" fill="#86efac" font-size="11" font-weight="900">HIGHER ${escapeHtml(formatBarrierNumber(higher))}</text>
+      <text x="${left + 6}" y="${Math.min(height - 10, lowerY - 8).toFixed(1)}" fill="#fca5a5" font-size="11" font-weight="900">LOWER ${escapeHtml(formatBarrierNumber(lower))}</text>
+      <text x="${right - 6}" y="${Math.max(16, zoneTopY + 14).toFixed(1)}" text-anchor="end" fill="#fcd34d" font-size="11" font-weight="900">MIDDLE ZONE</text>
+      <text x="${right - 6}" y="${Math.max(18, latestY - 10).toFixed(1)}" text-anchor="end" fill="#e2e8f0" font-size="11" font-weight="900">${arrow} ${escapeHtml(Number(latestPrice).toFixed(2))}</text>
+    `;
   }
 
   function applyAutoSlBtn() {
@@ -314,6 +484,7 @@
     }
     setText("unchainLastAction", un.last_action || "Ready");
     renderBias(un);
+    renderBarrierMarketChart(un, payload);
     renderActiveTrades(un);
   }
 
@@ -367,6 +538,19 @@
     }
   }
 
+  async function clearActive() {
+    const r = await postJSON("/unchain_clear_active", {});
+    if (r.ok && r.data) {
+      if (r.data.payload) renderPayload(r.data.payload, { forceForm: true });
+      const count = Array.isArray(r.data.cleared) ? r.data.cleared.length : 0;
+      const msg = r.data.message || (count ? `Cleared ${count} active trade(s)` : "No active UNCHAIN trades to clear");
+      toast(msg, count ? "success" : "info");
+    } else {
+      toast((r.data && (r.data.message || r.data.error)) || "Clear failed", "error");
+      if (r.data && r.data.payload) renderPayload(r.data.payload);
+    }
+  }
+
   async function toggleAutoBoth() {
     await saveSettings(false);
     const current = !!(state.lastPayload && state.lastPayload.unchain && state.lastPayload.unchain.auto_both_enabled);
@@ -407,6 +591,9 @@
       case "unchain-close-all":
         await closeAll();
         break;
+      case "unchain-clear-active":
+        await clearActive();
+        break;
       default:
         break;
     }
@@ -418,6 +605,14 @@
       if (state.lastSocket === socket && state.socketBound) return;
       state.lastSocket = socket;
       state.socketBound = true;
+      socket.on("tick", (data) => {
+        if (!data) return;
+        pushBarrierChartPrice(data.price != null ? data.price : data.quote, data.symbol);
+        if (isActive()) {
+          const un = state.lastPayload && (state.lastPayload.unchain || state.lastPayload);
+          renderBarrierMarketChart(un || {}, state.lastPayload || data || {});
+        }
+      });
       socket.on("unchain_status", (data) => {
         if (!isActive() || !data) return;
         renderPayload(data);
@@ -444,10 +639,12 @@
       node.addEventListener("input", () => {
         markDirty(id);
         if (id === "unchainHigherStake") mirrorHigherStakeToLower();
+        if (id === "unchainHigherBarrier" || id === "unchainLowerBarrier") renderBarrierMarketChart(state.lastPayload && (state.lastPayload.unchain || state.lastPayload) || {}, state.lastPayload || {});
       });
       node.addEventListener("change", () => {
         markDirty(id);
         if (id === "unchainHigherStake") mirrorHigherStakeToLower();
+        if (id === "unchainHigherBarrier" || id === "unchainLowerBarrier") renderBarrierMarketChart(state.lastPayload && (state.lastPayload.unchain || state.lastPayload) || {}, state.lastPayload || {});
       });
       node.addEventListener("keydown", (evt) => {
         if (evt.key === "Enter") {

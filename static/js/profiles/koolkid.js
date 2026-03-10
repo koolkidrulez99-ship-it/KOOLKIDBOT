@@ -52,12 +52,14 @@
     const wrap = document.getElementById("dual2xOptionsKoolkid");
     const optionA = document.getElementById("dual2xOver6Under4BtnKoolkid");
     const optionB = document.getElementById("dual2xOver5Under4BtnKoolkid");
+    const optionC = document.getElementById("dual2xOver2Under1BtnKoolkid");
+    const optionD = document.getElementById("dual2xOver8Under7BtnKoolkid");
     if (btn) {
       btn.innerText = state.dual2xBusy ? "DUAL 2x (RUNNING...)" : (state.dual2xOpen ? "DUAL 2x ▼" : "DUAL 2x");
       btn.style.background = state.dual2xBusy ? "#0ea5e9" : (state.dual2xOpen ? "#22c55e" : "#1e293b");
     }
     if (wrap) wrap.style.display = state.dual2xOpen ? "block" : "none";
-    [optionA, optionB].forEach((b) => {
+    [optionA, optionB, optionC, optionD].forEach((b) => {
       if (!b) return;
       b.disabled = !!state.dual2xBusy;
       b.style.opacity = state.dual2xBusy ? "0.7" : "1";
@@ -66,22 +68,42 @@
     renderDual2xAnalysisKoolkid();
   }
 
-  async function placeDual2xSameTickKoolkid(overBarrier, underBarrier) {
+  async function placeDual2xLegsSameTickKoolkid(legs) {
     const stake = getStakeValueKoolkid();
-    const common = { stake, amount: stake };
-    const jobs = [
-      postJSON("/manual_trade", Object.assign({}, common, { type: "OVER", barrier: Number(overBarrier) })),
-      postJSON("/manual_trade", Object.assign({}, common, { type: "UNDER", barrier: Number(underBarrier) })),
-    ];
+    const totalWeight = legs.reduce((sum, leg) => sum + Math.max(0, Number(leg.weight || 1)), 0) || 1;
+    const jobs = legs.map((leg) => {
+      const weight = Math.max(0, Number(leg.weight || 1));
+      const legStake = Number((stake * weight / totalWeight).toFixed(2));
+      const payload = {
+        stake: legStake,
+        amount: legStake,
+        type: String(leg.type || "OVER").toUpperCase(),
+        barrier: Number(leg.barrier),
+      };
+      return postJSON("/manual_trade", payload);
+    });
     const rs = await Promise.allSettled(jobs);
     let placed = 0;
     const failures = [];
+    const stakes = [];
     rs.forEach((r, idx) => {
       const ok = r.status === "fulfilled" && r.value && r.value.data && r.value.data.status === "success";
       if (ok) placed += 1;
-      else failures.push(idx === 0 ? `OVER ${overBarrier}` : `UNDER ${underBarrier}`);
+      else failures.push(legs[idx].label || `${legs[idx].type} ${legs[idx].barrier}`);
+      const defaultStake = Number((stake * Math.max(0, Number(legs[idx].weight || 1)) / totalWeight).toFixed(2));
+      stakes.push({
+        label: legs[idx].label || `${legs[idx].type} ${legs[idx].barrier}`,
+        stake: (r.status === "fulfilled" && r.value && r.value.stake) ? r.value.stake : defaultStake,
+      });
     });
-    return { placed, failures, stake };
+    return { placed, failures, stake, stakes };
+  }
+
+  async function placeDual2xSameTickKoolkid(overBarrier, underBarrier) {
+    return placeDual2xLegsSameTickKoolkid([
+      { type: "OVER", barrier: Number(overBarrier), weight: 1, label: `OVER ${overBarrier}` },
+      { type: "UNDER", barrier: Number(underBarrier), weight: 1, label: `UNDER ${underBarrier}` },
+    ]);
   }
 
 
@@ -443,18 +465,51 @@ function updateAdvancedAIModeButtons(modes, payload) {
   window.runDual2xKoolkid = async function (mode) {
     if (state.dual2xBusy) return;
     const key = String(mode || "").toUpperCase();
-    const config = key === "OVER5_UNDER4"
-      ? { over: 5, under: 4, label: "OVER 5 & UNDER 4" }
-      : { over: 6, under: 4, label: "OVER 6 & UNDER 4" };
+    const configs = {
+      OVER6_UNDER4: {
+        label: "OVER 6 & UNDER 4",
+        legs: [
+          { type: "OVER", barrier: 6, weight: 1, label: "OVER 6" },
+          { type: "UNDER", barrier: 4, weight: 1, label: "UNDER 4" },
+        ],
+        deadKey: "over6Under4Dead",
+      },
+      OVER5_UNDER4: {
+        label: "OVER 5 & UNDER 4",
+        legs: [
+          { type: "OVER", barrier: 5, weight: 1, label: "OVER 5" },
+          { type: "UNDER", barrier: 4, weight: 1, label: "UNDER 4" },
+        ],
+        deadKey: "over5Under4Dead",
+      },
+      OVER2_UNDER1: {
+        label: "OVER 2 & UNDER 1 (5:1 split)",
+        legs: [
+          { type: "OVER", barrier: 2, weight: 5, label: "OVER 2" },
+          { type: "UNDER", barrier: 1, weight: 1, label: "UNDER 1" },
+        ],
+        deadKey: null,
+      },
+      OVER8_UNDER7: {
+        label: "OVER 8 & UNDER 7 (5:1 split)",
+        legs: [
+          { type: "OVER", barrier: 8, weight: 1, label: "OVER 8" },
+          { type: "UNDER", barrier: 7, weight: 5, label: "UNDER 7" },
+        ],
+        deadKey: null,
+      },
+    };
+    const config = configs[key] || configs.OVER6_UNDER4;
 
     state.dual2xBusy = true;
     updateDual2xUIKoolkid();
     try {
       const liveStats = dual2xAnalyzeCombosKoolkid((state.dual2xAnalysis && state.dual2xAnalysis.pctByDigit) || {});
-      const deadRisk = key === "OVER5_UNDER4" ? liveStats.over5Under4Dead : liveStats.over6Under4Dead;
-      const r = await placeDual2xSameTickKoolkid(config.over, config.under);
-      if (r.placed === 2) {
-        safeToast(`DUAL 2x sent: ${config.label} (same-tick request) • $${Number(r.stake).toFixed(2)} each${Number.isFinite(deadRisk) ? ` • dead risk ${deadRisk.toFixed(1)}%` : ""}`, "success");
+      const deadRisk = config.deadKey ? liveStats[config.deadKey] : null;
+      const r = await placeDual2xLegsSameTickKoolkid(config.legs);
+      if (r.placed === config.legs.length) {
+        const stakeMsg = r.stakes && r.stakes.length ? r.stakes.map((s) => `${s.label}: $${Number(s.stake).toFixed(2)}`).join(" / ") : "";
+        safeToast(`DUAL 2x sent: ${config.label} • ${stakeMsg}${Number.isFinite(deadRisk) ? ` • dead risk ${deadRisk.toFixed(1)}%` : ""}`, "success");
       } else if (r.placed === 1) {
         safeToast(`DUAL 2x partial (1/2): ${config.label}`, "error");
       } else {
