@@ -177,6 +177,12 @@
       gap:10px;
       min-width:0;
     }
+    .unchain-profile .unchain-field-grid-3{
+      display:grid;
+      grid-template-columns:repeat(3,minmax(0,1fr));
+      gap:10px;
+      min-width:0;
+    }
     .unchain-profile .unchain-side--duration{
       background:linear-gradient(180deg, rgba(56,189,248,0.08), rgba(15,23,42,0.95));
       border-color:rgba(56,189,248,0.28);
@@ -445,10 +451,11 @@
       .unchain-profile .unchain-field.is-compact{
         flex:1 1 auto;
       }
-      .unchain-profile .unchain-field-grid-2,
-      .unchain-profile .unchain-btn-row--compact{
-        grid-template-columns:1fr;
-      }
+    .unchain-profile .unchain-field-grid-2,
+    .unchain-profile .unchain-field-grid-3,
+    .unchain-profile .unchain-btn-row--compact{
+      grid-template-columns:1fr;
+    }
       .unchain-profile .unchain-row input,
       .unchain-profile .unchain-row select,
       .unchain-profile .unchain-row button,
@@ -527,11 +534,29 @@
   <div class="card">
     <div class="unchain-header" style="margin-bottom:12px;">
       <div>
+        <h3 style="margin:0;">🛰️ Market Scanner (10 max)</h3>
+        <div class="unchain-sub">Scans up to ten markets, waits for 30 ticks, then keeps updating every tick. Shows the top four barrier picks targeting ~150% profit.</div>
+      </div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+        <div id="unchainScannerStatus" class="unchain-chip">OFF</div>
+        <button data-action="unchain-scanner-analyze" style="background:#22c55e;">🔍 Analyze</button>
+      </div>
+    </div>
+    <div id="unchainScannerList" class="unchain-active-list" style="display:none;">
+      <div class="unchain-empty">Scanner is idle. Tap Analyze to see the best four markets.</div>
+    </div>
+  </div>
+
+
+  <div class="card">
+    <div class="unchain-header" style="margin-bottom:12px;">
+      <div>
         <h3 style="margin:0;">📈 Live Market vs Barriers</h3>
         <div class="unchain-sub">A lightweight live price chart with your Higher and Lower barriers and the shaded middle zone between them.</div>
       </div>
       <div id="unchainBarrierZoneState" class="unchain-market-status"><span class="dot"></span><span>WAITING FOR LIVE PRICE</span></div>
     </div>
+    <div id="unchainPriceRangeLabel" class="unchain-market-chart-note" style="margin:6px 0;">Price range: —</div>
     <div class="unchain-market-chart-wrap">
       <svg id="unchainBarrierMarketChart" class="unchain-market-chart-svg" viewBox="0 0 760 260" preserveAspectRatio="none" aria-label="UNCHAIN live market barrier chart"></svg>
       <div class="unchain-market-chart-footer">
@@ -555,7 +580,7 @@
         <div class="unchain-row">
           <div class="unchain-field is-compact">
             <label class="unchain-label" for="unchainHigherStake">Higher Stake</label>
-            <input id="unchainHigherStake" type="number" min="0.35" step="0.01" value="1.00">
+            <input id="unchainHigherStake" type="number" min="0.35" step="0.01" value="1">
           </div>
         </div>
         <div class="unchain-row" style="margin-top:10px;">
@@ -572,7 +597,7 @@
         <div class="unchain-row">
           <div class="unchain-field is-compact">
             <label class="unchain-label" for="unchainLowerStake">Lower Stake</label>
-            <input id="unchainLowerStake" type="number" min="0.35" step="0.01" value="1.00">
+            <input id="unchainLowerStake" type="number" min="0.35" step="0.01" value="1">
           </div>
         </div>
         <div class="unchain-row" style="margin-top:10px;">
@@ -589,14 +614,15 @@
         <div class="unchain-field-grid-2">
           <div class="unchain-field">
             <label class="unchain-label" for="unchainDuration">Duration</label>
-            <input id="unchainDuration" type="number" min="1" step="1" value="5">
+            <select id="unchainDuration" style="min-height:50px;"></select>
           </div>
           <div class="unchain-field">
             <label class="unchain-label" for="unchainDurationUnit">Unit</label>
-            <select id="unchainDurationUnit">
+            <select id="unchainDurationUnit" style="min-height:50px;">
               <option value="t" selected>Ticks</option>
               <option value="s">Seconds</option>
               <option value="m">Minutes</option>
+              <option value="h">Hours</option>
             </select>
           </div>
         </div>
@@ -613,7 +639,6 @@
         <div class="unchain-btn-row--compact">
           <button id="unchainAutoSlBtn" data-action="unchain-toggle-autosl" style="background:#eab308;color:#111827;">AUTO SL: ON</button>
           <button data-action="unchain-save-settings" style="background:#06b6d4;">💾 Save</button>
-          <button data-action="unchain-refresh" style="background:#64748b;">🔄 Refresh</button>
         </div>
       </div>
     </div>
@@ -628,7 +653,29 @@
       <button data-action="unchain-trade-both" style="background:#f59e0b;color:#111827;">⚖️ BOTH</button>
       <button data-action="unchain-close-all" style="background:#7c3aed;">💸 CLOSE UNCHAIN TRADES</button>
     </div>
-    <div id="unchainAutoBothMeta" style="margin-top:10px;color:#94a3b8;font-size:12px;">Auto Both repeats Higher + Lower together, waits for both to finish, then uses a 3s cooldown before the next pair.</div>
+    <div style="margin-top:12px;padding:10px 12px;border-radius:12px;background:rgba(15,23,42,0.75);border:1px solid rgba(148,163,184,0.22);">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+        <div style="font-size:12px;font-weight:700;color:#cbd5e1;">Auto Both Confidence</div>
+        <div id="unchainAutoConfidenceValue" style="font-size:12px;font-weight:800;color:#38bdf8;">60%</div>
+      </div>
+      <input id="unchainAutoConfidence" type="range" min="55" max="80" step="1" value="60" style="width:100%;margin-top:8px;accent-color:#38bdf8;">
+      <div style="margin-top:6px;color:#94a3b8;font-size:11px;">Auto Both enters only when market confidence reaches this level.</div>
+      <div class="unchain-field-grid-3" style="margin-top:10px;">
+        <div class="unchain-field">
+          <label class="unchain-label" for="unchainAutoMinMovement">Min Movement</label>
+          <input id="unchainAutoMinMovement" type="number" min="0.00001" step="0.00001" value="0.12">
+        </div>
+        <div class="unchain-field">
+          <label class="unchain-label" for="unchainAutoMinTickSpeed">Max Tick Gap (s)</label>
+          <input id="unchainAutoMinTickSpeed" type="number" min="0.05" step="0.01" value="1.5">
+        </div>
+        <div class="unchain-field">
+          <label class="unchain-label" for="unchainAutoMinRange">Min Range</label>
+          <input id="unchainAutoMinRange" type="number" min="0.00001" step="0.00001" value="0.20">
+        </div>
+      </div>
+    </div>
+    <div id="unchainAutoBothMeta" style="margin-top:10px;color:#94a3b8;font-size:12px;">Auto Both repeats Higher + Lower together, then waits for cooldown. Use confidence to control entry strictness.</div>
     <div id="unchainRiskBlock" style="display:none;margin-top:10px;padding:10px;border-radius:12px;background:#7f1d1d;color:#fecaca;border:1px solid #ef4444;"></div>
     <div style="margin-top:10px;color:#94a3b8;font-size:12px;">Both sends one Higher contract and one Lower contract using the current saved values.</div>
   </div>

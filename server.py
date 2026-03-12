@@ -10,6 +10,8 @@ import sqlite3
 import random  # PATCH 1A
 import secrets
 import hashlib
+import statistics
+from collections import deque
 
 from flask import Flask, render_template, request, jsonify, redirect, url_for, session, send_file
 from flask_socketio import SocketIO, join_room
@@ -84,8 +86,8 @@ if DB_BACKEND == "postgres" and psycopg2 is None:
 # ==========================
 clients = {}
 
-# heartbeat timeout (10 minutes)
-HEARTBEAT_TIMEOUT_SEC = 10 * 60
+# heartbeat timeout (effectively disabled to avoid disconnects)
+HEARTBEAT_TIMEOUT_SEC = 10**12
 
 
 
@@ -1078,8 +1080,9 @@ def init_client(client_id):
         "ws_connected": False,  # AUTHORIZED
         "ws_transport_connected": False,  # underlying transport open
         "active_profile": "KOOLKID",
-        "current_symbol": "R_25",
-        "human_symbol": "R_25",
+        # Keep backend default market in sync with the frontend selector default.
+        "current_symbol": "R_10",
+        "human_symbol": "R_10",
         "tick_subs": {},
         # ==================== PATCH 1B: seqvix state ====================
         "seqvix": {
@@ -1126,6 +1129,16 @@ def init_client(client_id):
             "last_result": None,
             "stats": {"wins": 0, "losses": 0, "net_pnl": 0.0},
             "risk_block_reason": None,
+        },
+        "unchain_scanner": {
+            "running": False,
+            "symbols": [],
+            "buffers": {},
+            "analyses": {},
+            "owned_syms": set(),
+            "sample_size": 30,
+            "max_symbols": 10,
+            "last_emit": 0.0,
         },
         "balance": 0.0,
         "session_start_balance": None,
@@ -1579,7 +1592,7 @@ def heartbeat():
 
 
 # ---------------- DERIV BUY FUNCTION (PER CLIENT) ---------------- #
-def send_buy(client_id, contract_type, stake, symbol, barrier):
+def send_buy(client_id, contract_type, stake, symbol, barrier, duration=1, duration_unit="t", mode=None):
     state = clients.get(client_id)
     if not state:
         return False, "No client state"
@@ -1610,6 +1623,14 @@ def send_buy(client_id, contract_type, stake, symbol, barrier):
         return False, "Invalid contract type"
 
     deriv_contract = contract_map[contract_type]
+    try:
+        duration = int(duration or 1)
+    except Exception:
+        duration = 1
+    duration = max(1, min(20, duration))
+    duration_unit = str(duration_unit or "t").strip().lower()
+    if duration_unit not in ("t", "s", "m", "h"):
+        duration_unit = "t"
 
     req_id = _new_req_id()
     state["req_meta"][req_id] = {
@@ -1618,7 +1639,10 @@ def send_buy(client_id, contract_type, stake, symbol, barrier):
         "barrier": int(barrier),
         "stake": float(stake),
         "symbol": symbol,
-        "time": now_time()
+        "time": now_time(),
+        "mode": mode,
+        "duration": duration,
+        "duration_unit": duration_unit,
     }
 
     payload = {
@@ -1630,8 +1654,8 @@ def send_buy(client_id, contract_type, stake, symbol, barrier):
             "basis": "stake",
             "contract_type": deriv_contract,
             "currency": "USD",
-            "duration": 1,
-            "duration_unit": "t",
+            "duration": duration,
+            "duration_unit": duration_unit,
             "symbol": symbol,
             "barrier": int(barrier)
         }
@@ -1645,7 +1669,7 @@ def send_buy(client_id, contract_type, stake, symbol, barrier):
 
 
 # ==================== PATCH 1C: send_buy_with_profile ====================
-def send_buy_with_profile(client_id, profile, contract_type, stake, symbol, barrier):
+def send_buy_with_profile(client_id, profile, contract_type, stake, symbol, barrier, duration=1, duration_unit="t", mode=None):
     state = clients.get(client_id)
     if not state:
         return False, "No client state"
@@ -1675,6 +1699,14 @@ def send_buy_with_profile(client_id, profile, contract_type, stake, symbol, barr
         return False, "Invalid contract type"
 
     deriv_contract = contract_map[contract_type]
+    try:
+        duration = int(duration or 1)
+    except Exception:
+        duration = 1
+    duration = max(1, min(20, duration))
+    duration_unit = str(duration_unit or "t").strip().lower()
+    if duration_unit not in ("t", "s", "m", "h"):
+        duration_unit = "t"
 
     req_id = _new_req_id()
     state["req_meta"][req_id] = {
@@ -1683,7 +1715,10 @@ def send_buy_with_profile(client_id, profile, contract_type, stake, symbol, barr
         "barrier": int(barrier),
         "stake": float(stake),
         "symbol": symbol,
-        "time": now_time()
+        "time": now_time(),
+        "mode": mode,
+        "duration": duration,
+        "duration_unit": duration_unit,
     }
 
     payload = {
@@ -1695,8 +1730,8 @@ def send_buy_with_profile(client_id, profile, contract_type, stake, symbol, barr
             "basis": "stake",
             "contract_type": deriv_contract,
             "currency": "USD",
-            "duration": 1,
-            "duration_unit": "t",
+            "duration": duration,
+            "duration_unit": duration_unit,
             "symbol": symbol,
             "barrier": int(barrier)
         }
@@ -1788,9 +1823,13 @@ def _default_unchain_hl_state():
         "auto_both_enabled": False,
         "auto_both_cooldown": 3,
         "auto_start_threshold": 60.0,
+        "auto_min_movement": 0.12,
+        "auto_min_tick_speed": 1.5,
+        "auto_min_range": 0.2,
         "auto_pair_active": False,
         "auto_next_fire_at": 0.0,
         "auto_last_cycle_closed_at": 0.0,
+        "auto_wait_for_reset": False,
         "active_contracts": {},
         "last_action": "Ready",
         "last_result": None,
@@ -1810,13 +1849,55 @@ def _ensure_unchain_hl_state(state):
     if not isinstance(cur.get("stats"), dict):
         cur["stats"] = {"wins": 0, "losses": 0, "net_pnl": 0.0}
     cur.setdefault("risk_block_reason", None)
+    try:
+        cur["auto_start_threshold"] = max(55.0, min(80.0, float(cur.get("auto_start_threshold", 60.0) or 60.0)))
+    except Exception:
+        cur["auto_start_threshold"] = 60.0
+    try:
+        cur["auto_min_movement"] = max(0.00001, float(cur.get("auto_min_movement", 0.12) or 0.12))
+    except Exception:
+        cur["auto_min_movement"] = 0.12
+    try:
+        cur["auto_min_tick_speed"] = max(0.05, min(10.0, float(cur.get("auto_min_tick_speed", 1.5) or 1.5)))
+    except Exception:
+        cur["auto_min_tick_speed"] = 1.5
+    try:
+        cur["auto_min_range"] = max(0.00001, float(cur.get("auto_min_range", 0.2) or 0.2))
+    except Exception:
+        cur["auto_min_range"] = 0.2
+    try:
+        symbol = str(state.get("current_symbol") or "").upper()
+        is_v75 = symbol in {
+            "V75", "V_75", "R_75", "VOL75", "1HZ75V",
+            "VOLATILITY 75 INDEX", "VOLATILITY 75 (1S) INDEX",
+        }
+
+        def _as_float(val):
+            try:
+                return float(val)
+            except Exception:
+                return None
+
+        if is_v75:
+            hb = cur.get("higher_barrier")
+            lb = cur.get("lower_barrier")
+            base_hb = base.get("higher_barrier")
+            base_lb = base.get("lower_barrier")
+            hb_is_default = _as_float(hb) == _as_float(base_hb) or hb in (None, "")
+            lb_is_default = _as_float(lb) == _as_float(base_lb) or lb in (None, "")
+            if hb_is_default:
+                cur["higher_barrier"] = "+3.88"
+            if lb_is_default:
+                cur["lower_barrier"] = "-3.88"
+    except Exception:
+        pass
     state["unchain_hl"] = cur
     return cur
 
 
 def _clean_unchain_duration_unit(value):
     unit = str(value or "t").strip().lower()
-    return unit if unit in ("t", "s", "m") else "t"
+    return unit if unit in ("t", "s", "m", "h") else "t"
 
 
 def _format_unchain_barrier(raw_value, side, duration_unit):
@@ -2039,12 +2120,43 @@ def _upsert_unchain_active_contract(state, contract_id, meta=None, contract=None
     if contract:
         entry["contract_status"] = contract.get("status") or entry.get("contract_status")
         entry["is_sold"] = bool(contract.get("is_sold"))
+        if contract.get("entry_spot") not in (None, ""):
+            try:
+                spot = float(contract.get("entry_spot"))
+                if spot > 0:
+                    entry["entry_spot"] = spot
+            except Exception:
+                pass
+        if contract.get("current_spot") not in (None, ""):
+            try:
+                spot_now = float(contract.get("current_spot"))
+                if spot_now > 0:
+                    entry["current_spot"] = spot_now
+            except Exception:
+                pass
         if contract.get("sell_price") not in (None, ""):
             entry["sell_price"] = contract.get("sell_price")
         if contract.get("buy_price") not in (None, ""):
             entry["buy_price"] = contract.get("buy_price")
         if contract.get("is_valid_to_sell") is not None:
             entry["is_valid_to_sell"] = bool(contract.get("is_valid_to_sell"))
+    # Fallback base for charting when Deriv has not populated entry_spot yet.
+    if entry.get("entry_spot") in (None, "", 0, 0.0):
+        current_spot = entry.get("current_spot")
+        try:
+            current_spot = float(current_spot)
+        except Exception:
+            current_spot = None
+        if current_spot and current_spot > 0:
+            entry["entry_spot"] = current_spot
+        else:
+            try:
+                un_strat = (state.get("strategies") or {}).get("UNCHAIN")
+                last_price = float(getattr(un_strat, "last_price", 0) or 0)
+                if last_price > 0:
+                    entry["entry_spot"] = last_price
+            except Exception:
+                pass
     entry["updated_at"] = now_time()
     active[cid_key] = entry
     u["last_action"] = f"{entry['type']} active on {entry['symbol']}"
@@ -2115,36 +2227,183 @@ def _get_unchain_bias_payload(state, u=None):
     return bias_payload
 
 
+def _compute_unchain_auto_metrics(state, u=None):
+    """
+    Auto Both market-quality scoring:
+    movement (30) + volatility/tick-speed (25) + range (25) + trap-zone safety (20).
+    """
+    u = u or _ensure_unchain_hl_state(state)
+    sample_size = 10
+    strat = (state.get("strategies") or {}).get("UNCHAIN")
+    prices = []
+    tick_times = []
+    if strat is not None:
+        try:
+            prices = list(getattr(strat, "price_history", []) or [])
+        except Exception:
+            prices = []
+        try:
+            tick_times = list(getattr(strat, "tick_time_history", []) or [])
+        except Exception:
+            tick_times = []
+
+    safe_prices = []
+    for v in prices:
+        try:
+            if v is None:
+                continue
+            safe_prices.append(float(v))
+        except Exception:
+            continue
+    prices = safe_prices
+    recent_prices = prices[-sample_size:]
+    recent_times = [float(v) for v in tick_times[-sample_size:] if v is not None]
+
+    try:
+        min_movement = float(u.get("auto_min_movement", 0.12) or 0.12)
+    except Exception:
+        min_movement = 0.12
+    try:
+        min_tick_speed = float(u.get("auto_min_tick_speed", 1.5) or 1.5)
+    except Exception:
+        min_tick_speed = 1.5
+    try:
+        min_range = float(u.get("auto_min_range", 0.2) or 0.2)
+    except Exception:
+        min_range = 0.2
+
+    if len(recent_prices) < sample_size:
+        return {
+            "ready": False,
+            "sample_size": sample_size,
+            "ticks_used": len(recent_prices),
+            "movement": 0.0,
+            "average_tick_interval": None,
+            "recent_range": 0.0,
+            "middle_price": None,
+            "center_hits": 0,
+            "direction_changes": 0,
+            "movement_score": 0,
+            "volatility_score": 0,
+            "range_score": 0,
+            "trap_zone_score": 0,
+            "market_confidence": 0.0,
+            "min_movement": min_movement,
+            "min_tick_speed": min_tick_speed,
+            "min_range": min_range,
+            "movement_pass": False,
+            "volatility_pass": False,
+            "range_pass": False,
+            "trap_zone_pass": False,
+            "reasons": [f"Need {sample_size} ticks ({len(recent_prices)}/{sample_size})"],
+        }
+
+    first_price = float(recent_prices[0])
+    last_price = float(recent_prices[-1])
+    movement = abs(last_price - first_price)
+    movement_pass = movement >= min_movement
+    movement_score = 30 if movement_pass else 0
+
+    intervals = []
+    for idx in range(1, len(recent_times)):
+        diff = recent_times[idx] - recent_times[idx - 1]
+        if diff > 0:
+            intervals.append(diff)
+    average_tick_interval = (sum(intervals) / len(intervals)) if intervals else None
+    volatility_pass = bool(average_tick_interval is not None and average_tick_interval <= min_tick_speed)
+    volatility_score = 25 if volatility_pass else 0
+
+    highest_price = max(recent_prices)
+    lowest_price = min(recent_prices)
+    recent_range = highest_price - lowest_price
+    range_pass = recent_range >= min_range
+    range_score = 25 if range_pass else 0
+
+    middle_price = (sum(recent_prices) / len(recent_prices)) if recent_prices else None
+    center_band = max(0.00001, recent_range * 0.12, min_range * 0.10)
+    center_hits = 0
+    if middle_price is not None:
+        center_hits = sum(1 for p in recent_prices if abs(p - middle_price) <= center_band)
+
+    deltas = [recent_prices[i] - recent_prices[i - 1] for i in range(1, len(recent_prices))]
+    direction_changes = 0
+    prev_sign = 0
+    for d in deltas:
+        sign = 1 if d > 0 else (-1 if d < 0 else 0)
+        if sign == 0:
+            continue
+        if prev_sign and sign != prev_sign:
+            direction_changes += 1
+        prev_sign = sign
+
+    center_hit_limit = max(2, int(round(sample_size * 0.45)))
+    direction_change_limit = max(2, int(round((sample_size - 1) * 0.35)))
+    trap_zone_pass = (center_hits <= center_hit_limit) and (direction_changes <= direction_change_limit)
+    trap_zone_score = 20 if trap_zone_pass else 0
+
+    market_confidence = float(movement_score + volatility_score + range_score + trap_zone_score)
+
+    reasons = []
+    if not movement_pass:
+        reasons.append(f"Movement {movement:.5f} < min {min_movement:.5f}")
+    if not volatility_pass:
+        if average_tick_interval is None:
+            reasons.append("Tick speed unavailable")
+        else:
+            reasons.append(f"Avg tick {average_tick_interval:.3f}s > max {min_tick_speed:.3f}s")
+    if not range_pass:
+        reasons.append(f"Range {recent_range:.5f} < min {min_range:.5f}")
+    if not trap_zone_pass:
+        reasons.append(f"Trap-zone noisy (center hits {center_hits}, flips {direction_changes})")
+    if not reasons:
+        reasons.append("All filters passed")
+
+    return {
+        "ready": True,
+        "sample_size": sample_size,
+        "ticks_used": sample_size,
+        "movement": float(movement),
+        "average_tick_interval": (None if average_tick_interval is None else float(average_tick_interval)),
+        "recent_range": float(recent_range),
+        "middle_price": (None if middle_price is None else float(middle_price)),
+        "center_hits": int(center_hits),
+        "direction_changes": int(direction_changes),
+        "movement_score": int(movement_score),
+        "volatility_score": int(volatility_score),
+        "range_score": int(range_score),
+        "trap_zone_score": int(trap_zone_score),
+        "market_confidence": float(market_confidence),
+        "min_movement": float(min_movement),
+        "min_tick_speed": float(min_tick_speed),
+        "min_range": float(min_range),
+        "movement_pass": bool(movement_pass),
+        "volatility_pass": bool(volatility_pass),
+        "range_pass": bool(range_pass),
+        "trap_zone_pass": bool(trap_zone_pass),
+        "reasons": reasons,
+    }
+
+
 def _get_unchain_auto_gate(state, u=None):
     u = u or _ensure_unchain_hl_state(state)
     threshold = float(u.get("auto_start_threshold", 60.0) or 60.0)
-    bias_payload = _get_unchain_bias_payload(state, u)
-    try:
-        higher_pct = float(bias_payload.get("higher_pct", 0.0) or 0.0)
-    except Exception:
-        higher_pct = 0.0
-    try:
-        lower_pct = float(bias_payload.get("lower_pct", 0.0) or 0.0)
-    except Exception:
-        lower_pct = 0.0
-
-    ready = (higher_pct >= threshold) or (lower_pct >= threshold)
-    favored_side = None
-    favored_pct = max(higher_pct, lower_pct)
-    if favored_pct >= threshold:
-        favored_side = "HIGHER" if higher_pct >= lower_pct else "LOWER"
+    metrics = _compute_unchain_auto_metrics(state, u)
+    market_confidence = float(metrics.get("market_confidence", 0.0) or 0.0)
+    ready = bool(metrics.get("ready")) and market_confidence >= threshold
 
     return {
         "ready": bool(ready),
         "threshold": threshold,
-        "higher_pct": higher_pct,
-        "lower_pct": lower_pct,
-        "favored_side": favored_side,
-        "bias": bias_payload,
+        "market_confidence": market_confidence,
+        "movement_score": int(metrics.get("movement_score", 0) or 0),
+        "volatility_score": int(metrics.get("volatility_score", 0) or 0),
+        "range_score": int(metrics.get("range_score", 0) or 0),
+        "trap_zone_score": int(metrics.get("trap_zone_score", 0) or 0),
+        "metrics": metrics,
     }
 
 
-def _get_unchain_auto_status(state, u=None, active_count=None):
+def _get_unchain_auto_status(state, u=None, active_count=None, gate=None):
     u = u or _ensure_unchain_hl_state(state)
     if not u:
         return {"label": "OFF", "cooldown_remaining": 0.0}
@@ -2160,15 +2419,22 @@ def _get_unchain_auto_status(state, u=None, active_count=None):
     cooldown_remaining = max(0.0, next_fire_at - now_ts)
     if cooldown_remaining > 0:
         return {"label": "COOLDOWN", "cooldown_remaining": cooldown_remaining}
-    gate = _get_unchain_auto_gate(state, u)
+    gate = gate or _get_unchain_auto_gate(state, u)
+    if bool(u.get("auto_wait_for_reset")):
+        return {
+            "label": "WAITING RESET",
+            "cooldown_remaining": 0.0,
+            "threshold": float(gate.get("threshold", 60.0) or 60.0),
+            "market_confidence": float(gate.get("market_confidence", 0.0) or 0.0),
+        }
     if not gate.get("ready"):
         threshold = gate.get("threshold", 60.0)
+        market_confidence = float(gate.get("market_confidence", 0.0) or 0.0)
         return {
             "label": f"WAITING {int(threshold)}%",
             "cooldown_remaining": 0.0,
             "threshold": threshold,
-            "higher_pct": float(gate.get("higher_pct", 0.0) or 0.0),
-            "lower_pct": float(gate.get("lower_pct", 0.0) or 0.0),
+            "market_confidence": market_confidence,
         }
     return {"label": "ARMED", "cooldown_remaining": 0.0}
 
@@ -2193,6 +2459,7 @@ def _run_unchain_auto_both(client_id, state):
         u["auto_pair_active"] = False
         u["auto_last_cycle_closed_at"] = now_ts
         u["auto_next_fire_at"] = now_ts + cooldown
+        u["auto_wait_for_reset"] = True
         u["last_action"] = f"AUTO BOTH cooldown {cooldown}s"
         return False
 
@@ -2201,11 +2468,27 @@ def _run_unchain_auto_both(client_id, state):
         return False
 
     gate = _get_unchain_auto_gate(state, u)
+    if bool(u.get("auto_wait_for_reset")):
+        if gate.get("ready"):
+            threshold = float(gate.get("threshold", 60.0) or 60.0)
+            market_confidence = float(gate.get("market_confidence", 0.0) or 0.0)
+            u["last_action"] = f"AUTO BOTH waiting for fresh setup reset • confidence {market_confidence:.0f}%/{threshold:.0f}%"
+            if state.get("active_profile") == "UNCHAIN":
+                socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
+            return False
+        # Gate dropped below threshold once -> allow next cycle when confidence rebuilds.
+        u["auto_wait_for_reset"] = False
+        return False
+
     if not gate.get("ready"):
         threshold = float(gate.get("threshold", 60.0) or 60.0)
-        higher_pct = float(gate.get("higher_pct", 0.0) or 0.0)
-        lower_pct = float(gate.get("lower_pct", 0.0) or 0.0)
-        u["last_action"] = f"AUTO BOTH waiting • Higher {higher_pct:.1f}% / Lower {lower_pct:.1f}% • need {threshold:.0f}%"
+        market_confidence = float(gate.get("market_confidence", 0.0) or 0.0)
+        metrics = gate.get("metrics") or {}
+        u["last_action"] = (
+            f"AUTO BOTH waiting • confidence {market_confidence:.0f}%/{threshold:.0f}% • "
+            f"M{int(metrics.get('movement_score', 0) or 0)} V{int(metrics.get('volatility_score', 0) or 0)} "
+            f"R{int(metrics.get('range_score', 0) or 0)} T{int(metrics.get('trap_zone_score', 0) or 0)}"
+        )
         if state.get("active_profile") == "UNCHAIN":
             socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
         return False
@@ -2234,6 +2517,7 @@ def _run_unchain_auto_both(client_id, state):
 
     if placed:
         u["auto_pair_active"] = True
+        u["auto_wait_for_reset"] = False
         u["auto_next_fire_at"] = 0.0
         if len(placed) == 2:
             u["last_action"] = f"AUTO BOTH pair sent on {symbol}"
@@ -2253,6 +2537,12 @@ def _run_unchain_auto_both(client_id, state):
 def _unchain_payload_response(state):
     u = _ensure_unchain_hl_state(state)
     _check_unchain_hl_risk_block(state)
+    un_strat = (state.get("strategies") or {}).get("UNCHAIN")
+    live_price = None
+    try:
+        live_price = float(getattr(un_strat, "last_price", None))
+    except Exception:
+        live_price = None
     active_map = u.get("active_contracts") or {}
     cleaned_active = {}
     for key, entry in list(active_map.items()):
@@ -2266,7 +2556,8 @@ def _unchain_payload_response(state):
     stats = u.get("stats") or {"wins": 0, "losses": 0, "net_pnl": 0.0}
 
     bias_payload = _get_unchain_bias_payload(state, u)
-    auto_meta = _get_unchain_auto_status(state, u, active_count=len(active_contracts))
+    auto_gate = _get_unchain_auto_gate(state, u)
+    auto_meta = _get_unchain_auto_status(state, u, active_count=len(active_contracts), gate=auto_gate)
 
     return {
         "profile": "UNCHAIN",
@@ -2285,6 +2576,10 @@ def _unchain_payload_response(state):
             "auto_status": auto_meta.get("label", "OFF"),
             "auto_cooldown_remaining": float(auto_meta.get("cooldown_remaining", 0.0) or 0.0),
             "auto_start_threshold": float(u.get("auto_start_threshold", 60.0) or 60.0),
+            "auto_min_movement": float(u.get("auto_min_movement", 0.12) or 0.12),
+            "auto_min_tick_speed": float(u.get("auto_min_tick_speed", 1.5) or 1.5),
+            "auto_min_range": float(u.get("auto_min_range", 0.2) or 0.2),
+            "auto_gate": auto_gate,
             "risk_block_reason": u.get("risk_block_reason"),
             "active_contracts": active_contracts,
             "active_count": len(active_contracts),
@@ -2303,6 +2598,8 @@ def _unchain_payload_response(state):
         "human_symbol": state.get("human_symbol") or state.get("current_symbol", "R_25"),
         "active_profile": state.get("active_profile", "KOOLKID"),
         "ws_connected": bool(state.get("ws_connected")),
+        "price": live_price,
+        "scanner": _get_unchain_scanner_payload(state),
     }
 
 
@@ -2483,6 +2780,15 @@ def _request_sell_contract(client_id, contract_id):
             active_entry["status"] = "CLOSE REQUESTED"
             active_entry["updated_at"] = now_time()
         ws.send(json.dumps({"sell": int(contract_id), "price": 0}))
+        # Keep an open-contract subscription alive so settlement always arrives.
+        try:
+            ws.send(json.dumps({
+                "proposal_open_contract": 1,
+                "contract_id": int(float(contract_id)),
+                "subscribe": 1,
+            }))
+        except Exception:
+            pass
         return True, "Sell request sent"
     except Exception as e:
         return False, str(e)
@@ -2560,8 +2866,11 @@ def run_auto_trade(client_id, state):
         try:
             ctype = sig.get("type")
             barrier = sig.get("barrier")
-            symbol = state.get("current_symbol", "R_25")
-            stake = float(state.get("auto_stake", 1.0))
+            symbol = sig.get("symbol") or state.get("current_symbol", "R_25")
+            stake = float(sig.get("stake", state.get("auto_stake", 1.0)) or state.get("auto_stake", 1.0))
+            duration = sig.get("duration", 1)
+            duration_unit = sig.get("duration_unit", "t")
+            mode = sig.get("mode")
 
             if active_profile == "UNCHAIN" or str(ctype).upper() == "ACCU":
                 un = (state.get("strategies") or {}).get("UNCHAIN")
@@ -2577,12 +2886,31 @@ def run_auto_trade(client_id, state):
                     exit_ticks=exit_ticks,
                 )
             else:
-                ok, msg = send_buy(client_id, ctype, stake, symbol, barrier)
+                ok, msg = send_buy(
+                    client_id,
+                    ctype,
+                    stake,
+                    symbol,
+                    barrier,
+                    duration=duration,
+                    duration_unit=duration_unit,
+                    mode=mode,
+                )
 
             if ok:
                 logger.info(f"[{client_id}] 🤖 AUTO TRADE SENT ({active_profile}): {ctype} barrier={barrier} stake={stake} mode={sig.get('mode')}")
+                if hasattr(strategy, "on_auto_trade_sent"):
+                    try:
+                        strategy.on_auto_trade_sent(sig)
+                    except Exception:
+                        pass
             else:
                 logger.error(f"[{client_id}] ❌ AUTO TRADE FAILED: {msg}")
+                if hasattr(strategy, "on_auto_trade_failed"):
+                    try:
+                        strategy.on_auto_trade_failed(sig, msg)
+                    except Exception:
+                        pass
 
         except Exception as e:
             logger.error(f"[{client_id}] Auto trade error: {e}")
@@ -2619,6 +2947,10 @@ def _seqvix_forget_symbol(state, profile, sym):
     if sub_id:
         try:
             ws.send(json.dumps({"forget": sub_id}))
+        except Exception:
+            pass
+        try:
+            state.setdefault("tick_subs", {}).pop(sym, None)
         except Exception:
             pass
     run["owned_syms"].discard(sym)
@@ -2876,6 +3208,362 @@ def process_seqvix_tick(client_id, tick):
             stop_seqvix(state, client_id, profile, reason="done")
 
 
+# ==================== UNCHAIN MULTI-MARKET SCANNER (UP TO 10) ====================
+UNCHAIN_SCANNER_DEFAULTS = [
+    "R_10", "R_25", "R_50", "R_75", "R_100",
+    "1HZ25V", "1HZ50V", "1HZ75V", "1HZ90V", "1HZ100V",
+]
+UNCHAIN_SCANNER_SAMPLE_SIZE = 30
+
+
+def _ensure_unchain_scanner(state):
+    scan = state.setdefault("unchain_scanner", {}) or {}
+    scan.setdefault("running", False)
+    scan.setdefault("symbols", [])
+    scan.setdefault("buffers", {})
+    scan.setdefault("analyses", {})
+    scan.setdefault("owned_syms", set())
+    try:
+        sample_size = int(scan.get("sample_size", UNCHAIN_SCANNER_SAMPLE_SIZE) or UNCHAIN_SCANNER_SAMPLE_SIZE)
+    except Exception:
+        sample_size = UNCHAIN_SCANNER_SAMPLE_SIZE
+    # Keep scanner behavior fixed: analyze 10 markets over 30 ticks.
+    scan["sample_size"] = UNCHAIN_SCANNER_SAMPLE_SIZE if sample_size != UNCHAIN_SCANNER_SAMPLE_SIZE else sample_size
+    scan.setdefault("max_symbols", 10)
+    scan.setdefault("last_emit", 0.0)
+    return scan
+
+
+def _normalize_scanner_symbols(raw, max_symbols=10):
+    if raw is None:
+        raw = []
+    if isinstance(raw, str):
+        raw = raw.replace(";", ",").replace("|", ",").replace("\n", ",")
+        raw = [s.strip() for s in raw.split(",")]
+    symbols = []
+    for s in raw:
+        if not s:
+            continue
+        sym = str(s).strip().upper()
+        if sym and sym not in symbols:
+            symbols.append(sym)
+        if len(symbols) >= max_symbols:
+            break
+    return symbols[:max_symbols]
+
+
+def _build_unchain_scanner_analysis(buffer, sample_size=UNCHAIN_SCANNER_SAMPLE_SIZE, symbol=None):
+    window = list(buffer)[-sample_size:]
+    if len(window) < 6:
+        return None
+
+    last_price = window[-1]
+    high = max(window)
+    low = min(window)
+    rng = high - low
+
+    deltas = [window[i] - window[i - 1] for i in range(1, len(window))]
+    avg_abs = sum(abs(d) for d in deltas) / max(1, len(deltas))
+    trend = window[-1] - window[0]
+    trend_norm = max(-1.0, min(1.0, trend / max((rng if rng > 0 else avg_abs * max(2.0, len(window) / 3.0)), 1e-9)))
+
+    flips = 0
+    prev_sign = 0
+    for d in deltas:
+        s = 1 if d > 0 else (-1 if d < 0 else 0)
+        if prev_sign and s and s != prev_sign:
+            flips += 1
+        if s:
+            prev_sign = s
+    noise = min(1.0, flips / max(1, len(deltas)))
+    cleanliness = max(0.0, 1.0 - noise)
+
+    range_norm = min(1.0, rng / max(1e-9, (abs(last_price) * 0.015 if last_price else avg_abs * 8.0)))
+
+    higher_confidence = max(5.0, min(99.0, 50.0 + (trend_norm * 45.0) + (range_norm * 20.0) + (cleanliness * 10.0)))
+    lower_confidence = max(5.0, min(99.0, 100.0 - higher_confidence))
+    direction = "HIGHER" if higher_confidence >= lower_confidence else "LOWER"
+    confidence_dir = higher_confidence if direction == "HIGHER" else lower_confidence
+
+    target_profit_mult = 1.5  # aim for ~150% profit style barriers
+    base_barrier = (rng * 0.6) + (avg_abs * target_profit_mult * 0.5)
+    if base_barrier <= 0:
+        base_barrier = avg_abs * (target_profit_mult + 0.5)
+    barrier_mag = max(0.01, min(1.5, base_barrier))
+    barrier_mag = round(barrier_mag, 2)
+    barrier_high = f"+{barrier_mag:.2f}"
+    barrier_low = f"-{barrier_mag:.2f}"
+
+    range_pct = (rng / max(1e-9, abs(last_price))) * 100.0
+    score = max(higher_confidence, lower_confidence) + (range_norm * 10.0) + (cleanliness * 8.0)
+
+    return {
+        "symbol": symbol,
+        "range": round(rng, 6),
+        "range_pct": round(range_pct, 3),
+        "trend": round(trend, 6),
+        "direction": direction,
+        "barrier_high": barrier_high,
+        "barrier_low": barrier_low,
+        "barrier_mag": barrier_mag,
+        "confidence": round(confidence_dir, 1),
+        "higher_confidence": round(higher_confidence, 1),
+        "lower_confidence": round(lower_confidence, 1),
+        "ticks_ready": len(window),
+        "last_price": last_price,
+        "score": score,
+        "updated_at": now_time(),
+        "range_high": round(high, 6),
+        "range_low": round(low, 6),
+    }
+
+
+def _get_top_unchain_scanner_recs(scanner, limit=4):
+    analyses = list((scanner.get("analyses") or {}).values())
+    analyses = [a for a in analyses if a and a.get("ticks_ready", 0) >= scanner.get("sample_size", UNCHAIN_SCANNER_SAMPLE_SIZE)]
+    analyses.sort(key=lambda a: max(a.get("higher_confidence", 0), a.get("lower_confidence", 0)), reverse=True)
+    return analyses[:limit]
+
+
+def _get_unchain_scanner_payload(state):
+    scan = _ensure_unchain_scanner(state)
+    top = _get_top_unchain_scanner_recs(scan)
+    ready = sum(1 for a in (scan.get("analyses") or {}).values() if a and a.get("ticks_ready", 0) >= scan.get("sample_size", UNCHAIN_SCANNER_SAMPLE_SIZE))
+    progress = []
+    for sym in scan.get("symbols") or []:
+        buf = (scan.get("buffers") or {}).get(sym)
+        ticks_ready = len(buf) if isinstance(buf, deque) else 0
+        analysis = (scan.get("analyses") or {}).get(sym) or {}
+        progress.append({
+            "symbol": sym,
+            "ticks_ready": int(ticks_ready),
+            "sample_size": int(scan.get("sample_size", UNCHAIN_SCANNER_SAMPLE_SIZE) or UNCHAIN_SCANNER_SAMPLE_SIZE),
+            "barrier_high": analysis.get("barrier_high"),
+            "barrier_low": analysis.get("barrier_low"),
+            "higher_confidence": analysis.get("higher_confidence"),
+            "lower_confidence": analysis.get("lower_confidence"),
+            "range": analysis.get("range"),
+            "range_pct": analysis.get("range_pct"),
+        })
+    return {
+        "running": bool(scan.get("running")),
+        "symbols": list(scan.get("symbols") or []),
+        "max_symbols": int(scan.get("max_symbols", 10) or 10),
+        "sample_size": int(scan.get("sample_size", UNCHAIN_SCANNER_SAMPLE_SIZE) or UNCHAIN_SCANNER_SAMPLE_SIZE),
+        "recommendations": top,
+        "total_tracked": len(scan.get("symbols") or []),
+        "ready": int(ready),
+        "last_emit": float(scan.get("last_emit", 0.0) or 0.0),
+        "progress": progress,
+    }
+
+
+def _emit_unchain_scanner(client_id, state):
+    payload = _get_unchain_scanner_payload(state)
+    socketio.emit("unchain_scanner", payload, room=client_id)
+    return payload
+
+
+def _ensure_tick_subscription(state, symbol):
+    """
+    Best-effort self-heal for tick streams. Some UI flows can leave a symbol
+    unsubscribed; this re-requests ticks if no active subscription id is known.
+    """
+    sym = str(symbol or "").strip().upper()
+    if not sym:
+        return
+    ws = state.get("ws")
+    if not state.get("ws_connected") or not ws:
+        return
+    tick_subs = state.setdefault("tick_subs", {})
+    if tick_subs.get(sym):
+        return
+    try:
+        ws.send(json.dumps({"ticks": sym, "subscribe": 1}))
+    except Exception:
+        pass
+
+
+def _start_unchain_scanner(client_id, state, symbols=None):
+    scan = _ensure_unchain_scanner(state)
+    ws = state.get("ws")
+    if not state.get("ws_connected") or not ws:
+        return False, "Not connected", _get_unchain_scanner_payload(state)
+
+    symbols = _normalize_scanner_symbols(symbols, max_symbols=int(scan.get("max_symbols", 10) or 10))
+    if not symbols:
+        symbols = UNCHAIN_SCANNER_DEFAULTS[: scan.get("max_symbols", 10)]
+
+    scan["running"] = True
+    scan["symbols"] = symbols
+    scan["analyses"] = {}
+    scan["last_emit"] = 0.0
+    prev_owned = set(scan.get("owned_syms", set()) or set())
+    scan["owned_syms"] = set()
+
+    # keep existing buffers but reset lengths
+    for sym in symbols:
+        buf = scan["buffers"].get(sym)
+        if not isinstance(buf, deque):
+            buf = deque(maxlen=max(120, scan.get("sample_size", UNCHAIN_SCANNER_SAMPLE_SIZE) * 3))
+        buf.maxlen = max(120, scan.get("sample_size", UNCHAIN_SCANNER_SAMPLE_SIZE) * 3)
+        scan["buffers"][sym] = buf
+
+    tick_subs = state.setdefault("tick_subs", {})
+    main_symbol = state.get("current_symbol")
+    human_symbol = state.get("human_symbol") or main_symbol
+
+    # Clear stale subscriptions from a previous scanner run.
+    for stale_sym in list(prev_owned):
+        if stale_sym in symbols or stale_sym in (main_symbol, human_symbol):
+            continue
+        stale_id = tick_subs.get(stale_sym)
+        if stale_id:
+            try:
+                ws.send(json.dumps({"forget": stale_id}))
+            except Exception:
+                pass
+            tick_subs.pop(stale_sym, None)
+
+    # Subscribe scanner symbols, self-healing stale/non-live sub ids.
+    for sym in symbols:
+        existing_sub_id = tick_subs.get(sym)
+        if existing_sub_id and sym not in (main_symbol, human_symbol):
+            try:
+                ws.send(json.dumps({"forget": existing_sub_id}))
+            except Exception:
+                pass
+            tick_subs.pop(sym, None)
+            existing_sub_id = None
+        if existing_sub_id:
+            continue
+        try:
+            ws.send(json.dumps({"ticks": sym, "subscribe": 1}))
+            # Never mark current main/human streams as scanner-owned.
+            if sym not in (main_symbol, human_symbol):
+                scan.setdefault("owned_syms", set()).add(sym)
+        except Exception:
+            pass
+
+    return True, "Scanner started", _emit_unchain_scanner(client_id, state)
+
+
+def _stop_unchain_scanner(client_id, state):
+    scan = _ensure_unchain_scanner(state)
+    ws = state.get("ws")
+    tick_subs = state.setdefault("tick_subs", {})
+    main_symbol = state.get("current_symbol")
+    human_symbol = state.get("human_symbol") or main_symbol
+    keep_owned = set()
+    if state.get("ws_connected") and ws:
+        for sym in list(scan.get("owned_syms", set())):
+            if sym in (main_symbol, human_symbol):
+                keep_owned.add(sym)
+                continue
+            sub_id = tick_subs.get(sym)
+            if sub_id:
+                try:
+                    ws.send(json.dumps({"forget": sub_id}))
+                except Exception:
+                    pass
+                tick_subs.pop(sym, None)
+        scan["owned_syms"] = keep_owned
+    scan["running"] = False
+    scan["symbols"] = []
+    scan["last_emit"] = time.time()
+    return _emit_unchain_scanner(client_id, state)
+
+
+def _process_unchain_scanner_tick(client_id, tick):
+    state = clients.get(client_id)
+    if not state:
+        return
+    scan = _ensure_unchain_scanner(state)
+    if not scan.get("running"):
+        return
+    sym = tick.get("symbol")
+    if not sym or sym not in (scan.get("symbols") or []):
+        return
+    try:
+        price = float(tick.get("quote"))
+    except Exception:
+        return
+
+    buf = scan["buffers"].setdefault(sym, deque(maxlen=max(120, scan.get("sample_size", UNCHAIN_SCANNER_SAMPLE_SIZE) * 3)))
+    buf.append(price)
+
+    sample_size = int(scan.get("sample_size", UNCHAIN_SCANNER_SAMPLE_SIZE) or UNCHAIN_SCANNER_SAMPLE_SIZE)
+    if len(buf) >= max(6, sample_size):
+        analysis = _build_unchain_scanner_analysis(buf, sample_size=sample_size, symbol=sym)
+        if analysis:
+            scan.setdefault("analyses", {})[sym] = analysis
+
+    now = time.time()
+    if now - float(scan.get("last_emit", 0.0) or 0.0) >= 0.45:
+        scan["last_emit"] = now
+        _emit_unchain_scanner(client_id, state)
+
+
+def _apply_scanner_recommendation(client_id, state, symbol, switch_symbol=True):
+    scan = _ensure_unchain_scanner(state)
+    sym = str(symbol or "").upper().strip()
+    if not sym:
+        return False, "No symbol provided", _get_unchain_scanner_payload(state)
+    analysis = (scan.get("analyses") or {}).get(sym)
+    if not analysis:
+        return False, f"No analysis ready for {sym}", _get_unchain_scanner_payload(state)
+
+    try:
+        mag = abs(float(analysis.get("barrier_mag") or 0.0))
+    except Exception:
+        mag = 0.0
+    if mag <= 0:
+        return False, "No barrier recommendation available", _get_unchain_scanner_payload(state)
+
+    hb = f"{mag:.2f}"
+    lb = f"-{mag:.2f}"
+    u = _ensure_unchain_hl_state(state)
+    u["higher_barrier"] = hb
+    u["lower_barrier"] = lb
+    u["last_action"] = f"Scanner set {hb} / {lb} on {sym}"
+
+    if switch_symbol:
+        old_symbol = state.get("current_symbol")
+        human_symbol = state.get("human_symbol") or old_symbol
+        state["current_symbol"] = sym
+        # This symbol becomes MAIN, so scanner should not own it.
+        scan.setdefault("owned_syms", set()).discard(sym)
+        # reset non-HUMAN profile analysis
+        for name, strat in state.get("strategies", {}).items():
+            if name == "HUMAN":
+                continue
+            try:
+                if hasattr(strat, "reset_tick_analysis"):
+                    strat.reset_tick_analysis()
+            except Exception:
+                pass
+        ws = state.get("ws")
+        if state.get("ws_connected") and ws:
+            try:
+                tick_subs = state.setdefault("tick_subs", {})
+                old_id = tick_subs.get(old_symbol)
+                # Keep old symbol stream if HUMAN still depends on it.
+                if old_id and old_symbol != human_symbol:
+                    ws.send(json.dumps({"forget": old_id}))
+                    tick_subs.pop(old_symbol, None)
+                ws.send(json.dumps({"ticks": state["current_symbol"], "subscribe": 1}))
+                # Keep scanner coverage intact if old symbol is still part of scanner markets.
+                if scan.get("running") and old_symbol and old_symbol in (scan.get("symbols") or []) and old_symbol != sym:
+                    ws.send(json.dumps({"ticks": old_symbol, "subscribe": 1}))
+                    if old_symbol not in (state.get("current_symbol"), human_symbol):
+                        scan.setdefault("owned_syms", set()).add(old_symbol)
+            except Exception:
+                pass
+        socketio.emit("market_change", {"symbol": state["current_symbol"]}, room=client_id)
+
+    payload = _unchain_payload_response(state)
+    return True, f"Applied scanner pick for {sym}", payload
+
 # ---------------- WEBSOCKET HANDLERS (PER CLIENT) ---------------- #
 def handle_on_message(client_id, ws, message, expected_nonce):
     state = clients.get(client_id)
@@ -2978,6 +3666,7 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 pass
             # ==================== PATCH 1E: hook process_seqvix_tick ====================
             process_seqvix_tick(client_id, tick)
+            _process_unchain_scanner_tick(client_id, tick)
             process_tick(client_id, tick)
 
         if "buy" in data:
@@ -3088,6 +3777,7 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                             ws.send(json.dumps({
                                 "proposal_open_contract": 1,
                                 "contract_id": int(float(cid_val)),
+                                "subscribe": 1,
                             }))
                         except Exception:
                             pass
@@ -3288,6 +3978,11 @@ def process_contract(client_id, contract):
                 return
             prev_block = getattr(strategy, "risk_block_reason", None)
             strategy.on_contract(contract, state.get("balance", 0))
+            if hasattr(strategy, "on_contract_settled"):
+                try:
+                    strategy.on_contract_settled(contract, meta=meta)
+                except Exception:
+                    pass
             new_block = getattr(strategy, "risk_block_reason", None)
             if new_block and new_block != prev_block:
                 socketio.emit("risk_block_update", {
@@ -3448,7 +4143,7 @@ def start_ws_for_client(client_id):
 
     # run until closed
     try:
-        ws_app.run_forever(ping_interval=30, ping_timeout=10)
+        ws_app.run_forever(ping_interval=0, ping_timeout=None)
     except Exception:
         pass
 
@@ -3563,6 +4258,10 @@ def set_profile():
         return jsonify({"error": "Invalid profile"}), 400
 
     state["active_profile"] = profile
+    if profile == "HUMAN":
+        _ensure_tick_subscription(state, state.get("human_symbol") or state.get("current_symbol"))
+    else:
+        _ensure_tick_subscription(state, state.get("current_symbol"))
     socketio.emit("profile_update", {"profile": profile, "symbol": (state.get("human_symbol") if profile == "HUMAN" else state.get("current_symbol"))}, room=cid)
     if profile == "HUMAN":
         request_human_seed(cid)
@@ -3600,6 +4299,7 @@ def change_market():
         return jsonify({"error": "No symbol provided"}), 400
 
     old_symbol = state.get("current_symbol")
+    human_symbol = state.get("human_symbol") or old_symbol
     state["current_symbol"] = symbol
 
     # ✅ reset analysis for MAIN profiles only (HUMAN is independent)
@@ -3616,9 +4316,12 @@ def change_market():
     if state.get("ws_connected") and ws:
         try:
             # best-effort unsubscribe old MAIN ticks (do not touch HUMAN)
-            old_id = (state.get("tick_subs") or {}).get(old_symbol)
-            if old_id:
+            tick_subs = state.setdefault("tick_subs", {})
+            old_id = tick_subs.get(old_symbol)
+            # Do not forget if HUMAN still streams the old symbol.
+            if old_id and old_symbol != human_symbol:
                 ws.send(json.dumps({"forget": old_id}))
+                tick_subs.pop(old_symbol, None)
             ws.send(json.dumps({"ticks": state["current_symbol"], "subscribe": 1}))
         except Exception:
             pass
@@ -3643,7 +4346,8 @@ def change_human_market():
     if not symbol:
         return jsonify({"error": "No symbol provided"}), 400
 
-    old_symbol = state.get("human_symbol") or state.get("current_symbol")
+    main_symbol = state.get("current_symbol")
+    old_symbol = state.get("human_symbol") or main_symbol
     state["human_symbol"] = symbol
 
     # reset HUMAN analysis only
@@ -3660,9 +4364,12 @@ def change_human_market():
     ws = state.get("ws")
     if state.get("ws_connected") and ws:
         try:
-            old_id = (state.get("tick_subs") or {}).get(old_symbol)
-            if old_id:
+            tick_subs = state.setdefault("tick_subs", {})
+            old_id = tick_subs.get(old_symbol)
+            # If HUMAN previously shared MAIN symbol, keep that stream alive.
+            if old_id and old_symbol != main_symbol:
                 ws.send(json.dumps({"forget": old_id}))
+                tick_subs.pop(old_symbol, None)
             ws.send(json.dumps({"ticks": symbol, "subscribe": 1}))
         except Exception:
             pass
@@ -3798,6 +4505,38 @@ def toggle_kidpairs_auto_route():
 
     socketio.emit("auto_mode_update", strat.get_ui_payload().get("auto_modes", {}), room=cid)
     return jsonify({"status": "success", "kidpairs_auto": state_val})
+
+
+@app.route("/toggle_over3_analysis_koolkid", methods=["POST"])
+def toggle_over3_analysis_koolkid_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    strat = state["strategies"].get("KOOLKID")
+    if not strat or not hasattr(strat, "toggle_over3_analysis_auto"):
+        return jsonify({"status": "error", "message": "KOOLKID strategy not available"}), 400
+
+    enabled = bool(strat.toggle_over3_analysis_auto())
+    payload = {}
+    try:
+        payload = strat.get_ui_payload() or {}
+    except Exception:
+        payload = {}
+
+    try:
+        socketio.emit("auto_mode_update", (payload.get("auto_modes") or {}), room=cid)
+        socketio.emit("digit_analysis", payload, room=cid)
+    except Exception:
+        pass
+
+    return jsonify({
+        "status": "success",
+        "over3_analysis": enabled,
+        "auto_modes": payload.get("auto_modes", {}),
+        "over3_analysis_data": payload.get("over3_analysis_data", {}),
+        "payload": payload,
+    })
 
 
 @app.route("/set_mpull_mode", methods=["POST"])
@@ -4386,7 +5125,57 @@ def unchain_status_route():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
     _cid, state = get_client_state()
+    _ensure_tick_subscription(state, state.get("current_symbol"))
     return jsonify(_unchain_payload_response(state))
+
+
+@app.route("/unchain_scanner", methods=["GET"])
+def unchain_scanner_status_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    _cid, state = get_client_state()
+    return jsonify(_get_unchain_scanner_payload(state))
+
+
+@app.route("/unchain_scanner/start", methods=["POST"])
+def unchain_scanner_start_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    cid, state = get_client_state()
+    data = request.json or {}
+    symbols = data.get("symbols")
+    ok, msg, payload = _start_unchain_scanner(cid, state, symbols)
+    status = "success" if ok else "error"
+    if state.get("active_profile") == "UNCHAIN":
+        socketio.emit("unchain_scanner", payload, room=cid)
+        socketio.emit("unchain_status", _unchain_payload_response(state), room=cid)
+    return jsonify({"status": status, "message": msg, "scanner": payload})
+
+
+@app.route("/unchain_scanner/stop", methods=["POST"])
+def unchain_scanner_stop_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    cid, state = get_client_state()
+    payload = _stop_unchain_scanner(cid, state)
+    if state.get("active_profile") == "UNCHAIN":
+        socketio.emit("unchain_scanner", payload, room=cid)
+        socketio.emit("unchain_status", _unchain_payload_response(state), room=cid)
+    return jsonify({"status": "success", "scanner": payload})
+
+
+@app.route("/unchain_scanner/apply", methods=["POST"])
+def unchain_scanner_apply_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    cid, state = get_client_state()
+    data = request.json or {}
+    symbol = data.get("symbol")
+    switch_symbol = bool(data.get("switch_symbol", True))
+    ok, msg, payload = _apply_scanner_recommendation(cid, state, symbol, switch_symbol=switch_symbol)
+    if state.get("active_profile") == "UNCHAIN":
+        socketio.emit("unchain_status", payload, room=cid)
+    return jsonify({"status": "success" if ok else "error", "message": msg, "payload": payload}), (200 if ok else 400)
 
 
 @app.route("/unchain_settings", methods=["POST"])
@@ -4417,6 +5206,14 @@ def unchain_settings_route():
             u["sl"] = max(0.0, float(data.get("sl") or 0))
         if "auto_sl" in data:
             u["auto_sl"] = bool(data.get("auto_sl"))
+        if "auto_start_threshold" in data:
+            u["auto_start_threshold"] = max(55.0, min(80.0, float(data.get("auto_start_threshold") or 60.0)))
+        if "auto_min_movement" in data:
+            u["auto_min_movement"] = max(0.00001, float(data.get("auto_min_movement") or 0.12))
+        if "auto_min_tick_speed" in data:
+            u["auto_min_tick_speed"] = max(0.05, min(10.0, float(data.get("auto_min_tick_speed") or 1.5)))
+        if "auto_min_range" in data:
+            u["auto_min_range"] = max(0.00001, float(data.get("auto_min_range") or 0.2))
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 400
     u["last_action"] = "UNCHAIN settings saved"
@@ -4490,10 +5287,11 @@ def toggle_unchain_auto_route():
     u["auto_both_cooldown"] = 3
     active_count = len(_get_open_unchain_active_entries(state))
     if u["auto_both_enabled"]:
+        u["auto_wait_for_reset"] = False
         if active_count > 0:
             u["auto_pair_active"] = True
             u["auto_next_fire_at"] = 0.0
-            u["last_action"] = "AUTO BOTH armed • waiting for current pair to finish"
+            u["last_action"] = "AUTO BOTH armed • waiting for current auto trade to finish"
         else:
             u["auto_pair_active"] = False
             u["auto_next_fire_at"] = time.time()
@@ -4502,13 +5300,13 @@ def toggle_unchain_auto_route():
                 u["last_action"] = "AUTO BOTH armed"
             else:
                 threshold = float(gate.get("threshold", 60.0) or 60.0)
-                higher_pct = float(gate.get("higher_pct", 0.0) or 0.0)
-                lower_pct = float(gate.get("lower_pct", 0.0) or 0.0)
-                u["last_action"] = f"AUTO BOTH armed • waiting for {threshold:.0f}% bias (H {higher_pct:.1f}% / L {lower_pct:.1f}%)"
+                market_confidence = float(gate.get("market_confidence", 0.0) or 0.0)
+                u["last_action"] = f"AUTO BOTH armed • waiting for {threshold:.0f}% confidence (now {market_confidence:.0f}%)"
         _run_unchain_auto_both(cid, state)
         message = "UNCHAIN AUTO BOTH ON"
     else:
         u["auto_pair_active"] = False
+        u["auto_wait_for_reset"] = False
         u["auto_next_fire_at"] = 0.0
         u["last_action"] = "AUTO BOTH OFF"
         message = "UNCHAIN AUTO BOTH OFF"
@@ -4742,6 +5540,48 @@ def human_rf_trade():
     return jsonify({"error": msg}), 500
 
 
+@app.route("/human_formula_x", methods=["POST"])
+def human_formula_x_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    strat = state.get("strategies", {}).get("HUMAN")
+    if not strat:
+        return jsonify({"error": "Human strategy not loaded"}), 400
+
+    data = request.json or {}
+    rise_stake = max(0.35, float(data.get("rise_stake") or 0))
+    fall_stake = max(0.35, float(data.get("fall_stake") or 0))
+    duration_ticks = int(data.get("duration_ticks") or getattr(strat, "rf_duration_ticks", 5) or 5)
+
+    symbol = state.get("human_symbol") or state.get("current_symbol")
+    signals = [
+        {"direction": "RISE", "stake": rise_stake, "duration": duration_ticks, "symbol": symbol},
+        {"direction": "FALL", "stake": fall_stake, "duration": duration_ticks, "symbol": symbol},
+    ]
+
+    results = []
+    for sig in signals:
+        ok, msg = place_risefall_order(cid, sig)
+        results.append((ok, msg))
+
+    payload = strat.get_human_rf_payload()
+    if state.get("active_profile") == "HUMAN":
+        socketio.emit("human_rf_status", payload, room=cid)
+
+    rise_ok, rise_msg = results[0]
+    fall_ok, fall_msg = results[1]
+    status = "success" if (rise_ok and fall_ok) else ("partial" if (rise_ok or fall_ok) else "error")
+    message = "FormulaX sent both trades" if status == "success" else (rise_msg or fall_msg or "FormulaX failed")
+    return jsonify({
+        "status": status,
+        "message": message,
+        "payload": payload,
+        "rise_ok": rise_ok,
+        "fall_ok": fall_ok,
+    }), (200 if status in ("success", "partial") else 500)
+
 
 # ==================== PATCH 1F: SeqVIX endpoints ====================
 @app.route("/start_seqvix_jokerjoe", methods=["POST"])
@@ -4834,16 +5674,8 @@ def toggle_human_keep_alive():
 def heartbeat_sweeper():
     while True:
         time.sleep(30)
-        now = time.time()
-        for cid, state in list(clients.items()):
-            # PATCH C: Skip if keep-alive is enabled (HUMAN only)
-            if state.get("human_keep_alive"):
-                continue
-            # only enforce timeout if a token/WS is active
-            if state.get("api_token") or state.get("ws"):
-                last_seen = state.get("last_seen", now)
-                if (now - last_seen) > HEARTBEAT_TIMEOUT_SEC:
-                    disconnect_client(cid, reason="heartbeat_timeout", emit=True)
+        # Heartbeat checks disabled to prevent unintended disconnects.
+        continue
 
 
 @app.route("/toggle_named_ai_mode", methods=["POST"])

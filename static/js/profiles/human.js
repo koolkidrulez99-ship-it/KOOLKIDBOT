@@ -3,6 +3,7 @@
   let pollTimer = null;
   let cachedStatus = null;
   let socketHooked = false;
+  const fxState = { active: false, firing: false, lastToast: 0 };
 
   function getApp() {
     return window.BotApp || {};
@@ -29,7 +30,7 @@
     if(!signalEl) return;
     const state = (signalState || "WAIT").toUpperCase();
     const dir = (tradeDirection || "").toUpperCase();
-    const text = (dir && state !== "WAIT") ? `${state} • ${dir}` : state;
+    const text = (dir && state !== "WAIT") ? `${state} - ${dir}` : state;
     signalEl.textContent = text;
 
     signalEl.style.color = "#e5e7eb";
@@ -120,7 +121,9 @@
 
     const durEl = byId("humanRfDuration");
     if(durEl && settings.duration_ticks != null && String(durEl.value) !== String(settings.duration_ticks)){
-      durEl.value = String(settings.duration_ticks);
+      if(document.activeElement !== durEl){
+        durEl.value = String(settings.duration_ticks);
+      }
     }
     const thEl = byId("humanRfThreshold");
     if(thEl && settings.conf_threshold != null && String(thEl.value) !== String(Math.round(Number(settings.conf_threshold)))){
@@ -141,6 +144,7 @@
       if(!res.ok) return;
       const data = await res.json();
       renderHumanRFStatus(data);
+      maybeAutoFormulaX();
     }catch(e){
       // silent
     }
@@ -235,7 +239,7 @@
       const data = await postJSON("/human_rf_trade", payload);
       if(typeof showToast === "function"){
         const d = (data && data.signal && data.signal.direction) ? data.signal.direction : (direction || "AUTO");
-        showToast(`✅ HUMAN ${d} trade sent`, "success");
+        showToast(`HUMAN ${d} trade sent`, "success");
       }
       await fetchHumanRFStatus();
     }catch(e){
@@ -249,7 +253,7 @@
       const stakeVal = stakeEl ? clampNum(stakeEl.value || 1, 0.35, 1000000, 1) : 1;
       if(stakeEl) stakeEl.value = String(stakeVal);
       const data = await postJSON("/set_auto_stake", { stake: stakeVal });
-      if(typeof showToast === "function") showToast(`💰 HUMAN stake set: ${Number(data.auto_stake || stakeVal).toFixed(2)}`, "success");
+      if(typeof showToast === "function") showToast("HUMAN stake set: " + Number(data.auto_stake || stakeVal).toFixed(2), "success");
     }catch(e){
       if(typeof showToast === "function") showToast(e.message || "Failed to set stake", "error");
     }
@@ -278,6 +282,12 @@
         socket.on("human_rf_status", (payload) => {
           if(rootExists()) renderHumanRFStatus(payload);
         });
+        socket.on("human_market_change", () => {
+          fetchHumanRFStatus();
+        });
+        socket.on("market_change", () => {
+          fetchHumanRFStatus();
+        });
         socketHooked = true;
       }
     }catch(e){}
@@ -286,6 +296,90 @@
   function getAppHooks(){
     const App = getApp();
     return App || {};
+  }
+
+  function updateFormulaXButton(){
+    const btn = byId("formulaXBtn");
+    if(!btn) return;
+    if(fxState.active){
+      btn.innerText = "FormulaX • ON (waiting)";
+      btn.style.background = "#38bdf8";
+    }else{
+      btn.innerText = "FormulaX";
+      btn.style.background = "#0ea5e9";
+    }
+  }
+
+  function inferMarketDirection(){
+    const bias = (cachedStatus && cachedStatus.bias || "").toUpperCase();
+    const td = (cachedStatus && cachedStatus.trade_direction || cachedStatus && cachedStatus.signal || "").toUpperCase();
+    if(td.includes("RISE") || td.includes("HIGH")) return "RISE";
+    if(td.includes("FALL") || td.includes("LOW")) return "FALL";
+    if(bias.includes("BULL")) return "RISE";
+    if(bias.includes("BEAR")) return "FALL";
+    return null;
+  }
+
+  function maybeAutoFormulaX(){
+    if(!fxState.active || fxState.firing) return;
+    const dir = inferMarketDirection();
+    if(dir){
+      runFormulaXOnce(dir);
+    }else{
+      const now = Date.now();
+      if(now - fxState.lastToast > 4000 && typeof showToast === "function"){
+        fxState.lastToast = now;
+        showToast("FormulaX: waiting for market trend…", "info");
+      }
+    }
+  }
+
+  async function runFormulaXOnce(dir){
+    try{
+      fxState.firing = true;
+      const stakeEl = byId("stake");
+      const durEl = byId("humanRfDuration");
+      const stakeVal = stakeEl ? clampNum(stakeEl.value || 1, 0.35, 1000000, 1) : 1;
+      const durationTicks = durEl ? clampNum(durEl.value || 5, 1, 10, 5) : 5;
+      if(stakeEl) stakeEl.value = String(stakeVal);
+      if(durEl) durEl.value = String(durationTicks);
+
+      const bigStake = Number((stakeVal * 2 / 3).toFixed(2));
+      const smallStake = Math.max(0.35, Number((stakeVal - bigStake).toFixed(2)));
+      const riseStake = dir === "RISE" ? bigStake : smallStake;
+      const fallStake = dir === "FALL" ? bigStake : smallStake;
+
+      const r = await postJSON("/human_formula_x", {
+        rise_stake: riseStake,
+        fall_stake: fallStake,
+        duration_ticks: durationTicks,
+      });
+      const ok = r && r.status === "success";
+      if(typeof showToast === "function"){
+        showToast(`FormulaX sent RISE $${riseStake.toFixed(2)} + FALL $${fallStake.toFixed(2)} (${dir} favored)`, ok ? "success" : "warn");
+      }
+      fxState.active = false;
+      await fetchHumanRFStatus();
+    }catch(e){
+      if(typeof showToast === "function") showToast(e.message || "FormulaX failed", "error");
+      fxState.active = false;
+    }finally{
+      fxState.firing = false;
+      updateFormulaXButton();
+    }
+  }
+
+  async function toggleFormulaX(){
+    fxState.active = !fxState.active;
+    fxState.firing = false;
+    fxState.lastToast = 0;
+    updateFormulaXButton();
+    if(fxState.active){
+      if(typeof showToast === "function") showToast("FormulaX armed: waiting for market trend…", "info");
+      maybeAutoFormulaX();
+    }else{
+      if(typeof showToast === "function") showToast("FormulaX off", "warn");
+    }
   }
 
   function bindUI(root) {
@@ -298,6 +392,9 @@
           break;
       }
     }, "human_action_clicks");
+
+    // also poll FormulaX while actions come in
+    maybeAutoFormulaX();
   }
 
   async function onMount(payload) {
@@ -310,14 +407,17 @@
     window.saveHumanRFSettings = saveHumanRFSettings;
     window.toggleHumanRFSetting = toggleHumanRFSetting;
     window.humanRFSetStake = humanRFSetStake;
+    window.runFormulaX = toggleFormulaX;
 
     // initial render/poll
     startPolling();
+    maybeAutoFormulaX();
   }
 
   async function afterLoadProfileUI() {
     bindSocketIfPossible();
     startPolling();
+    maybeAutoFormulaX();
   }
 
   async function onActivate() {
@@ -325,6 +425,7 @@
     try{
       if(typeof refreshHumanKeepAliveUI === "function") await refreshHumanKeepAliveUI();
     }catch(e){}
+    maybeAutoFormulaX();
   }
 
   if (typeof window.registerProfileModule === "function") {

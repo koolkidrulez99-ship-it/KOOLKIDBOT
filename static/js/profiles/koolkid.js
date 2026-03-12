@@ -4,6 +4,7 @@
     lastSocket: null,
     socketBound: false,
     barrierAnalysis: null,
+    over3Analysis: null,
     autoModes: {},
     dual2xOpen: false,
     dual2xBusy: false,
@@ -351,6 +352,67 @@
     }
   }
 
+  function renderOver3AnalysisKoolkid(data) {
+    if (data && typeof data === "object") state.over3Analysis = data;
+    const d = state.over3Analysis || {};
+    const info = document.getElementById("over3AnalysisInfoKoolkid");
+    const btn = document.getElementById("over3AnalysisBtnKoolkid");
+    const enabled = !!(state.autoModes && state.autoModes.over3_analysis);
+    if (btn) {
+      btn.innerText = `Over 3 Analysis: ${enabled ? "ON" : "OFF"}`;
+      btn.style.background = enabled ? "#22c55e" : "#1e293b";
+    }
+    if (!info) return;
+
+    const symbol = String(d.symbol || "");
+    const symbolOk = !!d.symbol_ok;
+    const high100 = Number(d.high_count_100 || 0);
+    const high10 = Number(d.high_count_10 || 0);
+    const streak = Number(d.current_high_streak || 0);
+    const losses = Number(d.consecutive_losses || 0);
+    const total = Number(d.total_trades || 0);
+    const duration = Number(d.duration_ticks || 1);
+    const active = !!d.trade_active;
+    const stopped = !!d.session_stopped;
+    const waitFresh = !!d.wait_fresh_setup;
+    const setupReady = !!d.entry_conditions_ready;
+    const counts = `H100 ${high100}/58 • H10 ${high10}/6 • Streak ${streak}/<6`;
+    const session = `Losses ${losses}/2 • Trades ${total}/5 • Duration ${duration}T`;
+
+    if (!enabled) {
+      info.style.color = "#94a3b8";
+      info.innerText = `Over 3 off • ${counts}`;
+      return;
+    }
+    if (!symbolOk) {
+      info.style.color = "#f59e0b";
+      info.innerText = `Switch to Volatility 50 (R_50) to run Over 3 • Current ${symbol || "-"}`;
+      return;
+    }
+    if (stopped) {
+      info.style.color = "#ef4444";
+      info.innerText = `Session stopped (${session}). Toggle OFF/ON to restart.`;
+      return;
+    }
+    if (active) {
+      info.style.color = "#38bdf8";
+      info.innerText = `Trade active on R_50, waiting result • ${session}`;
+      return;
+    }
+    if (waitFresh) {
+      info.style.color = "#f59e0b";
+      info.innerText = `Waiting fresh setup reset • ${counts} • ${session}`;
+      return;
+    }
+    if (setupReady) {
+      info.style.color = "#22c55e";
+      info.innerText = `Setup ready: Over 3 entry armed • ${counts} • ${session}`;
+      return;
+    }
+    info.style.color = "#94a3b8";
+    info.innerText = `Scanning R_50 ticks • ${counts} • ${session}`;
+  }
+
 
 function updateAdvancedAIModeButtons(modes, payload) {
   const map = [
@@ -359,6 +421,7 @@ function updateAdvancedAIModeButtons(modes, payload) {
     ["smart_flow", "smartFlowBtnKoolkid", "🎯 SMART FLOW"],
     ["meta_ai", "metaAiBtnKoolkid", "⚡ META AI"],
     ["kidracks_ai", "kidracksAiBtnKoolkid", "🤓 KIDRACKS AI"],
+    ["over3_analysis", "over3AnalysisBtnKoolkid", "Over 3 Analysis"],
   ];
   map.forEach(([key, id, label]) => {
     const btn = document.getElementById(id);
@@ -396,6 +459,8 @@ function updateAdvancedAIModeButtons(modes, payload) {
     }
     if (payload && payload.barrier_analysis) renderBarrierAnalysis(payload.barrier_analysis);
     else if (kidGxBtn) renderBarrierAnalysis(state.barrierAnalysis || { selected: "UNDER 9" });
+    if (payload && payload.over3_analysis_data) renderOver3AnalysisKoolkid(payload.over3_analysis_data);
+    else renderOver3AnalysisKoolkid();
     updateDual2xUIKoolkid();
     renderDual2xAnalysisKoolkid();
     updateAdvancedAIModeButtons(modes || {}, payload || null);
@@ -412,6 +477,7 @@ function updateAdvancedAIModeButtons(modes, payload) {
         if (!isActive()) return;
         renderDual2xAnalysisKoolkid(data || {});
         if (data && data.barrier_analysis) renderBarrierAnalysis(data.barrier_analysis);
+        if (data && data.over3_analysis_data) renderOver3AnalysisKoolkid(data.over3_analysis_data);
         if (data && data.auto_modes) updateModeButtonsFromPayload(data.auto_modes, data);
       });
 
@@ -439,6 +505,7 @@ function updateAdvancedAIModeButtons(modes, payload) {
     bindWindowEvents();
     updateDual2xUIKoolkid();
     renderDual2xAnalysisKoolkid();
+    renderOver3AnalysisKoolkid();
     setTimeout(syncSelectedDigitsToServer, 200);
   }
 
@@ -447,6 +514,7 @@ function updateAdvancedAIModeButtons(modes, payload) {
     bindSocketListeners();
     updateDual2xUIKoolkid();
     renderDual2xAnalysisKoolkid();
+    renderOver3AnalysisKoolkid();
     setTimeout(syncSelectedDigitsToServer, 150);
   }
 
@@ -455,6 +523,7 @@ function updateAdvancedAIModeButtons(modes, payload) {
     bindSocketListeners();
     updateDual2xUIKoolkid();
     renderDual2xAnalysisKoolkid();
+    renderOver3AnalysisKoolkid();
   }
 
   window.toggleDual2xKoolkid = function () {
@@ -576,6 +645,18 @@ function updateAdvancedAIModeButtons(modes, payload) {
       safeToast(`MPull💰🤓 ALL DIGITS: ${r.data.mpull_all_digits_auto ? "ON" : "OFF"}`, r.data.mpull_all_digits_auto ? "success" : "error");
     } else {
       safeToast((r.data && r.data.message) || "MPull ALL DIGITS failed", "error");
+    }
+  };
+
+  window.toggleOver3AnalysisKoolkid = async function () {
+    const r = await postJSON("/toggle_over3_analysis_koolkid", {});
+    if (r.data && r.data.status === "success") {
+      if (r.data.auto_modes) state.autoModes = Object.assign({}, state.autoModes || {}, r.data.auto_modes);
+      updateModeButtonsFromPayload(r.data.auto_modes || { over3_analysis: !!r.data.over3_analysis }, r.data.payload || null);
+      if (r.data.over3_analysis_data) renderOver3AnalysisKoolkid(r.data.over3_analysis_data);
+      safeToast(`Over 3 Analysis: ${r.data.over3_analysis ? "ON" : "OFF"}`, r.data.over3_analysis ? "success" : "error");
+    } else {
+      safeToast((r.data && r.data.message) || "Over 3 Analysis failed", "error");
     }
   };
 

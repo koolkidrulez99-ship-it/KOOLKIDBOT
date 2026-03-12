@@ -23,6 +23,7 @@ class UnchainStrategy:
         self.last_digit = None
         self.last_symbol = None
         self.last_tick_ts = 0
+        self.tick_time_history = deque(maxlen=240)
         self.price_history = deque(maxlen=240)
         self.delta_history = deque(maxlen=120)
         self.abs_delta_history = deque(maxlen=120)
@@ -220,6 +221,11 @@ class UnchainStrategy:
         self.market_tick_counter += 1
         self.last_symbol = (tick or {}).get("symbol") or self.last_symbol
         self.last_tick_ts = int((tick or {}).get("epoch") or time.time())
+        try:
+            tick_ts = float((tick or {}).get("epoch") or (tick or {}).get("timestamp") or (tick or {}).get("time") or time.time())
+        except Exception:
+            tick_ts = time.time()
+        self.tick_time_history.append(tick_ts)
         self.last_digit = digit
 
         prev_price = self.last_price
@@ -619,7 +625,9 @@ class UnchainStrategy:
         except Exception:
             pass
         try:
-            self.open_contract_entry_spot = self._to_float(contract.get("entry_spot"), 0.0)
+            spot = self._to_float(contract.get("entry_spot"), 0.0)
+            if spot > 0:
+                self.open_contract_entry_spot = spot
         except Exception:
             pass
         try:
@@ -629,7 +637,9 @@ class UnchainStrategy:
         except Exception:
             pass
         try:
-            self.open_contract_current_spot = self._to_float(contract.get("current_spot"), 0.0)
+            spot_now = self._to_float(contract.get("current_spot"), 0.0)
+            if spot_now > 0:
+                self.open_contract_current_spot = spot_now
         except Exception:
             pass
         # If contract already sold/settled, final cleanup will happen in on_contract
@@ -814,7 +824,222 @@ class UnchainStrategy:
             return max(18, min(60, duration * 6))
         if unit == "s":
             return max(10, min(40, (duration // 2) + 8))
+        if unit == "h":
+            return max(60, min(240, duration * 30))
         return max(8, min(32, duration * 2))
+
+    def get_trap_zone_payload(self, config=None):
+        """
+        Trap-zone gate for UNCHAIN AUTO BOTH.
+        The goal is to block entries while market is stuck in middle noise and
+        only allow entries when movement + speed + direction show a real escape.
+        """
+        config = config or {}
+        higher_barrier = self._to_float(config.get("higher_barrier", 0.12), 0.12)
+        lower_barrier = self._to_float(config.get("lower_barrier", -0.12), -0.12)
+        upper_trigger = max(higher_barrier, lower_barrier)
+        lower_trigger = min(higher_barrier, lower_barrier)
+        zone_width = abs(upper_trigger - lower_trigger)
+        if zone_width <= 0:
+            zone_width = max(abs(upper_trigger), abs(lower_trigger), 0.12)
+        center_offset = (upper_trigger + lower_trigger) / 2.0
+
+        try:
+            lookback = int(config.get("lookback_ticks", 18) or 18)
+        except Exception:
+            lookback = 18
+        lookback = max(10, min(20, lookback))
+
+        prices = list(self.price_history)
+        if len(prices) < lookback:
+            return {
+                "status": "TRAP ZONE: BUILDING",
+                "ready": False,
+                "score": 0,
+                "score_max": 5,
+                "score_needed": 4,
+                "favored_side": None,
+                "is_trapped": True,
+                "flat_market": True,
+                "movement_pass": False,
+                "volatility_pass": False,
+                "direction_pass": False,
+                "escape_pass": False,
+                "fake_breakout_block": False,
+                "lookback": min(len(prices), lookback),
+                "reasons": [f"Need more ticks ({len(prices)}/{lookback})"],
+                "zone_upper": round(upper_trigger, 6),
+                "zone_lower": round(lower_trigger, 6),
+                "zone_center": round(center_offset, 6),
+                "zone_width": round(zone_width, 6),
+                "current_offset": 0.0,
+                "range_width": 0.0,
+                "tick_speed": {"avg_interval_sec": None, "ticks_per_sec": 0.0},
+            }
+
+        window = prices[-lookback:]
+        deltas = [window[i] - window[i - 1] for i in range(1, len(window))]
+        if not deltas:
+            deltas = [0.0]
+        abs_deltas = [abs(d) for d in deltas]
+        avg_abs = (sum(abs_deltas) / len(abs_deltas)) if abs_deltas else 0.0
+        med_abs = statistics.median(abs_deltas) if abs_deltas else 0.0
+
+        movement_span = min(5, len(deltas))
+        recent_move = window[-1] - window[-1 - movement_span] if movement_span > 0 else 0.0
+        net_move = window[-1] - window[0]
+        range_width = max(window) - min(window)
+        min_move = max(zone_width * 0.18, avg_abs * 2.0, med_abs * 1.8, 1e-9)
+        movement_pass = abs(recent_move) >= min_move and abs(net_move) >= (min_move * 0.85)
+
+        up_count = sum(1 for d in deltas if d > 0)
+        down_count = sum(1 for d in deltas if d < 0)
+        direction_strength = max(up_count, down_count) / max(1, len(deltas))
+        dominant_side = None
+        if up_count > down_count and direction_strength >= 0.58 and (up_count - down_count) >= 2:
+            dominant_side = "HIGHER"
+        elif down_count > up_count and direction_strength >= 0.58 and (down_count - up_count) >= 2:
+            dominant_side = "LOWER"
+        direction_pass = dominant_side is not None
+
+        times = list(self.tick_time_history)
+        intervals = []
+        if len(times) >= 3:
+            t_window = times[-lookback:]
+            for i in range(1, len(t_window)):
+                try:
+                    diff = float(t_window[i]) - float(t_window[i - 1])
+                except Exception:
+                    diff = 0.0
+                if diff > 0:
+                    intervals.append(diff)
+        avg_interval = (sum(intervals) / len(intervals)) if intervals else None
+        ticks_per_sec = (1.0 / avg_interval) if (avg_interval and avg_interval > 0) else 0.0
+        volatility_pass = bool(avg_interval is not None and (avg_interval <= 1.7 or ticks_per_sec >= 0.65))
+        if avg_interval is None and len(deltas) >= 12:
+            # Fallback if timestamp stream is unavailable: allow by data depth.
+            volatility_pass = True
+
+        offsets = [p - window[0] for p in window]
+        current_offset = offsets[-1]
+        near_upper = current_offset >= (upper_trigger - zone_width * 0.30)
+        near_lower = current_offset <= (lower_trigger + zone_width * 0.30)
+        follow_up_up = sum(1 for d in deltas[-3:] if d > 0) >= 2
+        follow_up_down = sum(1 for d in deltas[-3:] if d < 0) >= 2
+
+        escape_up = bool(
+            movement_pass
+            and volatility_pass
+            and direction_pass
+            and dominant_side == "HIGHER"
+            and near_upper
+            and follow_up_up
+            and recent_move > 0
+        )
+        escape_down = bool(
+            movement_pass
+            and volatility_pass
+            and direction_pass
+            and dominant_side == "LOWER"
+            and near_lower
+            and follow_up_down
+            and recent_move < 0
+        )
+        escape_side = "HIGHER" if escape_up else ("LOWER" if escape_down else None)
+        escape_pass = escape_side is not None
+
+        fake_up = bool(
+            max(offsets) >= (upper_trigger - zone_width * 0.12)
+            and current_offset < (upper_trigger - zone_width * 0.45)
+        )
+        fake_down = bool(
+            min(offsets) <= (lower_trigger + zone_width * 0.12)
+            and current_offset > (lower_trigger + zone_width * 0.45)
+        )
+        fake_breakout_block = fake_up or fake_down
+
+        center_band_low = lower_trigger + zone_width * 0.15
+        center_band_high = upper_trigger - zone_width * 0.15
+        in_center_band = center_band_low <= current_offset <= center_band_high
+        flat_market = range_width <= max(min_move * 0.9, avg_abs * 2.2)
+        is_trapped = bool(in_center_band and (not escape_pass or flat_market))
+
+        score = 0
+        score += 1 if movement_pass else 0
+        score += 1 if volatility_pass else 0
+        score += 1 if direction_pass else 0
+        score += 1 if escape_pass else 0
+        score += 1 if not fake_breakout_block else 0
+        score_max = 5
+        score_needed = 4
+
+        favored_side = escape_side if escape_side else dominant_side
+        ready = bool(
+            score >= score_needed
+            and not is_trapped
+            and not flat_market
+            and escape_pass
+            and not fake_breakout_block
+            and favored_side in ("HIGHER", "LOWER")
+        )
+
+        reasons = []
+        if ready:
+            reasons.append(f"{favored_side} escape confirmed")
+        else:
+            if is_trapped:
+                reasons.append("price trapped in middle zone")
+            if flat_market:
+                reasons.append("market flat")
+            if not movement_pass:
+                reasons.append("movement weak")
+            if not volatility_pass:
+                reasons.append("tick speed slow")
+            if not direction_pass:
+                reasons.append("direction mixed")
+            if not escape_pass:
+                reasons.append("escape not confirmed")
+            if fake_breakout_block:
+                reasons.append("possible fake breakout")
+        if not reasons:
+            reasons.append("waiting for fresh setup")
+
+        if ready:
+            status = f"TRAP ESCAPE {favored_side} READY"
+        elif is_trapped:
+            status = "TRAP ZONE HOLD"
+        elif flat_market:
+            status = "FLAT MARKET HOLD"
+        else:
+            status = "WAITING CLEAN ESCAPE"
+
+        return {
+            "status": status,
+            "ready": ready,
+            "score": int(score),
+            "score_max": int(score_max),
+            "score_needed": int(score_needed),
+            "favored_side": favored_side if favored_side in ("HIGHER", "LOWER") else None,
+            "is_trapped": bool(is_trapped),
+            "flat_market": bool(flat_market),
+            "movement_pass": bool(movement_pass),
+            "volatility_pass": bool(volatility_pass),
+            "direction_pass": bool(direction_pass),
+            "escape_pass": bool(escape_pass),
+            "fake_breakout_block": bool(fake_breakout_block),
+            "lookback": int(len(window)),
+            "reasons": reasons[:5],
+            "zone_upper": round(upper_trigger, 6),
+            "zone_lower": round(lower_trigger, 6),
+            "zone_center": round(center_offset, 6),
+            "zone_width": round(zone_width, 6),
+            "current_offset": round(current_offset, 6),
+            "range_width": round(range_width, 6),
+            "tick_speed": {
+                "avg_interval_sec": (round(avg_interval, 4) if avg_interval is not None else None),
+                "ticks_per_sec": round(ticks_per_sec, 3),
+            },
+        }
 
     def get_bias_payload(self, config=None):
         """
@@ -848,6 +1073,11 @@ class UnchainStrategy:
                 "lookback": min(len(prices), lookback),
                 "summary": "Gathering enough recent ticks to score Higher vs Lower.",
                 "updated_at": self.now_time(),
+                "range_width": 0.0,
+                "range_pct": 0.0,
+                "shared_confidence": 0.0,
+                "higher_confidence": 0.0,
+                "lower_confidence": 0.0,
             }
 
         window = prices[-lookback:]
@@ -866,9 +1096,16 @@ class UnchainStrategy:
         gross_move = sum(abs(d) for d in deltas)
         scale = max(avg_abs, 1e-9)
 
+        price_high = max(window)
+        price_low = min(window)
+        price_range = price_high - price_low
+        mid_price = window[-1] if window[-1] not in (0, None) else (price_high + price_low) / 2 or 1e-9
+        range_pct = (price_range / max(1e-9, abs(mid_price))) * 100.0
+
         trend_norm = max(-1.0, min(1.0, net_move / (scale * max(2.0, len(deltas) / 3.0))))
         flow_norm = max(-1.0, min(1.0, (up_count - down_count) / max(1.0, len(deltas))))
         recent_norm = max(-1.0, min(1.0, recent_move / (scale * max(1.5, recent_span or 1))))
+        range_norm = max(0.0, min(1.0, price_range / max(scale * max(2.5, len(deltas) / 2.0), 1e-9)))
 
         higher_barrier = self._to_float(config.get("higher_barrier", 0.0), 0.0)
         lower_barrier = self._to_float(config.get("lower_barrier", 0.0), 0.0)
@@ -893,11 +1130,12 @@ class UnchainStrategy:
         structural_norm = max(-1.0, min(1.0, structural_norm))
 
         combined = (
-            0.34 * trend_norm
-            + 0.22 * flow_norm
-            + 0.16 * recent_norm
+            0.30 * trend_norm
+            + 0.18 * flow_norm
+            + 0.15 * recent_norm
             + 0.12 * barrier_norm
-            + 0.16 * structural_norm
+            + 0.13 * structural_norm
+            + 0.12 * range_norm
         )
         combined = max(-1.0, min(1.0, combined))
 
@@ -955,11 +1193,20 @@ class UnchainStrategy:
         elif barrier_norm < -0.18:
             reasons.append("lower setup easier")
 
+        if price_range > 0 and range_pct >= 0.18:
+            reasons.append(f"range {price_range:.4f} ({range_pct:.2f}%)")
+
         if flat_count >= max(2, len(deltas) // 3):
             reasons.append("slow tape")
 
         if not reasons:
             reasons = ["balanced flow", "wait for cleaner move"]
+
+        cleanliness = max(0.0, min(1.0, 1.0 - (float(self.chop_score or 0.0) / 100.0)))
+        shared_conf = round(
+            max(10.0, min(99.0, 45.0 + (range_norm * 25.0) + (cleanliness * 20.0) + (abs(trend_norm) * 18.0))),
+            1,
+        )
 
         return {
             "status": status,
@@ -968,8 +1215,13 @@ class UnchainStrategy:
             "strength": strength,
             "reasons": reasons[:4],
             "lookback": len(window),
-            "summary": f"Based on the latest {len(window)} ticks and your current UNCHAIN duration/barriers.",
+            "summary": f"Based on the latest {len(window)} ticks (range {price_range:.4f}, {range_pct:.2f}% of price) and your current UNCHAIN duration/barriers.",
             "updated_at": self.now_time(),
+            "range_width": round(price_range, 6),
+            "range_pct": round(range_pct, 3),
+            "shared_confidence": shared_conf,
+            "higher_confidence": shared_conf,
+            "lower_confidence": shared_conf,
         }
 
     # -----------------------------

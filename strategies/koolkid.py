@@ -82,6 +82,16 @@ class KoolKidStrategy(BaseStrategy):
         self.mpull_all_digits_auto = False
         self.mpull_all_digits_selected_digits = set()
         self.mpull_all_digits_last_trade_time = 0.0
+        self.last_symbol = None
+
+        # Over 3 Analysis bot state
+        self.over3_analysis_auto = False
+        self.over3_duration_ticks = 1
+        self.over3_trade_active = False
+        self.over3_consecutive_losses = 0
+        self.over3_total_trades = 0
+        self.over3_session_stopped = False
+        self.over3_wait_fresh_setup = False
 
         # 5 second delay between trades (your request)
         self.cooldown_seconds = 5.0
@@ -172,6 +182,15 @@ class KoolKidStrategy(BaseStrategy):
         self.mpull_all_digits_auto = False
         self.mpull_all_digits_selected_digits = set()
         self.mpull_all_digits_last_trade_time = 0.0
+        self.last_symbol = None
+
+        self.over3_analysis_auto = False
+        self.over3_duration_ticks = 1
+        self.over3_trade_active = False
+        self.over3_consecutive_losses = 0
+        self.over3_total_trades = 0
+        self.over3_session_stopped = False
+        self.over3_wait_fresh_setup = False
 
         self.koolluck_current_sequence = None
         self.koolluck_step_index = 0
@@ -245,6 +264,8 @@ class KoolKidStrategy(BaseStrategy):
         self.kidgx_auto = False
         self.ai_auto_trading = False
         self.mpull_all_digits_auto = False
+        self.over3_analysis_auto = False
+        self.over3_trade_active = False
 
     # ==============================
     # NEW FEATURE TOGGLES / SETTINGS
@@ -269,6 +290,106 @@ class KoolKidStrategy(BaseStrategy):
         if self.mpull_all_digits_auto:
             self.mpull_auto = False
         return self.mpull_all_digits_auto
+
+    def _reset_over3_analysis_session(self):
+        self.over3_trade_active = False
+        self.over3_consecutive_losses = 0
+        self.over3_total_trades = 0
+        self.over3_session_stopped = False
+        self.over3_wait_fresh_setup = False
+
+    def toggle_over3_analysis_auto(self):
+        self.over3_analysis_auto = not self.over3_analysis_auto
+        if self.over3_analysis_auto:
+            self._reset_over3_analysis_session()
+        else:
+            self.over3_trade_active = False
+        return self.over3_analysis_auto
+
+    def _is_high_digit(self, digit):
+        try:
+            return int(digit) >= 4
+        except Exception:
+            return False
+
+    def _over3_counts(self):
+        ticks = list(self.tick_digits or [])
+        last100 = ticks[-100:]
+        last10 = ticks[-10:]
+        high100 = sum(1 for d in last100 if self._is_high_digit(d))
+        high10 = sum(1 for d in last10 if self._is_high_digit(d))
+        streak = 0
+        for d in reversed(last100):
+            if self._is_high_digit(d):
+                streak += 1
+            else:
+                break
+        return {
+            "sample100": len(last100),
+            "sample10": len(last10),
+            "high_count_100": int(high100),
+            "high_count_10": int(high10),
+            "current_high_streak": int(streak),
+        }
+
+    def get_over3_analysis_state(self):
+        counts = self._over3_counts()
+        entry_conditions = bool(
+            counts["sample100"] >= 100
+            and counts["sample10"] >= 10
+            and counts["high_count_100"] >= 58
+            and counts["high_count_10"] >= 6
+            and counts["current_high_streak"] < 6
+        )
+        symbol = str(getattr(self, "last_symbol", "") or "").upper().strip()
+        symbol_ok = symbol == "R_50"
+        duration_ticks = 2 if int(counts["high_count_100"]) >= 64 else int(getattr(self, "over3_duration_ticks", 1) or 1)
+        duration_ticks = 1 if duration_ticks not in (1, 2) else duration_ticks
+        return {
+            "symbol_ok": bool(symbol_ok),
+            "symbol": symbol,
+            "duration_ticks": int(duration_ticks),
+            "trade_active": bool(self.over3_trade_active),
+            "consecutive_losses": int(self.over3_consecutive_losses),
+            "total_trades": int(self.over3_total_trades),
+            "session_stopped": bool(self.over3_session_stopped),
+            "wait_fresh_setup": bool(self.over3_wait_fresh_setup),
+            "entry_conditions_ready": bool(entry_conditions),
+            **counts,
+        }
+
+    def check_over3_analysis_signal(self):
+        if not bool(getattr(self, "over3_analysis_auto", False)):
+            return None
+
+        s = self.get_over3_analysis_state()
+        if not s["symbol_ok"] or s["session_stopped"] or s["trade_active"]:
+            return None
+
+        if s["consecutive_losses"] >= 2 or s["total_trades"] >= 5:
+            self.over3_session_stopped = True
+            return None
+
+        setup_ready = bool(s["entry_conditions_ready"])
+        if self.over3_wait_fresh_setup:
+            if not setup_ready:
+                self.over3_wait_fresh_setup = False
+            return None
+
+        if not setup_ready:
+            return None
+
+        duration_ticks = int(s.get("duration_ticks", 1) or 1)
+        if duration_ticks not in (1, 2):
+            duration_ticks = 1
+        return {
+            "mode": "OVER3_ANALYSIS",
+            "type": "OVER",
+            "barrier": 3,
+            "duration": duration_ticks,
+            "duration_unit": "t",
+            "symbol": "R_50",
+        }
 
     def set_mpull_all_digits_selected_digits(self, digits):
         cleaned = set()
@@ -428,10 +549,42 @@ class KoolKidStrategy(BaseStrategy):
 
     def on_tick(self, tick, digit):
         super().on_tick(tick, digit)
+        try:
+            self.last_symbol = tick.get("symbol")
+        except Exception:
+            pass
 
         self.pattern_buffer.append(digit)
         self.update_confidence_bars()
         self._record_barrier_analysis_tick(digit)
+
+    def on_auto_trade_sent(self, signal):
+        mode = str((signal or {}).get("mode") or "").upper().strip()
+        if mode == "OVER3_ANALYSIS":
+            self.over3_trade_active = True
+
+    def on_auto_trade_failed(self, signal, _reason=None):
+        mode = str((signal or {}).get("mode") or "").upper().strip()
+        if mode == "OVER3_ANALYSIS":
+            self.over3_trade_active = False
+
+    def on_contract_settled(self, contract, meta=None):
+        mode = str(((meta or {}).get("mode") or "").upper().strip())
+        if mode != "OVER3_ANALYSIS":
+            return
+        try:
+            profit = float((contract or {}).get("profit", 0) or 0)
+        except Exception:
+            profit = 0.0
+        self.over3_trade_active = False
+        self.over3_total_trades = int(self.over3_total_trades) + 1
+        if profit > 0:
+            self.over3_consecutive_losses = 0
+        else:
+            self.over3_consecutive_losses = int(self.over3_consecutive_losses) + 1
+        self.over3_wait_fresh_setup = True
+        if int(self.over3_consecutive_losses) >= 2 or int(self.over3_total_trades) >= 5:
+            self.over3_session_stopped = True
 
     # ==============================
     # HELPERS
@@ -926,6 +1079,10 @@ class KoolKidStrategy(BaseStrategy):
 
         now = time.time()
 
+        over3_sig = self.check_over3_analysis_signal()
+        if over3_sig:
+            signals.append(over3_sig)
+
         # ------------------------------
         # NEW MODES (can run immediately)
         # ------------------------------
@@ -1048,6 +1205,7 @@ class KoolKidStrategy(BaseStrategy):
                 "barrier_analysis": self.barrier_analysis_running,
                 "ai_auto_trading": self.ai_auto_trading,
                 "mpull_all_digits": self.mpull_all_digits_auto,
+                "over3_analysis": self.over3_analysis_auto,
             },
             "auto_settings": {
                 "kidracks_barrier": self.kidracks_barrier,
@@ -1057,6 +1215,7 @@ class KoolKidStrategy(BaseStrategy):
                 "barrier_analysis_selected": self.barrier_analysis_selected,
                 "mpull_all_digits_selected_digits": sorted(list(self.mpull_all_digits_selected_digits)),
             },
+            "over3_analysis_data": self.get_over3_analysis_state(),
             "barrier_analysis": {
                 "running": bool(self.barrier_analysis_running),
                 "progress": int(min(self.barrier_analysis_warm_count, self.barrier_analysis_warm_target)),

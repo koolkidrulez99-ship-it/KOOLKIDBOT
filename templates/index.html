@@ -957,10 +957,7 @@ function bindSocketHandlers(){
     });
 
     socket.on("trade_placed", (data)=>{
-        const t = prettyType(data.type);
-        const b = (data.barrier !== undefined && data.barrier !== null) ? ` ${data.barrier}` : "";
-        const s = (data.stake !== undefined && data.stake !== null) ? ` $${Number(data.stake).toFixed(2)}` : "";
-        showToast(`✅ ${t}${b} placed${s}`, "success");
+        onTradePlacedForToast(data || {});
     });
 
     socket.on("trade_result", (data)=>{
@@ -975,6 +972,9 @@ function bindSocketHandlers(){
                 list.prepend(buildTradeItem(data));
             }
         }
+
+        const suppressIndividualToast = onTradeResultForToast(data || {});
+        if(suppressIndividualToast) return;
 
         const result = (data.result || "LOSS").toUpperCase();
         const profit = typeof data.profit === "number" ? data.profit : (data.profit_value || 0);
@@ -1066,6 +1066,344 @@ const accountDashboard = document.getElementById("accountDashboard");
 const profileTitle = document.getElementById("profileTitle");
 
 const tradeStore = { KOOLKID: [], JOKERJOE: [], HUMAN: [], UNCHAIN: [] };
+const TRADE_TOAST_MULTI_JOIN_MS = 900;
+const TRADE_TOAST_BATCH_STALE_MS = 15 * 60 * 1000;
+const tradeToastByProfile = {};
+const PROFILE_DRAFTS_STORAGE_KEY = "bot_profile_drafts_v1";
+let profileDrafts = {};
+let profileDraftSaveTimer = null;
+
+function normalizeProfileName(v){
+    const p = String(v || "").toUpperCase().trim();
+    if(!p) return "KOOLKID";
+    return p;
+}
+
+function normalizeContractId(v){
+    if(v === undefined || v === null || v === "") return null;
+    const s = String(v).trim();
+    return s ? s : null;
+}
+
+function toProfitNumber(v){
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+}
+
+function getTradeToastProfileState(profile){
+    const p = normalizeProfileName(profile);
+    if(!tradeToastByProfile[p]){
+        tradeToastByProfile[p] = {
+            activePlacementBatch: null,
+            queue: [],
+        };
+    }
+    return tradeToastByProfile[p];
+}
+
+function removeTradeToastBatch(profileState, batch){
+    if(!profileState || !batch) return;
+    if(batch.closeTimer){
+        clearTimeout(batch.closeTimer);
+        batch.closeTimer = null;
+    }
+    profileState.queue = (profileState.queue || []).filter((item)=> item !== batch);
+    if(profileState.activePlacementBatch === batch){
+        profileState.activePlacementBatch = null;
+    }
+}
+
+function cleanupTradeToastProfileState(profileState){
+    if(!profileState) return;
+    const now = Date.now();
+    profileState.queue = (profileState.queue || []).filter((batch)=>{
+        if(!batch) return false;
+        const age = now - Number(batch.lastActivityAt || batch.createdAt || now);
+        if(age > TRADE_TOAST_BATCH_STALE_MS){
+            if(batch.closeTimer){
+                clearTimeout(batch.closeTimer);
+                batch.closeTimer = null;
+            }
+            return false;
+        }
+        return true;
+    });
+    if(profileState.activePlacementBatch && profileState.queue.indexOf(profileState.activePlacementBatch) < 0){
+        profileState.activePlacementBatch = null;
+    }
+}
+
+function normalizePlacedTradeType(v){
+    const t = prettyType(v || "TRADE");
+    return String(t || "TRADE").toUpperCase();
+}
+
+function addPlacedTradeType(batch, rawType){
+    if(!batch) return;
+    const key = normalizePlacedTradeType(rawType);
+    const map = batch.typeCounts || (batch.typeCounts = {});
+    map[key] = Number(map[key] || 0) + 1;
+}
+
+function buildPlacementToastLabel(batch){
+    const count = Math.max(0, Number(batch && batch.count) || 0);
+    const map = (batch && batch.typeCounts) || {};
+    const entries = Object.keys(map)
+        .map((k)=> ({ key: k, count: Number(map[k] || 0) }))
+        .filter((x)=> x.count > 0)
+        .sort((a,b)=> b.count - a.count);
+
+    if(entries.length <= 0){
+        return `✅ Trades placed +${count}`;
+    }
+    if(entries.length === 1){
+        return `✅ ${entries[0].key} trades placed +${count}`;
+    }
+    const mix = entries.slice(0, 3).map((x)=> `${x.key} x${x.count}`).join(", ");
+    return `✅ MIXED trades placed +${count} (${mix})`;
+}
+
+function markTradePlacementWindowClosed(profileState, batch){
+    if(!batch) return;
+    if(batch.closeTimer){
+        clearTimeout(batch.closeTimer);
+        batch.closeTimer = null;
+    }
+    batch.placementClosed = true;
+    if(!batch.placementToastShown && Number(batch.count || 0) > 0){
+        showToast(buildPlacementToastLabel(batch), "success");
+        batch.placementToastShown = true;
+    }
+    if(profileState && profileState.activePlacementBatch === batch){
+        profileState.activePlacementBatch = null;
+    }
+}
+
+function scheduleTradePlacementClose(profileState, batch){
+    if(!profileState || !batch) return;
+    if(batch.closeTimer) clearTimeout(batch.closeTimer);
+    batch.closeTimer = setTimeout(()=>{
+        markTradePlacementWindowClosed(profileState, batch);
+    }, TRADE_TOAST_MULTI_JOIN_MS);
+}
+
+function createTradeToastBatch(profile, data){
+    const now = Date.now();
+    return {
+        profile: normalizeProfileName(profile),
+        createdAt: now,
+        lastActivityAt: now,
+        count: 0,
+        settled: 0,
+        totalProfit: 0,
+        isMulti: false,
+        placementClosed: false,
+        placementToastShown: false,
+        closeTimer: null,
+        typeCounts: {},
+        contractIds: new Set(),
+        settledContractIds: new Set(),
+    };
+}
+
+function onTradePlacedForToast(data){
+    const profile = normalizeProfileName((data && data.profile) || activeProfile);
+    const profileState = getTradeToastProfileState(profile);
+    cleanupTradeToastProfileState(profileState);
+
+    const now = Date.now();
+    let batch = profileState.activePlacementBatch;
+    if(!batch || batch.placementClosed || (now - Number(batch.lastActivityAt || 0)) > TRADE_TOAST_MULTI_JOIN_MS){
+        batch = createTradeToastBatch(profile, data || {});
+        profileState.activePlacementBatch = batch;
+        profileState.queue.push(batch);
+    }
+
+    batch.count += 1;
+    batch.lastActivityAt = now;
+
+    const cid = normalizeContractId(data && data.contract_id);
+    if(cid) batch.contractIds.add(cid);
+    addPlacedTradeType(batch, data && data.type);
+
+    if(batch.count >= 2){
+        batch.isMulti = true;
+        batch.placementClosed = false;
+    }
+
+    scheduleTradePlacementClose(profileState, batch);
+}
+
+function findTradeBatchForResult(profileState, data){
+    if(!profileState) return null;
+    const cid = normalizeContractId(data && (data.contract_id ?? data.contractId));
+    const queue = profileState.queue || [];
+
+    if(cid){
+        for(const batch of queue){
+            if(!batch || batch.settled >= batch.count) continue;
+            if(batch.contractIds && batch.contractIds.has(cid) && !(batch.settledContractIds && batch.settledContractIds.has(cid))){
+                return batch;
+            }
+        }
+    }
+
+    for(const batch of queue){
+        if(!batch || batch.settled >= batch.count) continue;
+        return batch;
+    }
+    return null;
+}
+
+function onTradeResultForToast(data){
+    const profile = normalizeProfileName((data && data.profile) || activeProfile);
+    const profileState = getTradeToastProfileState(profile);
+    cleanupTradeToastProfileState(profileState);
+
+    const batch = findTradeBatchForResult(profileState, data || {});
+    if(!batch) return false;
+
+    if(profileState.activePlacementBatch === batch){
+        markTradePlacementWindowClosed(profileState, batch);
+    }
+
+    const cid = normalizeContractId(data && (data.contract_id ?? data.contractId));
+    if(cid){
+        if(batch.settledContractIds.has(cid)) return batch.count > 1;
+        batch.settledContractIds.add(cid);
+    }
+
+    batch.settled = Math.min(batch.count, Number(batch.settled || 0) + 1);
+    batch.totalProfit = toProfitNumber(batch.totalProfit) + toProfitNumber(data && (data.profit ?? data.profit_value));
+    batch.lastActivityAt = Date.now();
+
+    if(batch.count > 1){
+        if(batch.settled >= batch.count){
+            const total = toProfitNumber(batch.totalProfit);
+            if(total > 0){
+                showToast(`📦 Batch done: +$${total.toFixed(2)} total profit`, "success");
+            }else if(total < 0){
+                showToast(`📦 Batch done: -$${Math.abs(total).toFixed(2)} total loss`, "error");
+            }else{
+                showToast("📦 Batch done: $0.00 total", "info");
+            }
+            removeTradeToastBatch(profileState, batch);
+        }
+        return true;
+    }
+
+    removeTradeToastBatch(profileState, batch);
+    return false;
+}
+
+function loadProfileDraftsFromStorage(){
+    try{
+        const raw = localStorage.getItem(PROFILE_DRAFTS_STORAGE_KEY);
+        if(!raw){
+            profileDrafts = {};
+            return;
+        }
+        const parsed = JSON.parse(raw);
+        profileDrafts = (parsed && typeof parsed === "object") ? parsed : {};
+    }catch(e){
+        profileDrafts = {};
+    }
+}
+
+function saveProfileDraftsToStorage(){
+    try{
+        localStorage.setItem(PROFILE_DRAFTS_STORAGE_KEY, JSON.stringify(profileDrafts || {}));
+    }catch(e){}
+}
+
+function captureProfileDraft(profile){
+    const p = String(profile || "").toUpperCase();
+    if(!p) return;
+    const root = document.getElementById("profileContainer");
+    if(!root) return;
+    const nodes = root.querySelectorAll("input[id], select[id], textarea[id]");
+    const draft = {};
+
+    nodes.forEach((node)=>{
+        if(!node || !node.id) return;
+        if(node.dataset && node.dataset.draftIgnore === "1") return;
+
+        const type = String(node.type || "").toLowerCase();
+        if(type === "button" || type === "submit" || type === "reset" || type === "file") return;
+
+        if(type === "checkbox" || type === "radio"){
+            draft[node.id] = { kind: "checked", value: !!node.checked };
+            return;
+        }
+
+        const tag = String(node.tagName || "").toUpperCase();
+        if(tag === "SELECT" && node.multiple){
+            const vals = Array.from(node.options || [])
+                .filter((opt)=> !!opt.selected)
+                .map((opt)=> String(opt.value));
+            draft[node.id] = { kind: "values", value: vals };
+            return;
+        }
+
+        draft[node.id] = { kind: "value", value: String(node.value ?? "") };
+    });
+
+    if(Object.keys(draft).length){
+        profileDrafts[p] = draft;
+    }else{
+        delete profileDrafts[p];
+    }
+    saveProfileDraftsToStorage();
+}
+
+function applyProfileDraft(profile){
+    const p = String(profile || "").toUpperCase();
+    if(!p) return;
+    const draft = profileDrafts[p];
+    if(!draft || typeof draft !== "object") return;
+    const root = document.getElementById("profileContainer");
+    if(!root) return;
+
+    Object.keys(draft).forEach((id)=>{
+        const node = document.getElementById(id);
+        if(!node || !root.contains(node)) return;
+        const entry = draft[id] || {};
+
+        if(entry.kind === "checked"){
+            node.checked = !!entry.value;
+        }else if(entry.kind === "values" && node.multiple){
+            const wanted = new Set(Array.isArray(entry.value) ? entry.value.map(String) : []);
+            Array.from(node.options || []).forEach((opt)=>{
+                opt.selected = wanted.has(String(opt.value));
+            });
+        }else if(entry.kind === "value"){
+            node.value = entry.value == null ? "" : String(entry.value);
+        }else{
+            return;
+        }
+
+        try{ node.dispatchEvent(new Event("input", { bubbles: true })); }catch(e){}
+        try{ node.dispatchEvent(new Event("change", { bubbles: true })); }catch(e){}
+    });
+}
+
+function scheduleProfileDraftSave(profile){
+    if(profileDraftSaveTimer) clearTimeout(profileDraftSaveTimer);
+    profileDraftSaveTimer = setTimeout(()=>{
+        captureProfileDraft(profile || activeProfile);
+    }, 160);
+}
+
+function bindProfileDraftAutosave(){
+    const root = document.getElementById("profileContainer");
+    if(!root || root.dataset.profileDraftBound === "1") return;
+    root.dataset.profileDraftBound = "1";
+    root.addEventListener("input", ()=> scheduleProfileDraftSave(activeProfile));
+    root.addEventListener("change", ()=> scheduleProfileDraftSave(activeProfile));
+}
+
+loadProfileDraftsFromStorage();
+window.addEventListener("beforeunload", ()=> captureProfileDraft(activeProfile));
 
 function renderTradeList(profile){
     const list = document.getElementById("profileTradeList");
@@ -1255,6 +1593,7 @@ async function loadProfileUI(profile){
     const html = await res.text();
 
     document.getElementById("profileContainer").innerHTML = html;
+    bindProfileDraftAutosave();
 
     try{ await runProfileModuleHook(profile, "onMount", { profile, root: document.getElementById("profileContainer") }); }catch(e){}
 
@@ -1734,6 +2073,8 @@ function applyLiveTickVisibility(){
 }
 
 async function setProfile(profile){
+    const previousProfile = activeProfile;
+    captureProfileDraft(previousProfile);
     activeProfile = profile;
     await ensureProfileModuleScript(profile);
 
@@ -1768,6 +2109,10 @@ async function setProfile(profile){
 
     await loadProfileUI(profile);
     try{ await runProfileModuleHook(profile, "onActivate", { profile }); }catch(e){}
+    applyProfileDraft(profile);
+    syncAutoStake();
+    sendRiskControls();
+    scheduleProfileDraftSave(profile);
 
     // ==================== PATCH C: refresh keep-alive UI when switching to HUMAN ====================
     if(profile === "HUMAN"){
