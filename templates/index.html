@@ -667,6 +667,70 @@ input:focus, select:focus{
   .howto-title button{width:100%;}
 }
 
+/* ===== Mobile-only layout lock (prevents buttons drifting to corners) ===== */
+body.mobile-only-ui{
+  padding:10px !important;
+}
+body.mobile-only-ui .container{
+  max-width:100% !important;
+  padding:10px 8px 96px !important;
+}
+body.mobile-only-ui .card{
+  width:100% !important;
+  margin-left:auto !important;
+  margin-right:auto !important;
+}
+body.mobile-only-ui .profile-btn{
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  margin:6px 0 !important;
+}
+body.mobile-only-ui .api-left{
+  display:grid !important;
+  grid-template-columns:1fr !important;
+}
+body.mobile-only-ui .api-left > input,
+body.mobile-only-ui .api-left > button,
+body.mobile-only-ui .api-left > select{
+  width:100% !important;
+  margin:6px 0 !important;
+}
+body.mobile-only-ui #profileContainer .panelGrid,
+body.mobile-only-ui #profileContainer .ui-btn-grid-2,
+body.mobile-only-ui #profileContainer .ui-btn-grid-3,
+body.mobile-only-ui #profileContainer .unchain-btn-row,
+body.mobile-only-ui #profileContainer .unchain-btn-row--compact,
+body.mobile-only-ui #profileContainer .human-rf-actions,
+body.mobile-only-ui #profileContainer .human-exec-toggle-row,
+body.mobile-only-ui #profileContainer .human-chart-toolbar{
+  display:grid !important;
+  grid-template-columns:1fr !important;
+  gap:8px !important;
+  justify-items:stretch !important;
+}
+body.mobile-only-ui #profileContainer button{
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  margin:5px 0 !important;
+}
+body.mobile-only-ui #profileContainer [style*="display:flex"][style*="justify-content:space-between"]{
+  justify-content:center !important;
+  align-items:stretch !important;
+  flex-wrap:wrap !important;
+  gap:10px !important;
+}
+body.mobile-only-ui #profileContainer [style*="display:flex"][style*="justify-content:space-between"] > button{
+  flex:1 1 100% !important;
+}
+body.mobile-only-ui #profileContainer .koolkid-history-stats,
+body.mobile-only-ui #profileContainer .jokerjoe-history-grid,
+body.mobile-only-ui #profileContainer .human-history-stats,
+body.mobile-only-ui #profileContainer .unchain-history-grid{
+  grid-template-columns:repeat(2,minmax(0,1fr)) !important;
+}
+
 </style>
 
 <body>
@@ -3088,6 +3152,21 @@ async function toggleHumanKeepAliveOriginal(){
 }
 
 window.toggleHumanKeepAliveOriginal = toggleHumanKeepAliveOriginal;
+
+function syncMobileOnlyLayout(){
+    try{
+        const isSmallScreen = window.matchMedia("(max-width: 900px)").matches;
+        const hasCoarsePointer = window.matchMedia("(pointer: coarse)").matches;
+        const isMobileUa = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || "");
+        const enableMobileLayout = !!(isSmallScreen && (hasCoarsePointer || isMobileUa));
+        if(document.body){
+            document.body.classList.toggle("mobile-only-ui", enableMobileLayout);
+        }
+    }catch(e){}
+}
+window.addEventListener("resize", syncMobileOnlyLayout, { passive:true });
+window.addEventListener("orientationchange", syncMobileOnlyLayout);
+syncMobileOnlyLayout();
 
 /* ✅ STARTUP */
 initSocket();

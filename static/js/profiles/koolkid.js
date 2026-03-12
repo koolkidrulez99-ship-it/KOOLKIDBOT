@@ -376,6 +376,7 @@
     const stopped = !!d.session_stopped;
     const waitFresh = !!d.wait_fresh_setup;
     const setupReady = !!d.entry_conditions_ready;
+    const marketLabel = symbol || "selected market";
     const counts = `H100 ${high100}/58 • H10 ${high10}/6 • Streak ${streak}/<6`;
     const session = `Losses ${losses}/2 • Trades ${total}/5 • Duration ${duration}T`;
 
@@ -386,7 +387,7 @@
     }
     if (!symbolOk) {
       info.style.color = "#f59e0b";
-      info.innerText = `Switch to Volatility 50 (R_50) to run Over 3 • Current ${symbol || "-"}`;
+      info.innerText = "Waiting for market ticks to start Over 3 analysis...";
       return;
     }
     if (stopped) {
@@ -396,7 +397,7 @@
     }
     if (active) {
       info.style.color = "#38bdf8";
-      info.innerText = `Trade active on R_50, waiting result • ${session}`;
+      info.innerText = `Trade active on ${marketLabel}, waiting result • ${session}`;
       return;
     }
     if (waitFresh) {
@@ -406,11 +407,11 @@
     }
     if (setupReady) {
       info.style.color = "#22c55e";
-      info.innerText = `Setup ready: Over 3 entry armed • ${counts} • ${session}`;
+      info.innerText = `Setup ready on ${marketLabel}: Over 3 entry armed • ${counts} • ${session}`;
       return;
     }
     info.style.color = "#94a3b8";
-    info.innerText = `Scanning R_50 ticks • ${counts} • ${session}`;
+    info.innerText = `Scanning ${marketLabel} ticks • ${counts} • ${session}`;
   }
 
 

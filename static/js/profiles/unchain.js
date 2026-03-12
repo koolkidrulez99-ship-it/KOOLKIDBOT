@@ -19,6 +19,7 @@
       previewBaseSymbol: null,
       wasActiveTrade: false,
     },
+    tradeCountdownToastEl: null,
   };
 
   const FORM_FIELDS = [
@@ -54,6 +55,39 @@
   function el(id) { return document.getElementById(id); }
   function setText(id, v) { const n = el(id); if (n) n.innerText = v == null ? "—" : String(v); }
   function toast(msg, type) { try { if (typeof showToast === "function") showToast(msg, type || "info"); } catch (e) {} }
+
+  function ensureTradeCountdownToast() {
+    const container = document.getElementById("toastContainer");
+    if (!container) return null;
+    let toastEl = state.tradeCountdownToastEl;
+    if (toastEl && !container.contains(toastEl)) {
+      state.tradeCountdownToastEl = null;
+      toastEl = null;
+    }
+    if (!toastEl) {
+      toastEl = document.createElement("div");
+      toastEl.className = "toast info";
+      toastEl.dataset.unchainCountdownToast = "1";
+      container.prepend(toastEl);
+      requestAnimationFrame(() => {
+        try { toastEl.classList.add("show"); } catch (e) {}
+      });
+      state.tradeCountdownToastEl = toastEl;
+    }
+    return toastEl;
+  }
+
+  function removeTradeCountdownToast() {
+    const toastEl = state.tradeCountdownToastEl;
+    if (!toastEl) return;
+    state.tradeCountdownToastEl = null;
+    try { toastEl.classList.remove("show"); } catch (e) {}
+    setTimeout(() => {
+      try {
+        if (toastEl.parentNode) toastEl.parentNode.removeChild(toastEl);
+      } catch (e) {}
+    }, 250);
+  }
 
   async function postJSON(url, body) {
     const res = await fetch(url, {
@@ -412,14 +446,21 @@
     const select = el("unchainDuration");
     if (!select) return;
     const presets = DURATION_PRESETS[unit] || [];
+    if (!presets.length) return;
+    const presetKey = `${unit}:${presets.join(",")}`;
+    const previousPresetKey = String(select.dataset.presetKey || "");
+    const shouldRebuild = !!forceSelect || previousPresetKey !== presetKey || select.options.length !== presets.length;
     const current = select.value;
-    select.innerHTML = presets.map((v) => `<option value="${v}">${v}</option>`).join("");
+    if (shouldRebuild) {
+      select.innerHTML = presets.map((v) => `<option value="${v}">${v}</option>`).join("");
+      select.dataset.presetKey = presetKey;
+    }
     const isValid = presets.some((v) => String(v) === String(current));
-    if (forceSelect && isValid) {
-      select.value = String(current);
-    } else if (forceSelect || !isValid) {
+    if (!isValid) {
       select.value = String(presets[0] ?? current ?? 5);
-    } else {
+      return;
+    }
+    if (shouldRebuild || forceSelect) {
       select.value = String(current);
     }
   }
@@ -570,6 +611,70 @@
     }
   }
 
+  function formatTradeCountdown(item) {
+    if (!item) return "—";
+    const unit = String(item.countdown_unit || "").toLowerCase();
+    const remaining = Number(item.countdown_remaining);
+    const duration = Number(item.duration);
+    if (!Number.isFinite(remaining) || remaining < 0 || !unit) return "—";
+    const safeRemaining = Math.max(0, Math.floor(remaining));
+    if (unit === "t") {
+      const total = Number.isFinite(duration) ? Math.max(1, Math.floor(duration)) : null;
+      return `${safeRemaining}${total ? ` / ${total}` : ""} ticks`;
+    }
+    if (unit === "s") return `${safeRemaining}s`;
+    if (unit === "m") return `${safeRemaining}m`;
+    if (unit === "h") return `${safeRemaining}h`;
+    return String(safeRemaining);
+  }
+
+  function countdownSortValue(item) {
+    if (!item) return Number.POSITIVE_INFINITY;
+    const unit = String(item.countdown_unit || "").toLowerCase();
+    const remaining = Number(item.countdown_remaining);
+    const remainingSeconds = Number(item.countdown_seconds);
+    if (!Number.isFinite(remaining) || remaining < 0) return Number.POSITIVE_INFINITY;
+    if (unit === "s") return Number.isFinite(remainingSeconds) ? remainingSeconds : remaining;
+    if (unit === "m") return Number.isFinite(remainingSeconds) ? remainingSeconds : (remaining * 60);
+    if (unit === "h") return Number.isFinite(remainingSeconds) ? remainingSeconds : (remaining * 3600);
+    return remaining;
+  }
+
+  function countdownToastTone(item) {
+    const n = countdownSortValue(item);
+    if (!Number.isFinite(n)) return "info";
+    if (n <= 1) return "warn";
+    return "info";
+  }
+
+  function syncTradeCountdownToast(items) {
+    if (!isActive()) {
+      removeTradeCountdownToast();
+      return;
+    }
+    const list = Array.isArray(items) ? items.filter(Boolean) : [];
+    if (!list.length) {
+      removeTradeCountdownToast();
+      return;
+    }
+    const ranked = list.slice().sort((a, b) => countdownSortValue(a) - countdownSortValue(b));
+    const focus = ranked[0];
+    const countdownLabel = formatTradeCountdown(focus);
+    if (!focus || countdownLabel === "—") {
+      removeTradeCountdownToast();
+      return;
+    }
+    const type = String(focus.type || focus.side || "TRADE").toUpperCase();
+    const contractId = focus.contract_id != null ? `#${focus.contract_id}` : "#—";
+    const extra = ranked.length > 1 ? ` • +${ranked.length - 1} more` : "";
+    const message = `⏳ ${type} ${contractId} • ${countdownLabel} left${extra}`;
+    const toastEl = ensureTradeCountdownToast();
+    if (!toastEl) return;
+    const tone = countdownToastTone(focus);
+    toastEl.className = `toast ${tone} show`;
+    if (toastEl.innerText !== message) toastEl.innerText = message;
+  }
+
   function renderActiveTrades(un) {
     const wrap = el("unchainActiveTrades");
     if (!wrap) return;
@@ -583,6 +688,7 @@
     });
     if (!items.length) {
       wrap.innerHTML = '<div class="unchain-empty">No active UNCHAIN trades.</div>';
+      syncTradeCountdownToast([]);
       return;
     }
     wrap.innerHTML = items.map((item) => {
@@ -590,8 +696,10 @@
       const profit = item.open_profit == null ? "—" : `$${Number(item.open_profit).toFixed(2)}`;
       const profitColor = item.open_profit == null ? "#f8fafc" : (Number(item.open_profit) >= 0 ? "#22c55e" : "#ef4444");
       const durationLabel = `${item.duration || "—"}${String(item.duration_unit || "").toUpperCase()}`;
-      return `<div class="unchain-active-item"><div class="top"><div style="font-weight:900;color:${type === "HIGHER" ? "#22c55e" : "#ef4444"};">${type}</div><div class="unchain-chip">#${item.contract_id || "—"}</div></div><div style="margin-top:8px;color:#cbd5e1;display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;"><div><span class="unchain-label">Stake</span><div>$${Number(item.stake || 0).toFixed(2)}</div></div><div><span class="unchain-label">Barrier</span><div>${item.barrier || "—"}</div></div><div><span class="unchain-label">Duration</span><div>${durationLabel}</div></div><div><span class="unchain-label">Symbol</span><div>${item.symbol || "—"}</div></div><div><span class="unchain-label">Open P/L</span><div style="color:${profitColor};font-weight:800;">${profit}</div></div></div></div>`;
+      const countdown = formatTradeCountdown(item);
+      return `<div class="unchain-active-item"><div class="top"><div style="font-weight:900;color:${type === "HIGHER" ? "#22c55e" : "#ef4444"};">${type}</div><div class="unchain-chip">#${item.contract_id || "—"}</div></div><div style="margin-top:8px;color:#cbd5e1;display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;"><div><span class="unchain-label">Stake</span><div>$${Number(item.stake || 0).toFixed(2)}</div></div><div><span class="unchain-label">Barrier</span><div>${item.barrier || "—"}</div></div><div><span class="unchain-label">Duration</span><div>${durationLabel}</div></div><div><span class="unchain-label">Countdown</span><div>${countdown}</div></div><div><span class="unchain-label">Symbol</span><div>${item.symbol || "—"}</div></div><div><span class="unchain-label">Open P/L</span><div style="color:${profitColor};font-weight:800;">${profit}</div></div></div></div>`;
     }).join("");
+    syncTradeCountdownToast(items);
   }
 
 
@@ -993,6 +1101,7 @@
     stopPolling();
     state.pollTimer = setInterval(() => {
       if (isActive()) refreshStatus(true);
+      else removeTradeCountdownToast();
     }, 1200);
   }
 

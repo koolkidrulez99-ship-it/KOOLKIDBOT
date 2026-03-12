@@ -10,6 +10,7 @@ import sqlite3
 import random  # PATCH 1A
 import secrets
 import hashlib
+import math
 import statistics
 from collections import deque
 
@@ -2108,6 +2109,14 @@ def _upsert_unchain_active_contract(state, contract_id, meta=None, contract=None
     entry["duration"] = meta.get("duration", entry.get("duration"))
     entry["duration_unit"] = meta.get("duration_unit", entry.get("duration_unit"))
     entry["time"] = meta.get("time") or entry.get("time") or now_time()
+    if entry.get("open_epoch") in (None, ""):
+        entry["open_epoch"] = float(time.time())
+    if entry.get("open_tick_seq") in (None, ""):
+        try:
+            un_strat = (state.get("strategies") or {}).get("UNCHAIN")
+            entry["open_tick_seq"] = int(getattr(un_strat, "tick_count", 0) or 0)
+        except Exception:
+            pass
     entry_status = status or contract.get("status") or entry.get("status") or "OPEN"
     if contract.get("is_sold"):
         entry_status = "SOLD"
@@ -2140,6 +2149,21 @@ def _upsert_unchain_active_contract(state, contract_id, meta=None, contract=None
             entry["buy_price"] = contract.get("buy_price")
         if contract.get("is_valid_to_sell") is not None:
             entry["is_valid_to_sell"] = bool(contract.get("is_valid_to_sell"))
+        if contract.get("tick_count") not in (None, ""):
+            try:
+                entry["tick_count"] = int(float(contract.get("tick_count")))
+            except Exception:
+                pass
+        if contract.get("date_start") not in (None, ""):
+            try:
+                entry["date_start"] = float(contract.get("date_start"))
+            except Exception:
+                pass
+        if contract.get("date_expiry") not in (None, ""):
+            try:
+                entry["date_expiry"] = float(contract.get("date_expiry"))
+            except Exception:
+                pass
     # Fallback base for charting when Deriv has not populated entry_spot yet.
     if entry.get("entry_spot") in (None, "", 0, 0.0):
         current_spot = entry.get("current_spot")
@@ -2161,6 +2185,85 @@ def _upsert_unchain_active_contract(state, contract_id, meta=None, contract=None
     active[cid_key] = entry
     u["last_action"] = f"{entry['type']} active on {entry['symbol']}"
     return entry
+
+
+def _decorate_unchain_active_entry_countdown(entry, state, now_ts=None):
+    now_ts = float(now_ts if now_ts is not None else time.time())
+    out = dict(entry or {})
+    out["countdown_remaining"] = None
+    out["countdown_unit"] = None
+    out["countdown_seconds"] = None
+
+    try:
+        duration = int(float(out.get("duration", 0) or 0))
+    except Exception:
+        duration = 0
+    duration_unit = _clean_unchain_duration_unit(out.get("duration_unit", "t"))
+    if duration <= 0:
+        return out
+
+    if duration_unit == "t":
+        elapsed_ticks = None
+        try:
+            open_tick_seq = out.get("open_tick_seq")
+            if open_tick_seq not in (None, ""):
+                open_tick_seq = int(float(open_tick_seq))
+                un_strat = (state.get("strategies") or {}).get("UNCHAIN")
+                now_tick_seq = int(getattr(un_strat, "tick_count", 0) or 0)
+                elapsed_ticks = max(0, now_tick_seq - open_tick_seq)
+        except Exception:
+            elapsed_ticks = None
+        if elapsed_ticks is None:
+            try:
+                # Some feeds expose tick_count as elapsed ticks, while others expose
+                # total duration ticks. Only trust it if it's still below duration.
+                raw_tick_count = out.get("tick_count")
+                if raw_tick_count not in (None, ""):
+                    tick_count = max(0, int(float(raw_tick_count)))
+                    if tick_count < duration:
+                        elapsed_ticks = tick_count
+            except Exception:
+                elapsed_ticks = None
+        if elapsed_ticks is not None:
+            remaining = max(0, duration - elapsed_ticks)
+            out["countdown_remaining"] = int(remaining)
+            out["countdown_unit"] = "t"
+        else:
+            out["countdown_remaining"] = int(duration)
+            out["countdown_unit"] = "t"
+        return out
+
+    seconds_per_unit = 1 if duration_unit == "s" else (60 if duration_unit == "m" else 3600)
+    total_seconds = max(1, duration * seconds_per_unit)
+    remaining_seconds = None
+    try:
+        expiry_ts = out.get("date_expiry")
+        if expiry_ts not in (None, ""):
+            remaining_seconds = max(0, int(math.ceil(float(expiry_ts) - now_ts)))
+    except Exception:
+        remaining_seconds = None
+    if remaining_seconds is None:
+        try:
+            start_ts = out.get("date_start")
+            if start_ts in (None, ""):
+                start_ts = out.get("open_epoch")
+            if start_ts not in (None, ""):
+                elapsed = max(0.0, now_ts - float(start_ts))
+                remaining_seconds = max(0, int(math.ceil(total_seconds - elapsed)))
+        except Exception:
+            remaining_seconds = None
+    if remaining_seconds is None:
+        return out
+
+    out["countdown_seconds"] = int(remaining_seconds)
+    out["countdown_unit"] = duration_unit
+    if duration_unit == "s":
+        out["countdown_remaining"] = int(remaining_seconds)
+    elif duration_unit == "m":
+        out["countdown_remaining"] = int(math.ceil(remaining_seconds / 60.0))
+    else:
+        out["countdown_remaining"] = int(math.ceil(remaining_seconds / 3600.0))
+    return out
 
 
 def _finalize_unchain_contract(state, contract, meta=None):
@@ -2551,7 +2654,11 @@ def _unchain_payload_response(state):
     if len(cleaned_active) != len(active_map):
         u["active_contracts"] = cleaned_active
         active_map = cleaned_active
-    active_contracts = list(active_map.values())
+    now_ts = time.time()
+    active_contracts = [
+        _decorate_unchain_active_entry_countdown(entry, state, now_ts=now_ts)
+        for entry in active_map.values()
+    ]
     active_contracts.sort(key=lambda x: str(x.get("contract_id") or ""))
     stats = u.get("stats") or {"wins": 0, "losses": 0, "net_pnl": 0.0}
 
@@ -3794,10 +3901,14 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 cid_val = contract.get("contract_id")
                 meta_for_contract = _peek_contract_meta(state, cid_val)
                 unchain_known = _is_unchain_contract_known(state, cid_val, meta=meta_for_contract)
-                if unchain_known and not _is_contract_settled_fast(contract):
+                is_processed = _is_unchain_contract_processed(state, cid_val)
+                is_settled_fast = _is_contract_settled_fast(contract)
+                # If user manually cleared active trades, ignore non-settled stream updates
+                # so they do not pop back into the active list.
+                if unchain_known and (not is_processed) and (not is_settled_fast):
                     _upsert_unchain_active_contract(state, cid_val, meta=meta_for_contract, contract=contract, status="OPEN")
                 un = (state.get("strategies") or {}).get("UNCHAIN")
-                if un and hasattr(un, "on_open_contract"):
+                if un and hasattr(un, "on_open_contract") and (not is_processed):
                     if ((meta_for_contract and (meta_for_contract.get("profile") or "").upper() == "UNCHAIN" and str(meta_for_contract.get("type") or "").upper() == "ACCU")
                         or (getattr(un, "active_contract_id", None) and cid_val and int(getattr(un, "active_contract_id")) == int(cid_val))):
                         un.on_open_contract(contract)

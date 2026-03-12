@@ -92,6 +92,7 @@ class KoolKidStrategy(BaseStrategy):
         self.over3_total_trades = 0
         self.over3_session_stopped = False
         self.over3_wait_fresh_setup = False
+        self.over3_ticks_by_symbol = {}
 
         # 5 second delay between trades (your request)
         self.cooldown_seconds = 5.0
@@ -191,6 +192,7 @@ class KoolKidStrategy(BaseStrategy):
         self.over3_total_trades = 0
         self.over3_session_stopped = False
         self.over3_wait_fresh_setup = False
+        self.over3_ticks_by_symbol = {}
 
         self.koolluck_current_sequence = None
         self.koolluck_step_index = 0
@@ -312,8 +314,16 @@ class KoolKidStrategy(BaseStrategy):
         except Exception:
             return False
 
-    def _over3_counts(self):
-        ticks = list(self.tick_digits or [])
+    def _over3_symbol_key(self, symbol):
+        sym = str(symbol or "").upper().strip()
+        return sym or ""
+
+    def _over3_counts(self, symbol=None):
+        sym = self._over3_symbol_key(symbol or getattr(self, "last_symbol", ""))
+        if sym:
+            ticks = list((self.over3_ticks_by_symbol or {}).get(sym) or [])
+        else:
+            ticks = list(self.tick_digits or [])
         last100 = ticks[-100:]
         last10 = ticks[-10:]
         high100 = sum(1 for d in last100 if self._is_high_digit(d))
@@ -333,7 +343,8 @@ class KoolKidStrategy(BaseStrategy):
         }
 
     def get_over3_analysis_state(self):
-        counts = self._over3_counts()
+        symbol = self._over3_symbol_key(getattr(self, "last_symbol", ""))
+        counts = self._over3_counts(symbol=symbol)
         entry_conditions = bool(
             counts["sample100"] >= 100
             and counts["sample10"] >= 10
@@ -341,8 +352,7 @@ class KoolKidStrategy(BaseStrategy):
             and counts["high_count_10"] >= 6
             and counts["current_high_streak"] < 6
         )
-        symbol = str(getattr(self, "last_symbol", "") or "").upper().strip()
-        symbol_ok = symbol == "R_50"
+        symbol_ok = bool(symbol)
         duration_ticks = 2 if int(counts["high_count_100"]) >= 64 else int(getattr(self, "over3_duration_ticks", 1) or 1)
         duration_ticks = 1 if duration_ticks not in (1, 2) else duration_ticks
         return {
@@ -382,13 +392,16 @@ class KoolKidStrategy(BaseStrategy):
         duration_ticks = int(s.get("duration_ticks", 1) or 1)
         if duration_ticks not in (1, 2):
             duration_ticks = 1
+        symbol = self._over3_symbol_key(s.get("symbol") or getattr(self, "last_symbol", ""))
+        if not symbol:
+            return None
         return {
             "mode": "OVER3_ANALYSIS",
             "type": "OVER",
             "barrier": 3,
             "duration": duration_ticks,
             "duration_unit": "t",
-            "symbol": "R_50",
+            "symbol": symbol,
         }
 
     def set_mpull_all_digits_selected_digits(self, digits):
@@ -551,6 +564,16 @@ class KoolKidStrategy(BaseStrategy):
         super().on_tick(tick, digit)
         try:
             self.last_symbol = tick.get("symbol")
+        except Exception:
+            pass
+        try:
+            symbol = self._over3_symbol_key(getattr(self, "last_symbol", ""))
+            if symbol and digit is not None:
+                buf = self.over3_ticks_by_symbol.get(symbol)
+                if buf is None:
+                    buf = deque(maxlen=100)
+                    self.over3_ticks_by_symbol[symbol] = buf
+                buf.append(int(digit))
         except Exception:
             pass
 
