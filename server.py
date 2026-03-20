@@ -1118,7 +1118,7 @@ def init_client(client_id):
         "unchain_hl": {
             "higher_stake": 1.0,
             "lower_stake": 1.0,
-            "higher_barrier": "0.12",
+            "higher_barrier": "+0.12",
             "lower_barrier": "-0.12",
             "duration": 5,
             "duration_unit": "t",
@@ -1145,6 +1145,7 @@ def init_client(client_id):
         "session_start_balance": None,
         "auto_stake": 1.0,
         "req_meta": {},          # req_id -> meta
+        "_proposal_waiters": {}, # req_id -> {"event","proposal","error"}
         "contract_meta": {},     # contract_id -> meta
         "last_seen": time.time(),  # heartbeat (page open)
         "strategies": {
@@ -1814,7 +1815,7 @@ def _default_unchain_hl_state():
     return {
         "higher_stake": 1.0,
         "lower_stake": 1.0,
-        "higher_barrier": "0.12",
+        "higher_barrier": "+0.12",
         "lower_barrier": "-0.12",
         "duration": 5,
         "duration_unit": "t",
@@ -1823,19 +1824,39 @@ def _default_unchain_hl_state():
         "auto_sl": True,
         "auto_both_enabled": False,
         "auto_both_cooldown": 3,
+        "auto_both_pair_active": False,
+        "auto_both_next_fire_at": 0.0,
+        "auto_both_last_cycle_closed_at": 0.0,
+        "ai_auto_trade_enabled": False,
         "auto_start_threshold": 60.0,
         "auto_min_movement": 0.12,
         "auto_min_tick_speed": 1.5,
         "auto_min_range": 0.2,
+        # AI Auto Trade internal state
         "auto_pair_active": False,
         "auto_next_fire_at": 0.0,
         "auto_last_cycle_closed_at": 0.0,
         "auto_wait_for_reset": False,
+        "auto_reset_drop_seen": False,
+        "auto_cycle_id": 0,
+        "auto_cycle_settled": 0,
+        "auto_cycle_losses": 0,
+        "auto_last_cycle_had_loss": False,
         "active_contracts": {},
         "last_action": "Ready",
         "last_result": None,
         "stats": {"wins": 0, "losses": 0, "net_pnl": 0.0},
         "risk_block_reason": None,
+        "both_analyzer": {
+            "status": "IDLE",
+            "signal": "WAIT",
+            "reason": "Tap Analyze to run Barrier Analysis Tool.",
+            "symbol": None,
+            "updated_at": None,
+            "final_score": 0.0,
+            "tested_setups": 0,
+            "recommended": None,
+        },
     }
 
 
@@ -1849,9 +1870,57 @@ def _ensure_unchain_hl_state(state):
         cur["active_contracts"] = {}
     if not isinstance(cur.get("stats"), dict):
         cur["stats"] = {"wins": 0, "losses": 0, "net_pnl": 0.0}
+    if not isinstance(cur.get("both_analyzer"), dict):
+        cur["both_analyzer"] = {
+            "status": "IDLE",
+            "signal": "WAIT",
+            "reason": "Tap Analyze to run Barrier Analysis Tool.",
+            "symbol": None,
+            "updated_at": None,
+            "final_score": 0.0,
+            "tested_setups": 0,
+            "recommended": None,
+        }
+    else:
+        cur["both_analyzer"].setdefault("status", "IDLE")
+        cur["both_analyzer"].setdefault("signal", "WAIT")
+        cur["both_analyzer"].setdefault("reason", "Tap Analyze to run Barrier Analysis Tool.")
+        cur["both_analyzer"].setdefault("symbol", None)
+        cur["both_analyzer"].setdefault("updated_at", None)
+        cur["both_analyzer"].setdefault("final_score", 0.0)
+        cur["both_analyzer"].setdefault("tested_setups", 0)
+        cur["both_analyzer"].setdefault("recommended", None)
     cur.setdefault("risk_block_reason", None)
+    cur["auto_both_enabled"] = bool(cur.get("auto_both_enabled", False))
+    cur["ai_auto_trade_enabled"] = bool(cur.get("ai_auto_trade_enabled", False))
+    cur["auto_both_pair_active"] = bool(cur.get("auto_both_pair_active", False))
     try:
-        cur["auto_start_threshold"] = max(55.0, min(80.0, float(cur.get("auto_start_threshold", 60.0) or 60.0)))
+        cur["auto_both_next_fire_at"] = max(0.0, float(cur.get("auto_both_next_fire_at", 0.0) or 0.0))
+    except Exception:
+        cur["auto_both_next_fire_at"] = 0.0
+    try:
+        cur["auto_both_last_cycle_closed_at"] = max(0.0, float(cur.get("auto_both_last_cycle_closed_at", 0.0) or 0.0))
+    except Exception:
+        cur["auto_both_last_cycle_closed_at"] = 0.0
+    cur["auto_wait_for_reset"] = bool(cur.get("auto_wait_for_reset", False))
+    cur["auto_reset_drop_seen"] = bool(cur.get("auto_reset_drop_seen", False))
+    try:
+        cur["auto_cycle_id"] = max(0, int(cur.get("auto_cycle_id", 0) or 0))
+    except Exception:
+        cur["auto_cycle_id"] = 0
+    try:
+        cur["auto_cycle_settled"] = max(0, int(cur.get("auto_cycle_settled", 0) or 0))
+    except Exception:
+        cur["auto_cycle_settled"] = 0
+    try:
+        cur["auto_cycle_losses"] = max(0, int(cur.get("auto_cycle_losses", 0) or 0))
+    except Exception:
+        cur["auto_cycle_losses"] = 0
+    cur["auto_last_cycle_had_loss"] = bool(cur.get("auto_last_cycle_had_loss", False))
+    cur["duration_unit"] = _clean_unchain_duration_unit(cur.get("duration_unit", "t"))
+    cur["duration"] = _sanitize_unchain_duration(cur.get("duration", 5), cur["duration_unit"])
+    try:
+        cur["auto_start_threshold"] = max(60.0, min(80.0, float(cur.get("auto_start_threshold", 60.0) or 60.0)))
     except Exception:
         cur["auto_start_threshold"] = 60.0
     try:
@@ -1901,22 +1970,42 @@ def _clean_unchain_duration_unit(value):
     return unit if unit in ("t", "s", "m", "h") else "t"
 
 
+def _sanitize_unchain_duration(value, duration_unit):
+    unit = _clean_unchain_duration_unit(duration_unit)
+    try:
+        duration = int(float(value))
+    except Exception:
+        defaults = {"t": 5, "s": 15, "m": 1, "h": 1}
+        duration = defaults.get(unit, 5)
+
+    if unit == "t":
+        return max(5, min(10, duration))
+    if unit == "s":
+        return max(15, min(59, duration))
+    if unit == "m":
+        return max(1, min(59, duration))
+    return max(1, min(24, duration))
+
+
 def _format_unchain_barrier(raw_value, side, duration_unit):
     raw = str(raw_value if raw_value is not None else "").strip()
     if not raw:
         raise ValueError("Barrier is required")
 
-    # Higher/Lower uses the contract side to decide the direction.
-    # If the user does not type a sign, keep the barrier as a positive offset
-    # for BOTH sides (same behavior users see in the Deriv UI).
     user_typed_sign = raw.startswith(("+", "-"))
     numeric = float(raw) if user_typed_sign else abs(float(raw))
+    magnitude = abs(float(numeric))
+    formatted = f"{magnitude:.10f}".rstrip("0").rstrip(".") or "0"
 
     unit = _clean_unchain_duration_unit(duration_unit)
-    if not user_typed_sign and unit in ("t", "s", "m"):
-        out = f"+{numeric:.10f}".rstrip("0").rstrip(".")
+    if raw.startswith("+"):
+        out = f"+{formatted}"
+    elif raw.startswith("-"):
+        out = f"-{formatted}"
+    elif unit in ("t", "s", "m"):
+        out = f"+{formatted}"
     else:
-        out = f"{numeric:.10f}".rstrip("0").rstrip(".")
+        out = formatted
     return out or "0"
 
 
@@ -2143,6 +2232,45 @@ def _upsert_unchain_active_contract(state, contract_id, meta=None, contract=None
                     entry["current_spot"] = spot_now
             except Exception:
                 pass
+        if contract.get("current_spot_time") not in (None, ""):
+            try:
+                spot_time = int(float(contract.get("current_spot_time")))
+                if spot_time > 0:
+                    entry["current_spot_time"] = spot_time
+                    last_spot_time = entry.get("_last_counted_spot_time")
+                    try:
+                        last_spot_time = int(float(last_spot_time))
+                    except Exception:
+                        last_spot_time = None
+                    if last_spot_time is None:
+                        entry["_last_counted_spot_time"] = spot_time
+                        if entry.get("_elapsed_contract_ticks") in (None, ""):
+                            seeded_elapsed = 0
+                            try:
+                                seeded_tick_count = contract.get("tick_count")
+                                if seeded_tick_count in (None, ""):
+                                    seeded_tick_count = entry.get("tick_count")
+                                seeded_tick_count = int(float(seeded_tick_count))
+                                duration_val = int(float(entry.get("duration", 0) or 0))
+                                if duration_val > 0 and 0 <= seeded_tick_count < duration_val:
+                                    seeded_elapsed = seeded_tick_count
+                            except Exception:
+                                seeded_elapsed = 0
+                            entry["_elapsed_contract_ticks"] = seeded_elapsed
+                    elif spot_time > last_spot_time:
+                        try:
+                            elapsed_ticks = int(float(entry.get("_elapsed_contract_ticks", 0) or 0))
+                        except Exception:
+                            elapsed_ticks = 0
+                        # Count each new contract spot timestamp as one elapsed tick.
+                        # This prevents duplicate stream payloads from double-counting.
+                        entry["_elapsed_contract_ticks"] = max(0, elapsed_ticks + 1)
+                        entry["_last_counted_spot_time"] = spot_time
+                    elif spot_time < last_spot_time:
+                        # Guard against stream resets/out-of-order events.
+                        entry["_last_counted_spot_time"] = spot_time
+            except Exception:
+                pass
         if contract.get("sell_price") not in (None, ""):
             entry["sell_price"] = contract.get("sell_price")
         if contract.get("buy_price") not in (None, ""):
@@ -2205,25 +2333,53 @@ def _decorate_unchain_active_entry_countdown(entry, state, now_ts=None):
     if duration_unit == "t":
         elapsed_ticks = None
         try:
+            raw_stream_elapsed = out.get("_elapsed_contract_ticks")
+            if raw_stream_elapsed not in (None, ""):
+                stream_elapsed = max(0, int(float(raw_stream_elapsed)))
+                if stream_elapsed <= duration:
+                    elapsed_ticks = stream_elapsed
+        except Exception:
+            elapsed_ticks = None
+        # Prefer Deriv contract tick_count when available because it reflects
+        # contract-native progression and is resilient to duplicate tick streams.
+        try:
+            raw_tick_count = out.get("tick_count")
+            if raw_tick_count not in (None, ""):
+                tick_count = max(0, int(float(raw_tick_count)))
+                # Some feeds may expose duration as total ticks; only trust
+                # tick_count as elapsed while it's still below duration.
+                if tick_count < duration:
+                    if elapsed_ticks is None:
+                        elapsed_ticks = tick_count
+                    else:
+                        # If both are available, trust the larger elapsed value:
+                        # stream elapsed can start late, while tick_count can lag.
+                        elapsed_ticks = max(elapsed_ticks, tick_count)
+        except Exception:
+            pass
+
+        seq_elapsed_ticks = None
+        try:
             open_tick_seq = out.get("open_tick_seq")
             if open_tick_seq not in (None, ""):
                 open_tick_seq = int(float(open_tick_seq))
                 un_strat = (state.get("strategies") or {}).get("UNCHAIN")
                 now_tick_seq = int(getattr(un_strat, "tick_count", 0) or 0)
-                elapsed_ticks = max(0, now_tick_seq - open_tick_seq)
+                seq_elapsed_ticks = max(0, now_tick_seq - open_tick_seq)
         except Exception:
-            elapsed_ticks = None
+            seq_elapsed_ticks = None
+
         if elapsed_ticks is None:
-            try:
-                # Some feeds expose tick_count as elapsed ticks, while others expose
-                # total duration ticks. Only trust it if it's still below duration.
-                raw_tick_count = out.get("tick_count")
-                if raw_tick_count not in (None, ""):
-                    tick_count = max(0, int(float(raw_tick_count)))
-                    if tick_count < duration:
-                        elapsed_ticks = tick_count
-            except Exception:
-                elapsed_ticks = None
+            elapsed_ticks = seq_elapsed_ticks
+        elif (
+            seq_elapsed_ticks is not None
+            and out.get("_elapsed_contract_ticks") in (None, "")
+            and out.get("tick_count") in (None, "")
+        ):
+            # Only cross-check against sequence fallback when no contract-native
+            # elapsed source exists.
+            elapsed_ticks = min(elapsed_ticks, seq_elapsed_ticks)
+
         if elapsed_ticks is not None:
             remaining = max(0, duration - elapsed_ticks)
             out["countdown_remaining"] = int(remaining)
@@ -2266,6 +2422,224 @@ def _decorate_unchain_active_entry_countdown(entry, state, now_ts=None):
     return out
 
 
+def _unchain_countdown_reached_limit(entry):
+    if not isinstance(entry, dict):
+        return False
+    unit = _clean_unchain_duration_unit(entry.get("countdown_unit", ""))
+    remaining = entry.get("countdown_remaining")
+    remaining_seconds = entry.get("countdown_seconds")
+
+    rem_val = None
+    try:
+        if remaining not in (None, ""):
+            rem_val = float(remaining)
+    except Exception:
+        rem_val = None
+
+    rem_sec_val = None
+    try:
+        if remaining_seconds not in (None, ""):
+            rem_sec_val = float(remaining_seconds)
+    except Exception:
+        rem_sec_val = None
+
+    if unit == "t":
+        return rem_val is not None and rem_val <= 0
+    if rem_sec_val is not None:
+        return rem_sec_val <= 0
+    if rem_val is not None:
+        return rem_val <= 0
+    return False
+
+
+def _maybe_force_unchain_close_on_countdown(client_id, state):
+    u = _ensure_unchain_hl_state(state)
+    active_map = u.get("active_contracts") or {}
+    if not active_map:
+        return []
+
+    now_ts = time.time()
+    settled = []
+    refreshed = []
+    waiting = []
+    ws = state.get("ws")
+    un_strat = (state.get("strategies") or {}).get("UNCHAIN")
+    now_tick_seq = None
+    try:
+        now_tick_seq = int(getattr(un_strat, "tick_count", 0) or 0)
+    except Exception:
+        now_tick_seq = None
+
+    for cid_key, entry in list(active_map.items()):
+        if not isinstance(entry, dict):
+            continue
+        if not _entry_is_open_for_ui(entry):
+            continue
+
+        status_text = str(entry.get("status") or entry.get("contract_status") or "").strip().lower()
+        if status_text in ("sold", "won", "lost", "settled", "closed", "expired", "cancelled", "canceled"):
+            continue
+
+        last_auto_close = 0.0
+        try:
+            last_auto_close = float(entry.get("_auto_close_requested_at", 0.0) or 0.0)
+        except Exception:
+            last_auto_close = 0.0
+
+        if "close requested" in status_text and last_auto_close and (now_ts - last_auto_close) < 5.0:
+            continue
+
+        decorated = _decorate_unchain_active_entry_countdown(entry, state, now_ts=now_ts)
+        if not _unchain_countdown_reached_limit(decorated):
+            entry.pop("_bot_settle_after_tick_seq", None)
+            entry.pop("_bot_settle_after_ts", None)
+            continue
+
+        contract_id = decorated.get("contract_id") or entry.get("contract_id") or cid_key
+        if contract_id in (None, ""):
+            continue
+
+        def _refresh_open_contract(min_gap_sec=2.0):
+            last_refresh = 0.0
+            try:
+                last_refresh = float(entry.get("_auto_refresh_requested_at", 0.0) or 0.0)
+            except Exception:
+                last_refresh = 0.0
+            if not ws:
+                return False
+            if last_refresh and (now_ts - last_refresh) < float(min_gap_sec):
+                return False
+            try:
+                ws.send(json.dumps({
+                    "proposal_open_contract": 1,
+                    "contract_id": int(float(contract_id)),
+                    "subscribe": 1,
+                }))
+            except Exception:
+                try:
+                    ws.send(json.dumps({
+                        "proposal_open_contract": 1,
+                        "contract_id": contract_id,
+                        "subscribe": 1,
+                    }))
+                except Exception:
+                    return False
+            entry["_auto_refresh_requested_at"] = now_ts
+            refreshed.append(str(contract_id))
+            return True
+
+        # Always refresh open contract at countdown end so bot settlement can use
+        # the latest open P/L without waiting for Deriv close.
+        _refresh_open_contract(min_gap_sec=1.4)
+
+        unit = _clean_unchain_duration_unit(
+            decorated.get("countdown_unit")
+            or decorated.get("duration_unit")
+            or entry.get("duration_unit")
+            or "t"
+        )
+
+        ready_to_settle = False
+        if unit == "t":
+            if now_tick_seq is None:
+                waiting.append(str(contract_id))
+                continue
+            settle_after_tick = entry.get("_bot_settle_after_tick_seq")
+            try:
+                settle_after_tick = int(float(settle_after_tick))
+            except Exception:
+                settle_after_tick = None
+            if settle_after_tick is None:
+                entry["_bot_settle_after_tick_seq"] = int(now_tick_seq) + 3
+                entry["updated_at"] = now_time()
+                waiting.append(str(contract_id))
+                continue
+            if int(now_tick_seq) < int(settle_after_tick):
+                waiting.append(str(contract_id))
+                continue
+            ready_to_settle = True
+        else:
+            settle_after_ts = entry.get("_bot_settle_after_ts")
+            try:
+                settle_after_ts = float(settle_after_ts)
+            except Exception:
+                settle_after_ts = None
+            if settle_after_ts is None:
+                entry["_bot_settle_after_ts"] = now_ts + 5.0
+                entry["updated_at"] = now_time()
+                waiting.append(str(contract_id))
+                continue
+            if now_ts < settle_after_ts:
+                waiting.append(str(contract_id))
+                continue
+            ready_to_settle = True
+
+        if not ready_to_settle:
+            continue
+
+        local_profit = None
+        for k in ("open_profit", "profit", "profit_value"):
+            try:
+                val = decorated.get(k, entry.get(k))
+                if val in (None, ""):
+                    continue
+                num = float(val)
+                if math.isfinite(num):
+                    local_profit = num
+                    break
+            except Exception:
+                continue
+        if local_profit is None:
+            local_profit = 0.0
+
+        buy_price = None
+        try:
+            buy_price = float(entry.get("stake") or 0.0)
+        except Exception:
+            buy_price = 0.0
+        if not math.isfinite(buy_price):
+            buy_price = 0.0
+        sell_price = buy_price + float(local_profit)
+
+        meta_for_contract = _peek_contract_meta(state, contract_id) or {}
+        synthetic_contract = {
+            "contract_id": contract_id,
+            "status": "BOT_SETTLED",
+            "is_sold": True,
+            "is_settled": True,
+            "profit": float(local_profit),
+            "buy_price": float(buy_price),
+            "sell_price": float(sell_price),
+        }
+        settled_entry = _finalize_unchain_contract(state, synthetic_contract, meta=meta_for_contract)
+        settled_entry["status"] = "BOT_SETTLED"
+        settled_entry["result_source"] = "BOT_LOCAL_COUNTDOWN"
+        _mark_unchain_contract_processed(state, contract_id)
+        _pull_contract_meta(state, contract_id)
+        socketio.emit("trade_result", settled_entry, room=client_id)
+        settled.append(str(contract_id))
+
+    if settled:
+        u["last_action"] = (
+            f"Countdown finished (+3 ticks / +5s buffer) • bot-settled {len(settled)} UNCHAIN trade(s)"
+        )
+        _run_unchain_ai_auto_trade(client_id, state)
+        _run_unchain_auto_both(client_id, state)
+        if state.get("active_profile") == "UNCHAIN":
+            socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
+        send_stats_update(client_id)
+    elif waiting:
+        u["last_action"] = (
+            f"Countdown finished • waiting +3 ticks or +5s for {len(waiting)} UNCHAIN trade(s)"
+        )
+    elif refreshed:
+        u["last_action"] = (
+            f"Countdown finished • refreshing live P/L for {len(refreshed)} UNCHAIN trade(s)"
+        )
+
+    return settled
+
+
 def _finalize_unchain_contract(state, contract, meta=None):
     u = _ensure_unchain_hl_state(state)
     contract_id = contract.get("contract_id")
@@ -2293,6 +2667,25 @@ def _finalize_unchain_contract(state, contract, meta=None):
     else:
         stats["losses"] = int(stats.get("losses", 0) or 0) + 1
     stats["net_pnl"] = float(stats.get("net_pnl", 0.0) or 0.0) + profit
+
+    # Track AI AUTO TRADE cycle outcomes so post-loss re-entry can require
+    # a fresh expansion cycle instead of immediate re-entry.
+    try:
+        source = str(meta.get("entry_source") or "").upper().strip()
+        cycle_val = meta.get("auto_cycle_id")
+        cycle_id = None
+        if cycle_val not in (None, ""):
+            cycle_id = int(float(cycle_val))
+        if source == "AI_AUTO_TRADE" and cycle_id is not None:
+            current_cycle = int(u.get("auto_cycle_id", 0) or 0)
+            if current_cycle == cycle_id:
+                u["auto_cycle_settled"] = int(u.get("auto_cycle_settled", 0) or 0) + 1
+                if profit <= 0:
+                    u["auto_cycle_losses"] = int(u.get("auto_cycle_losses", 0) or 0) + 1
+                    u["auto_last_cycle_had_loss"] = True
+    except Exception:
+        pass
+
     u["last_result"] = entry
     u["last_action"] = f"{entry['type']} {result} on {entry['symbol']} ({profit:+.2f})"
     _check_unchain_hl_risk_block(state)
@@ -2320,7 +2713,7 @@ def _get_unchain_bias_payload(state, u=None):
         strat = (state.get("strategies") or {}).get("UNCHAIN")
         if strat and hasattr(strat, "get_bias_payload"):
             bias_payload = strat.get_bias_payload({
-                "higher_barrier": u.get("higher_barrier", "0.12"),
+                "higher_barrier": u.get("higher_barrier", "+0.12"),
                 "lower_barrier": u.get("lower_barrier", "-0.12"),
                 "duration": int(u.get("duration", 5) or 5),
                 "duration_unit": _clean_unchain_duration_unit(u.get("duration_unit", "t")),
@@ -2332,11 +2725,12 @@ def _get_unchain_bias_payload(state, u=None):
 
 def _compute_unchain_auto_metrics(state, u=None):
     """
-    Auto Both market-quality scoring:
-    movement (30) + volatility/tick-speed (25) + range (25) + trap-zone safety (20).
+    AI AUTO TRADE middle-zone avoidance engine.
+    Uses last 100 ticks and evaluates 20-tick local force/escape quality.
     """
     u = u or _ensure_unchain_hl_state(state)
-    sample_size = 10
+    sample_size = 100
+    window = 20
     strat = (state.get("strategies") or {}).get("UNCHAIN")
     prices = []
     tick_times = []
@@ -2360,7 +2754,7 @@ def _compute_unchain_auto_metrics(state, u=None):
             continue
     prices = safe_prices
     recent_prices = prices[-sample_size:]
-    recent_times = [float(v) for v in tick_times[-sample_size:] if v is not None]
+    recent_times = list(tick_times[-sample_size:])
 
     try:
         min_movement = float(u.get("auto_min_movement", 0.12) or 0.12)
@@ -2370,10 +2764,6 @@ def _compute_unchain_auto_metrics(state, u=None):
         min_tick_speed = float(u.get("auto_min_tick_speed", 1.5) or 1.5)
     except Exception:
         min_tick_speed = 1.5
-    try:
-        min_range = float(u.get("auto_min_range", 0.2) or 0.2)
-    except Exception:
-        min_range = 0.2
 
     if len(recent_prices) < sample_size:
         return {
@@ -2383,7 +2773,14 @@ def _compute_unchain_auto_metrics(state, u=None):
             "movement": 0.0,
             "average_tick_interval": None,
             "recent_range": 0.0,
-            "middle_price": None,
+            "current_20_range": 0.0,
+            "avg_20_range": 0.0,
+            "range_expansion_ratio": 0.0,
+            "avg_abs_tick_movement": 0.0,
+            "tick_arrival_speed": None,
+            "compression_score": 100.0,
+            "momentum_burst_score": 0.0,
+            "micro_breakout_score": 0.0,
             "center_hits": 0,
             "direction_changes": 0,
             "movement_score": 0,
@@ -2391,108 +2788,943 @@ def _compute_unchain_auto_metrics(state, u=None):
             "range_score": 0,
             "trap_zone_score": 0,
             "market_confidence": 0.0,
+            "confidence_score": 0.0,
             "min_movement": min_movement,
             "min_tick_speed": min_tick_speed,
-            "min_range": min_range,
+            "min_range": 0.0,
             "movement_pass": False,
             "volatility_pass": False,
             "range_pass": False,
             "trap_zone_pass": False,
+            "reject_reasons": [f"Need {sample_size} ticks ({len(recent_prices)}/{sample_size})"],
             "reasons": [f"Need {sample_size} ticks ({len(recent_prices)}/{sample_size})"],
+            "dynamic_allowed": False,
+            "movement_regime": "WEAK",
+            "dynamic_barrier_mag": None,
+            "dynamic_higher_barrier": None,
+            "dynamic_lower_barrier": None,
+            "dynamic_duration": None,
+            "dynamic_duration_unit": "t",
+            "active_escape": False,
+            "last3_pullback_center": False,
+            "in_compression_band": False,
         }
 
-    first_price = float(recent_prices[0])
-    last_price = float(recent_prices[-1])
-    movement = abs(last_price - first_price)
-    movement_pass = movement >= min_movement
-    movement_score = 30 if movement_pass else 0
+    def _clamp(v, lo, hi):
+        try:
+            return max(lo, min(hi, float(v)))
+        except Exception:
+            return lo
 
-    intervals = []
-    for idx in range(1, len(recent_times)):
-        diff = recent_times[idx] - recent_times[idx - 1]
-        if diff > 0:
-            intervals.append(diff)
-    average_tick_interval = (sum(intervals) / len(intervals)) if intervals else None
-    volatility_pass = bool(average_tick_interval is not None and average_tick_interval <= min_tick_speed)
-    volatility_score = 25 if volatility_pass else 0
+    def _safe_barrier(raw, fallback):
+        try:
+            return abs(float(raw))
+        except Exception:
+            return float(fallback)
 
-    highest_price = max(recent_prices)
-    lowest_price = min(recent_prices)
-    recent_range = highest_price - lowest_price
-    range_pass = recent_range >= min_range
-    range_score = 25 if range_pass else 0
+    last_20 = recent_prices[-window:]
+    current_price = float(last_20[-1])
+    first_price = float(last_20[0])
+    net_movement_20 = abs(current_price - first_price)
 
-    middle_price = (sum(recent_prices) / len(recent_prices)) if recent_prices else None
-    center_band = max(0.00001, recent_range * 0.12, min_range * 0.10)
-    center_hits = 0
-    if middle_price is not None:
-        center_hits = sum(1 for p in recent_prices if abs(p - middle_price) <= center_band)
+    ranges20 = []
+    for idx in range(0, len(recent_prices) - window + 1):
+        seg = recent_prices[idx:idx + window]
+        ranges20.append(max(seg) - min(seg))
+    current_20_range = float(ranges20[-1]) if ranges20 else 0.0
+    historical_20_ranges = ranges20[:-1] if len(ranges20) > 1 else ranges20
+    avg_20_range = float(sum(historical_20_ranges) / len(historical_20_ranges)) if historical_20_ranges else current_20_range
+    avg_20_range = max(0.0000001, avg_20_range)
+    range_expansion_ratio = float(current_20_range / avg_20_range)
 
-    deltas = [recent_prices[i] - recent_prices[i - 1] for i in range(1, len(recent_prices))]
-    direction_changes = 0
-    prev_sign = 0
+    deltas = [last_20[i] - last_20[i - 1] for i in range(1, len(last_20))]
+    abs_deltas = [abs(d) for d in deltas]
+    avg_abs_tick_movement = float(sum(abs_deltas) / len(abs_deltas)) if abs_deltas else 0.0
+
+    intervals = _build_tick_intervals(recent_times[-window:], max_gap_seconds=max(8.0, min_tick_speed * 5.0))
+    average_tick_interval = float(sum(intervals) / len(intervals)) if intervals else None
+    tick_arrival_speed = average_tick_interval
+
+    signs = []
     for d in deltas:
-        sign = 1 if d > 0 else (-1 if d < 0 else 0)
-        if sign == 0:
-            continue
-        if prev_sign and sign != prev_sign:
+        if d > 0:
+            signs.append(1)
+        elif d < 0:
+            signs.append(-1)
+    direction_changes = 0
+    for idx in range(1, len(signs)):
+        if signs[idx] != signs[idx - 1]:
             direction_changes += 1
-        prev_sign = sign
+    alternating_chop_ratio = float(direction_changes / max(1, len(signs) - 1)) if signs else 0.0
 
-    center_hit_limit = max(2, int(round(sample_size * 0.45)))
-    direction_change_limit = max(2, int(round((sample_size - 1) * 0.35)))
-    trap_zone_pass = (center_hits <= center_hit_limit) and (direction_changes <= direction_change_limit)
-    trap_zone_score = 20 if trap_zone_pass else 0
+    center_price = float(sum(last_20) / len(last_20))
+    center_zone_half = max(0.00001, current_20_range * 0.18, avg_abs_tick_movement * 1.8)
+    compression_band_half = max(0.00001, avg_abs_tick_movement * 1.35, current_20_range * 0.12)
+    center_hits = sum(1 for p in last_20 if abs(p - center_price) <= compression_band_half)
 
-    market_confidence = float(movement_score + volatility_score + range_score + trap_zone_score)
+    range_compression_component = _clamp((1.35 - range_expansion_ratio) / 1.35, 0.0, 1.0)
+    center_component = _clamp(center_hits / float(window), 0.0, 1.0)
+    chop_component = _clamp(alternating_chop_ratio, 0.0, 1.0)
+    compression_score = float(round(
+        (range_compression_component * 45.0)
+        + (center_component * 35.0)
+        + (chop_component * 20.0),
+        2,
+    ))
 
-    reasons = []
-    if not movement_pass:
-        reasons.append(f"Movement {movement:.5f} < min {min_movement:.5f}")
-    if not volatility_pass:
-        if average_tick_interval is None:
-            reasons.append("Tick speed unavailable")
+    directional_push = net_movement_20 / max(0.0000001, avg_abs_tick_movement * window)
+    short_push = abs(last_20[-1] - last_20[-5]) / max(0.0000001, avg_abs_tick_movement * 5) if len(last_20) >= 5 else 0.0
+    momentum_raw = (directional_push * 0.70) + (short_push * 0.30)
+    momentum_burst_score = float(round(_clamp((momentum_raw / 1.40) * 100.0, 0.0, 100.0), 2))
+
+    prior_19 = last_20[:-1]
+    prior_high = max(prior_19)
+    prior_low = min(prior_19)
+    breakout_up = max(0.0, current_price - prior_high)
+    breakout_down = max(0.0, prior_low - current_price)
+    breakout_distance = max(breakout_up, breakout_down)
+    breakout_direction = "UP" if breakout_up > breakout_down and breakout_up > 0 else ("DOWN" if breakout_down > 0 else "NONE")
+    micro_breakout_score = float(round(
+        _clamp((breakout_distance / max(0.0000001, avg_abs_tick_movement)) / 1.40 * 100.0, 0.0, 100.0),
+        2,
+    ))
+
+    last3 = last_20[-3:]
+    last3_pullback_center = sum(1 for p in last3 if abs(p - center_price) <= center_zone_half) >= 2
+    in_compression_band = abs(current_price - center_price) <= compression_band_half
+    active_escape = bool(
+        breakout_direction != "NONE"
+        and abs(current_price - center_price) > center_zone_half
+        and micro_breakout_score >= 45.0
+        and momentum_burst_score >= 50.0
+    )
+
+    set_higher = _safe_barrier(u.get("higher_barrier"), 0.12)
+    set_lower = _safe_barrier(u.get("lower_barrier"), 0.12)
+    set_barrier_mag = max(0.03, float((set_higher + set_lower) / 2.0))
+    net_move_floor = max(float(min_movement), float(avg_abs_tick_movement * 2.2), float(set_barrier_mag * 0.55))
+
+    reject_range = range_expansion_ratio < 1.35
+    reject_compression = compression_score >= 65.0
+    reject_tick_speed = bool(average_tick_interval is None or average_tick_interval > min_tick_speed)
+    reject_net_small = net_movement_20 < net_move_floor
+    reject_chop = bool(alternating_chop_ratio >= 0.62 and current_20_range <= (avg_20_range * 1.05))
+    reject_pullback = bool(last3_pullback_center)
+    reject_compression_band = bool(in_compression_band)
+    reject_escape = not active_escape
+
+    movement_regime = "WEAK"
+    dynamic_barrier_mag = None
+    dynamic_higher_barrier = None
+    dynamic_lower_barrier = None
+    dynamic_duration = None
+    dynamic_duration_unit = "t"
+    dynamic_allowed = False
+
+    if (not reject_range) and (momentum_burst_score >= 52.0) and (micro_breakout_score >= 40.0):
+        if range_expansion_ratio >= 1.90 and momentum_burst_score >= 70.0:
+            movement_regime = "STRONG"
+            target_mag = max(0.08, min(0.30, current_20_range * 0.28))
+            dynamic_duration = 5
         else:
-            reasons.append(f"Avg tick {average_tick_interval:.3f}s > max {min_tick_speed:.3f}s")
-    if not range_pass:
-        reasons.append(f"Range {recent_range:.5f} < min {min_range:.5f}")
-    if not trap_zone_pass:
-        reasons.append(f"Trap-zone noisy (center hits {center_hits}, flips {direction_changes})")
-    if not reasons:
-        reasons.append("All filters passed")
+            movement_regime = "MODERATE"
+            target_mag = max(0.05, min(0.18, current_20_range * 0.20))
+            dynamic_duration = 7
+        dynamic_barrier_mag = round(_clamp((target_mag * 0.70) + (set_barrier_mag * 0.30), 0.03, 0.35), 2)
+        dynamic_higher_barrier = f"+{dynamic_barrier_mag:.2f}"
+        dynamic_lower_barrier = f"-{dynamic_barrier_mag:.2f}"
+        dynamic_allowed = True
+
+    movement_expansion_score = round(_clamp(((range_expansion_ratio - 1.0) / 1.2) * 25.0, 0.0, 25.0), 2)
+    if average_tick_interval is None or average_tick_interval <= 0:
+        tick_flow_score = 0.0
+    else:
+        tick_flow_ratio = min_tick_speed / max(0.0000001, average_tick_interval)
+        tick_flow_score = round(_clamp((tick_flow_ratio / 1.15) * 20.0, 0.0, 20.0), 2)
+    low_compression_score = round(_clamp(((100.0 - compression_score) / 100.0) * 20.0, 0.0, 20.0), 2)
+    momentum_component_score = round(_clamp((momentum_burst_score / 100.0) * 20.0, 0.0, 20.0), 2)
+    breakout_component_score = round(_clamp((micro_breakout_score / 100.0) * 15.0, 0.0, 15.0), 2)
+    confidence_score = round(
+        movement_expansion_score
+        + tick_flow_score
+        + low_compression_score
+        + momentum_component_score
+        + breakout_component_score,
+        2,
+    )
+
+    reject_reasons = []
+    if reject_range:
+        reject_reasons.append(
+            f"20-tick range expansion too weak ({range_expansion_ratio:.2f}x < 1.35x recent average)"
+        )
+    if reject_compression:
+        reject_reasons.append(f"Compression high ({compression_score:.1f})")
+    if reject_tick_speed:
+        if average_tick_interval is None:
+            reject_reasons.append("Tick speed unavailable")
+        else:
+            reject_reasons.append(f"Tick speed slow ({average_tick_interval:.3f}s > {min_tick_speed:.3f}s)")
+    if reject_net_small:
+        reject_reasons.append(f"Net movement too small ({net_movement_20:.5f} < {net_move_floor:.5f})")
+    if reject_chop:
+        reject_reasons.append("Market alternating in tight chop")
+    if reject_pullback:
+        reject_reasons.append("Last 3 ticks pulled back into local centre zone")
+    if reject_compression_band:
+        reject_reasons.append("Price returned inside compression band")
+    if reject_escape:
+        reject_reasons.append("Price is not actively escaping local centre")
+    if not dynamic_allowed:
+        reject_reasons.append("Weak movement regime (no dynamic barrier/duration)")
+
+    # Legacy score buckets retained for front-end compatibility.
+    movement_score = int(round(_clamp((movement_expansion_score / 25.0) * 30.0, 0.0, 30.0)))
+    volatility_score = int(round(_clamp((tick_flow_score / 20.0) * 25.0, 0.0, 25.0)))
+    range_score = int(round(_clamp((low_compression_score / 20.0) * 25.0, 0.0, 25.0)))
+    trap_zone_raw = momentum_component_score + breakout_component_score
+    trap_zone_score = int(round(_clamp((trap_zone_raw / 35.0) * 20.0, 0.0, 20.0)))
+
+    movement_pass = not (reject_range or reject_net_small)
+    volatility_pass = not reject_tick_speed
+    range_pass = not reject_range
+    trap_zone_pass = not (reject_chop or reject_compression or reject_pullback or reject_compression_band or reject_escape)
 
     return {
         "ready": True,
         "sample_size": sample_size,
         "ticks_used": sample_size,
-        "movement": float(movement),
+        "movement": float(net_movement_20),
         "average_tick_interval": (None if average_tick_interval is None else float(average_tick_interval)),
-        "recent_range": float(recent_range),
-        "middle_price": (None if middle_price is None else float(middle_price)),
+        "tick_arrival_speed": (None if tick_arrival_speed is None else float(tick_arrival_speed)),
+        "recent_range": float(current_20_range),
+        "current_20_range": float(current_20_range),
+        "avg_20_range": float(avg_20_range),
+        "range_expansion_ratio": float(range_expansion_ratio),
+        "avg_abs_tick_movement": float(avg_abs_tick_movement),
+        "compression_score": float(compression_score),
+        "momentum_burst_score": float(momentum_burst_score),
+        "micro_breakout_score": float(micro_breakout_score),
+        "breakout_direction": breakout_direction,
+        "center_price": float(center_price),
+        "center_zone_half": float(center_zone_half),
+        "compression_band_half": float(compression_band_half),
         "center_hits": int(center_hits),
         "direction_changes": int(direction_changes),
+        "alternating_chop_ratio": float(alternating_chop_ratio),
+        "active_escape": bool(active_escape),
+        "last3_pullback_center": bool(last3_pullback_center),
+        "in_compression_band": bool(in_compression_band),
+        "movement_regime": movement_regime,
+        "dynamic_allowed": bool(dynamic_allowed),
+        "dynamic_barrier_mag": (None if dynamic_barrier_mag is None else float(dynamic_barrier_mag)),
+        "dynamic_higher_barrier": dynamic_higher_barrier,
+        "dynamic_lower_barrier": dynamic_lower_barrier,
+        "dynamic_duration": (None if dynamic_duration is None else int(dynamic_duration)),
+        "dynamic_duration_unit": dynamic_duration_unit,
+        "set_barrier_mag": float(set_barrier_mag),
+        "movement_expansion_score": float(movement_expansion_score),
+        "tick_flow_score": float(tick_flow_score),
+        "low_compression_score": float(low_compression_score),
+        "momentum_component_score": float(momentum_component_score),
+        "breakout_component_score": float(breakout_component_score),
+        "confidence_score": float(confidence_score),
+        "market_confidence": float(confidence_score),
         "movement_score": int(movement_score),
         "volatility_score": int(volatility_score),
         "range_score": int(range_score),
         "trap_zone_score": int(trap_zone_score),
-        "market_confidence": float(market_confidence),
         "min_movement": float(min_movement),
         "min_tick_speed": float(min_tick_speed),
-        "min_range": float(min_range),
+        "min_range": float(avg_20_range * 1.35),
         "movement_pass": bool(movement_pass),
         "volatility_pass": bool(volatility_pass),
         "range_pass": bool(range_pass),
         "trap_zone_pass": bool(trap_zone_pass),
-        "reasons": reasons,
+        "reject_reasons": reject_reasons,
+        "reasons": (reject_reasons if reject_reasons else ["All AI AUTO TRADE checks passed"]),
     }
+
+
+def _safe_float(value, default=None):
+    try:
+        if value in (None, ""):
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def _normalize_tick_timestamp(value):
+    v = _safe_float(value, None)
+    if v is None:
+        return None
+    # Some feeds/clients may send ms timestamps, normalize to seconds.
+    if v > 1e11:
+        v = v / 1000.0
+    return float(v)
+
+
+def _build_tick_intervals(tick_times, max_gap_seconds=8.0):
+    if not tick_times:
+        return []
+    normalized = []
+    for raw in tick_times:
+        ts = _normalize_tick_timestamp(raw)
+        if ts is None:
+            continue
+        normalized.append(ts)
+    if len(normalized) < 2:
+        return []
+    intervals = []
+    cutoff = max(0.2, float(max_gap_seconds or 8.0))
+    for idx in range(1, len(normalized)):
+        diff = normalized[idx] - normalized[idx - 1]
+        if diff <= 0:
+            continue
+        # Ignore stale/outlier jumps so one long idle gap does not poison speed checks.
+        if diff > cutoff:
+            continue
+        intervals.append(diff)
+    return intervals
+
+
+def _resolve_proposal_waiter(state, req_id, proposal=None, error=None):
+    if req_id in (None, ""):
+        return False
+    waiters = state.get("_proposal_waiters")
+    if not isinstance(waiters, dict):
+        return False
+
+    # Try exact, string, and integer-normalized keys.
+    candidate_keys = [req_id, str(req_id)]
+    try:
+        normalized_int = int(float(req_id))
+        candidate_keys.append(normalized_int)
+        candidate_keys.append(str(normalized_int))
+    except Exception:
+        pass
+
+    waiter = None
+    used_key = None
+    for key in candidate_keys:
+        waiter = waiters.get(key)
+        if waiter is not None:
+            used_key = key
+            break
+    if waiter is not None and used_key is not None:
+        waiters.pop(used_key, None)
+    if waiter is None:
+        return False
+    waiter["proposal"] = proposal
+    waiter["error"] = error
+    evt = waiter.get("event")
+    try:
+        if evt:
+            evt.set()
+    except Exception:
+        pass
+    return True
+
+
+def _request_unchain_proposal_quote(state, *, side, stake, symbol, barrier, duration, duration_unit="t", timeout_sec=1.6):
+    ws = state.get("ws")
+    if not state.get("ws_connected") or not ws:
+        return None, "Not connected"
+
+    side = str(side or "").upper().strip()
+    if side not in ("HIGHER", "LOWER"):
+        return None, "Invalid side"
+
+    try:
+        amount = float(stake)
+    except Exception:
+        return None, "Invalid stake"
+    if amount <= 0:
+        return None, "Stake must be greater than 0"
+
+    unit = _clean_unchain_duration_unit(duration_unit)
+    duration_val = _sanitize_unchain_duration(duration, unit)
+
+    try:
+        barrier_value = _format_unchain_barrier(barrier, side, unit)
+    except Exception as e:
+        return None, str(e)
+
+    contract_type = "CALL" if side == "HIGHER" else "PUT"
+    req_id = _new_req_id()
+    waiter = {"event": threading.Event(), "proposal": None, "error": None}
+    waiters = state.setdefault("_proposal_waiters", {})
+    waiters[req_id] = waiter
+    waiters[str(req_id)] = waiter
+
+    payload = {
+        "proposal": 1,
+        "amount": float(amount),
+        "basis": "stake",
+        "contract_type": contract_type,
+        "currency": "USD",
+        "duration": int(duration_val),
+        "duration_unit": unit,
+        "symbol": symbol,
+        "barrier": barrier_value,
+        "req_id": req_id,
+    }
+
+    try:
+        ws.send(json.dumps(payload))
+    except Exception as e:
+        waiters.pop(req_id, None)
+        waiters.pop(str(req_id), None)
+        return None, str(e)
+
+    if not waiter["event"].wait(max(0.40, float(timeout_sec))):
+        waiters.pop(req_id, None)
+        waiters.pop(str(req_id), None)
+        return None, "Quote timeout"
+
+    waiters.pop(req_id, None)
+    waiters.pop(str(req_id), None)
+    if waiter.get("error"):
+        return None, str(waiter.get("error"))
+
+    proposal = waiter.get("proposal") or {}
+    ask_price = _safe_float(proposal.get("ask_price"), _safe_float(proposal.get("display_value"), None))
+    payout = _safe_float(proposal.get("payout"), None)
+    if ask_price is None:
+        ask_price = float(amount)
+    if payout is None:
+        profit = _safe_float(proposal.get("profit"), None)
+        payout = (ask_price + profit) if profit is not None else ask_price
+
+    quote = {
+        "ask_price": float(max(0.0, ask_price)),
+        "payout": float(max(0.0, payout)),
+        "barrier": barrier_value,
+        "duration": int(duration_val),
+        "duration_unit": unit,
+        "contract_type": contract_type,
+        "symbol": symbol,
+    }
+    return quote, None
+
+
+def _run_unchain_both_analyzer(state):
+    u = _ensure_unchain_hl_state(state)
+    strat = (state.get("strategies") or {}).get("UNCHAIN")
+    symbol = str(state.get("current_symbol") or "R_25")
+
+    analysis = {
+        "status": "WAIT",
+        "signal": "WAIT",
+        "reason": "Tap Analyze to run Barrier Analysis Tool.",
+        "symbol": symbol,
+        "updated_at": now_time(),
+        "sample_size": 0,
+        "ticks_collected": 0,
+        "required_min_ticks": 100,
+        "max_ticks_considered": 200,
+        "required_score": 55.0,  # confidence threshold
+        "final_score": 0.0,
+        "middle_zone_risk": "HIGH",
+        "confidence": 0.0,
+        "expected_profit": 0.0,
+        "recommended_duration": None,
+        "best_higher_setup": None,
+        "best_lower_setup": None,
+        "best_both_setup": None,
+        "market_metrics": {
+            "avg_abs_move": 0.0,
+            "short_term_range": 0.0,
+            "tick_speed": None,
+            "compression": 0.0,
+            "momentum_burst": 0.0,
+            "directional_drift": 0.0,
+            "mean_reversion_pressure": 0.0,
+        },
+        "tested_setups": 0,
+        "recommended": None,
+        "top_setups": [],
+    }
+
+    def _clamp(v, lo, hi):
+        try:
+            return max(lo, min(hi, float(v)))
+        except Exception:
+            return lo
+
+    def _risk_label(p_mid_value):
+        p = float(p_mid_value or 0.0)
+        if p <= 0.28:
+            return "LOW"
+        if p <= 0.44:
+            return "MEDIUM"
+        return "HIGH"
+
+    def _compact_setup(row, side_hint=None):
+        if not row:
+            return None
+        side = str(side_hint or row.get("best_side") or "BOTH").upper()
+        p_side = float(
+            row.get("p_high", 0.0) if side == "HIGHER"
+            else (row.get("p_low", 0.0) if side == "LOWER" else (1.0 - float(row.get("p_mid", 0.0) or 0.0)))
+        )
+        net_side = float(
+            row.get("higher_net", 0.0) if side == "HIGHER"
+            else (row.get("lower_net", 0.0) if side == "LOWER" else row.get("balanced_profit", 0.0))
+        )
+        return {
+            "side": side,
+            "duration": int(row.get("duration", 0) or 0),
+            "duration_unit": str(row.get("duration_unit") or "t"),
+            "higher_barrier": row.get("higher_barrier"),
+            "lower_barrier": row.get("lower_barrier"),
+            "net": net_side,
+            "probability": p_side,
+            "expected_profit": float(p_side * net_side),
+            "ev_score": float(row.get("ev_score", 0.0) or 0.0),
+            "p_mid": float(row.get("p_mid", 0.0) or 0.0),
+            "confidence": float(row.get("confidence", 0.0) or 0.0),
+            "middle_zone_risk": str(row.get("middle_zone_risk") or _risk_label(row.get("p_mid"))),
+        }
+
+    prices = []
+    times = []
+    if strat is not None:
+        try:
+            prices = [float(v) for v in list(getattr(strat, "price_history", []) or []) if v is not None]
+        except Exception:
+            prices = []
+        try:
+            times = [float(v) for v in list(getattr(strat, "tick_time_history", []) or []) if v is not None]
+        except Exception:
+            times = []
+
+    sample_size = min(200, len(prices))
+    min_samples = 100
+    recent_prices = prices[-sample_size:]
+    recent_times = times[-sample_size:]
+    analysis["sample_size"] = len(recent_prices)
+    analysis["ticks_collected"] = len(recent_prices)
+    if len(recent_prices) < min_samples:
+        analysis["reason"] = (
+            f"Collecting ticks: {len(recent_prices)}/{min_samples} "
+            f"(analyzer can use up to {analysis['max_ticks_considered']})."
+        )
+        u["both_analyzer"] = analysis
+        return analysis
+
+    short_window = min(20, len(recent_prices))
+    short_prices = recent_prices[-short_window:]
+    if len(short_prices) < 5:
+        analysis["reason"] = "Need more recent ticks for short-range analysis."
+        u["both_analyzer"] = analysis
+        return analysis
+
+    deltas = [recent_prices[i] - recent_prices[i - 1] for i in range(1, len(recent_prices))]
+    abs_deltas = [abs(d) for d in deltas]
+    if not abs_deltas:
+        analysis["reason"] = "Not enough movement data to score barrier setups."
+        u["both_analyzer"] = analysis
+        return analysis
+
+    avg_abs_move = float(sum(abs_deltas) / len(abs_deltas))
+    short_term_range = float(max(short_prices) - min(short_prices))
+
+    configured_tick_gap = 1.5
+    intervals = _build_tick_intervals(recent_times, max_gap_seconds=max(8.0, configured_tick_gap * 5.0))
+    if not intervals:
+        intervals = _build_tick_intervals(recent_times, max_gap_seconds=120.0)
+    avg_tick_interval = (sum(intervals) / len(intervals)) if intervals else None
+
+    signs = [1 if d > 0 else (-1 if d < 0 else 0) for d in deltas]
+    directional_signs = [s for s in signs if s != 0]
+    direction_changes = 0
+    for idx in range(1, len(directional_signs)):
+        if directional_signs[idx] != directional_signs[idx - 1]:
+            direction_changes += 1
+
+    directional_drift = 0.0
+    total_abs = sum(abs_deltas)
+    if total_abs > 0:
+        directional_drift = abs(sum(deltas)) / total_abs
+
+    short_ranges = []
+    for idx in range(0, len(recent_prices) - short_window + 1):
+        seg = recent_prices[idx:idx + short_window]
+        short_ranges.append(max(seg) - min(seg))
+    avg_short_range = float(sum(short_ranges) / len(short_ranges)) if short_ranges else short_term_range
+    avg_short_range = max(0.0000001, avg_short_range)
+    range_expansion = short_term_range / avg_short_range
+
+    center_price = float(sum(short_prices) / len(short_prices))
+    center_band = max(0.00001, short_term_range * 0.16, avg_abs_move * 1.2)
+    center_hits = sum(1 for p in short_prices if abs(p - center_price) <= center_band)
+    center_ratio = center_hits / max(1.0, float(short_window))
+    alternating_ratio = direction_changes / max(1.0, float(len(directional_signs) - 1))
+
+    compression_norm = _clamp(
+        ((_clamp((1.2 - range_expansion) / 1.2, 0.0, 1.0) * 0.55)
+         + (center_ratio * 0.30)
+         + (_clamp(alternating_ratio, 0.0, 1.0) * 0.15)),
+        0.0,
+        1.0,
+    )
+    compression_score = round(compression_norm * 100.0, 2)
+
+    burst_lookback = min(8, len(recent_prices) - 1)
+    burst_move = 0.0
+    if burst_lookback >= 1:
+        burst_move = float(recent_prices[-1] - recent_prices[-1 - burst_lookback])
+    momentum_burst = round(
+        _clamp(abs(burst_move) / max(0.0000001, avg_abs_move * max(1.0, float(burst_lookback))), 0.0, 2.0) * 50.0,
+        2,
+    )
+
+    mean_reversion_norm = _clamp((alternating_ratio * 0.55) + (center_ratio * 0.45), 0.0, 1.0)
+    mean_reversion_pressure = round(mean_reversion_norm * 100.0, 2)
+
+    trend_bias = 0.0
+    if total_abs > 0:
+        trend_bias = _clamp(sum(deltas) / total_abs, -1.0, 1.0)
+    burst_bias = _clamp(
+        burst_move / max(0.0000001, avg_abs_move * max(1.0, float(burst_lookback)) * 1.8),
+        -1.0,
+        1.0,
+    )
+
+    tick_speed_component = 0.0
+    if avg_tick_interval is not None and avg_tick_interval > 0:
+        tick_speed_component = _clamp((configured_tick_gap / avg_tick_interval) / 1.1, 0.0, 1.0)
+    expansion_component = _clamp((range_expansion - 1.0) / 0.8, 0.0, 1.0)
+    decompression_component = 1.0 - compression_norm
+    burst_component = _clamp(momentum_burst / 100.0, 0.0, 1.0)
+    drift_component = _clamp(directional_drift, 0.0, 1.0)
+    anti_reversion_component = 1.0 - mean_reversion_norm
+
+    base_confidence = round(
+        _clamp(
+            (
+                expansion_component * 0.24
+                + tick_speed_component * 0.16
+                + decompression_component * 0.20
+                + burst_component * 0.22
+                + drift_component * 0.10
+                + anti_reversion_component * 0.08
+            ) * 100.0,
+            0.0,
+            100.0,
+        ),
+        2,
+    )
+
+    analysis["market_metrics"] = {
+        "avg_abs_move": float(avg_abs_move),
+        "short_term_range": float(short_term_range),
+        "tick_speed": (None if avg_tick_interval is None else float(avg_tick_interval)),
+        "compression": float(compression_score),
+        "momentum_burst": float(momentum_burst),
+        "directional_drift": float(directional_drift * 100.0),
+        "mean_reversion_pressure": float(mean_reversion_pressure),
+    }
+    analysis["confidence"] = float(base_confidence)
+    analysis["final_score"] = float(base_confidence)
+
+    duration_candidates = [3, 5, 8, 10]
+    try:
+        safe_higher = abs(float(u.get("higher_barrier", "+0.12") or 0.12))
+    except Exception:
+        safe_higher = 0.12
+    try:
+        safe_lower = abs(float(u.get("lower_barrier", "-0.12") or 0.12))
+    except Exception:
+        safe_lower = 0.12
+    configured_barrier = max(0.03, (safe_higher + safe_lower) / 2.0)
+    base_mag = max(0.03, (avg_abs_move * 1.7), (short_term_range * 0.16), (configured_barrier * 0.75))
+    raw_mags = [base_mag * 0.70, base_mag * 0.90, base_mag * 1.10, base_mag * 1.35, base_mag * 1.60]
+    barrier_mags = []
+    seen = set()
+    for raw in raw_mags:
+        rounded = round(_clamp(raw, 0.03, 0.45), 2)
+        if rounded in seen:
+            continue
+        seen.add(rounded)
+        barrier_mags.append(rounded)
+    if not barrier_mags:
+        barrier_mags = [0.08, 0.10, 0.12]
+
+    higher_stake = max(0.35, float(u.get("higher_stake", 1.0) or 1.0))
+    lower_stake = max(0.35, float(u.get("lower_stake", 1.0) or 1.0))
+    net_profit_target = 0.0
+    p_mid_threshold = 0.44
+    compression_reject_threshold = 78.0
+    confidence_threshold = float(analysis["required_score"])
+
+    scored = []
+    quote_errors = 0
+    quote_error_messages = []
+
+    def _is_barrier_range_error(err_msg):
+        s = str(err_msg or "").lower()
+        if "barrier" not in s:
+            return False
+        return (
+            ("acceptable range" in s)
+            or ("out of range" in s)
+            or ("must be between" in s)
+            or ("invalid barrier" in s)
+            or ("barrier range" in s)
+        )
+
+    def _quote_with_adaptive_barrier(side, stake, duration, start_mag):
+        attempt_mags = []
+        for factor in (1.00, 0.85, 0.70, 0.55, 0.42, 0.32, 0.24, 0.18, 0.14, 0.10, 0.07):
+            test_mag = round(_clamp(float(start_mag) * factor, 0.01, 0.45), 2)
+            if test_mag in attempt_mags:
+                continue
+            attempt_mags.append(test_mag)
+
+        last_err = None
+        for test_mag in attempt_mags:
+            test_barrier = f"+{test_mag:.2f}" if side == "HIGHER" else f"-{test_mag:.2f}"
+            quote, err = _request_unchain_proposal_quote(
+                state,
+                side=side,
+                stake=stake,
+                symbol=symbol,
+                barrier=test_barrier,
+                duration=duration,
+                duration_unit="t",
+            )
+            if quote is not None:
+                out = dict(quote)
+                out["resolved_barrier"] = test_barrier
+                out["resolved_barrier_mag"] = float(test_mag)
+                return out, None
+            last_err = err or last_err
+            if _is_barrier_range_error(err):
+                continue
+            err_txt = str(err or "").lower()
+            if ("timeout" in err_txt) or ("temporar" in err_txt) or ("too many" in err_txt):
+                continue
+            break
+        return None, last_err
+
+    for duration in duration_candidates:
+        for mag in barrier_mags:
+            seed_higher_barrier = f"+{mag:.2f}"
+            seed_lower_barrier = f"-{mag:.2f}"
+
+            qh, err_h = _quote_with_adaptive_barrier(
+                side="HIGHER",
+                stake=higher_stake,
+                duration=duration,
+                start_mag=mag,
+            )
+            ql, err_l = _quote_with_adaptive_barrier(
+                side="LOWER",
+                stake=lower_stake,
+                duration=duration,
+                start_mag=mag,
+            )
+
+            if (qh is None) or (ql is None):
+                quote_errors += 1
+                if qh is None and err_h:
+                    if len(quote_error_messages) < 4:
+                        quote_error_messages.append(f"HIGHER {duration}t {seed_higher_barrier}: {err_h}")
+                if ql is None and err_l:
+                    if len(quote_error_messages) < 4:
+                        quote_error_messages.append(f"LOWER {duration}t {seed_lower_barrier}: {err_l}")
+                continue
+
+            higher_barrier = str(qh.get("resolved_barrier") or qh.get("barrier") or seed_higher_barrier)
+            lower_barrier = str(ql.get("resolved_barrier") or ql.get("barrier") or seed_lower_barrier)
+            try:
+                higher_mag = abs(float(qh.get("resolved_barrier_mag", mag) or mag))
+            except Exception:
+                higher_mag = float(mag)
+            try:
+                lower_mag = abs(float(ql.get("resolved_barrier_mag", mag) or mag))
+            except Exception:
+                lower_mag = float(mag)
+            middle_zone_width = max(0.00001, higher_mag + lower_mag)
+
+            higher_cost = float(qh.get("ask_price", higher_stake) or higher_stake)
+            lower_cost = float(ql.get("ask_price", lower_stake) or lower_stake)
+            higher_payout = float(qh.get("payout", higher_cost) or higher_cost)
+            lower_payout = float(ql.get("payout", lower_cost) or lower_cost)
+            total_cost = higher_cost + lower_cost
+            higher_net = higher_payout - total_cost
+            lower_net = lower_payout - total_cost
+
+            zone_to_range = middle_zone_width / max(0.00001, short_term_range)
+            barrier_pressure = _clamp((zone_to_range - 0.75) / 1.25, 0.0, 1.0)
+            duration_relief = _clamp((float(duration) - 3.0) / 7.0, 0.0, 1.0)
+            slow_tick_penalty = 0.5
+            if avg_tick_interval is not None:
+                slow_tick_penalty = _clamp((avg_tick_interval / max(0.00001, configured_tick_gap)) - 1.0, 0.0, 1.0)
+
+            p_mid = _clamp(
+                (compression_norm * 0.40)
+                + (mean_reversion_norm * 0.25)
+                + (barrier_pressure * 0.22)
+                + (slow_tick_penalty * 0.13),
+                0.03,
+                0.92,
+            )
+            p_mid = _clamp(p_mid * (1.0 - (duration_relief * 0.22)), 0.03, 0.92)
+
+            direction_bias = _clamp((trend_bias * 0.70) + (burst_bias * 0.30), -1.0, 1.0)
+            remaining_prob = max(0.0, 1.0 - p_mid)
+            if remaining_prob <= 0.02:
+                p_high = remaining_prob * 0.5
+                p_low = remaining_prob * 0.5
+            else:
+                share_high = _clamp(0.5 + (direction_bias * 0.35), 0.08, 0.92)
+                p_high = remaining_prob * share_high
+                p_low = remaining_prob - p_high
+
+            duration_bonus = (duration_relief * 6.0)
+            barrier_penalty = max(0.0, (zone_to_range - 1.0) * 12.0)
+            candidate_confidence = round(_clamp(base_confidence + duration_bonus - barrier_penalty, 0.0, 100.0), 2)
+
+            total_loss = total_cost
+            ev_score = round((p_high * higher_net) + (p_low * lower_net) - (p_mid * total_loss), 4)
+            balanced_profit = min(higher_net, lower_net)
+
+            reject_reasons = []
+            if higher_net < net_profit_target:
+                reject_reasons.append(f"Higher net {higher_net:.2f} < target {net_profit_target:.2f}")
+            if lower_net < net_profit_target:
+                reject_reasons.append(f"Lower net {lower_net:.2f} < target {net_profit_target:.2f}")
+            if p_mid > p_mid_threshold:
+                reject_reasons.append(f"P_mid {p_mid:.2f} > threshold {p_mid_threshold:.2f}")
+            if compression_score > compression_reject_threshold:
+                reject_reasons.append(f"Compression {compression_score:.1f} too high")
+            if candidate_confidence < confidence_threshold:
+                reject_reasons.append(
+                    f"Confidence {candidate_confidence:.1f} below {confidence_threshold:.1f}"
+                )
+            valid = len(reject_reasons) == 0
+            middle_zone_risk = _risk_label(p_mid)
+
+            scored.append({
+                "duration": int(duration),
+                "duration_unit": "t",
+                "higher_barrier": higher_barrier,
+                "lower_barrier": lower_barrier,
+                "barrier_mag": float((higher_mag + lower_mag) / 2.0),
+                "higher_cost": round(higher_cost, 2),
+                "lower_cost": round(lower_cost, 2),
+                "higher_payout": round(higher_payout, 2),
+                "lower_payout": round(lower_payout, 2),
+                "total_cost": round(total_cost, 2),
+                "higher_net": round(higher_net, 2),
+                "lower_net": round(lower_net, 2),
+                "balanced_profit": round(balanced_profit, 2),
+                "p_high": round(p_high, 4),
+                "p_low": round(p_low, 4),
+                "p_mid": round(p_mid, 4),
+                "ev_score": float(ev_score),
+                "confidence": float(candidate_confidence),
+                "middle_zone_risk": str(middle_zone_risk),
+                "best_side": ("HIGHER" if higher_net >= lower_net else "LOWER"),
+                "reject_reasons": reject_reasons,
+                "valid": bool(valid),
+                "final_score": float(candidate_confidence),
+            })
+
+    if not scored:
+        analysis["reason"] = "WAIT: could not fetch enough live quote data for tested setups."
+        if quote_errors:
+            analysis["reason"] += f" Quote errors: {quote_errors}."
+        if quote_error_messages:
+            analysis["quote_errors"] = quote_error_messages
+            analysis["reason"] += f" First error: {quote_error_messages[0]}"
+        analysis["reason"] += " Durations tested: 3t, 5t, 8t, 10t."
+        u["both_analyzer"] = analysis
+        return analysis
+
+    valid_setups = [row for row in scored if row.get("valid")]
+    ranking_pool = list(valid_setups)
+    ranking_pool.sort(
+        key=lambda row: (
+            float(row.get("p_mid", 1.0) or 1.0),
+            -float(row.get("ev_score", -9999.0) or -9999.0),
+            -float(row.get("balanced_profit", -9999.0) or -9999.0),
+        )
+    )
+
+    best_both = ranking_pool[0] if ranking_pool else None
+    diagnostic_best = None
+    if best_both is None and scored:
+        diagnostic_pool = sorted(
+            scored,
+            key=lambda row: (
+                float(row.get("p_mid", 1.0) or 1.0),
+                -float(row.get("ev_score", -9999.0) or -9999.0),
+                -float(row.get("balanced_profit", -9999.0) or -9999.0),
+            ),
+        )
+        diagnostic_best = diagnostic_pool[0] if diagnostic_pool else None
+
+    best_higher = max(scored, key=lambda row: float(row.get("higher_net", -9999.0) or -9999.0)) if scored else None
+    best_lower = max(scored, key=lambda row: float(row.get("lower_net", -9999.0) or -9999.0)) if scored else None
+
+    analysis["tested_setups"] = len(scored)
+    analysis["top_setups"] = ranking_pool[:4]
+    analysis["best_higher_setup"] = _compact_setup(best_higher, "HIGHER")
+    analysis["best_lower_setup"] = _compact_setup(best_lower, "LOWER")
+    analysis["best_both_setup"] = _compact_setup(best_both, "BOTH")
+
+    if best_both is not None:
+        analysis["recommended"] = dict(best_both)
+        analysis["recommended_duration"] = int(best_both.get("duration", 0) or 0)
+        analysis["expected_profit"] = float(best_both.get("ev_score", 0.0) or 0.0)
+        analysis["middle_zone_risk"] = str(best_both.get("middle_zone_risk") or "HIGH")
+        analysis["confidence"] = float(best_both.get("confidence", base_confidence) or base_confidence)
+        analysis["final_score"] = float(best_both.get("confidence", base_confidence) or base_confidence)
+
+    if valid_setups and best_both is not None:
+        analysis["status"] = "READY"
+        analysis["signal"] = "TRADE BOTH NOW"
+        analysis["reason"] = (
+            f"READY: {best_both['duration']}T {best_both['higher_barrier']} / {best_both['lower_barrier']} • "
+            f"EV {best_both['ev_score']:+.2f} • P_mid {best_both['p_mid'] * 100:.1f}% • "
+            f"confidence {best_both['confidence']:.1f}%"
+        )
+    else:
+        analysis["status"] = "WAIT"
+        analysis["signal"] = "WAIT"
+        if best_both is None and diagnostic_best is None:
+            analysis["reason"] = "WAIT: no candidate setups available."
+        elif best_both is None and diagnostic_best is not None:
+            reasons = list(diagnostic_best.get("reject_reasons") or [])
+            if reasons:
+                analysis["reason"] = f"WAIT: {reasons[0]}"
+            else:
+                analysis["reason"] = "WAIT: no setup passed all barrier analyzer checks."
+        else:
+            reasons = list(best_both.get("reject_reasons") or [])
+            if reasons:
+                analysis["reason"] = f"WAIT: {reasons[0]}"
+            else:
+                analysis["reason"] = "WAIT: no setup passed all barrier analyzer checks."
+
+    u["both_analyzer"] = analysis
+    return analysis
 
 
 def _get_unchain_auto_gate(state, u=None):
     u = u or _ensure_unchain_hl_state(state)
-    threshold = float(u.get("auto_start_threshold", 60.0) or 60.0)
+    threshold = max(60.0, float(u.get("auto_start_threshold", 60.0) or 60.0))
     metrics = _compute_unchain_auto_metrics(state, u)
-    market_confidence = float(metrics.get("market_confidence", 0.0) or 0.0)
-    ready = bool(metrics.get("ready")) and market_confidence >= threshold
+    market_confidence = float(
+        metrics.get("confidence_score", metrics.get("market_confidence", 0.0)) or 0.0
+    )
+    reject_reasons = list(metrics.get("reject_reasons") or [])
+    ready = bool(metrics.get("ready")) and (market_confidence >= threshold) and (len(reject_reasons) == 0)
 
     return {
         "ready": bool(ready),
@@ -2502,15 +3734,16 @@ def _get_unchain_auto_gate(state, u=None):
         "volatility_score": int(metrics.get("volatility_score", 0) or 0),
         "range_score": int(metrics.get("range_score", 0) or 0),
         "trap_zone_score": int(metrics.get("trap_zone_score", 0) or 0),
+        "reject_reasons": reject_reasons,
         "metrics": metrics,
     }
 
 
-def _get_unchain_auto_status(state, u=None, active_count=None, gate=None):
+def _get_unchain_ai_auto_status(state, u=None, active_count=None, gate=None):
     u = u or _ensure_unchain_hl_state(state)
     if not u:
         return {"label": "OFF", "cooldown_remaining": 0.0}
-    enabled = bool(u.get("auto_both_enabled"))
+    enabled = bool(u.get("ai_auto_trade_enabled"))
     if active_count is None:
         active_count = len([v for v in (u.get("active_contracts") or {}).values() if _entry_is_open_for_ui(v)])
     if not enabled:
@@ -2542,9 +3775,9 @@ def _get_unchain_auto_status(state, u=None, active_count=None, gate=None):
     return {"label": "ARMED", "cooldown_remaining": 0.0}
 
 
-def _run_unchain_auto_both(client_id, state):
+def _run_unchain_ai_auto_trade(client_id, state):
     u = _ensure_unchain_hl_state(state)
-    if not bool(u.get("auto_both_enabled")):
+    if not bool(u.get("ai_auto_trade_enabled")):
         return False
     if not state.get("ws_connected") or not state.get("ws"):
         return False
@@ -2562,8 +3795,14 @@ def _run_unchain_auto_both(client_id, state):
         u["auto_pair_active"] = False
         u["auto_last_cycle_closed_at"] = now_ts
         u["auto_next_fire_at"] = now_ts + cooldown
-        u["auto_wait_for_reset"] = True
-        u["last_action"] = f"AUTO BOTH cooldown {cooldown}s"
+        if bool(u.get("auto_last_cycle_had_loss")):
+            u["auto_wait_for_reset"] = True
+            u["auto_reset_drop_seen"] = False
+            u["last_action"] = f"AI AUTO TRADE loss cooldown {cooldown}s • waiting fresh expansion cycle"
+        else:
+            u["auto_wait_for_reset"] = False
+            u["auto_reset_drop_seen"] = False
+            u["last_action"] = f"AI AUTO TRADE cooldown {cooldown}s"
         return False
 
     next_fire_at = float(u.get("auto_next_fire_at") or 0.0)
@@ -2571,35 +3810,69 @@ def _run_unchain_auto_both(client_id, state):
         return False
 
     gate = _get_unchain_auto_gate(state, u)
+    threshold = float(gate.get("threshold", 60.0) or 60.0)
+    market_confidence = float(gate.get("market_confidence", 0.0) or 0.0)
+    metrics = gate.get("metrics") or {}
+    reject_reasons = list(gate.get("reject_reasons") or metrics.get("reject_reasons") or [])
+
     if bool(u.get("auto_wait_for_reset")):
-        if gate.get("ready"):
-            threshold = float(gate.get("threshold", 60.0) or 60.0)
-            market_confidence = float(gate.get("market_confidence", 0.0) or 0.0)
-            u["last_action"] = f"AUTO BOTH waiting for fresh setup reset • confidence {market_confidence:.0f}%/{threshold:.0f}%"
+        reset_floor = max(40.0, threshold - 12.0)
+        if not bool(u.get("auto_reset_drop_seen")):
+            if market_confidence <= reset_floor:
+                u["auto_reset_drop_seen"] = True
+                u["last_action"] = (
+                    f"AI AUTO TRADE reset dip confirmed ({market_confidence:.0f}% <= {reset_floor:.0f}%) • waiting rebuild"
+                )
+            else:
+                u["last_action"] = (
+                    f"AI AUTO TRADE waiting fresh expansion after loss • "
+                    f"need confidence dip <= {reset_floor:.0f}% (now {market_confidence:.0f}%)"
+                )
             if state.get("active_profile") == "UNCHAIN":
                 socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
             return False
-        # Gate dropped below threshold once -> allow next cycle when confidence rebuilds.
+        if not gate.get("ready"):
+            reason = reject_reasons[0] if reject_reasons else f"confidence {market_confidence:.0f}%/{threshold:.0f}%"
+            u["last_action"] = f"AI AUTO TRADE rebuild in progress • {reason}"
+            if state.get("active_profile") == "UNCHAIN":
+                socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
+            return False
         u["auto_wait_for_reset"] = False
-        return False
+        u["auto_reset_drop_seen"] = False
 
     if not gate.get("ready"):
-        threshold = float(gate.get("threshold", 60.0) or 60.0)
-        market_confidence = float(gate.get("market_confidence", 0.0) or 0.0)
-        metrics = gate.get("metrics") or {}
+        reason = reject_reasons[0] if reject_reasons else "conditions not met"
         u["last_action"] = (
-            f"AUTO BOTH waiting • confidence {market_confidence:.0f}%/{threshold:.0f}% • "
-            f"M{int(metrics.get('movement_score', 0) or 0)} V{int(metrics.get('volatility_score', 0) or 0)} "
-            f"R{int(metrics.get('range_score', 0) or 0)} T{int(metrics.get('trap_zone_score', 0) or 0)}"
+            f"AI AUTO TRADE waiting • confidence {market_confidence:.0f}%/{threshold:.0f}% • {reason}"
         )
         if state.get("active_profile") == "UNCHAIN":
             socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
         return False
 
+    if not bool(metrics.get("dynamic_allowed")):
+        u["last_action"] = "AI AUTO TRADE waiting • weak movement regime"
+        if state.get("active_profile") == "UNCHAIN":
+            socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
+        return False
+
+    duration = int(metrics.get("dynamic_duration") or u.get("duration", 5) or 5)
+    duration_unit = _clean_unchain_duration_unit(metrics.get("dynamic_duration_unit", "t"))
+    higher_barrier = metrics.get("dynamic_higher_barrier") or u.get("higher_barrier", "+0.12")
+    lower_barrier = metrics.get("dynamic_lower_barrier") or u.get("lower_barrier", "-0.12")
+
+    try:
+        cycle_id = int(u.get("auto_cycle_id", 0) or 0) + 1
+    except Exception:
+        cycle_id = 1
+    u["auto_cycle_id"] = cycle_id
+    u["auto_cycle_settled"] = 0
+    u["auto_cycle_losses"] = 0
+    u["auto_last_cycle_had_loss"] = False
+
     symbol = state.get("current_symbol", "R_25")
     plan = [
-        ("HIGHER", u.get("higher_stake", 1.0), u.get("higher_barrier", "0.12")),
-        ("LOWER", u.get("lower_stake", 1.0), u.get("lower_barrier", "-0.12")),
+        ("HIGHER", u.get("higher_stake", 1.0), higher_barrier),
+        ("LOWER", u.get("lower_stake", 1.0), lower_barrier),
     ]
     placed = []
     errors = []
@@ -2610,8 +3883,11 @@ def _run_unchain_auto_both(client_id, state):
             stake=stake,
             symbol=symbol,
             barrier=barrier,
-            duration=u.get("duration", 5),
-            duration_unit=u.get("duration_unit", "t"),
+            duration=duration,
+            duration_unit=duration_unit,
+            entry_source="AI_AUTO_TRADE",
+            auto_cycle_id=cycle_id,
+            auto_confidence=market_confidence,
         )
         if ok:
             placed.append(side)
@@ -2621,14 +3897,118 @@ def _run_unchain_auto_both(client_id, state):
     if placed:
         u["auto_pair_active"] = True
         u["auto_wait_for_reset"] = False
+        u["auto_reset_drop_seen"] = False
         u["auto_next_fire_at"] = 0.0
         if len(placed) == 2:
-            u["last_action"] = f"AUTO BOTH pair sent on {symbol}"
+            u["last_action"] = (
+                f"AI AUTO TRADE pair sent on {symbol} • {duration}{duration_unit.upper()} • "
+                f"{higher_barrier}/{lower_barrier} • conf {market_confidence:.0f}%"
+            )
         else:
-            u["last_action"] = f"AUTO BOTH partial send ({' + '.join(placed)})"
+            u["last_action"] = f"AI AUTO TRADE partial send ({' + '.join(placed)})"
     else:
         u["auto_pair_active"] = False
         u["auto_next_fire_at"] = now_ts + cooldown
+        if errors:
+            u["last_action"] = f"AI AUTO TRADE retry in {cooldown}s • {errors[0]}"
+
+    if state.get("active_profile") == "UNCHAIN":
+        socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
+    return bool(placed)
+
+
+def _get_unchain_auto_both_status(state, u=None, active_count=None):
+    u = u or _ensure_unchain_hl_state(state)
+    if not u:
+        return {"label": "OFF", "cooldown_remaining": 0.0}
+    enabled = bool(u.get("auto_both_enabled"))
+    if active_count is None:
+        active_count = len([v for v in (u.get("active_contracts") or {}).values() if _entry_is_open_for_ui(v)])
+    if not enabled:
+        return {"label": "OFF", "cooldown_remaining": 0.0}
+    if bool(u.get("ai_auto_trade_enabled")):
+        return {"label": "PAUSED AI", "cooldown_remaining": 0.0}
+    if active_count > 0 or bool(u.get("auto_both_pair_active")):
+        return {"label": "RUNNING", "cooldown_remaining": 0.0}
+    now_ts = time.time()
+    next_fire_at = float(u.get("auto_both_next_fire_at") or 0.0)
+    cooldown_remaining = max(0.0, next_fire_at - now_ts)
+    if cooldown_remaining > 0:
+        return {"label": "COOLDOWN", "cooldown_remaining": cooldown_remaining}
+    return {"label": "ARMED", "cooldown_remaining": 0.0}
+
+
+def _run_unchain_auto_both(client_id, state):
+    u = _ensure_unchain_hl_state(state)
+    if not bool(u.get("auto_both_enabled")):
+        return False
+    # Keep AI AUTO TRADE and AUTO BOTH as separate engines; AI has priority when enabled.
+    if bool(u.get("ai_auto_trade_enabled")):
+        return False
+    if not state.get("ws_connected") or not state.get("ws"):
+        return False
+
+    cooldown = max(0, int(u.get("auto_both_cooldown", 3) or 3))
+    open_entries = _get_open_unchain_active_entries(state)
+    active_count = len(open_entries)
+    now_ts = time.time()
+
+    if active_count > 0:
+        u["auto_both_pair_active"] = True
+        return False
+
+    if bool(u.get("auto_both_pair_active")):
+        u["auto_both_pair_active"] = False
+        u["auto_both_last_cycle_closed_at"] = now_ts
+        u["auto_both_next_fire_at"] = now_ts + cooldown
+        u["last_action"] = f"AUTO BOTH cooldown {cooldown}s"
+        return False
+
+    next_fire_at = float(u.get("auto_both_next_fire_at") or 0.0)
+    if next_fire_at and now_ts < next_fire_at:
+        return False
+
+    symbol = state.get("current_symbol", "R_25")
+    duration_unit = _clean_unchain_duration_unit(u.get("duration_unit", "t"))
+    duration = _sanitize_unchain_duration(u.get("duration", 5), duration_unit)
+    higher_barrier = u.get("higher_barrier", "+0.12")
+    lower_barrier = u.get("lower_barrier", "-0.12")
+    plan = [
+        ("HIGHER", u.get("higher_stake", 1.0), higher_barrier),
+        ("LOWER", u.get("lower_stake", 1.0), lower_barrier),
+    ]
+
+    placed = []
+    errors = []
+    for side, stake, barrier in plan:
+        ok, msg = _send_unchain_hl_trade(
+            client_id,
+            side=side,
+            stake=stake,
+            symbol=symbol,
+            barrier=barrier,
+            duration=duration,
+            duration_unit=duration_unit,
+            entry_source="AUTO_BOTH_CLASSIC",
+        )
+        if ok:
+            placed.append(side)
+        else:
+            errors.append(f"{side}: {msg}")
+
+    if placed:
+        u["auto_both_pair_active"] = True
+        u["auto_both_next_fire_at"] = 0.0
+        if len(placed) == 2:
+            u["last_action"] = (
+                f"AUTO BOTH pair sent on {symbol} • {duration}{duration_unit.upper()} • "
+                f"{higher_barrier}/{lower_barrier}"
+            )
+        else:
+            u["last_action"] = f"AUTO BOTH partial send ({' + '.join(placed)})"
+    else:
+        u["auto_both_pair_active"] = False
+        u["auto_both_next_fire_at"] = now_ts + cooldown
         if errors:
             u["last_action"] = f"AUTO BOTH retry in {cooldown}s • {errors[0]}"
 
@@ -2664,14 +4044,15 @@ def _unchain_payload_response(state):
 
     bias_payload = _get_unchain_bias_payload(state, u)
     auto_gate = _get_unchain_auto_gate(state, u)
-    auto_meta = _get_unchain_auto_status(state, u, active_count=len(active_contracts), gate=auto_gate)
+    ai_auto_meta = _get_unchain_ai_auto_status(state, u, active_count=len(active_contracts), gate=auto_gate)
+    auto_both_meta = _get_unchain_auto_both_status(state, u, active_count=len(active_contracts))
 
     return {
         "profile": "UNCHAIN",
         "unchain": {
             "higher_stake": float(u.get("higher_stake", 1.0) or 1.0),
             "lower_stake": float(u.get("lower_stake", 1.0) or 1.0),
-            "higher_barrier": u.get("higher_barrier", "0.12"),
+            "higher_barrier": u.get("higher_barrier", "+0.12"),
             "lower_barrier": u.get("lower_barrier", "-0.12"),
             "duration": int(u.get("duration", 5) or 5),
             "duration_unit": _clean_unchain_duration_unit(u.get("duration_unit", "t")),
@@ -2679,20 +4060,25 @@ def _unchain_payload_response(state):
             "sl": float(u.get("sl", 0) or 0),
             "auto_sl": bool(u.get("auto_sl", True)),
             "auto_both_enabled": bool(u.get("auto_both_enabled", False)),
+            "ai_auto_trade_enabled": bool(u.get("ai_auto_trade_enabled", False)),
             "auto_both_cooldown": max(0, int(u.get("auto_both_cooldown", 3) or 3)),
-            "auto_status": auto_meta.get("label", "OFF"),
-            "auto_cooldown_remaining": float(auto_meta.get("cooldown_remaining", 0.0) or 0.0),
+            "auto_status": auto_both_meta.get("label", "OFF"),
+            "auto_cooldown_remaining": float(auto_both_meta.get("cooldown_remaining", 0.0) or 0.0),
+            "ai_auto_status": ai_auto_meta.get("label", "OFF"),
+            "ai_auto_cooldown_remaining": float(ai_auto_meta.get("cooldown_remaining", 0.0) or 0.0),
             "auto_start_threshold": float(u.get("auto_start_threshold", 60.0) or 60.0),
             "auto_min_movement": float(u.get("auto_min_movement", 0.12) or 0.12),
             "auto_min_tick_speed": float(u.get("auto_min_tick_speed", 1.5) or 1.5),
             "auto_min_range": float(u.get("auto_min_range", 0.2) or 0.2),
             "auto_gate": auto_gate,
+            "ai_auto_gate": auto_gate,
             "risk_block_reason": u.get("risk_block_reason"),
             "active_contracts": active_contracts,
             "active_count": len(active_contracts),
             "last_action": u.get("last_action") or "Ready",
             "last_result": u.get("last_result"),
             "bias": bias_payload,
+            "both_analyzer": u.get("both_analyzer"),
             "stats": {
                 "wins": int(stats.get("wins", 0) or 0),
                 "losses": int(stats.get("losses", 0) or 0),
@@ -2710,7 +4096,19 @@ def _unchain_payload_response(state):
     }
 
 
-def _send_unchain_hl_trade(client_id, *, side, stake, symbol, barrier, duration, duration_unit):
+def _send_unchain_hl_trade(
+    client_id,
+    *,
+    side,
+    stake,
+    symbol,
+    barrier,
+    duration,
+    duration_unit,
+    entry_source=None,
+    auto_cycle_id=None,
+    auto_confidence=None,
+):
     state = clients.get(client_id)
     if not state:
         return False, "No client state"
@@ -2729,16 +4127,25 @@ def _send_unchain_hl_trade(client_id, *, side, stake, symbol, barrier, duration,
         return False, "Invalid stake"
     if stake <= 0:
         return False, "Stake must be greater than 0"
-    try:
-        duration = int(duration)
-    except Exception:
-        return False, "Invalid duration"
-    duration = max(1, min(999, duration))
     duration_unit = _clean_unchain_duration_unit(duration_unit)
+    duration = _sanitize_unchain_duration(duration, duration_unit)
     try:
         barrier_value = _format_unchain_barrier(barrier, side, duration_unit)
     except Exception as e:
         return False, str(e)
+    safe_cycle_id = None
+    if auto_cycle_id not in (None, ""):
+        try:
+            safe_cycle_id = int(float(auto_cycle_id))
+        except Exception:
+            safe_cycle_id = None
+    safe_auto_confidence = None
+    if auto_confidence is not None:
+        try:
+            safe_auto_confidence = float(auto_confidence)
+        except Exception:
+            safe_auto_confidence = None
+
     req_id = _new_req_id()
     req_meta = {
         "profile": "UNCHAIN",
@@ -2750,6 +4157,9 @@ def _send_unchain_hl_trade(client_id, *, side, stake, symbol, barrier, duration,
         "duration": int(duration),
         "duration_unit": duration_unit,
         "deriv_contract_type": {"HIGHER": "CALL", "LOWER": "PUT"}[side],
+        "entry_source": (str(entry_source).upper().strip() if entry_source else None),
+        "auto_cycle_id": safe_cycle_id,
+        "auto_confidence": safe_auto_confidence,
     }
     state.setdefault("req_meta", {})[req_id] = req_meta
     deriv_contract = {"HIGHER": "CALL", "LOWER": "PUT"}[side]
@@ -2886,12 +4296,24 @@ def _request_sell_contract(client_id, contract_id):
         if active_entry is not None:
             active_entry["status"] = "CLOSE REQUESTED"
             active_entry["updated_at"] = now_time()
-        ws.send(json.dumps({"sell": int(contract_id), "price": 0}))
+        sell_contract_id = contract_id
+        try:
+            sell_contract_id = int(float(contract_id))
+        except Exception:
+            norm_cid = _normalize_contract_id(contract_id)
+            if norm_cid and str(norm_cid).isdigit():
+                sell_contract_id = int(norm_cid)
+        ws.send(json.dumps({"sell": sell_contract_id, "price": 0}))
         # Keep an open-contract subscription alive so settlement always arrives.
         try:
+            sub_contract_id = sell_contract_id
+            try:
+                sub_contract_id = int(float(sell_contract_id))
+            except Exception:
+                pass
             ws.send(json.dumps({
                 "proposal_open_contract": 1,
-                "contract_id": int(float(contract_id)),
+                "contract_id": sub_contract_id,
                 "subscribe": 1,
             }))
         except Exception:
@@ -3682,8 +5104,56 @@ def handle_on_message(client_id, ws, message, expected_nonce):
     try:
         data = json.loads(message)
 
+        echo_req = data.get("echo_req") or {}
+        req_id = data.get("req_id")
+        if req_id in (None, ""):
+            req_id = echo_req.get("req_id")
+        if "proposal" in data:
+            if _resolve_proposal_waiter(state, req_id, proposal=data.get("proposal"), error=None):
+                return
+
         if "error" in data:
+            if _resolve_proposal_waiter(state, req_id, proposal=None, error=(data.get("error") or {}).get("message", "Quote error")):
+                return
             msg = data["error"].get("message", "Unknown API Error")
+            sell_req_cid = None
+            try:
+                sell_req_cid = (echo_req or {}).get("sell")
+            except Exception:
+                sell_req_cid = None
+            if sell_req_cid not in (None, ""):
+                try:
+                    meta_for_contract = _peek_contract_meta(state, sell_req_cid)
+                    if _is_unchain_contract_known(state, sell_req_cid, meta=meta_for_contract):
+                        active_entry = _get_unchain_active_entry(state, sell_req_cid)
+                        if isinstance(active_entry, dict):
+                            fail_count = 0
+                            try:
+                                fail_count = max(0, int(active_entry.get("_auto_close_fail_count", 0) or 0))
+                            except Exception:
+                                fail_count = 0
+                            fail_count += 1
+                            active_entry["_auto_close_fail_count"] = fail_count
+                            backoff_sec = min(300.0, max(20.0, 20.0 * float(fail_count)))
+                            active_entry["_auto_close_blocked_until"] = time.time() + backoff_sec
+                            if str(active_entry.get("status") or "").upper().startswith("CLOSE REQUESTED"):
+                                active_entry["status"] = "OPEN"
+                            active_entry["updated_at"] = now_time()
+                        u = _ensure_unchain_hl_state(state)
+                        try:
+                            cid_txt = _normalize_contract_id(sell_req_cid) or str(sell_req_cid)
+                        except Exception:
+                            cid_txt = str(sell_req_cid)
+                        u["last_action"] = (
+                            f"Deriv rejected close for #{cid_txt} • retry paused {int(backoff_sec)}s"
+                        )
+                        logger.warning(f"[{client_id}] UNCHAIN sell rejected for {sell_req_cid}: {msg}")
+                        if state.get("active_profile") == "UNCHAIN":
+                            socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
+                        # Suppress repetitive auto-close api_error popups for this handled path.
+                        return
+                except Exception:
+                    pass
             logger.error(f"[{client_id}] API Error: {msg}")
             socketio.emit("api_error", {"message": msg}, room=client_id)
             return
@@ -3806,6 +5276,20 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                             )
                 except Exception:
                     pass
+                duration_val = None
+                duration_unit_val = _clean_unchain_duration_unit(meta.get("duration_unit", "t"))
+                countdown_seconds = None
+                try:
+                    duration_val = int(float(meta.get("duration")))
+                except Exception:
+                    duration_val = None
+                if duration_val is not None:
+                    if duration_unit_val == "s":
+                        countdown_seconds = int(duration_val)
+                    elif duration_unit_val == "m":
+                        countdown_seconds = int(duration_val) * 60
+                    elif duration_unit_val == "h":
+                        countdown_seconds = int(duration_val) * 3600
                 socketio.emit("trade_placed", {
                     "profile": meta.get("profile"),
                     "type": meta.get("type"),
@@ -3813,7 +5297,15 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                     "stake": meta.get("stake"),
                     "symbol": meta.get("symbol"),
                     "time": meta.get("time"),
-                    "contract_id": contract_id
+                    "contract_id": contract_id,
+                    "duration": duration_val,
+                    "duration_unit": duration_unit_val if duration_val is not None else None,
+                    "countdown_remaining": duration_val,
+                    "countdown_unit": duration_unit_val if duration_val is not None else None,
+                    "countdown_seconds": countdown_seconds,
+                    "status": "PENDING",
+                    "result": "PENDING",
+                    "pending": True,
                 }, room=client_id)
             else:
                 socketio.emit("trade_placed", {
@@ -3992,6 +5484,10 @@ def process_tick(client_id, tick):
         # UNCHAIN precise exit-by-ticks / early-exit checks run in background on main market ticks
         if is_main:
             _maybe_unchain_exit_on_tick(client_id, state)
+            # Countdown manager:
+            # - refreshes Deriv contract status once countdown hits 0
+            # - only sends sell when Deriv marks contract as sellable
+            _maybe_force_unchain_close_on_countdown(client_id, state)
 
         # Active strategy for UI only
         active_profile = state.get("active_profile", "KOOLKID")
@@ -4015,6 +5511,7 @@ def process_tick(client_id, tick):
 
         run_auto_trade(client_id, state)
         if is_main:
+            _run_unchain_ai_auto_trade(client_id, state)
             _run_unchain_auto_both(client_id, state)
 
         if active_profile == "UNCHAIN":
@@ -4111,12 +5608,20 @@ def process_contract(client_id, contract):
                 entry.setdefault("time", meta.get("time"))
             else:
                 entry.setdefault("profile", profile_for_contract)
+            # Always emit the same contract id used at placement so frontend can
+            # merge pending -> settled instead of showing a duplicate row.
+            if contract_id not in (None, ""):
+                entry.setdefault("contract_id", contract_id)
+            entry.setdefault("status", contract.get("status"))
+            if entry.get("result") in (None, ""):
+                entry["result"] = "WIN" if profit > 0 else "LOSS"
             exit_digit = extract_exit_digit_from_contract(contract)
             if exit_digit is not None:
                 entry["exit_digit"] = exit_digit
 
         socketio.emit("trade_result", entry, room=client_id)
         if profile_for_contract == "UNCHAIN":
+            _run_unchain_ai_auto_trade(client_id, state)
             _run_unchain_auto_both(client_id, state)
         if state.get("active_profile") == "UNCHAIN":
             socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
@@ -4145,7 +5650,7 @@ def send_stats_update(client_id):
             "losses": losses,
             "winrate": winrate,
             "net_pnl": float(stats.get("net_pnl", 0.0) or 0.0),
-            "auto_trade": bool(u.get("auto_both_enabled", False)),
+            "auto_trade": bool(u.get("auto_both_enabled", False) or u.get("ai_auto_trade_enabled", False)),
         }
         socketio.emit("stats_update", payload, room=client_id)
         return
@@ -5289,6 +6794,35 @@ def unchain_scanner_apply_route():
     return jsonify({"status": "success" if ok else "error", "message": msg, "payload": payload}), (200 if ok else 400)
 
 
+@app.route("/unchain_both_analyze", methods=["POST"])
+def unchain_both_analyze_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    cid, state = get_client_state()
+    if not state.get("ws_connected") or not state.get("ws"):
+        payload = _unchain_payload_response(state)
+        return jsonify({
+            "status": "error",
+            "message": "Connect to API first to run Barrier Analysis Tool",
+            "payload": payload,
+            "analysis": (payload.get("unchain") or {}).get("both_analyzer"),
+        }), 400
+
+    analysis = _run_unchain_both_analyzer(state)
+    payload = _unchain_payload_response(state)
+    if state.get("active_profile") == "UNCHAIN":
+        socketio.emit("unchain_status", payload, room=cid)
+    status_ok = str((analysis or {}).get("signal") or "WAIT").upper() == "TRADE BOTH NOW"
+    msg = (analysis or {}).get("reason") or ("Setup ready" if status_ok else "Wait")
+    return jsonify({
+        "status": "success",
+        "ok_to_trade": bool(status_ok),
+        "message": msg,
+        "analysis": analysis,
+        "payload": payload,
+    })
+
+
 @app.route("/unchain_settings", methods=["POST"])
 def unchain_settings_route():
     if not login_required():
@@ -5304,13 +6838,15 @@ def unchain_settings_route():
         if "lower_stake" in data:
             u["lower_stake"] = max(0.35, float(data.get("lower_stake") or 0.35))
         if "higher_barrier" in data:
-            u["higher_barrier"] = str(data.get("higher_barrier") or "0.12").strip()
+            u["higher_barrier"] = str(data.get("higher_barrier") or "+0.12").strip()
         if "lower_barrier" in data:
             u["lower_barrier"] = str(data.get("lower_barrier") or "-0.12").strip()
-        if "duration" in data:
-            u["duration"] = max(1, min(999, int(data.get("duration") or 1)))
         if "duration_unit" in data:
             u["duration_unit"] = _clean_unchain_duration_unit(data.get("duration_unit"))
+        if "duration" in data or "duration_unit" in data:
+            active_unit = _clean_unchain_duration_unit(u.get("duration_unit", "t"))
+            raw_duration = data.get("duration", u.get("duration", 5))
+            u["duration"] = _sanitize_unchain_duration(raw_duration, active_unit)
         if "tp" in data:
             u["tp"] = max(0.0, float(data.get("tp") or 0))
         if "sl" in data:
@@ -5318,7 +6854,7 @@ def unchain_settings_route():
         if "auto_sl" in data:
             u["auto_sl"] = bool(data.get("auto_sl"))
         if "auto_start_threshold" in data:
-            u["auto_start_threshold"] = max(55.0, min(80.0, float(data.get("auto_start_threshold") or 60.0)))
+            u["auto_start_threshold"] = max(60.0, min(80.0, float(data.get("auto_start_threshold") or 60.0)))
         if "auto_min_movement" in data:
             u["auto_min_movement"] = max(0.00001, float(data.get("auto_min_movement") or 0.12))
         if "auto_min_tick_speed" in data:
@@ -5350,11 +6886,11 @@ def unchain_trade_route():
     duration_unit = data.get("duration_unit", u.get("duration_unit", "t"))
     plan = []
     if side == "HIGHER":
-        plan.append(("HIGHER", data.get("higher_stake", u.get("higher_stake", 1.0)), data.get("higher_barrier", u.get("higher_barrier", "0.12"))))
+        plan.append(("HIGHER", data.get("higher_stake", u.get("higher_stake", 1.0)), data.get("higher_barrier", u.get("higher_barrier", "+0.12"))))
     elif side == "LOWER":
         plan.append(("LOWER", data.get("lower_stake", u.get("lower_stake", 1.0)), data.get("lower_barrier", u.get("lower_barrier", "-0.12"))))
     elif side == "BOTH":
-        plan.append(("HIGHER", data.get("higher_stake", u.get("higher_stake", 1.0)), data.get("higher_barrier", u.get("higher_barrier", "0.12"))))
+        plan.append(("HIGHER", data.get("higher_stake", u.get("higher_stake", 1.0)), data.get("higher_barrier", u.get("higher_barrier", "+0.12"))))
         plan.append(("LOWER", data.get("lower_stake", u.get("lower_stake", 1.0)), data.get("lower_barrier", u.get("lower_barrier", "-0.12"))))
     else:
         return jsonify({"status": "error", "message": "Invalid side. Use HIGHER, LOWER, or BOTH.", "payload": _unchain_payload_response(state)}), 400
@@ -5382,13 +6918,8 @@ def unchain_trade_route():
     return jsonify({"status": "success", "message": f"Sent {' + '.join(placed)}", "payload": payload, "placed": placed})
 
 
-@app.route("/toggle_unchain_auto", methods=["POST"])
-def toggle_unchain_auto_route():
-    if not login_required():
-        return jsonify({"error": "Unauthorized"}), 403
-    cid, state = get_client_state()
+def _toggle_unchain_auto(cid, state, data):
     u = _ensure_unchain_hl_state(state)
-    data = request.json or {}
     requested = data.get("enabled")
     if requested is None:
         u["auto_both_enabled"] = not bool(u.get("auto_both_enabled"))
@@ -5398,27 +6929,19 @@ def toggle_unchain_auto_route():
     u["auto_both_cooldown"] = 3
     active_count = len(_get_open_unchain_active_entries(state))
     if u["auto_both_enabled"]:
-        u["auto_wait_for_reset"] = False
         if active_count > 0:
-            u["auto_pair_active"] = True
-            u["auto_next_fire_at"] = 0.0
-            u["last_action"] = "AUTO BOTH armed • waiting for current auto trade to finish"
+            u["auto_both_pair_active"] = True
+            u["auto_both_next_fire_at"] = 0.0
+            u["last_action"] = "AUTO BOTH armed • waiting for current pair to settle"
         else:
-            u["auto_pair_active"] = False
-            u["auto_next_fire_at"] = time.time()
-            gate = _get_unchain_auto_gate(state, u)
-            if gate.get("ready"):
-                u["last_action"] = "AUTO BOTH armed"
-            else:
-                threshold = float(gate.get("threshold", 60.0) or 60.0)
-                market_confidence = float(gate.get("market_confidence", 0.0) or 0.0)
-                u["last_action"] = f"AUTO BOTH armed • waiting for {threshold:.0f}% confidence (now {market_confidence:.0f}%)"
+            u["auto_both_pair_active"] = False
+            u["auto_both_next_fire_at"] = time.time()
+            u["last_action"] = "AUTO BOTH armed"
         _run_unchain_auto_both(cid, state)
         message = "UNCHAIN AUTO BOTH ON"
     else:
-        u["auto_pair_active"] = False
-        u["auto_wait_for_reset"] = False
-        u["auto_next_fire_at"] = 0.0
+        u["auto_both_pair_active"] = False
+        u["auto_both_next_fire_at"] = 0.0
         u["last_action"] = "AUTO BOTH OFF"
         message = "UNCHAIN AUTO BOTH OFF"
 
@@ -5433,6 +6956,76 @@ def toggle_unchain_auto_route():
     })
 
 
+def _toggle_unchain_ai_auto_trade(cid, state, data):
+    u = _ensure_unchain_hl_state(state)
+    requested = data.get("enabled")
+    if requested is None:
+        u["ai_auto_trade_enabled"] = not bool(u.get("ai_auto_trade_enabled"))
+    else:
+        u["ai_auto_trade_enabled"] = bool(requested)
+
+    u["auto_both_cooldown"] = 3
+    active_count = len(_get_open_unchain_active_entries(state))
+    if u["ai_auto_trade_enabled"]:
+        u["auto_wait_for_reset"] = False
+        u["auto_reset_drop_seen"] = False
+        if active_count > 0:
+            u["auto_pair_active"] = True
+            u["auto_next_fire_at"] = 0.0
+            u["last_action"] = "AI AUTO TRADE armed • waiting for current pair to settle"
+        else:
+            u["auto_pair_active"] = False
+            u["auto_next_fire_at"] = time.time()
+            gate = _get_unchain_auto_gate(state, u)
+            threshold = float(gate.get("threshold", 60.0) or 60.0)
+            market_confidence = float(gate.get("market_confidence", 0.0) or 0.0)
+            reject_reasons = list(gate.get("reject_reasons") or [])
+            if gate.get("ready"):
+                u["last_action"] = "AI AUTO TRADE armed"
+            else:
+                reason = reject_reasons[0] if reject_reasons else "waiting for setup quality"
+                u["last_action"] = (
+                    f"AI AUTO TRADE armed • confidence {market_confidence:.0f}%/{threshold:.0f}% • {reason}"
+                )
+        _run_unchain_ai_auto_trade(cid, state)
+        message = "UNCHAIN AI AUTO TRADE ON"
+    else:
+        u["auto_pair_active"] = False
+        u["auto_wait_for_reset"] = False
+        u["auto_reset_drop_seen"] = False
+        u["auto_next_fire_at"] = 0.0
+        u["last_action"] = "AI AUTO TRADE OFF"
+        message = "UNCHAIN AI AUTO TRADE OFF"
+
+    payload = _unchain_payload_response(state)
+    if state.get("active_profile") == "UNCHAIN":
+        socketio.emit("unchain_status", payload, room=cid)
+    return jsonify({
+        "status": "success",
+        "message": message,
+        "auto_enabled": bool(u.get("ai_auto_trade_enabled")),
+        "payload": payload,
+    })
+
+
+@app.route("/toggle_unchain_auto", methods=["POST"])
+def toggle_unchain_auto_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    cid, state = get_client_state()
+    data = request.json or {}
+    return _toggle_unchain_auto(cid, state, data)
+
+
+@app.route("/toggle_unchain_ai_auto_trade", methods=["POST"])
+def toggle_unchain_ai_auto_trade_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    cid, state = get_client_state()
+    data = request.json or {}
+    return _toggle_unchain_ai_auto_trade(cid, state, data)
+
+
 @app.route("/unchain_stop", methods=["POST"])
 def unchain_stop_route():
     if not login_required():
@@ -5440,7 +7033,12 @@ def unchain_stop_route():
     cid, state = get_client_state()
     u = _ensure_unchain_hl_state(state)
     u["auto_both_enabled"] = False
+    u["auto_both_pair_active"] = False
+    u["auto_both_next_fire_at"] = 0.0
+    u["ai_auto_trade_enabled"] = False
     u["auto_pair_active"] = False
+    u["auto_wait_for_reset"] = False
+    u["auto_reset_drop_seen"] = False
     u["auto_next_fire_at"] = 0.0
     active_ids = list((u.get("active_contracts") or {}).keys())
     closed = []
@@ -5486,7 +7084,7 @@ def unchain_manual_enter_route():
         side=side,
         stake=data.get("stake", u.get("higher_stake" if side == "HIGHER" else "lower_stake", 1.0)),
         symbol=state.get("current_symbol", "R_25"),
-        barrier=data.get("barrier", u.get("higher_barrier" if side == "HIGHER" else "lower_barrier", "0.12" if side == "HIGHER" else "-0.12")),
+        barrier=data.get("barrier", u.get("higher_barrier" if side == "HIGHER" else "lower_barrier", "+0.12" if side == "HIGHER" else "-0.12")),
         duration=data.get("duration", u.get("duration", 5)),
         duration_unit=data.get("duration_unit", u.get("duration_unit", "t")),
     )
@@ -5550,6 +7148,7 @@ def unchain_clear_active_route():
             except Exception:
                 pass
         u["active_contracts"] = {}
+        u["auto_both_pair_active"] = False
         u["auto_pair_active"] = False
         u["last_action"] = f"Manually cleared {len(cleared)} UNCHAIN trade(s)"
     else:

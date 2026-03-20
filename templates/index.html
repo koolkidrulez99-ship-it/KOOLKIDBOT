@@ -300,6 +300,8 @@ input, select{
 }
 .trade-item.win{ border-left-color:#22c55e; }
 .trade-item.loss{ border-left-color:#ef4444; }
+.trade-item.pending{ border-left-color:#f59e0b; }
+.trade-item.closing{ border-left-color:#f59e0b; }
 
 .trade-row{
     display:flex;
@@ -317,6 +319,8 @@ input, select{
 .trade-profit{ font-weight:bold; font-size:15px; }
 .trade-profit.win{ color:#22c55e; }
 .trade-profit.loss{ color:#ef4444; }
+.trade-profit.pending{ color:#facc15; }
+.trade-profit.closing{ color:#facc15; }
 .trade-detail{ display:flex; gap:15px; color:#94a3b8; font-size:13px; }
 .exit-digit{
     background:#1e293b;
@@ -928,7 +932,9 @@ function bindSocketHandlers(){
     });
 
     socket.on("api_error", (data)=>{
-        showToast("API Error: " + (data.message || "Unknown error"), "error");
+        // Intentionally suppress API error popups in UI.
+        // Errors are still logged server-side.
+        void data;
     });
 
     socket.on("auto_mode_update", (modes)=>{
@@ -959,6 +965,11 @@ function bindSocketHandlers(){
         if(activeCell){
             activeCell.classList.add("flash");
             setTimeout(()=>activeCell.classList.remove("flash"), 250);
+        }
+
+        const changedProfiles = decrementPendingTickCountdowns(data && data.symbol);
+        if(changedProfiles.has(normalizeProfileName(activeProfile))){
+            renderTradeList(activeProfile);
         }
     });
 
@@ -1021,31 +1032,43 @@ function bindSocketHandlers(){
     });
 
     socket.on("trade_placed", (data)=>{
-        onTradePlacedForToast(data || {});
+        const placed = data || {};
+        onTradePlacedForToast(placed);
+        const profile = normalizeProfileName(placed.profile || activeProfile);
+        upsertTradeInStore(buildPendingTradeFromPlacement(placed));
+        if(normalizeProfileName(activeProfile) === profile){
+            renderTradeList(activeProfile);
+        }
     });
 
     socket.on("trade_result", (data)=>{
-        pushTradeToStore(data);
+        const settled = Object.assign({}, data || {});
+        settled.result = normalizeTradeResultLabel(settled.result, settled.status);
+        settled.pending = isTradeResultPending(settled.result);
+        upsertTradeInStore(settled);
 
-        if((data.profile || activeProfile).toUpperCase() === activeProfile){
-            const list = document.getElementById("profileTradeList");
-            if(list){
-                if (list.children.length === 1 && list.children[0].innerText.includes('No trades')) {
-                    list.innerHTML = '';
-                }
-                list.prepend(buildTradeItem(data));
-            }
+        if(normalizeProfileName(settled.profile || activeProfile) === normalizeProfileName(activeProfile)){
+            renderTradeList(activeProfile);
         }
 
-        const suppressIndividualToast = onTradeResultForToast(data || {});
+        const suppressIndividualToast = onTradeResultForToast(settled);
         if(suppressIndividualToast) return;
 
-        const result = (data.result || "LOSS").toUpperCase();
-        const profit = typeof data.profit === "number" ? data.profit : (data.profit_value || 0);
+        const result = normalizeTradeResultLabel(settled.result, settled.status);
+        const profit = typeof settled.profit === "number" ? settled.profit : (settled.profit_value || 0);
         if(result === "WIN"){
             showToast(`🏆 WIN +$${Math.abs(profit).toFixed(2)}`, "success");
-        }else{
+        }else if(result === "LOSS"){
             showToast(`❌ LOSS -$${Math.abs(profit).toFixed(2)}`, "error");
+        }else{
+            showToast(`📌 ${result} $${Math.abs(profit).toFixed(2)}`, "info");
+        }
+    });
+
+    socket.on("unchain_status", (payload)=>{
+        const changed = syncUnchainPendingTradesFromStatus(payload || {});
+        if(changed && activeProfile === "UNCHAIN"){
+            renderTradeList("UNCHAIN");
         }
     });
 
@@ -1146,12 +1169,195 @@ function normalizeProfileName(v){
 function normalizeContractId(v){
     if(v === undefined || v === null || v === "") return null;
     const s = String(v).trim();
-    return s ? s : null;
+    if(!s) return null;
+    const compact = s.replace(/^\+/, "");
+    if(/^-?\d+(\.0+)?$/.test(compact)){
+        return compact.replace(/\.0+$/, "");
+    }
+    return compact;
 }
 
 function toProfitNumber(v){
     const n = Number(v);
     return Number.isFinite(n) ? n : 0;
+}
+
+function normalizeTradeResultLabel(result, status){
+    const raw = String(result || status || "").toUpperCase().trim();
+    if(!raw) return "LOSS";
+    if(raw === "WIN" || raw === "WON") return "WIN";
+    if(raw === "LOSS" || raw === "LOST") return "LOSS";
+    if(raw.includes("CLOSE REQUESTED") || raw === "CLOSING") return "CLOSING";
+    if(raw.includes("PENDING") || raw === "OPEN" || raw === "ACTIVE") return "PENDING";
+    return raw;
+}
+
+function isTradeResultPending(label){
+    const x = String(label || "").toUpperCase();
+    if(!x) return false;
+    return (
+        x === "PENDING" ||
+        x === "CLOSING" ||
+        x === "OPEN" ||
+        x === "ACTIVE" ||
+        x.includes("PENDING") ||
+        x.includes("CLOSE REQUESTED")
+    );
+}
+
+function formatTradeCountdownLabel(trade){
+    const unit = String((trade && trade.countdown_unit) || "").toLowerCase();
+    const remaining = Number(trade && trade.countdown_remaining);
+    const duration = Number(trade && trade.duration);
+    if(!unit || !Number.isFinite(remaining) || remaining < 0) return "";
+    const safe = Math.max(0, Math.floor(remaining));
+    if(unit === "t"){
+        if(Number.isFinite(duration) && Math.floor(duration) <= 1) return "";
+        const total = Number.isFinite(duration) ? Math.max(1, Math.floor(duration)) : null;
+        return `${safe}${total ? ` / ${total}` : ""} ticks`;
+    }
+    if(unit === "s") return `${safe}s`;
+    if(unit === "m") return `${safe}m`;
+    if(unit === "h") return `${safe}h`;
+    return String(safe);
+}
+
+function mergeTradeRecord(existing, incoming){
+    const base = (existing && typeof existing === "object") ? existing : {};
+    const next = (incoming && typeof incoming === "object") ? incoming : {};
+    const merged = Object.assign({}, base, next);
+    if(base.time && !next.time){
+        merged.time = base.time;
+    }
+    const nextSymbol = next.symbol;
+    if(base.symbol && (nextSymbol === undefined || nextSymbol === null || String(nextSymbol).trim() === "")){
+        merged.symbol = base.symbol;
+    }
+    const normalized = normalizeTradeResultLabel(merged.result, merged.status);
+    merged.result = normalized;
+    merged.pending = isTradeResultPending(normalized);
+    return merged;
+}
+
+function upsertTradeInStore(trade){
+    if(!trade || typeof trade !== "object") return null;
+    const profile = normalizeProfileName(trade.profile || activeProfile);
+    if(!tradeStore[profile]) tradeStore[profile] = [];
+    const arr = tradeStore[profile];
+    const incoming = mergeTradeRecord(null, Object.assign({}, trade, { profile }));
+    const cid = normalizeContractId(incoming.contract_id ?? incoming.contractId);
+
+    if(cid){
+        for(let i = arr.length - 1; i >= 0; i--){
+            const existingCid = normalizeContractId(arr[i] && (arr[i].contract_id ?? arr[i].contractId));
+            if(existingCid === cid){
+                arr[i] = mergeTradeRecord(arr[i], incoming);
+                return arr[i];
+            }
+        }
+    }
+
+    arr.push(incoming);
+    if(arr.length > 250) arr.shift();
+    return incoming;
+}
+
+function buildPendingTradeFromPlacement(data){
+    const profile = normalizeProfileName((data && data.profile) || activeProfile);
+    const symbolNode = document.getElementById("symbol");
+    const fallbackSymbol = symbolNode && symbolNode.value ? symbolNode.value : undefined;
+    return {
+        profile,
+        type: data && data.type,
+        barrier: data && data.barrier,
+        stake: data && data.stake,
+        symbol: (data && data.symbol) || fallbackSymbol,
+        time: (data && data.time) || new Date().toLocaleTimeString(),
+        contract_id: data && data.contract_id,
+        duration: data && data.duration,
+        duration_unit: data && data.duration_unit,
+        countdown_remaining: data && data.countdown_remaining,
+        countdown_unit: data && data.countdown_unit,
+        countdown_seconds: data && data.countdown_seconds,
+        status: "PENDING",
+        result: "PENDING",
+        pending: true,
+    };
+}
+
+function buildPendingTradeFromUnchainActive(item, payload){
+    if(!item || typeof item !== "object") return null;
+    const cid = normalizeContractId(item.contract_id);
+    if(!cid) return null;
+    const rawStatus = String(item.status || item.contract_status || "").toUpperCase().trim();
+    const result = (rawStatus.includes("CLOSE REQUESTED") || rawStatus === "CLOSING") ? "CLOSING" : "PENDING";
+    const root = payload || {};
+    const un = (root && root.unchain) || {};
+    return {
+        profile: "UNCHAIN",
+        type: item.type || item.side || "TRADE",
+        barrier: item.barrier,
+        stake: item.stake,
+        symbol: item.symbol || root.symbol || un.symbol,
+        time: item.time || new Date().toLocaleTimeString(),
+        contract_id: item.contract_id,
+        duration: item.duration,
+        duration_unit: item.duration_unit,
+        countdown_remaining: item.countdown_remaining,
+        countdown_unit: item.countdown_unit,
+        countdown_seconds: item.countdown_seconds,
+        open_profit: item.open_profit,
+        status: rawStatus || result,
+        result,
+        pending: true,
+    };
+}
+
+function syncUnchainPendingTradesFromStatus(payload){
+    const root = payload || {};
+    const un = root.unchain || root;
+    const items = Array.isArray(un && un.active_contracts) ? un.active_contracts : [];
+    if(!items.length) return false;
+    let changed = false;
+    items.forEach((item)=>{
+        if(!item || typeof item !== "object") return;
+        if(item.is_sold) return;
+        const s = String(item.status || item.contract_status || "").toLowerCase();
+        if(["sold", "won", "lost", "settled", "closed", "expired", "cancelled", "canceled"].includes(s)) return;
+        const pending = buildPendingTradeFromUnchainActive(item, root);
+        if(!pending) return;
+        upsertTradeInStore(pending);
+        changed = true;
+    });
+    return changed;
+}
+window.syncUnchainPendingTradesFromStatus = syncUnchainPendingTradesFromStatus;
+
+function decrementPendingTickCountdowns(symbol){
+    const market = String(symbol || "").toUpperCase().trim();
+    const changedProfiles = new Set();
+    Object.keys(tradeStore || {}).forEach((profileKey)=>{
+        const profile = normalizeProfileName(profileKey);
+        if(profile === "UNCHAIN") return; // UNCHAIN countdown is synced from backend status.
+        const arr = Array.isArray(tradeStore[profile]) ? tradeStore[profile] : [];
+        arr.forEach((trade)=>{
+            if(!trade || typeof trade !== "object") return;
+            if(!isTradeResultPending(normalizeTradeResultLabel(trade.result, trade.status))) return;
+            const unit = String(trade.countdown_unit || "").toLowerCase();
+            if(unit !== "t") return;
+            const durationVal = Number(trade.duration);
+            if(Number.isFinite(durationVal) && Math.floor(durationVal) <= 1) return;
+            const remaining = Number(trade.countdown_remaining);
+            if(!Number.isFinite(remaining) || remaining <= 0) return;
+            const tradeSymbol = String(trade.symbol || "").toUpperCase().trim();
+            if(market && tradeSymbol && tradeSymbol !== market) return;
+            const nextRemaining = Math.max(0, Math.floor(remaining) - 1);
+            if(nextRemaining === Math.floor(remaining)) return;
+            trade.countdown_remaining = nextRemaining;
+            changedProfiles.add(profile);
+        });
+    });
+    return changedProfiles;
 }
 
 function getTradeToastProfileState(profile){
@@ -1484,45 +1690,60 @@ function renderTradeList(profile){
 }
 
 function buildTradeItem(trade){
-    const result = (trade.result || "LOSS").toUpperCase();
-    const profit = typeof trade.profit === 'number' ? trade.profit : (trade.profit_value || 0);
+    const result = normalizeTradeResultLabel(trade.result, trade.status);
+    const pending = isTradeResultPending(result);
+    const resultClass = (result === "WIN")
+        ? "win"
+        : ((result === "LOSS") ? "loss" : (result === "CLOSING" ? "closing" : "pending"));
+    const profit = typeof trade.profit === 'number' ? trade.profit : toProfitNumber(trade.profit_value);
+    const openProfit = (trade.open_profit === undefined || trade.open_profit === null) ? null : Number(trade.open_profit);
     const typeRaw = trade.type || trade.contract_type || "UNKNOWN";
     const barrier = (trade.barrier !== undefined && trade.barrier !== null) ? trade.barrier : "";
     const type = (barrier !== "" ? `${typeRaw} ${barrier}` : typeRaw);
     const stake = trade.stake || trade.buy_price || 0;
+    const market = String(trade.symbol || trade.market || "—");
 
     const exitDigit = (trade.exitDigit !== undefined && trade.exitDigit !== null)
         ? trade.exitDigit
         : ((trade.exit_digit !== undefined && trade.exit_digit !== null) ? trade.exit_digit : "?");
 
     const time = trade.time || new Date().toLocaleTimeString();
+    const countdownLabel = formatTradeCountdownLabel(trade);
+    const badgeLabel = countdownLabel
+        ? `Countdown: ${countdownLabel}`
+        : (pending ? (trade.status || result) : `Exit: ${exitDigit}`);
 
     const item = document.createElement('div');
-    item.className = `trade-item ${result.toLowerCase()}`;
+    item.className = `trade-item ${resultClass}`;
 
-    const profitDisplay = (result === 'WIN' ? '+' : '-') + '$' + Math.abs(profit).toFixed(2);
+    let profitDisplay = (result === 'WIN' ? '+' : '-') + '$' + Math.abs(profit).toFixed(2);
+    if(pending){
+        if(Number.isFinite(openProfit)){
+            profitDisplay = `${openProfit >= 0 ? '+' : '-'}$${Math.abs(openProfit).toFixed(2)} (live)`;
+        }else{
+            profitDisplay = result === "CLOSING" ? "CLOSING" : "PENDING";
+        }
+    }
 
     item.innerHTML = `
         <div class="trade-row">
             <span class="trade-type">${type}</span>
-            <span class="trade-profit ${result.toLowerCase()}">${profitDisplay}</span>
+            <span class="trade-profit ${resultClass}">${profitDisplay}</span>
         </div>
         <div class="trade-row">
-            <span style="color:#94a3b8;">Stake: $${Number(stake).toFixed(2)}</span>
-            <span class="exit-digit">Exit: ${exitDigit}</span>
+            <span style="color:#94a3b8;">Stake: $${Number(stake).toFixed(2)} • Market: ${market}</span>
+            <span class="exit-digit">${badgeLabel}</span>
         </div>
         <div class="trade-detail">
             <span>${time}</span>
+            <span>${result}</span>
         </div>
     `;
     return item;
 }
 
 function pushTradeToStore(trade){
-    const p = (trade.profile || activeProfile || "KOOLKID").toUpperCase();
-    if(!tradeStore[p]) tradeStore[p] = [];
-    tradeStore[p].push(trade);
-    if(tradeStore[p].length > 250) tradeStore[p].shift();
+    return upsertTradeInStore(trade);
 }
 
 let stakeInput;

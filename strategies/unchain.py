@@ -23,6 +23,7 @@ class UnchainStrategy:
         self.last_digit = None
         self.last_symbol = None
         self.last_tick_ts = 0
+        self.last_tick_key = None
         self.tick_time_history = deque(maxlen=240)
         self.price_history = deque(maxlen=240)
         self.delta_history = deque(maxlen=120)
@@ -217,6 +218,17 @@ class UnchainStrategy:
         except Exception:
             return
 
+        # Skip duplicated stream payloads so one market tick cannot be counted twice.
+        try:
+            tick_epoch = int(float((tick or {}).get("epoch") or 0))
+        except Exception:
+            tick_epoch = 0
+        if tick_epoch > 0:
+            tick_key = (tick_epoch, float(price))
+            if self.last_tick_key == tick_key:
+                return
+            self.last_tick_key = tick_key
+
         self.tick_count += 1
         self.market_tick_counter += 1
         self.last_symbol = (tick or {}).get("symbol") or self.last_symbol
@@ -225,6 +237,8 @@ class UnchainStrategy:
             tick_ts = float((tick or {}).get("epoch") or (tick or {}).get("timestamp") or (tick or {}).get("time") or time.time())
         except Exception:
             tick_ts = time.time()
+        if tick_ts > 1e11:
+            tick_ts = tick_ts / 1000.0
         self.tick_time_history.append(tick_ts)
         self.last_digit = digit
 

@@ -490,7 +490,7 @@
     <div class="unchain-mini-grid">
       <div class="unchain-kpi"><div class="k">Net P&amp;L</div><div class="v" id="unchainNetPnl">$0.00</div></div>
       <div class="unchain-kpi"><div class="k">Wins / Losses</div><div class="v" id="unchainWinLoss">0 / 0</div></div>
-      <div class="unchain-kpi"><div class="k">Active Trades</div><div class="v" id="unchainActiveCount">0</div></div>
+      <div class="unchain-kpi"><div class="k">Pending / Live</div><div class="v" id="unchainActiveCount">0</div></div>
       <div class="unchain-kpi"><div class="k">Last Result</div><div class="v" id="unchainLastResult">—</div></div>
     </div>
   </div>
@@ -527,6 +527,31 @@
           <div id="unchainBiasStrength" class="v" style="color:#38bdf8;">Building</div>
         </div>
       </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="unchain-header" style="margin-bottom:12px;">
+      <div>
+        <h3 style="margin:0;">⚖️ BARRIER ANALYSIS TOOL</h3>
+        <div class="unchain-sub">Scans last 100-200 ticks, tests 3/5/8/10 tick durations with live Higher/Lower quotes, and ranks setups by P_mid + EV + profit balance.</div>
+      </div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+        <div id="unchainBothSignalChip" class="unchain-chip">WAIT</div>
+        <button data-action="unchain-both-analyze" style="background:#22c55e;">Analyze</button>
+        <button id="unchainBothApplyBtn" data-action="unchain-both-apply" style="background:#38bdf8;color:#0b1220;" disabled>Apply Setup</button>
+      </div>
+    </div>
+    <div id="unchainBothSummary" class="unchain-sub" style="color:#94a3b8;">Tap Analyze to score Higher/Lower/Both barrier setups.</div>
+    <div class="unchain-mini-grid" style="margin-top:12px;">
+      <div class="unchain-kpi"><div class="k">Confidence</div><div class="v" id="unchainBothScore">0.0%</div></div>
+      <div class="unchain-kpi"><div class="k">Rec Duration</div><div class="v" id="unchainBothDuration">—</div></div>
+      <div class="unchain-kpi"><div class="k">Best BOTH</div><div class="v" id="unchainBothBarriers">—</div></div>
+      <div class="unchain-kpi"><div class="k">Middle Risk</div><div class="v" id="unchainBothMiddleRisk">—</div></div>
+      <div class="unchain-kpi"><div class="k">Best HIGHER</div><div class="v" id="unchainBothPayoutHigher">—</div></div>
+      <div class="unchain-kpi"><div class="k">Best LOWER</div><div class="v" id="unchainBothPayoutLower">—</div></div>
+      <div class="unchain-kpi"><div class="k">Expected Profit</div><div class="v" id="unchainBothTotalCost">—</div></div>
+      <div class="unchain-kpi"><div class="k">EV / P_mid</div><div class="v" id="unchainBothTopSetup">—</div></div>
     </div>
   </div>
 
@@ -586,7 +611,7 @@
         <div class="unchain-row" style="margin-top:10px;">
           <div class="unchain-field is-compact">
             <label class="unchain-label" for="unchainHigherBarrier">Higher Barrier</label>
-            <input id="unchainHigherBarrier" type="text" value="0.12">
+            <input id="unchainHigherBarrier" type="text" value="+0.12">
           </div>
         </div>
         <div style="margin-top:8px;color:#94a3b8;font-size:12px;">For short durations this is sent as a positive relative barrier.</div>
@@ -647,7 +672,8 @@
   <div class="card">
     <h3 style="margin-top:0;">🚀 Execute</h3>
     <div class="unchain-btn-row">
-      <button id="unchainAutoBothBtn" data-action="unchain-toggle-auto-both" style="background:#0ea5e9;">🤖 AUTO BOTH: OFF</button>
+      <button id="unchainAutoBothBtn" data-action="unchain-toggle-auto-both" style="background:#0284c7;">🤖 AUTO BOTH: OFF</button>
+      <button id="unchainAiAutoTradeBtn" data-action="unchain-toggle-ai-auto-trade" style="background:#0ea5e9;">🤖 AI AUTO TRADE: OFF</button>
       <button data-action="unchain-trade-higher" style="background:#22c55e;">📈 HIGHER</button>
       <button data-action="unchain-trade-lower" style="background:#ef4444;">📉 LOWER</button>
       <button data-action="unchain-trade-both" style="background:#f59e0b;color:#111827;">⚖️ BOTH</button>
@@ -655,11 +681,11 @@
     </div>
     <div style="margin-top:12px;padding:10px 12px;border-radius:12px;background:rgba(15,23,42,0.75);border:1px solid rgba(148,163,184,0.22);">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
-        <div style="font-size:12px;font-weight:700;color:#cbd5e1;">Auto Both Confidence</div>
+        <div style="font-size:12px;font-weight:700;color:#cbd5e1;">AI Auto Trade Confidence</div>
         <div id="unchainAutoConfidenceValue" style="font-size:12px;font-weight:800;color:#38bdf8;">60%</div>
       </div>
-      <input id="unchainAutoConfidence" type="range" min="55" max="80" step="1" value="60" style="width:100%;margin-top:8px;accent-color:#38bdf8;">
-      <div style="margin-top:6px;color:#94a3b8;font-size:11px;">Auto Both enters only when market confidence reaches this level.</div>
+      <input id="unchainAutoConfidence" type="range" min="60" max="80" step="1" value="60" style="width:100%;margin-top:8px;accent-color:#38bdf8;">
+      <div style="margin-top:6px;color:#94a3b8;font-size:11px;">AI Auto Trade enters only when confidence is at least this level (minimum 60%).</div>
       <div class="unchain-field-grid-3" style="margin-top:10px;">
         <div class="unchain-field">
           <label class="unchain-label" for="unchainAutoMinMovement">Min Movement</label>
@@ -675,17 +701,9 @@
         </div>
       </div>
     </div>
-    <div id="unchainAutoBothMeta" style="margin-top:10px;color:#94a3b8;font-size:12px;">Auto Both repeats Higher + Lower together, then waits for cooldown. Use confidence to control entry strictness.</div>
+    <div id="unchainAutoBothMeta" style="margin-top:10px;color:#94a3b8;font-size:12px;">AI Auto Trade uses 100-tick force/escape analysis and only sends Higher + Lower when price is escaping centre-zone compression.</div>
     <div id="unchainRiskBlock" style="display:none;margin-top:10px;padding:10px;border-radius:12px;background:#7f1d1d;color:#fecaca;border:1px solid #ef4444;"></div>
     <div style="margin-top:10px;color:#94a3b8;font-size:12px;">Both sends one Higher contract and one Lower contract using the current saved values.</div>
-  </div>
-
-  <div class="card">
-    <div class="unchain-header" style="margin-bottom:8px;">
-      <h3 style="margin:0;">📌 Active UNCHAIN Trades</h3>
-      <button data-action="unchain-clear-active" style="background:#f97316;color:#111827;">🧹 Clear Active</button>
-    </div>
-    <div id="unchainActiveTrades" class="unchain-active-list"><div class="unchain-empty">No active UNCHAIN trades.</div></div>
   </div>
 
   <div class="card">

@@ -55,6 +55,7 @@
     const optionB = document.getElementById("dual2xOver5Under4BtnKoolkid");
     const optionC = document.getElementById("dual2xOver2Under1BtnKoolkid");
     const optionD = document.getElementById("dual2xOver8Under7BtnKoolkid");
+    const under3SplitBtn = document.getElementById("under3SplitBtnKoolkid");
     if (btn) {
       btn.innerText = state.dual2xBusy ? "DUAL 2x (RUNNING...)" : (state.dual2xOpen ? "DUAL 2x ▼" : "DUAL 2x");
       btn.style.background = state.dual2xBusy ? "#0ea5e9" : (state.dual2xOpen ? "#22c55e" : "#1e293b");
@@ -66,18 +67,32 @@
       b.style.opacity = state.dual2xBusy ? "0.7" : "1";
       b.style.cursor = state.dual2xBusy ? "not-allowed" : "pointer";
     });
+    if (under3SplitBtn) {
+      under3SplitBtn.disabled = !!state.dual2xBusy;
+      under3SplitBtn.style.opacity = state.dual2xBusy ? "0.7" : "1";
+      under3SplitBtn.style.cursor = state.dual2xBusy ? "not-allowed" : "pointer";
+      under3SplitBtn.innerText = state.dual2xBusy
+        ? "UNDER 3 (RUNNING...)"
+        : "UNDER 3 (OVER 3 + UNDER 3 SAME TICK)";
+    }
     renderDual2xAnalysisKoolkid();
   }
 
   async function placeDual2xLegsSameTickKoolkid(legs) {
     const stake = getStakeValueKoolkid();
     const totalWeight = legs.reduce((sum, leg) => sum + Math.max(0, Number(leg.weight || 1)), 0) || 1;
-    const jobs = legs.map((leg) => {
+    const plannedLegs = legs.map((leg) => {
+      const fixedStake = Number(leg.fixedStake);
       const weight = Math.max(0, Number(leg.weight || 1));
-      const legStake = Number((stake * weight / totalWeight).toFixed(2));
+      const legStake = (Number.isFinite(fixedStake) && fixedStake > 0)
+        ? Number(fixedStake.toFixed(2))
+        : Number((stake * weight / totalWeight).toFixed(2));
+      return Object.assign({}, leg, { legStake });
+    });
+    const jobs = plannedLegs.map((leg) => {
       const payload = {
-        stake: legStake,
-        amount: legStake,
+        stake: leg.legStake,
+        amount: leg.legStake,
         type: String(leg.type || "OVER").toUpperCase(),
         barrier: Number(leg.barrier),
       };
@@ -88,12 +103,15 @@
     const failures = [];
     const stakes = [];
     rs.forEach((r, idx) => {
+      const leg = plannedLegs[idx] || legs[idx] || {};
       const ok = r.status === "fulfilled" && r.value && r.value.data && r.value.data.status === "success";
       if (ok) placed += 1;
-      else failures.push(legs[idx].label || `${legs[idx].type} ${legs[idx].barrier}`);
-      const defaultStake = Number((stake * Math.max(0, Number(legs[idx].weight || 1)) / totalWeight).toFixed(2));
+      else failures.push(leg.label || `${leg.type} ${leg.barrier}`);
+      const defaultStake = Number.isFinite(Number(leg.legStake))
+        ? Number(leg.legStake)
+        : Number((stake * Math.max(0, Number(leg.weight || 1)) / totalWeight).toFixed(2));
       stakes.push({
-        label: legs[idx].label || `${legs[idx].type} ${legs[idx].barrier}`,
+        label: leg.label || `${leg.type} ${leg.barrier}`,
         stake: (r.status === "fulfilled" && r.value && r.value.stake) ? r.value.stake : defaultStake,
       });
     });
@@ -587,6 +605,38 @@ function updateAdvancedAIModeButtons(modes, payload) {
       }
     } catch (e) {
       safeToast(`DUAL 2x failed: ${config.label}`, "error");
+    } finally {
+      state.dual2xBusy = false;
+      updateDual2xUIKoolkid();
+    }
+  };
+
+  window.runUnder3SplitKoolkid = async function () {
+    if (state.dual2xBusy) return;
+    const stake = getStakeValueKoolkid();
+    const overStake = Number((stake * 0.65).toFixed(2)); // Match requested split behavior (example: $10 -> $6.50).
+    const underStake = Number((stake - overStake).toFixed(2));
+    if (overStake < 0.35 || underStake < 0.35) {
+      safeToast("Stake too low for Under 3 split. Use at least $1.00.", "error");
+      return;
+    }
+
+    state.dual2xBusy = true;
+    updateDual2xUIKoolkid();
+    try {
+      const r = await placeDual2xLegsSameTickKoolkid([
+        { type: "OVER", barrier: 3, fixedStake: overStake, label: "OVER 3" },
+        { type: "UNDER", barrier: 3, fixedStake: underStake, label: "UNDER 3" },
+      ]);
+      if (r.placed === 2) {
+        safeToast(`UNDER 3 sent • OVER 3 $${overStake.toFixed(2)} / UNDER 3 $${underStake.toFixed(2)} (same tick)`, "success");
+      } else if (r.placed === 1) {
+        safeToast(`UNDER 3 partial (1/2) • OVER 3 $${overStake.toFixed(2)} / UNDER 3 $${underStake.toFixed(2)}`, "error");
+      } else {
+        safeToast("UNDER 3 failed", "error");
+      }
+    } catch (e) {
+      safeToast("UNDER 3 failed", "error");
     } finally {
       state.dual2xBusy = false;
       updateDual2xUIKoolkid();

@@ -141,14 +141,14 @@
   }
 
   function readForm() {
-    const autoConfidence = Math.max(55, Math.min(80, readNumber("unchainAutoConfidence", 60)));
+    const autoConfidence = Math.max(60, Math.min(80, readNumber("unchainAutoConfidence", 60)));
     const autoMinMovement = Math.max(0.00001, readNumber("unchainAutoMinMovement", 0.12));
     const autoMinTickSpeed = Math.max(0.05, Math.min(10, readNumber("unchainAutoMinTickSpeed", 1.5)));
     const autoMinRange = Math.max(0.00001, readNumber("unchainAutoMinRange", 0.2));
     return {
       higher_stake: readNumber("unchainHigherStake", 1),
       lower_stake: readNumber("unchainLowerStake", 1),
-      higher_barrier: readText("unchainHigherBarrier", "0.12"),
+      higher_barrier: readText("unchainHigherBarrier", "+0.12"),
       lower_barrier: readText("unchainLowerBarrier", "-0.12"),
       duration: readInteger("unchainDuration", 5),
       duration_unit: readText("unchainDurationUnit", "t").toLowerCase(),
@@ -205,7 +205,7 @@
     const higherRaw = higherField ? String(higherField.value || "").trim() : "";
     const lowerRaw = lowerField ? String(lowerField.value || "").trim() : "";
     const higher = num(
-      higherRaw !== "" ? higherRaw : (un && un.higher_barrier) != null ? un.higher_barrier : "0.12",
+      higherRaw !== "" ? higherRaw : (un && un.higher_barrier) != null ? un.higher_barrier : "+0.12",
       0.12,
     );
     const lower = num(
@@ -506,7 +506,7 @@
     if (!un) return;
     setFieldValue("unchainHigherStake", formatInputNumber(un.higher_stake, 1), force);
     setFieldValue("unchainLowerStake", formatInputNumber(un.lower_stake, 1), force);
-    setFieldValue("unchainHigherBarrier", un.higher_barrier || "0.12", force);
+    setFieldValue("unchainHigherBarrier", un.higher_barrier || "+0.12", force);
     setFieldValue("unchainLowerBarrier", un.lower_barrier || "-0.12", force);
     setFieldValue("unchainDurationUnit", (un.duration_unit || "t").toLowerCase(), force);
     setFieldValue("unchainDuration", String(un.duration || 5), force);
@@ -564,51 +564,240 @@
 
 
   function renderAutoBoth(un) {
-    const btn = el("unchainAutoBothBtn");
+    const autoBothBtn = el("unchainAutoBothBtn");
+    const aiBtn = el("unchainAiAutoTradeBtn");
     const meta = el("unchainAutoBothMeta");
-    if (!btn && !meta) return;
-    const enabled = !!(un && un.auto_both_enabled);
-    const status = String((un && un.auto_status) || (enabled ? "ARMED" : "OFF")).toUpperCase();
-    const cooldown = Math.max(0, Number((un && un.auto_cooldown_remaining) || 0));
-    const gate = (un && un.auto_gate) || {};
+    if (!autoBothBtn && !aiBtn && !meta) return;
+    const bothEnabled = !!(un && un.auto_both_enabled);
+    const bothStatus = String((un && un.auto_status) || (bothEnabled ? "ARMED" : "OFF")).toUpperCase();
+    const bothCooldown = Math.max(0, Number((un && un.auto_cooldown_remaining) || 0));
+    const aiEnabled = !!(un && un.ai_auto_trade_enabled);
+    const aiStatus = String((un && un.ai_auto_status) || (aiEnabled ? "ARMED" : "OFF")).toUpperCase();
+    const aiCooldown = Math.max(0, Number((un && un.ai_auto_cooldown_remaining) || 0));
+    const gate = (un && (un.ai_auto_gate || un.auto_gate)) || {};
     const metrics = (gate && gate.metrics) || {};
-    const confidenceNow = Number(gate.market_confidence || metrics.market_confidence || 0);
+    const confidenceNow = Number(gate.market_confidence || metrics.confidence_score || metrics.market_confidence || 0);
     const confidenceNeed = Number((un && un.auto_start_threshold) || gate.threshold || 60);
-    const movementScore = Number(gate.movement_score ?? metrics.movement_score ?? 0);
-    const volatilityScore = Number(gate.volatility_score ?? metrics.volatility_score ?? 0);
-    const rangeScore = Number(gate.range_score ?? metrics.range_score ?? 0);
-    const trapScore = Number(gate.trap_zone_score ?? metrics.trap_zone_score ?? 0);
-    const avgGap = Number(metrics.average_tick_interval);
-    const movement = Number(metrics.movement);
-    const recentRange = Number(metrics.recent_range);
-    const reasons = Array.isArray(metrics.reasons) ? metrics.reasons : [];
+    const expansion = Number(metrics.range_expansion_ratio);
+    const compression = Number(metrics.compression_score);
+    const burst = Number(metrics.momentum_burst_score);
+    const breakout = Number(metrics.micro_breakout_score);
+    const avgGap = Number(metrics.tick_arrival_speed != null ? metrics.tick_arrival_speed : metrics.average_tick_interval);
+    const currentRange20 = Number(metrics.current_20_range != null ? metrics.current_20_range : metrics.recent_range);
+    const avgRange20 = Number(metrics.avg_20_range);
+    const regime = String(metrics.movement_regime || "WEAK").toUpperCase();
+    const dynBarrier = metrics.dynamic_barrier_mag != null ? Number(metrics.dynamic_barrier_mag) : null;
+    const dynDuration = metrics.dynamic_duration != null ? Number(metrics.dynamic_duration) : null;
+    const dynDurationUnit = String(metrics.dynamic_duration_unit || "t").toUpperCase();
+    const rejectReasons = Array.isArray(gate.reject_reasons) && gate.reject_reasons.length
+      ? gate.reject_reasons
+      : (Array.isArray(metrics.reject_reasons) ? metrics.reject_reasons : []);
 
-    if (btn) {
-      const label = enabled ? `🤖 AUTO BOTH: ON • ${status}` : "🤖 AUTO BOTH: OFF";
-      btn.innerText = label;
-      btn.style.background = enabled ? "#06b6d4" : "#0ea5e9";
-      btn.style.color = "#fff";
+    if (autoBothBtn) {
+      autoBothBtn.innerText = bothEnabled ? `🤖 AUTO BOTH: ON • ${bothStatus}` : "🤖 AUTO BOTH: OFF";
+      autoBothBtn.style.background = bothEnabled ? "#0891b2" : "#0284c7";
+      autoBothBtn.style.color = "#fff";
+    }
+
+    if (aiBtn) {
+      aiBtn.innerText = aiEnabled ? `🤖 AI AUTO TRADE: ON • ${aiStatus}` : "🤖 AI AUTO TRADE: OFF";
+      aiBtn.style.background = aiEnabled ? "#06b6d4" : "#0ea5e9";
+      aiBtn.style.color = "#fff";
     }
 
     if (meta) {
-      let text = "Auto Both scores movement, tick speed, range, and trap-zone safety before placing Higher + Lower together.";
-      if (enabled) {
-        if (status === "RUNNING") {
-          text = "AUTO BOTH is running. It is waiting for the current Higher + Lower pair to fully finish before the 3s cooldown starts.";
-        } else if (status === "COOLDOWN") {
-          text = `AUTO BOTH cooldown: ${cooldown.toFixed(1)}s remaining before the next Higher + Lower pair.`;
-        } else if (status.startsWith("WAITING")) {
+      const bothText = !bothEnabled
+        ? "AUTO BOTH is OFF."
+        : (bothStatus === "RUNNING"
+            ? "AUTO BOTH is running and waiting for active contracts to settle."
+            : (bothStatus.includes("PAUSED")
+                ? "AUTO BOTH is ON but paused while AI AUTO TRADE is enabled."
+            : (bothStatus === "COOLDOWN"
+                ? `AUTO BOTH cooldown: ${bothCooldown.toFixed(1)}s before next pair.`
+                : "AUTO BOTH armed: sends Higher + Lower with your saved barriers/duration.")));
+
+      let aiText = "AI AUTO TRADE is OFF.";
+      if (aiEnabled) {
+        if (aiStatus === "RUNNING") {
+          aiText = "AI AUTO TRADE is running. It waits for both contracts to fully settle before evaluating the next cycle.";
+        } else if (aiStatus === "COOLDOWN") {
+          aiText = `AI AUTO TRADE cooldown: ${aiCooldown.toFixed(1)}s before next evaluation.`;
+        } else if (aiStatus.startsWith("WAITING")) {
           const gapText = Number.isFinite(avgGap) ? `${avgGap.toFixed(3)}s` : "—";
-          const moveText = Number.isFinite(movement) ? movement.toFixed(5) : "—";
-          const rangeText = Number.isFinite(recentRange) ? recentRange.toFixed(5) : "—";
-          const reasonText = reasons.length ? ` • ${reasons[0]}` : "";
-          text = `AUTO BOTH waiting: confidence ${confidenceNow.toFixed(0)}% / ${confidenceNeed.toFixed(0)}% • scores M${movementScore}/30 V${volatilityScore}/25 R${rangeScore}/25 T${trapScore}/20 • move ${moveText} • avg tick ${gapText} • range ${rangeText}${reasonText}`;
+          const rangeText = Number.isFinite(currentRange20) && Number.isFinite(avgRange20)
+            ? `${currentRange20.toFixed(5)} / ${avgRange20.toFixed(5)}`
+            : "—";
+          const expansionText = Number.isFinite(expansion) ? `${expansion.toFixed(2)}x` : "—";
+          const compText = Number.isFinite(compression) ? compression.toFixed(1) : "—";
+          const burstText = Number.isFinite(burst) ? burst.toFixed(1) : "—";
+          const breakoutText = Number.isFinite(breakout) ? breakout.toFixed(1) : "—";
+          const reasonText = rejectReasons.length ? ` • ${rejectReasons[0]}` : "";
+          aiText = `AI AUTO TRADE waiting: conf ${confidenceNow.toFixed(0)}% / ${confidenceNeed.toFixed(0)}% • 20R ${rangeText} (${expansionText}) • comp ${compText} • burst ${burstText} • breakout ${breakoutText} • tick ${gapText}${reasonText}`;
         } else {
-          text = `AUTO BOTH armed: confidence ${confidenceNow.toFixed(0)}% / ${confidenceNeed.toFixed(0)}% • scores M${movementScore}/30 V${volatilityScore}/25 R${rangeScore}/25 T${trapScore}/20`;
+          const dynText = (dynBarrier != null && dynDuration != null)
+            ? ` • barrier ±${dynBarrier.toFixed(2)} • duration ${dynDuration}${dynDurationUnit}`
+            : "";
+          aiText = `AI AUTO TRADE armed: confidence ${confidenceNow.toFixed(0)}% / ${confidenceNeed.toFixed(0)}% • regime ${regime}${dynText}`;
         }
       }
-      meta.innerText = text;
+      meta.innerText = `${bothText} ${aiText}`;
     }
+  }
+
+  function fmtUsd(v) {
+    const n = Number(v);
+    return Number.isFinite(n) ? `$${n.toFixed(2)}` : "—";
+  }
+
+  function renderBothAnalyzer(un) {
+    const data = (un && un.both_analyzer) || {};
+    const rec = data && typeof data.recommended === "object" ? data.recommended : null;
+    const bestHigher = data && typeof data.best_higher_setup === "object" ? data.best_higher_setup : null;
+    const bestLower = data && typeof data.best_lower_setup === "object" ? data.best_lower_setup : null;
+    const bestBoth = data && typeof data.best_both_setup === "object" ? data.best_both_setup : rec;
+    const signal = String(data.signal || "WAIT").toUpperCase();
+    const reason = String(data.reason || "Tap Analyze to run Barrier Analysis Tool.");
+    const symbol = String(data.symbol || (state.lastPayload && state.lastPayload.symbol) || "—");
+    const tested = Number(data.tested_setups || 0);
+    const ticksCollected = Number(data.ticks_collected != null ? data.ticks_collected : (data.sample_size || 0));
+    const minTicks = Number(data.required_min_ticks || 100);
+    const maxTicks = Number(data.max_ticks_considered || 200);
+    const confidence = Number(
+      data.confidence != null
+        ? data.confidence
+        : (bestBoth && bestBoth.confidence != null ? bestBoth.confidence : data.final_score)
+    );
+    const expectedProfit = Number(
+      data.expected_profit != null
+        ? data.expected_profit
+        : (bestBoth && bestBoth.ev_score != null ? bestBoth.ev_score : NaN)
+    );
+
+    const fmtSideSetup = (setup, side) => {
+      if (!setup || typeof setup !== "object") return `${side}: —`;
+      const dur = Number(setup.duration);
+      const unit = String(setup.duration_unit || "t").toUpperCase();
+      const barrier = side === "HIGHER"
+        ? String(setup.higher_barrier || "—")
+        : String(setup.lower_barrier || "—");
+      const net = Number(setup.net);
+      const exp = Number(setup.expected_profit);
+      const prob = Number(setup.probability);
+      const netText = Number.isFinite(net) ? `${net >= 0 ? "+" : "-"}$${Math.abs(net).toFixed(2)}` : "—";
+      const expText = Number.isFinite(exp) ? `${exp >= 0 ? "+" : "-"}$${Math.abs(exp).toFixed(2)}` : "—";
+      const probText = Number.isFinite(prob) ? `${(prob * 100).toFixed(1)}%` : "—";
+      return `${side} ${Number.isFinite(dur) ? `${dur}${unit}` : "—"} ${barrier} (Net ${netText}, E ${expText}, P ${probText})`;
+    };
+
+    const chip = el("unchainBothSignalChip");
+    if (chip) {
+      chip.innerText = signal;
+      if (signal === "TRADE BOTH NOW") {
+        chip.style.background = "#22c55e";
+        chip.style.color = "#052e16";
+      } else {
+        chip.style.background = "#1e293b";
+        chip.style.color = "#e2e8f0";
+      }
+    }
+
+    const summary = el("unchainBothSummary");
+    if (summary) {
+      const bothText = bestBoth
+        ? `BOTH ${bestBoth.duration || "—"}${String(bestBoth.duration_unit || "t").toUpperCase()} ${bestBoth.higher_barrier || "—"} / ${bestBoth.lower_barrier || "—"}`
+        : "BOTH: —";
+      summary.innerText = `${reason} • Symbol ${symbol} • Ticks ${ticksCollected}/${minTicks} required (max ${maxTicks}) • ${fmtSideSetup(bestHigher, "HIGHER")} • ${fmtSideSetup(bestLower, "LOWER")} • ${bothText} • Tested ${tested} setup${tested === 1 ? "" : "s"}.`;
+      summary.style.color = signal === "TRADE BOTH NOW" ? "#86efac" : "#94a3b8";
+    }
+
+    setText("unchainBothScore", Number.isFinite(confidence) ? `${confidence.toFixed(1)}%` : "0.0%");
+    const recDuration = Number(data.recommended_duration);
+    const recDurationUnit = String((bestBoth && bestBoth.duration_unit) || "t").toUpperCase();
+    setText("unchainBothDuration", Number.isFinite(recDuration) && recDuration > 0
+      ? `${recDuration}${recDurationUnit}`
+      : (bestBoth ? `${bestBoth.duration || "—"}${String(bestBoth.duration_unit || "").toUpperCase()}` : "—"));
+    setText("unchainBothBarriers", bestBoth ? `${bestBoth.higher_barrier || "—"} / ${bestBoth.lower_barrier || "—"}` : "—");
+    setText("unchainBothMiddleRisk", bestBoth ? String(bestBoth.middle_zone_risk || data.middle_zone_risk || "—") : String(data.middle_zone_risk || "—"));
+    setText("unchainBothPayoutHigher", fmtSideSetup(bestHigher, "HIGHER"));
+    setText("unchainBothPayoutLower", fmtSideSetup(bestLower, "LOWER"));
+    setText("unchainBothTotalCost", Number.isFinite(expectedProfit) ? fmtUsd(expectedProfit) : "—");
+    const ev = Number(bestBoth && bestBoth.ev_score != null ? bestBoth.ev_score : (rec && rec.ev_score));
+    const pMid = Number(bestBoth && bestBoth.p_mid != null ? bestBoth.p_mid : (rec && rec.p_mid));
+    const evText = Number.isFinite(ev) ? `EV ${ev >= 0 ? "+" : ""}${ev.toFixed(2)}` : "EV —";
+    const pMidText = Number.isFinite(pMid) ? `P_mid ${(pMid * 100).toFixed(1)}%` : "P_mid —";
+    setText("unchainBothTopSetup", `${evText} • ${pMidText}`);
+
+    const applyBtn = el("unchainBothApplyBtn");
+    if (applyBtn) {
+      const canApply = !!(rec && String(signal).toUpperCase() === "TRADE BOTH NOW");
+      applyBtn.disabled = !canApply;
+      applyBtn.style.opacity = canApply ? "1" : "0.55";
+      applyBtn.style.cursor = canApply ? "pointer" : "not-allowed";
+    }
+  }
+
+  async function analyzeBothTool() {
+    try {
+      await saveSettings(false);
+      const r = await postJSON("/unchain_both_analyze", {});
+      if (r.ok && r.data) {
+        if (r.data.payload) renderPayload(r.data.payload, { forceForm: false });
+        const okNow = !!r.data.ok_to_trade;
+        const reason = String(r.data.message || "");
+        toast(reason || (okNow ? "Barrier setup ready" : "Barrier setup says wait"), okNow ? "success" : "info");
+        return;
+      }
+      toast((r.data && (r.data.message || r.data.error)) || "Barrier analysis failed", "error");
+      if (r.data && r.data.payload) renderPayload(r.data.payload);
+    } catch (e) {
+      toast("Barrier analysis failed", "error");
+    }
+  }
+
+  async function applyBothRecommendation() {
+    const un = state.lastPayload && (state.lastPayload.unchain || state.lastPayload);
+    const analyzer = (un && un.both_analyzer) || {};
+    const rec = analyzer && typeof analyzer.recommended === "object" ? analyzer.recommended : null;
+    const signal = String(analyzer.signal || "WAIT").toUpperCase();
+    if (!rec || signal !== "TRADE BOTH NOW") {
+      toast("No trade-ready setup to apply", "info");
+      return;
+    }
+
+    const durationUnit = String(rec.duration_unit || "t").toLowerCase();
+    const duration = parseInt(rec.duration, 10);
+    const higherBarrier = String(rec.higher_barrier || "").trim();
+    const lowerBarrier = String(rec.lower_barrier || "").trim();
+
+    const unitEl = el("unchainDurationUnit");
+    if (unitEl && durationUnit) {
+      unitEl.value = durationUnit;
+      markDirty("unchainDurationUnit");
+      applyDurationPresets(true);
+    }
+    const durationEl = el("unchainDuration");
+    if (durationEl && Number.isFinite(duration)) {
+      const asText = String(duration);
+      const hasOption = Array.from(durationEl.options || []).some((opt) => String(opt.value) === asText);
+      if (hasOption) {
+        durationEl.value = asText;
+        markDirty("unchainDuration");
+      }
+    }
+    const higherEl = el("unchainHigherBarrier");
+    if (higherEl && higherBarrier) {
+      higherEl.value = higherBarrier;
+      markDirty("unchainHigherBarrier");
+    }
+    const lowerEl = el("unchainLowerBarrier");
+    if (lowerEl && lowerBarrier) {
+      lowerEl.value = lowerBarrier;
+      markDirty("unchainLowerBarrier");
+    }
+
+    renderBarrierMarketChart(un || {}, state.lastPayload || {});
+    await saveSettings(true);
+    toast("Applied barrier setup", "success");
   }
 
   function formatTradeCountdown(item) {
@@ -676,8 +865,6 @@
   }
 
   function renderActiveTrades(un) {
-    const wrap = el("unchainActiveTrades");
-    if (!wrap) return;
     const rawItems = Array.isArray(un && un.active_contracts) ? un.active_contracts : [];
     const items = rawItems.filter((item) => {
       if (!item || typeof item !== "object") return false;
@@ -686,9 +873,11 @@
       const contractStatus = String(item.contract_status || "").toLowerCase();
       return ![status, contractStatus].some((v) => ["sold", "won", "lost", "settled", "closed", "expired"].includes(v));
     });
+    syncTradeCountdownToast(items);
+    const wrap = el("unchainActiveTrades");
+    if (!wrap) return;
     if (!items.length) {
       wrap.innerHTML = '<div class="unchain-empty">No active UNCHAIN trades.</div>';
-      syncTradeCountdownToast([]);
       return;
     }
     wrap.innerHTML = items.map((item) => {
@@ -699,7 +888,6 @@
       const countdown = formatTradeCountdown(item);
       return `<div class="unchain-active-item"><div class="top"><div style="font-weight:900;color:${type === "HIGHER" ? "#22c55e" : "#ef4444"};">${type}</div><div class="unchain-chip">#${item.contract_id || "—"}</div></div><div style="margin-top:8px;color:#cbd5e1;display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;"><div><span class="unchain-label">Stake</span><div>$${Number(item.stake || 0).toFixed(2)}</div></div><div><span class="unchain-label">Barrier</span><div>${item.barrier || "—"}</div></div><div><span class="unchain-label">Duration</span><div>${durationLabel}</div></div><div><span class="unchain-label">Countdown</span><div>${countdown}</div></div><div><span class="unchain-label">Symbol</span><div>${item.symbol || "—"}</div></div><div><span class="unchain-label">Open P/L</span><div style="color:${profitColor};font-weight:800;">${profit}</div></div></div></div>`;
     }).join("");
-    syncTradeCountdownToast(items);
   }
 
 
@@ -896,8 +1084,17 @@
     }
     setText("unchainLastAction", un.last_action || "Ready");
     renderScanner(state.scanner);
+    renderBothAnalyzer(un);
     renderBias(un);
     renderBarrierMarketChart(un, payload);
+    try {
+      if (typeof window.syncUnchainPendingTradesFromStatus === "function") {
+        const changed = window.syncUnchainPendingTradesFromStatus(payload);
+        if (changed && isActive() && typeof renderTradeList === "function") {
+          renderTradeList(PROFILE);
+        }
+      }
+    } catch (e) {}
     renderActiveTrades(un);
   }
 
@@ -977,6 +1174,19 @@
     }
   }
 
+  async function toggleAiAutoTrade() {
+    await saveSettings(false);
+    const current = !!(state.lastPayload && state.lastPayload.unchain && state.lastPayload.unchain.ai_auto_trade_enabled);
+    const r = await postJSON("/toggle_unchain_ai_auto_trade", { enabled: !current });
+    if (r.ok && r.data) {
+      if (r.data.payload) renderPayload(r.data.payload, { forceForm: true });
+      toast(r.data.message || (!current ? "UNCHAIN AI AUTO TRADE ON" : "UNCHAIN AI AUTO TRADE OFF"), !current ? "success" : "warn");
+    } else {
+      toast((r.data && (r.data.message || r.data.error)) || "Failed to toggle UNCHAIN AI AUTO TRADE", "error");
+      if (r.data && r.data.payload) renderPayload(r.data.payload);
+    }
+  }
+
   async function handleAction(action, btn) {
     switch (action) {
       case "unchain-toggle-autosl":
@@ -998,6 +1208,9 @@
       case "unchain-toggle-auto-both":
         await toggleAutoBoth();
         break;
+      case "unchain-toggle-ai-auto-trade":
+        await toggleAiAutoTrade();
+        break;
       case "unchain-close-all":
         await closeAll();
         break;
@@ -1006,6 +1219,12 @@
         break;
       case "unchain-scanner-analyze":
         await analyzeScanner();
+        break;
+      case "unchain-both-analyze":
+        await analyzeBothTool();
+        break;
+      case "unchain-both-apply":
+        await applyBothRecommendation();
         break;
       case "unchain-scanner-apply":
         if (btn && btn.dataset && btn.dataset.symbol) {
