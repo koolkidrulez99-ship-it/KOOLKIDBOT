@@ -1137,9 +1137,13 @@ def init_client(client_id):
             "buffers": {},
             "analyses": {},
             "owned_syms": set(),
-            "sample_size": 30,
+            "sample_size": 120,
             "max_symbols": 10,
             "last_emit": 0.0,
+            "window_ticks": 15,
+            "window_options": [5, 10, 15, 20],
+            "minimum_history": 120,
+            "total_ticks": 0,
         },
         "balance": 0.0,
         "session_start_balance": None,
@@ -1822,16 +1826,17 @@ def _default_unchain_hl_state():
         "tp": 0.0,
         "sl": 0.0,
         "auto_sl": True,
+        "half_barrier_enabled": False,
         "auto_both_enabled": False,
         "auto_both_cooldown": 3,
         "auto_both_pair_active": False,
         "auto_both_next_fire_at": 0.0,
         "auto_both_last_cycle_closed_at": 0.0,
         "ai_auto_trade_enabled": False,
-        "auto_start_threshold": 60.0,
-        "auto_min_movement": 0.12,
-        "auto_min_tick_speed": 1.5,
-        "auto_min_range": 0.2,
+        "auto_start_threshold": 48.0,
+        "auto_min_movement": 0.06,
+        "auto_min_tick_speed": 2.4,
+        "auto_min_range": 0.12,
         # AI Auto Trade internal state
         "auto_pair_active": False,
         "auto_next_fire_at": 0.0,
@@ -1891,6 +1896,7 @@ def _ensure_unchain_hl_state(state):
         cur["both_analyzer"].setdefault("tested_setups", 0)
         cur["both_analyzer"].setdefault("recommended", None)
     cur.setdefault("risk_block_reason", None)
+    cur["half_barrier_enabled"] = bool(cur.get("half_barrier_enabled", False))
     cur["auto_both_enabled"] = bool(cur.get("auto_both_enabled", False))
     cur["ai_auto_trade_enabled"] = bool(cur.get("ai_auto_trade_enabled", False))
     cur["auto_both_pair_active"] = bool(cur.get("auto_both_pair_active", False))
@@ -1920,21 +1926,21 @@ def _ensure_unchain_hl_state(state):
     cur["duration_unit"] = _clean_unchain_duration_unit(cur.get("duration_unit", "t"))
     cur["duration"] = _sanitize_unchain_duration(cur.get("duration", 5), cur["duration_unit"])
     try:
-        cur["auto_start_threshold"] = max(60.0, min(80.0, float(cur.get("auto_start_threshold", 60.0) or 60.0)))
+        cur["auto_start_threshold"] = max(45.0, min(80.0, float(cur.get("auto_start_threshold", 48.0) or 48.0)))
     except Exception:
-        cur["auto_start_threshold"] = 60.0
+        cur["auto_start_threshold"] = 48.0
     try:
-        cur["auto_min_movement"] = max(0.00001, float(cur.get("auto_min_movement", 0.12) or 0.12))
+        cur["auto_min_movement"] = max(0.00001, float(cur.get("auto_min_movement", 0.06) or 0.06))
     except Exception:
-        cur["auto_min_movement"] = 0.12
+        cur["auto_min_movement"] = 0.06
     try:
-        cur["auto_min_tick_speed"] = max(0.05, min(10.0, float(cur.get("auto_min_tick_speed", 1.5) or 1.5)))
+        cur["auto_min_tick_speed"] = max(0.05, min(10.0, float(cur.get("auto_min_tick_speed", 2.4) or 2.4)))
     except Exception:
-        cur["auto_min_tick_speed"] = 1.5
+        cur["auto_min_tick_speed"] = 2.4
     try:
-        cur["auto_min_range"] = max(0.00001, float(cur.get("auto_min_range", 0.2) or 0.2))
+        cur["auto_min_range"] = max(0.00001, float(cur.get("auto_min_range", 0.12) or 0.12))
     except Exception:
-        cur["auto_min_range"] = 0.2
+        cur["auto_min_range"] = 0.12
     try:
         symbol = str(state.get("current_symbol") or "").upper()
         is_v75 = symbol in {
@@ -1979,7 +1985,7 @@ def _sanitize_unchain_duration(value, duration_unit):
         duration = defaults.get(unit, 5)
 
     if unit == "t":
-        return max(5, min(10, duration))
+        return max(3, min(10, duration))
     if unit == "s":
         return max(15, min(59, duration))
     if unit == "m":
@@ -2007,6 +2013,16 @@ def _format_unchain_barrier(raw_value, side, duration_unit):
     else:
         out = formatted
     return out or "0"
+
+
+def _half_unchain_barrier(raw_value, side, duration_unit):
+    formatted = _format_unchain_barrier(raw_value, side, duration_unit)
+    try:
+        half_value = float(formatted) * 0.5
+    except Exception:
+        return formatted
+    half_raw = f"{half_value:+.10f}" if formatted.startswith(("+", "-")) else str(half_value)
+    return _format_unchain_barrier(half_raw, side, duration_unit)
 
 
 def _normalize_contract_id(contract_id):
@@ -2726,10 +2742,10 @@ def _get_unchain_bias_payload(state, u=None):
 def _compute_unchain_auto_metrics(state, u=None):
     """
     AI AUTO TRADE middle-zone avoidance engine.
-    Uses last 100 ticks and evaluates 20-tick local force/escape quality.
+    Uses last 60 ticks and evaluates 20-tick local force/escape quality.
     """
     u = u or _ensure_unchain_hl_state(state)
-    sample_size = 100
+    sample_size = 60
     window = 20
     strat = (state.get("strategies") or {}).get("UNCHAIN")
     prices = []
@@ -2757,13 +2773,13 @@ def _compute_unchain_auto_metrics(state, u=None):
     recent_times = list(tick_times[-sample_size:])
 
     try:
-        min_movement = float(u.get("auto_min_movement", 0.12) or 0.12)
+        min_movement = float(u.get("auto_min_movement", 0.06) or 0.06)
     except Exception:
-        min_movement = 0.12
+        min_movement = 0.06
     try:
-        min_tick_speed = float(u.get("auto_min_tick_speed", 1.5) or 1.5)
+        min_tick_speed = float(u.get("auto_min_tick_speed", 2.4) or 2.4)
     except Exception:
-        min_tick_speed = 1.5
+        min_tick_speed = 2.4
 
     if len(recent_prices) < sample_size:
         return {
@@ -2884,6 +2900,7 @@ def _compute_unchain_auto_metrics(state, u=None):
     breakout_down = max(0.0, prior_low - current_price)
     breakout_distance = max(breakout_up, breakout_down)
     breakout_direction = "UP" if breakout_up > breakout_down and breakout_up > 0 else ("DOWN" if breakout_down > 0 else "NONE")
+    breakout_ready = bool(breakout_direction != "NONE" and breakout_distance > 0.0)
     micro_breakout_score = float(round(
         _clamp((breakout_distance / max(0.0000001, avg_abs_tick_movement)) / 1.40 * 100.0, 0.0, 100.0),
         2,
@@ -2895,20 +2912,22 @@ def _compute_unchain_auto_metrics(state, u=None):
     active_escape = bool(
         breakout_direction != "NONE"
         and abs(current_price - center_price) > center_zone_half
-        and micro_breakout_score >= 45.0
-        and momentum_burst_score >= 50.0
+        and micro_breakout_score >= 28.0
+        and momentum_burst_score >= 38.0
     )
 
-    set_higher = _safe_barrier(u.get("higher_barrier"), 0.12)
-    set_lower = _safe_barrier(u.get("lower_barrier"), 0.12)
+    effective_higher = _half_unchain_barrier(u.get("higher_barrier", "+0.12"), "HIGHER", "t") if bool(u.get("half_barrier_enabled")) else u.get("higher_barrier", "+0.12")
+    effective_lower = _half_unchain_barrier(u.get("lower_barrier", "-0.12"), "LOWER", "t") if bool(u.get("half_barrier_enabled")) else u.get("lower_barrier", "-0.12")
+    set_higher = _safe_barrier(effective_higher, 0.12)
+    set_lower = _safe_barrier(effective_lower, 0.12)
     set_barrier_mag = max(0.03, float((set_higher + set_lower) / 2.0))
-    net_move_floor = max(float(min_movement), float(avg_abs_tick_movement * 2.2), float(set_barrier_mag * 0.55))
+    net_move_floor = max(float(min_movement), float(avg_abs_tick_movement * 1.6), float(set_barrier_mag * 0.35))
 
-    reject_range = range_expansion_ratio < 1.35
-    reject_compression = compression_score >= 65.0
+    reject_range = range_expansion_ratio < 1.18
+    reject_compression = compression_score >= 78.0
     reject_tick_speed = bool(average_tick_interval is None or average_tick_interval > min_tick_speed)
     reject_net_small = net_movement_20 < net_move_floor
-    reject_chop = bool(alternating_chop_ratio >= 0.62 and current_20_range <= (avg_20_range * 1.05))
+    reject_chop = bool(alternating_chop_ratio >= 0.76 and current_20_range <= (avg_20_range * 1.02))
     reject_pullback = bool(last3_pullback_center)
     reject_compression_band = bool(in_compression_band)
     reject_escape = not active_escape
@@ -2921,8 +2940,8 @@ def _compute_unchain_auto_metrics(state, u=None):
     dynamic_duration_unit = "t"
     dynamic_allowed = False
 
-    if (not reject_range) and (momentum_burst_score >= 52.0) and (micro_breakout_score >= 40.0):
-        if range_expansion_ratio >= 1.90 and momentum_burst_score >= 70.0:
+    if (not reject_range) and (momentum_burst_score >= 40.0) and (micro_breakout_score >= 28.0):
+        if range_expansion_ratio >= 1.65 and momentum_burst_score >= 60.0:
             movement_regime = "STRONG"
             target_mag = max(0.08, min(0.30, current_20_range * 0.28))
             dynamic_duration = 5
@@ -2969,14 +2988,8 @@ def _compute_unchain_auto_metrics(state, u=None):
         reject_reasons.append(f"Net movement too small ({net_movement_20:.5f} < {net_move_floor:.5f})")
     if reject_chop:
         reject_reasons.append("Market alternating in tight chop")
-    if reject_pullback:
-        reject_reasons.append("Last 3 ticks pulled back into local centre zone")
-    if reject_compression_band:
-        reject_reasons.append("Price returned inside compression band")
     if reject_escape:
         reject_reasons.append("Price is not actively escaping local centre")
-    if not dynamic_allowed:
-        reject_reasons.append("Weak movement regime (no dynamic barrier/duration)")
 
     # Legacy score buckets retained for front-end compatibility.
     movement_score = int(round(_clamp((movement_expansion_score / 25.0) * 30.0, 0.0, 30.0)))
@@ -2988,7 +3001,7 @@ def _compute_unchain_auto_metrics(state, u=None):
     movement_pass = not (reject_range or reject_net_small)
     volatility_pass = not reject_tick_speed
     range_pass = not reject_range
-    trap_zone_pass = not (reject_chop or reject_compression or reject_pullback or reject_compression_band or reject_escape)
+    trap_zone_pass = not (reject_chop or reject_compression or reject_escape)
 
     return {
         "ready": True,
@@ -3006,6 +3019,7 @@ def _compute_unchain_auto_metrics(state, u=None):
         "momentum_burst_score": float(momentum_burst_score),
         "micro_breakout_score": float(micro_breakout_score),
         "breakout_direction": breakout_direction,
+        "breakout_ready": bool(breakout_ready),
         "center_price": float(center_price),
         "center_zone_half": float(center_zone_half),
         "compression_band_half": float(compression_band_half),
@@ -3222,13 +3236,23 @@ def _run_unchain_both_analyzer(state):
         "updated_at": now_time(),
         "sample_size": 0,
         "ticks_collected": 0,
-        "required_min_ticks": 100,
+        "required_min_ticks": 50,
         "max_ticks_considered": 200,
         "required_score": 55.0,  # confidence threshold
         "final_score": 0.0,
         "middle_zone_risk": "HIGH",
         "confidence": 0.0,
         "expected_profit": 0.0,
+        "recommended_side": None,
+        "market_outlook": "WAITING",
+        "higher_probability": 0.0,
+        "lower_probability": 0.0,
+        "middle_probability": 0.0,
+        "higher_expected_profit": 0.0,
+        "lower_expected_profit": 0.0,
+        "both_profit_target": 0.0,
+        "both_min_win_profit": 0.0,
+        "payout_difference": 0.0,
         "recommended_duration": None,
         "best_higher_setup": None,
         "best_lower_setup": None,
@@ -3261,6 +3285,17 @@ def _run_unchain_both_analyzer(state):
             return "MEDIUM"
         return "HIGH"
 
+    def _outlook_label(p_high_value, p_low_value, p_mid_value):
+        p_high = float(p_high_value or 0.0)
+        p_low = float(p_low_value or 0.0)
+        p_mid = float(p_mid_value or 0.0)
+        top = max(p_high, p_low, p_mid)
+        if top <= 0:
+            return "WAITING"
+        if top == p_mid and p_mid >= 0.35:
+            return "MIDDLE ZONE"
+        return "HIGHER" if p_high >= p_low else "LOWER"
+
     def _compact_setup(row, side_hint=None):
         if not row:
             return None
@@ -3279,13 +3314,22 @@ def _run_unchain_both_analyzer(state):
             "duration_unit": str(row.get("duration_unit") or "t"),
             "higher_barrier": row.get("higher_barrier"),
             "lower_barrier": row.get("lower_barrier"),
-            "net": net_side,
+            "net": float(net_side),
+            "higher_net": float(row.get("higher_net", 0.0) or 0.0),
+            "lower_net": float(row.get("lower_net", 0.0) or 0.0),
             "probability": p_side,
+            "higher_probability": float(row.get("p_high", 0.0) or 0.0),
+            "lower_probability": float(row.get("p_low", 0.0) or 0.0),
+            "middle_probability": float(row.get("p_mid", 0.0) or 0.0),
             "expected_profit": float(p_side * net_side),
             "ev_score": float(row.get("ev_score", 0.0) or 0.0),
             "p_mid": float(row.get("p_mid", 0.0) or 0.0),
             "confidence": float(row.get("confidence", 0.0) or 0.0),
             "middle_zone_risk": str(row.get("middle_zone_risk") or _risk_label(row.get("p_mid"))),
+            "balanced_profit": float(row.get("balanced_profit", 0.0) or 0.0),
+            "both_profit_target": float(row.get("both_profit_target", 0.0) or 0.0),
+            "payout_difference": float(row.get("payout_difference", 0.0) or 0.0),
+            "market_outlook": str(row.get("market_outlook") or _outlook_label(row.get("p_high"), row.get("p_low"), row.get("p_mid"))),
         }
 
     prices = []
@@ -3301,7 +3345,7 @@ def _run_unchain_both_analyzer(state):
             times = []
 
     sample_size = min(200, len(prices))
-    min_samples = 100
+    min_samples = 50
     recent_prices = prices[-sample_size:]
     recent_times = times[-sample_size:]
     analysis["sample_size"] = len(recent_prices)
@@ -3431,12 +3475,14 @@ def _run_unchain_both_analyzer(state):
     analysis["final_score"] = float(base_confidence)
 
     duration_candidates = [3, 5, 8, 10]
+    effective_higher = _half_unchain_barrier(u.get("higher_barrier", "+0.12"), "HIGHER", "t") if bool(u.get("half_barrier_enabled")) else u.get("higher_barrier", "+0.12")
+    effective_lower = _half_unchain_barrier(u.get("lower_barrier", "-0.12"), "LOWER", "t") if bool(u.get("half_barrier_enabled")) else u.get("lower_barrier", "-0.12")
     try:
-        safe_higher = abs(float(u.get("higher_barrier", "+0.12") or 0.12))
+        safe_higher = abs(float(effective_higher or 0.12))
     except Exception:
         safe_higher = 0.12
     try:
-        safe_lower = abs(float(u.get("lower_barrier", "-0.12") or 0.12))
+        safe_lower = abs(float(effective_lower or 0.12))
     except Exception:
         safe_lower = 0.12
     configured_barrier = max(0.03, (safe_higher + safe_lower) / 2.0)
@@ -3455,6 +3501,9 @@ def _run_unchain_both_analyzer(state):
 
     higher_stake = max(0.35, float(u.get("higher_stake", 1.0) or 1.0))
     lower_stake = max(0.35, float(u.get("lower_stake", 1.0) or 1.0))
+    combined_stake = round(higher_stake + lower_stake, 2)
+    both_profit_target = round(max(0.01, combined_stake * 0.50), 2)
+    analysis["both_profit_target"] = float(both_profit_target)
     net_profit_target = 0.0
     p_mid_threshold = 0.44
     compression_reject_threshold = 78.0
@@ -3584,6 +3633,9 @@ def _run_unchain_both_analyzer(state):
                 share_high = _clamp(0.5 + (direction_bias * 0.35), 0.08, 0.92)
                 p_high = remaining_prob * share_high
                 p_low = remaining_prob - p_high
+            higher_expected_profit = round(p_high * higher_net, 4)
+            lower_expected_profit = round(p_low * lower_net, 4)
+            payout_difference = round(abs(higher_net - lower_net), 2)
 
             duration_bonus = (duration_relief * 6.0)
             barrier_penalty = max(0.0, (zone_to_range - 1.0) * 12.0)
@@ -3592,21 +3644,28 @@ def _run_unchain_both_analyzer(state):
             total_loss = total_cost
             ev_score = round((p_high * higher_net) + (p_low * lower_net) - (p_mid * total_loss), 4)
             balanced_profit = min(higher_net, lower_net)
-
-            reject_reasons = []
+            market_outlook = _outlook_label(p_high, p_low, p_mid)
+            shared_reject_reasons = []
             if higher_net < net_profit_target:
-                reject_reasons.append(f"Higher net {higher_net:.2f} < target {net_profit_target:.2f}")
+                shared_reject_reasons.append(f"Higher net {higher_net:.2f} < target {net_profit_target:.2f}")
             if lower_net < net_profit_target:
-                reject_reasons.append(f"Lower net {lower_net:.2f} < target {net_profit_target:.2f}")
+                shared_reject_reasons.append(f"Lower net {lower_net:.2f} < target {net_profit_target:.2f}")
             if p_mid > p_mid_threshold:
-                reject_reasons.append(f"P_mid {p_mid:.2f} > threshold {p_mid_threshold:.2f}")
+                shared_reject_reasons.append(f"P_mid {p_mid:.2f} > threshold {p_mid_threshold:.2f}")
             if compression_score > compression_reject_threshold:
-                reject_reasons.append(f"Compression {compression_score:.1f} too high")
+                shared_reject_reasons.append(f"Compression {compression_score:.1f} too high")
             if candidate_confidence < confidence_threshold:
-                reject_reasons.append(
+                shared_reject_reasons.append(
                     f"Confidence {candidate_confidence:.1f} below {confidence_threshold:.1f}"
                 )
-            valid = len(reject_reasons) == 0
+            higher_valid = (len(shared_reject_reasons) == 0) and (higher_net > 0.0) and (higher_expected_profit > 0.0)
+            lower_valid = (len(shared_reject_reasons) == 0) and (lower_net > 0.0) and (lower_expected_profit > 0.0)
+            reject_reasons = list(shared_reject_reasons)
+            if higher_net < both_profit_target:
+                reject_reasons.append(f"Higher win profit {higher_net:.2f} < both target {both_profit_target:.2f}")
+            if lower_net < both_profit_target:
+                reject_reasons.append(f"Lower win profit {lower_net:.2f} < both target {both_profit_target:.2f}")
+            both_valid = len(reject_reasons) == 0
             middle_zone_risk = _risk_label(p_mid)
 
             scored.append({
@@ -3623,15 +3682,23 @@ def _run_unchain_both_analyzer(state):
                 "higher_net": round(higher_net, 2),
                 "lower_net": round(lower_net, 2),
                 "balanced_profit": round(balanced_profit, 2),
+                "higher_expected_profit": float(higher_expected_profit),
+                "lower_expected_profit": float(lower_expected_profit),
+                "payout_difference": float(payout_difference),
+                "both_profit_target": float(both_profit_target),
                 "p_high": round(p_high, 4),
                 "p_low": round(p_low, 4),
                 "p_mid": round(p_mid, 4),
                 "ev_score": float(ev_score),
                 "confidence": float(candidate_confidence),
                 "middle_zone_risk": str(middle_zone_risk),
-                "best_side": ("HIGHER" if higher_net >= lower_net else "LOWER"),
+                "market_outlook": str(market_outlook),
+                "best_side": ("HIGHER" if higher_expected_profit >= lower_expected_profit else "LOWER"),
+                "higher_valid": bool(higher_valid),
+                "lower_valid": bool(lower_valid),
+                "both_valid": bool(both_valid),
                 "reject_reasons": reject_reasons,
-                "valid": bool(valid),
+                "valid": bool(both_valid),
                 "final_score": float(candidate_confidence),
             })
 
@@ -3646,71 +3713,172 @@ def _run_unchain_both_analyzer(state):
         u["both_analyzer"] = analysis
         return analysis
 
-    valid_setups = [row for row in scored if row.get("valid")]
-    ranking_pool = list(valid_setups)
+    both_pool = [row for row in scored if row.get("both_valid")]
+    ranking_pool = list(both_pool)
     ranking_pool.sort(
         key=lambda row: (
             float(row.get("p_mid", 1.0) or 1.0),
             -float(row.get("ev_score", -9999.0) or -9999.0),
             -float(row.get("balanced_profit", -9999.0) or -9999.0),
+            float(row.get("payout_difference", 9999.0) or 9999.0),
         )
     )
 
     best_both = ranking_pool[0] if ranking_pool else None
-    diagnostic_best = None
-    if best_both is None and scored:
-        diagnostic_pool = sorted(
-            scored,
-            key=lambda row: (
-                float(row.get("p_mid", 1.0) or 1.0),
-                -float(row.get("ev_score", -9999.0) or -9999.0),
-                -float(row.get("balanced_profit", -9999.0) or -9999.0),
-            ),
-        )
-        diagnostic_best = diagnostic_pool[0] if diagnostic_pool else None
+    diagnostic_pool = sorted(
+        scored,
+        key=lambda row: (
+            float(row.get("p_mid", 1.0) or 1.0),
+            -float(row.get("ev_score", -9999.0) or -9999.0),
+            -float(row.get("balanced_profit", -9999.0) or -9999.0),
+            float(row.get("payout_difference", 9999.0) or 9999.0),
+        ),
+    )
+    diagnostic_best = diagnostic_pool[0] if diagnostic_pool else None
 
-    best_higher = max(scored, key=lambda row: float(row.get("higher_net", -9999.0) or -9999.0)) if scored else None
-    best_lower = max(scored, key=lambda row: float(row.get("lower_net", -9999.0) or -9999.0)) if scored else None
+    higher_ranked = sorted(
+        scored,
+        key=lambda row: (
+            -float(row.get("higher_expected_profit", -9999.0) or -9999.0),
+            -float(row.get("higher_net", -9999.0) or -9999.0),
+            -float(row.get("p_high", -9999.0) or -9999.0),
+            float(row.get("p_mid", 1.0) or 1.0),
+            -float(row.get("confidence", -9999.0) or -9999.0),
+        ),
+    )
+    lower_ranked = sorted(
+        scored,
+        key=lambda row: (
+            -float(row.get("lower_expected_profit", -9999.0) or -9999.0),
+            -float(row.get("lower_net", -9999.0) or -9999.0),
+            -float(row.get("p_low", -9999.0) or -9999.0),
+            float(row.get("p_mid", 1.0) or 1.0),
+            -float(row.get("confidence", -9999.0) or -9999.0),
+        ),
+    )
+    higher_ready_pool = [row for row in higher_ranked if row.get("higher_valid")]
+    lower_ready_pool = [row for row in lower_ranked if row.get("lower_valid")]
+    best_higher = higher_ready_pool[0] if higher_ready_pool else (higher_ranked[0] if higher_ranked else None)
+    best_lower = lower_ready_pool[0] if lower_ready_pool else (lower_ranked[0] if lower_ranked else None)
+    visible_best_both = best_both or diagnostic_best
 
     analysis["tested_setups"] = len(scored)
-    analysis["top_setups"] = ranking_pool[:4]
+    analysis["top_setups"] = (ranking_pool[:4] if ranking_pool else diagnostic_pool[:4])
     analysis["best_higher_setup"] = _compact_setup(best_higher, "HIGHER")
     analysis["best_lower_setup"] = _compact_setup(best_lower, "LOWER")
-    analysis["best_both_setup"] = _compact_setup(best_both, "BOTH")
+    analysis["best_both_setup"] = _compact_setup(visible_best_both, "BOTH")
 
+    if best_higher is not None:
+        analysis["higher_expected_profit"] = float(best_higher.get("higher_expected_profit", 0.0) or 0.0)
+    if best_lower is not None:
+        analysis["lower_expected_profit"] = float(best_lower.get("lower_expected_profit", 0.0) or 0.0)
+    if visible_best_both is not None:
+        analysis["both_min_win_profit"] = float(visible_best_both.get("balanced_profit", 0.0) or 0.0)
+        analysis["payout_difference"] = float(visible_best_both.get("payout_difference", 0.0) or 0.0)
+
+    higher_ready = higher_ready_pool[0] if higher_ready_pool else None
+    lower_ready = lower_ready_pool[0] if lower_ready_pool else None
+    recommended_row = None
+    recommended_side = None
+    recommended_trade_ready = False
     if best_both is not None:
-        analysis["recommended"] = dict(best_both)
-        analysis["recommended_duration"] = int(best_both.get("duration", 0) or 0)
-        analysis["expected_profit"] = float(best_both.get("ev_score", 0.0) or 0.0)
-        analysis["middle_zone_risk"] = str(best_both.get("middle_zone_risk") or "HIGH")
-        analysis["confidence"] = float(best_both.get("confidence", base_confidence) or base_confidence)
-        analysis["final_score"] = float(best_both.get("confidence", base_confidence) or base_confidence)
+        recommended_row = best_both
+        recommended_side = "BOTH"
+        recommended_trade_ready = True
+    else:
+        higher_exp = float((higher_ready or {}).get("higher_expected_profit", 0.0) or 0.0)
+        lower_exp = float((lower_ready or {}).get("lower_expected_profit", 0.0) or 0.0)
+        if higher_ready is not None or lower_ready is not None:
+            if higher_exp >= lower_exp:
+                recommended_row = higher_ready or lower_ready
+                recommended_side = "HIGHER" if higher_ready is not None else "LOWER"
+            else:
+                recommended_row = lower_ready or higher_ready
+                recommended_side = "LOWER" if lower_ready is not None else "HIGHER"
+            recommended_trade_ready = True
+        else:
+            fallback_options = []
+            if visible_best_both is not None:
+                fallback_options.append((
+                    "BOTH",
+                    visible_best_both,
+                    float(visible_best_both.get("ev_score", 0.0) or 0.0),
+                ))
+            if best_higher is not None:
+                fallback_options.append((
+                    "HIGHER",
+                    best_higher,
+                    float(best_higher.get("higher_expected_profit", 0.0) or 0.0),
+                ))
+            if best_lower is not None:
+                fallback_options.append((
+                    "LOWER",
+                    best_lower,
+                    float(best_lower.get("lower_expected_profit", 0.0) or 0.0),
+                ))
+            if fallback_options:
+                fallback_options.sort(key=lambda item: item[2], reverse=True)
+                recommended_side, recommended_row, _score = fallback_options[0]
 
-    if valid_setups and best_both is not None:
-        analysis["status"] = "READY"
-        analysis["signal"] = "TRADE BOTH NOW"
-        analysis["reason"] = (
-            f"READY: {best_both['duration']}T {best_both['higher_barrier']} / {best_both['lower_barrier']} • "
-            f"EV {best_both['ev_score']:+.2f} • P_mid {best_both['p_mid'] * 100:.1f}% • "
-            f"confidence {best_both['confidence']:.1f}%"
+    anchor_row = recommended_row or visible_best_both or best_higher or best_lower
+    if anchor_row is not None:
+        analysis["recommended_duration"] = int(anchor_row.get("duration", 0) or 0)
+        analysis["middle_zone_risk"] = str(anchor_row.get("middle_zone_risk") or "HIGH")
+        analysis["confidence"] = float(anchor_row.get("confidence", base_confidence) or base_confidence)
+        analysis["final_score"] = float(anchor_row.get("confidence", base_confidence) or base_confidence)
+        analysis["market_outlook"] = str(
+            anchor_row.get("market_outlook")
+            or _outlook_label(anchor_row.get("p_high"), anchor_row.get("p_low"), anchor_row.get("p_mid"))
         )
+        analysis["higher_probability"] = round(float(anchor_row.get("p_high", 0.0) or 0.0) * 100.0, 1)
+        analysis["lower_probability"] = round(float(anchor_row.get("p_low", 0.0) or 0.0) * 100.0, 1)
+        analysis["middle_probability"] = round(float(anchor_row.get("p_mid", 0.0) or 0.0) * 100.0, 1)
+        if recommended_side == "BOTH":
+            analysis["expected_profit"] = float(anchor_row.get("ev_score", 0.0) or 0.0)
+        elif recommended_side == "HIGHER":
+            analysis["expected_profit"] = float(anchor_row.get("higher_expected_profit", 0.0) or 0.0)
+        elif recommended_side == "LOWER":
+            analysis["expected_profit"] = float(anchor_row.get("lower_expected_profit", 0.0) or 0.0)
+        else:
+            analysis["expected_profit"] = float(anchor_row.get("ev_score", 0.0) or 0.0)
+
+    analysis["recommended_side"] = recommended_side
+    if recommended_row is not None and recommended_side and recommended_trade_ready:
+        analysis["status"] = "READY"
+        analysis["signal"] = f"BEST {recommended_side}"
+        if recommended_side == "BOTH":
+            analysis["reason"] = (
+                f"READY: BEST BOTH {recommended_row['duration']}T {recommended_row['higher_barrier']} / {recommended_row['lower_barrier']} • "
+                f"min win {recommended_row['balanced_profit']:+.2f} vs target {both_profit_target:+.2f} • "
+                f"EV {recommended_row['ev_score']:+.2f} • P_mid {recommended_row['p_mid'] * 100:.1f}%"
+            )
+        elif recommended_side == "HIGHER":
+            analysis["reason"] = (
+                f"READY: BEST HIGHER {recommended_row['duration']}T {recommended_row['higher_barrier']} • "
+                f"net {recommended_row['higher_net']:+.2f} • expected {recommended_row['higher_expected_profit']:+.2f} • "
+                f"P_high {recommended_row['p_high'] * 100:.1f}% • P_mid {recommended_row['p_mid'] * 100:.1f}%"
+            )
+        else:
+            analysis["reason"] = (
+                f"READY: BEST LOWER {recommended_row['duration']}T {recommended_row['lower_barrier']} • "
+                f"net {recommended_row['lower_net']:+.2f} • expected {recommended_row['lower_expected_profit']:+.2f} • "
+                f"P_low {recommended_row['p_low'] * 100:.1f}% • P_mid {recommended_row['p_mid'] * 100:.1f}%"
+            )
     else:
         analysis["status"] = "WAIT"
-        analysis["signal"] = "WAIT"
-        if best_both is None and diagnostic_best is None:
+        analysis["signal"] = "MIDDLE ZONE" if str(analysis.get("market_outlook") or "").upper() == "MIDDLE ZONE" else "WAIT"
+        if visible_best_both is None:
             analysis["reason"] = "WAIT: no candidate setups available."
-        elif best_both is None and diagnostic_best is not None:
-            reasons = list(diagnostic_best.get("reject_reasons") or [])
-            if reasons:
-                analysis["reason"] = f"WAIT: {reasons[0]}"
-            else:
-                analysis["reason"] = "WAIT: no setup passed all barrier analyzer checks."
         else:
-            reasons = list(best_both.get("reject_reasons") or [])
+            reasons = list(visible_best_both.get("reject_reasons") or [])
             if reasons:
                 analysis["reason"] = f"WAIT: {reasons[0]}"
             else:
                 analysis["reason"] = "WAIT: no setup passed all barrier analyzer checks."
+    if recommended_row is not None and recommended_side:
+        analysis["recommended"] = dict(recommended_row)
+        analysis["recommended"]["recommended_side"] = recommended_side
+        analysis["recommended"]["is_trade_ready"] = bool(recommended_trade_ready)
 
     u["both_analyzer"] = analysis
     return analysis
@@ -3718,18 +3886,27 @@ def _run_unchain_both_analyzer(state):
 
 def _get_unchain_auto_gate(state, u=None):
     u = u or _ensure_unchain_hl_state(state)
-    threshold = max(60.0, float(u.get("auto_start_threshold", 60.0) or 60.0))
+    threshold = max(45.0, float(u.get("auto_start_threshold", 48.0) or 48.0))
     metrics = _compute_unchain_auto_metrics(state, u)
     market_confidence = float(
         metrics.get("confidence_score", metrics.get("market_confidence", 0.0)) or 0.0
     )
-    reject_reasons = list(metrics.get("reject_reasons") or [])
-    ready = bool(metrics.get("ready")) and (market_confidence >= threshold) and (len(reject_reasons) == 0)
+    breakout_ready = bool(metrics.get("breakout_ready"))
+    reject_reasons = []
+    if not bool(metrics.get("ready")):
+        reject_reasons = list(metrics.get("reject_reasons") or [])
+    else:
+        if market_confidence < threshold:
+            reject_reasons.append(f"confidence {market_confidence:.0f}%/{threshold:.0f}%")
+        if not breakout_ready:
+            reject_reasons.append("waiting for breakout")
+    ready = bool(metrics.get("ready")) and (market_confidence >= threshold) and breakout_ready
 
     return {
         "ready": bool(ready),
         "threshold": threshold,
         "market_confidence": market_confidence,
+        "breakout_ready": bool(breakout_ready),
         "movement_score": int(metrics.get("movement_score", 0) or 0),
         "volatility_score": int(metrics.get("volatility_score", 0) or 0),
         "range_score": int(metrics.get("range_score", 0) or 0),
@@ -3845,12 +4022,6 @@ def _run_unchain_ai_auto_trade(client_id, state):
         u["last_action"] = (
             f"AI AUTO TRADE waiting • confidence {market_confidence:.0f}%/{threshold:.0f}% • {reason}"
         )
-        if state.get("active_profile") == "UNCHAIN":
-            socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
-        return False
-
-    if not bool(metrics.get("dynamic_allowed")):
-        u["last_action"] = "AI AUTO TRADE waiting • weak movement regime"
         if state.get("active_profile") == "UNCHAIN":
             socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
         return False
@@ -4059,6 +4230,7 @@ def _unchain_payload_response(state):
             "tp": float(u.get("tp", 0) or 0),
             "sl": float(u.get("sl", 0) or 0),
             "auto_sl": bool(u.get("auto_sl", True)),
+            "half_barrier_enabled": bool(u.get("half_barrier_enabled", False)),
             "auto_both_enabled": bool(u.get("auto_both_enabled", False)),
             "ai_auto_trade_enabled": bool(u.get("ai_auto_trade_enabled", False)),
             "auto_both_cooldown": max(0, int(u.get("auto_both_cooldown", 3) or 3)),
@@ -4066,10 +4238,10 @@ def _unchain_payload_response(state):
             "auto_cooldown_remaining": float(auto_both_meta.get("cooldown_remaining", 0.0) or 0.0),
             "ai_auto_status": ai_auto_meta.get("label", "OFF"),
             "ai_auto_cooldown_remaining": float(ai_auto_meta.get("cooldown_remaining", 0.0) or 0.0),
-            "auto_start_threshold": float(u.get("auto_start_threshold", 60.0) or 60.0),
-            "auto_min_movement": float(u.get("auto_min_movement", 0.12) or 0.12),
-            "auto_min_tick_speed": float(u.get("auto_min_tick_speed", 1.5) or 1.5),
-            "auto_min_range": float(u.get("auto_min_range", 0.2) or 0.2),
+        "auto_start_threshold": float(u.get("auto_start_threshold", 48.0) or 48.0),
+        "auto_min_movement": float(u.get("auto_min_movement", 0.06) or 0.06),
+        "auto_min_tick_speed": float(u.get("auto_min_tick_speed", 2.4) or 2.4),
+        "auto_min_range": float(u.get("auto_min_range", 0.12) or 0.12),
             "auto_gate": auto_gate,
             "ai_auto_gate": auto_gate,
             "risk_block_reason": u.get("risk_block_reason"),
@@ -4129,8 +4301,11 @@ def _send_unchain_hl_trade(
         return False, "Stake must be greater than 0"
     duration_unit = _clean_unchain_duration_unit(duration_unit)
     duration = _sanitize_unchain_duration(duration, duration_unit)
+    u = _ensure_unchain_hl_state(state)
     try:
         barrier_value = _format_unchain_barrier(barrier, side, duration_unit)
+        if bool(u.get("half_barrier_enabled")):
+            barrier_value = _half_unchain_barrier(barrier_value, side, duration_unit)
     except Exception as e:
         return False, str(e)
     safe_cycle_id = None
@@ -4180,7 +4355,6 @@ def _send_unchain_hl_trade(
     }
     try:
         ws.send(json.dumps(payload))
-        u = _ensure_unchain_hl_state(state)
         u["last_action"] = f"{side} request sent on {symbol}"
         return True, f"{side} trade sent"
     except Exception as e:
@@ -4742,7 +4916,28 @@ UNCHAIN_SCANNER_DEFAULTS = [
     "R_10", "R_25", "R_50", "R_75", "R_100",
     "1HZ25V", "1HZ50V", "1HZ75V", "1HZ90V", "1HZ100V",
 ]
-UNCHAIN_SCANNER_SAMPLE_SIZE = 30
+UNCHAIN_SCANNER_WINDOW_OPTIONS = [20]
+UNCHAIN_SCANNER_DEFAULT_WINDOW = 20
+UNCHAIN_SCANNER_HISTORY_TICKS = 320
+UNCHAIN_SCANNER_MIN_HISTORY = 20
+UNCHAIN_SCANNER_EMIT_INTERVAL = 2.0
+
+
+def _normalize_scanner_window(window_ticks):
+    try:
+        value = int(window_ticks or UNCHAIN_SCANNER_DEFAULT_WINDOW)
+    except Exception:
+        value = UNCHAIN_SCANNER_DEFAULT_WINDOW
+    return value if value in UNCHAIN_SCANNER_WINDOW_OPTIONS else UNCHAIN_SCANNER_DEFAULT_WINDOW
+
+
+def _scanner_market_label(symbol):
+    sym = str(symbol or "").strip().upper()
+    if sym.startswith("1HZ") and sym.endswith("V") and sym[3:-1].isdigit():
+        return f"Vol {int(sym[3:-1])} (1s)"
+    if sym.startswith("R_") and sym[2:].isdigit():
+        return f"Vol {int(sym[2:])}"
+    return sym or "Unknown"
 
 
 def _ensure_unchain_scanner(state):
@@ -4752,14 +4947,21 @@ def _ensure_unchain_scanner(state):
     scan.setdefault("buffers", {})
     scan.setdefault("analyses", {})
     scan.setdefault("owned_syms", set())
-    try:
-        sample_size = int(scan.get("sample_size", UNCHAIN_SCANNER_SAMPLE_SIZE) or UNCHAIN_SCANNER_SAMPLE_SIZE)
-    except Exception:
-        sample_size = UNCHAIN_SCANNER_SAMPLE_SIZE
-    # Keep scanner behavior fixed: analyze 10 markets over 30 ticks.
-    scan["sample_size"] = UNCHAIN_SCANNER_SAMPLE_SIZE if sample_size != UNCHAIN_SCANNER_SAMPLE_SIZE else sample_size
+    scan.setdefault("window_ticks", UNCHAIN_SCANNER_DEFAULT_WINDOW)
+    scan.setdefault("window_options", list(UNCHAIN_SCANNER_WINDOW_OPTIONS))
+    scan.setdefault("minimum_history", UNCHAIN_SCANNER_MIN_HISTORY)
+    scan.setdefault("sample_size", UNCHAIN_SCANNER_MIN_HISTORY)
     scan.setdefault("max_symbols", 10)
     scan.setdefault("last_emit", 0.0)
+    scan.setdefault("total_ticks", 0)
+    scan.setdefault("last_tick_seen", {})
+    scan.setdefault("last_sub_attempt", {})
+    scan["window_ticks"] = _normalize_scanner_window(scan.get("window_ticks"))
+    scan["window_options"] = list(UNCHAIN_SCANNER_WINDOW_OPTIONS)
+    scan["minimum_history"] = UNCHAIN_SCANNER_MIN_HISTORY
+    scan["sample_size"] = UNCHAIN_SCANNER_MIN_HISTORY
+    scan["max_symbols"] = 10
+    scan["symbols"] = _normalize_scanner_symbols(scan.get("symbols") or [], max_symbols=scan["max_symbols"])
     return scan
 
 
@@ -4781,108 +4983,166 @@ def _normalize_scanner_symbols(raw, max_symbols=10):
     return symbols[:max_symbols]
 
 
-def _build_unchain_scanner_analysis(buffer, sample_size=UNCHAIN_SCANNER_SAMPLE_SIZE, symbol=None):
-    window = list(buffer)[-sample_size:]
-    if len(window) < 6:
+def _build_unchain_scanner_analysis(buffer, window_ticks=UNCHAIN_SCANNER_DEFAULT_WINDOW, symbol=None, active_symbol=None):
+    prices = list(buffer or [])
+    window_ticks = _normalize_scanner_window(window_ticks)
+    if len(prices) < window_ticks:
         return None
 
-    last_price = window[-1]
-    high = max(window)
-    low = min(window)
-    rng = high - low
+    sample_count = len(prices) - window_ticks + 1
+    if sample_count <= 0:
+        return None
 
-    deltas = [window[i] - window[i - 1] for i in range(1, len(window))]
-    avg_abs = sum(abs(d) for d in deltas) / max(1, len(deltas))
-    trend = window[-1] - window[0]
-    trend_norm = max(-1.0, min(1.0, trend / max((rng if rng > 0 else avg_abs * max(2.0, len(window) / 3.0)), 1e-9)))
+    up_moves = []
+    down_moves = []
+    end_deltas = []
+    for start_idx in range(sample_count):
+        segment = prices[start_idx:start_idx + window_ticks]
+        if len(segment) < window_ticks:
+            continue
+        start_price = float(segment[0])
+        end_price = float(segment[-1])
+        up_moves.append(max(segment) - start_price)
+        down_moves.append(start_price - min(segment))
+        end_deltas.append(end_price - start_price)
 
-    flips = 0
-    prev_sign = 0
-    for d in deltas:
-        s = 1 if d > 0 else (-1 if d < 0 else 0)
-        if prev_sign and s and s != prev_sign:
-            flips += 1
-        if s:
-            prev_sign = s
-    noise = min(1.0, flips / max(1, len(deltas)))
-    cleanliness = max(0.0, 1.0 - noise)
+    if not up_moves or not down_moves or not end_deltas:
+        return None
 
-    range_norm = min(1.0, rng / max(1e-9, (abs(last_price) * 0.015 if last_price else avg_abs * 8.0)))
+    avg_up = sum(up_moves) / len(up_moves)
+    avg_down = sum(down_moves) / len(down_moves)
+    avg_delta = sum(end_deltas) / len(end_deltas)
+    barrier_value = max(0.01, round(max(avg_up, avg_down) * 0.25, 2))
+    higher_prob = sum(1 for delta in end_deltas if delta >= barrier_value) / len(end_deltas)
+    lower_prob = sum(1 for delta in end_deltas if delta <= -barrier_value) / len(end_deltas)
+    middle_prob = max(0.0, 1.0 - higher_prob - lower_prob)
+    diff_move = avg_up - avg_down
+    combined_move = avg_up + avg_down
+    recent_segment = prices[-window_ticks:]
+    recent_drift = float(recent_segment[-1]) - float(recent_segment[0])
+    last_price = float(prices[-1])
 
-    higher_confidence = max(5.0, min(99.0, 50.0 + (trend_norm * 45.0) + (range_norm * 20.0) + (cleanliness * 10.0)))
-    lower_confidence = max(5.0, min(99.0, 100.0 - higher_confidence))
-    direction = "HIGHER" if higher_confidence >= lower_confidence else "LOWER"
-    confidence_dir = higher_confidence if direction == "HIGHER" else lower_confidence
-
-    target_profit_mult = 1.5  # aim for ~150% profit style barriers
-    base_barrier = (rng * 0.6) + (avg_abs * target_profit_mult * 0.5)
-    if base_barrier <= 0:
-        base_barrier = avg_abs * (target_profit_mult + 0.5)
-    barrier_mag = max(0.01, min(1.5, base_barrier))
-    barrier_mag = round(barrier_mag, 2)
-    barrier_high = f"+{barrier_mag:.2f}"
-    barrier_low = f"-{barrier_mag:.2f}"
-
-    range_pct = (rng / max(1e-9, abs(last_price))) * 100.0
-    score = max(higher_confidence, lower_confidence) + (range_norm * 10.0) + (cleanliness * 8.0)
+    if higher_prob > lower_prob:
+        best_side = "HIGHER"
+    elif lower_prob > higher_prob:
+        best_side = "LOWER"
+    else:
+        best_side = "HIGHER" if diff_move >= 0 else "LOWER"
 
     return {
         "symbol": symbol,
-        "range": round(rng, 6),
-        "range_pct": round(range_pct, 3),
-        "trend": round(trend, 6),
-        "direction": direction,
-        "barrier_high": barrier_high,
-        "barrier_low": barrier_low,
-        "barrier_mag": barrier_mag,
-        "confidence": round(confidence_dir, 1),
-        "higher_confidence": round(higher_confidence, 1),
-        "lower_confidence": round(lower_confidence, 1),
-        "ticks_ready": len(window),
-        "last_price": last_price,
-        "score": score,
+        "display_name": _scanner_market_label(symbol),
+        "is_active": bool(symbol and str(symbol).upper() == str(active_symbol or "").upper()),
+        "ticks_ready": len(prices),
+        "sample_count": sample_count,
+        "window_ticks": window_ticks,
+        "last_price": round(last_price, 6),
+        "avg_move_up": round(avg_up, 2),
+        "avg_move_down": round(avg_down, 2),
+        "difference": round(diff_move, 2),
+        "combined_move": round(combined_move, 2),
+        "drift": round(avg_delta, 4),
+        "recent_drift": round(recent_drift, 4),
+        "higher_win_prob": round(higher_prob, 4),
+        "lower_win_prob": round(lower_prob, 4),
+        "middle_prob": round(middle_prob, 4),
+        "higher_win": round(higher_prob * 100.0, 1),
+        "lower_win": round(lower_prob * 100.0, 1),
+        "middle_win": round(middle_prob * 100.0, 1),
+        "barrier_value": round(barrier_value, 2),
+        "barrier_high": f"+{barrier_value:.2f}",
+        "barrier_low": f"-{barrier_value:.2f}",
+        "best_side": best_side,
+        "score": 0,
+        "rank": None,
         "updated_at": now_time(),
-        "range_high": round(high, 6),
-        "range_low": round(low, 6),
     }
 
 
+def _rank_unchain_scanner_analyses(analyses):
+    rows = [row for row in analyses if isinstance(row, dict)]
+    if not rows:
+        return []
+    rows.sort(
+        key=lambda row: (
+            float(row.get("combined_move", 0.0) or 0.0),
+            float(row.get("higher_win_prob", 0.0) or 0.0) + float(row.get("lower_win_prob", 0.0) or 0.0),
+            max(float(row.get("higher_win_prob", 0.0) or 0.0), float(row.get("lower_win_prob", 0.0) or 0.0)),
+        ),
+        reverse=True,
+    )
+    max_combined = max(float(row.get("combined_move", 0.0) or 0.0) for row in rows) or 1.0
+    for idx, row in enumerate(rows):
+        move_norm = min(1.0, max(0.0, float(row.get("combined_move", 0.0) or 0.0) / max_combined))
+        win_sum = min(1.0, max(0.0, float(row.get("higher_win_prob", 0.0) or 0.0) + float(row.get("lower_win_prob", 0.0) or 0.0)))
+        best_prob = min(
+            1.0,
+            max(float(row.get("higher_win_prob", 0.0) or 0.0), float(row.get("lower_win_prob", 0.0) or 0.0)),
+        )
+        score = 44.0 + (move_norm * 16.0) + (win_sum * 14.0) + (best_prob * 8.0) + max(0.0, 10.0 - idx)
+        if row.get("is_active"):
+            score += 5.0
+        row["score"] = int(round(max(1.0, min(99.0, score))))
+        row["rank"] = idx + 1
+    return rows
+
+
 def _get_top_unchain_scanner_recs(scanner, limit=4):
-    analyses = list((scanner.get("analyses") or {}).values())
-    analyses = [a for a in analyses if a and a.get("ticks_ready", 0) >= scanner.get("sample_size", UNCHAIN_SCANNER_SAMPLE_SIZE)]
-    analyses.sort(key=lambda a: max(a.get("higher_confidence", 0), a.get("lower_confidence", 0)), reverse=True)
-    return analyses[:limit]
+    min_history = int(scanner.get("minimum_history", UNCHAIN_SCANNER_MIN_HISTORY) or UNCHAIN_SCANNER_MIN_HISTORY)
+    analyses = [
+        row for row in (scanner.get("analyses") or {}).values()
+        if isinstance(row, dict) and int(row.get("ticks_ready", 0) or 0) >= min_history
+    ]
+    ranked = _rank_unchain_scanner_analyses(analyses)
+    return ranked[:limit]
 
 
 def _get_unchain_scanner_payload(state):
     scan = _ensure_unchain_scanner(state)
+    current_symbol = state.get("current_symbol")
+    analyses = scan.get("analyses") or {}
+    for sym, row in analyses.items():
+        if not isinstance(row, dict):
+            continue
+        row["symbol"] = sym
+        row["display_name"] = _scanner_market_label(sym)
+        row["is_active"] = bool(sym and str(sym).upper() == str(current_symbol or "").upper())
     top = _get_top_unchain_scanner_recs(scan)
-    ready = sum(1 for a in (scan.get("analyses") or {}).values() if a and a.get("ticks_ready", 0) >= scan.get("sample_size", UNCHAIN_SCANNER_SAMPLE_SIZE))
+    min_history = int(scan.get("minimum_history", UNCHAIN_SCANNER_MIN_HISTORY) or UNCHAIN_SCANNER_MIN_HISTORY)
+    ready = sum(
+        1 for row in analyses.values()
+        if isinstance(row, dict) and int(row.get("ticks_ready", 0) or 0) >= min_history
+    )
     progress = []
     for sym in scan.get("symbols") or []:
         buf = (scan.get("buffers") or {}).get(sym)
         ticks_ready = len(buf) if isinstance(buf, deque) else 0
-        analysis = (scan.get("analyses") or {}).get(sym) or {}
         progress.append({
             "symbol": sym,
+            "display_name": _scanner_market_label(sym),
             "ticks_ready": int(ticks_ready),
-            "sample_size": int(scan.get("sample_size", UNCHAIN_SCANNER_SAMPLE_SIZE) or UNCHAIN_SCANNER_SAMPLE_SIZE),
-            "barrier_high": analysis.get("barrier_high"),
-            "barrier_low": analysis.get("barrier_low"),
-            "higher_confidence": analysis.get("higher_confidence"),
-            "lower_confidence": analysis.get("lower_confidence"),
-            "range": analysis.get("range"),
-            "range_pct": analysis.get("range_pct"),
+            "sample_count": max(0, int(ticks_ready) - int(scan.get("window_ticks", UNCHAIN_SCANNER_DEFAULT_WINDOW) or UNCHAIN_SCANNER_DEFAULT_WINDOW)),
+            "minimum_history": min_history,
+            "is_active": bool(sym and str(sym).upper() == str(current_symbol or "").upper()),
         })
+    progress.sort(key=lambda item: int(item.get("ticks_ready", 0) or 0), reverse=True)
     return {
         "running": bool(scan.get("running")),
         "symbols": list(scan.get("symbols") or []),
         "max_symbols": int(scan.get("max_symbols", 10) or 10),
-        "sample_size": int(scan.get("sample_size", UNCHAIN_SCANNER_SAMPLE_SIZE) or UNCHAIN_SCANNER_SAMPLE_SIZE),
+        "sample_size": min_history,
+        "minimum_history": min_history,
+        "window_ticks": int(scan.get("window_ticks", UNCHAIN_SCANNER_DEFAULT_WINDOW) or UNCHAIN_SCANNER_DEFAULT_WINDOW),
+        "window_options": list(scan.get("window_options") or UNCHAIN_SCANNER_WINDOW_OPTIONS),
         "recommendations": top,
         "total_tracked": len(scan.get("symbols") or []),
         "ready": int(ready),
+        "total_ticks": int(scan.get("total_ticks", 0) or 0),
         "last_emit": float(scan.get("last_emit", 0.0) or 0.0),
+        "title": "Market Scanner",
+        "headline": f"Top 4 pairs by longest movement ({int(scan.get('window_ticks', UNCHAIN_SCANNER_DEFAULT_WINDOW) or UNCHAIN_SCANNER_DEFAULT_WINDOW)}-tick window)",
+        "footer_note": "Scans up to 10 markets over 20 ticks, shows the best 4 pairs with the longest up & down movement from spot price, and sets barriers at 25% of average movement for balanced win. Updates every 2 seconds.",
+        "current_symbol": current_symbol,
         "progress": progress,
     }
 
@@ -4891,6 +5151,77 @@ def _emit_unchain_scanner(client_id, state):
     payload = _get_unchain_scanner_payload(state)
     socketio.emit("unchain_scanner", payload, room=client_id)
     return payload
+
+
+def _start_unchain_scanner_worker(client_id, state):
+    stop_evt = threading.Event()
+    state["_unchain_scanner_worker_stop_evt"] = stop_evt
+
+    def _worker():
+        while not stop_evt.is_set():
+            try:
+                if clients.get(client_id) is not state:
+                    break
+                scan = _ensure_unchain_scanner(state)
+                if not scan.get("running"):
+                    break
+                ws = state.get("ws")
+                if state.get("ws_connected") and ws:
+                    tick_subs = state.setdefault("tick_subs", {})
+                    last_seen = scan.setdefault("last_tick_seen", {})
+                    last_attempt = scan.setdefault("last_sub_attempt", {})
+                    main_symbol = state.get("current_symbol")
+                    human_symbol = state.get("human_symbol") or main_symbol
+                    now_ts = time.time()
+                    for sym in list(scan.get("symbols") or [])[: int(scan.get("max_symbols", 10) or 10)]:
+                        if sym in (main_symbol, human_symbol):
+                            continue
+                        sub_id = tick_subs.get(sym)
+                        last_tick = float(last_seen.get(sym, 0.0) or 0.0)
+                        last_sub = float(last_attempt.get(sym, 0.0) or 0.0)
+                        needs_sub = not sub_id
+                        stale = bool(sub_id) and (
+                            (last_tick > 0 and (now_ts - last_tick) >= 4.5)
+                            or (last_tick <= 0 and last_sub > 0 and (now_ts - last_sub) >= 4.5)
+                        )
+                        if stale:
+                            try:
+                                ws.send(json.dumps({"forget": sub_id}))
+                            except Exception:
+                                pass
+                            tick_subs.pop(sym, None)
+                            sub_id = None
+                            needs_sub = True
+                        if needs_sub:
+                            try:
+                                ws.send(json.dumps({"ticks": sym, "subscribe": 1}))
+                                scan.setdefault("owned_syms", set()).add(sym)
+                                last_attempt[sym] = now_ts
+                            except Exception:
+                                pass
+                scan["last_emit"] = time.time()
+                _emit_unchain_scanner(client_id, state)
+                if stop_evt.wait(2.0):
+                    break
+            except Exception as e:
+                logger.warning(f"[{client_id}] scanner worker error: {e}")
+                if stop_evt.wait(1.5):
+                    break
+
+    t = threading.Thread(target=_worker, daemon=True, name=f"unchain_scanner_{client_id}")
+    state["_unchain_scanner_worker_thread"] = t
+    t.start()
+
+
+def _stop_unchain_scanner_worker(state):
+    evt = state.get("_unchain_scanner_worker_stop_evt")
+    if evt and hasattr(evt, "set"):
+        try:
+            evt.set()
+        except Exception:
+            pass
+    state["_unchain_scanner_worker_stop_evt"] = None
+    state["_unchain_scanner_worker_thread"] = None
 
 
 def _ensure_tick_subscription(state, symbol):
@@ -4913,36 +5244,52 @@ def _ensure_tick_subscription(state, symbol):
         pass
 
 
-def _start_unchain_scanner(client_id, state, symbols=None):
+def _start_unchain_scanner(client_id, state, symbols=None, window_ticks=None):
     scan = _ensure_unchain_scanner(state)
     ws = state.get("ws")
     if not state.get("ws_connected") or not ws:
         return False, "Not connected", _get_unchain_scanner_payload(state)
 
-    symbols = _normalize_scanner_symbols(symbols, max_symbols=int(scan.get("max_symbols", 10) or 10))
+    if window_ticks is not None:
+        scan["window_ticks"] = _normalize_scanner_window(window_ticks)
+    scan = _ensure_unchain_scanner(state)
+
+    symbols = _normalize_scanner_symbols(symbols, max_symbols=10)
     if not symbols:
-        symbols = UNCHAIN_SCANNER_DEFAULTS[: scan.get("max_symbols", 10)]
+        symbols = list(UNCHAIN_SCANNER_DEFAULTS[:10])
+    if len(symbols) < 10:
+        for sym in UNCHAIN_SCANNER_DEFAULTS:
+            candidate = str(sym).upper().strip()
+            if not candidate or candidate in symbols:
+                continue
+            symbols.append(candidate)
+            if len(symbols) >= 10:
+                break
+    symbols = symbols[:10]
 
     scan["running"] = True
+    scan["max_symbols"] = 10
     scan["symbols"] = symbols
     scan["analyses"] = {}
     scan["last_emit"] = 0.0
+    scan["last_tick_seen"] = {}
+    scan["last_sub_attempt"] = {}
     prev_owned = set(scan.get("owned_syms", set()) or set())
     scan["owned_syms"] = set()
 
-    # keep existing buffers but reset lengths
+    total_ticks = 0
     for sym in symbols:
         buf = scan["buffers"].get(sym)
-        if not isinstance(buf, deque):
-            buf = deque(maxlen=max(120, scan.get("sample_size", UNCHAIN_SCANNER_SAMPLE_SIZE) * 3))
-        buf.maxlen = max(120, scan.get("sample_size", UNCHAIN_SCANNER_SAMPLE_SIZE) * 3)
+        if not isinstance(buf, deque) or buf.maxlen != UNCHAIN_SCANNER_HISTORY_TICKS:
+            buf = deque(list(buf) if isinstance(buf, deque) else [], maxlen=UNCHAIN_SCANNER_HISTORY_TICKS)
         scan["buffers"][sym] = buf
+        total_ticks += len(buf)
+    scan["total_ticks"] = int(total_ticks)
 
     tick_subs = state.setdefault("tick_subs", {})
     main_symbol = state.get("current_symbol")
     human_symbol = state.get("human_symbol") or main_symbol
 
-    # Clear stale subscriptions from a previous scanner run.
     for stale_sym in list(prev_owned):
         if stale_sym in symbols or stale_sym in (main_symbol, human_symbol):
             continue
@@ -4954,7 +5301,6 @@ def _start_unchain_scanner(client_id, state, symbols=None):
                 pass
             tick_subs.pop(stale_sym, None)
 
-    # Subscribe scanner symbols, self-healing stale/non-live sub ids.
     for sym in symbols:
         existing_sub_id = tick_subs.get(sym)
         if existing_sub_id and sym not in (main_symbol, human_symbol):
@@ -4968,13 +5314,15 @@ def _start_unchain_scanner(client_id, state, symbols=None):
             continue
         try:
             ws.send(json.dumps({"ticks": sym, "subscribe": 1}))
-            # Never mark current main/human streams as scanner-owned.
             if sym not in (main_symbol, human_symbol):
                 scan.setdefault("owned_syms", set()).add(sym)
+            scan.setdefault("last_sub_attempt", {})[sym] = time.time()
         except Exception:
             pass
 
-    return True, "Scanner started", _emit_unchain_scanner(client_id, state)
+    _stop_unchain_scanner_worker(state)
+    _start_unchain_scanner_worker(client_id, state)
+    return True, f"Scanner live on {scan['window_ticks']}-tick window", _emit_unchain_scanner(client_id, state)
 
 
 def _stop_unchain_scanner(client_id, state):
@@ -5000,6 +5348,7 @@ def _stop_unchain_scanner(client_id, state):
     scan["running"] = False
     scan["symbols"] = []
     scan["last_emit"] = time.time()
+    _stop_unchain_scanner_worker(state)
     return _emit_unchain_scanner(client_id, state)
 
 
@@ -5018,17 +5367,25 @@ def _process_unchain_scanner_tick(client_id, tick):
     except Exception:
         return
 
-    buf = scan["buffers"].setdefault(sym, deque(maxlen=max(120, scan.get("sample_size", UNCHAIN_SCANNER_SAMPLE_SIZE) * 3)))
+    buf = scan["buffers"].setdefault(sym, deque(maxlen=UNCHAIN_SCANNER_HISTORY_TICKS))
+    if buf.maxlen != UNCHAIN_SCANNER_HISTORY_TICKS:
+        buf = deque(list(buf), maxlen=UNCHAIN_SCANNER_HISTORY_TICKS)
+        scan["buffers"][sym] = buf
     buf.append(price)
+    scan["total_ticks"] = int(scan.get("total_ticks", 0) or 0) + 1
+    scan.setdefault("last_tick_seen", {})[sym] = time.time()
 
-    sample_size = int(scan.get("sample_size", UNCHAIN_SCANNER_SAMPLE_SIZE) or UNCHAIN_SCANNER_SAMPLE_SIZE)
-    if len(buf) >= max(6, sample_size):
-        analysis = _build_unchain_scanner_analysis(buf, sample_size=sample_size, symbol=sym)
-        if analysis:
-            scan.setdefault("analyses", {})[sym] = analysis
+    analysis = _build_unchain_scanner_analysis(
+        buf,
+        window_ticks=scan.get("window_ticks", UNCHAIN_SCANNER_DEFAULT_WINDOW),
+        symbol=sym,
+        active_symbol=state.get("current_symbol"),
+    )
+    if analysis:
+        scan.setdefault("analyses", {})[sym] = analysis
 
     now = time.time()
-    if now - float(scan.get("last_emit", 0.0) or 0.0) >= 0.45:
+    if now - float(scan.get("last_emit", 0.0) or 0.0) >= UNCHAIN_SCANNER_EMIT_INTERVAL:
         scan["last_emit"] = now
         _emit_unchain_scanner(client_id, state)
 
@@ -5043,26 +5400,24 @@ def _apply_scanner_recommendation(client_id, state, symbol, switch_symbol=True):
         return False, f"No analysis ready for {sym}", _get_unchain_scanner_payload(state)
 
     try:
-        mag = abs(float(analysis.get("barrier_mag") or 0.0))
+        mag = abs(float(analysis.get("barrier_value") or 0.0))
     except Exception:
         mag = 0.0
     if mag <= 0:
         return False, "No barrier recommendation available", _get_unchain_scanner_payload(state)
 
-    hb = f"{mag:.2f}"
+    hb = f"+{mag:.2f}"
     lb = f"-{mag:.2f}"
     u = _ensure_unchain_hl_state(state)
     u["higher_barrier"] = hb
     u["lower_barrier"] = lb
-    u["last_action"] = f"Scanner set {hb} / {lb} on {sym}"
+    u["last_action"] = f"Scanner set {hb} / {lb} on {_scanner_market_label(sym)}"
 
     if switch_symbol:
         old_symbol = state.get("current_symbol")
         human_symbol = state.get("human_symbol") or old_symbol
         state["current_symbol"] = sym
-        # This symbol becomes MAIN, so scanner should not own it.
         scan.setdefault("owned_syms", set()).discard(sym)
-        # reset non-HUMAN profile analysis
         for name, strat in state.get("strategies", {}).items():
             if name == "HUMAN":
                 continue
@@ -5076,12 +5431,10 @@ def _apply_scanner_recommendation(client_id, state, symbol, switch_symbol=True):
             try:
                 tick_subs = state.setdefault("tick_subs", {})
                 old_id = tick_subs.get(old_symbol)
-                # Keep old symbol stream if HUMAN still depends on it.
                 if old_id and old_symbol != human_symbol:
                     ws.send(json.dumps({"forget": old_id}))
                     tick_subs.pop(old_symbol, None)
                 ws.send(json.dumps({"ticks": state["current_symbol"], "subscribe": 1}))
-                # Keep scanner coverage intact if old symbol is still part of scanner markets.
                 if scan.get("running") and old_symbol and old_symbol in (scan.get("symbols") or []) and old_symbol != sym:
                     ws.send(json.dumps({"ticks": old_symbol, "subscribe": 1}))
                     if old_symbol not in (state.get("current_symbol"), human_symbol):
@@ -5091,8 +5444,7 @@ def _apply_scanner_recommendation(client_id, state, symbol, switch_symbol=True):
         socketio.emit("market_change", {"symbol": state["current_symbol"]}, room=client_id)
 
     payload = _unchain_payload_response(state)
-    return True, f"Applied scanner pick for {sym}", payload
-
+    return True, f"Applied scanner pick for {_scanner_market_label(sym)}", payload
 # ---------------- WEBSOCKET HANDLERS (PER CLIENT) ---------------- #
 def handle_on_message(client_id, ws, message, expected_nonce):
     state = clients.get(client_id)
@@ -5164,6 +5516,7 @@ def handle_on_message(client_id, ws, message, expected_nonce):
             loginid = data["authorize"].get("loginid", "UNKNOWN")
             balance = float(data["authorize"].get("balance", 0))
 
+            state["loginid"] = loginid
             state["balance"] = balance
 
             if state["session_start_balance"] is None:
@@ -5700,6 +6053,7 @@ def handle_on_close(client_id, ws, code, msg, expected_nonce):
 
     state["ws_connected"] = False
     state["ws_transport_connected"] = False
+    state["loginid"] = "UNKNOWN"
     logger.warning(f"[{client_id}] 🔌 WebSocket Disconnected")
     socketio.emit("connection_status", {"connected": False, "loginid": "UNKNOWN", "balance": state.get("balance", 0.0)}, room=client_id)
 
@@ -5774,6 +6128,7 @@ def set_token():
     token = (request.json or {}).get("token", "")
 
     state["api_token"] = token
+    state["loginid"] = "UNKNOWN"
     state["session_start_balance"] = None
 
     # start WS but avoid "2 instances" per browser session
@@ -5794,6 +6149,20 @@ def set_token():
     t.start()
 
     return jsonify({"status": "connecting"})
+
+
+@app.route("/api_connection_status", methods=["GET"])
+def api_connection_status():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    _cid, state = get_client_state()
+    return jsonify({
+        "connected": bool(state.get("ws_connected")),
+        "loginid": state.get("loginid", "UNKNOWN"),
+        "balance": float(state.get("balance", 0.0) or 0.0),
+        "has_token": bool(str(state.get("api_token", "") or "").strip()),
+    })
 
 
 @app.route("/set_auto_stake", methods=["POST"])
@@ -5933,12 +6302,20 @@ def change_market():
         try:
             # best-effort unsubscribe old MAIN ticks (do not touch HUMAN)
             tick_subs = state.setdefault("tick_subs", {})
+            scan = _ensure_unchain_scanner(state)
             old_id = tick_subs.get(old_symbol)
             # Do not forget if HUMAN still streams the old symbol.
             if old_id and old_symbol != human_symbol:
                 ws.send(json.dumps({"forget": old_id}))
                 tick_subs.pop(old_symbol, None)
             ws.send(json.dumps({"ticks": state["current_symbol"], "subscribe": 1}))
+            if scan.get("running"):
+                scan.setdefault("owned_syms", set()).discard(state["current_symbol"])
+                scan.setdefault("last_sub_attempt", {})[state["current_symbol"]] = time.time()
+                if old_symbol and old_symbol in (scan.get("symbols") or []) and old_symbol != state["current_symbol"] and old_symbol != human_symbol:
+                    ws.send(json.dumps({"ticks": old_symbol, "subscribe": 1}))
+                    scan.setdefault("owned_syms", set()).add(old_symbol)
+                    scan.setdefault("last_sub_attempt", {})[old_symbol] = time.time()
         except Exception:
             pass
 
@@ -6760,7 +7137,8 @@ def unchain_scanner_start_route():
     cid, state = get_client_state()
     data = request.json or {}
     symbols = data.get("symbols")
-    ok, msg, payload = _start_unchain_scanner(cid, state, symbols)
+    window_ticks = data.get("window")
+    ok, msg, payload = _start_unchain_scanner(cid, state, symbols, window_ticks=window_ticks)
     status = "success" if ok else "error"
     if state.get("active_profile") == "UNCHAIN":
         socketio.emit("unchain_scanner", payload, room=cid)
@@ -6812,7 +7190,7 @@ def unchain_both_analyze_route():
     payload = _unchain_payload_response(state)
     if state.get("active_profile") == "UNCHAIN":
         socketio.emit("unchain_status", payload, room=cid)
-    status_ok = str((analysis or {}).get("signal") or "WAIT").upper() == "TRADE BOTH NOW"
+    status_ok = str((analysis or {}).get("status") or "WAIT").upper() == "READY"
     msg = (analysis or {}).get("reason") or ("Setup ready" if status_ok else "Wait")
     return jsonify({
         "status": "success",
@@ -6853,14 +7231,16 @@ def unchain_settings_route():
             u["sl"] = max(0.0, float(data.get("sl") or 0))
         if "auto_sl" in data:
             u["auto_sl"] = bool(data.get("auto_sl"))
+        if "half_barrier_enabled" in data:
+            u["half_barrier_enabled"] = bool(data.get("half_barrier_enabled"))
         if "auto_start_threshold" in data:
-            u["auto_start_threshold"] = max(60.0, min(80.0, float(data.get("auto_start_threshold") or 60.0)))
+            u["auto_start_threshold"] = max(45.0, min(80.0, float(data.get("auto_start_threshold") or 48.0)))
         if "auto_min_movement" in data:
-            u["auto_min_movement"] = max(0.00001, float(data.get("auto_min_movement") or 0.12))
+            u["auto_min_movement"] = max(0.00001, float(data.get("auto_min_movement") or 0.06))
         if "auto_min_tick_speed" in data:
-            u["auto_min_tick_speed"] = max(0.05, min(10.0, float(data.get("auto_min_tick_speed") or 1.5)))
+            u["auto_min_tick_speed"] = max(0.05, min(10.0, float(data.get("auto_min_tick_speed") or 2.4)))
         if "auto_min_range" in data:
-            u["auto_min_range"] = max(0.00001, float(data.get("auto_min_range") or 0.2))
+            u["auto_min_range"] = max(0.00001, float(data.get("auto_min_range") or 0.12))
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 400
     u["last_action"] = "UNCHAIN settings saved"

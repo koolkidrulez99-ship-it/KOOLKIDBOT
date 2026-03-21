@@ -759,13 +759,20 @@ body.mobile-only-ui #profileContainer .unchain-history-grid{
 
         <div class="api-grid">
             <div class="api-left">
-                <input id="token" placeholder="Enter API Token" type="password" style="width:40%;">
-                <button onclick="connect()" style="background:#38bdf8;">Connect</button>
-                <button onclick="disconnect()" style="background:#ef4444;">Disconnect</button>
+                <div id="apiConnectForm" style="display:flex; flex-wrap:wrap; align-items:center; gap:10px; width:100%;">
+                    <input id="token" placeholder="Enter API Token" type="password" style="flex:1 1 240px; min-width:220px;">
+                    <button id="connectBtn" onclick="connect()" style="background:#38bdf8;">Connect</button>
+                    <select id="symbol" style="flex:1 1 200px;"></select>
+                </div>
+                <div id="apiConnectedPanel" style="display:none; align-items:center; gap:10px; flex-wrap:wrap; width:100%;">
+                    <div id="apiConnectedMessage" class="green" style="display:flex; align-items:center; gap:8px; font-weight:700; font-size:13px; line-height:1.2;">
+                        <span id="apiConnectedIcon" aria-hidden="true">🔑</span>
+                        <span id="apiConnectedText">API CONNECTED SUCCESSFULLY</span>
+                    </div>
+                    <button id="disconnectBtn" onclick="disconnect()" style="background:#ef4444;">Disconnect</button>
+                </div>
 
-                <select id="symbol"></select>
-
-                <p>Status: <span id="apiStatus" class="red">Not Connected</span></p>
+                <p id="apiStatusRow" style="margin-top:8px;">Status: <span id="apiStatus" class="red">Not Connected</span></p>
             </div>
 
             <div class="api-right" id="howToUsePanel">
@@ -917,17 +924,11 @@ function bindSocketHandlers(){
     });
 
     socket.on("connection_status", (data)=>{
-        apiConnected = data.connected;
+        const wasConnected = !!apiConnected;
+        const connected = applyApiConnectionState(data || {});
 
-        if(data.connected){
-            apiStatus.innerText = "Connected";
-            apiStatus.className = "green";
-            accountDashboard.style.display = "block";
+        if(connected && !wasConnected){
             showToast("✅ API AUTHORIZED", "success");
-        } else {
-            apiStatus.innerText = "Not Connected";
-            apiStatus.className = "red";
-            accountDashboard.style.display = "none";
         }
     });
 
@@ -1151,6 +1152,12 @@ const digitStream = document.getElementById("digitStream");
 
 const accountDashboard = document.getElementById("accountDashboard");
 const profileTitle = document.getElementById("profileTitle");
+const apiConnectForm = document.getElementById("apiConnectForm");
+const apiConnectedPanel = document.getElementById("apiConnectedPanel");
+const apiConnectedMessage = document.getElementById("apiConnectedMessage");
+const apiConnectedIcon = document.getElementById("apiConnectedIcon");
+const apiConnectedText = document.getElementById("apiConnectedText");
+const apiStatusRow = document.getElementById("apiStatusRow");
 
 const tradeStore = { KOOLKID: [], JOKERJOE: [], HUMAN: [], UNCHAIN: [] };
 const TRADE_TOAST_MULTI_JOIN_MS = 900;
@@ -1159,6 +1166,95 @@ const tradeToastByProfile = {};
 const PROFILE_DRAFTS_STORAGE_KEY = "bot_profile_drafts_v1";
 let profileDrafts = {};
 let profileDraftSaveTimer = null;
+let apiConnectPollTimer = null;
+let apiConnectPendingUntil = 0;
+
+function updateApiConnectionUi(mode, message){
+    const stateMode = mode === true ? "connected" : (mode === false ? "disconnected" : String(mode || "disconnected"));
+    const isConnected = stateMode === "connected";
+    const isPending = stateMode === "pending";
+    if(apiConnectForm) apiConnectForm.style.display = isConnected || isPending ? "none" : "flex";
+    if(apiConnectedPanel) apiConnectedPanel.style.display = isConnected || isPending ? "flex" : "none";
+    if(apiStatusRow) apiStatusRow.style.display = "block";
+    if(apiConnectedMessage){
+        apiConnectedMessage.className = isConnected ? "green" : (isPending ? "blue" : "");
+    }
+    if(apiConnectedIcon){
+        apiConnectedIcon.innerText = isConnected ? "🔑" : (isPending ? "⏳" : "");
+    }
+    if(apiConnectedText){
+        apiConnectedText.innerText = message || (isConnected ? "API CONNECTED SUCCESSFULLY" : (isPending ? "CONNECTING API..." : ""));
+    }
+    if(apiConnectedMessage){
+        apiConnectedMessage.style.fontSize = isConnected ? "13px" : "13px";
+        apiConnectedMessage.style.fontWeight = isConnected ? "700" : "700";
+    }
+}
+
+function stopApiConnectPolling(){
+    if(apiConnectPollTimer){
+        clearInterval(apiConnectPollTimer);
+        apiConnectPollTimer = null;
+    }
+}
+
+function applyApiConnectionState(data){
+    const connected = !!(data && data.connected);
+    apiConnected = connected;
+
+    if(connected){
+        apiConnectPendingUntil = 0;
+        stopApiConnectPolling();
+        apiStatus.innerText = "Connected";
+        apiStatus.className = "green";
+        updateApiConnectionUi("connected", "API CONNECTED SUCCESSFULLY");
+        accountDashboard.style.display = "block";
+        return true;
+    }
+
+    if(apiConnectPendingUntil && Date.now() < apiConnectPendingUntil){
+        apiStatus.innerText = "Connecting...";
+        apiStatus.className = "blue";
+        updateApiConnectionUi("pending", "CONNECTING API...");
+        accountDashboard.style.display = "none";
+        return false;
+    }
+
+    apiConnectPendingUntil = 0;
+    stopApiConnectPolling();
+    apiStatus.innerText = "Not Connected";
+    apiStatus.className = "red";
+    updateApiConnectionUi("disconnected");
+    accountDashboard.style.display = "none";
+    return false;
+}
+
+async function refreshApiConnectionState(silent){
+    try{
+        const res = await fetch("/api_connection_status", {method:"GET", cache:"no-store"});
+        const data = await res.json();
+        return applyApiConnectionState(data || {});
+    }catch(e){
+        if(!silent) showToast("Failed to refresh API connection state", "error");
+        return false;
+    }
+}
+
+function startApiConnectPolling(){
+    stopApiConnectPolling();
+    let attempts = 0;
+    apiConnectPollTimer = setInterval(async ()=>{
+        attempts += 1;
+        const connected = await refreshApiConnectionState(true);
+        if(connected || attempts >= 20){
+            if(!connected && attempts >= 20){
+                apiConnectPendingUntil = 0;
+                applyApiConnectionState({connected:false});
+            }
+            stopApiConnectPolling();
+        }
+    }, 750);
+}
 
 function normalizeProfileName(v){
     const p = String(v || "").toUpperCase().trim();
@@ -2414,16 +2510,38 @@ async function setProfile(profile){
 }
 
 async function connect(){
-    const token = document.getElementById("token").value;
-    await fetch("/set_token", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token})});
-    document.getElementById("token").value = "";
+    const tokenInput = document.getElementById("token");
+    const token = tokenInput ? tokenInput.value : "";
+    if(!token.trim()){
+        showToast("Enter an API token first", "error");
+        return;
+    }
+    apiConnectPendingUntil = Date.now() + 15000;
+    updateApiConnectionUi("pending", "CONNECTING API...");
+    apiStatus.innerText = "Connecting...";
+    apiStatus.className = "blue";
+    const res = await fetch("/set_token", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token})});
+    if(tokenInput) tokenInput.value = "";
+    if(!res.ok){
+        apiConnectPendingUntil = 0;
+        updateApiConnectionUi("disconnected");
+        apiStatus.innerText = "Not Connected";
+        apiStatus.className = "red";
+        showToast("Failed to start API connection", "error");
+        return;
+    }
+    startApiConnectPolling();
+    setTimeout(() => { refreshApiConnectionState(true).catch(() => {}); }, 150);
 }
 
 async function disconnect(){
+    apiConnectPendingUntil = 0;
+    stopApiConnectPolling();
     await fetch("/disconnect", {method:"POST"});
 
     apiStatus.innerText = "Disconnected";
     apiStatus.className = "red";
+    updateApiConnectionUi("disconnected");
     accountDashboard.style.display = "none";
 
     balanceDisplay.innerText = "0.00";
@@ -3392,6 +3510,7 @@ syncMobileOnlyLayout();
 /* ✅ STARTUP */
 initSocket();
 (async () => {
+    try{ await refreshApiConnectionState(true); }catch(e){}
     try{ await ensureProfileModuleScript("KOOLKID"); }catch(e){}
     setProfile("KOOLKID");
 })();

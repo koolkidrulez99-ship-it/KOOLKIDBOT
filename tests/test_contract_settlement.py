@@ -1,10 +1,15 @@
+import json
+
 import pytest
 from types import SimpleNamespace
 
+import server
 from server import (
     _decorate_unchain_active_entry_countdown,
     _format_unchain_barrier,
+    _half_unchain_barrier,
     _is_contract_settled_fast,
+    _send_unchain_hl_trade,
     _upsert_unchain_active_contract,
 )
 
@@ -120,3 +125,43 @@ def test_format_unchain_barrier_keeps_user_typed_plus_sign():
 
 def test_format_unchain_barrier_auto_adds_plus_for_unsigned_tick_units():
     assert _format_unchain_barrier("0.12", "HIGHER", "t") == "+0.12"
+
+
+def test_half_unchain_barrier_halves_higher_and_lower_values():
+    assert _half_unchain_barrier("+0.12", "HIGHER", "t") == "+0.06"
+    assert _half_unchain_barrier("-0.12", "LOWER", "t") == "-0.06"
+
+
+def test_send_unchain_hl_trade_uses_half_barrier_setting(monkeypatch):
+    sent = []
+
+    class DummyWs:
+        def send(self, payload):
+            sent.append(json.loads(payload))
+
+    state = {
+        "ws_connected": True,
+        "ws": DummyWs(),
+        "req_meta": {},
+        "unchain_hl": {"half_barrier_enabled": True},
+    }
+    server.clients["test-half-barrier"] = state
+    monkeypatch.setattr(server, "_check_unchain_hl_risk_block", lambda state: None)
+
+    try:
+        ok, msg = _send_unchain_hl_trade(
+            "test-half-barrier",
+            side="HIGHER",
+            stake=1.0,
+            symbol="R_25",
+            barrier="+0.12",
+            duration=5,
+            duration_unit="t",
+        )
+    finally:
+        server.clients.pop("test-half-barrier", None)
+
+    assert ok is True
+    assert "sent" in msg.lower()
+    assert sent
+    assert sent[0]["parameters"]["barrier"] == "+0.06"

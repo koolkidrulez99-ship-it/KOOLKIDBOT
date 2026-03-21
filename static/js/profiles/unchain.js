@@ -4,9 +4,11 @@
     socketBound: false,
     lastSocket: null,
     auto_sl: true,
+    half_barrier_enabled: false,
     pollTimer: null,
     lastPayload: null,
     scanner: null,
+    bothAnalyzerEnabled: false,
     dirtyFields: new Set(),
     isSaving: false,
     marketChart: {
@@ -43,13 +45,11 @@
     return arr;
   };
   const DURATION_PRESETS = {
-    t: range(5, 10, 1),
+    t: range(3, 10, 1),
     s: range(15, 59, 1),
     m: range(1, 59, 1),
     h: range(1, 24, 1),
   };
-  const SCANNER_SAMPLE_SIZE = 30;
-
   function App() { return window.BotApp || {}; }
   function isActive() { try { return typeof activeProfile !== "undefined" && activeProfile === PROFILE; } catch (e) { return false; } }
   function el(id) { return document.getElementById(id); }
@@ -140,21 +140,44 @@
     return raw || fallback;
   }
 
+  function formatBarrierInputValue(v, fallback) {
+    const n = Number(v);
+    const safe = Number.isFinite(n) ? n : Number(fallback);
+    if (!Number.isFinite(safe)) return String(fallback);
+    const absText = String(Math.abs(safe).toFixed(10)).replace(/\.?0+$/, "");
+    return `${safe < 0 ? "-" : "+"}${absText || "0"}`;
+  }
+
+  function scaleBarrierText(rawValue, factor, fallback) {
+    const scaled = num(rawValue, fallback) * Number(factor || 1);
+    return formatBarrierInputValue(scaled, num(fallback, 0));
+  }
+
+  function getDisplayedBarrierText(rawValue, fallback, halfEnabled) {
+    const source = String(rawValue == null || rawValue === "" ? formatBarrierInputValue(fallback, fallback) : rawValue).trim();
+    return halfEnabled ? scaleBarrierText(source, 0.5, fallback) : source;
+  }
+
   function readForm() {
-    const autoConfidence = Math.max(60, Math.min(80, readNumber("unchainAutoConfidence", 60)));
-    const autoMinMovement = Math.max(0.00001, readNumber("unchainAutoMinMovement", 0.12));
-    const autoMinTickSpeed = Math.max(0.05, Math.min(10, readNumber("unchainAutoMinTickSpeed", 1.5)));
-    const autoMinRange = Math.max(0.00001, readNumber("unchainAutoMinRange", 0.2));
+    const autoConfidence = Math.max(45, Math.min(80, readNumber("unchainAutoConfidence", 48)));
+    const autoMinMovement = Math.max(0.00001, readNumber("unchainAutoMinMovement", 0.06));
+    const autoMinTickSpeed = Math.max(0.05, Math.min(10, readNumber("unchainAutoMinTickSpeed", 2.4)));
+    const autoMinRange = Math.max(0.00001, readNumber("unchainAutoMinRange", 0.12));
+    const halfBarrierToggle = el("unchainHalfBarrierToggle");
+    const halfBarrierEnabled = halfBarrierToggle ? !!halfBarrierToggle.checked : !!state.half_barrier_enabled;
+    const higherBarrierRaw = readText("unchainHigherBarrier", "+0.12");
+    const lowerBarrierRaw = readText("unchainLowerBarrier", "-0.12");
     return {
       higher_stake: readNumber("unchainHigherStake", 1),
       lower_stake: readNumber("unchainLowerStake", 1),
-      higher_barrier: readText("unchainHigherBarrier", "+0.12"),
-      lower_barrier: readText("unchainLowerBarrier", "-0.12"),
+      higher_barrier: halfBarrierEnabled ? scaleBarrierText(higherBarrierRaw, 2, 0.12) : higherBarrierRaw,
+      lower_barrier: halfBarrierEnabled ? scaleBarrierText(lowerBarrierRaw, 2, -0.12) : lowerBarrierRaw,
       duration: readInteger("unchainDuration", 5),
       duration_unit: readText("unchainDurationUnit", "t").toLowerCase(),
       tp: readNumber("unchainTp", 0),
       sl: readNumber("unchainSl", 0),
       auto_sl: !!state.auto_sl,
+      half_barrier_enabled: halfBarrierEnabled,
       auto_start_threshold: autoConfidence,
       auto_min_movement: autoMinMovement,
       auto_min_tick_speed: autoMinTickSpeed,
@@ -204,13 +227,14 @@
     const lowerField = el("unchainLowerBarrier");
     const higherRaw = higherField ? String(higherField.value || "").trim() : "";
     const lowerRaw = lowerField ? String(lowerField.value || "").trim() : "";
+    const halfBarrier = !!(state.half_barrier_enabled || (un && un.half_barrier_enabled));
     const higher = num(
-      higherRaw !== "" ? higherRaw : (un && un.higher_barrier) != null ? un.higher_barrier : "+0.12",
-      0.12,
+      higherRaw !== "" ? higherRaw : getDisplayedBarrierText((un && un.higher_barrier) != null ? un.higher_barrier : "+0.12", 0.12, halfBarrier),
+      halfBarrier ? 0.06 : 0.12,
     );
     const lower = num(
-      lowerRaw !== "" ? lowerRaw : (un && un.lower_barrier) != null ? un.lower_barrier : "-0.12",
-      -0.12,
+      lowerRaw !== "" ? lowerRaw : getDisplayedBarrierText((un && un.lower_barrier) != null ? un.lower_barrier : "-0.12", -0.12, halfBarrier),
+      halfBarrier ? -0.06 : -0.12,
     );
     return {
       higher,
@@ -473,11 +497,20 @@
     btn.style.color = state.auto_sl ? "#111827" : "#fff";
   }
 
+  function applyHalfBarrierToggle() {
+    const wrap = el("unchainHalfBarrierWrap");
+    const input = el("unchainHalfBarrierToggle");
+    const label = el("unchainHalfBarrierState");
+    if (input) input.checked = !!state.half_barrier_enabled;
+    if (wrap) wrap.classList.toggle("is-on", !!state.half_barrier_enabled);
+    if (label) label.innerText = state.half_barrier_enabled ? "ON" : "OFF";
+  }
+
   function applyAutoConfidenceLabel() {
     const slider = el("unchainAutoConfidence");
     const label = el("unchainAutoConfidenceValue");
     if (!slider || !label) return;
-    const v = Math.max(55, Math.min(80, Number(slider.value || 60)));
+    const v = Math.max(45, Math.min(80, Number(slider.value || 48)));
     slider.value = String(Math.round(v));
     label.innerText = `${Math.round(v)}%`;
   }
@@ -504,22 +537,72 @@
 
   function fillForm(un, force) {
     if (!un) return;
+    const halfEnabled = !!un.half_barrier_enabled;
+    state.auto_sl = !!un.auto_sl;
+    state.half_barrier_enabled = halfEnabled;
     setFieldValue("unchainHigherStake", formatInputNumber(un.higher_stake, 1), force);
     setFieldValue("unchainLowerStake", formatInputNumber(un.lower_stake, 1), force);
-    setFieldValue("unchainHigherBarrier", un.higher_barrier || "+0.12", force);
-    setFieldValue("unchainLowerBarrier", un.lower_barrier || "-0.12", force);
+    setFieldValue("unchainHigherBarrier", getDisplayedBarrierText(un.higher_barrier || "+0.12", 0.12, halfEnabled), force);
+    setFieldValue("unchainLowerBarrier", getDisplayedBarrierText(un.lower_barrier || "-0.12", -0.12, halfEnabled), force);
     setFieldValue("unchainDurationUnit", (un.duration_unit || "t").toLowerCase(), force);
     setFieldValue("unchainDuration", String(un.duration || 5), force);
     applyDurationPresets(!!force);
     setFieldValue("unchainTp", String(un.tp || 0), force);
     setFieldValue("unchainSl", String(un.sl || 0), force);
-    setFieldValue("unchainAutoConfidence", String(Math.max(55, Math.min(80, Number(un.auto_start_threshold || 60)))), force);
-    setFieldValue("unchainAutoMinMovement", formatInputNumber(un.auto_min_movement, 0.12), force);
-    setFieldValue("unchainAutoMinTickSpeed", formatInputNumber(un.auto_min_tick_speed, 1.5), force);
-    setFieldValue("unchainAutoMinRange", formatInputNumber(un.auto_min_range, 0.2), force);
-    state.auto_sl = !!un.auto_sl;
+    setFieldValue("unchainAutoConfidence", String(Math.max(45, Math.min(80, Number(un.auto_start_threshold || 48)))), force);
+    setFieldValue("unchainAutoMinMovement", formatInputNumber(un.auto_min_movement, 0.06), force);
+    setFieldValue("unchainAutoMinTickSpeed", formatInputNumber(un.auto_min_tick_speed, 2.4), force);
+    setFieldValue("unchainAutoMinRange", formatInputNumber(un.auto_min_range, 0.12), force);
     applyAutoSlBtn();
+    applyHalfBarrierToggle();
     applyAutoConfidenceLabel();
+  }
+
+  function syncHalfBarrierPreview() {
+    renderBarrierMarketChart((state.lastPayload && (state.lastPayload.unchain || state.lastPayload)) || {}, state.lastPayload || {});
+  }
+
+  function transformHalfBarrierFieldValues(enabled) {
+    const factor = enabled ? 0.5 : 2;
+    const higherEl = el("unchainHigherBarrier");
+    const lowerEl = el("unchainLowerBarrier");
+    if (higherEl) {
+      higherEl.value = scaleBarrierText(higherEl.value, factor, 0.12);
+      markDirty("unchainHigherBarrier");
+    }
+    if (lowerEl) {
+      lowerEl.value = scaleBarrierText(lowerEl.value, factor, -0.12);
+      markDirty("unchainLowerBarrier");
+    }
+  }
+
+  function bindHalfBarrierToggle() {
+    const input = el("unchainHalfBarrierToggle");
+    if (!input || input.dataset.unchainBound === "1") return;
+    input.dataset.unchainBound = "1";
+    input.addEventListener("change", async () => {
+      const previous = !!state.half_barrier_enabled;
+      const nextEnabled = !!input.checked;
+      const higherEl = el("unchainHigherBarrier");
+      const lowerEl = el("unchainLowerBarrier");
+      const previousHigher = higherEl ? String(higherEl.value || "") : "";
+      const previousLower = lowerEl ? String(lowerEl.value || "") : "";
+      state.half_barrier_enabled = nextEnabled;
+      transformHalfBarrierFieldValues(nextEnabled);
+      applyHalfBarrierToggle();
+      syncHalfBarrierPreview();
+      const r = await saveSettings(false);
+      if (!(r && r.ok)) {
+        const fallbackPayload = state.lastPayload && (state.lastPayload.unchain || state.lastPayload);
+        if (higherEl) higherEl.value = previousHigher;
+        if (lowerEl) lowerEl.value = previousLower;
+        state.half_barrier_enabled = fallbackPayload && typeof fallbackPayload.half_barrier_enabled !== "undefined"
+          ? !!fallbackPayload.half_barrier_enabled
+          : previous;
+        applyHalfBarrierToggle();
+        syncHalfBarrierPreview();
+      }
+    });
   }
 
   function renderStatusChip(un, payload) {
@@ -654,13 +737,18 @@
     const rec = data && typeof data.recommended === "object" ? data.recommended : null;
     const bestHigher = data && typeof data.best_higher_setup === "object" ? data.best_higher_setup : null;
     const bestLower = data && typeof data.best_lower_setup === "object" ? data.best_lower_setup : null;
-    const bestBoth = data && typeof data.best_both_setup === "object" ? data.best_both_setup : rec;
+    const bestBoth = data && typeof data.best_both_setup === "object"
+      ? data.best_both_setup
+      : ((rec && String(rec.recommended_side || rec.side || "").toUpperCase() === "BOTH") ? rec : null);
+    const status = String(data.status || "WAIT").toUpperCase();
     const signal = String(data.signal || "WAIT").toUpperCase();
+    const recommendedSide = String(data.recommended_side || (rec && rec.recommended_side) || "").toUpperCase();
+    const marketOutlook = String(data.market_outlook || (bestBoth && bestBoth.market_outlook) || "WAITING").toUpperCase();
     const reason = String(data.reason || "Tap Analyze to run Barrier Analysis Tool.");
     const symbol = String(data.symbol || (state.lastPayload && state.lastPayload.symbol) || "—");
     const tested = Number(data.tested_setups || 0);
     const ticksCollected = Number(data.ticks_collected != null ? data.ticks_collected : (data.sample_size || 0));
-    const minTicks = Number(data.required_min_ticks || 100);
+    const minTicks = Number(data.required_min_ticks || 50);
     const maxTicks = Number(data.max_ticks_considered || 200);
     const confidence = Number(
       data.confidence != null
@@ -671,6 +759,34 @@
       data.expected_profit != null
         ? data.expected_profit
         : (bestBoth && bestBoth.ev_score != null ? bestBoth.ev_score : NaN)
+    );
+    const higherProb = Number(data.higher_probability);
+    const lowerProb = Number(data.lower_probability);
+    const middleProb = Number(data.middle_probability);
+    const bothMinProfit = Number(
+      data.both_min_win_profit != null
+        ? data.both_min_win_profit
+        : (bestBoth && bestBoth.balanced_profit != null ? bestBoth.balanced_profit : NaN)
+    );
+    const bothProfitTarget = Number(
+      data.both_profit_target != null
+        ? data.both_profit_target
+        : (bestBoth && bestBoth.both_profit_target != null ? bestBoth.both_profit_target : NaN)
+    );
+    const payoutDiff = Number(
+      data.payout_difference != null
+        ? data.payout_difference
+        : (bestBoth && bestBoth.payout_difference != null ? bestBoth.payout_difference : NaN)
+    );
+    const higherExpected = Number(
+      data.higher_expected_profit != null
+        ? data.higher_expected_profit
+        : (bestHigher && bestHigher.expected_profit != null ? bestHigher.expected_profit : NaN)
+    );
+    const lowerExpected = Number(
+      data.lower_expected_profit != null
+        ? data.lower_expected_profit
+        : (bestLower && bestLower.expected_profit != null ? bestLower.expected_profit : NaN)
     );
 
     const fmtSideSetup = (setup, side) => {
@@ -686,19 +802,34 @@
       const netText = Number.isFinite(net) ? `${net >= 0 ? "+" : "-"}$${Math.abs(net).toFixed(2)}` : "—";
       const expText = Number.isFinite(exp) ? `${exp >= 0 ? "+" : "-"}$${Math.abs(exp).toFixed(2)}` : "—";
       const probText = Number.isFinite(prob) ? `${(prob * 100).toFixed(1)}%` : "—";
-      return `${side} ${Number.isFinite(dur) ? `${dur}${unit}` : "—"} ${barrier} (Net ${netText}, E ${expText}, P ${probText})`;
+      return `${Number.isFinite(dur) ? `${dur}${unit}` : "—"} ${barrier} • Net ${netText} • E ${expText} • P ${probText}`;
     };
 
     const chip = el("unchainBothSignalChip");
     if (chip) {
       chip.innerText = signal;
-      if (signal === "TRADE BOTH NOW") {
+      if (status === "READY" && recommendedSide === "BOTH") {
         chip.style.background = "#22c55e";
         chip.style.color = "#052e16";
+      } else if (status === "READY") {
+        chip.style.background = "#38bdf8";
+        chip.style.color = "#082f49";
+      } else if (signal === "MIDDLE ZONE" || marketOutlook === "MIDDLE ZONE") {
+        chip.style.background = "#f59e0b";
+        chip.style.color = "#451a03";
       } else {
         chip.style.background = "#1e293b";
         chip.style.color = "#e2e8f0";
       }
+    }
+
+    const body = el("unchainBothBody");
+    const toggleBtn = el("unchainBothToggleBtn");
+    if (body) body.style.display = state.bothAnalyzerEnabled ? "" : "none";
+    if (toggleBtn) {
+      toggleBtn.innerText = state.bothAnalyzerEnabled ? "ON" : "OFF";
+      toggleBtn.style.background = state.bothAnalyzerEnabled ? "#22c55e" : "#475569";
+      toggleBtn.style.color = state.bothAnalyzerEnabled ? "#052e16" : "#e2e8f0";
     }
 
     const summary = el("unchainBothSummary");
@@ -706,22 +837,38 @@
       const bothText = bestBoth
         ? `BOTH ${bestBoth.duration || "—"}${String(bestBoth.duration_unit || "t").toUpperCase()} ${bestBoth.higher_barrier || "—"} / ${bestBoth.lower_barrier || "—"}`
         : "BOTH: —";
-      summary.innerText = `${reason} • Symbol ${symbol} • Ticks ${ticksCollected}/${minTicks} required (max ${maxTicks}) • ${fmtSideSetup(bestHigher, "HIGHER")} • ${fmtSideSetup(bestLower, "LOWER")} • ${bothText} • Tested ${tested} setup${tested === 1 ? "" : "s"}.`;
-      summary.style.color = signal === "TRADE BOTH NOW" ? "#86efac" : "#94a3b8";
+      const probText = [
+        `H ${Number.isFinite(higherProb) ? `${higherProb.toFixed(1)}%` : "—"}`,
+        `L ${Number.isFinite(lowerProb) ? `${lowerProb.toFixed(1)}%` : "—"}`,
+        `M ${Number.isFinite(middleProb) ? `${middleProb.toFixed(1)}%` : "—"}`
+      ].join(" • ");
+      summary.innerText = `${reason} • Symbol ${symbol} • Outlook ${marketOutlook} • ${probText} • Ticks ${ticksCollected}/${minTicks} required (max ${maxTicks}) • ${fmtSideSetup(bestHigher, "HIGHER")} • ${fmtSideSetup(bestLower, "LOWER")} • ${bothText} • Tested ${tested} setup${tested === 1 ? "" : "s"}.`;
+      summary.style.color = status === "READY"
+        ? (recommendedSide === "BOTH" ? "#86efac" : "#7dd3fc")
+        : ((signal === "MIDDLE ZONE" || marketOutlook === "MIDDLE ZONE") ? "#fcd34d" : "#94a3b8");
     }
 
     setText("unchainBothScore", Number.isFinite(confidence) ? `${confidence.toFixed(1)}%` : "0.0%");
+    setText("unchainBothOutlook", marketOutlook || "WAITING");
+    setText(
+      "unchainBothProbabilities",
+      `H ${Number.isFinite(higherProb) ? `${higherProb.toFixed(1)}%` : "—"} • L ${Number.isFinite(lowerProb) ? `${lowerProb.toFixed(1)}%` : "—"} • M ${Number.isFinite(middleProb) ? `${middleProb.toFixed(1)}%` : "—"}`
+    );
     const recDuration = Number(data.recommended_duration);
-    const recDurationUnit = String((bestBoth && bestBoth.duration_unit) || "t").toUpperCase();
+    const recDurationUnit = String((rec && rec.duration_unit) || (bestBoth && bestBoth.duration_unit) || "t").toUpperCase();
     setText("unchainBothDuration", Number.isFinite(recDuration) && recDuration > 0
       ? `${recDuration}${recDurationUnit}`
-      : (bestBoth ? `${bestBoth.duration || "—"}${String(bestBoth.duration_unit || "").toUpperCase()}` : "—"));
+      : (rec ? `${rec.duration || "—"}${String(rec.duration_unit || "").toUpperCase()}` : (bestBoth ? `${bestBoth.duration || "—"}${String(bestBoth.duration_unit || "").toUpperCase()}` : "—")));
     setText("unchainBothBarriers", bestBoth ? `${bestBoth.higher_barrier || "—"} / ${bestBoth.lower_barrier || "—"}` : "—");
     setText("unchainBothMiddleRisk", bestBoth ? String(bestBoth.middle_zone_risk || data.middle_zone_risk || "—") : String(data.middle_zone_risk || "—"));
     setText("unchainBothPayoutHigher", fmtSideSetup(bestHigher, "HIGHER"));
     setText("unchainBothPayoutLower", fmtSideSetup(bestLower, "LOWER"));
-    setText("unchainBothTotalCost", Number.isFinite(expectedProfit) ? fmtUsd(expectedProfit) : "—");
-    const ev = Number(bestBoth && bestBoth.ev_score != null ? bestBoth.ev_score : (rec && rec.ev_score));
+    setText("unchainBothTotalCost", Number.isFinite(bothMinProfit) ? fmtUsd(bothMinProfit) : "—");
+    setText("unchainBothProfitTarget", Number.isFinite(bothProfitTarget) ? fmtUsd(bothProfitTarget) : "—");
+    setText("unchainBothPayoutDiff", Number.isFinite(payoutDiff) ? fmtUsd(payoutDiff) : "—");
+    setText("unchainBothHigherExp", Number.isFinite(higherExpected) ? fmtUsd(higherExpected) : "—");
+    setText("unchainBothLowerExp", Number.isFinite(lowerExpected) ? fmtUsd(lowerExpected) : "—");
+    const ev = Number(bestBoth && bestBoth.ev_score != null ? bestBoth.ev_score : (rec && rec.ev_score != null ? rec.ev_score : expectedProfit));
     const pMid = Number(bestBoth && bestBoth.p_mid != null ? bestBoth.p_mid : (rec && rec.p_mid));
     const evText = Number.isFinite(ev) ? `EV ${ev >= 0 ? "+" : ""}${ev.toFixed(2)}` : "EV —";
     const pMidText = Number.isFinite(pMid) ? `P_mid ${(pMid * 100).toFixed(1)}%` : "P_mid —";
@@ -729,7 +876,7 @@
 
     const applyBtn = el("unchainBothApplyBtn");
     if (applyBtn) {
-      const canApply = !!(rec && String(signal).toUpperCase() === "TRADE BOTH NOW");
+      const canApply = !!rec;
       applyBtn.disabled = !canApply;
       applyBtn.style.opacity = canApply ? "1" : "0.55";
       applyBtn.style.cursor = canApply ? "pointer" : "not-allowed";
@@ -737,6 +884,10 @@
   }
 
   async function analyzeBothTool() {
+    if (!state.bothAnalyzerEnabled) {
+      toast("Barrier Analysis Tool is OFF", "info");
+      return;
+    }
     try {
       await saveSettings(false);
       const r = await postJSON("/unchain_both_analyze", {});
@@ -755,12 +906,15 @@
   }
 
   async function applyBothRecommendation() {
+    if (!state.bothAnalyzerEnabled) {
+      toast("Barrier Analysis Tool is OFF", "info");
+      return;
+    }
     const un = state.lastPayload && (state.lastPayload.unchain || state.lastPayload);
     const analyzer = (un && un.both_analyzer) || {};
     const rec = analyzer && typeof analyzer.recommended === "object" ? analyzer.recommended : null;
-    const signal = String(analyzer.signal || "WAIT").toUpperCase();
-    if (!rec || signal !== "TRADE BOTH NOW") {
-      toast("No trade-ready setup to apply", "info");
+    if (!rec) {
+      toast("No analyzed barrier setup to apply", "info");
       return;
     }
 
@@ -768,6 +922,12 @@
     const duration = parseInt(rec.duration, 10);
     const higherBarrier = String(rec.higher_barrier || "").trim();
     const lowerBarrier = String(rec.lower_barrier || "").trim();
+    const displayHigherBarrier = higherBarrier
+      ? getDisplayedBarrierText(higherBarrier, 0.12, !!state.half_barrier_enabled)
+      : "";
+    const displayLowerBarrier = lowerBarrier
+      ? getDisplayedBarrierText(lowerBarrier, -0.12, !!state.half_barrier_enabled)
+      : "";
 
     const unitEl = el("unchainDurationUnit");
     if (unitEl && durationUnit) {
@@ -779,25 +939,35 @@
     if (durationEl && Number.isFinite(duration)) {
       const asText = String(duration);
       const hasOption = Array.from(durationEl.options || []).some((opt) => String(opt.value) === asText);
-      if (hasOption) {
-        durationEl.value = asText;
-        markDirty("unchainDuration");
+      if (!hasOption) {
+        const opt = document.createElement("option");
+        opt.value = asText;
+        opt.text = asText;
+        durationEl.appendChild(opt);
       }
+      durationEl.value = asText;
+      markDirty("unchainDuration");
     }
     const higherEl = el("unchainHigherBarrier");
-    if (higherEl && higherBarrier) {
-      higherEl.value = higherBarrier;
+    if (higherEl && displayHigherBarrier) {
+      higherEl.value = displayHigherBarrier;
       markDirty("unchainHigherBarrier");
     }
     const lowerEl = el("unchainLowerBarrier");
-    if (lowerEl && lowerBarrier) {
-      lowerEl.value = lowerBarrier;
+    if (lowerEl && displayLowerBarrier) {
+      lowerEl.value = displayLowerBarrier;
       markDirty("unchainLowerBarrier");
     }
 
     renderBarrierMarketChart(un || {}, state.lastPayload || {});
     await saveSettings(true);
     toast("Applied barrier setup", "success");
+  }
+
+  function toggleBothAnalyzer() {
+    state.bothAnalyzerEnabled = !state.bothAnalyzerEnabled;
+    const un = state.lastPayload && (state.lastPayload.unchain || state.lastPayload);
+    renderBothAnalyzer(un || {});
   }
 
   function formatTradeCountdown(item) {
@@ -890,100 +1060,214 @@
     }).join("");
   }
 
+  function fmtScannerPct(v) {
+    const n = Number(v);
+    return Number.isFinite(n) ? `${n.toFixed(1)}%` : "—";
+  }
+
+  function fmtScannerNum(v) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n.toFixed(2) : "—";
+  }
+
+  function fmtScannerSigned(v) {
+    const n = Number(v);
+    return Number.isFinite(n) ? `${n >= 0 ? "+" : "-"}${Math.abs(n).toFixed(2)}` : "—";
+  }
 
   function renderScanner(scanner) {
-    state.scanner = scanner || state.scanner;
-    const payload = scanner || state.scanner;
+    state.scanner = scanner || state.scanner || {};
+    const payload = state.scanner || {};
     const statusEl = el("unchainScannerStatus");
+    const headlineEl = el("unchainScannerHeadline");
+    const tickCountEl = el("unchainScannerTickCount");
+    const footerEl = el("unchainScannerFooter");
+    const bodyEl = el("unchainScannerBody");
+    const windowsEl = el("unchainScannerWindows");
     const listEl = el("unchainScannerList");
 
-    if (statusEl) {
-      if (!payload || !payload.running) {
-        statusEl.innerText = "OFF";
-        statusEl.style.background = "#1e293b";
-        statusEl.style.color = "#e2e8f0";
-      } else {
-        const tracked = Number(payload.total_tracked || (payload.symbols && payload.symbols.length) || 0);
-        const ready = Number(payload.ready || 0);
-        statusEl.innerText = `RUNNING • ${tracked} markets • ${ready} ready`;
-        statusEl.style.background = "#22c55e";
-        statusEl.style.color = "#0f172a";
-      }
+    const currentWindow = Number(payload.window_ticks || 20);
+    const windowOptions = Array.isArray(payload.window_options) && payload.window_options.length
+      ? payload.window_options
+      : [20];
+
+    if (windowsEl) {
+      windowsEl.innerHTML = windowOptions.map((ticks) => {
+        const active = Number(ticks) === currentWindow;
+        return `<button type="button" class="unchain-scanner-window-btn${active ? " is-active" : ""}" data-action="unchain-scanner-window" data-window="${Number(ticks) || 15}">${Number(ticks) || 15}</button>`;
+      }).join("");
     }
+    if (headlineEl) {
+      headlineEl.innerText = payload.headline || `Top 4 pairs by longest movement (${currentWindow}-tick window)`;
+    }
+    if (tickCountEl) {
+      const totalTicks = Number(payload.total_ticks || 0);
+      tickCountEl.innerText = `${totalTicks.toLocaleString()} ticks`;
+    }
+    if (footerEl) {
+      footerEl.innerHTML = payload.footer_note
+        ? `<strong>Live mode:</strong> ${String(payload.footer_note).replace(/^Live mode:\s*/i, "")}`
+        : "<strong>Live mode:</strong> Scans up to 10 markets over 20 ticks, shows the best 4 pairs with the longest up & down movement from spot price, and sets barriers at 25% of average movement for balanced win. Updates every 2 seconds.";
+    }
+
+    const running = !!payload.running;
+    if (statusEl) {
+      statusEl.innerText = running ? "ON" : "OFF";
+      statusEl.classList.toggle("is-on", running);
+      statusEl.classList.toggle("is-off", !running);
+    }
+    if (tickCountEl) tickCountEl.style.display = running ? "" : "none";
+    if (bodyEl) bodyEl.style.display = running ? "grid" : "none";
 
     if (!listEl) return;
-    if (!payload || !payload.running) {
-      listEl.style.display = "none";
-      return;
-    }
-    listEl.style.display = "grid";
     const recs = Array.isArray(payload.recommendations) ? payload.recommendations.slice(0, 4) : [];
-    const progress = Array.isArray(payload.progress) ? payload.progress : [];
-    if (!recs.length) {
-      if (!progress.length) {
-        listEl.innerHTML = "<div class=\"unchain-empty\">Scanning 10 markets… waiting for ticks.</div>";
-        return;
-      }
-      listEl.innerHTML = progress.map((item) => {
-        const ready = Number(item.ticks_ready || 0);
-        const need = Number(item.sample_size || payload.sample_size || SCANNER_SAMPLE_SIZE);
-        const pct = Math.min(100, Math.round((ready / Math.max(1, need)) * 100));
-        return `<div class=\"unchain-active-item\">
-          <div class=\"top\">
-            <div style=\"font-weight:900;\">${item.symbol || "—"}</div>
-            <div class=\"unchain-chip\">Ticks ${ready}/${need}</div>
-          </div>
-          <div style=\"margin-top:8px;color:#cbd5e1;\">
-            <div style=\"height:10px;border-radius:20px;background:#0f172a;border:1px solid rgba(148,163,184,0.25);overflow:hidden;\">
-              <div style=\"width:${pct}%;height:100%;background:#22c55e;\"></div>
-            </div>
-          </div>
-        </div>`;
-      }).join("");
+    const progress = Array.isArray(payload.progress) ? payload.progress.slice(0, 4) : [];
+    const minimumHistory = Number(payload.minimum_history || payload.sample_size || 20);
+
+    if (!running) {
+      listEl.innerHTML = '<div class="unchain-empty">Scanner is off. Tap ON to start.</div>';
       return;
     }
 
-    listEl.innerHTML = recs.map((rec) => {
-      const higherScore = Number(rec.higher_confidence ?? rec.confidence ?? 0);
-      const lowerScore = Number(rec.lower_confidence ?? rec.confidence ?? 0);
-      const bestDir = higherScore >= lowerScore ? "HIGHER" : "LOWER";
-      const bestScore = Math.max(higherScore, lowerScore);
-      const range = rec.range != null ? Number(rec.range).toFixed(4) : "—";
-      const rangePct = rec.range_pct != null ? Number(rec.range_pct).toFixed(2) : "—";
-      const ticksReady = rec.ticks_ready != null ? Number(rec.ticks_ready) : payload.sample_size || SCANNER_SAMPLE_SIZE;
-      const direction = String(rec.direction || bestDir).toUpperCase();
-      return `<div class="unchain-active-item">
-        <div class="top">
-          <div style="font-weight:900;">${rec.symbol || "—"}</div>
-          <div class="unchain-chip">Best: ${bestDir} ${bestScore.toFixed(1)}%</div>
+    if (!progress.length && !recs.length) {
+      listEl.innerHTML = '<div class="unchain-empty">Collecting live ticks across up to 10 markets…</div>';
+      return;
+    }
+
+    const recMap = new Map(recs.map((item) => [String(item.symbol || ""), item]));
+    const rowPool = [];
+    const seen = new Set();
+    recs.forEach((item) => {
+      const symbol = String(item && item.symbol || "");
+      if (!symbol || seen.has(symbol)) return;
+      seen.add(symbol);
+      rowPool.push(item);
+    });
+    progress.forEach((item) => {
+      const symbol = String(item && item.symbol || "");
+      if (!symbol || seen.has(symbol) || rowPool.length >= 4) return;
+      seen.add(symbol);
+      rowPool.push(recMap.get(symbol) || item);
+    });
+    const rows = rowPool.slice(0, 4).map((item, idx) => Object.assign({ rank: idx + 1 }, item));
+
+    listEl.innerHTML = rows.map((row, idx) => {
+      const rank = Number(row.rank || idx + 1);
+      const displayName = row.display_name || row.symbol || "—";
+      const active = !!row.is_active;
+      const sampleCount = Number(row.sample_count || 0);
+      const ticksReady = Number(row.ticks_ready || 0);
+      const rawPct = Math.round((ticksReady / Math.max(1, minimumHistory)) * 100);
+      const hasAnalysis = Number.isFinite(Number(row.avg_move_up)) && Number.isFinite(Number(row.avg_move_down));
+      if (!hasAnalysis) {
+        const pct = Math.max(6, Math.min(ticksReady >= minimumHistory ? 99 : 100, rawPct));
+        const activeBadge = active ? '<span class="unchain-scanner-badge">ACTIVE</span>' : "";
+        return `<div class="unchain-scanner-market${rank === 1 ? " is-rank-1" : ""}${active ? " is-active" : ""}">
+          <div class="unchain-scanner-market-head">
+            <div class="unchain-scanner-market-left">
+              <div class="unchain-scanner-rank-row">
+                <span class="unchain-scanner-rank">#${rank}</span>
+                <span class="unchain-scanner-market-name">${displayName}</span>
+                ${activeBadge}
+              </div>
+              <div class="unchain-scanner-mini-meta"><span>↗ ${sampleCount}t</span><span class="muted">${ticksReady}/${minimumHistory}</span></div>
+            </div>
+            <div class="unchain-scanner-score-wrap">
+              <div>
+                <div class="unchain-scanner-score">${pct}</div>
+                <div class="unchain-scanner-score-label">LOAD</div>
+              </div>
+            </div>
+          </div>
+          <div class="unchain-scanner-bar-wrap">
+            <div class="unchain-scanner-bar-label">Collecting live ticks across 20 ticks</div>
+            <div class="unchain-scanner-bar"><span style="width:${pct}%;"></span></div>
+          </div>
+        </div>`;
+      }
+      const pct = Math.max(6, Math.min(100, rawPct));
+      const score = Math.max(1, Math.min(99, Number(row.score || pct)));
+      const higherWin = Number(row.higher_win);
+      const lowerWin = Number(row.lower_win);
+      const avgUp = Number(row.avg_move_up);
+      const avgDown = Number(row.avg_move_down);
+      const difference = Number(row.difference);
+      const drift = Number(row.recent_drift != null ? row.recent_drift : row.drift);
+      const trendIcon = drift >= 0 ? "↗" : "↘";
+      const bestSide = String(row.best_side || (higherWin >= lowerWin ? "HIGHER" : "LOWER")).toUpperCase();
+      const bestPillClass = bestSide === "HIGHER" ? "is-best-higher" : (bestSide === "LOWER" ? "is-best-lower" : "is-best");
+      const differenceClass = difference >= 0 ? "is-green" : "is-red";
+      const applyBtn = `<button class="unchain-scanner-apply" data-action="unchain-scanner-apply" data-symbol="${row.symbol || ""}">Apply</button>`;
+      return `<div class="unchain-scanner-market${rank === 1 ? " is-rank-1" : ""}${active ? " is-active" : ""}">
+        <div class="unchain-scanner-market-head">
+          <div class="unchain-scanner-market-left">
+            <div class="unchain-scanner-rank-row">
+              <span class="unchain-scanner-rank">#${rank}</span>
+              <span class="unchain-scanner-market-name">${displayName}</span>
+              ${active ? '<span class="unchain-scanner-badge">ACTIVE</span>' : ""}
+            </div>
+            <div class="unchain-scanner-mini-meta">
+              <span>${trendIcon} ${sampleCount}t</span>
+              <span class="muted">${ticksReady} ticks tracked</span>
+            </div>
+          </div>
+          <div class="unchain-scanner-score-wrap">
+            <div>
+              <div class="unchain-scanner-score">${score}</div>
+              <div class="unchain-scanner-score-label">Score</div>
+            </div>
+          </div>
         </div>
-        <div style="margin-top:8px;color:#cbd5e1;display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;">
-          <div><span class="unchain-label">Barrier</span><div>${rec.barrier_high || "—"} / ${rec.barrier_low || "—"}</div></div>
-          <div><span class="unchain-label">Higher Score</span><div>${higherScore.toFixed(1)}%</div></div>
-          <div><span class="unchain-label">Lower Score</span><div>${lowerScore.toFixed(1)}%</div></div>
-          <div><span class="unchain-label">Range</span><div>${range} (${rangePct}%)</div></div>
-          <div><span class="unchain-label">Ticks</span><div>${ticksReady}/${payload.sample_size || SCANNER_SAMPLE_SIZE}</div></div>
-          <div><span class="unchain-label">Direction</span><div>${direction}</div></div>
+        <div class="unchain-scanner-stats">
+          <div class="unchain-scanner-stat"><span class="label">Higher win:</span><span class="value ${higherWin >= lowerWin ? "is-green" : "is-red"}">${fmtScannerPct(higherWin)}</span></div>
+          <div class="unchain-scanner-stat"><span class="label">Lower win:</span><span class="value ${lowerWin > higherWin ? "is-green" : "is-red"}">${fmtScannerPct(lowerWin)}</span></div>
+          <div class="unchain-scanner-stat"><span class="label">Avg move up:</span><span class="value is-green">${fmtScannerNum(avgUp)}</span></div>
+          <div class="unchain-scanner-stat"><span class="label">Avg move dn:</span><span class="value is-red">${fmtScannerNum(avgDown)}</span></div>
         </div>
-        <div class="unchain-btn-row" style="margin-top:10px;">
-          <button data-action="unchain-scanner-apply" data-symbol="${rec.symbol || ""}" style="background:#22c55e;">Apply & Switch</button>
+        <div class="unchain-scanner-diff">Difference (Up - Down): <strong class="${differenceClass}">${fmtScannerSigned(difference)}</strong></div>
+        <div class="unchain-scanner-chip-row">
+          <span class="unchain-scanner-pill is-green">↗ H: ${row.barrier_high || fmtScannerSigned(row.barrier_value)}</span>
+          <span class="unchain-scanner-pill is-red">↘ L: ${row.barrier_low || fmtScannerSigned(-Number(row.barrier_value || 0))}</span>
+          <span class="unchain-scanner-pill ${bestPillClass}">✧ Best: ${bestSide}</span>
+          ${applyBtn}
+        </div>
+        <div class="unchain-scanner-bar-wrap">
+          <div class="unchain-scanner-bar-label">Score</div>
+          <div class="unchain-scanner-bar"><span style="width:${score}%;"></span></div>
         </div>
       </div>`;
     }).join("");
   }
 
-
-  function readScannerSymbols() { return []; }
-
-  async function analyzeScanner() {
+  async function analyzeScanner(windowTicks) {
     try {
-      const r = await postJSON("/unchain_scanner/start", {});
-      const msg = (r.data && (r.data.message || r.data.error)) || "Scanner analyzing top markets";
+      const activeWindow = Number(windowTicks || (state.scanner && state.scanner.window_ticks) || 20);
+      const r = await postJSON("/unchain_scanner/start", { window: activeWindow });
+      const msg = (r.data && (r.data.message || r.data.error)) || `Market Scanner ON (${activeWindow} ticks)`;
       if (r.ok && r.data && r.data.scanner) renderScanner(r.data.scanner);
       toast(msg, (r.ok && (!r.data || r.data.status !== "error")) ? "success" : "error");
     } catch (e) {
-      toast("Failed to analyze markets", "error");
+      toast("Failed to start market scanner", "error");
     }
+  }
+
+  async function stopScanner() {
+    try {
+      const r = await postJSON("/unchain_scanner/stop", {});
+      if (r.ok && r.data && r.data.scanner) renderScanner(r.data.scanner);
+      toast((r.data && (r.data.message || "Market Scanner OFF")) || "Market Scanner OFF", r.ok ? "info" : "error");
+    } catch (e) {
+      toast("Failed to stop market scanner", "error");
+    }
+  }
+
+  async function toggleScanner() {
+    const running = !!(state.scanner && state.scanner.running);
+    if (running) {
+      await stopScanner();
+      return;
+    }
+    await analyzeScanner();
   }
 
   async function applyScannerSymbol(symbol) {
@@ -1217,8 +1501,19 @@
       case "unchain-clear-active":
         await clearActive();
         break;
+      case "unchain-scanner-toggle":
+        await toggleScanner();
+        break;
+      case "unchain-scanner-window":
+        if (btn && btn.dataset && btn.dataset.window) {
+          await analyzeScanner(Number(btn.dataset.window));
+        }
+        break;
       case "unchain-scanner-analyze":
         await analyzeScanner();
+        break;
+      case "unchain-both-toggle":
+        toggleBothAnalyzer();
         break;
       case "unchain-both-analyze":
         await analyzeBothTool();
@@ -1313,7 +1608,9 @@
     applyDurationPresets(true);
     bindFormInputs();
     applyAutoSlBtn();
+    applyHalfBarrierToggle();
     applyAutoConfidenceLabel();
+    bindHalfBarrierToggle();
   }
 
   function startPolling() {

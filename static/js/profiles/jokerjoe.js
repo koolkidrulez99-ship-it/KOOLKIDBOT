@@ -47,8 +47,11 @@
     const modal = getEl("aiAutoModeModalJokerjoe");
     if (!modal) return;
     state.aiAutoModalOpen = true;
-    modal.style.display = "flex";
+    modal.style.display = "block";
     updateAIAutoModeModalUiJokerjoe();
+    try {
+      modal.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    } catch (e) {}
   }
 
   function closeAIAutoModeModalJokerjoe() {
@@ -835,7 +838,6 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     try { App().ensureDigitClickPatchSoon && App().ensureDigitClickPatchSoon(); } catch (e) {}
     try { App().applyDigitSelectionUI && App().applyDigitSelectionUI(); } catch (e) {}
     patchKidgambleConfirm();
-    try { const m = getEl("aiAutoModeModalJokerjoe"); if (m && m.dataset.bound !== "1") { m.dataset.bound = "1"; m.addEventListener("click", (ev) => { if (ev.target === m) closeAIAutoModeModalJokerjoe(); }); } } catch (e) {}
     bindSocketListeners();
     bindBarrierSync();
     bindMatchesAnalysisObserverJokerjoe();
