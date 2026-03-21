@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import server
 from server import (
+    _ensure_unchain_hl_state,
     _decorate_unchain_active_entry_countdown,
     _format_unchain_barrier,
     _half_unchain_barrier,
@@ -130,6 +131,15 @@ def test_format_unchain_barrier_auto_adds_plus_for_unsigned_tick_units():
 def test_half_unchain_barrier_halves_higher_and_lower_values():
     assert _half_unchain_barrier("+0.12", "HIGHER", "t") == "+0.06"
     assert _half_unchain_barrier("-0.12", "LOWER", "t") == "-0.06"
+
+
+def test_ensure_unchain_state_restores_v75_default_barriers():
+    state = {"current_symbol": "1HZ75V"}
+
+    u = _ensure_unchain_hl_state(state)
+
+    assert u["higher_barrier"] == "+3.88"
+    assert u["lower_barrier"] == "-3.88"
 
 
 def test_send_unchain_hl_trade_uses_half_barrier_setting(monkeypatch):

@@ -53,7 +53,7 @@
     }
     .unchain-profile .unchain-history-grid{
       display:grid;
-      grid-template-columns:repeat(4,minmax(0,1fr));
+      grid-template-columns:repeat(5,minmax(0,1fr));
       gap:10px;
       margin-top:12px;
     }
@@ -886,12 +886,91 @@
       .unchain-profile .unchain-scanner-market-head{
         align-items:flex-start;
       }
+      .unchain-profile .unchain-scanner-list{
+        gap:10px;
+      }
+      .unchain-profile .unchain-scanner-market{
+        padding:12px 13px;
+        border-radius:16px;
+      }
+      .unchain-profile .unchain-scanner-market-left{
+        gap:6px;
+      }
+      .unchain-profile .unchain-scanner-rank-row{
+        gap:6px;
+      }
+      .unchain-profile .unchain-scanner-rank{
+        min-width:28px;
+        min-height:22px;
+        padding:3px 8px;
+        border-radius:8px;
+        font-size:11px;
+      }
+      .unchain-profile .unchain-scanner-market-name{
+        font-size:1.05rem;
+      }
+      .unchain-profile .unchain-scanner-mini-meta{
+        gap:8px;
+        font-size:11px;
+      }
+      .unchain-profile .unchain-scanner-badge{
+        min-height:22px;
+        padding:4px 9px;
+        font-size:10px;
+      }
       .unchain-profile .unchain-scanner-score-wrap{
         justify-content:flex-start;
+        gap:8px;
+        min-width:0;
+      }
+      .unchain-profile .unchain-scanner-score{
+        font-size:1.55rem;
+      }
+      .unchain-profile .unchain-scanner-score-label{
+        font-size:10px;
+      }
+      .unchain-profile .unchain-scanner-stats{
+        gap:8px;
+        margin-top:10px;
+        font-size:13px;
+      }
+      .unchain-profile .unchain-scanner-stat .label{
+        font-size:12px;
+      }
+      .unchain-profile .unchain-scanner-diff{
+        margin-top:8px;
+        padding-top:8px;
+        font-size:12px;
+      }
+      .unchain-profile .unchain-scanner-diff strong{
+        font-size:0.92rem;
+      }
+      .unchain-profile .unchain-scanner-chip-row{
+        gap:8px;
+        margin-top:10px;
+      }
+      .unchain-profile .unchain-scanner-pill{
+        min-height:32px;
+        padding:7px 10px;
+        font-size:12px;
       }
       .unchain-profile .unchain-scanner-apply{
         margin-left:0;
         width:100%;
+        min-height:32px;
+        padding:7px 12px;
+        font-size:12px;
+      }
+      .unchain-profile .unchain-scanner-bar-wrap{
+        margin-top:10px;
+        gap:5px;
+      }
+      .unchain-profile .unchain-scanner-bar-label{
+        font-size:12px;
+      }
+      .unchain-profile .unchain-scanner-footer-note{
+        font-size:12px;
+        padding:12px 13px;
       }
     }
   </style>
@@ -1164,15 +1243,15 @@
     </div>
 
     <div class="unchain-history-grid">
-      <div class="unchain-kpi" style="text-align:center;">
+      <div class="unchain-kpi" data-history-filter-card="ALL" onclick="toggleTradeHistoryFilter('ALL')" role="button" tabindex="0" style="text-align:center;">
         <div class="k">Total Trades</div>
         <div id="profileTotalTrades" class="v">0</div>
       </div>
-      <div class="unchain-kpi" style="text-align:center;">
+      <div class="unchain-kpi" data-history-filter-card="WIN" onclick="toggleTradeHistoryFilter('WIN')" role="button" tabindex="0" style="text-align:center;">
         <div class="k">Wins</div>
         <div id="profileWins" class="v" style="color:#22c55e;">0</div>
       </div>
-      <div class="unchain-kpi" style="text-align:center;">
+      <div class="unchain-kpi" data-history-filter-card="LOSS" onclick="toggleTradeHistoryFilter('LOSS')" role="button" tabindex="0" style="text-align:center;">
         <div class="k">Losses</div>
         <div id="profileLosses" class="v" style="color:#ef4444;">0</div>
       </div>
@@ -1182,6 +1261,10 @@
           <span id="profileWinRate">0%</span>
           <div style="font-size:12px;color:#94a3b8;margin-top:4px;">Loss Rate: <span id="profileLossRate">0%</span></div>
         </div>
+      </div>
+      <div class="unchain-kpi" style="text-align:center;">
+        <div class="k">Net Profit / Loss</div>
+        <div id="profileNetProfitLoss" class="v" style="font-size:1rem;color:#e2e8f0;">+$0.00</div>
       </div>
     </div>
 

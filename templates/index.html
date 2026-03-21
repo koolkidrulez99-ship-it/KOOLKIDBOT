@@ -267,15 +267,15 @@ input, select{
     font-size:12px;
 }
 .howto-body{
+    margin-top:14px;
+    padding:14px;
+    border-radius:18px;
+    background:rgba(2,6,23,0.45);
+    border:1px solid rgba(148,163,184,0.12);
     font-size:12px;
     color:#cbd5e1;
-    line-height:1.4;
-    max-height:260px;
-    overflow:auto;
-    padding-right:6px;
+    line-height:1.5;
 }
-.howto-body ul{ margin:8px 0 0 18px; padding:0; }
-.howto-body li{ margin:6px 0; }
 .howto-badge{
     display:inline-block;
     padding:2px 8px;
@@ -284,6 +284,123 @@ input, select{
     font-size:11px;
     color:#94a3b8;
     margin-left:6px;
+}
+.howto-inline-note{
+    color:#cbd5e1;
+}
+.howto-inline-note strong{
+    color:#f8fafc;
+}
+.howto-modal{
+    position:fixed;
+    inset:0;
+    display:none;
+    align-items:center;
+    justify-content:center;
+    padding:20px;
+    background:rgba(2,6,23,0.72);
+    backdrop-filter:blur(8px);
+    z-index:999998;
+}
+.howto-modal.is-open{
+    display:flex;
+}
+.howto-modal-card{
+    width:min(1080px,100%);
+    max-height:min(88vh,900px);
+    overflow:hidden;
+    border-radius:24px;
+    border:1px solid rgba(148,163,184,0.18);
+    background:linear-gradient(180deg,rgba(8,15,30,0.98),rgba(15,23,42,0.98));
+    box-shadow:0 32px 80px rgba(2,6,23,0.55);
+    display:flex;
+    flex-direction:column;
+}
+.howto-modal-header{
+    display:flex;
+    align-items:flex-start;
+    justify-content:space-between;
+    gap:16px;
+    padding:20px 22px 16px;
+    border-bottom:1px solid rgba(148,163,184,0.16);
+}
+.howto-modal-header h3{
+    margin:0;
+    font-size:1.25rem;
+}
+.howto-modal-header p{
+    margin:8px 0 0;
+    color:#94a3b8;
+    font-size:13px;
+    line-height:1.5;
+}
+.howto-modal-close{
+    min-width:42px;
+    height:42px;
+    margin:0;
+    border-radius:12px;
+    background:#1e293b;
+    color:#e2e8f0;
+    font-size:18px;
+    line-height:1;
+}
+.howto-modal-body{
+    overflow:auto;
+    padding:20px 22px 22px;
+    display:grid;
+    gap:14px;
+}
+.howto-modal-lead{
+    padding:14px 16px;
+    border-radius:18px;
+    background:rgba(14,165,233,0.08);
+    border:1px solid rgba(14,165,233,0.16);
+    color:#dbeafe;
+    line-height:1.6;
+}
+.howto-guide-section{
+    border:1px solid rgba(148,163,184,0.14);
+    border-radius:18px;
+    background:rgba(15,23,42,0.52);
+    padding:16px;
+}
+.howto-guide-section h4{
+    margin:0 0 6px;
+    color:#f8fafc;
+    font-size:15px;
+}
+.howto-guide-note{
+    color:#94a3b8;
+    font-size:12px;
+    line-height:1.5;
+    margin-bottom:12px;
+}
+.howto-guide-list{
+    display:grid;
+    grid-template-columns:repeat(2,minmax(0,1fr));
+    gap:10px;
+}
+.howto-guide-item{
+    padding:12px 13px;
+    border-radius:14px;
+    background:rgba(2,6,23,0.38);
+    border:1px solid rgba(148,163,184,0.1);
+}
+.howto-guide-label{
+    color:#facc15;
+    font-weight:800;
+    font-size:12px;
+    letter-spacing:.02em;
+}
+.howto-guide-desc{
+    margin-top:6px;
+    color:#cbd5e1;
+    font-size:13px;
+    line-height:1.5;
+}
+.howto-guide-desc b,
+.howto-guide-desc strong{
+    color:#f8fafc;
 }
 
 /* ===== TRADE HISTORY ITEMS ===== */
@@ -610,21 +727,9 @@ input:focus, select:focus{
   background:linear-gradient(135deg,#0ea5e9,#2563eb);
 }
 .howto-body{
-  margin-top:14px;
-  padding:14px;
-  border-radius:18px;
-  background:rgba(2,6,23,0.45);
-  border:1px solid rgba(148,163,184,0.12);
+  min-height:92px;
 }
 .howto-body strong, .howto-body b{color:#f8fafc;}
-.howto-body .howto-lead{
-  color:#cbd5e1;
-  font-size:13px;
-  margin-bottom:10px;
-  line-height:1.5;
-}
-.howto-body ul{margin:0 0 0 18px;padding:0;display:grid;gap:8px;}
-.howto-body li{line-height:1.45; color:#cbd5e1;}
 .howto-badge{
   margin-left:8px;
   padding:6px 10px;
@@ -677,6 +782,11 @@ input:focus, select:focus{
   .profile-btn{width:100%; min-width:0; margin:5px 0;}
   .howto-title{flex-direction:column; align-items:flex-start;}
   .howto-title button{width:100%;}
+  .howto-modal{padding:10px;}
+  .howto-modal-card{max-height:92vh;border-radius:18px;}
+  .howto-modal-header,
+  .howto-modal-body{padding:14px;}
+  .howto-guide-list{grid-template-columns:1fr;}
 }
 
 /* ===== Mobile-only layout lock (prevents buttons drifting to corners) ===== */
@@ -768,7 +878,7 @@ body.mobile-only-ui #profileContainer .unchain-history-grid{
         <div class="api-grid">
             <div class="api-left">
                 <div id="apiConnectForm" style="display:flex; flex-wrap:wrap; align-items:center; gap:10px; width:100%;">
-                    <input id="token" placeholder="Enter API Token" type="password" style="flex:1 1 240px; min-width:220px;">
+                    <input id="token" placeholder="Enter API Token" type="password" style="flex:0 1 210px; min-width:180px; max-width:240px;">
                     <button id="connectBtn" onclick="connect()" style="background:#38bdf8;">Connect</button>
                 </div>
                 <div id="apiConnectedPanel" style="display:none; align-items:center; gap:10px; flex-wrap:wrap; width:100%;">
@@ -778,9 +888,9 @@ body.mobile-only-ui #profileContainer .unchain-history-grid{
                     </div>
                     <button id="disconnectBtn" onclick="disconnect()" style="background:#ef4444;">Disconnect</button>
                 </div>
-                <div id="marketPickerRow" style="display:flex; flex-direction:column; align-items:flex-start; gap:6px; width:100%; margin-top:10px;">
+                <div id="marketPickerRow" style="display:flex; flex-direction:column; align-items:flex-start; gap:6px; width:100%; max-width:320px; margin-top:10px;">
                     <div style="color:#94a3b8; font-size:12px;">Market</div>
-                    <select id="symbol" style="width:100%;"></select>
+                    <select id="symbol" style="width:100%; max-width:320px;"></select>
                 </div>
 
                 <p id="apiStatusRow" style="margin-top:8px;">Status: <span id="apiStatus" class="red">Not Connected</span></p>
@@ -796,6 +906,19 @@ body.mobile-only-ui #profileContainer .unchain-history-grid{
                 </div>
                 <div class="howto-body" id="howtoBody"></div>
             </div>
+        </div>
+    </div>
+
+    <div id="howtoModal" class="howto-modal" aria-hidden="true">
+        <div class="howto-modal-card" role="dialog" aria-modal="true" aria-labelledby="howtoModalTitle">
+            <div class="howto-modal-header">
+                <div>
+                    <h3 id="howtoModalTitle">How To Use</h3>
+                    <p id="howtoModalSub">Button-by-button help for the active profile.</p>
+                </div>
+                <button id="howtoModalCloseBtn" class="howto-modal-close" type="button" aria-label="Close How To Use popup">✕</button>
+            </div>
+            <div id="howtoModalBody" class="howto-modal-body"></div>
         </div>
     </div>
 
@@ -1018,18 +1141,9 @@ function bindSocketHandlers(){
         }
 
         if(activeProfile === "JOKERJOE"){
-            const row = document.getElementById("multigCountdownRow");
-            if(row){
-                const mp = data.multig_pending;
-                if(mp && mp.active){
-                    row.style.display = "block";
-                    const dEl = document.getElementById("multigDigit");
-                    const sEl = document.getElementById("multigSecs");
-                    if(dEl) dEl.innerText = mp.barrier;
-                    if(sEl) sEl.innerText = mp.seconds_remaining;
-                }else{
-                    row.style.display = "none";
-                }
+            const changed = syncJokerjoeMultiGPendingTrade(data);
+            if(changed){
+                renderTradeList("JOKERJOE");
             }
         }
 
@@ -1050,22 +1164,23 @@ function bindSocketHandlers(){
     });
 
     socket.on("trade_placed", (data)=>{
-        const placed = data || {};
+        const placed = Object.assign({}, data || {});
+        placed.profile = resolveTradeProfile(placed, activeProfile);
         onTradePlacedForToast(placed);
-        const profile = normalizeProfileName(placed.profile || activeProfile);
         upsertTradeInStore(buildPendingTradeFromPlacement(placed));
-        if(normalizeProfileName(activeProfile) === profile){
+        if(normalizeProfileName(activeProfile) === placed.profile){
             renderTradeList(activeProfile);
         }
     });
 
     socket.on("trade_result", (data)=>{
         const settled = Object.assign({}, data || {});
+        settled.profile = resolveTradeProfile(settled, activeProfile);
         settled.result = normalizeTradeResultLabel(settled.result, settled.status);
         settled.pending = isTradeResultPending(settled.result);
         upsertTradeInStore(settled);
 
-        if(normalizeProfileName(settled.profile || activeProfile) === normalizeProfileName(activeProfile)){
+        if(normalizeProfileName(settled.profile) === normalizeProfileName(activeProfile)){
             renderTradeList(activeProfile);
         }
 
@@ -1111,12 +1226,17 @@ function bindSocketHandlers(){
         const lossesEl = getProfileScopedElement("profileLosses");
         const winRateEl = getProfileScopedElement("profileWinRate");
         const lossRateEl = getProfileScopedElement("profileLossRate");
+        const netProfitLossEl = getProfileScopedElement("profileNetProfitLoss");
         if (totalEl) {
             totalEl.innerText = (data.wins + data.losses);
             if (winsEl) winsEl.innerText = data.wins;
             if (lossesEl) lossesEl.innerText = data.losses;
             if (winRateEl) winRateEl.innerText = data.winrate + "%";
             if (lossRateEl) lossRateEl.innerText = (100 - data.winrate).toFixed(1) + "%";
+            if (netProfitLossEl) {
+                netProfitLossEl.innerText = (pnl >= 0 ? "+$" : "-$") + Math.abs(pnl).toFixed(2);
+                netProfitLossEl.style.color = pnl > 0 ? "#22c55e" : (pnl < 0 ? "#ef4444" : "#e2e8f0");
+            }
         }
     });
 
@@ -1183,6 +1303,7 @@ const apiConnectedText = document.getElementById("apiConnectedText");
 const apiStatusRow = document.getElementById("apiStatusRow");
 
 const tradeStore = { KOOLKID: [], JOKERJOE: [], HUMAN: [], UNCHAIN: [] };
+const tradeHistoryFilterByProfile = {};
 const TRADE_TOAST_MULTI_JOIN_MS = 900;
 const TRADE_TOAST_BATCH_STALE_MS = 15 * 60 * 1000;
 const tradeToastByProfile = {};
@@ -1314,6 +1435,32 @@ function normalizeContractId(v){
     return compact;
 }
 
+function findStoredTradeLocationByContractId(contractId){
+    const cid = normalizeContractId(contractId);
+    if(!cid) return null;
+    const profiles = Object.keys(tradeStore || {});
+    for(const profileKey of profiles){
+        const profile = normalizeProfileName(profileKey);
+        const arr = Array.isArray(tradeStore[profile]) ? tradeStore[profile] : [];
+        for(let i = arr.length - 1; i >= 0; i--){
+            const existingCid = normalizeContractId(arr[i] && (arr[i].contract_id ?? arr[i].contractId));
+            if(existingCid === cid){
+                return { profile, index: i, record: arr[i] };
+            }
+        }
+    }
+    return null;
+}
+
+function resolveTradeProfile(data, fallbackProfile){
+    const cid = normalizeContractId(data && (data.contract_id ?? data.contractId));
+    const existing = findStoredTradeLocationByContractId(cid);
+    if(existing && existing.profile) return existing.profile;
+    const explicit = String((data && data.profile) || "").toUpperCase().trim();
+    if(explicit) return explicit;
+    return normalizeProfileName(fallbackProfile || activeProfile);
+}
+
 function toProfitNumber(v){
     const n = Number(v);
     return Number.isFinite(n) ? n : 0;
@@ -1389,29 +1536,42 @@ function mergeTradeRecord(existing, incoming){
 
 function upsertTradeInStore(trade){
     if(!trade || typeof trade !== "object") return null;
-    const profile = normalizeProfileName(trade.profile || activeProfile);
+    const profile = resolveTradeProfile(trade, trade.profile || activeProfile);
     if(!tradeStore[profile]) tradeStore[profile] = [];
-    const arr = tradeStore[profile];
     const incoming = mergeTradeRecord(null, Object.assign({}, trade, { profile }));
     const cid = normalizeContractId(incoming.contract_id ?? incoming.contractId);
 
     if(cid){
-        for(let i = arr.length - 1; i >= 0; i--){
-            const existingCid = normalizeContractId(arr[i] && (arr[i].contract_id ?? arr[i].contractId));
-            if(existingCid === cid){
-                arr[i] = mergeTradeRecord(arr[i], incoming);
-                return arr[i];
-            }
+        const existing = findStoredTradeLocationByContractId(cid);
+        if(existing){
+            const existingArr = tradeStore[existing.profile] || [];
+            existingArr[existing.index] = mergeTradeRecord(
+                existingArr[existing.index],
+                Object.assign({}, incoming, { profile: existing.profile })
+            );
+            return existingArr[existing.index];
         }
     }
 
+    const arr = tradeStore[profile];
     arr.push(incoming);
     if(arr.length > 250) arr.shift();
     return incoming;
 }
 
+function removeTradeFromStoreByContractId(profile, contractId){
+    const p = normalizeProfileName(profile);
+    const cid = normalizeContractId(contractId);
+    if(!cid || !Array.isArray(tradeStore[p])) return false;
+    const arr = tradeStore[p];
+    const idx = arr.findIndex((item)=> normalizeContractId(item && (item.contract_id ?? item.contractId)) === cid);
+    if(idx < 0) return false;
+    arr.splice(idx, 1);
+    return true;
+}
+
 function buildPendingTradeFromPlacement(data){
-    const profile = normalizeProfileName((data && data.profile) || activeProfile);
+    const profile = resolveTradeProfile(data, activeProfile);
     const symbolNode = document.getElementById("symbol");
     const fallbackSymbol = symbolNode && symbolNode.value ? symbolNode.value : undefined;
     return {
@@ -1459,6 +1619,46 @@ function buildPendingTradeFromUnchainActive(item, payload){
         result,
         pending: true,
     };
+}
+
+function syncJokerjoeMultiGPendingTrade(payload){
+    const profile = "JOKERJOE";
+    const queueId = "JOKERJOE-MULTIG-PENDING";
+    const mp = payload && payload.multig_pending;
+    const existing = findStoredTradeLocationByContractId(queueId);
+    const symbolNode = document.getElementById("symbol");
+    const fallbackSymbol = symbolNode && symbolNode.value ? symbolNode.value : undefined;
+
+    if(!mp || !mp.active){
+        return removeTradeFromStoreByContractId(profile, queueId);
+    }
+
+    const remaining = Math.max(0, Number(mp.seconds_remaining || 0));
+    const currentStakeNode = document.getElementById("stake");
+    const currentStake = Number(currentStakeNode && currentStakeNode.value);
+    const durationValue = existing && existing.record && Number.isFinite(Number(existing.record.duration))
+        ? Math.max(Number(existing.record.duration), remaining || 0)
+        : Math.max(remaining || 0, 1);
+
+    upsertTradeInStore({
+        profile,
+        type: "MULTIG QUEUED",
+        barrier: mp.barrier,
+        stake: Number.isFinite(currentStake) ? currentStake : 0,
+        symbol: fallbackSymbol,
+        time: existing && existing.record && existing.record.time ? existing.record.time : new Date().toLocaleTimeString(),
+        contract_id: queueId,
+        duration: durationValue,
+        duration_unit: "s",
+        countdown_remaining: remaining,
+        countdown_unit: "s",
+        countdown_seconds: remaining,
+        status: "QUEUED",
+        result: "PENDING",
+        pending: true,
+        is_virtual_queue: true,
+    });
+    return true;
 }
 
 function syncUnchainPendingTradesFromStatus(payload){
@@ -1640,7 +1840,7 @@ function createTradeToastBatch(profile, data){
 }
 
 function onTradePlacedForToast(data){
-    const profile = normalizeProfileName((data && data.profile) || activeProfile);
+    const profile = resolveTradeProfile(data, activeProfile);
     const profileState = getTradeToastProfileState(profile);
     cleanupTradeToastProfileState(profileState);
 
@@ -1689,7 +1889,7 @@ function findTradeBatchForResult(profileState, data){
 }
 
 function onTradeResultForToast(data){
-    const profile = normalizeProfileName((data && data.profile) || activeProfile);
+    const profile = resolveTradeProfile(data, activeProfile);
     const profileState = getTradeToastProfileState(profile);
     cleanupTradeToastProfileState(profileState);
 
@@ -1843,14 +2043,83 @@ function renderTradeList(profile){
     if(!list) return;
 
     const arr = tradeStore[profile] || [];
-    if(arr.length === 0){
-        list.innerHTML = '<div style="text-align:center; color:#64748b; padding:20px;">No trades yet</div>';
+    const filter = getTradeHistoryFilter(profile);
+    const filtered = arr.filter((trade)=>{
+        if(filter === "WIN") return normalizeTradeResultLabel(trade && trade.result, trade && trade.status) === "WIN";
+        if(filter === "LOSS") return normalizeTradeResultLabel(trade && trade.result, trade && trade.status) === "LOSS";
+        return true;
+    });
+    const emptyLabel = filter === "WIN" ? "No wins yet" : (filter === "LOSS" ? "No losses yet" : "No trades yet");
+
+    renderTradeHistoryFilterState(profile);
+
+    if(filtered.length === 0){
+        list.innerHTML = `<div style="text-align:center; color:#64748b; padding:20px;">${emptyLabel}</div>`;
         return;
     }
 
     list.innerHTML = "";
-    arr.slice().reverse().forEach(t => list.appendChild(buildTradeItem(t)));
+    filtered.slice().reverse().forEach(t => list.appendChild(buildTradeItem(t)));
 }
+
+function getTradeHistoryFilter(profile){
+    const key = normalizeProfileName(profile || activeProfile);
+    const value = String(tradeHistoryFilterByProfile[key] || "ALL").toUpperCase();
+    return (value === "WIN" || value === "LOSS") ? value : "ALL";
+}
+
+function renderTradeHistoryFilterState(profile){
+    const root = getProfileContainerRoot();
+    if(!root) return;
+    const activeFilter = getTradeHistoryFilter(profile || activeProfile);
+    root.querySelectorAll("[data-history-filter-card]").forEach((card)=>{
+        const filter = String(card.getAttribute("data-history-filter-card") || "").toUpperCase();
+        const isActive = filter === activeFilter;
+        let borderColor = "#334155";
+        let background = "#0f172a";
+        let shadow = "none";
+        if(isActive && filter === "WIN"){
+            borderColor = "#22c55e";
+            background = "rgba(20,83,45,0.42)";
+            shadow = "0 0 0 1px rgba(34,197,94,0.24)";
+        }else if(isActive && filter === "LOSS"){
+            borderColor = "#ef4444";
+            background = "rgba(127,29,29,0.42)";
+            shadow = "0 0 0 1px rgba(239,68,68,0.24)";
+        }else if(isActive && filter === "ALL"){
+            borderColor = "#38bdf8";
+            background = "rgba(8,47,73,0.42)";
+            shadow = "0 0 0 1px rgba(56,189,248,0.24)";
+        }
+
+        card.style.cursor = "pointer";
+        card.style.userSelect = "none";
+        card.style.transition = "background 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease";
+        card.style.borderColor = borderColor;
+        card.style.background = background;
+        card.style.boxShadow = shadow;
+        card.setAttribute("aria-pressed", isActive ? "true" : "false");
+        if(filter === "WIN"){
+            card.title = isActive ? "Showing wins only" : "Click to show wins only";
+        }else if(filter === "LOSS"){
+            card.title = isActive ? "Showing losses only" : "Click to show losses only";
+        }else{
+            card.title = "Click to show all trades";
+        }
+    });
+}
+
+function toggleTradeHistoryFilter(filter){
+    const profile = normalizeProfileName(activeProfile);
+    const next = String(filter || "ALL").toUpperCase();
+    if(next !== "WIN" && next !== "LOSS"){
+        tradeHistoryFilterByProfile[profile] = "ALL";
+    }else{
+        tradeHistoryFilterByProfile[profile] = getTradeHistoryFilter(profile) === next ? "ALL" : next;
+    }
+    renderTradeList(profile);
+}
+window.toggleTradeHistoryFilter = toggleTradeHistoryFilter;
 
 function buildTradeItem(trade){
     const result = normalizeTradeResultLabel(trade.result, trade.status);
@@ -1950,6 +2219,11 @@ let currentAutoBarrierMode = null;
 const howtoBody = document.getElementById("howtoBody");
 const howtoBadge = document.getElementById("howtoModeBadge");
 const howtoToggleBtn = document.getElementById("howtoToggleBtn");
+const howtoModal = document.getElementById("howtoModal");
+const howtoModalBody = document.getElementById("howtoModalBody");
+const howtoModalTitle = document.getElementById("howtoModalTitle");
+const howtoModalSub = document.getElementById("howtoModalSub");
+const howtoModalCloseBtn = document.getElementById("howtoModalCloseBtn");
 let howtoVisible = false;
 
 
@@ -2115,75 +2389,386 @@ function refreshDynamicElements(){
     }
 }
 
-function getHowToHTMLForProfile(profile) {
-    if (profile === "KOOLKID") {
-        return `
-            <div class="howto-lead">
-                KOOLKID is your fast digit-control profile. Set the stake and barrier first, then use the digit grid, confidence bars, and automation blocks to decide whether you want manual entries or assisted execution.
-            </div>
-            <ul>
-                <li><b>Quick start:</b> set <b>Stake</b>, choose a <b>Barrier</b>, then tap a digit or use the main trade buttons for your entry style.</li>
-                <li><b>Digit Grid:</b> the grid is your fastest way to pick a barrier. When a digit is selected, KOOLKID uses that number for related manual and auto tools.</li>
-                <li><b>Confidence Bars + Barrier Analysis:</b> use them as your live read before turning on fast modes. Higher percentages mean the recent market is favouring that side more often.</li>
-                <li><b>Main buttons:</b> quick buttons like Take 3, Burst 4, kidGx, AI Auto-Trading, DUAL 2x, and the other strategy blocks all keep using your saved inputs unless that specific mode has its own selector.</li>
-                <li><b>Risk controls:</b> <b>TP</b>, <b>SL</b>, and <b>AUTO SL</b> protect the profile at session level, while the trade history panel helps you check how the mode is performing.</li>
-            </ul>
-        `;
+function getSharedHowToSection(){
+    return {
+        title: "Shared Top Bar",
+        note: "These controls stay above every profile and affect the whole app, not just one strategy.",
+        items: [
+            { label: "KOOLKID / JOKERJOE / HUMAN / UNCHAIN", desc: "These profile buttons switch the main workspace. Use them when you want to move from digit trading to rise/fall or higher/lower without leaving the page." },
+            { label: "Connect", desc: "Starts API authorization with the token you typed. Use this first before trying to place trades." },
+            { label: "Disconnect", desc: "Safely disconnects the Deriv session from the bot. Use this when you want to stop the live connection." },
+            { label: "Market", desc: "Changes the main market the active profile trades on. Most manual and auto tools follow this selection unless a profile has its own separate market stream." },
+            { label: "Status", desc: "Shows whether the API is connected, connecting, or disconnected so you know if the bot is ready to trade." },
+            { label: "SHOW", desc: "Opens this full guide popup for the current profile. The popup explains the buttons in plain language." },
+            { label: "Balance / Net P&L", desc: "The account dashboard shows your live balance and the running profit or loss for the current session." },
+            { label: "Last Digit / Tick Count", desc: "The live tick card shows the latest digit and how many ticks the bot has watched so far." },
+        ],
+    };
+}
+
+function getHowToGuideData(profile){
+    const p = String(profile || "KOOLKID").toUpperCase();
+    if(p === "KOOLKID"){
+        return {
+            title: "KOOLKID Guide",
+            subtitle: "Fast OVER / UNDER workflow with lots of burst tools and layered auto modes.",
+            lead: "KOOLKID is your quick-reaction digit profile. The safest rhythm is: choose stake, barrier, and duration first, watch the confidence bars and analysis tools, then use either manual burst buttons or one auto mode at a time.",
+            sections: [
+                getSharedHowToSection(),
+                {
+                    title: "Setup And Protection",
+                    note: "These controls define the basic trade settings KOOLKID reuses across most buttons.",
+                    items: [
+                        { label: "Stake / Barrier / Duration", desc: "These fields decide your main trade size, chosen digit barrier, and how many ticks the manual KOOLKID trade buttons use." },
+                        { label: "SET TP", desc: "Saves your take-profit level so the profile can stop after reaching your session target." },
+                        { label: "AUTO SL: ON/OFF", desc: "Turns automatic stop-loss protection on or off for the profile." },
+                        { label: "SET SL", desc: "Saves your stop-loss level so the profile can block further trades after your session loss limit is reached." },
+                        { label: "Barrier Analysis: OFF/ON", desc: "Opens the KOOLKID barrier analysis area. Use it when you want help spotting stronger OVER/UNDER areas before pressing trade buttons." },
+                    ],
+                },
+                {
+                    title: "Main KOOLKID Action Buttons",
+                    items: [
+                        { label: "⚡ kidGx", desc: "Turns the KOOLKID kidGx logic on or off. It uses the chosen barrier with KOOLKID's faster automated entry style." },
+                        { label: "🤖 AI AUTO-TRADING", desc: "Turns KOOLKID AI auto trading on or off. Use it when you want the profile to wait for its own logic instead of clicking manual entries." },
+                        { label: "AUTO OFF / AUTO ON", desc: "This is the master auto switch. It controls whether KOOLKID is allowed to run its linked auto strategies." },
+                        { label: "DUAL 2x", desc: "Turns the paired DUAL 2x tool on or off so you can use KOOLKID's split-entry combinations." },
+                        { label: "OVER 6 & UNDER 4", desc: "Runs the DUAL 2x split using the Over 6 and Under 4 pair." },
+                        { label: "OVER 5 & UNDER 4", desc: "Runs the DUAL 2x split using the Over 5 and Under 4 pair." },
+                        { label: "OVER 2 & UNDER 1 (5:1 split)", desc: "Runs the lighter DUAL 2x split that leans the sizing 5:1 across the two sides." },
+                        { label: "OVER 8 & UNDER 7 (5:1 split)", desc: "Runs the high-digit DUAL 2x split with the same 5:1 style." },
+                    ],
+                },
+                {
+                    title: "Quick Burst Trades",
+                    note: "Use these when you want several fast manual entries with your saved stake, barrier, duration, and current market.",
+                    items: [
+                        { label: "🔥 TAKE 3 UNDER NOW", desc: "Sends three fast UNDER trades using your saved settings." },
+                        { label: "🔥 TAKE 3 OVER NOW", desc: "Sends three fast OVER trades using your saved settings." },
+                        { label: "⚡ BURST 4 UNDER FAST", desc: "Sends four quick UNDER trades in a burst." },
+                        { label: "⚡ BURST 4 OVER FAST", desc: "Sends four quick OVER trades in a burst." },
+                        { label: "UNDER 3 (OVER 3 + UNDER 3 SAME TICK)", desc: "Places the special paired setup built around the Under 3 idea on the same tick window." },
+                    ],
+                },
+                {
+                    title: "Auto Strategies",
+                    note: "These are best used one at a time so you can see clearly which logic is driving the entries.",
+                    items: [
+                        { label: "KIDRACKS AUTO TRADE", desc: "Turns the KIDRACKS automation on or off." },
+                        { label: "KOOLKIDSPEED AUTO", desc: "Turns the speed-focused KOOLKIDSPEED mode on or off for faster reactions." },
+                        { label: "kidBagz", desc: "Turns the kidBagz auto mode on or off." },
+                        { label: "kidPairs", desc: "Turns kidPairs automation on or off." },
+                        { label: "1 Trade / 2 Trades", desc: "Sets how many trades kidPairs should place each time it fires." },
+                        { label: "koolluck", desc: "Turns the koolluck auto mode on or off." },
+                    ],
+                },
+                {
+                    title: "Advanced AI Modes",
+                    items: [
+                        { label: "KIDBRAIN", desc: "Turns KIDBRAIN on or off. Use it when you want KOOLKID to rely on that AI mode's own reading style." },
+                        { label: "EDGE BRAIN", desc: "Turns EDGE BRAIN on or off for a more edge-filtered AI mode." },
+                        { label: "SMART FLOW", desc: "Turns SMART FLOW on or off. It focuses on live flow and timing quality." },
+                        { label: "META AI", desc: "Turns META AI on or off." },
+                        { label: "KIDRACKS AI", desc: "Turns the AI version of KIDRACKS on or off." },
+                        { label: "Over 3 Analysis", desc: "Turns the Over 3 analysis helper on or off so you can watch that pattern before entering." },
+                    ],
+                },
+                {
+                    title: "MPull And Extra Tools",
+                    items: [
+                        { label: "MPull", desc: "Turns the MPull tool on or off." },
+                        { label: "BOTH", desc: "Sets MPull to work both sides instead of only over or only under." },
+                        { label: "OVER 5 ONLY", desc: "Limits MPull to the over-side setup only." },
+                        { label: "UNDER 5 ONLY", desc: "Limits MPull to the under-side setup only." },
+                        { label: "MPull ALL DIGITS", desc: "Expands MPull so it can work across all digits instead of a narrower filter." },
+                        { label: "5*² sequential vix", desc: "Turns the sequential-vix scan on or off for KOOLKID." },
+                    ],
+                },
+                {
+                    title: "History And Reading The Screen",
+                    items: [
+                        { label: "Digit Grid", desc: "Tap a digit to quickly set the barrier. This is the fastest manual way to point KOOLKID at a specific digit." },
+                        { label: "Confidence Bars", desc: "These bars show how strongly recent ticks favour the matching OVER or UNDER ideas." },
+                        { label: "Clear History", desc: "Clears the KOOLKID trade-history list and resets the visible profile stats." },
+                        { label: "Trade History", desc: "Shows each trade result, stake, market, duration, countdown for pending trades, and the running profile stats." },
+                    ],
+                },
+            ],
+        };
     }
-    if (profile === "JOKERJOE") {
-        return `
-            <div class="howto-lead">
-                JOKERJOE is your advanced digit workstation. It is built for manual MATCHES/DIFFERS entries, layered auto modes, and deeper analysis before you let the profile fire on its own.
-            </div>
-            <ul>
-                <li><b>Quick start:</b> set <b>Stake</b> and <b>Barrier</b>, then use the digit grid or the quick-trade buttons for <b>MATCHES</b> and <b>DIFFERS</b>.</li>
-                <li><b>Analysis panels:</b> the <b>Differs</b>, <b>Matches</b>, and sequential panels help you see which digits are strongest before using auto modes.</li>
-                <li><b>Auto strategies:</b> tools like <b>sludgeX</b>, <b>tripleX</b>, <b>kidX</b>, <b>MultiG</b>, and the AI blocks each read the market differently, so keep an eye on their status text before stacking modes.</li>
-                <li><b>Fast tools:</b> <b>INSTA 5</b>, <b>kidgambleX</b>, advanced AI modes, and sequential options are best used after the analysis boxes have warmed up and the digit edge looks clear.</li>
-                <li><b>Risk controls:</b> save your <b>TP</b>, <b>SL</b>, and <b>AUTO SL</b> first so even aggressive modes still respect your session limits.</li>
-            </ul>
-        `;
+    if(p === "JOKERJOE"){
+        return {
+            title: "JOKERJOE Guide",
+            subtitle: "Manual MATCHES / DIFFERS with layered analysis, AI modes, and queue-based digit tools.",
+            lead: "JOKERJOE is your deeper digit workstation. A good flow is: set stake, barrier, and duration, let the analysis boxes warm up, then choose either a manual tool, one auto strategy, or one AI mode so you can tell exactly what is doing the trading.",
+            sections: [
+                getSharedHowToSection(),
+                {
+                    title: "Setup And Safety",
+                    items: [
+                        { label: "Stake / Barrier / Duration", desc: "These define the main size, digit barrier, and tick duration for JOKERJOE's manual and helper buttons." },
+                        { label: "SET TP", desc: "Stores your take-profit target for the JOKERJOE session." },
+                        { label: "AUTO SL: ON/OFF", desc: "Turns profile stop-loss protection on or off." },
+                        { label: "SET SL", desc: "Stores your stop-loss limit for the JOKERJOE session." },
+                    ],
+                },
+                {
+                    title: "Analysis Panels",
+                    note: "These tools help you decide before you send trades.",
+                    items: [
+                        { label: "DIFFERS ANALYSIS", desc: "Shows low-frequency digits so you can quickly see which digits look cleaner for DIFFERS ideas." },
+                        { label: "MATCHES ANALYSIS: OFF/ON", desc: "Opens or closes the MATCHES study panel." },
+                        { label: "MatchSniper 1x", desc: "Turns the one-trade MATCHES sniper mode on or off." },
+                        { label: "MatchSniper 5x", desc: "Turns the five-trade MATCHES sniper batch mode on or off." },
+                    ],
+                },
+                {
+                    title: "Top Action Buttons",
+                    items: [
+                        { label: "⚡ kidGx", desc: "Turns JOKERJOE kidGx mode on or off." },
+                        { label: "🤖 AI AUTO-TRADING", desc: "Opens the AI auto-trading chooser for JOKERJOE." },
+                        { label: "🌟 Golden Digits", desc: "Selects the Golden Digits AI mode." },
+                        { label: "📉 Lowest %", desc: "Selects the Lowest % AI mode so JOKERJOE trades the weakest-looking digits by its logic." },
+                        { label: "5 Trades / 1 Trade", desc: "Sets how many trades the Lowest % AI mode should place when it triggers." },
+                        { label: "✕", desc: "Closes the AI auto-trading chooser without changing anything else." },
+                        { label: "AUTO OFF / AUTO ON", desc: "Master auto switch for the profile's linked auto systems." },
+                    ],
+                },
+                {
+                    title: "Quick Trades",
+                    note: "These use your saved market, stake, barrier, and duration.",
+                    items: [
+                        { label: "DIGIT MATCHES", desc: "Places one manual MATCHES trade on the selected barrier digit." },
+                        { label: "DIGIT DIFFERS", desc: "Places one manual DIFFERS trade on the selected barrier digit." },
+                        { label: "INSTA 5 ON X", desc: "Sends five fast trades on the current barrier digit." },
+                        { label: "🎲 kidgambleX", desc: "Runs the kidgambleX batch helper using the current market and stake." },
+                    ],
+                },
+                {
+                    title: "Auto Strategies",
+                    items: [
+                        { label: "sludgeX AUTO", desc: "Turns sludgeX on or off." },
+                        { label: "tripleX AUTO", desc: "Turns tripleX on or off." },
+                        { label: "kidX", desc: "Turns kidX on or off." },
+                        { label: "MultiG", desc: "Turns MultiG on or off. MultiG can queue a digit and wait before firing." },
+                    ],
+                },
+                {
+                    title: "Advanced AI Modes",
+                    items: [
+                        { label: "KIDBRAIN", desc: "Turns KIDBRAIN on or off." },
+                        { label: "EDGE BRAIN", desc: "Turns EDGE BRAIN on or off." },
+                        { label: "SMART FLOW", desc: "Turns SMART FLOW on or off." },
+                        { label: "META AI", desc: "Turns META AI on or off." },
+                        { label: "KIDRACKS AI", desc: "Turns KIDRACKS AI on or off." },
+                    ],
+                },
+                {
+                    title: "Sequential And History",
+                    items: [
+                        { label: "5*² sequential vix", desc: "Turns the sequential-vix market runner on or off for JOKERJOE." },
+                        { label: "MultiG queued", desc: "This pending row appears inside Trade History when MultiG has armed a digit and is waiting to fire. If it cancels, the row disappears." },
+                        { label: "Clear History", desc: "Clears the JOKERJOE trade-history list and resets the visible stats." },
+                        { label: "Trade History", desc: "Shows the result row, stake, market, duration, countdown, and the JOKERJOE running totals." },
+                    ],
+                },
+            ],
+        };
     }
-    if (profile === "UNCHAIN") {
-        return `
-            <div class="howto-lead">
-                UNCHAIN is now your <b>Higher / Lower</b> profile. It lets you save separate settings for each side, review live bias before entering, and repeat the same setup faster without rebuilding it each time.
-            </div>
-            <ul>
-                <li><b>Separate sides:</b> set an independent <b>Higher stake</b>, <b>Lower stake</b>, <b>Higher barrier</b>, and <b>Lower barrier</b> so both sides can be tuned differently.</li>
-                <li><b>Shared duration:</b> one duration control drives both sides, and you can switch the unit between <b>ticks</b>, <b>seconds</b>, and <b>minutes</b>.</li>
-                <li><b>Execution:</b> use <b>HIGHER</b>, <b>LOWER</b>, or <b>BOTH</b> for manual entries. <b>AUTO BOTH</b> keeps repeating the same pair after a finished cycle when your start conditions are met.</li>
-                <li><b>Bias display:</b> watch the <b>Higher %</b>, <b>Lower %</b>, strength tag, and reason chips. A strong reading helps you decide whether the market is favouring one side enough before entry.</li>
-                <li><b>Protection + tracking:</b> <b>TP</b>, <b>SL</b>, <b>AUTO SL</b>, active trades, and trade history work together so you can see open exposure and session performance in one place.</li>
-            </ul>
-        `;
+    if(p === "UNCHAIN"){
+        return {
+            title: "UNCHAIN Guide",
+            subtitle: "Higher / Lower profile with barrier tools, market scanning, and separate manual or auto pair execution.",
+            lead: "UNCHAIN is built for Higher and Lower barrier trading. The normal flow is: check the bias analyzer, run the barrier tool or market scanner if you want suggestions, save or apply the setup, then choose manual HIGHER / LOWER / BOTH or let an auto mode handle the timing.",
+            sections: [
+                getSharedHowToSection(),
+                {
+                    title: "Bias And Analysis Tools",
+                    items: [
+                        { label: "Higher / Lower Bias Analyzer", desc: "This display-only panel scores the current market and tells you whether Higher or Lower looks stronger right now." },
+                        { label: "BARRIER ANALYSIS TOOL OFF/ON", desc: "Turns the barrier-analysis panel on or off." },
+                        { label: "Analyze", desc: "Runs the barrier analysis using recent ticks and live quote logic." },
+                        { label: "Apply Setup", desc: "Pushes the recommended duration and barriers into your UNCHAIN controls so you can trade them quickly." },
+                        { label: "Market Scanner OFF/ON", desc: "Turns the market scanner on or off. When on, it scans multiple markets and shows the strongest four." },
+                        { label: "Scanner Apply", desc: "The Apply button on a scanner card loads that market and its suggested barriers into your current setup." },
+                    ],
+                },
+                {
+                    title: "Setup Controls",
+                    note: "These settings feed the manual buttons and most auto modes.",
+                    items: [
+                        { label: "HALF BARRIER", desc: "Cuts your visible Higher and Lower barriers in half so you can use a tighter barrier quickly." },
+                        { label: "Higher Stake / Higher Barrier", desc: "Sets the amount and barrier used when you press HIGHER." },
+                        { label: "Lower Stake / Lower Barrier", desc: "Sets the amount and barrier used when you press LOWER." },
+                        { label: "Duration / Unit", desc: "Sets the shared duration for both sides. You can switch between ticks, seconds, minutes, and hours." },
+                        { label: "TP / SL", desc: "Stores your take-profit and stop-loss limits for the UNCHAIN session." },
+                        { label: "AUTO SL: ON/OFF", desc: "Turns automatic stop-loss protection on or off." },
+                        { label: "💾 Save", desc: "Saves the current UNCHAIN setup so the profile keeps using it." },
+                    ],
+                },
+                {
+                    title: "Execution Buttons",
+                    items: [
+                        { label: "🤖 AUTO BOTH", desc: "Turns the repeating BOTH auto mode on or off." },
+                        { label: "🤖 AI AUTO TRADE", desc: "Turns the AI auto-trade logic on or off so UNCHAIN can wait for confidence and breakout conditions before sending trades." },
+                        { label: "📈 HIGHER", desc: "Places a manual Higher trade using the Higher setup." },
+                        { label: "📉 LOWER", desc: "Places a manual Lower trade using the Lower setup." },
+                        { label: "⚖️ BOTH", desc: "Places both the Higher and Lower sides at the same time using your saved setup." },
+                        { label: "💸 CLOSE UNCHAIN TRADES", desc: "Requests close-out for all currently active UNCHAIN trades." },
+                    ],
+                },
+                {
+                    title: "Live Views",
+                    items: [
+                        { label: "Live Market vs Barriers", desc: "Shows the current price, both barriers, and the middle zone so you can see whether price is sitting between your barriers or escaping." },
+                        { label: "AI Auto Trade Confidence", desc: "The confidence slider and extra fields tune how easy or strict the AI entry logic should be." },
+                    ],
+                },
+                {
+                    title: "History And Cleanup",
+                    items: [
+                        { label: "Clear History", desc: "Clears the UNCHAIN trade-history list and the visible stats." },
+                        { label: "Trade History", desc: "Shows pending, live, and finished UNCHAIN rows with market, duration, countdown, and result." },
+                    ],
+                },
+            ],
+        };
     }
+    return {
+        title: "HUMAN Guide",
+        subtitle: "Rise / Fall assistant with signal reading, auto filters, and chart context.",
+        lead: "HUMAN is your rise/fall assistant. The cleanest routine is: watch the signal, confidence, and reason first, adjust the settings if needed, then either press TAKE SIGNAL manually or let auto assist work only when the setup is strong enough.",
+        sections: [
+            getSharedHowToSection(),
+            {
+                title: "Main Signal Buttons",
+                items: [
+                    { label: "🎯 TAKE SIGNAL", desc: "Uses HUMAN's current best read and takes the signal direction it thinks is strongest." },
+                    { label: "📈 RISE NOW", desc: "Forces a manual Rise trade immediately." },
+                    { label: "📉 FALL NOW", desc: "Forces a manual Fall trade immediately." },
+                ],
+            },
+            {
+                title: "Smart Assist Controls",
+                note: "These buttons change how strict or flexible HUMAN is before it lets itself trade.",
+                items: [
+                    { label: "Smart Assist", desc: "Turns the HUMAN signal engine on or off." },
+                    { label: "Take Auto Trades", desc: "Allows HUMAN to place trades automatically once the setup passes your threshold." },
+                    { label: "Bias Lock", desc: "Keeps HUMAN leaning with the stronger detected bias until that bias weakens." },
+                    { label: "No-Trade Filter", desc: "Blocks messy or weak setups so HUMAN does not trade every small move." },
+                    { label: "Adaptive Cooldown", desc: "Lets HUMAN adjust its waiting time between signals instead of using one fixed pause." },
+                    { label: "💾 SAVE RISE/FALL SETTINGS", desc: "Saves the current HUMAN settings such as duration and threshold." },
+                ],
+            },
+            {
+                title: "Execution Settings",
+                items: [
+                    { label: "💰 SET STAKE", desc: "Stores the stake HUMAN should use for manual and assisted trades." },
+                    { label: "✅ SET TP", desc: "Stores HUMAN's take-profit target." },
+                    { label: "🛑 SET SL", desc: "Stores HUMAN's stop-loss target." },
+                    { label: "AUTO SL", desc: "Turns automatic stop-loss protection on or off." },
+                    { label: "KEEP ALIVE", desc: "Keeps the HUMAN session active so the page closing does not immediately drop the connection." },
+                    { label: "FORMULA X", desc: "Runs the HUMAN Formula X helper for a guided action based on the current read." },
+                ],
+            },
+            {
+                title: "Chart Tools And Reading",
+                items: [
+                    { label: "− / + / Reset", desc: "These chart buttons zoom out, zoom in, or reset the HUMAN chart view." },
+                    { label: "Signal Breakdown", desc: "The trend, momentum, pullback, trigger, and clean scores help you see why HUMAN likes or dislikes the setup." },
+                ],
+            },
+            {
+                title: "History",
+                items: [
+                    { label: "Clear History", desc: "Clears the HUMAN trade-history list and resets the visible stats." },
+                    { label: "Trade History", desc: "Shows the HUMAN results with market, duration, pending countdowns, and profile totals." },
+                ],
+            },
+        ],
+    };
+}
+
+function renderHowToGuide(guide){
+    if(!guide || typeof guide !== "object") return "";
+    const sections = Array.isArray(guide.sections) ? guide.sections : [];
     return `
-        <div class="howto-lead">
-            HUMAN is your rise / fall assistant. It reads the short-term market for you, shows the current bias, and can stay manual or help with filtered auto entries.
-        </div>
-        <ul>
-            <li><b>Quick start:</b> choose your <b>stake</b>, set the <b>duration</b>, then watch the signal box for <b>RISE</b>, <b>FALL</b>, or <b>WAIT</b>.</li>
-            <li><b>Smart Assist:</b> the bias, confidence, reason text, and score breakdown tell you whether momentum, trend, pullback quality, and trigger strength are lining up.</li>
-            <li><b>Auto controls:</b> <b>Take Auto Trades</b> only enters when confidence clears your threshold, so keep the threshold realistic for the market you are trading.</li>
-            <li><b>Chart + context:</b> the chart and signal breakdown help you see whether the current move still looks clean or is already becoming late.</li>
-            <li><b>Risk controls:</b> set <b>TP</b>, <b>SL</b>, and <b>AUTO SL</b> before you let HUMAN assist with execution.</li>
-        </ul>
+        <div class="howto-modal-lead">${guide.lead || ""}</div>
+        ${sections.map((section)=>{
+            const items = Array.isArray(section.items) ? section.items : [];
+            return `
+                <section class="howto-guide-section">
+                    <h4>${section.title || "Guide Section"}</h4>
+                    ${section.note ? `<div class="howto-guide-note">${section.note}</div>` : ""}
+                    <div class="howto-guide-list">
+                        ${items.map((item)=>`
+                            <div class="howto-guide-item">
+                                <div class="howto-guide-label">${item.label || ""}</div>
+                                <div class="howto-guide-desc">${item.desc || ""}</div>
+                            </div>
+                        `).join("")}
+                    </div>
+                </section>
+            `;
+        }).join("")}
     `;
 }
 
+function getHowToHTMLForProfile(profile) {
+    return renderHowToGuide(getHowToGuideData(profile));
+}
+
+function openHowToModal(){
+    howtoVisible = true;
+    refreshHowTo();
+    if(howtoModal){
+        howtoModal.classList.add("is-open");
+        howtoModal.setAttribute("aria-hidden", "false");
+    }
+}
+
+function closeHowToModal(){
+    howtoVisible = false;
+    if(howtoModal){
+        howtoModal.classList.remove("is-open");
+        howtoModal.setAttribute("aria-hidden", "true");
+    }
+}
+
 function refreshHowTo(){
-    howtoBadge.innerText = activeProfile;
-    howtoBody.innerHTML = getHowToHTMLForProfile(activeProfile);
-    howtoBody.style.display = howtoVisible ? "block" : "none";
-    howtoToggleBtn.innerText = howtoVisible ? "HIDE" : "SHOW";
+    const guide = getHowToGuideData(activeProfile);
+    if(howtoBadge) howtoBadge.innerText = activeProfile;
+    if(howtoBody){
+        howtoBody.innerHTML = `
+            <div class="howto-inline-note">
+                <strong>${activeProfile}</strong> guide is now a popup. Tap <strong>SHOW</strong> to open the full button-by-button walkthrough.
+            </div>
+        `;
+        howtoBody.style.display = "block";
+    }
+    if(howtoToggleBtn) howtoToggleBtn.innerText = "SHOW";
+    if(howtoModalTitle) howtoModalTitle.innerText = guide.title || "How To Use";
+    if(howtoModalSub) howtoModalSub.innerText = guide.subtitle || "Button-by-button help for the active profile.";
+    if(howtoModalBody) howtoModalBody.innerHTML = getHowToHTMLForProfile(activeProfile);
 }
 
 function toggleHowTo(){
-    howtoVisible = !howtoVisible;
-    howtoBody.style.display = howtoVisible ? "block" : "none";
-    howtoToggleBtn.innerText = howtoVisible ? "HIDE" : "SHOW";
+    openHowToModal();
 }
+
+if(howtoModalCloseBtn){
+    howtoModalCloseBtn.addEventListener("click", closeHowToModal);
+}
+if(howtoModal){
+    howtoModal.addEventListener("click", (ev)=>{
+        if(ev.target === howtoModal) closeHowToModal();
+    });
+}
+document.addEventListener("keydown", (ev)=>{
+    if(ev.key === "Escape" && howtoVisible){
+        closeHowToModal();
+    }
+});
 
 function showToast(message, type="info"){
     const container = document.getElementById("toastContainer");
@@ -2944,6 +3529,12 @@ async function toggleMultiGAuto(){
     const data = await res.json();
     if(data.status === "success"){
         updateAutoModeButtons({multig: data.multig_auto});
+        if(!data.multig_auto){
+            removeTradeFromStoreByContractId("JOKERJOE", "JOKERJOE-MULTIG-PENDING");
+            if(activeProfile === "JOKERJOE"){
+                renderTradeList("JOKERJOE");
+            }
+        }
         showToast("MultiG: " + (data.multig_auto ? "ON" : "OFF"), data.multig_auto ? "success" : "error");
     }else{
         showToast(data.message || "MultiG toggle failed", "error");
