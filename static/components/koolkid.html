@@ -1,17 +1,16 @@
 <style>
 #koolkidProfileUi,
 #koolkidProfileUi *{box-sizing:border-box}
-#koolkidProfileUi{width:100%;min-width:0}
+#koolkidProfileUi{width:100%;min-width:0;margin:0 auto}
+#koolkidProfileUi .card,
+#koolkidProfileUi .panelGrid,
 #koolkidProfileUi .panelGrid > div,
 #koolkidProfileUi .ui-group,
 #koolkidProfileUi .ui-group-body,
 #koolkidProfileUi .confidence-wrap,
 #koolkidProfileUi .conf-item,
 #koolkidProfileUi .digit-grid,
-#koolkidProfileUi .koolkid-history-grid,
-#koolkidProfileUi .koolkid-split-grid,
-#koolkidProfileUi .koolkid-analysis-grid-3,
-#koolkidProfileUi .koolkid-analysis-stack > div{min-width:0}
+#koolkidProfileUi #profileTradeList{min-width:0;max-width:100%}
 .ui-group{background:#0f172a;border:1px solid #334155;border-radius:12px;overflow:hidden}
 .ui-group + .ui-group{margin-top:8px}
 .ui-group summary{cursor:pointer;list-style:none;padding:10px 12px;font-weight:700;color:#e2e8f0;display:flex;align-items:center;justify-content:space-between;gap:8px;background:#111827}
@@ -23,23 +22,10 @@
 .ui-note{font-size:12px;color:#94a3b8;margin-top:-2px}
 .ui-btn-grid-2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .ui-btn-grid-3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
-.koolkid-split-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
-.koolkid-analysis-grid-3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
-.koolkid-analysis-stack{display:grid;gap:6px}
-.koolkid-history-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:12px}
 .ui-section-title{font-size:12px;color:#94a3b8;text-transform:uppercase;letter-spacing:.04em;margin:2px 2px 0}
 @media (max-width: 900px){
-  .ui-btn-grid-2,.ui-btn-grid-3,.koolkid-split-grid,.koolkid-analysis-grid-3,.confidence-wrap{grid-template-columns:1fr}
-  .koolkid-history-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
-  #koolkidProfileUi .panelGrid{grid-template-columns:1fr !important}
-  #koolkidProfileUi .card,
-  #koolkidProfileUi .ui-group,
-  #koolkidProfileUi button,
-  #koolkidProfileUi input,
-  #koolkidProfileUi select{max-width:100%}
-}
-@media (max-width: 520px){
-  .koolkid-history-grid{grid-template-columns:1fr}
+  .ui-btn-grid-2,.ui-btn-grid-3{grid-template-columns:1fr}
+  #koolkidProfileUi .panelGrid{margin:0 auto}
 }
 
 #profileTradeList{height:360px;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;touch-action:pan-y;padding-right:6px;scrollbar-width:thin;scrollbar-color:#475569 transparent}
@@ -58,7 +44,7 @@
     <!-- LEFT: inputs + tp/sl bars + confidence -->
     <div>
       <div style="background:#0f172a; border:1px solid #334155; border-radius:12px; padding:12px;">
-        <div class="koolkid-split-grid" style="align-items:center;">
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; align-items:center;">
           <div>
             <div style="color:#94a3b8; font-size:12px;">Stake</div>
             <input id="stake" type="number" min="0.35" step="0.01" value="1" style="width:100%;">
@@ -68,8 +54,23 @@
             <input id="barrier" type="number" min="0" max="9" step="1" value="5" style="width:100%;">
           </div>
         </div>
+        <div style="margin-top:10px;">
+          <div style="color:#94a3b8; font-size:12px;">Duration</div>
+          <select id="durationTicks" style="width:100%;">
+            <option value="1" selected>1 Tick</option>
+            <option value="2">2 Ticks</option>
+            <option value="3">3 Ticks</option>
+            <option value="4">4 Ticks</option>
+            <option value="5">5 Ticks</option>
+            <option value="6">6 Ticks</option>
+            <option value="7">7 Ticks</option>
+            <option value="8">8 Ticks</option>
+            <option value="9">9 Ticks</option>
+            <option value="10">10 Ticks</option>
+          </select>
+        </div>
 
-        <div class="koolkid-split-grid" style="margin-top:10px;">
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-top:10px;">
           <div>
             <div style="color:#94a3b8; font-size:12px;">Take Profit (TP)</div>
             <input id="tp" type="number" step="0.01" value="0" style="width:100%;">
@@ -216,7 +217,7 @@
                 <div id="dual2xAnalysisStatusKoolkid" style="font-size:11px; color:#94a3b8;">Waiting for digit % data…</div>
               </div>
 
-              <div class="koolkid-analysis-grid-3" style="margin-top:8px;">
+              <div style="margin-top:8px; display:grid; grid-template-columns:repeat(3, 1fr); gap:6px;">
                 <div style="background:#111827; border:1px solid #334155; border-radius:10px; padding:8px;">
                   <div style="font-size:11px; color:#94a3b8;">Digit 4</div>
                   <div id="dual2xDigit4PctKoolkid" style="font-weight:700;">-</div>
@@ -231,7 +232,7 @@
                 </div>
               </div>
 
-              <div class="koolkid-analysis-stack" style="margin-top:8px;">
+              <div style="margin-top:8px; display:grid; gap:6px;">
                 <div style="background:#111827; border:1px solid #334155; border-radius:10px; padding:8px;">
                   <div style="font-weight:700; font-size:12px;">OVER 6 &amp; UNDER 4</div>
                   <div style="font-size:12px; color:#cbd5e1;">Dead zone (4,5,6): <span id="dual2xDeadRiskA" style="font-weight:700;">-</span> • Safe zone: <span id="dual2xSafeA" style="font-weight:700;">-</span></div>
@@ -349,7 +350,7 @@
     <button onclick="clearProfileHistory()" style="background:#fb7185;">Clear History</button>
   </div>
 
-  <div class="koolkid-history-grid">
+  <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:10px; margin-top:12px;">
     <div style="background:#0f172a; border:1px solid #334155; border-radius:12px; padding:12px; text-align:center;">
       <div style="color:#94a3b8; font-size:12px;">Total Trades</div>
       <div id="profileTotalTrades" style="font-size:22px; font-weight:bold;">0</div>

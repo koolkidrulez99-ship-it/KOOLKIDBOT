@@ -96,14 +96,27 @@
     return out.sort((a, b) => a.pct - b.pct || a.digit - b.digit);
   }
 
+  function getDurationTicksJokerjoe() {
+    try {
+      if (typeof window.getManualDurationTicks === "function") {
+        return window.getManualDurationTicks();
+      }
+    } catch (e) {}
+    const node = document.getElementById("durationTicks");
+    const raw = parseInt((node && node.value) || "1", 10);
+    if (!Number.isFinite(raw) || raw < 1) return 1;
+    return Math.min(10, raw);
+  }
+
   async function placeBatchManualTradesJokerjoe(contractType, digits) {
     const stakeEl = document.getElementById("stake");
     let stake = Number(stakeEl && stakeEl.value);
     if (!Number.isFinite(stake) || stake <= 0) stake = 1;
+    const duration = getDurationTicksJokerjoe();
 
     // Send stake with each manual trade so batch actions (MatchSniper 5x) respect the UI stake.
     // Include both `stake` and `amount` for compatibility with different backend parsers.
-    const base = { type: contractType, stake, amount: stake };
+    const base = { type: contractType, stake, amount: stake, duration, duration_unit: "t" };
 
     const jobs = (digits || []).map((d) => postJSON("/manual_trade", Object.assign({}, base, { barrier: Number(d) })));
     const results = await Promise.allSettled(jobs);
@@ -129,16 +142,20 @@
     let attempts = 0;
     try {
       const stake = getManualStakeValueJokerjoe();
-      const r = await postJSON("/insta5", { barrier: Number(digit), stake, amount: stake });
+      const duration = getDurationTicksJokerjoe();
+      const r = await postJSON("/insta5", { barrier: Number(digit), stake, amount: stake, duration, duration_unit: "t" });
       totalPlaced = Math.max(0, Number(r && r.data && r.data.placed) || 0);
     } catch (e) {}
 
     while (totalPlaced < 5 && attempts < 20) {
       attempts += 1;
       const missing = 5 - totalPlaced;
-      const jobs = [];
       const stake = getManualStakeValueJokerjoe();
-      for (let i = 0; i < missing; i++) jobs.push(postJSON("/manual_trade", { type: "DIFFERS", barrier: Number(digit), stake, amount: stake }));
+      const duration = getDurationTicksJokerjoe();
+      const jobs = [];
+      for (let i = 0; i < missing; i++) {
+        jobs.push(postJSON("/manual_trade", { type: "DIFFERS", barrier: Number(digit), stake, amount: stake, duration, duration_unit: "t" }));
+      }
       const rs = await Promise.allSettled(jobs);
       let add = 0;
       rs.forEach((x) => {
@@ -153,7 +170,8 @@
   async function placeOneDiffersTradeJokerjoe(digit) {
     try {
       const stake = getManualStakeValueJokerjoe();
-      const r = await postJSON("/manual_trade", { type: "DIFFERS", barrier: Number(digit), stake, amount: stake });
+      const duration = getDurationTicksJokerjoe();
+      const r = await postJSON("/manual_trade", { type: "DIFFERS", barrier: Number(digit), stake, amount: stake, duration, duration_unit: "t" });
       const ok = !!(r && r.data && r.data.status === "success");
       return { placed: ok ? 1 : 0, exact: ok };
     } catch (e) {

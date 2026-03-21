@@ -45,7 +45,7 @@
     return arr;
   };
   const DURATION_PRESETS = {
-    t: range(3, 10, 1),
+    t: range(5, 10, 1),
     s: range(15, 59, 1),
     m: range(1, 59, 1),
     h: range(1, 24, 1),

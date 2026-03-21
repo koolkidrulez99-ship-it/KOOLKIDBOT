@@ -2015,6 +2015,14 @@ def _format_unchain_barrier(raw_value, side, duration_unit):
     return out or "0"
 
 
+def _sanitize_digit_trade_duration(value):
+    try:
+        duration = int(float(value))
+    except Exception:
+        duration = 1
+    return max(1, min(10, duration))
+
+
 def _half_unchain_barrier(raw_value, side, duration_unit):
     formatted = _format_unchain_barrier(raw_value, side, duration_unit)
     try:
@@ -5959,6 +5967,8 @@ def process_contract(client_id, contract):
                 entry.setdefault("stake", meta.get("stake"))
                 entry.setdefault("symbol", meta.get("symbol"))
                 entry.setdefault("time", meta.get("time"))
+                entry.setdefault("duration", meta.get("duration"))
+                entry.setdefault("duration_unit", meta.get("duration_unit"))
             else:
                 entry.setdefault("profile", profile_for_contract)
             # Always emit the same contract id used at placement so frontend can
@@ -6839,6 +6849,8 @@ def kidgamblex_route():
         stake = 1.0
 
     symbol = data.get("symbol", state.get("current_symbol", "R_25"))
+    duration = _sanitize_digit_trade_duration(data.get("duration", 1))
+    duration_unit = "t"
 
     strat = state["strategies"].get("JOKERJOE")
     if not strat or not hasattr(strat, "get_top_digits"):
@@ -6850,7 +6862,7 @@ def kidgamblex_route():
 
     placed = 0
     for d in digits:
-        ok, _msg = send_buy(cid, "MATCHES", stake, symbol, int(d))
+        ok, _msg = send_buy(cid, "MATCHES", stake, symbol, int(d), duration=duration, duration_unit=duration_unit)
         if ok:
             placed += 1
         time.sleep(0.12)
@@ -7038,10 +7050,12 @@ def insta5_route():
 
     symbol = data.get("symbol", state.get("current_symbol", "R_25"))
     barrier = int(data.get("barrier", 5))
+    duration = _sanitize_digit_trade_duration(data.get("duration", 1))
+    duration_unit = "t"
 
     placed = 0
     for _ in range(5):
-        ok, _msg = send_buy(cid, contract_type, stake, symbol, barrier)
+        ok, _msg = send_buy(cid, contract_type, stake, symbol, barrier, duration=duration, duration_unit=duration_unit)
         if ok:
             placed += 1
         time.sleep(0.06)
@@ -7061,8 +7075,10 @@ def manual_trade():
     stake = float(data.get("stake", 1))
     symbol = data.get("symbol", state.get("current_symbol", "R_25"))
     barrier = int(data.get("barrier", 5))
+    duration = _sanitize_digit_trade_duration(data.get("duration", 1))
+    duration_unit = "t"
 
-    ok, msg = send_buy(cid, contract_type, stake, symbol, barrier)
+    ok, msg = send_buy(cid, contract_type, stake, symbol, barrier, duration=duration, duration_unit=duration_unit)
     return jsonify({"status": "success" if ok else "error", "message": msg})
 
 
@@ -7078,10 +7094,12 @@ def manual_3_trades():
     stake = float(data.get("stake", 1))
     symbol = data.get("symbol", state.get("current_symbol", "R_25"))
     barrier = int(data.get("barrier", 5))
+    duration = _sanitize_digit_trade_duration(data.get("duration", 1))
+    duration_unit = "t"
 
     placed = 0
     for _ in range(3):
-        ok, _msg = send_buy(cid, contract_type, stake, symbol, barrier)
+        ok, _msg = send_buy(cid, contract_type, stake, symbol, barrier, duration=duration, duration_unit=duration_unit)
         if ok:
             placed += 1
         time.sleep(0.15)
@@ -7101,10 +7119,12 @@ def burst_4():
     stake = float(data.get("stake", 1))
     symbol = data.get("symbol", state.get("current_symbol", "R_25"))
     barrier = int(data.get("barrier", 5))
+    duration = _sanitize_digit_trade_duration(data.get("duration", 1))
+    duration_unit = "t"
 
     placed = 0
     for _ in range(4):
-        ok, _msg = send_buy(cid, contract_type, stake, symbol, barrier)
+        ok, _msg = send_buy(cid, contract_type, stake, symbol, barrier, duration=duration, duration_unit=duration_unit)
         if ok:
             placed += 1
         time.sleep(0.10)

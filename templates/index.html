@@ -322,6 +322,14 @@ input, select{
 .trade-profit.pending{ color:#facc15; }
 .trade-profit.closing{ color:#facc15; }
 .trade-detail{ display:flex; gap:15px; color:#94a3b8; font-size:13px; }
+.trade-meta{
+    display:flex;
+    flex-direction:column;
+    gap:2px;
+    color:#facc15;
+    font-size:15px;
+    font-weight:600;
+}
 .exit-digit{
     background:#1e293b;
     padding:2px 8px;
@@ -1318,6 +1326,17 @@ function formatTradeCountdownLabel(trade){
     return String(safe);
 }
 
+function formatTradeDurationLabel(trade){
+    const duration = Number(trade && trade.duration);
+    const unit = String(((trade && trade.duration_unit) || (trade && trade.countdown_unit) || "t")).toLowerCase();
+    if(!Number.isFinite(duration) || duration <= 0) return "—";
+    const safe = Math.max(1, Math.floor(duration));
+    if(unit === "s") return `${safe} ${safe === 1 ? "Second" : "Seconds"}`;
+    if(unit === "m") return `${safe} ${safe === 1 ? "Minute" : "Minutes"}`;
+    if(unit === "h") return `${safe} ${safe === 1 ? "Hour" : "Hours"}`;
+    return `${safe} ${safe === 1 ? "Tick" : "Ticks"}`;
+}
+
 function mergeTradeRecord(existing, incoming){
     const base = (existing && typeof existing === "object") ? existing : {};
     const next = (incoming && typeof incoming === "object") ? incoming : {};
@@ -1798,6 +1817,7 @@ function buildTradeItem(trade){
     const type = (barrier !== "" ? `${typeRaw} ${barrier}` : typeRaw);
     const stake = trade.stake || trade.buy_price || 0;
     const market = String(trade.symbol || trade.market || "—");
+    const durationLabel = formatTradeDurationLabel(trade);
 
     const exitDigit = (trade.exitDigit !== undefined && trade.exitDigit !== null)
         ? trade.exitDigit
@@ -1827,7 +1847,11 @@ function buildTradeItem(trade){
             <span class="trade-profit ${resultClass}">${profitDisplay}</span>
         </div>
         <div class="trade-row">
-            <span style="color:#94a3b8;">Stake: $${Number(stake).toFixed(2)} • Market: ${market}</span>
+            <div class="trade-meta">
+                <span>Stake: $${Number(stake).toFixed(2)}</span>
+                <span>Market: ${market}</span>
+                <span>Duration: ${durationLabel}</span>
+            </div>
             <span class="exit-digit">${badgeLabel}</span>
         </div>
         <div class="trade-detail">
@@ -1844,6 +1868,7 @@ function pushTradeToStore(trade){
 
 let stakeInput;
 let barrierInput;
+let durationTicksInput;
 let tpInput;
 let slInput;
 let digitGrid;
@@ -2002,6 +2027,7 @@ async function loadProfileUI(profile){
 function refreshDynamicElements(){
     stakeInput = document.getElementById("stake");
     barrierInput = document.getElementById("barrier");
+    durationTicksInput = document.getElementById("durationTicks");
 
     tpInput = document.getElementById("tp");
     slInput = document.getElementById("sl");
@@ -2145,6 +2171,14 @@ function updateInsta5Label(){
     if(!insta5Btn || !barrierInput) return;
     const b = parseInt(barrierInput.value || "5", 10);
     insta5Btn.innerText = `INSTA 5 ON ${isNaN(b) ? 5 : b}`;
+}
+
+function getManualDurationTicks(){
+    const node = durationTicksInput || document.getElementById("durationTicks");
+    let duration = parseInt((node && node.value) || "1", 10);
+    if(!Number.isFinite(duration) || duration < 1) duration = 1;
+    if(duration > 10) duration = 10;
+    return duration;
 }
 
 function onDigitClicked(digit, ev){
@@ -2873,9 +2907,10 @@ async function insta5(){
     const stake = stakeInput.value;
     const symbol = document.getElementById("symbol").value;
     const barrier = parseInt(barrierInput.value || "5", 10);
+    const duration = getManualDurationTicks();
 
     try{
-        const res = await fetch("/insta5", {method:"POST",headers:{"Content-Type":"application/json"},body: JSON.stringify({ stake, symbol, barrier: isNaN(barrier) ? 5 : barrier })});
+        const res = await fetch("/insta5", {method:"POST",headers:{"Content-Type":"application/json"},body: JSON.stringify({ stake, symbol, barrier: isNaN(barrier) ? 5 : barrier, duration, duration_unit:"t" })});
         const data = await res.json();
         if(data.status === "success") showToast("⚡ INSTA 5 SENT", "warn");
         else showToast(data.message || "INSTA 5 failed", "error");
@@ -2889,9 +2924,10 @@ async function kidgambleX(){
     if(!stakeInput) return;
     const stake = stakeInput.value;
     const symbol = document.getElementById("symbol").value;
+    const duration = getManualDurationTicks();
 
     try{
-        const res = await fetch("/kidgamblex", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ stake, symbol })});
+        const res = await fetch("/kidgamblex", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ stake, symbol, duration, duration_unit:"t" })});
         const data = await res.json();
         if(data.status === "success") showToast("🎲 kidgambleX sent", "warn");
         else showToast(data.message || "kidgambleX failed", "error");
@@ -2907,8 +2943,9 @@ async function trade(type, barrierOverride=null){
     const stake = stakeInput.value;
     const symbol = document.getElementById("symbol").value;
     const barrier = barrierOverride !== null ? barrierOverride : barrierInput.value;
+    const duration = getManualDurationTicks();
 
-    await fetch("/manual_trade", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type, stake, symbol, barrier})});
+    await fetch("/manual_trade", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type, stake, symbol, barrier, duration, duration_unit:"t"})});
 }
 
 async function take3(type){
@@ -2916,8 +2953,9 @@ async function take3(type){
     const stake = stakeInput.value;
     const symbol = document.getElementById("symbol").value;
     const barrier = barrierInput.value;
+    const duration = getManualDurationTicks();
 
-    await fetch("/manual_3_trades", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type, stake, symbol, barrier})});
+    await fetch("/manual_3_trades", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type, stake, symbol, barrier, duration, duration_unit:"t"})});
     showToast("🔥 TAKE 3 SENT (" + type + ")", "info");
 }
 
@@ -2926,8 +2964,9 @@ async function burst4(type){
     const stake = stakeInput.value;
     const symbol = document.getElementById("symbol").value;
     const barrier = barrierInput.value;
+    const duration = getManualDurationTicks();
 
-    await fetch("/burst_4", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type, stake, symbol, barrier})});
+    await fetch("/burst_4", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type, stake, symbol, barrier, duration, duration_unit:"t"})});
     showToast("⚡ BURST 4 SENT (" + type + ")", "warn");
 }
 
