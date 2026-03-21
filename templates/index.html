@@ -770,7 +770,6 @@ body.mobile-only-ui #profileContainer .unchain-history-grid{
                 <div id="apiConnectForm" style="display:flex; flex-wrap:wrap; align-items:center; gap:10px; width:100%;">
                     <input id="token" placeholder="Enter API Token" type="password" style="flex:1 1 240px; min-width:220px;">
                     <button id="connectBtn" onclick="connect()" style="background:#38bdf8;">Connect</button>
-                    <select id="symbol" style="flex:1 1 200px;"></select>
                 </div>
                 <div id="apiConnectedPanel" style="display:none; align-items:center; gap:10px; flex-wrap:wrap; width:100%;">
                     <div id="apiConnectedMessage" class="green" style="display:flex; align-items:center; gap:8px; font-weight:700; font-size:13px; line-height:1.2;">
@@ -778,6 +777,10 @@ body.mobile-only-ui #profileContainer .unchain-history-grid{
                         <span id="apiConnectedText">API CONNECTED SUCCESSFULLY</span>
                     </div>
                     <button id="disconnectBtn" onclick="disconnect()" style="background:#ef4444;">Disconnect</button>
+                </div>
+                <div id="marketPickerRow" style="display:flex; flex-direction:column; align-items:flex-start; gap:6px; width:100%; margin-top:10px;">
+                    <div style="color:#94a3b8; font-size:12px;">Market</div>
+                    <select id="symbol" style="width:100%;"></select>
                 </div>
 
                 <p id="apiStatusRow" style="margin-top:8px;">Status: <span id="apiStatus" class="red">Not Connected</span></p>
@@ -941,9 +944,15 @@ function bindSocketHandlers(){
     });
 
     socket.on("api_error", (data)=>{
-        // Intentionally suppress API error popups in UI.
-        // Errors are still logged server-side.
-        void data;
+        const message = String((data && data.message) || "").trim();
+        if(!isAuthApiErrorMessage(message)) return;
+        apiConnectPendingUntil = 0;
+        stopApiConnectPolling();
+        apiConnected = false;
+        updateApiConnectionUi("disconnected");
+        apiStatus.innerText = "Not Connected";
+        apiStatus.className = "red";
+        showToast(message || "Invalid API token", "error");
     });
 
     socket.on("auto_mode_update", (modes)=>{
@@ -1097,13 +1106,17 @@ function bindSocketHandlers(){
             }
         }
 
-        const totalEl = document.getElementById("profileTotalTrades");
+        const totalEl = getProfileScopedElement("profileTotalTrades");
+        const winsEl = getProfileScopedElement("profileWins");
+        const lossesEl = getProfileScopedElement("profileLosses");
+        const winRateEl = getProfileScopedElement("profileWinRate");
+        const lossRateEl = getProfileScopedElement("profileLossRate");
         if (totalEl) {
             totalEl.innerText = (data.wins + data.losses);
-            document.getElementById("profileWins").innerText = data.wins;
-            document.getElementById("profileLosses").innerText = data.losses;
-            document.getElementById("profileWinRate").innerText = data.winrate + "%";
-            document.getElementById("profileLossRate").innerText = (100 - data.winrate).toFixed(1) + "%";
+            if (winsEl) winsEl.innerText = data.wins;
+            if (lossesEl) lossesEl.innerText = data.losses;
+            if (winRateEl) winRateEl.innerText = data.winrate + "%";
+            if (lossRateEl) lossRateEl.innerText = (100 - data.winrate).toFixed(1) + "%";
         }
     });
 
@@ -1161,6 +1174,8 @@ const digitStream = document.getElementById("digitStream");
 const accountDashboard = document.getElementById("accountDashboard");
 const profileTitle = document.getElementById("profileTitle");
 const apiConnectForm = document.getElementById("apiConnectForm");
+const tokenInputEl = document.getElementById("token");
+const connectBtnEl = document.getElementById("connectBtn");
 const apiConnectedPanel = document.getElementById("apiConnectedPanel");
 const apiConnectedMessage = document.getElementById("apiConnectedMessage");
 const apiConnectedIcon = document.getElementById("apiConnectedIcon");
@@ -1182,6 +1197,8 @@ function updateApiConnectionUi(mode, message){
     const isConnected = stateMode === "connected";
     const isPending = stateMode === "pending";
     if(apiConnectForm) apiConnectForm.style.display = isConnected || isPending ? "none" : "flex";
+    if(tokenInputEl) tokenInputEl.style.display = "";
+    if(connectBtnEl) connectBtnEl.style.display = "";
     if(apiConnectedPanel) apiConnectedPanel.style.display = isConnected || isPending ? "flex" : "none";
     if(apiStatusRow) apiStatusRow.style.display = "block";
     if(apiConnectedMessage){
@@ -1197,6 +1214,22 @@ function updateApiConnectionUi(mode, message){
         apiConnectedMessage.style.fontSize = isConnected ? "13px" : "13px";
         apiConnectedMessage.style.fontWeight = isConnected ? "700" : "700";
     }
+}
+
+function isAuthApiErrorMessage(message){
+    const text = String(message || "").toLowerCase();
+    if(!text) return false;
+    return (
+        text.includes("invalidtoken") ||
+        text.includes("invalid token") ||
+        text.includes("token is invalid") ||
+        text.includes("authorization required") ||
+        text.includes("authorisation required") ||
+        text.includes("not authorized") ||
+        text.includes("not authorised") ||
+        (text.includes("authorize") && text.includes("failed")) ||
+        (text.includes("token") && text.includes("invalid"))
+    );
 }
 
 function stopApiConnectPolling(){
@@ -1498,6 +1531,21 @@ function removeTradeToastBatch(profileState, batch){
     }
 }
 
+function getProfileContainerRoot(){
+    return document.getElementById("profileContainer");
+}
+
+function getProfileScopedElement(id){
+    const key = String(id || "").trim();
+    if(!key) return null;
+    const root = getProfileContainerRoot();
+    if(root){
+        const scoped = root.querySelector(`[id="${key}"]`);
+        if(scoped) return scoped;
+    }
+    return document.getElementById(key);
+}
+
 function cleanupTradeToastProfileState(profileState){
     if(!profileState) return;
     const now = Date.now();
@@ -1791,7 +1839,7 @@ loadProfileDraftsFromStorage();
 window.addEventListener("beforeunload", ()=> captureProfileDraft(activeProfile));
 
 function renderTradeList(profile){
-    const list = document.getElementById("profileTradeList");
+    const list = getProfileScopedElement("profileTradeList");
     if(!list) return;
 
     const arr = tradeStore[profile] || [];
