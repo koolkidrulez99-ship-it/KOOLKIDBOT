@@ -171,6 +171,10 @@
     .unchain-profile .unchain-field.is-compact{
       flex:0 1 120px;
     }
+    .unchain-profile .unchain-field.is-barrier{
+      flex:1 1 220px;
+      min-width:220px;
+    }
     .unchain-profile .unchain-field-grid-2{
       display:grid;
       grid-template-columns:repeat(2,minmax(0,1fr));
@@ -223,6 +227,72 @@
     }
     .unchain-profile .unchain-btn-row--compact > button{
       box-shadow:0 10px 24px rgba(2,6,23,0.28);
+    }
+    .unchain-profile .unchain-barrier-inline{
+      display:flex;
+      align-items:center;
+      gap:6px;
+      min-width:0;
+    }
+    .unchain-profile .unchain-barrier-stepper{
+      flex:0 0 34px;
+      width:34px;
+      min-width:34px;
+      height:42px;
+      min-height:42px;
+      padding:0 6px;
+      font-size:15px;
+      line-height:1;
+    }
+    .unchain-profile .unchain-barrier-input{
+      flex:1 1 auto;
+      min-width:110px;
+      text-align:center;
+      font-variant-numeric:tabular-nums;
+    }
+    .unchain-profile .unchain-barrier-presets{
+      display:grid;
+      grid-template-columns:repeat(4,minmax(0,1fr));
+      gap:6px;
+      margin-top:8px;
+    }
+    .unchain-profile .unchain-barrier-preset{
+      min-height:36px !important;
+      padding:7px 10px !important;
+      font-size:12px !important;
+      line-height:1.1;
+      white-space:nowrap;
+    }
+    .unchain-profile .unchain-koolkid-barrier-grid{
+      display:grid;
+      grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+      gap:8px;
+      margin-top:14px;
+    }
+    .unchain-profile .unchain-koolkid-barrier-inline{
+      display:flex;
+      align-items:center;
+      gap:4px;
+      min-width:0;
+    }
+    .unchain-profile .unchain-koolkid-barrier-stepper{
+      flex:0 0 26px;
+      width:26px;
+      min-width:26px;
+      height:36px;
+      min-height:36px;
+      padding:0 5px;
+      font-size:13px;
+      line-height:1;
+    }
+    .unchain-profile .unchain-koolkid-barrier-input{
+      flex:1 1 auto;
+      min-width:0;
+      min-height:36px;
+      padding:7px 5px;
+      font-size:12px;
+      text-align:center;
+      font-variant-numeric:tabular-nums;
     }
     .unchain-profile .unchain-inline-toggle{
       display:flex;
@@ -859,6 +929,9 @@
       .unchain-profile .unchain-field.is-compact{
         flex:1 1 auto;
       }
+      .unchain-profile .unchain-field.is-barrier{
+        min-width:0;
+      }
     .unchain-profile .unchain-field-grid-2,
     .unchain-profile .unchain-field-grid-3,
     .unchain-profile .unchain-btn-row--compact,
@@ -971,6 +1044,57 @@
       .unchain-profile .unchain-scanner-footer-note{
         font-size:12px;
         padding:12px 13px;
+      }
+      .unchain-profile .unchain-barrier-presets{
+        grid-template-columns:repeat(2,minmax(0,1fr));
+        gap:5px;
+      }
+      .unchain-profile .unchain-barrier-preset{
+        min-height:30px !important;
+        padding:5px 6px !important;
+        font-size:11px !important;
+        border-radius:10px;
+      }
+      .unchain-profile .unchain-row .unchain-barrier-inline{
+        gap:4px;
+      }
+      .unchain-profile .unchain-row .unchain-barrier-inline button{
+        width:28px !important;
+        min-width:28px !important;
+        flex:0 0 28px !important;
+        height:34px !important;
+        min-height:34px !important;
+        padding:0 4px !important;
+        font-size:13px !important;
+      }
+      .unchain-profile .unchain-row .unchain-barrier-inline input{
+        width:auto !important;
+        min-width:0 !important;
+        min-height:34px !important;
+        padding:6px 8px !important;
+        font-size:12px !important;
+      }
+      .unchain-profile .unchain-koolkid-barrier-grid{
+        grid-template-columns:1fr 1fr;
+        gap:6px;
+      }
+      .unchain-profile .unchain-koolkid-barrier-inline{
+        gap:3px;
+      }
+      .unchain-profile .unchain-koolkid-barrier-stepper{
+        width:24px !important;
+        min-width:24px !important;
+        flex:0 0 24px !important;
+        height:32px !important;
+        min-height:32px !important;
+        padding:0 3px !important;
+        font-size:12px !important;
+      }
+      .unchain-profile .unchain-koolkid-barrier-input{
+        width:auto !important;
+        min-height:32px !important;
+        padding:5px 4px !important;
+        font-size:11px !important;
       }
     }
   </style>
@@ -1133,26 +1257,26 @@
       <div class="unchain-side">
         <h4 style="color:#22c55e;">📈 Higher Setup</h4>
         <div class="unchain-row">
-          <div class="unchain-field is-compact">
+          <div class="unchain-field is-compact is-barrier">
             <label class="unchain-label" for="unchainHigherStake">Higher Stake</label>
             <input id="unchainHigherStake" type="number" min="0.35" step="0.01" value="1">
           </div>
         </div>
         <div class="unchain-row" style="margin-top:10px;">
-          <div class="unchain-field is-compact">
+          <div class="unchain-field is-compact is-barrier">
             <label class="unchain-label" for="unchainHigherBarrier">Higher Barrier</label>
-            <div style="display:flex;align-items:center;gap:6px;">
-              <button data-action="unchain-barrier-step" data-target="unchainHigherBarrier" data-delta="-0.01" style="min-width:34px;height:42px;background:#14532d;color:#dcfce7;">-</button>
-              <input id="unchainHigherBarrier" type="text" value="+0.12" style="flex:1;min-width:0;">
-              <button data-action="unchain-barrier-step" data-target="unchainHigherBarrier" data-delta="0.01" style="min-width:34px;height:42px;background:#166534;color:#dcfce7;">+</button>
+            <div class="unchain-barrier-inline">
+              <button class="unchain-barrier-stepper" data-action="unchain-barrier-step" data-target="unchainHigherBarrier" data-delta="-0.01" style="background:#14532d;color:#dcfce7;">-</button>
+              <input class="unchain-barrier-input" id="unchainHigherBarrier" type="text" value="+0.12">
+              <button class="unchain-barrier-stepper" data-action="unchain-barrier-step" data-target="unchainHigherBarrier" data-delta="0.01" style="background:#166534;color:#dcfce7;">+</button>
             </div>
           </div>
         </div>
-        <div class="unchain-btn-row--compact" style="margin-top:8px;gap:6px;flex-wrap:wrap;">
-          <button data-action="unchain-higher-preset" data-value="+3.88" style="background:#166534;color:#dcfce7;padding:7px 10px;font-size:12px;">+3.88</button>
-          <button data-action="unchain-higher-preset" data-value="+0.50" style="background:#166534;color:#dcfce7;padding:7px 10px;font-size:12px;">+0.50</button>
-          <button data-action="unchain-higher-preset" data-value="+3.49" style="background:#166534;color:#dcfce7;padding:7px 10px;font-size:12px;">+3.49</button>
-          <button data-action="unchain-higher-preset" data-value="+0.12" style="background:#166534;color:#dcfce7;padding:7px 10px;font-size:12px;">+0.12</button>
+        <div class="unchain-barrier-presets">
+          <button class="unchain-barrier-preset" data-action="unchain-higher-preset" data-value="+3.88" style="background:#166534;color:#dcfce7;">+3.88</button>
+          <button class="unchain-barrier-preset" data-action="unchain-higher-preset" data-value="+0.50" style="background:#166534;color:#dcfce7;">+0.50</button>
+          <button class="unchain-barrier-preset" data-action="unchain-higher-preset" data-value="+3.49" style="background:#166534;color:#dcfce7;">+3.49</button>
+          <button class="unchain-barrier-preset" data-action="unchain-higher-preset" data-value="+0.12" style="background:#166534;color:#dcfce7;">+0.12</button>
         </div>
         <div style="margin-top:8px;color:#94a3b8;font-size:12px;">For short durations this is sent as a positive relative barrier.</div>
       </div>
@@ -1168,18 +1292,18 @@
         <div class="unchain-row" style="margin-top:10px;">
           <div class="unchain-field is-compact">
             <label class="unchain-label" for="unchainLowerBarrier">Lower Barrier</label>
-            <div style="display:flex;align-items:center;gap:6px;">
-              <button data-action="unchain-barrier-step" data-target="unchainLowerBarrier" data-delta="-0.01" style="min-width:34px;height:42px;background:#7f1d1d;color:#fee2e2;">-</button>
-              <input id="unchainLowerBarrier" type="text" value="-0.12" style="flex:1;min-width:0;">
-              <button data-action="unchain-barrier-step" data-target="unchainLowerBarrier" data-delta="0.01" style="min-width:34px;height:42px;background:#991b1b;color:#fee2e2;">+</button>
+            <div class="unchain-barrier-inline">
+              <button class="unchain-barrier-stepper" data-action="unchain-barrier-step" data-target="unchainLowerBarrier" data-delta="-0.01" style="background:#7f1d1d;color:#fee2e2;">-</button>
+              <input class="unchain-barrier-input" id="unchainLowerBarrier" type="text" value="-0.12">
+              <button class="unchain-barrier-stepper" data-action="unchain-barrier-step" data-target="unchainLowerBarrier" data-delta="0.01" style="background:#991b1b;color:#fee2e2;">+</button>
             </div>
           </div>
         </div>
-        <div class="unchain-btn-row--compact" style="margin-top:8px;gap:6px;flex-wrap:wrap;">
-          <button data-action="unchain-lower-preset" data-value="-3.88" style="background:#991b1b;color:#fee2e2;padding:7px 10px;font-size:12px;">-3.88</button>
-          <button data-action="unchain-lower-preset" data-value="-0.50" style="background:#991b1b;color:#fee2e2;padding:7px 10px;font-size:12px;">-0.50</button>
-          <button data-action="unchain-lower-preset" data-value="-3.49" style="background:#991b1b;color:#fee2e2;padding:7px 10px;font-size:12px;">-3.49</button>
-          <button data-action="unchain-lower-preset" data-value="-0.12" style="background:#991b1b;color:#fee2e2;padding:7px 10px;font-size:12px;">-0.12</button>
+        <div class="unchain-barrier-presets">
+          <button class="unchain-barrier-preset" data-action="unchain-lower-preset" data-value="-3.88" style="background:#991b1b;color:#fee2e2;">-3.88</button>
+          <button class="unchain-barrier-preset" data-action="unchain-lower-preset" data-value="-0.50" style="background:#991b1b;color:#fee2e2;">-0.50</button>
+          <button class="unchain-barrier-preset" data-action="unchain-lower-preset" data-value="-3.49" style="background:#991b1b;color:#fee2e2;">-3.49</button>
+          <button class="unchain-barrier-preset" data-action="unchain-lower-preset" data-value="-0.12" style="background:#991b1b;color:#fee2e2;">-0.12</button>
         </div>
         <div style="margin-top:8px;color:#94a3b8;font-size:12px;">For short durations this is sent as a negative relative barrier.</div>
       </div>
@@ -1266,21 +1390,21 @@
           </div>
         </div>
 
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:14px;">
+        <div class="unchain-koolkid-barrier-grid">
           <div class="unchain-field">
             <label class="unchain-label" for="unchainKoolkidHigherBarrier">KOOLKID Higher Barrier</label>
-            <div style="display:flex;align-items:center;gap:4px;">
-              <button data-action="unchain-barrier-step" data-target="unchainKoolkidHigherBarrier" data-delta="-0.01" style="min-width:26px;height:36px;padding:0 5px;background:#14532d;color:#dcfce7;">-</button>
-              <input id="unchainKoolkidHigherBarrier" type="text" value="+0.06" style="flex:1;min-width:0;padding:7px 5px;font-size:12px;min-height:36px;">
-              <button data-action="unchain-barrier-step" data-target="unchainKoolkidHigherBarrier" data-delta="0.01" style="min-width:26px;height:36px;padding:0 5px;background:#166534;color:#dcfce7;">+</button>
+            <div class="unchain-koolkid-barrier-inline">
+              <button class="unchain-koolkid-barrier-stepper" data-action="unchain-barrier-step" data-target="unchainKoolkidHigherBarrier" data-delta="-0.01" style="background:#14532d;color:#dcfce7;">-</button>
+              <input class="unchain-koolkid-barrier-input" id="unchainKoolkidHigherBarrier" type="text" value="+0.06">
+              <button class="unchain-koolkid-barrier-stepper" data-action="unchain-barrier-step" data-target="unchainKoolkidHigherBarrier" data-delta="0.01" style="background:#166534;color:#dcfce7;">+</button>
             </div>
           </div>
           <div class="unchain-field">
             <label class="unchain-label" for="unchainKoolkidLowerBarrier">KOOLKID Lower Barrier</label>
-            <div style="display:flex;align-items:center;gap:4px;">
-              <button data-action="unchain-barrier-step" data-target="unchainKoolkidLowerBarrier" data-delta="-0.01" style="min-width:26px;height:36px;padding:0 5px;background:#7f1d1d;color:#fee2e2;">-</button>
-              <input id="unchainKoolkidLowerBarrier" type="text" value="-0.06" style="flex:1;min-width:0;padding:7px 5px;font-size:12px;min-height:36px;">
-              <button data-action="unchain-barrier-step" data-target="unchainKoolkidLowerBarrier" data-delta="0.01" style="min-width:26px;height:36px;padding:0 5px;background:#991b1b;color:#fee2e2;">+</button>
+            <div class="unchain-koolkid-barrier-inline">
+              <button class="unchain-koolkid-barrier-stepper" data-action="unchain-barrier-step" data-target="unchainKoolkidLowerBarrier" data-delta="-0.01" style="background:#7f1d1d;color:#fee2e2;">-</button>
+              <input class="unchain-koolkid-barrier-input" id="unchainKoolkidLowerBarrier" type="text" value="-0.06">
+              <button class="unchain-koolkid-barrier-stepper" data-action="unchain-barrier-step" data-target="unchainKoolkidLowerBarrier" data-delta="0.01" style="background:#991b1b;color:#fee2e2;">+</button>
             </div>
           </div>
         </div>
