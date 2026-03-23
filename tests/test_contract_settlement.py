@@ -5,9 +5,12 @@ from types import SimpleNamespace
 
 import server
 from server import (
+    _apply_unchain_market_default_barriers,
     _ensure_unchain_hl_state,
     _decorate_unchain_active_entry_countdown,
     _format_unchain_barrier,
+    _format_unchain_market_default_barrier,
+    _get_unchain_visible_barrier,
     _half_unchain_barrier,
     _is_contract_settled_fast,
     _send_unchain_hl_trade,
@@ -133,13 +136,123 @@ def test_half_unchain_barrier_halves_higher_and_lower_values():
     assert _half_unchain_barrier("-0.12", "LOWER", "t") == "-0.06"
 
 
-def test_ensure_unchain_state_restores_v75_default_barriers():
+def test_get_unchain_visible_barrier_respects_saved_half_toggle():
+    u = {"higher_barrier": "+0.12", "lower_barrier": "-0.12", "half_barrier_enabled": True}
+
+    assert _get_unchain_visible_barrier(u, "HIGHER", "t") == "+0.06"
+    assert _get_unchain_visible_barrier(u, "LOWER", "t") == "-0.06"
+
+
+def test_ensure_unchain_state_keeps_standard_default_barriers():
     state = {"current_symbol": "1HZ75V"}
 
     u = _ensure_unchain_hl_state(state)
 
-    assert u["higher_barrier"] == "+3.88"
-    assert u["lower_barrier"] == "-3.88"
+    assert u["higher_barrier"] == "+0.12"
+    assert u["lower_barrier"] == "-0.12"
+
+
+def test_format_unchain_market_default_barrier_uses_relative_deriv_value():
+    assert _format_unchain_market_default_barrier("+0.33", "HIGHER") == "+0.33"
+    assert _format_unchain_market_default_barrier("+0.33", "LOWER") == "-0.33"
+
+
+def test_apply_unchain_market_default_barriers_updates_main_and_koolkid_setup(monkeypatch):
+    state = {
+        "ws_connected": True,
+        "ws": object(),
+        "current_symbol": "R_75",
+        "unchain_hl": {
+            "higher_barrier": "+0.12",
+            "lower_barrier": "-0.12",
+            "higher_stake": 1.0,
+            "duration": 5,
+            "duration_unit": "t",
+        },
+    }
+
+    monkeypatch.setattr(
+        server,
+        "_fetch_unchain_market_default_barrier",
+        lambda *args, **kwargs: ("+0.33", None),
+    )
+
+    ok, info = _apply_unchain_market_default_barriers(state, "R_75")
+
+    assert ok is True
+    assert info == "+0.33 / -0.33"
+    assert state["unchain_hl"]["higher_barrier"] == "+0.33"
+    assert state["unchain_hl"]["lower_barrier"] == "-0.33"
+    assert state["unchain_hl"]["koolkid_higher_barrier"] == "+0.33"
+    assert state["unchain_hl"]["koolkid_lower_barrier"] == "-0.33"
+    assert state["unchain_hl"]["market_default_symbol"] == "R_75"
+
+
+def test_sync_unchain_market_default_barriers_only_refreshes_unsynced_symbol(monkeypatch):
+    state = {
+        "ws_connected": True,
+        "ws": object(),
+        "current_symbol": "R_10",
+        "unchain_hl": {
+            "higher_barrier": "+0.12",
+            "lower_barrier": "-0.12",
+            "koolkid_higher_barrier": "+0.12",
+            "koolkid_lower_barrier": "-0.12",
+            "duration": 5,
+            "duration_unit": "t",
+        },
+    }
+
+    monkeypatch.setattr(
+        server,
+        "_fetch_unchain_market_default_barrier",
+        lambda *args, **kwargs: ("+0.33", None),
+    )
+
+    changed, info = server._sync_unchain_market_default_barriers(state, force=False)
+
+    assert changed is True
+    assert info == "+0.33 / -0.33"
+    assert state["unchain_hl"]["higher_barrier"] == "+0.33"
+    assert state["unchain_hl"]["market_default_symbol"] == "R_10"
+
+    state["unchain_hl"]["higher_barrier"] = "+9.99"
+    state["unchain_hl"]["lower_barrier"] = "-9.99"
+
+    changed, info = server._sync_unchain_market_default_barriers(state, force=False)
+
+    assert changed is False
+    assert info == "Already synced"
+    assert state["unchain_hl"]["higher_barrier"] == "+9.99"
+    assert state["unchain_hl"]["lower_barrier"] == "-9.99"
+
+
+def test_sync_unchain_market_default_barriers_force_refreshes_on_login(monkeypatch):
+    state = {
+        "ws_connected": True,
+        "ws": object(),
+        "current_symbol": "R_10",
+        "unchain_hl": {
+            "higher_barrier": "+9.99",
+            "lower_barrier": "-9.99",
+            "market_default_symbol": "R_10",
+            "duration": 5,
+            "duration_unit": "t",
+        },
+    }
+
+    monkeypatch.setattr(
+        server,
+        "_fetch_unchain_market_default_barrier",
+        lambda *args, **kwargs: ("+0.33", None),
+    )
+
+    changed, info = server._sync_unchain_market_default_barriers(state, force=True)
+
+    assert changed is True
+    assert info == "+0.33 / -0.33"
+    assert state["unchain_hl"]["higher_barrier"] == "+0.33"
+    assert state["unchain_hl"]["lower_barrier"] == "-0.33"
 
 
 def test_send_unchain_hl_trade_uses_half_barrier_setting(monkeypatch):
@@ -175,3 +288,39 @@ def test_send_unchain_hl_trade_uses_half_barrier_setting(monkeypatch):
     assert "sent" in msg.lower()
     assert sent
     assert sent[0]["parameters"]["barrier"] == "+0.06"
+
+
+def test_send_unchain_hl_trade_can_skip_saved_half_toggle(monkeypatch):
+    sent = []
+
+    class DummyWs:
+        def send(self, payload):
+            sent.append(json.loads(payload))
+
+    state = {
+        "ws_connected": True,
+        "ws": DummyWs(),
+        "req_meta": {},
+        "unchain_hl": {"half_barrier_enabled": True},
+    }
+    server.clients["test-skip-half-barrier"] = state
+    monkeypatch.setattr(server, "_check_unchain_hl_risk_block", lambda state: None)
+
+    try:
+        ok, msg = _send_unchain_hl_trade(
+            "test-skip-half-barrier",
+            side="LOWER",
+            stake=1.0,
+            symbol="R_25",
+            barrier="-0.06",
+            duration=5,
+            duration_unit="t",
+            respect_half_barrier_toggle=False,
+        )
+    finally:
+        server.clients.pop("test-skip-half-barrier", None)
+
+    assert ok is True
+    assert "sent" in msg.lower()
+    assert sent
+    assert sent[0]["parameters"]["barrier"] == "-0.06"

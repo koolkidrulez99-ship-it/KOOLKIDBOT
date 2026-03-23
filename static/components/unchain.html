@@ -1141,8 +1141,18 @@
         <div class="unchain-row" style="margin-top:10px;">
           <div class="unchain-field is-compact">
             <label class="unchain-label" for="unchainHigherBarrier">Higher Barrier</label>
-            <input id="unchainHigherBarrier" type="text" value="+0.12">
+            <div style="display:flex;align-items:center;gap:6px;">
+              <button data-action="unchain-barrier-step" data-target="unchainHigherBarrier" data-delta="-0.01" style="min-width:34px;height:42px;background:#14532d;color:#dcfce7;">-</button>
+              <input id="unchainHigherBarrier" type="text" value="+0.12" style="flex:1;min-width:0;">
+              <button data-action="unchain-barrier-step" data-target="unchainHigherBarrier" data-delta="0.01" style="min-width:34px;height:42px;background:#166534;color:#dcfce7;">+</button>
+            </div>
           </div>
+        </div>
+        <div class="unchain-btn-row--compact" style="margin-top:8px;gap:6px;flex-wrap:wrap;">
+          <button data-action="unchain-higher-preset" data-value="+3.88" style="background:#166534;color:#dcfce7;padding:7px 10px;font-size:12px;">+3.88</button>
+          <button data-action="unchain-higher-preset" data-value="+0.50" style="background:#166534;color:#dcfce7;padding:7px 10px;font-size:12px;">+0.50</button>
+          <button data-action="unchain-higher-preset" data-value="+3.49" style="background:#166534;color:#dcfce7;padding:7px 10px;font-size:12px;">+3.49</button>
+          <button data-action="unchain-higher-preset" data-value="+0.12" style="background:#166534;color:#dcfce7;padding:7px 10px;font-size:12px;">+0.12</button>
         </div>
         <div style="margin-top:8px;color:#94a3b8;font-size:12px;">For short durations this is sent as a positive relative barrier.</div>
       </div>
@@ -1158,8 +1168,18 @@
         <div class="unchain-row" style="margin-top:10px;">
           <div class="unchain-field is-compact">
             <label class="unchain-label" for="unchainLowerBarrier">Lower Barrier</label>
-            <input id="unchainLowerBarrier" type="text" value="-0.12">
+            <div style="display:flex;align-items:center;gap:6px;">
+              <button data-action="unchain-barrier-step" data-target="unchainLowerBarrier" data-delta="-0.01" style="min-width:34px;height:42px;background:#7f1d1d;color:#fee2e2;">-</button>
+              <input id="unchainLowerBarrier" type="text" value="-0.12" style="flex:1;min-width:0;">
+              <button data-action="unchain-barrier-step" data-target="unchainLowerBarrier" data-delta="0.01" style="min-width:34px;height:42px;background:#991b1b;color:#fee2e2;">+</button>
+            </div>
           </div>
+        </div>
+        <div class="unchain-btn-row--compact" style="margin-top:8px;gap:6px;flex-wrap:wrap;">
+          <button data-action="unchain-lower-preset" data-value="-3.88" style="background:#991b1b;color:#fee2e2;padding:7px 10px;font-size:12px;">-3.88</button>
+          <button data-action="unchain-lower-preset" data-value="-0.50" style="background:#991b1b;color:#fee2e2;padding:7px 10px;font-size:12px;">-0.50</button>
+          <button data-action="unchain-lower-preset" data-value="-3.49" style="background:#991b1b;color:#fee2e2;padding:7px 10px;font-size:12px;">-3.49</button>
+          <button data-action="unchain-lower-preset" data-value="-0.12" style="background:#991b1b;color:#fee2e2;padding:7px 10px;font-size:12px;">-0.12</button>
         </div>
         <div style="margin-top:8px;color:#94a3b8;font-size:12px;">For short durations this is sent as a negative relative barrier.</div>
       </div>
@@ -1202,12 +1222,74 @@
   <div class="card">
     <h3 style="margin-top:0;">🚀 Execute</h3>
     <div class="unchain-btn-row">
+      <button id="unchainKoolkidBtn" data-action="unchain-koolkid-panel" style="background:#2563eb;">KOOLKID</button>
       <button id="unchainAutoBothBtn" data-action="unchain-toggle-auto-both" style="background:#0284c7;">🤖 AUTO BOTH: OFF</button>
       <button id="unchainAiAutoTradeBtn" data-action="unchain-toggle-ai-auto-trade" style="background:#0ea5e9;">🤖 AI AUTO TRADE: OFF</button>
       <button data-action="unchain-trade-higher" style="background:#22c55e;">📈 HIGHER</button>
       <button data-action="unchain-trade-lower" style="background:#ef4444;">📉 LOWER</button>
       <button data-action="unchain-trade-both" style="background:#f59e0b;color:#111827;">⚖️ BOTH</button>
       <button data-action="unchain-close-all" style="background:#7c3aed;">💸 CLOSE UNCHAIN TRADES</button>
+    </div>
+    <div id="unchainKoolkidBody" style="display:none;position:fixed;inset:0;z-index:75;padding:18px;background:rgba(2,6,23,0.76);align-items:center;justify-content:center;">
+      <div style="width:min(560px,100%);max-height:min(88vh,760px);overflow:auto;padding:16px;border-radius:18px;background:linear-gradient(180deg,#111827,#020617);border:1px solid rgba(59,130,246,0.30);box-shadow:0 24px 60px rgba(2,6,23,0.55);">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
+          <div>
+            <div style="font-size:18px;font-weight:800;color:#dbeafe;">KOOLKID</div>
+            <div style="margin-top:4px;color:#93c5fd;font-size:12px;">Choose the UNCHAIN KOOLKID mode, set sim/live durations, set the HL loss trigger, and decide which live barriers should be used if a paper side wins.</div>
+          </div>
+          <button data-action="unchain-koolkid-close" style="min-width:38px;height:38px;background:#1e293b;">✕</button>
+        </div>
+
+        <div class="unchain-btn-row" style="margin-top:14px;">
+          <button id="unchainKoolkidHlBtn" data-action="unchain-koolkid-hl" style="background:#1d4ed8;">📈 HIGHER/LOWER: OFF</button>
+          <button id="unchainKoolkidBothBtn" data-action="unchain-koolkid-both" style="background:#475569;">⚖️ BOTH</button>
+        </div>
+
+        <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:14px;">
+          <div class="unchain-field">
+            <label class="unchain-label" for="unchainKoolkidSimDuration" style="font-size:11px;">Simulation (sec)</label>
+            <input id="unchainKoolkidSimDuration" type="number" min="5" max="59" step="1" value="15" style="min-height:42px;padding:10px;font-size:14px;">
+          </div>
+          <div class="unchain-field">
+            <label class="unchain-label" for="unchainKoolkidLiveDuration" style="font-size:11px;">Live Duration (t)</label>
+            <input id="unchainKoolkidLiveDuration" type="number" min="1" max="10" step="1" value="5" style="min-height:42px;padding:10px;font-size:14px;">
+          </div>
+          <div class="unchain-field">
+            <label class="unchain-label" for="unchainKoolkidHlLossPct" style="font-size:11px;">HL Trigger %</label>
+            <select id="unchainKoolkidHlLossPct" style="min-height:42px;padding:10px;font-size:14px;">
+              <option value="50" selected>50%</option>
+              <option value="55">55%</option>
+              <option value="60">60%</option>
+              <option value="65">65%</option>
+              <option value="70">70%</option>
+            </select>
+          </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:14px;">
+          <div class="unchain-field">
+            <label class="unchain-label" for="unchainKoolkidHigherBarrier">KOOLKID Higher Barrier</label>
+            <div style="display:flex;align-items:center;gap:4px;">
+              <button data-action="unchain-barrier-step" data-target="unchainKoolkidHigherBarrier" data-delta="-0.01" style="min-width:26px;height:36px;padding:0 5px;background:#14532d;color:#dcfce7;">-</button>
+              <input id="unchainKoolkidHigherBarrier" type="text" value="+0.06" style="flex:1;min-width:0;padding:7px 5px;font-size:12px;min-height:36px;">
+              <button data-action="unchain-barrier-step" data-target="unchainKoolkidHigherBarrier" data-delta="0.01" style="min-width:26px;height:36px;padding:0 5px;background:#166534;color:#dcfce7;">+</button>
+            </div>
+          </div>
+          <div class="unchain-field">
+            <label class="unchain-label" for="unchainKoolkidLowerBarrier">KOOLKID Lower Barrier</label>
+            <div style="display:flex;align-items:center;gap:4px;">
+              <button data-action="unchain-barrier-step" data-target="unchainKoolkidLowerBarrier" data-delta="-0.01" style="min-width:26px;height:36px;padding:0 5px;background:#7f1d1d;color:#fee2e2;">-</button>
+              <input id="unchainKoolkidLowerBarrier" type="text" value="-0.06" style="flex:1;min-width:0;padding:7px 5px;font-size:12px;min-height:36px;">
+              <button data-action="unchain-barrier-step" data-target="unchainKoolkidLowerBarrier" data-delta="0.01" style="min-width:26px;height:36px;padding:0 5px;background:#991b1b;color:#fee2e2;">+</button>
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-top:8px;color:#94a3b8;font-size:12px;">📈 Higher/Lower paper-trades the weaker side only and uses your chosen 50-70% loss trigger. ⚖️ Both paper-trades HIGHER + LOWER together, checks with 7s left, then either sends reduced-barrier BOTH, 60:40 BOTH, or skips.</div>
+        <div id="unchainKoolkidStatus" style="margin-top:10px;color:#93c5fd;font-size:12px;line-height:1.5;">
+          KOOLKID status will show here.
+        </div>
+      </div>
     </div>
     <div style="margin-top:12px;padding:10px 12px;border-radius:12px;background:rgba(15,23,42,0.75);border:1px solid rgba(148,163,184,0.22);">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">

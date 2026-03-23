@@ -47,11 +47,8 @@
     const modal = getEl("aiAutoModeModalJokerjoe");
     if (!modal) return;
     state.aiAutoModalOpen = true;
-    modal.style.display = "block";
+    modal.style.display = "flex";
     updateAIAutoModeModalUiJokerjoe();
-    try {
-      modal.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    } catch (e) {}
   }
 
   function closeAIAutoModeModalJokerjoe() {
@@ -993,6 +990,11 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
   window.closeAIAutoModeModalJokerjoe = function () {
     closeAIAutoModeModalJokerjoe();
   };
+
+  document.addEventListener("keydown", (evt) => {
+    if (evt.key !== "Escape" || !state.aiAutoModalOpen) return;
+    closeAIAutoModeModalJokerjoe();
+  });
 
 
 async function toggleAdvancedModeJokerjoe(modeKey, label) {

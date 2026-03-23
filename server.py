@@ -1852,6 +1852,21 @@ def _default_unchain_hl_state():
         "last_result": None,
         "stats": {"wins": 0, "losses": 0, "net_pnl": 0.0},
         "risk_block_reason": None,
+        "koolkid_hl_enabled": False,
+        "koolkid_hl_cooldown_until": 0.0,
+        "koolkid_hl_last_reason": "KOOLKID Higher/Lower is OFF.",
+        "koolkid_both_enabled": False,
+        "koolkid_both_cooldown_until": 0.0,
+        "koolkid_both_last_reason": "KOOLKID Both is OFF.",
+        "koolkid_sim_duration": 15,
+        "koolkid_live_duration": 5,
+        "koolkid_hl_loss_trigger_pct": 50,
+        "koolkid_higher_barrier": "",
+        "koolkid_lower_barrier": "",
+        "koolkid_hl_simulation": None,
+        "koolkid_both_simulation": None,
+        "pair_failure_toast_at": 0.0,
+        "pair_failure_toast_message": "",
         "both_analyzer": {
             "status": "IDLE",
             "signal": "WAIT",
@@ -1899,6 +1914,120 @@ def _ensure_unchain_hl_state(state):
     cur["half_barrier_enabled"] = bool(cur.get("half_barrier_enabled", False))
     cur["auto_both_enabled"] = bool(cur.get("auto_both_enabled", False))
     cur["ai_auto_trade_enabled"] = bool(cur.get("ai_auto_trade_enabled", False))
+    cur["koolkid_hl_enabled"] = bool(cur.get("koolkid_hl_enabled", False))
+    cur["koolkid_hl_last_reason"] = str(cur.get("koolkid_hl_last_reason") or "KOOLKID Higher/Lower is OFF.")
+    cur["koolkid_both_enabled"] = bool(cur.get("koolkid_both_enabled", False))
+    cur["koolkid_both_last_reason"] = str(cur.get("koolkid_both_last_reason") or "KOOLKID Both is OFF.")
+    try:
+        cur["koolkid_sim_duration"] = max(5, min(59, int(float(cur.get("koolkid_sim_duration", 15) or 15))))
+    except Exception:
+        cur["koolkid_sim_duration"] = 15
+    try:
+        cur["koolkid_live_duration"] = max(1, min(10, int(float(cur.get("koolkid_live_duration", 5) or 5))))
+    except Exception:
+        cur["koolkid_live_duration"] = 5
+    try:
+        cur["koolkid_hl_loss_trigger_pct"] = max(50, min(70, int(float(cur.get("koolkid_hl_loss_trigger_pct", 50) or 50))))
+    except Exception:
+        cur["koolkid_hl_loss_trigger_pct"] = 50
+    cur["market_default_symbol"] = str(cur.get("market_default_symbol") or "").upper()
+    cur["koolkid_higher_barrier"] = str(cur.get("koolkid_higher_barrier") or "").strip()
+    cur["koolkid_lower_barrier"] = str(cur.get("koolkid_lower_barrier") or "").strip()
+    try:
+        cur["koolkid_hl_cooldown_until"] = max(0.0, float(cur.get("koolkid_hl_cooldown_until", 0.0) or 0.0))
+    except Exception:
+        cur["koolkid_hl_cooldown_until"] = 0.0
+    try:
+        cur["koolkid_both_cooldown_until"] = max(0.0, float(cur.get("koolkid_both_cooldown_until", 0.0) or 0.0))
+    except Exception:
+        cur["koolkid_both_cooldown_until"] = 0.0
+    if not isinstance(cur.get("koolkid_hl_simulation"), dict):
+        cur["koolkid_hl_simulation"] = None
+    else:
+        sim = cur["koolkid_hl_simulation"]
+        sim["active"] = bool(sim.get("active", False))
+        sim["side"] = str(sim.get("side") or "").upper()
+        sim["opposite_side"] = str(sim.get("opposite_side") or "").upper()
+        try:
+            sim["started_at"] = float(sim.get("started_at", 0.0) or 0.0)
+        except Exception:
+            sim["started_at"] = 0.0
+        try:
+            sim["check_at"] = float(sim.get("check_at", 0.0) or 0.0)
+        except Exception:
+            sim["check_at"] = 0.0
+        try:
+            sim["ends_at"] = float(sim.get("ends_at", 0.0) or 0.0)
+        except Exception:
+            sim["ends_at"] = 0.0
+        sim["time"] = str(sim.get("time") or now_time())
+        try:
+            sim["simulation_duration"] = max(5, min(59, int(float(sim.get("simulation_duration", cur.get("koolkid_sim_duration", 15)) or cur.get("koolkid_sim_duration", 15)))))
+        except Exception:
+            sim["simulation_duration"] = int(cur.get("koolkid_sim_duration", 15) or 15)
+        try:
+            sim["live_duration"] = max(1, min(10, int(float(sim.get("live_duration", cur.get("koolkid_live_duration", 5)) or cur.get("koolkid_live_duration", 5)))))
+        except Exception:
+            sim["live_duration"] = int(cur.get("koolkid_live_duration", 5) or 5)
+        try:
+            sim["loss_trigger_pct"] = max(50, min(70, int(float(sim.get("loss_trigger_pct", cur.get("koolkid_hl_loss_trigger_pct", 50)) or cur.get("koolkid_hl_loss_trigger_pct", 50)))))
+        except Exception:
+            sim["loss_trigger_pct"] = int(cur.get("koolkid_hl_loss_trigger_pct", 50) or 50)
+        sim["virtual_contract_id"] = str(sim.get("virtual_contract_id") or "UNCHAIN-KOOLKID-HL-SIM")
+    if not isinstance(cur.get("koolkid_both_simulation"), dict):
+        cur["koolkid_both_simulation"] = None
+    else:
+        sim = cur["koolkid_both_simulation"]
+        sim["active"] = bool(sim.get("active", False))
+        try:
+            sim["started_at"] = float(sim.get("started_at", 0.0) or 0.0)
+        except Exception:
+            sim["started_at"] = 0.0
+        try:
+            sim["check_at"] = float(sim.get("check_at", 0.0) or 0.0)
+        except Exception:
+            sim["check_at"] = 0.0
+        try:
+            sim["ends_at"] = float(sim.get("ends_at", 0.0) or 0.0)
+        except Exception:
+            sim["ends_at"] = 0.0
+        sim["time"] = str(sim.get("time") or now_time())
+        try:
+            sim["simulation_duration"] = max(5, min(59, int(float(sim.get("simulation_duration", cur.get("koolkid_sim_duration", 15)) or cur.get("koolkid_sim_duration", 15)))))
+        except Exception:
+            sim["simulation_duration"] = int(cur.get("koolkid_sim_duration", 15) or 15)
+        try:
+            sim["live_duration"] = max(1, min(10, int(float(sim.get("live_duration", cur.get("koolkid_live_duration", 5)) or cur.get("koolkid_live_duration", 5)))))
+        except Exception:
+            sim["live_duration"] = int(cur.get("koolkid_live_duration", 5) or 5)
+        sim["virtual_contract_id"] = str(sim.get("virtual_contract_id") or "UNCHAIN-KOOLKID-BOTH-SIM")
+        side_items = []
+        for item in list(sim.get("sides") or []):
+            if not isinstance(item, dict):
+                continue
+            side_name = str(item.get("side") or "").upper()
+            if side_name not in ("HIGHER", "LOWER"):
+                continue
+            try:
+                item["stake"] = float(item.get("stake", 0.0) or 0.0)
+            except Exception:
+                item["stake"] = 0.0
+            try:
+                item["sim_barrier_mag"] = abs(float(item.get("sim_barrier_mag", 0.0) or 0.0))
+            except Exception:
+                item["sim_barrier_mag"] = 0.0
+            item["side"] = side_name
+            item["contract_id"] = str(
+                item.get("contract_id")
+                or f"UNCHAIN-KOOLKID-BOTH-SIM-{side_name}"
+            )
+            side_items.append(item)
+        sim["sides"] = side_items
+    try:
+        cur["pair_failure_toast_at"] = max(0.0, float(cur.get("pair_failure_toast_at", 0.0) or 0.0))
+    except Exception:
+        cur["pair_failure_toast_at"] = 0.0
+    cur["pair_failure_toast_message"] = str(cur.get("pair_failure_toast_message") or "")
     cur["auto_both_pair_active"] = bool(cur.get("auto_both_pair_active", False))
     try:
         cur["auto_both_next_fire_at"] = max(0.0, float(cur.get("auto_both_next_fire_at", 0.0) or 0.0))
@@ -1941,32 +2070,24 @@ def _ensure_unchain_hl_state(state):
         cur["auto_min_range"] = max(0.00001, float(cur.get("auto_min_range", 0.12) or 0.12))
     except Exception:
         cur["auto_min_range"] = 0.12
-    try:
-        symbol = str(state.get("current_symbol") or "").upper()
-        is_v75 = symbol in {
-            "V75", "V_75", "R_75", "VOL75", "1HZ75V",
-            "VOLATILITY 75 INDEX", "VOLATILITY 75 (1S) INDEX",
-        }
-
-        def _as_float(val):
-            try:
-                return float(val)
-            except Exception:
-                return None
-
-        if is_v75:
-            hb = cur.get("higher_barrier")
-            lb = cur.get("lower_barrier")
-            base_hb = base.get("higher_barrier")
-            base_lb = base.get("lower_barrier")
-            hb_is_default = _as_float(hb) == _as_float(base_hb) or hb in (None, "")
-            lb_is_default = _as_float(lb) == _as_float(base_lb) or lb in (None, "")
-            if hb_is_default:
-                cur["higher_barrier"] = "+3.88"
-            if lb_is_default:
-                cur["lower_barrier"] = "-3.88"
-    except Exception:
-        pass
+    if not cur.get("koolkid_higher_barrier"):
+        try:
+            cur["koolkid_higher_barrier"] = _half_unchain_barrier(
+                _format_unchain_barrier(cur.get("higher_barrier", "+0.12"), "HIGHER", "t"),
+                "HIGHER",
+                "t",
+            )
+        except Exception:
+            cur["koolkid_higher_barrier"] = "+0.06"
+    if not cur.get("koolkid_lower_barrier"):
+        try:
+            cur["koolkid_lower_barrier"] = _half_unchain_barrier(
+                _format_unchain_barrier(cur.get("lower_barrier", "-0.12"), "LOWER", "t"),
+                "LOWER",
+                "t",
+            )
+        except Exception:
+            cur["koolkid_lower_barrier"] = "-0.06"
     state["unchain_hl"] = cur
     return cur
 
@@ -2031,6 +2152,56 @@ def _half_unchain_barrier(raw_value, side, duration_unit):
         return formatted
     half_raw = f"{half_value:+.10f}" if formatted.startswith(("+", "-")) else str(half_value)
     return _format_unchain_barrier(half_raw, side, duration_unit)
+
+
+def _get_unchain_visible_barrier(u, side, duration_unit="t"):
+    unit = _clean_unchain_duration_unit(duration_unit or (u or {}).get("duration_unit", "t"))
+    side_key = "higher_barrier" if str(side or "").upper() == "HIGHER" else "lower_barrier"
+    raw = (u or {}).get(side_key, "+0.12" if side_key == "higher_barrier" else "-0.12")
+    try:
+        formatted = _format_unchain_barrier(raw, side, unit)
+    except Exception:
+        formatted = "+0.12" if side_key == "higher_barrier" else "-0.12"
+    if bool((u or {}).get("half_barrier_enabled")):
+        return _half_unchain_barrier(formatted, side, unit)
+    return formatted
+
+
+def _get_unchain_koolkid_live_barrier(u, side, duration_unit="t"):
+    unit = _clean_unchain_duration_unit(duration_unit or "t")
+    side_name = str(side or "").upper()
+    if side_name == "HIGHER":
+        raw = str((u or {}).get("koolkid_higher_barrier") or "").strip()
+        fallback = "+0.12"
+    else:
+        raw = str((u or {}).get("koolkid_lower_barrier") or "").strip()
+        fallback = "-0.12"
+    if raw:
+        try:
+            return _format_unchain_barrier(raw, side_name, unit)
+        except Exception:
+            pass
+    try:
+        return _half_unchain_barrier(
+            _format_unchain_barrier((u or {}).get("higher_barrier" if side_name == "HIGHER" else "lower_barrier", fallback), side_name, unit),
+            side_name,
+            unit,
+        )
+    except Exception:
+        return "+0.06" if side_name == "HIGHER" else "-0.06"
+
+
+def _build_unchain_signed_barrier(side, magnitude, duration_unit="t"):
+    side_name = str(side or "").upper()
+    sign = "+" if side_name == "HIGHER" else "-"
+    try:
+        mag = abs(float(magnitude))
+    except Exception:
+        mag = 0.0
+    raw = f"{sign}{mag:.10f}".rstrip("0").rstrip(".")
+    if raw in ("+", "-"):
+        raw = f"{sign}0"
+    return _format_unchain_barrier(raw, side_name, duration_unit)
 
 
 def _normalize_contract_id(contract_id):
@@ -2722,6 +2893,996 @@ def _get_open_unchain_active_entries(state):
     return [entry for entry in active_map.values() if _entry_is_open_for_ui(entry)]
 
 
+def _clear_unchain_koolkid_hl_simulation(u, *, reason=None, cooldown_sec=0.0):
+    if not isinstance(u, dict):
+        return
+    u["koolkid_hl_simulation"] = None
+    try:
+        u["koolkid_hl_cooldown_until"] = max(0.0, time.time() + float(cooldown_sec or 0.0))
+    except Exception:
+        u["koolkid_hl_cooldown_until"] = 0.0
+    if reason is not None:
+        u["koolkid_hl_last_reason"] = str(reason)
+
+
+def _clear_unchain_koolkid_both_simulation(u, *, reason=None, cooldown_sec=0.0):
+    if not isinstance(u, dict):
+        return
+    u["koolkid_both_simulation"] = None
+    try:
+        u["koolkid_both_cooldown_until"] = max(0.0, time.time() + float(cooldown_sec or 0.0))
+    except Exception:
+        u["koolkid_both_cooldown_until"] = 0.0
+    if reason is not None:
+        u["koolkid_both_last_reason"] = str(reason)
+
+
+def _estimate_unchain_koolkid_hl_value(sim, current_price, metrics, *, max_balance_ratio=1.35):
+    if not isinstance(sim, dict):
+        return 0.0, 0.0, 0.0
+    try:
+        stake = max(0.0, float(sim.get("stake", 0.0) or 0.0))
+    except Exception:
+        stake = 0.0
+    try:
+        start_price = float(sim.get("start_price", 0.0) or 0.0)
+    except Exception:
+        start_price = 0.0
+    try:
+        live_price = float(current_price)
+    except Exception:
+        live_price = start_price
+    try:
+        barrier_mag = abs(float(sim.get("sim_barrier_mag", 0.0) or 0.0))
+    except Exception:
+        barrier_mag = 0.0
+    try:
+        avg_abs_move = abs(float((metrics or {}).get("avg_abs_tick_movement", 0.0) or 0.0))
+    except Exception:
+        avg_abs_move = 0.0
+    try:
+        range_20 = abs(float((metrics or {}).get("current_20_range", 0.0) or 0.0))
+    except Exception:
+        range_20 = 0.0
+
+    denom = max(barrier_mag * 0.65, avg_abs_move * 6.0, range_20 * 0.35, 0.0000001)
+    sim_side = str(sim.get("side") or "").upper()
+    signed_move = (live_price - start_price) if sim_side == "HIGHER" else (start_price - live_price)
+
+    try:
+        started_at = float(sim.get("started_at", 0.0) or 0.0)
+    except Exception:
+        started_at = 0.0
+    elapsed = max(0.0, time.time() - started_at) if started_at > 0 else 0.0
+    sim_duration = 15.0
+    try:
+        sim_duration = max(5.0, float(sim.get("simulation_duration", 15.0) or 15.0))
+    except Exception:
+        sim_duration = 15.0
+    elapsed_ratio = min(1.0, elapsed / sim_duration)
+    balance_ratio = 1.0 + (signed_move / denom) - (max(0.0, elapsed_ratio - 0.35) * 0.18)
+    try:
+        cap = max(0.0, float(max_balance_ratio or 1.35))
+    except Exception:
+        cap = 1.35
+    balance_ratio = max(0.0, min(cap, balance_ratio))
+    estimated_value = round(stake * balance_ratio, 2)
+    estimated_pnl = round(estimated_value - stake, 2)
+    return estimated_value, estimated_pnl, balance_ratio
+
+
+def _get_unchain_koolkid_live_checks(side_sim, metrics, strat, trade_side=None):
+    side_name = str(trade_side or (side_sim or {}).get("side") or "").upper()
+    live_barrier_mag = abs(float((side_sim or {}).get("live_barrier_mag", 0.0) or 0.0))
+    avg_abs_move = abs(float((metrics or {}).get("avg_abs_tick_movement", 0.0) or 0.0))
+    current_range = abs(float((metrics or {}).get("current_20_range", 0.0) or 0.0))
+    compression_score = float((metrics or {}).get("compression_score", 100.0) or 100.0)
+
+    recent_prices = []
+    try:
+        recent_prices = list(getattr(strat, "price_history", []) or [])
+    except Exception:
+        recent_prices = []
+    recent_move = 0.0
+    if len(recent_prices) >= 5:
+        try:
+            recent_move = float(recent_prices[-1] - recent_prices[-5])
+        except Exception:
+            recent_move = 0.0
+
+    direction_floor = max(avg_abs_move * 1.2, live_barrier_mag * 0.25, 0.00001)
+    if side_name == "HIGHER":
+        recent_direction_ok = recent_move >= direction_floor
+    else:
+        recent_direction_ok = recent_move <= -direction_floor
+
+    market_moving = bool((metrics or {}).get("ready")) and current_range >= max(avg_abs_move * 3.5, live_barrier_mag * 1.1, 0.00001)
+    market_not_flat = market_moving and compression_score <= 85.0
+    barrier_safe_cap = max(current_range * 0.55, avg_abs_move * 6.0, 0.03)
+    barrier_safe = live_barrier_mag <= barrier_safe_cap
+    return {
+        "recent_direction_ok": bool(recent_direction_ok),
+        "market_not_flat": bool(market_not_flat),
+        "barrier_safe": bool(barrier_safe),
+        "recent_move": float(recent_move),
+        "direction_floor": float(direction_floor),
+        "market_moving": bool(market_moving),
+        "barrier_safe_cap": float(barrier_safe_cap),
+    }
+
+
+def _emit_unchain_toast(client_id, message, level="info"):
+    try:
+        socketio.emit(
+            "unchain_toast",
+            {
+                "message": str(message or ""),
+                "type": str(level or "info"),
+            },
+            room=client_id,
+        )
+    except Exception:
+        pass
+
+
+def _maybe_emit_unchain_pair_failure_toast(client_id, state, message, *, level="error", min_gap=6.0):
+    u = _ensure_unchain_hl_state(state)
+    now_ts = time.time()
+    last_ts = float(u.get("pair_failure_toast_at", 0.0) or 0.0)
+    last_msg = str(u.get("pair_failure_toast_message") or "")
+    safe_msg = str(message or "")
+    if safe_msg == last_msg and (now_ts - last_ts) < float(min_gap or 0.0):
+        return
+    u["pair_failure_toast_at"] = now_ts
+    u["pair_failure_toast_message"] = safe_msg
+    _emit_unchain_toast(client_id, safe_msg, level=level)
+
+
+def _check_unchain_pair_balance(state, plan, *, failure_prefix="Trade failed"):
+    normalized = []
+    total_stake = 0.0
+    for item in list(plan or []):
+        if not isinstance(item, (list, tuple)) or len(item) < 3:
+            continue
+        side = str(item[0] or "").upper()
+        if side not in ("HIGHER", "LOWER"):
+            continue
+        try:
+            stake = float(item[1] or 0.0)
+        except Exception:
+            stake = 0.0
+        normalized.append((side, stake, item[2]))
+        total_stake += max(0.0, stake)
+    try:
+        balance = max(0.0, float(state.get("balance", 0.0) or 0.0))
+    except Exception:
+        balance = 0.0
+    if total_stake > (balance + 0.000001):
+        message = (
+            f"{failure_prefix}: need ${total_stake:.2f} total balance for both trades, "
+            f"but only ${balance:.2f} is available."
+        )
+        return False, message, normalized, round(total_stake, 2), round(balance, 2)
+    return True, None, normalized, round(total_stake, 2), round(balance, 2)
+
+
+def _rebalance_unchain_pair_stakes(total_stake, strong_side, *, favored_ratio=0.60, min_side_stake=0.35):
+    try:
+        total = float(total_stake or 0.0)
+    except Exception:
+        total = 0.0
+    total = max(float(min_side_stake) * 2.0, total)
+    favored_ratio = max(0.51, min(0.80, float(favored_ratio or 0.60)))
+    strong = round(total * favored_ratio, 2)
+    weak = round(total - strong, 2)
+    if weak < float(min_side_stake):
+        weak = round(float(min_side_stake), 2)
+        strong = round(max(float(min_side_stake), total - weak), 2)
+    if strong < float(min_side_stake):
+        strong = round(float(min_side_stake), 2)
+        weak = round(max(float(min_side_stake), total - strong), 2)
+    if str(strong_side or "").upper() == "LOWER":
+        return {"HIGHER": weak, "LOWER": strong}
+    return {"HIGHER": strong, "LOWER": weak}
+
+
+def _get_unchain_koolkid_hl_loss_trigger_pct(u=None, sim=None):
+    source = sim if isinstance(sim, dict) else (u or {})
+    try:
+        return max(50, min(70, int(float(source.get("loss_trigger_pct", (u or {}).get("koolkid_hl_loss_trigger_pct", 50)) or (u or {}).get("koolkid_hl_loss_trigger_pct", 50)))))
+    except Exception:
+        return 50
+
+
+def _get_unchain_koolkid_hl_check_after(sim_duration, loss_trigger_pct):
+    try:
+        duration = max(5, int(float(sim_duration or 15)))
+    except Exception:
+        duration = 15
+    try:
+        trigger_pct = max(50, min(70, int(float(loss_trigger_pct or 50))))
+    except Exception:
+        trigger_pct = 50
+    if trigger_pct >= 60:
+        if duration >= 20:
+            return max(1, min(duration - 1, 9))
+        if duration >= 15:
+            return max(1, min(duration - 1, 8))
+    return max(1, int(math.floor(duration / 2)))
+
+
+def _estimate_unchain_koolkid_both_value(sim, current_price, metrics):
+    estimated_value, estimated_pnl, balance_ratio = _estimate_unchain_koolkid_hl_value(
+        sim,
+        current_price,
+        metrics,
+        max_balance_ratio=1.8,
+    )
+    try:
+        stake = max(0.0, float((sim or {}).get("stake", 0.0) or 0.0))
+    except Exception:
+        stake = 0.0
+    base_profit_pct = ((estimated_pnl / stake) * 100.0) if stake > 0 else 0.0
+    try:
+        start_price = float((sim or {}).get("start_price", 0.0) or 0.0)
+    except Exception:
+        start_price = 0.0
+    try:
+        live_price = float(current_price if current_price is not None else (sim or {}).get("current_price", start_price))
+    except Exception:
+        live_price = start_price
+    try:
+        barrier_mag = abs(float((sim or {}).get("sim_barrier_mag", 0.0) or 0.0))
+    except Exception:
+        barrier_mag = 0.0
+    try:
+        avg_abs_move = abs(float((metrics or {}).get("avg_abs_tick_movement", 0.0) or 0.0))
+    except Exception:
+        avg_abs_move = 0.0
+    try:
+        current_range = abs(float((metrics or {}).get("current_20_range", 0.0) or 0.0))
+    except Exception:
+        current_range = 0.0
+    side_name = str((sim or {}).get("side") or "").upper()
+    signed_move = (live_price - start_price) if side_name == "HIGHER" else (start_price - live_price)
+    progress_scale = max(barrier_mag * 0.50, avg_abs_move * 2.75, current_range * 0.12, 0.0000001)
+    progress_profit_pct = (signed_move / progress_scale) * 100.0
+    try:
+        started_at = float((sim or {}).get("started_at", 0.0) or 0.0)
+    except Exception:
+        started_at = 0.0
+    try:
+        sim_duration = max(5.0, float((sim or {}).get("simulation_duration", 15.0) or 15.0))
+    except Exception:
+        sim_duration = 15.0
+    elapsed_ratio = min(1.0, max(0.0, (time.time() - started_at) / sim_duration)) if started_at > 0 else 0.0
+    if elapsed_ratio > 0.82:
+        progress_profit_pct -= ((elapsed_ratio - 0.82) / 0.18) * 12.0
+    progress_profit_pct = max(-100.0, min(160.0, progress_profit_pct))
+    decision_profit_pct = max(float(base_profit_pct), float(progress_profit_pct))
+    return estimated_value, estimated_pnl, balance_ratio, round(float(decision_profit_pct), 2)
+
+
+def _serialize_unchain_koolkid_hl(state, u=None, active_count=None):
+    u = u or _ensure_unchain_hl_state(state)
+    if active_count is None:
+        active_count = len(_get_open_unchain_active_entries(state))
+    now_ts = time.time()
+    enabled = bool(u.get("koolkid_hl_enabled"))
+    sim = u.get("koolkid_hl_simulation") if isinstance(u.get("koolkid_hl_simulation"), dict) else None
+    cooldown_remaining = max(0.0, float(u.get("koolkid_hl_cooldown_until", 0.0) or 0.0) - now_ts)
+    payload = {
+        "enabled": enabled,
+        "status": "OFF",
+        "label": "OFF",
+        "last_reason": str(u.get("koolkid_hl_last_reason") or "KOOLKID Higher/Lower is OFF."),
+        "cooldown_remaining": float(cooldown_remaining),
+        "simulation_duration": int(u.get("koolkid_sim_duration", 15) or 15),
+        "live_duration": int(u.get("koolkid_live_duration", 5) or 5),
+        "loss_trigger_pct": int(u.get("koolkid_hl_loss_trigger_pct", 50) or 50),
+        "simulation": None,
+    }
+    if not enabled:
+        return payload
+
+    if sim and bool(sim.get("active")):
+        started_at = float(sim.get("started_at", 0.0) or 0.0)
+        ends_at = float(sim.get("ends_at", 0.0) or 0.0)
+        check_at = float(sim.get("check_at", 0.0) or 0.0)
+        sim_duration = int(sim.get("simulation_duration", u.get("koolkid_sim_duration", 15)) or u.get("koolkid_sim_duration", 15) or 15)
+        live_duration = int(sim.get("live_duration", u.get("koolkid_live_duration", 5)) or u.get("koolkid_live_duration", 5) or 5)
+        remaining = max(0, int(math.ceil(max(0.0, ends_at - now_ts)))) if ends_at else 0
+        check_remaining = max(0, int(math.ceil(max(0.0, check_at - now_ts)))) if check_at else 0
+        metrics = _compute_unchain_auto_metrics(state, u)
+        price = None
+        try:
+            strat = (state.get("strategies") or {}).get("UNCHAIN")
+            price = float(getattr(strat, "last_price", None))
+        except Exception:
+            price = sim.get("current_price")
+        estimated_value, estimated_pnl, balance_ratio = _estimate_unchain_koolkid_hl_value(sim, price, metrics)
+        phase = "CHECKING" if check_remaining <= 0 else "SIMULATING"
+        payload["status"] = phase
+        payload["label"] = f"{phase} {sim.get('side') or '—'}"
+        payload["simulation"] = {
+            "active": True,
+            "phase": phase,
+            "side": str(sim.get("side") or "").upper(),
+            "opposite_side": str(sim.get("opposite_side") or "").upper(),
+            "symbol": sim.get("symbol") or state.get("current_symbol"),
+            "stake": float(sim.get("stake", 0.0) or 0.0),
+            "sim_barrier": sim.get("sim_barrier"),
+            "live_barrier": sim.get("live_barrier"),
+            "time": sim.get("time") or now_time(),
+            "started_at": started_at,
+            "contract_id": sim.get("virtual_contract_id") or "UNCHAIN-KOOLKID-HL-SIM",
+            "duration": sim_duration,
+            "duration_unit": "s",
+            "check_after": max(1, int(round(max(0.0, check_at - started_at)))) if started_at and check_at else _get_unchain_koolkid_hl_check_after(sim_duration, sim.get("loss_trigger_pct", u.get("koolkid_hl_loss_trigger_pct", 50))),
+            "countdown_remaining": remaining,
+            "countdown_unit": "s",
+            "countdown_seconds": remaining,
+            "check_remaining": check_remaining,
+            "live_duration": live_duration,
+            "live_duration_unit": "t",
+            "loss_trigger_pct": _get_unchain_koolkid_hl_loss_trigger_pct(u, sim),
+            "estimated_value": float(estimated_value),
+            "estimated_pnl": float(estimated_pnl),
+            "balance_ratio": float(balance_ratio),
+            "message": str(sim.get("message") or payload["last_reason"]),
+        }
+        return payload
+
+    if active_count > 0:
+        payload["status"] = "LIVE TRADE ACTIVE"
+        payload["label"] = "BLOCKED"
+        if not payload["last_reason"]:
+            payload["last_reason"] = "KOOLKID Higher/Lower waits until current UNCHAIN trades finish."
+        return payload
+
+    if cooldown_remaining > 0:
+        payload["status"] = "COOLDOWN"
+        payload["label"] = "COOLDOWN"
+        return payload
+
+    payload["status"] = "ARMED"
+    payload["label"] = "ARMED"
+    if not payload["last_reason"]:
+        payload["last_reason"] = "KOOLKID Higher/Lower is armed and waiting for a weak-side simulation."
+    return payload
+
+
+def _serialize_unchain_koolkid_both(state, u=None, active_count=None):
+    u = u or _ensure_unchain_hl_state(state)
+    if active_count is None:
+        active_count = len(_get_open_unchain_active_entries(state))
+    now_ts = time.time()
+    enabled = bool(u.get("koolkid_both_enabled"))
+    sim = u.get("koolkid_both_simulation") if isinstance(u.get("koolkid_both_simulation"), dict) else None
+    cooldown_remaining = max(0.0, float(u.get("koolkid_both_cooldown_until", 0.0) or 0.0) - now_ts)
+    payload = {
+        "enabled": enabled,
+        "status": "OFF",
+        "label": "OFF",
+        "last_reason": str(u.get("koolkid_both_last_reason") or "KOOLKID Both is OFF."),
+        "cooldown_remaining": float(cooldown_remaining),
+        "simulation_duration": int(u.get("koolkid_sim_duration", 15) or 15),
+        "live_duration": int(u.get("koolkid_live_duration", 5) or 5),
+        "simulation": None,
+    }
+    if not enabled:
+        return payload
+
+    if sim and bool(sim.get("active")):
+        started_at = float(sim.get("started_at", 0.0) or 0.0)
+        ends_at = float(sim.get("ends_at", 0.0) or 0.0)
+        check_at = float(sim.get("check_at", 0.0) or 0.0)
+        sim_duration = int(sim.get("simulation_duration", u.get("koolkid_sim_duration", 15)) or u.get("koolkid_sim_duration", 15) or 15)
+        live_duration = int(sim.get("live_duration", u.get("koolkid_live_duration", 5)) or u.get("koolkid_live_duration", 5) or 5)
+        remaining = max(0, int(math.ceil(max(0.0, ends_at - now_ts)))) if ends_at else 0
+        check_remaining = max(0, int(math.ceil(max(0.0, check_at - now_ts)))) if check_at else 0
+        metrics = _compute_unchain_auto_metrics(state, u)
+        price = None
+        try:
+            strat = (state.get("strategies") or {}).get("UNCHAIN")
+            price = float(getattr(strat, "last_price", None))
+        except Exception:
+            price = sim.get("current_price")
+        side_rows = []
+        leading_side = None
+        leading_profit_pct = -9999.0
+        for item in list(sim.get("sides") or []):
+            side_sim = dict(item or {})
+            side_sim["simulation_duration"] = sim_duration
+            estimated_value, estimated_pnl, balance_ratio, decision_profit_pct = _estimate_unchain_koolkid_both_value(
+                side_sim,
+                price,
+                metrics,
+            )
+            try:
+                stake_value = float(side_sim.get("stake", 0.0) or 0.0)
+            except Exception:
+                stake_value = 0.0
+            side_name = str(side_sim.get("side") or "").upper()
+            if decision_profit_pct > leading_profit_pct:
+                leading_profit_pct = decision_profit_pct
+                leading_side = side_name
+            side_rows.append({
+                "side": side_name,
+                "stake": float(stake_value),
+                "symbol": side_sim.get("symbol") or sim.get("symbol") or state.get("current_symbol"),
+                "sim_barrier": side_sim.get("sim_barrier"),
+                "duration": sim_duration,
+                "duration_unit": "s",
+                "phase": "CHECKING" if check_remaining <= 0 else "SIMULATING",
+                "estimated_value": float(estimated_value),
+                "estimated_pnl": float(estimated_pnl),
+                "balance_ratio": float(balance_ratio),
+                "profit_pct": float(round(decision_profit_pct, 2)),
+                "contract_id": side_sim.get("contract_id") or f"UNCHAIN-KOOLKID-BOTH-SIM-{side_name}",
+            })
+        phase = "CHECKING" if check_remaining <= 0 else "SIMULATING"
+        payload["status"] = phase
+        payload["label"] = "SIM BOTH"
+        payload["simulation"] = {
+            "active": True,
+            "phase": phase,
+            "symbol": sim.get("symbol") or state.get("current_symbol"),
+            "time": sim.get("time") or now_time(),
+            "started_at": started_at,
+            "contract_id": sim.get("virtual_contract_id") or "UNCHAIN-KOOLKID-BOTH-SIM",
+            "duration": sim_duration,
+            "duration_unit": "s",
+            "countdown_remaining": remaining,
+            "countdown_unit": "s",
+            "countdown_seconds": remaining,
+            "check_remaining": check_remaining,
+            "live_duration": live_duration,
+            "live_duration_unit": "t",
+            "leading_side": leading_side,
+            "leading_profit_pct": float(round(leading_profit_pct if leading_profit_pct > -9999.0 else 0.0, 2)),
+            "message": str(sim.get("message") or payload["last_reason"]),
+            "sides": side_rows,
+        }
+        return payload
+
+    if active_count > 0:
+        payload["status"] = "LIVE TRADE ACTIVE"
+        payload["label"] = "BLOCKED"
+        if not payload["last_reason"]:
+            payload["last_reason"] = "KOOLKID Both waits until current UNCHAIN trades finish."
+        return payload
+
+    if cooldown_remaining > 0:
+        payload["status"] = "COOLDOWN"
+        payload["label"] = "COOLDOWN"
+        return payload
+
+    payload["status"] = "ARMED"
+    payload["label"] = "ARMED"
+    if not payload["last_reason"]:
+        payload["last_reason"] = "KOOLKID Both is armed and waiting for a dual paper simulation."
+    return payload
+
+
+def _get_unchain_koolkid_both_market_signal(u, metrics, strat, strong_side):
+    strong_side = str(strong_side or "").upper()
+    live_barrier = _get_unchain_koolkid_live_barrier(u, strong_side, "t")
+    try:
+        live_barrier_mag = abs(float(live_barrier))
+    except Exception:
+        live_barrier_mag = 0.06
+    probe = {
+        "side": strong_side,
+        "live_barrier_mag": float(live_barrier_mag),
+    }
+    live_checks = _get_unchain_koolkid_live_checks(probe, metrics, strat, trade_side=strong_side)
+    recent_prices = []
+    try:
+        recent_prices = list(getattr(strat, "price_history", []) or [])
+    except Exception:
+        recent_prices = []
+    last_prices = [float(v) for v in recent_prices[-8:] if v is not None]
+    deltas = []
+    for idx in range(1, len(last_prices)):
+        try:
+            deltas.append(float(last_prices[idx] - last_prices[idx - 1]))
+        except Exception:
+            continue
+    aligned_moves = 0
+    meaningful_moves = 0
+    floor = max(abs(float(metrics.get("avg_abs_tick_movement", 0.0) or 0.0)) * 0.35, 0.00001)
+    for delta in deltas:
+        if abs(delta) < floor:
+            continue
+        meaningful_moves += 1
+        if (strong_side == "HIGHER" and delta > 0) or (strong_side == "LOWER" and delta < 0):
+            aligned_moves += 1
+    consistency_ratio = float(aligned_moves / meaningful_moves) if meaningful_moves > 0 else 0.0
+    avg_interval = metrics.get("average_tick_interval")
+    try:
+        min_tick_speed = float(metrics.get("min_tick_speed", u.get("auto_min_tick_speed", 2.4)) or u.get("auto_min_tick_speed", 2.4))
+    except Exception:
+        min_tick_speed = 2.4
+    speed_ok = bool(avg_interval is not None and float(avg_interval) <= max(min_tick_speed * 1.10, 2.8))
+    momentum = float(metrics.get("momentum_burst_score", 0.0) or 0.0)
+    breakout = float(metrics.get("micro_breakout_score", 0.0) or 0.0)
+    current_range = abs(float(metrics.get("current_20_range", 0.0) or 0.0))
+    avg_move = abs(float(metrics.get("avg_abs_tick_movement", 0.0) or 0.0))
+    explosive = bool(
+        speed_ok
+        and consistency_ratio >= 0.70
+        and live_checks.get("recent_direction_ok")
+        and live_checks.get("market_not_flat")
+        and momentum >= 58.0
+        and breakout >= 42.0
+        and current_range >= max(avg_move * 4.5, live_barrier_mag * 1.8, 0.06)
+    )
+    directional = bool(
+        speed_ok
+        and consistency_ratio >= 0.60
+        and live_checks.get("recent_direction_ok")
+        and live_checks.get("market_not_flat")
+        and momentum >= 38.0
+        and current_range >= max(avg_move * 3.0, live_barrier_mag * 1.2, 0.04)
+    )
+    movement_class = "WEAK"
+    if explosive:
+        movement_class = "STRONG"
+    elif directional:
+        movement_class = "DIRECTIONAL"
+    return {
+        "movement_class": movement_class,
+        "speed_ok": bool(speed_ok),
+        "consistency_ok": bool(consistency_ratio >= 0.60 and live_checks.get("recent_direction_ok")),
+        "consistency_ratio": float(round(consistency_ratio, 2)),
+        "momentum_burst_score": float(momentum),
+        "micro_breakout_score": float(breakout),
+        "live_checks": live_checks,
+    }
+
+
+def _run_unchain_koolkid_hl(client_id, state):
+    u = _ensure_unchain_hl_state(state)
+    if not bool(u.get("koolkid_hl_enabled")):
+        return False
+    if not state.get("ws_connected") or not state.get("ws"):
+        u["koolkid_hl_last_reason"] = "Connect API first for KOOLKID Higher/Lower."
+        return False
+    if bool(u.get("ai_auto_trade_enabled")) or bool(u.get("auto_both_enabled")):
+        u["koolkid_hl_last_reason"] = "Turn off AI AUTO TRADE and AUTO BOTH before using KOOLKID Higher/Lower."
+        return False
+    risk_block = _check_unchain_hl_risk_block(state)
+    if risk_block:
+        u["koolkid_hl_last_reason"] = str(risk_block)
+        return False
+
+    open_entries = _get_open_unchain_active_entries(state)
+    now_ts = time.time()
+    sim = u.get("koolkid_hl_simulation") if isinstance(u.get("koolkid_hl_simulation"), dict) else None
+    if open_entries:
+        if sim and sim.get("active"):
+            _clear_unchain_koolkid_hl_simulation(
+                u,
+                reason="KOOLKID Higher/Lower paused because an UNCHAIN trade is already active.",
+                cooldown_sec=4.0,
+            )
+        else:
+            u["koolkid_hl_last_reason"] = "KOOLKID Higher/Lower waits until current UNCHAIN trades finish."
+        return False
+
+    strat = (state.get("strategies") or {}).get("UNCHAIN")
+    if not strat:
+        u["koolkid_hl_last_reason"] = "UNCHAIN strategy is not available."
+        return False
+    try:
+        current_price = float(getattr(strat, "last_price", None))
+    except Exception:
+        current_price = None
+    if current_price is None:
+        u["koolkid_hl_last_reason"] = "Waiting for live price before starting KOOLKID simulation."
+        return False
+
+    metrics = _compute_unchain_auto_metrics(state, u)
+    bias = _get_unchain_bias_payload(state, u)
+
+    if sim and sim.get("active"):
+        if str(sim.get("side") or "").upper() not in ("HIGHER", "LOWER") or str(sim.get("opposite_side") or "").upper() not in ("HIGHER", "LOWER"):
+            _clear_unchain_koolkid_hl_simulation(
+                u,
+                reason="KOOLKID simulation restarted to restore weaker-side logic.",
+                cooldown_sec=0.0,
+            )
+            sim = None
+        else:
+            sim["current_price"] = float(current_price)
+            sim_duration = int(sim.get("simulation_duration", u.get("koolkid_sim_duration", 15)) or u.get("koolkid_sim_duration", 15) or 15)
+            live_duration = int(sim.get("live_duration", u.get("koolkid_live_duration", 5)) or u.get("koolkid_live_duration", 5) or 5)
+            loss_trigger_pct = _get_unchain_koolkid_hl_loss_trigger_pct(u, sim)
+            sim["simulation_duration"] = sim_duration
+            sim["live_duration"] = live_duration
+            sim["loss_trigger_pct"] = loss_trigger_pct
+            estimated_value, estimated_pnl, balance_ratio = _estimate_unchain_koolkid_hl_value(sim, current_price, metrics)
+            sim["estimated_value"] = float(estimated_value)
+            sim["estimated_pnl"] = float(estimated_pnl)
+            sim["balance_ratio"] = float(balance_ratio)
+
+            if now_ts < float(sim.get("check_at", 0.0) or 0.0):
+                seconds_left = max(0, int(math.ceil(float(sim.get("check_at", now_ts) or now_ts) - now_ts)))
+                u["koolkid_hl_last_reason"] = (
+                    f"KOOLKID sim {sim.get('side')} running • check in {seconds_left}s • "
+                    f"est ${estimated_value:.2f} ({estimated_pnl:+.2f}) • trigger {loss_trigger_pct}% loss"
+                )
+                return False
+
+            live_side = str(sim.get("opposite_side") or "").upper()
+            live_checks = _get_unchain_koolkid_live_checks(sim, metrics, strat, trade_side=live_side)
+            stake_value = float(sim.get("stake", 0.0) or 0.0)
+            loss_value_floor = max(0.0, stake_value * (1.0 - (float(loss_trigger_pct) / 100.0)))
+            sim_losing = estimated_value <= loss_value_floor
+
+            if sim_losing and live_checks.get("recent_direction_ok") and live_checks.get("market_not_flat") and live_checks.get("barrier_safe"):
+                stake_key = "higher_stake" if live_side == "HIGHER" else "lower_stake"
+                live_stake = float(u.get(stake_key, 1.0) or 1.0)
+                ok, msg = _send_unchain_hl_trade(
+                    client_id,
+                    side=live_side,
+                    stake=live_stake,
+                    symbol=sim.get("symbol") or state.get("current_symbol"),
+                    barrier=sim.get("live_barrier"),
+                    duration=live_duration,
+                    duration_unit="t",
+                    entry_source="KOOLKID_HL",
+                    respect_half_barrier_toggle=False,
+                )
+                if ok:
+                    u["last_action"] = (
+                        f"KOOLKID live {live_side} sent after weak {sim.get('side')} sim • {sim.get('live_barrier')} • {live_duration}T"
+                    )
+                    _clear_unchain_koolkid_hl_simulation(
+                        u,
+                        reason=(
+                            f"KOOLKID fired {live_side} after {sim.get('side')} sim fell to "
+                            f"${estimated_value:.2f} ({estimated_pnl:+.2f}) at the {loss_trigger_pct}% loss trigger."
+                        ),
+                        cooldown_sec=5.0,
+                    )
+                    return True
+                _clear_unchain_koolkid_hl_simulation(
+                    u,
+                    reason=f"KOOLKID live {live_side} failed: {msg}",
+                    cooldown_sec=5.0,
+                )
+                return False
+
+            reasons = []
+            if not sim_losing:
+                reasons.append(f"sim held ${estimated_value:.2f} above the {loss_trigger_pct}% loss trigger")
+            if not live_checks.get("recent_direction_ok"):
+                reasons.append("recent tick direction does not agree")
+            if not live_checks.get("market_not_flat"):
+                reasons.append("market is too flat")
+            if not live_checks.get("barrier_safe"):
+                reasons.append("barrier is not safe")
+            _clear_unchain_koolkid_hl_simulation(
+                u,
+                reason=f"KOOLKID skipped: {reasons[0] if reasons else 'conditions not met'}",
+                cooldown_sec=4.0,
+            )
+            u["last_action"] = u.get("koolkid_hl_last_reason") or "KOOLKID skipped"
+            return False
+
+    cooldown_until = float(u.get("koolkid_hl_cooldown_until", 0.0) or 0.0)
+    if cooldown_until and now_ts < cooldown_until:
+        return False
+
+    higher_pct = float(bias.get("higher_pct", 50.0) or 50.0)
+    lower_pct = float(bias.get("lower_pct", 50.0) or 50.0)
+    if abs(higher_pct - lower_pct) < 3.0:
+        u["koolkid_hl_last_reason"] = f"KOOLKID waiting: weaker side is not clear yet (H {higher_pct:.1f}% / L {lower_pct:.1f}%)."
+        return False
+
+    sim_duration = int(u.get("koolkid_sim_duration", 15) or 15)
+    live_duration = int(u.get("koolkid_live_duration", 5) or 5)
+    loss_trigger_pct = _get_unchain_koolkid_hl_loss_trigger_pct(u)
+    decision_after = _get_unchain_koolkid_hl_check_after(sim_duration, loss_trigger_pct)
+    weaker_side = "HIGHER" if higher_pct < lower_pct else "LOWER"
+    opposite_side = "LOWER" if weaker_side == "HIGHER" else "HIGHER"
+    stake_key = "higher_stake" if weaker_side == "HIGHER" else "lower_stake"
+    sim_stake = float(u.get(stake_key, 1.0) or 1.0)
+    sim_barrier = _get_unchain_visible_barrier(u, weaker_side, "t")
+    try:
+        sim_barrier_mag = abs(float(sim_barrier))
+    except Exception:
+        sim_barrier_mag = 0.12
+    live_barrier = _get_unchain_koolkid_live_barrier(u, opposite_side, "t")
+    try:
+        live_barrier_mag = abs(float(live_barrier))
+    except Exception:
+        live_barrier_mag = 0.06
+
+    u["koolkid_hl_simulation"] = {
+        "active": True,
+        "side": weaker_side,
+        "opposite_side": opposite_side,
+        "symbol": state.get("current_symbol"),
+        "stake": float(sim_stake),
+        "sim_barrier": sim_barrier,
+        "sim_barrier_mag": float(sim_barrier_mag),
+        "live_barrier": live_barrier,
+        "live_barrier_mag": float(live_barrier_mag),
+        "start_price": float(current_price),
+        "current_price": float(current_price),
+        "started_at": float(now_ts),
+        "check_at": float(now_ts + decision_after),
+        "ends_at": float(now_ts + sim_duration),
+        "simulation_duration": int(sim_duration),
+        "live_duration": int(live_duration),
+        "loss_trigger_pct": int(loss_trigger_pct),
+        "time": now_time(),
+        "virtual_contract_id": "UNCHAIN-KOOLKID-HL-SIM",
+        "message": f"{sim_duration}s paper {weaker_side} sim started • trigger {loss_trigger_pct}% loss • opposite {opposite_side} live will use {live_barrier} for {live_duration}T if conditions pass.",
+    }
+    u["koolkid_hl_last_reason"] = (
+        f"KOOLKID sim {weaker_side} started • check at {decision_after}s • trigger {loss_trigger_pct}% loss • live {opposite_side} would use {live_barrier} for {live_duration}T."
+    )
+    u["last_action"] = u["koolkid_hl_last_reason"]
+    return False
+
+
+def _run_unchain_koolkid_both(client_id, state):
+    u = _ensure_unchain_hl_state(state)
+    if not bool(u.get("koolkid_both_enabled")):
+        return False
+    if not state.get("ws_connected") or not state.get("ws"):
+        u["koolkid_both_last_reason"] = "Connect API first for KOOLKID Both."
+        return False
+    if bool(u.get("ai_auto_trade_enabled")) or bool(u.get("auto_both_enabled")):
+        u["koolkid_both_last_reason"] = "Turn off AI AUTO TRADE and AUTO BOTH before using KOOLKID Both."
+        return False
+    risk_block = _check_unchain_hl_risk_block(state)
+    if risk_block:
+        u["koolkid_both_last_reason"] = str(risk_block)
+        return False
+
+    open_entries = _get_open_unchain_active_entries(state)
+    now_ts = time.time()
+    sim = u.get("koolkid_both_simulation") if isinstance(u.get("koolkid_both_simulation"), dict) else None
+    if open_entries:
+        if sim and sim.get("active"):
+            _clear_unchain_koolkid_both_simulation(
+                u,
+                reason="KOOLKID Both paused because an UNCHAIN trade is already active.",
+                cooldown_sec=4.0,
+            )
+        else:
+            u["koolkid_both_last_reason"] = "KOOLKID Both waits until current UNCHAIN trades finish."
+        return False
+
+    strat = (state.get("strategies") or {}).get("UNCHAIN")
+    if not strat:
+        u["koolkid_both_last_reason"] = "UNCHAIN strategy is not available."
+        return False
+    try:
+        current_price = float(getattr(strat, "last_price", None))
+    except Exception:
+        current_price = None
+    if current_price is None:
+        u["koolkid_both_last_reason"] = "Waiting for live price before starting KOOLKID Both simulation."
+        return False
+
+    metrics = _compute_unchain_auto_metrics(state, u)
+
+    if sim and sim.get("active"):
+        sim_duration = int(sim.get("simulation_duration", u.get("koolkid_sim_duration", 15)) or u.get("koolkid_sim_duration", 15) or 15)
+        live_duration = int(sim.get("live_duration", u.get("koolkid_live_duration", 5)) or u.get("koolkid_live_duration", 5) or 5)
+        sim["current_price"] = float(current_price)
+        sim["simulation_duration"] = sim_duration
+        sim["live_duration"] = live_duration
+
+        side_rows = []
+        leading_side = None
+        leading_profit_pct = -9999.0
+        for item in list(sim.get("sides") or []):
+            side_sim = dict(item or {})
+            side_sim["simulation_duration"] = sim_duration
+            estimated_value, estimated_pnl, balance_ratio, profit_pct = _estimate_unchain_koolkid_both_value(
+                side_sim,
+                current_price,
+                metrics,
+            )
+            item["estimated_value"] = float(estimated_value)
+            item["estimated_pnl"] = float(estimated_pnl)
+            item["balance_ratio"] = float(balance_ratio)
+            item["profit_pct"] = float(round(profit_pct, 2))
+            side_rows.append(item)
+            if profit_pct > leading_profit_pct:
+                leading_profit_pct = profit_pct
+                leading_side = str(item.get("side") or "").upper()
+        sim["sides"] = side_rows
+        sim["leading_side"] = leading_side
+        sim["leading_profit_pct"] = float(round(leading_profit_pct if leading_profit_pct > -9999.0 else 0.0, 2))
+
+        if now_ts < float(sim.get("check_at", 0.0) or 0.0):
+            seconds_left = max(0, int(math.ceil(float(sim.get("check_at", now_ts) or now_ts) - now_ts)))
+            hi = next((row for row in side_rows if str(row.get("side") or "").upper() == "HIGHER"), None)
+            lo = next((row for row in side_rows if str(row.get("side") or "").upper() == "LOWER"), None)
+            hi_pct = float((hi or {}).get("profit_pct", 0.0) or 0.0)
+            lo_pct = float((lo or {}).get("profit_pct", 0.0) or 0.0)
+            u["koolkid_both_last_reason"] = (
+                f"KOOLKID BOTH sim running • H {hi_pct:+.0f}% • L {lo_pct:+.0f}% • decision in {seconds_left}s"
+            )
+            return False
+
+        strong_side = str(leading_side or "").upper()
+        leading_profit_pct_value = float(sim.get("leading_profit_pct", 0.0) or 0.0)
+        required_profit_pct = float(_get_unchain_koolkid_hl_loss_trigger_pct(u))
+        if strong_side not in ("HIGHER", "LOWER") or leading_profit_pct_value < (required_profit_pct - 0.5):
+            _clear_unchain_koolkid_both_simulation(
+                u,
+                reason=(
+                    f"KOOLKID BOTH skipped: no side reached +{required_profit_pct:.0f}% profit by the 7s-left check "
+                    f"(best {leading_profit_pct_value:+.0f}%)."
+                ),
+                cooldown_sec=4.0,
+            )
+            u["last_action"] = u.get("koolkid_both_last_reason") or "KOOLKID BOTH skipped"
+            return False
+
+        signal = _get_unchain_koolkid_both_market_signal(u, metrics, strat, strong_side)
+        movement_class = str(signal.get("movement_class") or "WEAK").upper()
+        higher_stake = float(u.get("higher_stake", 1.0) or 1.0)
+        lower_stake = float(u.get("lower_stake", 1.0) or 1.0)
+        higher_barrier = _get_unchain_koolkid_live_barrier(u, "HIGHER", "t")
+        lower_barrier = _get_unchain_koolkid_live_barrier(u, "LOWER", "t")
+        plan_note = ""
+        if movement_class == "STRONG":
+            higher_barrier = _half_unchain_barrier(higher_barrier, "HIGHER", "t")
+            lower_barrier = _half_unchain_barrier(lower_barrier, "LOWER", "t")
+            plan_note = "reduced barriers"
+        elif movement_class == "DIRECTIONAL":
+            split = _rebalance_unchain_pair_stakes(higher_stake + lower_stake, strong_side)
+            higher_stake = float(split.get("HIGHER", higher_stake))
+            lower_stake = float(split.get("LOWER", lower_stake))
+            plan_note = f"60:40 toward {strong_side}"
+        else:
+            reasons = []
+            if not signal.get("speed_ok"):
+                reasons.append("tick speed is not strong enough")
+            if not signal.get("consistency_ok"):
+                reasons.append("recent ticks are not consistent enough")
+            if str(movement_class or "WEAK").upper() == "WEAK":
+                reasons.append("movement is weak")
+            _clear_unchain_koolkid_both_simulation(
+                u,
+                reason=f"KOOLKID BOTH skipped: {reasons[0] if reasons else 'movement is weak'}",
+                cooldown_sec=4.0,
+            )
+            u["last_action"] = u.get("koolkid_both_last_reason") or "KOOLKID BOTH skipped"
+            return False
+
+        plan = [
+            ("HIGHER", higher_stake, higher_barrier),
+            ("LOWER", lower_stake, lower_barrier),
+        ]
+        balance_ok, balance_msg, normalized_plan, _total_stake, _balance = _check_unchain_pair_balance(
+            state,
+            plan,
+            failure_prefix="Trade failed",
+        )
+        if not balance_ok:
+            _clear_unchain_koolkid_both_simulation(u, reason=balance_msg, cooldown_sec=5.0)
+            u["last_action"] = balance_msg
+            _maybe_emit_unchain_pair_failure_toast(client_id, state, balance_msg)
+            return False
+
+        placed = []
+        errors = []
+        for side_name, side_stake, side_barrier in normalized_plan:
+            ok, msg = _send_unchain_hl_trade(
+                client_id,
+                side=side_name,
+                stake=side_stake,
+                symbol=sim.get("symbol") or state.get("current_symbol"),
+                barrier=side_barrier,
+                duration=live_duration,
+                duration_unit="t",
+                entry_source="KOOLKID_BOTH",
+                respect_half_barrier_toggle=False,
+            )
+            if ok:
+                placed.append(side_name)
+            else:
+                errors.append(f"{side_name}: {msg}")
+                break
+
+        if len(placed) == 2:
+            u["last_action"] = (
+                f"KOOLKID BOTH sent on {sim.get('symbol') or state.get('current_symbol')} • "
+                f"{live_duration}T • {plan_note or 'balanced both'}"
+            )
+            _clear_unchain_koolkid_both_simulation(
+                u,
+                reason=(
+                    f"KOOLKID BOTH fired {plan_note or 'balanced both'} after {strong_side} led "
+                    f"the paper sim by {float(sim.get('leading_profit_pct', 0.0) or 0.0):+.0f}%."
+                ),
+                cooldown_sec=5.0,
+            )
+            return True
+
+        failure_message = errors[0] if errors else "live BOTH send failed"
+        _clear_unchain_koolkid_both_simulation(
+            u,
+            reason=f"KOOLKID BOTH failed: {failure_message}",
+            cooldown_sec=5.0,
+        )
+        u["last_action"] = u.get("koolkid_both_last_reason") or "KOOLKID BOTH failed"
+        return False
+
+    cooldown_until = float(u.get("koolkid_both_cooldown_until", 0.0) or 0.0)
+    if cooldown_until and now_ts < cooldown_until:
+        return False
+
+    sim_duration = int(u.get("koolkid_sim_duration", 15) or 15)
+    live_duration = int(u.get("koolkid_live_duration", 5) or 5)
+    decision_after = max(1, sim_duration - 7)
+    higher_stake = float(u.get("higher_stake", 1.0) or 1.0)
+    lower_stake = float(u.get("lower_stake", 1.0) or 1.0)
+    higher_sim_barrier = _get_unchain_visible_barrier(u, "HIGHER", "t")
+    lower_sim_barrier = _get_unchain_visible_barrier(u, "LOWER", "t")
+    try:
+        higher_sim_mag = abs(float(higher_sim_barrier))
+    except Exception:
+        higher_sim_mag = 0.12
+    try:
+        lower_sim_mag = abs(float(lower_sim_barrier))
+    except Exception:
+        lower_sim_mag = 0.12
+
+    u["koolkid_both_simulation"] = {
+        "active": True,
+        "symbol": state.get("current_symbol"),
+        "start_price": float(current_price),
+        "current_price": float(current_price),
+        "started_at": float(now_ts),
+        "check_at": float(now_ts + decision_after),
+        "ends_at": float(now_ts + sim_duration),
+        "simulation_duration": int(sim_duration),
+        "live_duration": int(live_duration),
+        "time": now_time(),
+        "virtual_contract_id": "UNCHAIN-KOOLKID-BOTH-SIM",
+        "message": (
+            f"{sim_duration}s paper BOTH sim started • check when 7s remain • live BOTH would use {live_duration}T."
+        ),
+        "sides": [
+            {
+                "side": "HIGHER",
+                "symbol": state.get("current_symbol"),
+                "stake": float(higher_stake),
+                "sim_barrier": higher_sim_barrier,
+                "sim_barrier_mag": float(higher_sim_mag),
+                "start_price": float(current_price),
+                "contract_id": "UNCHAIN-KOOLKID-BOTH-SIM-HIGHER",
+            },
+            {
+                "side": "LOWER",
+                "symbol": state.get("current_symbol"),
+                "stake": float(lower_stake),
+                "sim_barrier": lower_sim_barrier,
+                "sim_barrier_mag": float(lower_sim_mag),
+                "start_price": float(current_price),
+                "contract_id": "UNCHAIN-KOOLKID-BOTH-SIM-LOWER",
+            },
+        ],
+    }
+    u["koolkid_both_last_reason"] = (
+        f"KOOLKID BOTH sim started • decision when 7s remain • live BOTH would use {live_duration}T."
+    )
+    u["last_action"] = u["koolkid_both_last_reason"]
+    return False
+
+
 def _get_unchain_bias_payload(state, u=None):
     u = u or _ensure_unchain_hl_state(state)
     bias_payload = {
@@ -3168,10 +4329,12 @@ def _request_unchain_proposal_quote(state, *, side, stake, symbol, barrier, dura
     unit = _clean_unchain_duration_unit(duration_unit)
     duration_val = _sanitize_unchain_duration(duration, unit)
 
-    try:
-        barrier_value = _format_unchain_barrier(barrier, side, unit)
-    except Exception as e:
-        return None, str(e)
+    barrier_value = None
+    if barrier not in (None, ""):
+        try:
+            barrier_value = _format_unchain_barrier(barrier, side, unit)
+        except Exception as e:
+            return None, str(e)
 
     contract_type = "CALL" if side == "HIGHER" else "PUT"
     req_id = _new_req_id()
@@ -3189,9 +4352,10 @@ def _request_unchain_proposal_quote(state, *, side, stake, symbol, barrier, dura
         "duration": int(duration_val),
         "duration_unit": unit,
         "symbol": symbol,
-        "barrier": barrier_value,
         "req_id": req_id,
     }
+    if barrier_value not in (None, ""):
+        payload["barrier"] = barrier_value
 
     try:
         ws.send(json.dumps(payload))
@@ -3218,17 +4382,210 @@ def _request_unchain_proposal_quote(state, *, side, stake, symbol, barrier, dura
     if payout is None:
         profit = _safe_float(proposal.get("profit"), None)
         payout = (ask_price + profit) if profit is not None else ask_price
+    contract_details = proposal.get("contract_details") or {}
+    resolved_barrier = (
+        contract_details.get("barrier")
+        or proposal.get("barrier")
+        or proposal.get("spot")
+        or proposal.get("entry_spot")
+    )
+    spot_value = _safe_float(proposal.get("spot"), _safe_float(resolved_barrier, None))
 
     quote = {
         "ask_price": float(max(0.0, ask_price)),
         "payout": float(max(0.0, payout)),
-        "barrier": barrier_value,
+        "barrier": barrier_value if barrier_value not in (None, "") else (str(resolved_barrier) if resolved_barrier not in (None, "") else None),
+        "resolved_barrier": (str(resolved_barrier) if resolved_barrier not in (None, "") else None),
+        "spot": (float(spot_value) if spot_value is not None else None),
         "duration": int(duration_val),
         "duration_unit": unit,
         "contract_type": contract_type,
         "symbol": symbol,
     }
     return quote, None
+
+
+_UNCHAIN_MARKET_BARRIER_CACHE = {}
+
+
+def _contracts_for_duration_to_scalar(spec):
+    raw = str(spec or "").strip().lower()
+    if not raw:
+        return None, None
+    num = ""
+    unit = ""
+    for ch in raw:
+        if ch.isdigit() or ch == ".":
+            num += ch
+        elif ch.isalpha():
+            unit += ch
+    if not num or not unit:
+        return None, None
+    try:
+        value = float(num)
+    except Exception:
+        return None, None
+    if unit == "t":
+        return value, "t"
+    if unit == "s":
+        return value, "s"
+    if unit == "m":
+        return value * 60.0, "s"
+    if unit == "h":
+        return value * 3600.0, "s"
+    if unit == "d":
+        return value * 86400.0, "s"
+    return None, None
+
+
+def _duration_matches_contracts_for(item, duration, duration_unit):
+    expiry_type = str((item or {}).get("expiry_type") or "").strip().lower()
+    if expiry_type == "tick":
+        if _clean_unchain_duration_unit(duration_unit) != "t":
+            return False
+        try:
+            target = float(int(duration))
+        except Exception:
+            return False
+        min_v, min_unit = _contracts_for_duration_to_scalar((item or {}).get("min_contract_duration"))
+        max_v, max_unit = _contracts_for_duration_to_scalar((item or {}).get("max_contract_duration"))
+        if min_unit not in (None, "t") or max_unit not in (None, "t"):
+            return False
+        if min_v is not None and target < min_v:
+            return False
+        if max_v is not None and max_v > 0 and target > max_v:
+            return False
+        return True
+
+    if _clean_unchain_duration_unit(duration_unit) == "t":
+        return False
+    try:
+        target_unit = _clean_unchain_duration_unit(duration_unit)
+        target = float(duration)
+    except Exception:
+        return False
+    if target_unit == "s":
+        target_seconds = target
+    elif target_unit == "m":
+        target_seconds = target * 60.0
+    elif target_unit == "h":
+        target_seconds = target * 3600.0
+    else:
+        return False
+    min_v, min_unit = _contracts_for_duration_to_scalar((item or {}).get("min_contract_duration"))
+    max_v, max_unit = _contracts_for_duration_to_scalar((item or {}).get("max_contract_duration"))
+    if min_unit not in (None, "s") or max_unit not in (None, "s"):
+        return False
+    if min_v is not None and target_seconds < min_v:
+        return False
+    if max_v is not None and max_v > 0 and target_seconds > max_v:
+        return False
+    return str(expiry_type or "").lower() in ("intraday", "daily")
+
+
+def _fetch_unchain_market_default_barrier(symbol, duration, duration_unit):
+    sym = str(symbol or "").strip().upper()
+    unit = _clean_unchain_duration_unit(duration_unit)
+    try:
+        dur = int(float(duration))
+    except Exception:
+        dur = 5 if unit == "t" else 15
+    cache_key = (sym, dur, unit)
+    cached = _UNCHAIN_MARKET_BARRIER_CACHE.get(cache_key)
+    now_ts = time.time()
+    if isinstance(cached, dict) and (now_ts - float(cached.get("ts", 0.0) or 0.0)) < 300.0:
+        return cached.get("barrier"), cached.get("error")
+
+    ws = None
+    try:
+        ws = websocket.create_connection(DERIV_WS, timeout=5)
+        ws.send(json.dumps({"contracts_for": sym, "currency": "USD"}))
+        response = json.loads(ws.recv() or "{}")
+        if "error" in response:
+            err = str((response.get("error") or {}).get("message") or "contracts_for failed")
+            _UNCHAIN_MARKET_BARRIER_CACHE[cache_key] = {"ts": now_ts, "barrier": None, "error": err}
+            return None, err
+        available = ((response.get("contracts_for") or {}).get("available") or [])
+        candidates = []
+        for item in available:
+            if str((item or {}).get("contract_type") or "").upper() != "CALL":
+                continue
+            if str((item or {}).get("start_type") or "").lower() != "spot":
+                continue
+            if str((item or {}).get("barrier_category") or "").lower() != "euro_non_atm":
+                continue
+            try:
+                barrier_count = int((item or {}).get("barriers") or 0)
+            except Exception:
+                barrier_count = 0
+            if barrier_count < 1:
+                continue
+            barrier_text = str((item or {}).get("barrier") or "").strip()
+            if not barrier_text:
+                continue
+            if not _duration_matches_contracts_for(item, dur, unit):
+                continue
+            candidates.append(item)
+
+        if not candidates:
+            err = "No Deriv default barrier found for this market/duration"
+            _UNCHAIN_MARKET_BARRIER_CACHE[cache_key] = {"ts": now_ts, "barrier": None, "error": err}
+            return None, err
+
+        chosen = candidates[0]
+        barrier_text = str(chosen.get("barrier") or "").strip()
+        _UNCHAIN_MARKET_BARRIER_CACHE[cache_key] = {"ts": now_ts, "barrier": barrier_text, "error": None}
+        return barrier_text, None
+    except Exception as e:
+        err = str(e)
+        _UNCHAIN_MARKET_BARRIER_CACHE[cache_key] = {"ts": now_ts, "barrier": None, "error": err}
+        return None, err
+    finally:
+        try:
+            if ws:
+                ws.close()
+        except Exception:
+            pass
+
+
+def _format_unchain_market_default_barrier(raw_barrier, side):
+    try:
+        barrier_value = abs(float(str(raw_barrier or "").strip()))
+    except Exception:
+        return None
+    sign = "+" if str(side or "").upper() == "HIGHER" else "-"
+    return f"{sign}{barrier_value:.2f}"
+
+
+def _apply_unchain_market_default_barriers(state, symbol):
+    u = _ensure_unchain_hl_state(state)
+    quote_barrier, err = _fetch_unchain_market_default_barrier(
+        str(symbol or state.get("current_symbol") or "R_25"),
+        u.get("duration", 5),
+        u.get("duration_unit", "t"),
+    )
+    if err:
+        return False, str(err)
+    higher_default = _format_unchain_market_default_barrier(quote_barrier, "HIGHER")
+    lower_default = _format_unchain_market_default_barrier(quote_barrier, "LOWER")
+    if not higher_default or not lower_default:
+        return False, "Could not resolve market default barrier"
+    u["higher_barrier"] = higher_default
+    u["lower_barrier"] = lower_default
+    u["koolkid_higher_barrier"] = higher_default
+    u["koolkid_lower_barrier"] = lower_default
+    u["market_default_symbol"] = str(symbol or state.get("current_symbol") or "").upper()
+    return True, f"{higher_default} / {lower_default}"
+
+
+def _sync_unchain_market_default_barriers(state, force=False):
+    u = _ensure_unchain_hl_state(state)
+    symbol = str(state.get("current_symbol") or "R_25").upper()
+    if not force and symbol and symbol == str(u.get("market_default_symbol") or "").upper():
+        return False, "Already synced"
+    if not state.get("ws_connected") or not state.get("ws"):
+        return False, "Not connected"
+    return _apply_unchain_market_default_barriers(state, symbol)
 
 
 def _run_unchain_both_analyzer(state):
@@ -4053,9 +5410,22 @@ def _run_unchain_ai_auto_trade(client_id, state):
         ("HIGHER", u.get("higher_stake", 1.0), higher_barrier),
         ("LOWER", u.get("lower_stake", 1.0), lower_barrier),
     ]
+    balance_ok, balance_msg, normalized_plan, _total_stake, _balance = _check_unchain_pair_balance(
+        state,
+        plan,
+        failure_prefix="Trade failed",
+    )
+    if not balance_ok:
+        u["auto_pair_active"] = False
+        u["auto_next_fire_at"] = now_ts + cooldown
+        u["last_action"] = f"AI AUTO TRADE skipped • {balance_msg}"
+        _maybe_emit_unchain_pair_failure_toast(client_id, state, balance_msg)
+        if state.get("active_profile") == "UNCHAIN":
+            socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
+        return False
     placed = []
     errors = []
-    for side, stake, barrier in plan:
+    for side, stake, barrier in normalized_plan:
         ok, msg = _send_unchain_hl_trade(
             client_id,
             side=side,
@@ -4156,10 +5526,23 @@ def _run_unchain_auto_both(client_id, state):
         ("HIGHER", u.get("higher_stake", 1.0), higher_barrier),
         ("LOWER", u.get("lower_stake", 1.0), lower_barrier),
     ]
+    balance_ok, balance_msg, normalized_plan, _total_stake, _balance = _check_unchain_pair_balance(
+        state,
+        plan,
+        failure_prefix="Trade failed",
+    )
+    if not balance_ok:
+        u["auto_both_pair_active"] = False
+        u["auto_both_next_fire_at"] = now_ts + cooldown
+        u["last_action"] = f"AUTO BOTH skipped • {balance_msg}"
+        _maybe_emit_unchain_pair_failure_toast(client_id, state, balance_msg)
+        if state.get("active_profile") == "UNCHAIN":
+            socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
+        return False
 
     placed = []
     errors = []
-    for side, stake, barrier in plan:
+    for side, stake, barrier in normalized_plan:
         ok, msg = _send_unchain_hl_trade(
             client_id,
             side=side,
@@ -4225,6 +5608,8 @@ def _unchain_payload_response(state):
     auto_gate = _get_unchain_auto_gate(state, u)
     ai_auto_meta = _get_unchain_ai_auto_status(state, u, active_count=len(active_contracts), gate=auto_gate)
     auto_both_meta = _get_unchain_auto_both_status(state, u, active_count=len(active_contracts))
+    koolkid_hl_meta = _serialize_unchain_koolkid_hl(state, u, active_count=len(active_contracts))
+    koolkid_both_meta = _serialize_unchain_koolkid_both(state, u, active_count=len(active_contracts))
 
     return {
         "profile": "UNCHAIN",
@@ -4241,15 +5626,20 @@ def _unchain_payload_response(state):
             "half_barrier_enabled": bool(u.get("half_barrier_enabled", False)),
             "auto_both_enabled": bool(u.get("auto_both_enabled", False)),
             "ai_auto_trade_enabled": bool(u.get("ai_auto_trade_enabled", False)),
+            "koolkid_sim_duration": int(u.get("koolkid_sim_duration", 15) or 15),
+            "koolkid_live_duration": int(u.get("koolkid_live_duration", 5) or 5),
+            "koolkid_hl_loss_trigger_pct": int(u.get("koolkid_hl_loss_trigger_pct", 50) or 50),
+            "koolkid_higher_barrier": _get_unchain_koolkid_live_barrier(u, "HIGHER", "t"),
+            "koolkid_lower_barrier": _get_unchain_koolkid_live_barrier(u, "LOWER", "t"),
             "auto_both_cooldown": max(0, int(u.get("auto_both_cooldown", 3) or 3)),
             "auto_status": auto_both_meta.get("label", "OFF"),
             "auto_cooldown_remaining": float(auto_both_meta.get("cooldown_remaining", 0.0) or 0.0),
             "ai_auto_status": ai_auto_meta.get("label", "OFF"),
             "ai_auto_cooldown_remaining": float(ai_auto_meta.get("cooldown_remaining", 0.0) or 0.0),
-        "auto_start_threshold": float(u.get("auto_start_threshold", 48.0) or 48.0),
-        "auto_min_movement": float(u.get("auto_min_movement", 0.06) or 0.06),
-        "auto_min_tick_speed": float(u.get("auto_min_tick_speed", 2.4) or 2.4),
-        "auto_min_range": float(u.get("auto_min_range", 0.12) or 0.12),
+            "auto_start_threshold": float(u.get("auto_start_threshold", 48.0) or 48.0),
+            "auto_min_movement": float(u.get("auto_min_movement", 0.06) or 0.06),
+            "auto_min_tick_speed": float(u.get("auto_min_tick_speed", 2.4) or 2.4),
+            "auto_min_range": float(u.get("auto_min_range", 0.12) or 0.12),
             "auto_gate": auto_gate,
             "ai_auto_gate": auto_gate,
             "risk_block_reason": u.get("risk_block_reason"),
@@ -4258,6 +5648,8 @@ def _unchain_payload_response(state):
             "last_action": u.get("last_action") or "Ready",
             "last_result": u.get("last_result"),
             "bias": bias_payload,
+            "koolkid_hl": koolkid_hl_meta,
+            "koolkid_both": koolkid_both_meta,
             "both_analyzer": u.get("both_analyzer"),
             "stats": {
                 "wins": int(stats.get("wins", 0) or 0),
@@ -4288,6 +5680,7 @@ def _send_unchain_hl_trade(
     entry_source=None,
     auto_cycle_id=None,
     auto_confidence=None,
+    respect_half_barrier_toggle=True,
 ):
     state = clients.get(client_id)
     if not state:
@@ -4312,7 +5705,7 @@ def _send_unchain_hl_trade(
     u = _ensure_unchain_hl_state(state)
     try:
         barrier_value = _format_unchain_barrier(barrier, side, duration_unit)
-        if bool(u.get("half_barrier_enabled")):
+        if respect_half_barrier_toggle and bool(u.get("half_barrier_enabled")):
             barrier_value = _half_unchain_barrier(barrier_value, side, duration_unit)
     except Exception as e:
         return False, str(e)
@@ -5539,6 +6932,10 @@ def handle_on_message(client_id, ws, message, expected_nonce):
             }, room=client_id)
 
             socketio.emit("balance_update", {"balance": balance}, room=client_id)
+            try:
+                _sync_unchain_market_default_barriers(state, force=True)
+            except Exception:
+                pass
             emit_profile_snapshot(client_id)
 
             ws.send(json.dumps({"ticks": state["current_symbol"], "subscribe": 1}))
@@ -5874,6 +7271,8 @@ def process_tick(client_id, tick):
         if is_main:
             _run_unchain_ai_auto_trade(client_id, state)
             _run_unchain_auto_both(client_id, state)
+            _run_unchain_koolkid_hl(client_id, state)
+            _run_unchain_koolkid_both(client_id, state)
 
         if active_profile == "UNCHAIN":
             socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
@@ -6296,6 +7695,14 @@ def change_market():
     old_symbol = state.get("current_symbol")
     human_symbol = state.get("human_symbol") or old_symbol
     state["current_symbol"] = symbol
+    market_barrier_msg = None
+
+    try:
+        applied, info = _apply_unchain_market_default_barriers(state, symbol)
+        if applied:
+            market_barrier_msg = f"UNCHAIN default barriers set to {info}"
+    except Exception:
+        market_barrier_msg = None
 
     # ✅ reset analysis for MAIN profiles only (HUMAN is independent)
     for name, strat in state.get("strategies", {}).items():
@@ -6330,11 +7737,16 @@ def change_market():
             pass
 
     socketio.emit("market_change", {"symbol": state["current_symbol"]}, room=cid)
+    payload = _unchain_payload_response(state)
+    if state.get("active_profile") == "UNCHAIN":
+        socketio.emit("unchain_status", payload, room=cid)
     return jsonify({
         "status": "success",
         "symbol": state["current_symbol"],
         "main_symbol": state.get("current_symbol"),
-        "human_symbol": state.get("human_symbol") or state.get("current_symbol")
+        "human_symbol": state.get("human_symbol") or state.get("current_symbol"),
+        "message": market_barrier_msg or f"Market changed to {symbol}",
+        "payload": payload,
     })
 
 
@@ -7139,6 +8551,10 @@ def unchain_status_route():
         return jsonify({"error": "Unauthorized"}), 403
     _cid, state = get_client_state()
     _ensure_tick_subscription(state, state.get("current_symbol"))
+    try:
+        _sync_unchain_market_default_barriers(state, force=False)
+    except Exception:
+        pass
     return jsonify(_unchain_payload_response(state))
 
 
@@ -7239,6 +8655,16 @@ def unchain_settings_route():
             u["higher_barrier"] = str(data.get("higher_barrier") or "+0.12").strip()
         if "lower_barrier" in data:
             u["lower_barrier"] = str(data.get("lower_barrier") or "-0.12").strip()
+        if "koolkid_higher_barrier" in data:
+            u["koolkid_higher_barrier"] = str(data.get("koolkid_higher_barrier") or "").strip()
+        if "koolkid_lower_barrier" in data:
+            u["koolkid_lower_barrier"] = str(data.get("koolkid_lower_barrier") or "").strip()
+        if "koolkid_sim_duration" in data:
+            u["koolkid_sim_duration"] = max(5, min(59, int(float(data.get("koolkid_sim_duration") or 15))))
+        if "koolkid_live_duration" in data:
+            u["koolkid_live_duration"] = max(1, min(10, int(float(data.get("koolkid_live_duration") or 5))))
+        if "koolkid_hl_loss_trigger_pct" in data:
+            u["koolkid_hl_loss_trigger_pct"] = max(50, min(70, int(float(data.get("koolkid_hl_loss_trigger_pct") or 50))))
         if "duration_unit" in data:
             u["duration_unit"] = _clean_unchain_duration_unit(data.get("duration_unit"))
         if "duration" in data or "duration_unit" in data:
@@ -7294,6 +8720,18 @@ def unchain_trade_route():
         plan.append(("LOWER", data.get("lower_stake", u.get("lower_stake", 1.0)), data.get("lower_barrier", u.get("lower_barrier", "-0.12"))))
     else:
         return jsonify({"status": "error", "message": "Invalid side. Use HIGHER, LOWER, or BOTH.", "payload": _unchain_payload_response(state)}), 400
+    if side == "BOTH":
+        balance_ok, balance_msg, normalized_plan, _total_stake, _balance = _check_unchain_pair_balance(
+            state,
+            plan,
+            failure_prefix="Trade failed",
+        )
+        if not balance_ok:
+            payload = _unchain_payload_response(state)
+            if state.get("active_profile") == "UNCHAIN":
+                socketio.emit("unchain_status", payload, room=cid)
+            return jsonify({"status": "error", "message": balance_msg, "payload": payload, "placed": []}), 400
+        plan = normalized_plan
     placed = []
     for trade_side, stake, barrier in plan:
         ok, msg = _send_unchain_hl_trade(
@@ -7408,6 +8846,90 @@ def _toggle_unchain_ai_auto_trade(cid, state, data):
     })
 
 
+def _toggle_unchain_koolkid_hl(cid, state, data):
+    u = _ensure_unchain_hl_state(state)
+    requested = data.get("enabled")
+    if requested is None:
+        u["koolkid_hl_enabled"] = not bool(u.get("koolkid_hl_enabled"))
+    else:
+        u["koolkid_hl_enabled"] = bool(requested)
+
+    if u["koolkid_hl_enabled"]:
+        u["koolkid_both_enabled"] = False
+        _clear_unchain_koolkid_both_simulation(
+            u,
+            reason="KOOLKID Both is OFF.",
+            cooldown_sec=0.0,
+        )
+        u["koolkid_hl_cooldown_until"] = 0.0
+        u["koolkid_hl_last_reason"] = (
+            "KOOLKID Higher/Lower armed. It will paper-trade the weaker side and check halfway through the sim."
+        )
+        u["last_action"] = "KOOLKID Higher/Lower armed"
+        _run_unchain_koolkid_hl(cid, state)
+        message = "KOOLKID HIGHER/LOWER ON"
+    else:
+        _clear_unchain_koolkid_hl_simulation(
+            u,
+            reason="KOOLKID Higher/Lower is OFF.",
+            cooldown_sec=0.0,
+        )
+        u["last_action"] = "KOOLKID Higher/Lower OFF"
+        message = "KOOLKID HIGHER/LOWER OFF"
+
+    payload = _unchain_payload_response(state)
+    if state.get("active_profile") == "UNCHAIN":
+        socketio.emit("unchain_status", payload, room=cid)
+    return jsonify({
+        "status": "success",
+        "message": message,
+        "enabled": bool(u.get("koolkid_hl_enabled")),
+        "payload": payload,
+    })
+
+
+def _toggle_unchain_koolkid_both(cid, state, data):
+    u = _ensure_unchain_hl_state(state)
+    requested = data.get("enabled")
+    if requested is None:
+        u["koolkid_both_enabled"] = not bool(u.get("koolkid_both_enabled"))
+    else:
+        u["koolkid_both_enabled"] = bool(requested)
+
+    if u["koolkid_both_enabled"]:
+        u["koolkid_hl_enabled"] = False
+        _clear_unchain_koolkid_hl_simulation(
+            u,
+            reason="KOOLKID Higher/Lower is OFF.",
+            cooldown_sec=0.0,
+        )
+        u["koolkid_both_cooldown_until"] = 0.0
+        u["koolkid_both_last_reason"] = (
+            "KOOLKID Both armed. It will paper-trade Higher + Lower together and decide with 7s left."
+        )
+        u["last_action"] = "KOOLKID Both armed"
+        _run_unchain_koolkid_both(cid, state)
+        message = "KOOLKID BOTH ON"
+    else:
+        _clear_unchain_koolkid_both_simulation(
+            u,
+            reason="KOOLKID Both is OFF.",
+            cooldown_sec=0.0,
+        )
+        u["last_action"] = "KOOLKID Both OFF"
+        message = "KOOLKID BOTH OFF"
+
+    payload = _unchain_payload_response(state)
+    if state.get("active_profile") == "UNCHAIN":
+        socketio.emit("unchain_status", payload, room=cid)
+    return jsonify({
+        "status": "success",
+        "message": message,
+        "enabled": bool(u.get("koolkid_both_enabled")),
+        "payload": payload,
+    })
+
+
 @app.route("/toggle_unchain_auto", methods=["POST"])
 def toggle_unchain_auto_route():
     if not login_required():
@@ -7424,6 +8946,24 @@ def toggle_unchain_ai_auto_trade_route():
     cid, state = get_client_state()
     data = request.json or {}
     return _toggle_unchain_ai_auto_trade(cid, state, data)
+
+
+@app.route("/toggle_unchain_koolkid_hl", methods=["POST"])
+def toggle_unchain_koolkid_hl_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    cid, state = get_client_state()
+    data = request.json or {}
+    return _toggle_unchain_koolkid_hl(cid, state, data)
+
+
+@app.route("/toggle_unchain_koolkid_both", methods=["POST"])
+def toggle_unchain_koolkid_both_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    cid, state = get_client_state()
+    data = request.json or {}
+    return _toggle_unchain_koolkid_both(cid, state, data)
 
 
 @app.route("/unchain_stop", methods=["POST"])

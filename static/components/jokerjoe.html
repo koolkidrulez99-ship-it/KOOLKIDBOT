@@ -160,21 +160,23 @@
             <button id="kidGxBtnJokerjoe" onclick="toggleKidGxJokerjoe()" style="width:100%; height:46px; background:#1e293b;">⚡kidGx</button>
             <button id="aiAutoTradingBtnJokerjoe" onclick="toggleAIAutoTradingJokerjoe()" style="width:100%; height:46px; background:#1e293b;">🤖AI AUTO-TRADING: OFF</button>
           </div>
-          <div id="aiAutoModeModalJokerjoe" style="display:none; margin-top:8px; background:linear-gradient(180deg,#0f172a,#020617); border:1px solid #334155; border-radius:14px; padding:14px; box-shadow:0 20px 50px rgba(0,0,0,.28);">
-            <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:6px;">
-              <div style="font-weight:800;">🤖 AI AUTO-TRADING</div>
-              <button type="button" onclick="closeAIAutoModeModalJokerjoe()" style="height:34px; min-width:34px; border-radius:10px; background:#1e293b;">✕</button>
-            </div>
-            <div style="font-size:12px; color:#94a3b8; margin-bottom:10px;">Choose AI mode for JOKERJOE</div>
-            <div style="display:grid; gap:8px;">
-              <button id="aiAutoGoldenBtnJokerjoe" type="button" onclick="selectAIAutoModeJokerjoe('golden_digits')" style="width:100%; height:46px; background:#1e293b; border-radius:12px;">🌟 Golden Digits</button>
-              <button id="aiAutoLowestBtnJokerjoe" type="button" onclick="openAIAutoLowestTradeCountOptionsJokerjoe()" style="width:100%; height:46px; background:#1e293b; border-radius:12px;">📉 Lowest %</button>
-              <div id="aiAutoLowestTradeOptionsWrapJokerjoe" style="display:none; grid-template-columns:1fr 1fr; gap:8px; margin-top:-2px;">
-                <button id="aiAutoLowest5TradesBtnJokerjoe" type="button" onclick="selectAIAutoLowestTradeCountJokerjoe(5)" style="width:100%; height:42px; background:#1e293b; border-radius:12px;">5 Trades</button>
-                <button id="aiAutoLowest1TradeBtnJokerjoe" type="button" onclick="selectAIAutoLowestTradeCountJokerjoe(1)" style="width:100%; height:42px; background:#1e293b; border-radius:12px;">1 Trade</button>
+          <div id="aiAutoModeModalJokerjoe" onclick="if(event.target===this) closeAIAutoModeModalJokerjoe()" style="display:none; position:fixed; inset:0; z-index:75; padding:18px; align-items:center; justify-content:center; background:rgba(2,6,23,0.76);">
+            <div style="width:min(460px,100%); background:linear-gradient(180deg,#0f172a,#020617); border:1px solid #334155; border-radius:16px; padding:14px; box-shadow:0 20px 50px rgba(0,0,0,.38);">
+              <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:6px;">
+                <div style="font-weight:800;">🤖 AI AUTO-TRADING</div>
+                <button type="button" onclick="closeAIAutoModeModalJokerjoe()" style="height:34px; min-width:34px; border-radius:10px; background:#1e293b;">✕</button>
               </div>
+              <div style="font-size:12px; color:#94a3b8; margin-bottom:10px;">Choose AI mode for JOKERJOE</div>
+              <div style="display:grid; gap:8px;">
+                <button id="aiAutoGoldenBtnJokerjoe" type="button" onclick="selectAIAutoModeJokerjoe('golden_digits')" style="width:100%; height:46px; background:#1e293b; border-radius:12px;">🌟 Golden Digits</button>
+                <button id="aiAutoLowestBtnJokerjoe" type="button" onclick="openAIAutoLowestTradeCountOptionsJokerjoe()" style="width:100%; height:46px; background:#1e293b; border-radius:12px;">📉 Lowest %</button>
+                <div id="aiAutoLowestTradeOptionsWrapJokerjoe" style="display:none; grid-template-columns:1fr 1fr; gap:8px; margin-top:-2px;">
+                  <button id="aiAutoLowest5TradesBtnJokerjoe" type="button" onclick="selectAIAutoLowestTradeCountJokerjoe(5)" style="width:100%; height:42px; background:#1e293b; border-radius:12px;">5 Trades</button>
+                  <button id="aiAutoLowest1TradeBtnJokerjoe" type="button" onclick="selectAIAutoLowestTradeCountJokerjoe(1)" style="width:100%; height:42px; background:#1e293b; border-radius:12px;">1 Trade</button>
+                </div>
+              </div>
+              <div id="aiAutoModeModalStatusJokerjoe" style="margin-top:10px; font-size:12px; color:#94a3b8;">Lowest % = choose 5 Trades or 1 Trade • DIFFERS touch → move-away → next tick</div>
             </div>
-            <div id="aiAutoModeModalStatusJokerjoe" style="margin-top:10px; font-size:12px; color:#94a3b8;">Lowest % = choose 5 Trades or 1 Trade • DIFFERS touch → move-away → next tick</div>
           </div>
 
           <button id="autoBtn" onclick="toggleAuto()" style="width:100%; height:52px; background:#38bdf8;">

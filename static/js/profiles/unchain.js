@@ -9,6 +9,7 @@
     lastPayload: null,
     scanner: null,
     bothAnalyzerEnabled: false,
+    koolkidPanelOpen: false,
     dirtyFields: new Set(),
     isSaving: false,
     marketChart: {
@@ -22,6 +23,7 @@
       wasActiveTrade: false,
     },
     tradeCountdownToastEl: null,
+    lastMainSymbol: null,
   };
 
   const FORM_FIELDS = [
@@ -29,6 +31,11 @@
     "unchainLowerStake",
     "unchainHigherBarrier",
     "unchainLowerBarrier",
+    "unchainKoolkidHigherBarrier",
+    "unchainKoolkidLowerBarrier",
+    "unchainKoolkidSimDuration",
+    "unchainKoolkidLiveDuration",
+    "unchainKoolkidHlLossPct",
     "unchainDuration",
     "unchainDurationUnit",
     "unchainTp",
@@ -144,7 +151,7 @@
     const n = Number(v);
     const safe = Number.isFinite(n) ? n : Number(fallback);
     if (!Number.isFinite(safe)) return String(fallback);
-    const absText = String(Math.abs(safe).toFixed(10)).replace(/\.?0+$/, "");
+    const absText = Math.abs(safe).toFixed(2);
     return `${safe < 0 ? "-" : "+"}${absText || "0"}`;
   }
 
@@ -172,6 +179,11 @@
       lower_stake: readNumber("unchainLowerStake", 1),
       higher_barrier: halfBarrierEnabled ? scaleBarrierText(higherBarrierRaw, 2, 0.12) : higherBarrierRaw,
       lower_barrier: halfBarrierEnabled ? scaleBarrierText(lowerBarrierRaw, 2, -0.12) : lowerBarrierRaw,
+      koolkid_higher_barrier: readText("unchainKoolkidHigherBarrier", "+0.06"),
+      koolkid_lower_barrier: readText("unchainKoolkidLowerBarrier", "-0.06"),
+      koolkid_sim_duration: Math.max(5, Math.min(59, readInteger("unchainKoolkidSimDuration", 15))),
+      koolkid_live_duration: Math.max(1, Math.min(10, readInteger("unchainKoolkidLiveDuration", 5))),
+      koolkid_hl_loss_trigger_pct: Math.max(50, Math.min(70, readInteger("unchainKoolkidHlLossPct", 50))),
       duration: readInteger("unchainDuration", 5),
       duration_unit: readText("unchainDurationUnit", "t").toLowerCase(),
       tp: readNumber("unchainTp", 0),
@@ -535,15 +547,22 @@
     markDirty("unchainLowerStake");
   }
 
-  function fillForm(un, force) {
+  function fillForm(un, force, opts) {
     if (!un) return;
+    const options = opts || {};
+    const barrierForce = !!force || !!options.forceBarriers;
     const halfEnabled = !!un.half_barrier_enabled;
     state.auto_sl = !!un.auto_sl;
     state.half_barrier_enabled = halfEnabled;
     setFieldValue("unchainHigherStake", formatInputNumber(un.higher_stake, 1), force);
     setFieldValue("unchainLowerStake", formatInputNumber(un.lower_stake, 1), force);
-    setFieldValue("unchainHigherBarrier", getDisplayedBarrierText(un.higher_barrier || "+0.12", 0.12, halfEnabled), force);
-    setFieldValue("unchainLowerBarrier", getDisplayedBarrierText(un.lower_barrier || "-0.12", -0.12, halfEnabled), force);
+    setFieldValue("unchainHigherBarrier", getDisplayedBarrierText(un.higher_barrier || "+0.12", 0.12, halfEnabled), barrierForce);
+    setFieldValue("unchainLowerBarrier", getDisplayedBarrierText(un.lower_barrier || "-0.12", -0.12, halfEnabled), barrierForce);
+    setFieldValue("unchainKoolkidHigherBarrier", String(un.koolkid_higher_barrier || "+0.06"), barrierForce);
+    setFieldValue("unchainKoolkidLowerBarrier", String(un.koolkid_lower_barrier || "-0.06"), barrierForce);
+    setFieldValue("unchainKoolkidSimDuration", String(un.koolkid_sim_duration || 15), force);
+    setFieldValue("unchainKoolkidLiveDuration", String(un.koolkid_live_duration || 5), force);
+    setFieldValue("unchainKoolkidHlLossPct", String(un.koolkid_hl_loss_trigger_pct || 50), force);
     setFieldValue("unchainDurationUnit", (un.duration_unit || "t").toLowerCase(), force);
     setFieldValue("unchainDuration", String(un.duration || 5), force);
     applyDurationPresets(!!force);
@@ -574,6 +593,39 @@
       lowerEl.value = scaleBarrierText(lowerEl.value, factor, -0.12);
       markDirty("unchainLowerBarrier");
     }
+  }
+
+  function applyMainBarrierPreset(side, rawValue) {
+    const sideName = String(side || "").toUpperCase();
+    const targetId = sideName === "LOWER" ? "unchainLowerBarrier" : "unchainHigherBarrier";
+    const fallback = sideName === "LOWER" ? -0.12 : 0.12;
+    const node = el(targetId);
+    if (!node) return;
+    const shownValue = getDisplayedBarrierText(String(rawValue || ""), fallback, !!state.half_barrier_enabled);
+    node.value = shownValue;
+    markDirty(targetId);
+    renderBarrierMarketChart((state.lastPayload && (state.lastPayload.unchain || state.lastPayload)) || {}, state.lastPayload || {});
+  }
+
+  function nudgeBarrierField(targetId, deltaValue) {
+    const node = el(targetId);
+    if (!node) return;
+    const raw = String(node.value || "").trim();
+    const isLower = String(targetId || "").toLowerCase().includes("lower");
+    const fallback = isLower ? -0.12 : 0.12;
+    const current = num(raw || fallback, fallback);
+    const delta = num(deltaValue, 0);
+    let next = Math.round((current + delta) * 100) / 100;
+    if (isLower) {
+      const magnitude = Math.max(0.01, Math.round((Math.abs(current) + delta) * 100) / 100);
+      next = -magnitude;
+    } else {
+      next = Math.max(0.01, next);
+    }
+    node.value = formatBarrierInputValue(next, fallback);
+    markDirty(targetId);
+    const un = state.lastPayload && (state.lastPayload.unchain || state.lastPayload);
+    renderBarrierMarketChart(un || {}, state.lastPayload || {});
   }
 
   function bindHalfBarrierToggle() {
@@ -970,6 +1022,137 @@
     renderBothAnalyzer(un || {});
   }
 
+  function renderKoolkidHl(un) {
+    const data = (un && un.koolkid_hl) || {};
+    const bothData = (un && un.koolkid_both) || {};
+    const sim = data && typeof data.simulation === "object" ? data.simulation : null;
+    const bothSim = bothData && typeof bothData.simulation === "object" ? bothData.simulation : null;
+    const isEnabled = !!data.enabled;
+    const isBothEnabled = !!bothData.enabled;
+    const anyEnabled = isEnabled || isBothEnabled;
+
+    const panelBtn = el("unchainKoolkidBtn");
+    if (panelBtn) {
+      panelBtn.innerText = `KOOLKID: ${anyEnabled ? "ON" : "OFF"}`;
+      panelBtn.style.background = anyEnabled ? "#1d4ed8" : "#2563eb";
+      panelBtn.style.color = "#eff6ff";
+    }
+
+    const body = el("unchainKoolkidBody");
+    if (body) body.style.display = state.koolkidPanelOpen ? "flex" : "none";
+
+    const hlBtn = el("unchainKoolkidHlBtn");
+    if (hlBtn) {
+      hlBtn.innerText = `📈 HIGHER/LOWER: ${isEnabled ? "ON" : "OFF"}`;
+      hlBtn.style.background = isEnabled ? "#22c55e" : "#1d4ed8";
+      hlBtn.style.color = isEnabled ? "#052e16" : "#eff6ff";
+    }
+
+    const bothBtn = el("unchainKoolkidBothBtn");
+    if (bothBtn) {
+      bothBtn.innerText = `⚖️ BOTH: ${isBothEnabled ? "ON" : "OFF"}`;
+      bothBtn.style.background = isBothEnabled ? "#f59e0b" : "#475569";
+      bothBtn.style.color = isBothEnabled ? "#111827" : "#e2e8f0";
+    }
+
+    const status = el("unchainKoolkidStatus");
+    if (!status) return;
+    if (bothSim && bothSim.active) {
+      const sides = Array.isArray(bothSim.sides) ? bothSim.sides : [];
+      const hi = sides.find((item) => String((item && item.side) || "").toUpperCase() === "HIGHER") || null;
+      const lo = sides.find((item) => String((item && item.side) || "").toUpperCase() === "LOWER") || null;
+      const hiPct = Number(hi && hi.profit_pct);
+      const loPct = Number(lo && lo.profit_pct);
+      const remaining = Number(bothSim.countdown_remaining || 0);
+      const checkRemaining = Number(bothSim.check_remaining || 0);
+      const leader = String(bothSim.leading_side || "—").toUpperCase();
+      status.innerText =
+        `Paper BOTH sim • HIGHER ${Number.isFinite(hiPct) ? `${hiPct >= 0 ? "+" : ""}${hiPct.toFixed(0)}%` : "—"} • ` +
+        `LOWER ${Number.isFinite(loPct) ? `${loPct >= 0 ? "+" : ""}${loPct.toFixed(0)}%` : "—"} • ` +
+        `${remaining}s left • ${checkRemaining > 0 ? `decision in ${checkRemaining}s` : "checking now"} • ` +
+        `leader ${leader} • strong flow sends reduced-barrier BOTH, directional flow sends 60:40 BOTH.`;
+      status.style.color = "#fcd34d";
+      return;
+    }
+    if (sim && sim.active) {
+      const estValue = Number(sim.estimated_value);
+      const estPnl = Number(sim.estimated_pnl);
+      const remaining = Number(sim.countdown_remaining || 0);
+      const checkRemaining = Number(sim.check_remaining || 0);
+      const lossTriggerPct = Number(sim.loss_trigger_pct || data.loss_trigger_pct || 50);
+      const valueText = Number.isFinite(estValue) ? `$${estValue.toFixed(2)}` : "—";
+      const pnlText = Number.isFinite(estPnl) ? `${estPnl >= 0 ? "+" : "-"}$${Math.abs(estPnl).toFixed(2)}` : "—";
+      status.innerText =
+        `Paper ${String(sim.side || "—").toUpperCase()} sim live ${valueText} (${pnlText}) • ` +
+        `${remaining}s left • ${checkRemaining > 0 ? `decision in ${checkRemaining}s` : "checking now"} • ` +
+        `needs ${Number.isFinite(lossTriggerPct) ? lossTriggerPct.toFixed(0) : "50"}% loss • ` +
+        `live ${String(sim.opposite_side || "—").toUpperCase()} ${Number(sim.live_duration || 5)}T will use ${sim.live_barrier || "—"}.`;
+      status.style.color = "#93c5fd";
+      return;
+    }
+    if (isBothEnabled) {
+      status.innerText = String(bothData.last_reason || "KOOLKID Both is waiting for a dual paper trade setup.");
+      status.style.color = "#fcd34d";
+      return;
+    }
+    status.innerText = String(data.last_reason || "KOOLKID Higher/Lower is waiting for a weak-side paper trade setup.");
+    status.style.color = isEnabled ? "#93c5fd" : "#cbd5e1";
+  }
+
+  function toggleKoolkidPanel() {
+    state.koolkidPanelOpen = !state.koolkidPanelOpen;
+    const un = state.lastPayload && (state.lastPayload.unchain || state.lastPayload);
+    renderKoolkidHl(un || {});
+  }
+
+  function bindKoolkidModal() {
+    const modal = el("unchainKoolkidBody");
+    if (!modal || modal.dataset.unchainModalBound === "1") return;
+    modal.dataset.unchainModalBound = "1";
+    modal.addEventListener("click", (evt) => {
+      if (evt.target !== modal) return;
+      state.koolkidPanelOpen = false;
+      const un = state.lastPayload && (state.lastPayload.unchain || state.lastPayload);
+      renderKoolkidHl(un || {});
+    });
+    document.addEventListener("keydown", (evt) => {
+      if (evt.key !== "Escape" || !state.koolkidPanelOpen) return;
+      state.koolkidPanelOpen = false;
+      const un = state.lastPayload && (state.lastPayload.unchain || state.lastPayload);
+      renderKoolkidHl(un || {});
+    });
+  }
+
+  async function toggleKoolkidHl() {
+    const saved = await saveSettings(false);
+    if (!saved || !saved.ok) return;
+    const un = state.lastPayload && (state.lastPayload.unchain || state.lastPayload);
+    const current = !!(un && un.koolkid_hl && un.koolkid_hl.enabled);
+    const r = await postJSON("/toggle_unchain_koolkid_hl", { enabled: !current });
+    if (r.ok && r.data) {
+      if (r.data.payload) renderPayload(r.data.payload, { forceForm: true });
+      toast(r.data.message || (!current ? "KOOLKID HIGHER/LOWER ON" : "KOOLKID HIGHER/LOWER OFF"), !current ? "success" : "warn");
+    } else {
+      toast((r.data && (r.data.message || r.data.error)) || "Failed to toggle KOOLKID Higher/Lower", "error");
+      if (r.data && r.data.payload) renderPayload(r.data.payload);
+    }
+  }
+
+  async function toggleKoolkidBoth() {
+    const saved = await saveSettings(false);
+    if (!saved || !saved.ok) return;
+    const un = state.lastPayload && (state.lastPayload.unchain || state.lastPayload);
+    const current = !!(un && un.koolkid_both && un.koolkid_both.enabled);
+    const r = await postJSON("/toggle_unchain_koolkid_both", { enabled: !current });
+    if (r.ok && r.data) {
+      if (r.data.payload) renderPayload(r.data.payload, { forceForm: true });
+      toast(r.data.message || (!current ? "KOOLKID BOTH ON" : "KOOLKID BOTH OFF"), !current ? "success" : "warn");
+    } else {
+      toast((r.data && (r.data.message || r.data.error)) || "Failed to toggle KOOLKID Both", "error");
+      if (r.data && r.data.payload) renderPayload(r.data.payload);
+    }
+  }
+
   function formatTradeCountdown(item) {
     if (!item) return "—";
     const unit = String(item.countdown_unit || "").toLowerCase();
@@ -1341,10 +1524,15 @@
 
   function renderPayload(payload, opts) {
     if (!payload) return;
+    const un = payload.unchain || payload;
+    const nextSymbol = String(
+      payload.main_symbol || payload.symbol || un.main_symbol || un.symbol || ""
+    ).toUpperCase();
+    const symbolChanged = !!nextSymbol && nextSymbol !== String(state.lastMainSymbol || "").toUpperCase();
     state.lastPayload = payload;
     state.scanner = payload.scanner || state.scanner;
-    const un = payload.unchain || payload;
-    fillForm(un, !!(opts && opts.forceForm));
+    fillForm(un, !!(opts && opts.forceForm), { forceBarriers: symbolChanged });
+    if (nextSymbol) state.lastMainSymbol = nextSymbol;
     renderStatusChip(un, payload);
     renderRiskBlock(un);
     renderAutoBoth(un);
@@ -1369,6 +1557,7 @@
     setText("unchainLastAction", un.last_action || "Ready");
     renderScanner(state.scanner);
     renderBothAnalyzer(un);
+    renderKoolkidHl(un);
     renderBias(un);
     renderBarrierMarketChart(un, payload);
     try {
@@ -1489,6 +1678,29 @@
       case "unchain-trade-both":
         await sendTrade("BOTH");
         break;
+      case "unchain-higher-preset":
+        applyMainBarrierPreset("HIGHER", btn && btn.dataset ? btn.dataset.value : "+0.12");
+        break;
+      case "unchain-lower-preset":
+        applyMainBarrierPreset("LOWER", btn && btn.dataset ? btn.dataset.value : "-0.12");
+        break;
+      case "unchain-barrier-step":
+        if (btn && btn.dataset && btn.dataset.target) {
+          nudgeBarrierField(btn.dataset.target, btn.dataset.delta);
+        }
+        break;
+      case "unchain-koolkid-panel":
+        toggleKoolkidPanel();
+        break;
+      case "unchain-koolkid-close":
+        toggleKoolkidPanel();
+        break;
+      case "unchain-koolkid-hl":
+        await toggleKoolkidHl();
+        break;
+      case "unchain-koolkid-both":
+        await toggleKoolkidBoth();
+        break;
       case "unchain-toggle-auto-both":
         await toggleAutoBoth();
         break;
@@ -1553,6 +1765,10 @@
         if (!isActive() || !data) return;
         renderScanner(data);
       });
+      socket.on("unchain_toast", (data) => {
+        if (!isActive() || !data) return;
+        toast(data.message || "UNCHAIN notice", data.type || "info");
+      });
       socket.on("trade_result", () => {
         if (!isActive()) return;
         setTimeout(() => refreshStatus(true), 200);
@@ -1611,6 +1827,7 @@
     applyHalfBarrierToggle();
     applyAutoConfidenceLabel();
     bindHalfBarrierToggle();
+    bindKoolkidModal();
   }
 
   function startPolling() {

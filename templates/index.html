@@ -1621,6 +1621,63 @@ function buildPendingTradeFromUnchainActive(item, payload){
     };
 }
 
+function buildPendingTradeFromUnchainKoolkidSimulation(sim, payload){
+    if(!sim || typeof sim !== "object" || !sim.active) return [];
+    const root = payload || {};
+    const un = (root && root.unchain) || {};
+    const sideItems = Array.isArray(sim.sides) ? sim.sides : [];
+    if(!sideItems.length){
+        const cid = normalizeContractId(sim.contract_id || sim.virtual_contract_id || "UNCHAIN-KOOLKID-HL-SIM");
+        if(!cid) return [];
+        const estPnl = Number(sim.estimated_pnl);
+        return [{
+            profile: "UNCHAIN",
+            type: `KOOLKID SIM ${String(sim.side || "TRADE").toUpperCase()}`,
+            barrier: sim.sim_barrier,
+            stake: sim.stake,
+            symbol: sim.symbol || root.symbol || un.symbol,
+            time: sim.time || new Date().toLocaleTimeString(),
+            contract_id: cid,
+            duration: sim.duration || sim.simulation_duration || 15,
+            duration_unit: String((sim.duration_unit || "s")).toLowerCase(),
+            countdown_remaining: sim.countdown_remaining,
+            countdown_unit: String(sim.countdown_unit || "s").toLowerCase(),
+            countdown_seconds: sim.countdown_seconds,
+            open_profit: Number.isFinite(estPnl) ? estPnl : null,
+            status: sim.phase || "SIMULATING",
+            result: "PENDING",
+            pending: true,
+            is_virtual_queue: true,
+            is_simulation: true,
+        }];
+    }
+    return sideItems.map((item)=>{
+        const cid = normalizeContractId((item && item.contract_id) || `UNCHAIN-KOOLKID-HL-SIM-${String((item && item.side) || "").toUpperCase()}`);
+        if(!cid) return null;
+        const estPnl = Number(item && item.estimated_pnl);
+        return {
+            profile: "UNCHAIN",
+            type: `KOOLKID SIM ${String((item && item.side) || "TRADE").toUpperCase()}`,
+            barrier: item && item.sim_barrier,
+            stake: item && item.stake,
+            symbol: (item && item.symbol) || sim.symbol || root.symbol || un.symbol,
+            time: sim.time || new Date().toLocaleTimeString(),
+            contract_id: cid,
+            duration: (item && item.duration) || sim.duration || 15,
+            duration_unit: String(((item && item.duration_unit) || sim.duration_unit || "s")).toLowerCase(),
+            countdown_remaining: sim.countdown_remaining,
+            countdown_unit: String(sim.countdown_unit || "s").toLowerCase(),
+            countdown_seconds: sim.countdown_seconds,
+            open_profit: Number.isFinite(estPnl) ? estPnl : null,
+            status: (item && item.phase) || sim.phase || "SIMULATING",
+            result: "PENDING",
+            pending: true,
+            is_virtual_queue: true,
+            is_simulation: true,
+        };
+    }).filter(Boolean);
+}
+
 function syncJokerjoeMultiGPendingTrade(payload){
     const profile = "JOKERJOE";
     const queueId = "JOKERJOE-MULTIG-PENDING";
@@ -1665,7 +1722,6 @@ function syncUnchainPendingTradesFromStatus(payload){
     const root = payload || {};
     const un = root.unchain || root;
     const items = Array.isArray(un && un.active_contracts) ? un.active_contracts : [];
-    if(!items.length) return false;
     let changed = false;
     items.forEach((item)=>{
         if(!item || typeof item !== "object") return;
@@ -1677,6 +1733,36 @@ function syncUnchainPendingTradesFromStatus(payload){
         upsertTradeInStore(pending);
         changed = true;
     });
+    const sim = un && un.koolkid_hl && un.koolkid_hl.simulation;
+    if(sim && sim.active){
+        changed = removeTradeFromStoreByContractId("UNCHAIN", "UNCHAIN-KOOLKID-HL-SIM") || changed;
+        changed = removeTradeFromStoreByContractId("UNCHAIN", "UNCHAIN-KOOLKID-HL-SIM-HIGHER") || changed;
+        changed = removeTradeFromStoreByContractId("UNCHAIN", "UNCHAIN-KOOLKID-HL-SIM-LOWER") || changed;
+        const pendingSims = buildPendingTradeFromUnchainKoolkidSimulation(sim, root);
+        pendingSims.forEach((pendingSim)=>{
+            upsertTradeInStore(pendingSim);
+            changed = true;
+        });
+    }else{
+        changed = removeTradeFromStoreByContractId("UNCHAIN", "UNCHAIN-KOOLKID-HL-SIM-HIGHER") || changed;
+        changed = removeTradeFromStoreByContractId("UNCHAIN", "UNCHAIN-KOOLKID-HL-SIM-LOWER") || changed;
+        changed = removeTradeFromStoreByContractId("UNCHAIN", "UNCHAIN-KOOLKID-HL-SIM") || changed;
+    }
+    const bothSim = un && un.koolkid_both && un.koolkid_both.simulation;
+    if(bothSim && bothSim.active){
+        changed = removeTradeFromStoreByContractId("UNCHAIN", "UNCHAIN-KOOLKID-BOTH-SIM") || changed;
+        changed = removeTradeFromStoreByContractId("UNCHAIN", "UNCHAIN-KOOLKID-BOTH-SIM-HIGHER") || changed;
+        changed = removeTradeFromStoreByContractId("UNCHAIN", "UNCHAIN-KOOLKID-BOTH-SIM-LOWER") || changed;
+        const pendingBothSims = buildPendingTradeFromUnchainKoolkidSimulation(bothSim, root);
+        pendingBothSims.forEach((pendingSim)=>{
+            upsertTradeInStore(pendingSim);
+            changed = true;
+        });
+    }else{
+        changed = removeTradeFromStoreByContractId("UNCHAIN", "UNCHAIN-KOOLKID-BOTH-SIM-HIGHER") || changed;
+        changed = removeTradeFromStoreByContractId("UNCHAIN", "UNCHAIN-KOOLKID-BOTH-SIM-LOWER") || changed;
+        changed = removeTradeFromStoreByContractId("UNCHAIN", "UNCHAIN-KOOLKID-BOTH-SIM") || changed;
+    }
     return changed;
 }
 window.syncUnchainPendingTradesFromStatus = syncUnchainPendingTradesFromStatus;
@@ -2152,7 +2238,7 @@ function buildTradeItem(trade){
     let profitDisplay = (result === 'WIN' ? '+' : '-') + '$' + Math.abs(profit).toFixed(2);
     if(pending){
         if(Number.isFinite(openProfit)){
-            profitDisplay = `${openProfit >= 0 ? '+' : '-'}$${Math.abs(openProfit).toFixed(2)} (live)`;
+            profitDisplay = `${openProfit >= 0 ? '+' : '-'}$${Math.abs(openProfit).toFixed(2)} ${trade.is_simulation ? '(simulation trade)' : '(live)'}`;
         }else{
             profitDisplay = result === "CLOSING" ? "CLOSING" : "PENDING";
         }

@@ -26,6 +26,7 @@
 @media (max-width: 900px){
   .ui-btn-grid-2,.ui-btn-grid-3{grid-template-columns:1fr}
   #koolkidProfileUi .panelGrid{margin:0 auto}
+  #koolkidProfileUi .koolkid-history-stats{grid-template-columns:repeat(2,minmax(0,1fr)) !important; gap:8px !important;}
 }
 
 #profileTradeList{height:360px;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;touch-action:pan-y;padding-right:6px;scrollbar-width:thin;scrollbar-color:#475569 transparent}
@@ -350,7 +351,7 @@
     <button onclick="clearProfileHistory()" style="background:#fb7185;">Clear History</button>
   </div>
 
-  <div style="display:grid; grid-template-columns: repeat(5, 1fr); gap:10px; margin-top:12px;">
+  <div class="koolkid-history-stats" style="display:grid; grid-template-columns: repeat(5, 1fr); gap:10px; margin-top:12px;">
     <div data-history-filter-card="ALL" onclick="toggleTradeHistoryFilter('ALL')" role="button" tabindex="0" style="background:#0f172a; border:1px solid #334155; border-radius:12px; padding:12px; text-align:center;">
       <div style="color:#94a3b8; font-size:12px;">Total Trades</div>
       <div id="profileTotalTrades" style="font-size:22px; font-weight:bold;">0</div>
