@@ -24,6 +24,30 @@
   line-height: 1.15;
   word-break: break-word;
 }
+#humanProfilePanel .human-signal-breakdown {
+  min-width: 0;
+}
+#humanProfilePanel .human-signal-breakdown-header {
+  min-width: 0;
+}
+#humanProfilePanel .human-signal-breakdown-title {
+  font-weight: 700;
+}
+#humanProfilePanel .human-signal-breakdown-streaks {
+  color: #94a3b8;
+  font-size: 12px;
+}
+#humanProfilePanel .human-score-card {
+  min-width: 0;
+}
+#humanProfilePanel .human-score-card-label {
+  color: #94a3b8;
+  font-size: 11px;
+}
+#humanProfilePanel .human-score-card-value {
+  font-size: 18px;
+  font-weight: 700;
+}
 #humanProfilePanel #profileTradeList {
   overflow-x: auto;
 }
@@ -66,7 +90,35 @@
     grid-template-columns: 1fr !important;
   }
   #humanProfilePanel .human-score-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+    gap: 6px !important;
+  }
+  #humanProfilePanel .human-signal-breakdown {
+    padding: 10px !important;
+  }
+  #humanProfilePanel .human-signal-breakdown-header {
+    flex-direction: column;
+    align-items: flex-start !important;
+    gap: 4px !important;
+  }
+  #humanProfilePanel .human-signal-breakdown-title {
+    font-size: 15px;
+    line-height: 1.2;
+  }
+  #humanProfilePanel .human-signal-breakdown-streaks {
+    font-size: 11px;
+    line-height: 1.3;
+  }
+  #humanProfilePanel .human-score-card {
+    padding: 8px !important;
+    border-radius: 9px !important;
+  }
+  #humanProfilePanel .human-score-card-label {
+    font-size: 10px !important;
+    line-height: 1.2;
+  }
+  #humanProfilePanel .human-score-card-value {
+    font-size: 16px !important;
   }
   #humanProfilePanel .human-history-header {
     flex-wrap: wrap;
@@ -97,7 +149,10 @@
     text-align: center;
   }
   #humanProfilePanel .human-score-grid {
-    grid-template-columns: 1fr !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+  #humanProfilePanel .human-score-grid .human-score-card:last-child {
+    grid-column: 1 / -1;
   }
   #humanProfilePanel .human-history-stats {
     grid-template-columns: repeat(5, minmax(0, 1fr)) !important;
@@ -185,31 +240,31 @@
         </div>
     </div>
 
-    <div style="margin-top:12px; background:#0f172a; border-radius:14px; border:1px solid #334155; padding:12px;">
-        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
-            <div style="font-weight:700;">📊 Signal Breakdown</div>
-            <div id="humanRfStreaks" style="color:#94a3b8; font-size:12px;">Wins: 0 | Losses: 0 | Last: -</div>
+    <div class="human-signal-breakdown" style="margin-top:12px; background:#0f172a; border-radius:14px; border:1px solid #334155; padding:12px;">
+        <div class="human-signal-breakdown-header" style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+            <div class="human-signal-breakdown-title">📊 Signal Breakdown</div>
+            <div id="humanRfStreaks" class="human-signal-breakdown-streaks">Wins: 0 | Losses: 0 | Last: -</div>
         </div>
         <div class="human-score-grid" style="display:grid; grid-template-columns: repeat(5, 1fr); gap:8px; margin-top:10px;">
-            <div style="background:#111827; border-radius:10px; padding:10px; text-align:center;">
-                <div style="color:#94a3b8; font-size:11px;">Trend</div>
-                <div id="humanRfScoreTrend" style="font-size:18px; font-weight:700;">0</div>
+            <div class="human-score-card" style="background:#111827; border-radius:10px; padding:10px; text-align:center;">
+                <div class="human-score-card-label">Trend</div>
+                <div id="humanRfScoreTrend" class="human-score-card-value">0</div>
             </div>
-            <div style="background:#111827; border-radius:10px; padding:10px; text-align:center;">
-                <div style="color:#94a3b8; font-size:11px;">Momentum</div>
-                <div id="humanRfScoreMomentum" style="font-size:18px; font-weight:700;">0</div>
+            <div class="human-score-card" style="background:#111827; border-radius:10px; padding:10px; text-align:center;">
+                <div class="human-score-card-label">Momentum</div>
+                <div id="humanRfScoreMomentum" class="human-score-card-value">0</div>
             </div>
-            <div style="background:#111827; border-radius:10px; padding:10px; text-align:center;">
-                <div style="color:#94a3b8; font-size:11px;">Pullback</div>
-                <div id="humanRfScorePullback" style="font-size:18px; font-weight:700;">0</div>
+            <div class="human-score-card" style="background:#111827; border-radius:10px; padding:10px; text-align:center;">
+                <div class="human-score-card-label">Pullback</div>
+                <div id="humanRfScorePullback" class="human-score-card-value">0</div>
             </div>
-            <div style="background:#111827; border-radius:10px; padding:10px; text-align:center;">
-                <div style="color:#94a3b8; font-size:11px;">Trigger</div>
-                <div id="humanRfScoreTrigger" style="font-size:18px; font-weight:700;">0</div>
+            <div class="human-score-card" style="background:#111827; border-radius:10px; padding:10px; text-align:center;">
+                <div class="human-score-card-label">Trigger</div>
+                <div id="humanRfScoreTrigger" class="human-score-card-value">0</div>
             </div>
-            <div style="background:#111827; border-radius:10px; padding:10px; text-align:center;">
-                <div style="color:#94a3b8; font-size:11px;">Clean</div>
-                <div id="humanRfScoreClean" style="font-size:18px; font-weight:700;">0</div>
+            <div class="human-score-card" style="background:#111827; border-radius:10px; padding:10px; text-align:center;">
+                <div class="human-score-card-label">Clean</div>
+                <div id="humanRfScoreClean" class="human-score-card-value">0</div>
             </div>
         </div>
     </div>

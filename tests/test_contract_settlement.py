@@ -15,6 +15,7 @@ from server import (
     _is_contract_settled_fast,
     _send_unchain_hl_trade,
     _upsert_unchain_active_contract,
+    process_contract,
 )
 
 
@@ -157,6 +158,13 @@ def test_format_unchain_market_default_barrier_uses_relative_deriv_value():
     assert _format_unchain_market_default_barrier("+0.33", "LOWER") == "-0.33"
 
 
+def test_format_unchain_market_default_barrier_truncates_to_two_decimals():
+    assert _format_unchain_market_default_barrier("8.0487", "HIGHER") == "+8.04"
+    assert _format_unchain_market_default_barrier("8.0487", "LOWER") == "-8.04"
+    assert _format_unchain_market_default_barrier("0.1799", "HIGHER") == "+0.17"
+    assert _format_unchain_market_default_barrier("0.1799", "LOWER") == "-0.17"
+
+
 def test_apply_unchain_market_default_barriers_updates_main_and_koolkid_setup(monkeypatch):
     state = {
         "ws_connected": True,
@@ -186,6 +194,7 @@ def test_apply_unchain_market_default_barriers_updates_main_and_koolkid_setup(mo
     assert state["unchain_hl"]["koolkid_higher_barrier"] == "+0.33"
     assert state["unchain_hl"]["koolkid_lower_barrier"] == "-0.33"
     assert state["unchain_hl"]["market_default_symbol"] == "R_75"
+    assert state["unchain_hl"]["market_default_key"] == "R_75|5|T"
 
 
 def test_sync_unchain_market_default_barriers_only_refreshes_unsynced_symbol(monkeypatch):
@@ -215,6 +224,7 @@ def test_sync_unchain_market_default_barriers_only_refreshes_unsynced_symbol(mon
     assert info == "+0.33 / -0.33"
     assert state["unchain_hl"]["higher_barrier"] == "+0.33"
     assert state["unchain_hl"]["market_default_symbol"] == "R_10"
+    assert state["unchain_hl"]["market_default_key"] == "R_10|5|T"
 
     state["unchain_hl"]["higher_barrier"] = "+9.99"
     state["unchain_hl"]["lower_barrier"] = "-9.99"
@@ -225,6 +235,36 @@ def test_sync_unchain_market_default_barriers_only_refreshes_unsynced_symbol(mon
     assert info == "Already synced"
     assert state["unchain_hl"]["higher_barrier"] == "+9.99"
     assert state["unchain_hl"]["lower_barrier"] == "-9.99"
+
+
+def test_sync_unchain_market_default_barriers_refreshes_when_duration_key_changes(monkeypatch):
+    state = {
+        "ws_connected": True,
+        "ws": object(),
+        "current_symbol": "R_10",
+        "unchain_hl": {
+            "higher_barrier": "+0.33",
+            "lower_barrier": "-0.33",
+            "market_default_symbol": "R_10",
+            "market_default_key": "R_10|5|T",
+            "duration": 10,
+            "duration_unit": "t",
+        },
+    }
+
+    monkeypatch.setattr(
+        server,
+        "_fetch_unchain_market_default_barrier",
+        lambda *args, **kwargs: ("+0.55", None),
+    )
+
+    changed, info = server._sync_unchain_market_default_barriers(state, force=False)
+
+    assert changed is True
+    assert info == "+0.55 / -0.55"
+    assert state["unchain_hl"]["higher_barrier"] == "+0.55"
+    assert state["unchain_hl"]["lower_barrier"] == "-0.55"
+    assert state["unchain_hl"]["market_default_key"] == "R_10|10|T"
 
 
 def test_sync_unchain_market_default_barriers_force_refreshes_on_login(monkeypatch):
@@ -253,6 +293,126 @@ def test_sync_unchain_market_default_barriers_force_refreshes_on_login(monkeypat
     assert info == "+0.33 / -0.33"
     assert state["unchain_hl"]["higher_barrier"] == "+0.33"
     assert state["unchain_hl"]["lower_barrier"] == "-0.33"
+
+
+def test_process_contract_forces_settled_result_off_pending_labels(monkeypatch):
+    emitted = []
+
+    class DummyStrategy:
+        def __init__(self):
+            self.last_trade_entry = {}
+
+        def on_contract(self, contract, balance):
+            self.last_trade_entry = {
+                "time": "10:00:00",
+                "result": "PENDING",
+                "profit": round(float(contract.get("profit", 0) or 0), 2),
+                "symbol": contract.get("underlying", ""),
+            }
+
+        def get_last_trade_entry(self):
+            return self.last_trade_entry
+
+    state = {
+        "balance": 100.0,
+        "active_profile": "KOOLKID",
+        "strategies": {"KOOLKID": DummyStrategy()},
+        "contract_meta": {
+            12345: {
+                "profile": "KOOLKID",
+                "type": "OVER",
+                "stake": 1.0,
+                "symbol": "R_10",
+                "time": "09:59:00",
+                "duration": 5,
+                "duration_unit": "t",
+            }
+        },
+    }
+
+    monkeypatch.setitem(server.clients, "test-client", state)
+    monkeypatch.setattr(server.socketio, "emit", lambda event, payload, room=None: emitted.append((event, payload, room)))
+    monkeypatch.setattr(server, "send_stats_update", lambda client_id: None)
+
+    try:
+        process_contract(
+            "test-client",
+            {
+                "contract_id": 12345,
+                "status": "sold",
+                "profit": 0.6,
+                "is_sold": True,
+                "underlying": "R_10",
+            },
+        )
+    finally:
+        server.clients.pop("test-client", None)
+
+    trade_events = [payload for event, payload, _room in emitted if event == "trade_result"]
+    assert trade_events
+    assert trade_events[-1]["contract_id"] == 12345
+    assert trade_events[-1]["result"] == "WIN"
+    assert trade_events[-1]["status"] == "sold"
+
+
+def test_process_contract_extracts_exit_digit_from_current_spot_display_value(monkeypatch):
+    emitted = []
+
+    class DummyStrategy:
+        def __init__(self):
+            self.last_trade_entry = {}
+
+        def on_contract(self, contract, balance):
+            self.last_trade_entry = {
+                "time": "10:00:00",
+                "result": "WIN" if float(contract.get("profit", 0) or 0) > 0 else "LOSS",
+                "profit": round(float(contract.get("profit", 0) or 0), 2),
+                "symbol": contract.get("underlying", ""),
+            }
+
+        def get_last_trade_entry(self):
+            return self.last_trade_entry
+
+    state = {
+        "balance": 100.0,
+        "active_profile": "JOKERJOE",
+        "strategies": {"JOKERJOE": DummyStrategy()},
+        "contract_meta": {
+            54321: {
+                "profile": "JOKERJOE",
+                "type": "DIFFERS",
+                "stake": 1.0,
+                "symbol": "R_10",
+                "time": "09:59:00",
+                "duration": 5,
+                "duration_unit": "t",
+            }
+        },
+    }
+
+    monkeypatch.setitem(server.clients, "test-exit-digit", state)
+    monkeypatch.setattr(server.socketio, "emit", lambda event, payload, room=None: emitted.append((event, payload, room)))
+    monkeypatch.setattr(server, "send_stats_update", lambda client_id: None)
+
+    try:
+        process_contract(
+            "test-exit-digit",
+            {
+                "contract_id": 54321,
+                "status": "sold",
+                "profit": 0.6,
+                "is_sold": True,
+                "underlying": "R_10",
+                "current_spot_display_value": "9744.54",
+            },
+        )
+    finally:
+        server.clients.pop("test-exit-digit", None)
+
+    trade_events = [payload for event, payload, _room in emitted if event == "trade_result"]
+    assert trade_events
+    assert trade_events[-1]["contract_id"] == 54321
+    assert trade_events[-1]["exit_digit"] == 4
 
 
 def test_send_unchain_hl_trade_uses_half_barrier_setting(monkeypatch):

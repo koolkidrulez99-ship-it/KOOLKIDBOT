@@ -202,7 +202,6 @@ def test_koolkid_hl_uses_saved_real_side_barrier(monkeypatch):
     assert sim["opposite_side"] == "LOWER"
     assert sim["live_barrier"] == "-0.22"
 
-
 def test_koolkid_hl_uses_8_second_check_for_60pct_on_15_second_sim(monkeypatch):
     state = {
         "ws_connected": True,
@@ -356,7 +355,6 @@ def test_koolkid_hl_places_opposite_trade_after_losing_simulation(monkeypatch):
     assert placed[0]["duration"] == 5
     assert placed[0]["respect_half_barrier_toggle"] is False
     assert state["unchain_hl"]["koolkid_hl_simulation"] is None
-
 
 def test_koolkid_hl_60pct_trigger_waits_if_sim_not_losing_enough(monkeypatch):
     state = {

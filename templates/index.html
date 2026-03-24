@@ -188,6 +188,7 @@ input, select{
     padding:10px;
     display:none;
     min-width:180px;
+    max-width:min(220px, calc(100vw - 16px));
 }
 .digit-popup h4{
     margin:0 0 8px 0;
@@ -981,11 +982,12 @@ body.mobile-only-ui #profileContainer .unchain-history-grid{
 <!-- ==================== PATCH 2A: SeqVIX popups (already present) ==================== -->
 <div id="seqVixJokerPopup" class="digit-popup" style="display:none;">
   <h4>5*² sequential vix</h4>
-  <!-- ==================== PATCH 3A: 1/2 Trade selector for JOKERJOE ==================== -->
-  <div style="display:flex; gap:8px; margin-bottom:8px;">
-    <button id="seqVixJokerTrades1Btn" onclick="setSeqVixJokerTradesPerMarket(1)" style="flex:1; height:38px; background:#1e293b;">1 Trade</button>
-    <button id="seqVixJokerTrades2Btn" onclick="setSeqVixJokerTradesPerMarket(2)" style="flex:1; height:38px; background:#38bdf8; color:#0b1220;">2 Trades</button>
+  <div style="font-size:12px; color:#94a3b8; margin-bottom:6px;">Trade count mode</div>
+  <div style="display:flex; gap:8px; margin-bottom:10px;">
+    <button id="seqVixJokerTrades1Btn" onclick="setSeqVixJokerTradeMode('1')" style="flex:1; height:38px; background:#1e293b;">1 Trade</button>
+    <button id="seqVixJokerTrades2Btn" onclick="setSeqVixJokerTradeMode('2')" style="flex:1; height:38px; background:#38bdf8; color:#0b1220;">2 Trades</button>
   </div>
+  <div style="font-size:12px; color:#94a3b8; margin-bottom:6px;">Active market count</div>
   <button style="background:#22c55e; width:100%; margin-top:6px;" onclick="startSeqVixJokerjoe('5')">5 markets</button>
   <button style="background:#22c55e; width:100%; margin-top:6px;" onclick="startSeqVixJokerjoe('10')">10 markets</button>
   <button style="background:#22c55e; width:100%; margin-top:6px;" onclick="startSeqVixJokerjoe('ENDLESS')">Endless</button>
@@ -1267,6 +1269,11 @@ function bindSocketHandlers(){
             seqVixState.JOKERJOE.running = running;
             seqVixState.JOKERJOE.done = done;
             seqVixState.JOKERJOE.total = total; // null => ∞
+            seqVixState.JOKERJOE.marketMode = data.market_mode || "5";
+            seqVixState.JOKERJOE.tradeMode = data.trade_mode || "2";
+            seqVixState.JOKERJOE.queuedSignals = Number(data.queued_signals || 0);
+            seqVixState.JOKERJOE.openTradeStatus = data.open_trade_status || "";
+            seqVixState.JOKERJOE.activeMarkets = Array.isArray(data.active_markets) ? data.active_markets : [];
             updateSeqVixUI("JOKERJOE", running, done, total);
         }
     });
@@ -1517,10 +1524,33 @@ function formatTradeDurationLabel(trade){
     return `${safe} ${safe === 1 ? "Tick" : "Ticks"}`;
 }
 
+function resolveMergedTradeResult(base, next, merged){
+    const nextResult = String((next && next.result) || "").trim();
+    const nextStatus = String((next && next.status) || "").trim();
+    if(nextResult){
+        return normalizeTradeResultLabel(nextResult, nextStatus);
+    }
+
+    const prior = normalizeTradeResultLabel(base && base.result, (base && base.status) || (merged && merged.status));
+    if(nextStatus){
+        const byStatus = normalizeTradeResultLabel(nextStatus, nextStatus);
+        if(!isTradeResultPending(byStatus)) return byStatus;
+    }
+
+    const nextProfitRaw = (next && next.profit !== undefined) ? next.profit : (next ? next.profit_value : undefined);
+    const nextProfit = Number(nextProfitRaw);
+    if(Number.isFinite(nextProfit) && isTradeResultPending(prior)){
+        return nextProfit > 0 ? "WIN" : "LOSS";
+    }
+
+    return normalizeTradeResultLabel(merged && merged.result, merged && merged.status);
+}
+
 function mergeTradeRecord(existing, incoming){
     const base = (existing && typeof existing === "object") ? existing : {};
     const next = (incoming && typeof incoming === "object") ? incoming : {};
     const merged = Object.assign({}, base, next);
+    const mergedProfile = normalizeProfileName(merged.profile || base.profile || next.profile || activeProfile);
     if(base.time && !next.time){
         merged.time = base.time;
     }
@@ -1528,9 +1558,30 @@ function mergeTradeRecord(existing, incoming){
     if(base.symbol && (nextSymbol === undefined || nextSymbol === null || String(nextSymbol).trim() === "")){
         merged.symbol = base.symbol;
     }
-    const normalized = normalizeTradeResultLabel(merged.result, merged.status);
+    const normalized = resolveMergedTradeResult(base, next, merged);
     merged.result = normalized;
     merged.pending = isTradeResultPending(normalized);
+    if(!merged.pending){
+        if(mergedProfile === "UNCHAIN"){
+            if(
+                Number.isFinite(Number(base.countdown_remaining))
+                || Number.isFinite(Number(next.countdown_remaining))
+                || Number.isFinite(Number(merged.duration))
+            ){
+                merged.countdown_remaining = 0;
+            }
+            if(
+                Number.isFinite(Number(base.countdown_seconds))
+                || Number.isFinite(Number(next.countdown_seconds))
+            ){
+                merged.countdown_seconds = 0;
+            }
+        }else{
+            merged.countdown_remaining = null;
+            merged.countdown_seconds = null;
+        }
+        merged.status = normalized;
+    }
     return merged;
 }
 
@@ -2208,6 +2259,7 @@ function toggleTradeHistoryFilter(filter){
 window.toggleTradeHistoryFilter = toggleTradeHistoryFilter;
 
 function buildTradeItem(trade){
+    const tradeProfile = normalizeProfileName((trade && trade.profile) || activeProfile);
     const result = normalizeTradeResultLabel(trade.result, trade.status);
     const pending = isTradeResultPending(result);
     const resultClass = (result === "WIN")
@@ -2227,10 +2279,10 @@ function buildTradeItem(trade){
         : ((trade.exit_digit !== undefined && trade.exit_digit !== null) ? trade.exit_digit : "?");
 
     const time = trade.time || new Date().toLocaleTimeString();
-    const countdownLabel = formatTradeCountdownLabel(trade);
+    const countdownLabel = (pending || tradeProfile === "UNCHAIN") ? formatTradeCountdownLabel(trade) : "";
     const badgeLabel = countdownLabel
         ? `Countdown: ${countdownLabel}`
-        : (pending ? (trade.status || result) : `Exit: ${exitDigit}`);
+        : (pending ? (trade.status || result) : (tradeProfile === "UNCHAIN" ? `Duration: ${durationLabel}` : `Exit: ${exitDigit}`));
 
     const item = document.createElement('div');
     item.className = `trade-item ${resultClass}`;
@@ -2939,9 +2991,40 @@ function onDigitClicked(digit, ev){
         btn2.setAttribute("onclick", 'popupTrade("SELL")');
     }
 
-    digitPopup.style.left = (ev.clientX + 12) + "px";
-    digitPopup.style.top  = (ev.clientY + 12) + "px";
+    const target = ev && ev.currentTarget ? ev.currentTarget : null;
+    const rect = target && typeof target.getBoundingClientRect === "function"
+        ? target.getBoundingClientRect()
+        : null;
+    const viewportWidth = Math.max(window.innerWidth || 0, 320);
+    const viewportHeight = Math.max(window.innerHeight || 0, 320);
+    const margin = 8;
+    const fallbackLeft = Number(ev && ev.clientX) || (rect ? (rect.left + rect.width / 2) : margin);
+    const fallbackTop = Number(ev && ev.clientY) || (rect ? (rect.top + rect.height / 2) : margin);
+
+    digitPopup.style.visibility = "hidden";
     digitPopup.style.display = "block";
+    const popupWidth = Math.max(digitPopup.offsetWidth || 0, 180);
+    const popupHeight = Math.max(digitPopup.offsetHeight || 0, 120);
+
+    let left = rect ? rect.left + ((rect.width - popupWidth) / 2) : (fallbackLeft + 12);
+    let top = rect ? (rect.bottom + 10) : (fallbackTop + 12);
+
+    if(top + popupHeight > (viewportHeight - margin)){
+        top = rect ? (rect.top - popupHeight - 10) : (viewportHeight - popupHeight - margin);
+    }
+    if(top < margin){
+        top = margin;
+    }
+    if(left + popupWidth > (viewportWidth - margin)){
+        left = viewportWidth - popupWidth - margin;
+    }
+    if(left < margin){
+        left = margin;
+    }
+
+    digitPopup.style.left = `${Math.round(left)}px`;
+    digitPopup.style.top = `${Math.round(top)}px`;
+    digitPopup.style.visibility = "visible";
 }
 
 function hidePopup(){ digitPopup.style.display = "none"; }
@@ -3007,11 +3090,11 @@ autoBarrierCancel.addEventListener("click", hideAutoBarrierPopup);
 // ==================== PATCH 2B: SeqVIX state and functions ====================
 let seqVixState = {
   KOOLKID: { running:false, done:0, total:10 },
-  JOKERJOE: { running:false, done:0, total:0 }
+  JOKERJOE: { running:false, done:0, total:0, marketMode:"5", tradeMode:"2", queuedSignals:0, openTradeStatus:"", activeMarkets:[] }
 };
 
 // ==================== PATCH 2A (new): trade count state variables ====================
-let seqVixJokerTradesPerMarket = 2;   // default 2
+let seqVixJokerTradeMode = "2";
 let seqVixKoolkidTradesPerMarket = 2; // default 2
 
 function hideSeqVixPopups(){
@@ -3032,7 +3115,7 @@ function showSeqVixPopup(profile){
 
   // ==================== PATCH 3C: reset trade count UI when popup opens ====================
   if(profile === "JOKERJOE"){
-    updateSeqVixJokerTradesUI(seqVixJokerTradesPerMarket);
+    updateSeqVixJokerTradesUI(seqVixJokerTradeMode);
   }
   if(profile === "KOOLKID"){
     updateSeqVixKoolkidTradesUI(seqVixKoolkidTradesPerMarket);
@@ -3042,13 +3125,45 @@ function showSeqVixPopup(profile){
 function updateSeqVixUI(profile, running, done, total){
   const btnId = profile === "KOOLKID" ? "seqVixBtnKoolkid" : "seqVixBtnJokerjoe";
   const progId = profile === "KOOLKID" ? "seqVixProgressKoolkid" : "seqVixProgressJokerjoe";
+  const statusId = profile === "JOKERJOE" ? "seqVixStatusJokerjoe" : null;
 
   const btn = document.getElementById(btnId);
   const prog = document.getElementById(progId);
+  const statusEl = statusId ? document.getElementById(statusId) : null;
 
   const totalText = (total === null || total === undefined) ? "∞" : String(total);
   if(prog){
-    prog.innerText = `Markets done: ${done} / ${totalText}`;
+    prog.innerText = (profile === "JOKERJOE")
+      ? `Trades done: ${done} / ${totalText}`
+      : `Markets done: ${done} / ${totalText}`;
+  }
+  if(profile === "JOKERJOE" && statusEl){
+    const data = seqVixState.JOKERJOE || {};
+    const modeText = `Mode: ${data.marketMode === "ENDLESS" ? "Endless markets" : `${data.marketMode} markets`} | Trades per market: ${data.tradeMode}`;
+    const queueText = `Queued: ${Number(data.queuedSignals || 0)}${data.openTradeStatus ? ` | Open: ${data.openTradeStatus}` : ""}`;
+    const markets = Array.isArray(data.activeMarkets) ? data.activeMarkets : [];
+    const chips = markets.length
+      ? markets.map((market) => {
+          const symbol = String(market.symbol || "").trim();
+          const state = String(market.state || "").trim();
+          const stateLabel = state.replaceAll("_", " ");
+          const tradesDone = Number(market.trades_done || 0);
+          const tradesTarget = (market.trades_target === null || market.trades_target === undefined) ? "∞" : String(market.trades_target);
+          const overplayed = (market.overplayed_digit !== null && market.overplayed_digit !== undefined) ? ` avoid ${market.overplayed_digit}` : "";
+          const digitText = (market.signal_digit !== null && market.signal_digit !== undefined)
+            ? ` d${market.signal_digit}`
+            : ((market.last_digit !== null && market.last_digit !== undefined) ? ` last ${market.last_digit}` : "");
+          const progressText = state === "scanning"
+            ? ` ${Number(market.scan_count || 0)}/20`
+            : ` ${tradesDone}/${tradesTarget}`;
+          const color = state === "trade_open"
+            ? "#22c55e"
+            : (state === "ready_to_trade" ? "#facc15" : (state === "waiting_for_digit" ? "#38bdf8" : "#64748b"));
+          const textColor = state === "ready_to_trade" ? "#0f172a" : "#ffffff";
+          return `<span style="display:inline-block; margin:2px 6px 2px 0; padding:3px 8px; border-radius:999px; background:${color}; color:${textColor}; font-weight:700;">${symbol} ${stateLabel}${progressText}${digitText}${overplayed}</span>`;
+        }).join("")
+      : `<span style="color:#94a3b8;">No active scan markets</span>`;
+    statusEl.innerHTML = `<div>${modeText}</div><div style="margin-top:4px;">${queueText}</div><div style="margin-top:6px;">${chips}</div>`;
   }
   if(btn){
     btn.innerText = running ? "5*² sequential vix: ON" : "5*² sequential vix: OFF";
@@ -3057,13 +3172,13 @@ function updateSeqVixUI(profile, running, done, total){
 }
 
 // ==================== PATCH 2B (new): helper UI updaters for trade count ====================
-function updateSeqVixJokerTradesUI(n){
+function updateSeqVixJokerTradesUI(mode){
   const b1 = document.getElementById("seqVixJokerTrades1Btn");
   const b2 = document.getElementById("seqVixJokerTrades2Btn");
   if(!b1 || !b2) return;
-  const v = Number(n) === 1 ? 1 : 2;
-  b1.style.background = (v === 1) ? "#38bdf8" : "#1e293b";
-  b2.style.background = (v === 2) ? "#38bdf8" : "#1e293b";
+  const v = String(mode || "2").toUpperCase();
+  b1.style.background = (v === "1") ? "#38bdf8" : "#1e293b";
+  b2.style.background = (v === "2") ? "#38bdf8" : "#1e293b";
 }
 
 function updateSeqVixKoolkidTradesUI(n){
@@ -3075,9 +3190,10 @@ function updateSeqVixKoolkidTradesUI(n){
   b2.style.background = (v === 2) ? "#38bdf8" : "#1e293b";
 }
 
-function setSeqVixJokerTradesPerMarket(n){
-  seqVixJokerTradesPerMarket = (Number(n) === 1 ? 1 : 2);
-  updateSeqVixJokerTradesUI(seqVixJokerTradesPerMarket);
+function setSeqVixJokerTradeMode(mode){
+  const v = String(mode || "2").toUpperCase();
+  seqVixJokerTradeMode = (v === "1" || v === "2") ? v : "2";
+  updateSeqVixJokerTradesUI(seqVixJokerTradeMode);
 }
 
 function setSeqVixKoolkidTradesPerMarket(n){
@@ -3099,8 +3215,8 @@ async function startSeqVixJokerjoe(mode){
     method:"POST",
     headers: {"Content-Type":"application/json"},
     body: JSON.stringify({
-      mode,
-      trade_count: seqVixJokerTradesPerMarket   // ==================== PATCH 2C ====================
+      market_mode: mode,
+      trade_mode: seqVixJokerTradeMode
     })
   });
 }
@@ -3140,6 +3256,11 @@ async function refreshSeqVixStatus(){
       seqVixState.JOKERJOE.running = !!data.JOKERJOE.running;
       seqVixState.JOKERJOE.done = Number(data.JOKERJOE.done||0);
       seqVixState.JOKERJOE.total = (data.JOKERJOE.total === null ? null : Number(data.JOKERJOE.total||0));
+      seqVixState.JOKERJOE.marketMode = data.JOKERJOE.market_mode || "5";
+      seqVixState.JOKERJOE.tradeMode = data.JOKERJOE.trade_mode || "2";
+      seqVixState.JOKERJOE.queuedSignals = Number(data.JOKERJOE.queued_signals || 0);
+      seqVixState.JOKERJOE.openTradeStatus = data.JOKERJOE.open_trade_status || "";
+      seqVixState.JOKERJOE.activeMarkets = Array.isArray(data.JOKERJOE.active_markets) ? data.JOKERJOE.active_markets : [];
       updateSeqVixUI("JOKERJOE", seqVixState.JOKERJOE.running, seqVixState.JOKERJOE.done, seqVixState.JOKERJOE.total);
     }
   }catch(e){}

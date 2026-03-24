@@ -24,6 +24,10 @@
     },
     tradeCountdownToastEl: null,
     lastMainSymbol: null,
+    lastBarrierKey: null,
+    marketBarrierSyncInFlight: false,
+    marketBarrierSyncSignature: "",
+    marketBarrierSyncTimer: null,
   };
 
   const FORM_FIELDS = [
@@ -45,6 +49,13 @@
     "unchainAutoMinTickSpeed",
     "unchainAutoMinRange",
   ];
+  const MARKET_BARRIER_STORAGE_KEY = "unchainMarketBarrierSettingsV2";
+  const BARRIER_FIELD_IDS = new Set([
+    "unchainHigherBarrier",
+    "unchainLowerBarrier",
+    "unchainKoolkidHigherBarrier",
+    "unchainKoolkidLowerBarrier",
+  ]);
 
   const range = (start, end, step = 1) => {
     const arr = [];
@@ -163,6 +174,210 @@
   function getDisplayedBarrierText(rawValue, fallback, halfEnabled) {
     const source = String(rawValue == null || rawValue === "" ? formatBarrierInputValue(fallback, fallback) : rawValue).trim();
     return halfEnabled ? scaleBarrierText(source, 0.5, fallback) : source;
+  }
+
+  function normalizeMarketSymbol(symbol) {
+    return String(symbol || "").trim().toUpperCase();
+  }
+
+  function getCurrentMarketSymbol() {
+    const payload = state.lastPayload && (state.lastPayload.unchain || state.lastPayload);
+    const payloadSymbol = normalizeMarketSymbol(
+      (state.lastPayload && (state.lastPayload.main_symbol || state.lastPayload.symbol)) ||
+      (payload && (payload.main_symbol || payload.symbol)) ||
+      state.lastMainSymbol
+    );
+    if (payloadSymbol) return payloadSymbol;
+    const picker = el("symbol");
+    return normalizeMarketSymbol(picker ? picker.value : "");
+  }
+
+  function getMarketBarrierStore() {
+    try {
+      const raw = window.localStorage ? window.localStorage.getItem(MARKET_BARRIER_STORAGE_KEY) : "";
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function setMarketBarrierStore(store) {
+    try {
+      if (!window.localStorage) return;
+      window.localStorage.setItem(MARKET_BARRIER_STORAGE_KEY, JSON.stringify(store || {}));
+    } catch (e) {}
+  }
+
+  function buildMarketBarrierSettings(raw) {
+    const src = raw && typeof raw === "object" ? raw : {};
+    const higher = String(src.higher_barrier != null ? src.higher_barrier : "+0.12").trim() || "+0.12";
+    const lower = String(src.lower_barrier != null ? src.lower_barrier : "-0.12").trim() || "-0.12";
+    const koolkidHigher = String(src.koolkid_higher_barrier != null ? src.koolkid_higher_barrier : higher).trim() || higher;
+    const koolkidLower = String(src.koolkid_lower_barrier != null ? src.koolkid_lower_barrier : lower).trim() || lower;
+    const isCustom = !!src.is_custom;
+    return {
+      higher_barrier: higher,
+      lower_barrier: lower,
+      koolkid_higher_barrier: koolkidHigher,
+      koolkid_lower_barrier: koolkidLower,
+      is_custom: isCustom,
+    };
+  }
+
+  function buildMarketBarrierSignature(symbol, settings) {
+    const sym = normalizeMarketSymbol(symbol);
+    if (!sym || !settings) return "";
+    const safe = buildMarketBarrierSettings(settings);
+    return [
+      sym,
+      safe.higher_barrier,
+      safe.lower_barrier,
+      safe.koolkid_higher_barrier,
+      safe.koolkid_lower_barrier,
+      safe.is_custom ? "CUSTOM" : "DEFAULT",
+    ].join("|");
+  }
+
+  function areBarrierSettingsEqual(a, b) {
+    const left = buildMarketBarrierSettings(a);
+    const right = buildMarketBarrierSettings(b);
+    return (
+      left.higher_barrier === right.higher_barrier &&
+      left.lower_barrier === right.lower_barrier &&
+      left.koolkid_higher_barrier === right.koolkid_higher_barrier &&
+      left.koolkid_lower_barrier === right.koolkid_lower_barrier
+    );
+  }
+
+  function getSavedMarketBarrierSettings(symbol) {
+    const sym = normalizeMarketSymbol(symbol);
+    if (!sym) return null;
+    const store = getMarketBarrierStore();
+    if (!store || !store[sym]) return null;
+    return buildMarketBarrierSettings(store[sym]);
+  }
+
+  function persistMarketBarrierSettings(symbol, settings, opts) {
+    const sym = normalizeMarketSymbol(symbol);
+    if (!sym || !settings) return null;
+    const store = getMarketBarrierStore();
+    const current = buildMarketBarrierSettings(store[sym] || {});
+    const options = opts || {};
+    const next = buildMarketBarrierSettings(Object.assign({}, current, settings, {
+      is_custom: typeof options.custom === "boolean" ? options.custom : current.is_custom,
+    }));
+    store[sym] = next;
+    setMarketBarrierStore(store);
+    return next;
+  }
+
+  function getPayloadMarketBarrierSettings(un) {
+    if (!un) return null;
+    return buildMarketBarrierSettings({
+      higher_barrier: un.higher_barrier,
+      lower_barrier: un.lower_barrier,
+      koolkid_higher_barrier: un.koolkid_higher_barrier,
+      koolkid_lower_barrier: un.koolkid_lower_barrier,
+    });
+  }
+
+  function readCurrentMarketBarrierSettings() {
+    const form = readForm();
+    return buildMarketBarrierSettings(form);
+  }
+
+  function persistCurrentMarketBarrierSettings(symbolOverride, opts) {
+    const sym = normalizeMarketSymbol(symbolOverride || getCurrentMarketSymbol());
+    if (!sym) return null;
+    return persistMarketBarrierSettings(sym, readCurrentMarketBarrierSettings(), opts);
+  }
+
+  function seedMarketBarrierSettingsFromPayload(symbol, un) {
+    const sym = normalizeMarketSymbol(symbol);
+    if (!sym || !un) return null;
+    const existing = getSavedMarketBarrierSettings(sym);
+    const payloadSettings = getPayloadMarketBarrierSettings(un);
+    if (existing && existing.is_custom) {
+      if (payloadSettings && areBarrierSettingsEqual(existing, payloadSettings)) {
+        return persistMarketBarrierSettings(sym, payloadSettings, { custom: false });
+      }
+      return existing;
+    }
+    return persistMarketBarrierSettings(sym, payloadSettings, { custom: false });
+  }
+
+  function applySavedMarketBarrierSettingsToForm(settings, force) {
+    if (!settings) return;
+    const safe = buildMarketBarrierSettings(settings);
+    setFieldValue("unchainHigherBarrier", getDisplayedBarrierText(safe.higher_barrier, 0.12, !!state.half_barrier_enabled), !!force);
+    setFieldValue("unchainLowerBarrier", getDisplayedBarrierText(safe.lower_barrier, -0.12, !!state.half_barrier_enabled), !!force);
+    setFieldValue("unchainKoolkidHigherBarrier", safe.koolkid_higher_barrier, !!force);
+    setFieldValue("unchainKoolkidLowerBarrier", safe.koolkid_lower_barrier, !!force);
+  }
+
+  async function syncSavedMarketBarrierSettingsToServer(symbol, settings) {
+    const sym = normalizeMarketSymbol(symbol);
+    if (!sym || !settings) return null;
+    if (sym !== getCurrentMarketSymbol()) return null;
+    const normalized = buildMarketBarrierSettings(settings);
+    if (!normalized.is_custom) return { ok: true, skipped: true };
+    const nextSignature = buildMarketBarrierSignature(sym, normalized);
+    if (!nextSignature) return null;
+    const payload = state.lastPayload && (state.lastPayload.unchain || state.lastPayload);
+    const currentSignature = buildMarketBarrierSignature(sym, getPayloadMarketBarrierSettings(payload));
+    if (currentSignature === nextSignature) return { ok: true, skipped: true };
+    if (state.marketBarrierSyncInFlight && state.marketBarrierSyncSignature === nextSignature) {
+      return { ok: true, skipped: true };
+    }
+    state.marketBarrierSyncInFlight = true;
+    state.marketBarrierSyncSignature = nextSignature;
+    try {
+      const r = await postJSON("/unchain_settings", normalized);
+      if (r && r.ok && r.data) {
+        renderPayload(r.data, { forceForm: false });
+      }
+      return r;
+    } catch (e) {
+      return null;
+    } finally {
+      state.marketBarrierSyncInFlight = false;
+    }
+  }
+
+  function scheduleCurrentMarketBarrierSync(symbolOverride, opts) {
+    const sym = normalizeMarketSymbol(symbolOverride || getCurrentMarketSymbol());
+    if (!sym) return;
+    const savedNow = persistCurrentMarketBarrierSettings(sym, opts);
+    if (state.marketBarrierSyncTimer) {
+      clearTimeout(state.marketBarrierSyncTimer);
+      state.marketBarrierSyncTimer = null;
+    }
+    if (!(savedNow && savedNow.is_custom)) return;
+    state.marketBarrierSyncTimer = setTimeout(() => {
+      state.marketBarrierSyncTimer = null;
+      const currentSymbol = getCurrentMarketSymbol();
+      if (sym !== currentSymbol) return;
+      const saved = getSavedMarketBarrierSettings(sym);
+      if (!(saved && saved.is_custom)) return;
+      syncSavedMarketBarrierSettingsToServer(sym, saved).catch(() => {});
+    }, 180);
+  }
+
+  function hasDirtyBarrierFields() {
+    let anyDirty = false;
+    for (const id of BARRIER_FIELD_IDS) {
+      if (isFieldDirty(id)) {
+        anyDirty = true;
+        break;
+      }
+    }
+    if (!anyDirty) return false;
+    const payload = state.lastPayload && (state.lastPayload.unchain || state.lastPayload);
+    const payloadSettings = getPayloadMarketBarrierSettings(payload);
+    if (!payloadSettings) return true;
+    return !areBarrierSettingsEqual(readCurrentMarketBarrierSettings(), payloadSettings);
   }
 
   function readForm() {
@@ -604,6 +819,8 @@
     const shownValue = getDisplayedBarrierText(String(rawValue || ""), fallback, !!state.half_barrier_enabled);
     node.value = shownValue;
     markDirty(targetId);
+    persistCurrentMarketBarrierSettings(null, { custom: true });
+    scheduleCurrentMarketBarrierSync(null, { custom: true });
     renderBarrierMarketChart((state.lastPayload && (state.lastPayload.unchain || state.lastPayload)) || {}, state.lastPayload || {});
   }
 
@@ -624,6 +841,8 @@
     }
     node.value = formatBarrierInputValue(next, fallback);
     markDirty(targetId);
+    persistCurrentMarketBarrierSettings(null, { custom: true });
+    scheduleCurrentMarketBarrierSync(null, { custom: true });
     const un = state.lastPayload && (state.lastPayload.unchain || state.lastPayload);
     renderBarrierMarketChart(un || {}, state.lastPayload || {});
   }
@@ -1528,11 +1747,23 @@
     const nextSymbol = String(
       payload.main_symbol || payload.symbol || un.main_symbol || un.symbol || ""
     ).toUpperCase();
+    const nextBarrierKey = String(un.market_default_key || payload.market_default_key || "").toUpperCase();
     const symbolChanged = !!nextSymbol && nextSymbol !== String(state.lastMainSymbol || "").toUpperCase();
+    const barrierKeyChanged = !!nextBarrierKey && nextBarrierKey !== String(state.lastBarrierKey || "").toUpperCase();
     state.lastPayload = payload;
     state.scanner = payload.scanner || state.scanner;
-    fillForm(un, !!(opts && opts.forceForm), { forceBarriers: symbolChanged });
+    fillForm(un, !!(opts && opts.forceForm), { forceBarriers: symbolChanged || barrierKeyChanged });
+    let savedMarketBarriers = seedMarketBarrierSettingsFromPayload(nextSymbol, un);
+    if (savedMarketBarriers && savedMarketBarriers.is_custom) {
+      applySavedMarketBarrierSettingsToForm(savedMarketBarriers, symbolChanged || barrierKeyChanged || !!(opts && opts.forceForm));
+      const payloadSignature = buildMarketBarrierSignature(nextSymbol, getPayloadMarketBarrierSettings(un));
+      const savedSignature = buildMarketBarrierSignature(nextSymbol, savedMarketBarriers);
+      if (savedSignature && savedSignature !== payloadSignature) {
+        syncSavedMarketBarrierSettingsToServer(nextSymbol, savedMarketBarriers).catch(() => {});
+      }
+    }
     if (nextSymbol) state.lastMainSymbol = nextSymbol;
+    if (nextBarrierKey) state.lastBarrierKey = nextBarrierKey;
     renderStatusChip(un, payload);
     renderRiskBlock(un);
     renderAutoBoth(un);
@@ -1587,6 +1818,16 @@
     const r = await postJSON("/unchain_settings", form);
     state.isSaving = false;
     if (r.ok && r.data) {
+      const payload = r.data && (r.data.unchain || r.data);
+      const symbol = normalizeMarketSymbol(
+        (r.data && (r.data.main_symbol || r.data.symbol)) ||
+        (payload && (payload.main_symbol || payload.symbol)) ||
+        state.lastMainSymbol ||
+        getCurrentMarketSymbol()
+      );
+      persistMarketBarrierSettings(symbol, form, {
+        custom: !areBarrierSettingsEqual(form, getPayloadMarketBarrierSettings(payload)),
+      });
       clearDirtyFields();
       renderPayload(r.data, { forceForm: true });
       if (showToastMsg) toast("UNCHAIN settings saved", "success");
@@ -1800,6 +2041,10 @@
         if (id === "unchainHigherBarrier" || id === "unchainLowerBarrier") renderBarrierMarketChart(state.lastPayload && (state.lastPayload.unchain || state.lastPayload) || {}, state.lastPayload || {});
         if (id === "unchainDurationUnit") applyDurationPresets();
         if (id === "unchainAutoConfidence") applyAutoConfidenceLabel();
+        if (BARRIER_FIELD_IDS.has(id)) {
+          persistCurrentMarketBarrierSettings(null, { custom: true });
+          scheduleCurrentMarketBarrierSync(null, { custom: true });
+        }
       });
       node.addEventListener("keydown", (evt) => {
         if (evt.key === "Enter") {
@@ -1808,6 +2053,20 @@
         }
       });
     });
+  }
+
+  function bindMarketBarrierPersistence() {
+    const picker = el("symbol");
+    if (!picker || picker.dataset.unchainBarrierBound === "1") return;
+    picker.dataset.unchainBarrierBound = "1";
+    picker.addEventListener("change", () => {
+      const previousSymbol = normalizeMarketSymbol(state.lastMainSymbol || "");
+      if (previousSymbol) {
+        persistCurrentMarketBarrierSettings(previousSymbol, {
+          custom: hasDirtyBarrierFields(),
+        });
+      }
+    }, true);
   }
 
   function bindUI(root) {
@@ -1828,6 +2087,7 @@
     applyAutoConfidenceLabel();
     bindHalfBarrierToggle();
     bindKoolkidModal();
+    bindMarketBarrierPersistence();
   }
 
   function startPolling() {

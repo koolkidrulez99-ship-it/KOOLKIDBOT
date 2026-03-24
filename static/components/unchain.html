@@ -194,8 +194,14 @@
     .unchain-profile .unchain-side--duration .unchain-field-grid-2{
       margin-top:2px;
     }
+    .unchain-profile .unchain-side--duration .unchain-field{
+      min-width:0;
+    }
     .unchain-profile .unchain-side--duration .unchain-field input,
     .unchain-profile .unchain-side--duration .unchain-field select{
+      width:100%;
+      min-width:0;
+      max-width:100%;
       min-height:50px;
       border-color:rgba(56,189,248,0.22);
       box-shadow:inset 0 1px 0 rgba(255,255,255,0.03);
@@ -205,6 +211,41 @@
       outline:none;
       border-color:rgba(56,189,248,0.7);
       box-shadow:0 0 0 3px rgba(56,189,248,0.16);
+    }
+    .unchain-profile .unchain-collapse{
+      margin-top:12px;
+      border-radius:12px;
+      background:rgba(15,23,42,0.75);
+      border:1px solid rgba(148,163,184,0.22);
+      overflow:hidden;
+    }
+    .unchain-profile .unchain-collapse summary{
+      list-style:none;
+      cursor:pointer;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+      padding:10px 12px;
+      font-size:12px;
+      font-weight:700;
+      color:#cbd5e1;
+      user-select:none;
+    }
+    .unchain-profile .unchain-collapse summary::-webkit-details-marker{
+      display:none;
+    }
+    .unchain-profile .unchain-collapse summary::after{
+      content:"▸";
+      color:#94a3b8;
+      font-size:12px;
+      flex:0 0 auto;
+    }
+    .unchain-profile .unchain-collapse[open] summary::after{
+      content:"▾";
+    }
+    .unchain-profile .unchain-collapse-body{
+      padding:0 12px 12px;
     }
     .unchain-profile .unchain-btn-row{
       display:flex;
@@ -1284,13 +1325,13 @@
       <div class="unchain-side">
         <h4 style="color:#ef4444;">📉 Lower Setup</h4>
         <div class="unchain-row">
-          <div class="unchain-field is-compact">
+          <div class="unchain-field is-compact is-barrier">
             <label class="unchain-label" for="unchainLowerStake">Lower Stake</label>
             <input id="unchainLowerStake" type="number" min="0.35" step="0.01" value="1">
           </div>
         </div>
         <div class="unchain-row" style="margin-top:10px;">
-          <div class="unchain-field is-compact">
+          <div class="unchain-field is-compact is-barrier">
             <label class="unchain-label" for="unchainLowerBarrier">Lower Barrier</label>
             <div class="unchain-barrier-inline">
               <button class="unchain-barrier-stepper" data-action="unchain-barrier-step" data-target="unchainLowerBarrier" data-delta="-0.01" style="background:#7f1d1d;color:#fee2e2;">-</button>
@@ -1334,10 +1375,6 @@
             <label class="unchain-label" for="unchainSl">SL</label>
             <input id="unchainSl" type="number" min="0" step="0.01" value="0">
           </div>
-        </div>
-        <div class="unchain-btn-row--compact">
-          <button id="unchainAutoSlBtn" data-action="unchain-toggle-autosl" style="background:#eab308;color:#111827;">AUTO SL: ON</button>
-          <button data-action="unchain-save-settings" style="background:#06b6d4;">💾 Save</button>
         </div>
       </div>
     </div>
@@ -1415,28 +1452,30 @@
         </div>
       </div>
     </div>
-    <div style="margin-top:12px;padding:10px 12px;border-radius:12px;background:rgba(15,23,42,0.75);border:1px solid rgba(148,163,184,0.22);">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
-        <div style="font-size:12px;font-weight:700;color:#cbd5e1;">AI Auto Trade Confidence</div>
-        <div id="unchainAutoConfidenceValue" style="font-size:12px;font-weight:800;color:#38bdf8;">48%</div>
+    <details class="unchain-collapse">
+      <summary>
+        <span>AI Auto Trade Settings</span>
+        <span id="unchainAutoConfidenceValue" style="font-size:12px;font-weight:800;color:#38bdf8;">48%</span>
+      </summary>
+      <div class="unchain-collapse-body">
+        <input id="unchainAutoConfidence" type="range" min="45" max="80" step="1" value="48" style="width:100%;margin-top:2px;accent-color:#38bdf8;">
+        <div style="margin-top:6px;color:#94a3b8;font-size:11px;">AI Auto Trade enters as soon as confidence clears this level and a breakout is detected.</div>
+        <div class="unchain-field-grid-3" style="margin-top:10px;">
+          <div class="unchain-field">
+            <label class="unchain-label" for="unchainAutoMinMovement">Min Movement</label>
+            <input id="unchainAutoMinMovement" type="number" min="0.00001" step="0.00001" value="0.06">
+          </div>
+          <div class="unchain-field">
+            <label class="unchain-label" for="unchainAutoMinTickSpeed">Max Tick Gap (s)</label>
+            <input id="unchainAutoMinTickSpeed" type="number" min="0.05" step="0.01" value="2.4">
+          </div>
+          <div class="unchain-field">
+            <label class="unchain-label" for="unchainAutoMinRange">Min Range</label>
+            <input id="unchainAutoMinRange" type="number" min="0.00001" step="0.00001" value="0.12">
+          </div>
+        </div>
       </div>
-      <input id="unchainAutoConfidence" type="range" min="45" max="80" step="1" value="48" style="width:100%;margin-top:8px;accent-color:#38bdf8;">
-      <div style="margin-top:6px;color:#94a3b8;font-size:11px;">AI Auto Trade enters as soon as confidence clears this level and a breakout is detected.</div>
-      <div class="unchain-field-grid-3" style="margin-top:10px;">
-        <div class="unchain-field">
-          <label class="unchain-label" for="unchainAutoMinMovement">Min Movement</label>
-          <input id="unchainAutoMinMovement" type="number" min="0.00001" step="0.00001" value="0.06">
-        </div>
-        <div class="unchain-field">
-          <label class="unchain-label" for="unchainAutoMinTickSpeed">Max Tick Gap (s)</label>
-          <input id="unchainAutoMinTickSpeed" type="number" min="0.05" step="0.01" value="2.4">
-        </div>
-        <div class="unchain-field">
-          <label class="unchain-label" for="unchainAutoMinRange">Min Range</label>
-          <input id="unchainAutoMinRange" type="number" min="0.00001" step="0.00001" value="0.12">
-        </div>
-      </div>
-    </div>
+    </details>
     <div id="unchainAutoBothMeta" style="margin-top:10px;color:#94a3b8;font-size:12px;">AI Auto Trade now uses a looser 60-tick force/escape analysis and triggers as soon as confidence is met and a breakout happens.</div>
     <div id="unchainRiskBlock" style="display:none;margin-top:10px;padding:10px;border-radius:12px;background:#7f1d1d;color:#fecaca;border:1px solid #ef4444;"></div>
     <div style="margin-top:10px;color:#94a3b8;font-size:12px;">Both sends one Higher contract and one Lower contract using the current saved values.</div>

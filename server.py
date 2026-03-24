@@ -12,6 +12,7 @@ import secrets
 import hashlib
 import math
 import statistics
+from decimal import Decimal, ROUND_DOWN
 from collections import deque
 
 from flask import Flask, render_template, request, jsonify, redirect, url_for, session, send_file
@@ -938,6 +939,10 @@ def extract_exit_digit_from_contract(contract: dict):
             val = contract.get("exit_tick")
         if val is None or val == "":
             val = contract.get("sell_spot") or contract.get("exit_spot")
+        if val is None or val == "":
+            val = contract.get("current_spot_display_value")
+        if val is None or val == "":
+            val = contract.get("current_spot")
 
         if val is None or val == "":
             return None
@@ -1112,6 +1117,19 @@ def init_client(client_id):
                 "cooldown_until": 0.0,
                 "trades_per_market": 2,
                 "cooldown_sec": 5.0,
+                "market_limit": 0,
+                "scan_markets": [],
+                "remaining_markets": [],
+                "market_states": {},
+                "awaiting_buy": False,
+                "awaiting_symbol": None,
+                "awaiting_digit": None,
+                "active_contract_id": None,
+                "active_symbol": None,
+                "market_mode": "5",
+                "trade_mode": "2",
+                "signal_counter": 0,
+                "open_trade_status": "",
             }
         },
         "human_rf_status_last": "WAIT",
@@ -1931,6 +1949,7 @@ def _ensure_unchain_hl_state(state):
     except Exception:
         cur["koolkid_hl_loss_trigger_pct"] = 50
     cur["market_default_symbol"] = str(cur.get("market_default_symbol") or "").upper()
+    cur["market_default_key"] = str(cur.get("market_default_key") or "").upper()
     cur["koolkid_higher_barrier"] = str(cur.get("koolkid_higher_barrier") or "").strip()
     cur["koolkid_lower_barrier"] = str(cur.get("koolkid_lower_barrier") or "").strip()
     try:
@@ -2969,8 +2988,6 @@ def _estimate_unchain_koolkid_hl_value(sim, current_price, metrics, *, max_balan
     estimated_value = round(stake * balance_ratio, 2)
     estimated_pnl = round(estimated_value - stake, 2)
     return estimated_value, estimated_pnl, balance_ratio
-
-
 def _get_unchain_koolkid_live_checks(side_sim, metrics, strat, trade_side=None):
     side_name = str(trade_side or (side_sim or {}).get("side") or "").upper()
     live_barrier_mag = abs(float((side_sim or {}).get("live_barrier_mag", 0.0) or 0.0))
@@ -3506,6 +3523,9 @@ def _run_unchain_koolkid_hl(client_id, state):
             sim["estimated_value"] = float(estimated_value)
             sim["estimated_pnl"] = float(estimated_pnl)
             sim["balance_ratio"] = float(balance_ratio)
+            stake_value = float(sim.get("stake", 0.0) or 0.0)
+            loss_value_floor = max(0.0, stake_value * (1.0 - (float(loss_trigger_pct) / 100.0)))
+            sim_losing = estimated_value <= loss_value_floor
 
             if now_ts < float(sim.get("check_at", 0.0) or 0.0):
                 seconds_left = max(0, int(math.ceil(float(sim.get("check_at", now_ts) or now_ts) - now_ts)))
@@ -3517,18 +3537,16 @@ def _run_unchain_koolkid_hl(client_id, state):
 
             live_side = str(sim.get("opposite_side") or "").upper()
             live_checks = _get_unchain_koolkid_live_checks(sim, metrics, strat, trade_side=live_side)
-            stake_value = float(sim.get("stake", 0.0) or 0.0)
-            loss_value_floor = max(0.0, stake_value * (1.0 - (float(loss_trigger_pct) / 100.0)))
-            sim_losing = estimated_value <= loss_value_floor
 
             if sim_losing and live_checks.get("recent_direction_ok") and live_checks.get("market_not_flat") and live_checks.get("barrier_safe"):
+                symbol = sim.get("symbol") or state.get("current_symbol")
                 stake_key = "higher_stake" if live_side == "HIGHER" else "lower_stake"
                 live_stake = float(u.get(stake_key, 1.0) or 1.0)
                 ok, msg = _send_unchain_hl_trade(
                     client_id,
                     side=live_side,
                     stake=live_stake,
-                    symbol=sim.get("symbol") or state.get("current_symbol"),
+                    symbol=symbol,
                     barrier=sim.get("live_barrier"),
                     duration=live_duration,
                     duration_unit="t",
@@ -4550,19 +4568,35 @@ def _fetch_unchain_market_default_barrier(symbol, duration, duration_unit):
 
 def _format_unchain_market_default_barrier(raw_barrier, side):
     try:
-        barrier_value = abs(float(str(raw_barrier or "").strip()))
+        barrier_value = Decimal(str(raw_barrier or "").strip()).copy_abs()
+    except Exception:
+        return None
+    try:
+        barrier_value = barrier_value.quantize(Decimal("0.00"), rounding=ROUND_DOWN)
     except Exception:
         return None
     sign = "+" if str(side or "").upper() == "HIGHER" else "-"
     return f"{sign}{barrier_value:.2f}"
 
 
+def _build_unchain_market_default_key(symbol, duration, duration_unit):
+    sym = str(symbol or "").upper().strip()
+    try:
+        dur = int(float(duration or 0))
+    except Exception:
+        dur = 0
+    unit = _clean_unchain_duration_unit(duration_unit)
+    return f"{sym}|{dur}|{unit}".upper()
+
+
 def _apply_unchain_market_default_barriers(state, symbol):
     u = _ensure_unchain_hl_state(state)
+    active_duration = u.get("duration", 5)
+    active_duration_unit = u.get("duration_unit", "t")
     quote_barrier, err = _fetch_unchain_market_default_barrier(
         str(symbol or state.get("current_symbol") or "R_25"),
-        u.get("duration", 5),
-        u.get("duration_unit", "t"),
+        active_duration,
+        active_duration_unit,
     )
     if err:
         return False, str(err)
@@ -4575,13 +4609,24 @@ def _apply_unchain_market_default_barriers(state, symbol):
     u["koolkid_higher_barrier"] = higher_default
     u["koolkid_lower_barrier"] = lower_default
     u["market_default_symbol"] = str(symbol or state.get("current_symbol") or "").upper()
+    u["market_default_key"] = _build_unchain_market_default_key(
+        symbol or state.get("current_symbol"),
+        active_duration,
+        active_duration_unit,
+    )
     return True, f"{higher_default} / {lower_default}"
 
 
 def _sync_unchain_market_default_barriers(state, force=False):
     u = _ensure_unchain_hl_state(state)
     symbol = str(state.get("current_symbol") or "R_25").upper()
-    if not force and symbol and symbol == str(u.get("market_default_symbol") or "").upper():
+    current_key = _build_unchain_market_default_key(
+        symbol,
+        u.get("duration", 5),
+        u.get("duration_unit", "t"),
+    )
+    saved_key = str(u.get("market_default_key") or "").upper()
+    if not force and current_key and current_key == saved_key:
         return False, "Already synced"
     if not state.get("ws_connected") or not state.get("ws"):
         return False, "Not connected"
@@ -5618,6 +5663,7 @@ def _unchain_payload_response(state):
             "lower_stake": float(u.get("lower_stake", 1.0) or 1.0),
             "higher_barrier": u.get("higher_barrier", "+0.12"),
             "lower_barrier": u.get("lower_barrier", "-0.12"),
+            "market_default_key": u.get("market_default_key"),
             "duration": int(u.get("duration", 5) or 5),
             "duration_unit": _clean_unchain_duration_unit(u.get("duration_unit", "t")),
             "tp": float(u.get("tp", 0) or 0),
@@ -6026,6 +6072,12 @@ SEQVIX_MARKETS = [
     "1HZ10V", "1HZ15V", "1HZ25V", "1HZ30V", "1HZ50V", "1HZ75V", "1HZ90V", "1HZ100V",
     "RDBULL", "RDBEAR",
 ]
+SEQVIX_JOKERJOE_MARKETS = [
+    "R_10", "R_25", "R_50", "R_75", "R_100",
+    "1HZ10V", "1HZ15V", "1HZ25V", "1HZ30V", "1HZ50V", "1HZ75V", "1HZ90V", "1HZ100V",
+]
+SEQVIX_JOKERJOE_SAMPLE_SIZE = 20
+SEQVIX_JOKERJOE_OVERPLAY_THRESHOLD = 4
 
 def _seqvix_emit_progress(client_id, state, profile, reason=None):
     run = state["seqvix"][profile]
@@ -6035,9 +6087,356 @@ def _seqvix_emit_progress(client_id, state, profile, reason=None):
         "done": int(run.get("done", 0)),
         "total": (None if run.get("endless") else int(run.get("total", 0))),
     }
+    if profile == "JOKERJOE":
+        payload.update(_seqvix_jokerjoe_status_payload(run))
     if reason:
         payload["reason"] = reason
     socketio.emit("seqvix_progress", payload, room=client_id)
+
+
+def _seqvix_jokerjoe_mode_string(symbol, digit):
+    return f"SEQVIX_JJ|{str(symbol or '').upper()}|{int(digit)}"
+
+
+def _parse_seqvix_jokerjoe_mode(mode_value):
+    raw = str(mode_value or "").strip()
+    if not raw.startswith("SEQVIX_JJ|"):
+        return None
+    parts = raw.split("|", 2)
+    if len(parts) != 3:
+        return None
+    sym = str(parts[1] or "").upper().strip()
+    try:
+        digit = int(parts[2])
+    except Exception:
+        return None
+    if not sym or digit < 0 or digit > 9:
+        return None
+    return {"symbol": sym, "digit": digit}
+
+
+def _seqvix_jokerjoe_make_market_state(trades_target):
+    return {
+        "buffer": [],
+        "state": "scanning",
+        "trades_done": 0,
+        "trades_target": trades_target,
+        "last_tick_marker": None,
+        "last_played_digit": None,
+        "signal_digit": None,
+        "signal_order": None,
+        "signal_tick_marker": None,
+        "avoid_digit": None,
+        "dominant_count": 0,
+        "status_text": "Scanning 20 ticks",
+        "open_contract_id": None,
+    }
+
+
+def _seqvix_jokerjoe_detect_overplayed_digit(sample):
+    counts = {d: 0 for d in range(10)}
+    for value in sample or []:
+        try:
+            digit = int(value)
+        except Exception:
+            continue
+        if 0 <= digit <= 9:
+            counts[digit] += 1
+    ordered = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    if not ordered:
+        return None, 0
+    top_digit, top_count = ordered[0]
+    second_count = ordered[1][1] if len(ordered) > 1 else 0
+    if top_count >= SEQVIX_JOKERJOE_OVERPLAY_THRESHOLD and top_count > second_count:
+        return top_digit, top_count
+    return None, top_count
+
+
+def _seqvix_jokerjoe_is_busy(run):
+    return bool(run.get("awaiting_buy") or run.get("active_contract_id"))
+
+
+def _seqvix_jokerjoe_normalize_market_mode(mode):
+    raw = str(mode or "").upper().strip()
+    return raw if raw in ("5", "10", "ENDLESS") else "5"
+
+
+def _seqvix_jokerjoe_normalize_trade_mode(mode):
+    raw = str(mode or "").upper().strip()
+    return raw if raw in ("1", "2") else "2"
+
+
+def _seqvix_jokerjoe_trade_target(trade_mode):
+    trade_mode = _seqvix_jokerjoe_normalize_trade_mode(trade_mode)
+    return 1 if trade_mode == "1" else 2
+
+
+def _seqvix_jokerjoe_state_sort_key(run, symbol):
+    try:
+        return list(run.get("scan_markets") or []).index(symbol)
+    except Exception:
+        return 9999
+
+
+def _seqvix_jokerjoe_clear_signal(market, next_state="waiting_for_digit", status_text=None):
+    market["state"] = next_state
+    market["signal_digit"] = None
+    market["signal_order"] = None
+    market["signal_tick_marker"] = None
+    if status_text is not None:
+        market["status_text"] = status_text
+
+
+def _seqvix_jokerjoe_ready_queue(run):
+    queued = []
+    for sym, market in (run.get("market_states") or {}).items():
+        if not isinstance(market, dict):
+            continue
+        if str(market.get("state") or "") != "ready_to_trade":
+            continue
+        order = market.get("signal_order")
+        try:
+            order_key = int(order)
+        except Exception:
+            order_key = 10**9
+        queued.append((order_key, _seqvix_jokerjoe_state_sort_key(run, sym), sym))
+    queued.sort()
+    return [sym for _order, _idx, sym in queued]
+
+
+def _seqvix_jokerjoe_status_payload(run):
+    active_symbols = sorted(run.get("active_syms", set()), key=lambda sym: _seqvix_jokerjoe_state_sort_key(run, sym))
+    active_markets = []
+    for sym in active_symbols:
+        market = (run.get("market_states") or {}).get(sym) or {}
+        target = market.get("trades_target")
+        active_markets.append({
+            "symbol": sym,
+            "state": market.get("state", "scanning"),
+            "scan_count": len(market.get("buffer") or []),
+            "last_digit": market.get("last_played_digit"),
+            "signal_digit": market.get("signal_digit"),
+            "overplayed_digit": market.get("avoid_digit"),
+            "overplayed_count": int(market.get("dominant_count", 0) or 0),
+            "trades_done": int(market.get("trades_done", 0) or 0),
+            "trades_target": (None if target is None else int(target)),
+            "status_text": market.get("status_text", ""),
+        })
+    return {
+        "market_mode": run.get("market_mode", "5"),
+        "trade_mode": run.get("trade_mode", "2"),
+        "queued_signals": len(_seqvix_jokerjoe_ready_queue(run)),
+        "open_trade_status": run.get("open_trade_status", ""),
+        "active_markets": active_markets,
+    }
+
+
+def _seqvix_jokerjoe_tick_marker(tick):
+    try:
+        epoch = int(float(tick.get("epoch") or tick.get("timestamp") or tick.get("time") or 0))
+    except Exception:
+        epoch = 0
+    quote = tick.get("quote")
+    return f"{epoch}|{quote}"
+
+
+def _seqvix_jokerjoe_activate_market(state, sym):
+    run = state["seqvix"]["JOKERJOE"]
+    ws = state.get("ws")
+    if not ws or not state.get("ws_connected"):
+        return False
+    symbol = str(sym or "").upper().strip()
+    if not symbol or symbol in run.get("active_syms", set()):
+        return False
+    run.setdefault("active_syms", set()).add(symbol)
+    run.setdefault("market_states", {})[symbol] = _seqvix_jokerjoe_make_market_state(
+        _seqvix_jokerjoe_trade_target(run.get("trade_mode"))
+    )
+    existing_sub_id = (state.get("tick_subs") or {}).get(symbol)
+    if existing_sub_id:
+        return True
+    run.setdefault("owned_syms", set()).add(symbol)
+    try:
+        ws.send(json.dumps({"ticks": symbol, "subscribe": 1}))
+        return True
+    except Exception:
+        run["active_syms"].discard(symbol)
+        run.get("market_states", {}).pop(symbol, None)
+        run.get("owned_syms", set()).discard(symbol)
+        return False
+
+
+def _seqvix_jokerjoe_fill_markets(state):
+    run = state["seqvix"]["JOKERJOE"]
+    if not run.get("running"):
+        return
+    try:
+        limit = int(run.get("market_limit") or 0)
+    except Exception:
+        limit = 0
+    if limit <= 0:
+        return
+    while len(run.get("active_syms", set())) < limit:
+        remaining = run.setdefault("remaining_markets", [])
+        if not remaining:
+            if str(run.get("market_mode") or "").upper() == "ENDLESS":
+                pool = [sym for sym in (run.get("scan_markets") or []) if sym not in run.get("active_syms", set())]
+                if not pool:
+                    break
+                run["remaining_markets"] = pool
+                remaining = run["remaining_markets"]
+            else:
+                break
+        sym = remaining.pop(0)
+        _seqvix_jokerjoe_activate_market(state, sym)
+
+
+def _seqvix_jokerjoe_reset_waiting(run):
+    run["awaiting_buy"] = False
+    run["awaiting_symbol"] = None
+    run["awaiting_digit"] = None
+
+
+def _seqvix_jokerjoe_try_trade(client_id, state, sym, digit):
+    run = state["seqvix"]["JOKERJOE"]
+    if _seqvix_jokerjoe_is_busy(run):
+        return False, "busy"
+    stake = float(state.get("auto_stake", 1.0) or 1.0)
+    ok, msg = send_buy_with_profile(
+        client_id,
+        "JOKERJOE",
+        "DIFFERS",
+        stake,
+        sym,
+        int(digit),
+        duration=1,
+        duration_unit="t",
+        mode=_seqvix_jokerjoe_mode_string(sym, digit),
+    )
+    if ok:
+        run["awaiting_buy"] = True
+        run["awaiting_symbol"] = str(sym or "").upper().strip()
+        run["awaiting_digit"] = int(digit)
+        run["last_exec_ts"] = time.time()
+        run["open_trade_status"] = f"{str(sym or '').upper()} DIFFERS {int(digit)} sending"
+    return ok, msg
+
+
+def _seqvix_jokerjoe_on_buy_confirmed(state, contract_id, meta):
+    info = _parse_seqvix_jokerjoe_mode((meta or {}).get("mode"))
+    if not info:
+        return False
+    run = ((state.get("seqvix") or {}).get("JOKERJOE") or {})
+    symbol = info["symbol"]
+    _seqvix_jokerjoe_reset_waiting(run)
+    run["active_contract_id"] = _normalize_contract_id(contract_id) or str(contract_id)
+    run["active_symbol"] = symbol
+    market = (run.get("market_states") or {}).get(symbol)
+    if isinstance(market, dict):
+        market["state"] = "trade_open"
+        market["open_contract_id"] = run["active_contract_id"]
+        market["signal_digit"] = None
+        market["signal_order"] = None
+        market["signal_tick_marker"] = None
+        market["status_text"] = f"Trade open: DIFFER {info['digit']}"
+    run["open_trade_status"] = f"{symbol} DIFFER {info['digit']} open"
+    return True
+
+
+def _seqvix_jokerjoe_handle_buy_error(state, req_id):
+    req_meta = state.get("req_meta") or {}
+    candidate_keys = [req_id, str(req_id)]
+    try:
+        candidate_keys.append(int(float(req_id)))
+    except Exception:
+        pass
+    meta = None
+    key_used = None
+    for key in candidate_keys:
+        if key in req_meta:
+            meta = req_meta.get(key)
+            key_used = key
+            break
+    info = _parse_seqvix_jokerjoe_mode((meta or {}).get("mode"))
+    if not info:
+        return False
+    for key in candidate_keys:
+        req_meta.pop(key, None)
+    run = ((state.get("seqvix") or {}).get("JOKERJOE") or {})
+    if not run:
+        return True
+    if str(run.get("awaiting_symbol") or "").upper() == info["symbol"]:
+        _seqvix_jokerjoe_reset_waiting(run)
+    run["active_contract_id"] = None
+    run["active_symbol"] = None
+    run["open_trade_status"] = ""
+    market = (run.get("market_states") or {}).get(info["symbol"])
+    if isinstance(market, dict):
+        market["open_contract_id"] = None
+        _seqvix_jokerjoe_clear_signal(market, next_state="waiting_for_digit", status_text=f"Buy failed on {info['digit']}")
+    return True
+
+
+def _seqvix_jokerjoe_on_contract_settled(state, client_id, contract_id, meta):
+    info = _parse_seqvix_jokerjoe_mode((meta or {}).get("mode"))
+    if not info:
+        return False
+    run = ((state.get("seqvix") or {}).get("JOKERJOE") or {})
+    if not run:
+        return True
+    symbol = info["symbol"]
+    norm_cid = _normalize_contract_id(contract_id) or str(contract_id)
+    if not run.get("running") and str(run.get("active_contract_id") or "") != str(norm_cid):
+        return True
+
+    if str(run.get("active_contract_id") or "") == str(norm_cid) or str(run.get("active_symbol") or "").upper() == symbol:
+        run["active_contract_id"] = None
+        run["active_symbol"] = None
+        run["open_trade_status"] = ""
+    _seqvix_jokerjoe_reset_waiting(run)
+
+    market = (run.get("market_states") or {}).get(symbol)
+    if isinstance(market, dict):
+        market["open_contract_id"] = None
+        try:
+            market["trades_done"] = int(market.get("trades_done", 0) or 0) + 1
+        except Exception:
+            market["trades_done"] = 1
+    try:
+        run["done"] = int(run.get("done", 0) or 0) + 1
+    except Exception:
+        run["done"] = 1
+
+    market_complete = False
+    if isinstance(market, dict):
+        target = market.get("trades_target")
+        market_complete = (target is not None and int(market.get("trades_done", 0) or 0) >= int(target))
+        if market_complete:
+            market["state"] = "completed"
+            market["status_text"] = f"Completed {market['trades_done']}/{target}"
+        else:
+            _seqvix_jokerjoe_clear_signal(
+                market,
+                next_state="waiting_for_digit",
+                status_text=f"Completed trade {int(market.get('trades_done', 0) or 0)}",
+            )
+
+    if market_complete:
+        run.get("market_states", {}).pop(symbol, None)
+        run.get("active_syms", set()).discard(symbol)
+        _seqvix_forget_symbol(state, "JOKERJOE", symbol)
+        if str(run.get("market_mode") or "").upper() == "ENDLESS" and run.get("running"):
+            _seqvix_jokerjoe_fill_markets(state)
+
+    if run.get("running"):
+        _seqvix_emit_progress(client_id, state, "JOKERJOE")
+        if (not run.get("endless")):
+            total = int(run.get("total", 0) or 0)
+            if total and int(run.get("done", 0) or 0) >= total:
+                stop_seqvix(state, client_id, "JOKERJOE", reason="done")
+            elif not run.get("active_syms") and not _seqvix_jokerjoe_is_busy(run):
+                stop_seqvix(state, client_id, "JOKERJOE", reason="done")
+    return True
 
 def _seqvix_forget_symbol(state, profile, sym):
     """Only forget if this seqvix runner owns the symbol."""
@@ -6123,44 +6522,71 @@ def stop_seqvix(state, client_id, profile, reason="stopped"):
     run["config"] = {}
     run["owned_syms"] = set()
     run["cooldown_until"] = 0.0
+    run["market_limit"] = 0
+    run["scan_markets"] = []
+    run["remaining_markets"] = []
+    run["market_states"] = {}
+    run["awaiting_buy"] = False
+    run["awaiting_symbol"] = None
+    run["awaiting_digit"] = None
+    run["active_contract_id"] = None
+    run["active_symbol"] = None
+    run["market_mode"] = "5"
+    run["trade_mode"] = "2"
+    run["signal_counter"] = 0
+    run["open_trade_status"] = ""
 
     _seqvix_emit_progress(client_id, state, profile, reason=reason)
 
-def start_seqvix_jokerjoe(state, client_id, mode, trades_per_market=2):
+def start_seqvix_jokerjoe(state, client_id, market_mode, trade_mode="2"):
     run = state["seqvix"]["JOKERJOE"]
     if run.get("running"):
         stop_seqvix(state, client_id, "JOKERJOE", reason="restart")
 
-    # ==================== PATCH 1E: sanitize trades_per_market ====================
-    try:
-        tpm = int(trades_per_market)
-    except Exception:
-        tpm = 2
-    if tpm not in (1, 2):
-        tpm = 2
+    market_mode = _seqvix_jokerjoe_normalize_market_mode(market_mode)
+    trade_mode = _seqvix_jokerjoe_normalize_trade_mode(trade_mode)
+    market_limit = 10 if market_mode == "ENDLESS" else int(market_mode)
+    trade_target = _seqvix_jokerjoe_trade_target(trade_mode)
+    endless = bool(market_mode == "ENDLESS")
 
-    mode_str = str(mode).upper().strip()
-    endless = (mode_str == "ENDLESS")
-    total = 0
-    if not endless:
-        try:
-            total = int(mode_str)
-        except Exception:
-            total = 5
-        if total not in (5, 10):
-            total = 5
+    markets = list(SEQVIX_JOKERJOE_MARKETS)
+    initial = list(markets[:market_limit])
+    remaining = list(markets[market_limit:]) if market_mode == "ENDLESS" else []
 
     run.update({
-        "running": True, "endless": endless, "total": total, "done": 0,
-        "batch_size": 6, "sample_size": 30,
-        "remaining": SEQVIX_MARKETS.copy(),
-        "active_syms": set(), "samples": {}, "ready_syms": set(),
-        "last_exec_ts": 0.0, "config": {},
-        "owned_syms": set(), "cooldown_until": 0.0, "trades_per_market": tpm, "cooldown_sec": 5.0,
+        "running": True,
+        "endless": endless,
+        "total": (0 if endless else (market_limit * int(trade_target or 0))),
+        "done": 0,
+        "batch_size": market_limit,
+        "sample_size": SEQVIX_JOKERJOE_SAMPLE_SIZE,
+        "remaining": [],
+        "active_syms": set(),
+        "samples": {},
+        "ready_syms": set(),
+        "last_exec_ts": 0.0,
+        "config": {},
+        "owned_syms": set(),
+        "cooldown_until": 0.0,
+        "trades_per_market": trade_target,
+        "cooldown_sec": 0.0,
+        "market_limit": market_limit,
+        "scan_markets": list(markets),
+        "remaining_markets": list(initial),
+        "market_states": {},
+        "awaiting_buy": False,
+        "awaiting_symbol": None,
+        "awaiting_digit": None,
+        "active_contract_id": None,
+        "active_symbol": None,
+        "market_mode": market_mode,
+        "trade_mode": trade_mode,
+        "signal_counter": 0,
+        "open_trade_status": "",
     })
-    random.shuffle(run["remaining"])
-
-    _seqvix_fill_batch(state, "JOKERJOE")
+    if market_mode == "ENDLESS":
+        run["remaining_markets"].extend(remaining)
+    _seqvix_jokerjoe_fill_markets(state)
     _seqvix_emit_progress(client_id, state, "JOKERJOE")
 
 def start_seqvix_koolkid(state, client_id, contract_type, barrier, trades_per_market=2):
@@ -6206,27 +6632,15 @@ def _seqvix_execute_one_market(client_id, state, profile, sym):
 
     stake = float(state.get("auto_stake", 1.0))
     trade_count = int(run.get("trades_per_market", 2))
-
-    if profile == "JOKERJOE":
-        d1, d2 = _pick_two_rarest_digits(sample)
-        if trade_count == 1:
-            # only the rarest digit
-            ok1, _ = send_buy_with_profile(client_id, "JOKERJOE", "DIFFERS", stake, sym, d1)
-            return ok1
-        else:
-            ok1, _ = send_buy_with_profile(client_id, "JOKERJOE", "DIFFERS", stake, sym, d1)
-            ok2, _ = send_buy_with_profile(client_id, "JOKERJOE", "DIFFERS", stake, sym, d2)
-            return ok1 and ok2
+    ct = run["config"].get("contract_type", "OVER")
+    barrier = int(run["config"].get("barrier", 1))
+    if trade_count == 1:
+        ok1, _ = send_buy_with_profile(client_id, "KOOLKID", ct, stake, sym, barrier)
+        return ok1
     else:
-        ct = run["config"].get("contract_type", "OVER")
-        barrier = int(run["config"].get("barrier", 1))
-        if trade_count == 1:
-            ok1, _ = send_buy_with_profile(client_id, "KOOLKID", ct, stake, sym, barrier)
-            return ok1
-        else:
-            ok1, _ = send_buy_with_profile(client_id, "KOOLKID", ct, stake, sym, barrier)
-            ok2, _ = send_buy_with_profile(client_id, "KOOLKID", ct, stake, sym, barrier)
-            return ok1 and ok2
+        ok1, _ = send_buy_with_profile(client_id, "KOOLKID", ct, stake, sym, barrier)
+        ok2, _ = send_buy_with_profile(client_id, "KOOLKID", ct, stake, sym, barrier)
+        return ok1 and ok2
 
 def process_seqvix_tick(client_id, tick):
     state = clients.get(client_id)
@@ -6252,8 +6666,70 @@ def process_seqvix_tick(client_id, tick):
     if d is None:
         return
 
-    # update buffers
-    for profile in active_profiles:
+    if "JOKERJOE" in active_profiles:
+        run = seqvix["JOKERJOE"]
+        if sym in run.get("active_syms", set()):
+            market = run.setdefault("market_states", {}).setdefault(
+                sym,
+                _seqvix_jokerjoe_make_market_state(_seqvix_jokerjoe_trade_target(run.get("trade_mode"))),
+            )
+            marker = _seqvix_jokerjoe_tick_marker(tick)
+            status_changed = False
+            if marker != market.get("last_tick_marker"):
+                market["last_tick_marker"] = marker
+                market["last_played_digit"] = int(d)
+                current_state = str(market.get("state") or "scanning")
+                if current_state == "scanning":
+                    buf = market.setdefault("buffer", [])
+                    if len(buf) < SEQVIX_JOKERJOE_SAMPLE_SIZE:
+                        buf.append(int(d))
+                    if len(buf) >= SEQVIX_JOKERJOE_SAMPLE_SIZE:
+                        avoid_digit, dominant_count = _seqvix_jokerjoe_detect_overplayed_digit(buf)
+                        market["state"] = "waiting_for_digit"
+                        market["avoid_digit"] = avoid_digit
+                        market["dominant_count"] = dominant_count
+                        if avoid_digit is not None:
+                            market["status_text"] = f"Waiting • avoid {avoid_digit} ({dominant_count}/20)"
+                        else:
+                            market["status_text"] = "Waiting for fresh digit"
+                        status_changed = True
+                elif current_state == "waiting_for_digit":
+                    avoid_digit = market.get("avoid_digit")
+                    if avoid_digit is not None and int(d) == int(avoid_digit):
+                        market["status_text"] = f"Overplayed {avoid_digit} skipped"
+                        status_changed = True
+                    else:
+                        run["signal_counter"] = int(run.get("signal_counter", 0) or 0) + 1
+                        market["state"] = "ready_to_trade"
+                        market["signal_digit"] = int(d)
+                        market["signal_order"] = int(run["signal_counter"])
+                        market["signal_tick_marker"] = marker
+                        market["status_text"] = f"Queued DIFFER {int(d)} next tick"
+                        status_changed = True
+                elif current_state == "ready_to_trade":
+                    queued = _seqvix_jokerjoe_ready_queue(run)
+                    earliest = queued[0] if queued else None
+                    candidate = market.get("signal_digit")
+                    if sym != earliest or _seqvix_jokerjoe_is_busy(run):
+                        _seqvix_jokerjoe_clear_signal(market, next_state="waiting_for_digit", status_text="Signal expired • waiting fresh digit")
+                        status_changed = True
+                    elif candidate is not None:
+                        ok, msg = _seqvix_jokerjoe_try_trade(client_id, state, sym, candidate)
+                        if ok:
+                            market["state"] = "trade_open"
+                            market["status_text"] = f"Entering DIFFER {int(candidate)}"
+                            status_changed = True
+                        else:
+                            _seqvix_jokerjoe_clear_signal(market, next_state="waiting_for_digit", status_text=str(msg or "Trade failed"))
+                            status_changed = True
+                elif current_state == "trade_open":
+                    market["status_text"] = market.get("status_text") or "Trade open"
+            if status_changed:
+                _seqvix_emit_progress(client_id, state, "JOKERJOE")
+
+    # update buffers / execute legacy seqvix logic for KOOLKID only
+    legacy_profiles = [p for p in active_profiles if p != "JOKERJOE"]
+    for profile in legacy_profiles:
         run = seqvix[profile]
         if sym not in run.get("active_syms", set()):
             continue
@@ -6267,7 +6743,7 @@ def process_seqvix_tick(client_id, tick):
 
     # execute at most 1 market per tick per profile (rate limit) + cooldown
     now = time.time()
-    for profile in active_profiles:
+    for profile in legacy_profiles:
         run = seqvix[profile]
         if not run.get("running"):
             continue
@@ -6868,6 +7344,10 @@ def handle_on_message(client_id, ws, message, expected_nonce):
         if "error" in data:
             if _resolve_proposal_waiter(state, req_id, proposal=None, error=(data.get("error") or {}).get("message", "Quote error")):
                 return
+            try:
+                _seqvix_jokerjoe_handle_buy_error(state, req_id)
+            except Exception:
+                pass
             msg = data["error"].get("message", "Unknown API Error")
             sell_req_cid = None
             try:
@@ -7019,6 +7499,10 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 norm_contract_id = _normalize_contract_id(contract_id)
                 if norm_contract_id:
                     state["contract_meta"][norm_contract_id] = meta
+                try:
+                    _seqvix_jokerjoe_on_buy_confirmed(state, contract_id, meta)
+                except Exception:
+                    pass
                 try:
                     if (meta.get("profile") or "").upper() == "UNCHAIN":
                         _upsert_unchain_active_contract(state, contract_id, meta=meta, status="OPEN")
@@ -7373,15 +7857,24 @@ def process_contract(client_id, contract):
             # Always emit the same contract id used at placement so frontend can
             # merge pending -> settled instead of showing a duplicate row.
             if contract_id not in (None, ""):
-                entry.setdefault("contract_id", contract_id)
-            entry.setdefault("status", contract.get("status"))
-            if entry.get("result") in (None, ""):
+                entry["contract_id"] = contract_id
+            entry["status"] = contract.get("status") or entry.get("status")
+            raw_entry_result = str(entry.get("result") or "").upper().strip()
+            if (
+                raw_entry_result in ("", "PENDING", "OPEN", "ACTIVE", "CLOSING")
+                or "PENDING" in raw_entry_result
+                or "CLOSE REQUESTED" in raw_entry_result
+            ):
                 entry["result"] = "WIN" if profit > 0 else "LOSS"
             exit_digit = extract_exit_digit_from_contract(contract)
             if exit_digit is not None:
                 entry["exit_digit"] = exit_digit
 
         socketio.emit("trade_result", entry, room=client_id)
+        try:
+            _seqvix_jokerjoe_on_contract_settled(state, client_id, contract_id, meta)
+        except Exception:
+            pass
         if profile_for_contract == "UNCHAIN":
             _run_unchain_ai_auto_trade(client_id, state)
             _run_unchain_auto_both(client_id, state)
@@ -8690,6 +9183,10 @@ def unchain_settings_route():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 400
     u["last_action"] = "UNCHAIN settings saved"
+    try:
+        _sync_unchain_market_default_barriers(state, force=False)
+    except Exception:
+        pass
     _check_unchain_hl_risk_block(state)
     payload = _unchain_payload_response(state)
     if state.get("active_profile") == "UNCHAIN":
@@ -9244,9 +9741,9 @@ def start_seqvix_jokerjoe_route():
         return jsonify({"error": "Not connected"}), 400
 
     data = request.json or {}
-    mode = data.get("mode", "5")
-    trade_count = data.get("trade_count", 2)   # ==================== PATCH 1G ====================
-    start_seqvix_jokerjoe(state, cid, mode, trades_per_market=trade_count)
+    market_mode = data.get("market_mode", data.get("mode", "5"))
+    trade_mode = data.get("trade_mode", data.get("trade_count", "2"))
+    start_seqvix_jokerjoe(state, cid, market_mode, trade_mode=trade_mode)
     return jsonify({"status": "success"})
 
 @app.route("/stop_seqvix_jokerjoe", methods=["POST"])
@@ -9292,11 +9789,14 @@ def seqvix_status_route():
     out = {}
     for p in ("KOOLKID", "JOKERJOE"):
         run = (state.get("seqvix") or {}).get(p) or {}
-        out[p] = {
+        payload = {
             "running": bool(run.get("running")),
             "done": int(run.get("done", 0)),
             "total": (None if run.get("endless") else int(run.get("total", 0))),
         }
+        if p == "JOKERJOE":
+            payload.update(_seqvix_jokerjoe_status_payload(run))
+        out[p] = payload
     return jsonify(out)
 
 
