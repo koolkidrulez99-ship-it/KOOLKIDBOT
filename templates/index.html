@@ -984,8 +984,13 @@ body.mobile-only-ui #profileContainer .unchain-history-grid{
   <h4>5*² sequential vix</h4>
   <div style="font-size:12px; color:#94a3b8; margin-bottom:6px;">Trade count mode</div>
   <div style="display:flex; gap:8px; margin-bottom:10px;">
-    <button id="seqVixJokerTrades1Btn" onclick="setSeqVixJokerTradeMode('1')" style="flex:1; height:38px; background:#1e293b;">1 Trade</button>
-    <button id="seqVixJokerTrades2Btn" onclick="setSeqVixJokerTradeMode('2')" style="flex:1; height:38px; background:#38bdf8; color:#0b1220;">2 Trades</button>
+    <button id="seqVixJokerTrades1Btn" onclick="setSeqVixJokerTradeMode('1')" style="flex:1; height:38px; background:#38bdf8; color:#0b1220;">1 Trade</button>
+    <button id="seqVixJokerTrades2Btn" onclick="setSeqVixJokerTradeMode('2')" style="flex:1; height:38px; background:#1e293b;">2 Trades</button>
+  </div>
+  <div style="font-size:12px; color:#94a3b8; margin-bottom:6px;">Scan pool</div>
+  <div style="display:flex; gap:8px; margin-bottom:10px;">
+    <button id="seqVixJokerPoolAllBtn" onclick="setSeqVixJokerScanPool('ALL')" style="flex:1; height:38px; background:#38bdf8; color:#0b1220;">All Markets</button>
+    <button id="seqVixJokerPoolSlowBtn" onclick="setSeqVixJokerScanPool('SLOW')" style="flex:1; height:38px; background:#1e293b;">Slow Markets</button>
   </div>
   <div style="font-size:12px; color:#94a3b8; margin-bottom:6px;">Active market count</div>
   <button style="background:#22c55e; width:100%; margin-top:6px;" onclick="startSeqVixJokerjoe('5')">5 markets</button>
@@ -1070,14 +1075,23 @@ function bindSocketHandlers(){
 
     socket.on("api_error", (data)=>{
         const message = String((data && data.message) || "").trim();
-        if(!isAuthApiErrorMessage(message)) return;
-        apiConnectPendingUntil = 0;
-        stopApiConnectPolling();
-        apiConnected = false;
-        updateApiConnectionUi("disconnected");
-        apiStatus.innerText = "Not Connected";
-        apiStatus.className = "red";
-        showToast(message || "Invalid API token", "error");
+        if(isAuthApiErrorMessage(message)){
+            apiConnectPendingUntil = 0;
+            stopApiConnectPolling();
+            apiConnected = false;
+            updateApiConnectionUi("disconnected");
+            apiStatus.innerText = "Not Connected";
+            apiStatus.className = "red";
+            showToast(message || "Invalid API token", "error");
+            return;
+        }
+        if(/insufficient|not enough balance|not enough funds/i.test(message)){
+            showToast("❌ Insufficient funds to place trade", "error");
+            return;
+        }
+        if(message){
+            showToast(message, "error");
+        }
     });
 
     socket.on("auto_mode_update", (modes)=>{
@@ -1270,7 +1284,10 @@ function bindSocketHandlers(){
             seqVixState.JOKERJOE.done = done;
             seqVixState.JOKERJOE.total = total; // null => ∞
             seqVixState.JOKERJOE.marketMode = data.market_mode || "5";
-            seqVixState.JOKERJOE.tradeMode = data.trade_mode || "2";
+            seqVixState.JOKERJOE.tradeMode = data.trade_mode || "1";
+            seqVixState.JOKERJOE.scanPool = data.scan_pool || "ALL";
+            seqVixJokerTradeMode = seqVixState.JOKERJOE.tradeMode;
+            seqVixJokerScanPool = seqVixState.JOKERJOE.scanPool;
             seqVixState.JOKERJOE.queuedSignals = Number(data.queued_signals || 0);
             seqVixState.JOKERJOE.openTradeStatus = data.open_trade_status || "";
             seqVixState.JOKERJOE.activeMarkets = Array.isArray(data.active_markets) ? data.active_markets : [];
@@ -3090,11 +3107,12 @@ autoBarrierCancel.addEventListener("click", hideAutoBarrierPopup);
 // ==================== PATCH 2B: SeqVIX state and functions ====================
 let seqVixState = {
   KOOLKID: { running:false, done:0, total:10 },
-  JOKERJOE: { running:false, done:0, total:0, marketMode:"5", tradeMode:"2", queuedSignals:0, openTradeStatus:"", activeMarkets:[] }
+  JOKERJOE: { running:false, done:0, total:0, marketMode:"5", tradeMode:"1", scanPool:"ALL", queuedSignals:0, openTradeStatus:"", activeMarkets:[] }
 };
 
 // ==================== PATCH 2A (new): trade count state variables ====================
-let seqVixJokerTradeMode = "2";
+let seqVixJokerTradeMode = "1";
+let seqVixJokerScanPool = "ALL";
 let seqVixKoolkidTradesPerMarket = 2; // default 2
 
 function hideSeqVixPopups(){
@@ -3116,6 +3134,7 @@ function showSeqVixPopup(profile){
   // ==================== PATCH 3C: reset trade count UI when popup opens ====================
   if(profile === "JOKERJOE"){
     updateSeqVixJokerTradesUI(seqVixJokerTradeMode);
+    updateSeqVixJokerScanPoolUI(seqVixJokerScanPool);
   }
   if(profile === "KOOLKID"){
     updateSeqVixKoolkidTradesUI(seqVixKoolkidTradesPerMarket);
@@ -3139,7 +3158,8 @@ function updateSeqVixUI(profile, running, done, total){
   }
   if(profile === "JOKERJOE" && statusEl){
     const data = seqVixState.JOKERJOE || {};
-    const modeText = `Mode: ${data.marketMode === "ENDLESS" ? "Endless markets" : `${data.marketMode} markets`} | Trades per market: ${data.tradeMode}`;
+    const poolText = String(data.scanPool || "ALL").toUpperCase() === "SLOW" ? "Slow markets" : "All markets";
+    const modeText = `Mode: ${data.marketMode === "ENDLESS" ? "Endless markets" : `${data.marketMode} markets`} | Trades per market: ${data.tradeMode} | Pool: ${poolText}`;
     const queueText = `Queued: ${Number(data.queuedSignals || 0)}${data.openTradeStatus ? ` | Open: ${data.openTradeStatus}` : ""}`;
     const markets = Array.isArray(data.activeMarkets) ? data.activeMarkets : [];
     const chips = markets.length
@@ -3149,18 +3169,21 @@ function updateSeqVixUI(profile, running, done, total){
           const stateLabel = state.replaceAll("_", " ");
           const tradesDone = Number(market.trades_done || 0);
           const tradesTarget = (market.trades_target === null || market.trades_target === undefined) ? "∞" : String(market.trades_target);
+          const watchDigits = Array.isArray(market.watch_digits) ? market.watch_digits : [];
+          const watchText = watchDigits.length ? ` watch ${watchDigits.join("/")}` : "";
           const overplayed = (market.overplayed_digit !== null && market.overplayed_digit !== undefined) ? ` avoid ${market.overplayed_digit}` : "";
           const digitText = (market.signal_digit !== null && market.signal_digit !== undefined)
-            ? ` d${market.signal_digit}`
+            ? ` differ ${market.signal_digit}`
             : ((market.last_digit !== null && market.last_digit !== undefined) ? ` last ${market.last_digit}` : "");
           const progressText = state === "scanning"
             ? ` ${Number(market.scan_count || 0)}/20`
             : ` ${tradesDone}/${tradesTarget}`;
+          const desc = String(market.status_text || `${stateLabel}${progressText}${watchText}${digitText}${overplayed}`).trim();
           const color = state === "trade_open"
             ? "#22c55e"
             : (state === "ready_to_trade" ? "#facc15" : (state === "waiting_for_digit" ? "#38bdf8" : "#64748b"));
           const textColor = state === "ready_to_trade" ? "#0f172a" : "#ffffff";
-          return `<span style="display:inline-block; margin:2px 6px 2px 0; padding:3px 8px; border-radius:999px; background:${color}; color:${textColor}; font-weight:700;">${symbol} ${stateLabel}${progressText}${digitText}${overplayed}</span>`;
+          return `<span style="display:inline-block; margin:2px 6px 2px 0; padding:3px 8px; border-radius:999px; background:${color}; color:${textColor}; font-weight:700;">${symbol} ${desc}</span>`;
         }).join("")
       : `<span style="color:#94a3b8;">No active scan markets</span>`;
     statusEl.innerHTML = `<div>${modeText}</div><div style="margin-top:4px;">${queueText}</div><div style="margin-top:6px;">${chips}</div>`;
@@ -3176,9 +3199,18 @@ function updateSeqVixJokerTradesUI(mode){
   const b1 = document.getElementById("seqVixJokerTrades1Btn");
   const b2 = document.getElementById("seqVixJokerTrades2Btn");
   if(!b1 || !b2) return;
-  const v = String(mode || "2").toUpperCase();
+  const v = String(mode || "1").toUpperCase();
   b1.style.background = (v === "1") ? "#38bdf8" : "#1e293b";
   b2.style.background = (v === "2") ? "#38bdf8" : "#1e293b";
+}
+
+function updateSeqVixJokerScanPoolUI(mode){
+  const allBtn = document.getElementById("seqVixJokerPoolAllBtn");
+  const slowBtn = document.getElementById("seqVixJokerPoolSlowBtn");
+  if(!allBtn || !slowBtn) return;
+  const v = String(mode || "ALL").toUpperCase();
+  allBtn.style.background = (v === "ALL") ? "#38bdf8" : "#1e293b";
+  slowBtn.style.background = (v === "SLOW") ? "#38bdf8" : "#1e293b";
 }
 
 function updateSeqVixKoolkidTradesUI(n){
@@ -3191,9 +3223,15 @@ function updateSeqVixKoolkidTradesUI(n){
 }
 
 function setSeqVixJokerTradeMode(mode){
-  const v = String(mode || "2").toUpperCase();
-  seqVixJokerTradeMode = (v === "1" || v === "2") ? v : "2";
+  const v = String(mode || "1").toUpperCase();
+  seqVixJokerTradeMode = (v === "1" || v === "2") ? v : "1";
   updateSeqVixJokerTradesUI(seqVixJokerTradeMode);
+}
+
+function setSeqVixJokerScanPool(mode){
+  const v = String(mode || "ALL").toUpperCase();
+  seqVixJokerScanPool = (v === "SLOW") ? "SLOW" : "ALL";
+  updateSeqVixJokerScanPoolUI(seqVixJokerScanPool);
 }
 
 function setSeqVixKoolkidTradesPerMarket(n){
@@ -3216,7 +3254,8 @@ async function startSeqVixJokerjoe(mode){
     headers: {"Content-Type":"application/json"},
     body: JSON.stringify({
       market_mode: mode,
-      trade_mode: seqVixJokerTradeMode
+      trade_mode: seqVixJokerTradeMode,
+      scan_pool: seqVixJokerScanPool
     })
   });
 }
@@ -3257,7 +3296,10 @@ async function refreshSeqVixStatus(){
       seqVixState.JOKERJOE.done = Number(data.JOKERJOE.done||0);
       seqVixState.JOKERJOE.total = (data.JOKERJOE.total === null ? null : Number(data.JOKERJOE.total||0));
       seqVixState.JOKERJOE.marketMode = data.JOKERJOE.market_mode || "5";
-      seqVixState.JOKERJOE.tradeMode = data.JOKERJOE.trade_mode || "2";
+      seqVixState.JOKERJOE.tradeMode = data.JOKERJOE.trade_mode || "1";
+      seqVixState.JOKERJOE.scanPool = data.JOKERJOE.scan_pool || "ALL";
+      seqVixJokerTradeMode = seqVixState.JOKERJOE.tradeMode;
+      seqVixJokerScanPool = seqVixState.JOKERJOE.scanPool;
       seqVixState.JOKERJOE.queuedSignals = Number(data.JOKERJOE.queued_signals || 0);
       seqVixState.JOKERJOE.openTradeStatus = data.JOKERJOE.open_trade_status || "";
       seqVixState.JOKERJOE.activeMarkets = Array.isArray(data.JOKERJOE.active_markets) ? data.JOKERJOE.active_markets : [];

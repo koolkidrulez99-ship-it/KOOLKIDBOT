@@ -1127,7 +1127,7 @@ def init_client(client_id):
                 "active_contract_id": None,
                 "active_symbol": None,
                 "market_mode": "5",
-                "trade_mode": "2",
+                "trade_mode": "1",
                 "signal_counter": 0,
                 "open_trade_status": "",
             }
@@ -1615,6 +1615,18 @@ def heartbeat():
     return jsonify({"status": "ok", "client_id": cid})
 
 
+def _is_insufficient_funds_error(message):
+    text = str(message or "").strip().lower()
+    if not text:
+        return False
+    return (
+        "insufficient" in text
+        or "not enough balance" in text
+        or "not enough funds" in text
+        or "insufficient balance" in text
+    )
+
+
 # ---------------- DERIV BUY FUNCTION (PER CLIENT) ---------------- #
 def send_buy(client_id, contract_type, stake, symbol, barrier, duration=1, duration_unit="t", mode=None):
     state = clients.get(client_id)
@@ -1626,6 +1638,21 @@ def send_buy(client_id, contract_type, stake, symbol, barrier, duration=1, durat
 
     if not ws_connected or not ws:
         return False, "Not connected"
+
+    try:
+        stake_value = float(stake)
+    except Exception:
+        stake_value = 0.0
+    try:
+        balance_value = float(state.get("balance", 0.0) or 0.0)
+    except Exception:
+        balance_value = 0.0
+    if stake_value > 0 and balance_value + 1e-9 < stake_value:
+        try:
+            socketio.emit("api_error", {"message": "Insufficient funds to place trade"}, room=client_id)
+        except Exception:
+            pass
+        return False, "Insufficient funds"
 
     # PATCH D: Block digit trades if profile session is TP/SL blocked
     profile = state.get("active_profile", "KOOLKID")
@@ -1702,6 +1729,21 @@ def send_buy_with_profile(client_id, profile, contract_type, stake, symbol, barr
     ws_connected = state.get("ws_connected", False)
     if not ws_connected or not ws:
         return False, "Not connected"
+
+    try:
+        stake_value = float(stake)
+    except Exception:
+        stake_value = 0.0
+    try:
+        balance_value = float(state.get("balance", 0.0) or 0.0)
+    except Exception:
+        balance_value = 0.0
+    if stake_value > 0 and balance_value + 1e-9 < stake_value:
+        try:
+            socketio.emit("api_error", {"message": "Insufficient funds to place trade"}, room=client_id)
+        except Exception:
+            pass
+        return False, "Insufficient funds"
 
     # Enforce TP/SL for that profile (if your strategy supports it)
     strat = (state.get("strategies") or {}).get(profile)
@@ -6076,6 +6118,9 @@ SEQVIX_JOKERJOE_MARKETS = [
     "R_10", "R_25", "R_50", "R_75", "R_100",
     "1HZ10V", "1HZ15V", "1HZ25V", "1HZ30V", "1HZ50V", "1HZ75V", "1HZ90V", "1HZ100V",
 ]
+SEQVIX_JOKERJOE_SLOW_MARKETS = [
+    "R_10", "R_25", "R_50", "R_75", "R_100",
+]
 SEQVIX_JOKERJOE_SAMPLE_SIZE = 20
 SEQVIX_JOKERJOE_OVERPLAY_THRESHOLD = 4
 
@@ -6123,9 +6168,12 @@ def _seqvix_jokerjoe_make_market_state(trades_target):
         "trades_target": trades_target,
         "last_tick_marker": None,
         "last_played_digit": None,
+        "watch_digits": [],
+        "watch_percentage": None,
         "signal_digit": None,
         "signal_order": None,
         "signal_tick_marker": None,
+        "signal_from_tie": False,
         "avoid_digit": None,
         "dominant_count": 0,
         "status_text": "Scanning 20 ticks",
@@ -6152,6 +6200,59 @@ def _seqvix_jokerjoe_detect_overplayed_digit(sample):
     return None, top_count
 
 
+def _seqvix_jokerjoe_digit_counts(sample):
+    counts = {d: 0 for d in range(10)}
+    for value in sample or []:
+        try:
+            digit = int(value)
+        except Exception:
+            continue
+        if 0 <= digit <= 9:
+            counts[digit] += 1
+    return counts
+
+
+def _seqvix_jokerjoe_refresh_market_analysis(market):
+    sample = list(market.get("buffer") or [])[-SEQVIX_JOKERJOE_SAMPLE_SIZE:]
+    counts = _seqvix_jokerjoe_digit_counts(sample)
+    avoid_digit, dominant_count = _seqvix_jokerjoe_detect_overplayed_digit(sample)
+    eligible_digits = [d for d in range(10) if d != avoid_digit]
+    if not eligible_digits:
+        eligible_digits = list(range(10))
+    min_count = min(counts[d] for d in eligible_digits) if eligible_digits else 0
+    lowest_digits = [d for d in eligible_digits if counts[d] == min_count]
+    if len(lowest_digits) > 1:
+        min_tie_count = min(counts[d] for d in lowest_digits)
+        narrower = [d for d in lowest_digits if counts[d] == min_tie_count]
+        if len(narrower) == 1:
+            lowest_digits = narrower
+    percentage = round((float(min_count) / float(SEQVIX_JOKERJOE_SAMPLE_SIZE)) * 100.0, 1) if SEQVIX_JOKERJOE_SAMPLE_SIZE else 0.0
+    market["avoid_digit"] = avoid_digit
+    market["dominant_count"] = dominant_count
+    market["watch_digits"] = list(lowest_digits)
+    market["watch_percentage"] = percentage
+    return {
+        "counts": counts,
+        "watch_digits": list(lowest_digits),
+        "watch_percentage": percentage,
+        "avoid_digit": avoid_digit,
+        "dominant_count": dominant_count,
+    }
+
+
+def _seqvix_jokerjoe_watch_label(market):
+    digits = list(market.get("watch_digits") or [])
+    pct = market.get("watch_percentage")
+    if not digits:
+        return "Waiting for low digit"
+    digit_text = "/".join(str(int(d)) for d in digits)
+    pct_text = f" ({float(pct):.1f}%)" if pct is not None else ""
+    avoid_digit = market.get("avoid_digit")
+    if avoid_digit is not None:
+        return f"Watching {digit_text}{pct_text} • avoid {int(avoid_digit)}"
+    return f"Watching {digit_text}{pct_text}"
+
+
 def _seqvix_jokerjoe_is_busy(run):
     return bool(run.get("awaiting_buy") or run.get("active_contract_id"))
 
@@ -6164,6 +6265,18 @@ def _seqvix_jokerjoe_normalize_market_mode(mode):
 def _seqvix_jokerjoe_normalize_trade_mode(mode):
     raw = str(mode or "").upper().strip()
     return raw if raw in ("1", "2") else "2"
+
+
+def _seqvix_jokerjoe_normalize_scan_pool(mode):
+    raw = str(mode or "").upper().strip()
+    return raw if raw in ("ALL", "SLOW") else "ALL"
+
+
+def _seqvix_jokerjoe_markets_for_pool(scan_pool):
+    pool = _seqvix_jokerjoe_normalize_scan_pool(scan_pool)
+    if pool == "SLOW":
+        return list(SEQVIX_JOKERJOE_SLOW_MARKETS)
+    return list(SEQVIX_JOKERJOE_MARKETS)
 
 
 def _seqvix_jokerjoe_trade_target(trade_mode):
@@ -6183,6 +6296,7 @@ def _seqvix_jokerjoe_clear_signal(market, next_state="waiting_for_digit", status
     market["signal_digit"] = None
     market["signal_order"] = None
     market["signal_tick_marker"] = None
+    market["signal_from_tie"] = False
     if status_text is not None:
         market["status_text"] = status_text
 
@@ -6215,6 +6329,8 @@ def _seqvix_jokerjoe_status_payload(run):
             "state": market.get("state", "scanning"),
             "scan_count": len(market.get("buffer") or []),
             "last_digit": market.get("last_played_digit"),
+            "watch_digits": list(market.get("watch_digits") or []),
+            "watch_percentage": market.get("watch_percentage"),
             "signal_digit": market.get("signal_digit"),
             "overplayed_digit": market.get("avoid_digit"),
             "overplayed_count": int(market.get("dominant_count", 0) or 0),
@@ -6224,7 +6340,8 @@ def _seqvix_jokerjoe_status_payload(run):
         })
     return {
         "market_mode": run.get("market_mode", "5"),
-        "trade_mode": run.get("trade_mode", "2"),
+        "trade_mode": run.get("trade_mode", "1"),
+        "scan_pool": run.get("scan_pool", "ALL"),
         "queued_signals": len(_seqvix_jokerjoe_ready_queue(run)),
         "open_trade_status": run.get("open_trade_status", ""),
         "active_markets": active_markets,
@@ -6244,39 +6361,46 @@ def _seqvix_jokerjoe_activate_market(state, sym):
     run = state["seqvix"]["JOKERJOE"]
     ws = state.get("ws")
     if not ws or not state.get("ws_connected"):
-        return False
+        return False, False
     symbol = str(sym or "").upper().strip()
     if not symbol or symbol in run.get("active_syms", set()):
-        return False
+        return False, False
+    main_symbol = str(state.get("current_symbol") or "").upper().strip()
+    human_symbol = str(state.get("human_symbol") or main_symbol).upper().strip()
     run.setdefault("active_syms", set()).add(symbol)
     run.setdefault("market_states", {})[symbol] = _seqvix_jokerjoe_make_market_state(
         _seqvix_jokerjoe_trade_target(run.get("trade_mode"))
     )
+    if symbol in (main_symbol, human_symbol):
+        return True, False
     existing_sub_id = (state.get("tick_subs") or {}).get(symbol)
     if existing_sub_id:
-        return True
+        return True, False
     run.setdefault("owned_syms", set()).add(symbol)
     try:
         ws.send(json.dumps({"ticks": symbol, "subscribe": 1}))
-        return True
+        return True, True
     except Exception:
         run["active_syms"].discard(symbol)
         run.get("market_states", {}).pop(symbol, None)
         run.get("owned_syms", set()).discard(symbol)
-        return False
+        return False, False
 
 
-def _seqvix_jokerjoe_fill_markets(state):
+def _seqvix_jokerjoe_fill_markets(state, max_new_subscriptions=None):
     run = state["seqvix"]["JOKERJOE"]
     if not run.get("running"):
-        return
+        return 0
     try:
         limit = int(run.get("market_limit") or 0)
     except Exception:
         limit = 0
     if limit <= 0:
-        return
+        return 0
+    new_subscriptions = 0
     while len(run.get("active_syms", set())) < limit:
+        if max_new_subscriptions is not None and new_subscriptions >= int(max_new_subscriptions):
+            break
         remaining = run.setdefault("remaining_markets", [])
         if not remaining:
             if str(run.get("market_mode") or "").upper() == "ENDLESS":
@@ -6288,7 +6412,10 @@ def _seqvix_jokerjoe_fill_markets(state):
             else:
                 break
         sym = remaining.pop(0)
-        _seqvix_jokerjoe_activate_market(state, sym)
+        _ok, subscribed = _seqvix_jokerjoe_activate_market(state, sym)
+        if subscribed:
+            new_subscriptions += 1
+    return new_subscriptions
 
 
 def _seqvix_jokerjoe_reset_waiting(run):
@@ -6319,6 +6446,11 @@ def _seqvix_jokerjoe_try_trade(client_id, state, sym, digit):
         run["awaiting_digit"] = int(digit)
         run["last_exec_ts"] = time.time()
         run["open_trade_status"] = f"{str(sym or '').upper()} DIFFERS {int(digit)} sending"
+    elif _is_insufficient_funds_error(msg):
+        try:
+            socketio.emit("api_error", {"message": "Insufficient funds to place trade"}, room=client_id)
+        except Exception:
+            pass
     return ok, msg
 
 
@@ -6338,6 +6470,7 @@ def _seqvix_jokerjoe_on_buy_confirmed(state, contract_id, meta):
         market["signal_digit"] = None
         market["signal_order"] = None
         market["signal_tick_marker"] = None
+        market["signal_from_tie"] = False
         market["status_text"] = f"Trade open: DIFFER {info['digit']}"
     run["open_trade_status"] = f"{symbol} DIFFER {info['digit']} open"
     return True
@@ -6418,7 +6551,7 @@ def _seqvix_jokerjoe_on_contract_settled(state, client_id, contract_id, meta):
             _seqvix_jokerjoe_clear_signal(
                 market,
                 next_state="waiting_for_digit",
-                status_text=f"Completed trade {int(market.get('trades_done', 0) or 0)}",
+                status_text=_seqvix_jokerjoe_watch_label(market),
             )
 
     if market_complete:
@@ -6532,24 +6665,27 @@ def stop_seqvix(state, client_id, profile, reason="stopped"):
     run["active_contract_id"] = None
     run["active_symbol"] = None
     run["market_mode"] = "5"
-    run["trade_mode"] = "2"
+    run["trade_mode"] = "1"
+    run["scan_pool"] = "ALL"
     run["signal_counter"] = 0
     run["open_trade_status"] = ""
 
     _seqvix_emit_progress(client_id, state, profile, reason=reason)
 
-def start_seqvix_jokerjoe(state, client_id, market_mode, trade_mode="2"):
+def start_seqvix_jokerjoe(state, client_id, market_mode, trade_mode="1", scan_pool="ALL"):
     run = state["seqvix"]["JOKERJOE"]
     if run.get("running"):
         stop_seqvix(state, client_id, "JOKERJOE", reason="restart")
 
     market_mode = _seqvix_jokerjoe_normalize_market_mode(market_mode)
     trade_mode = _seqvix_jokerjoe_normalize_trade_mode(trade_mode)
-    market_limit = 10 if market_mode == "ENDLESS" else int(market_mode)
+    scan_pool = _seqvix_jokerjoe_normalize_scan_pool(scan_pool)
+    markets = _seqvix_jokerjoe_markets_for_pool(scan_pool)
+    requested_limit = 10 if market_mode == "ENDLESS" else int(market_mode)
+    market_limit = min(requested_limit, len(markets))
     trade_target = _seqvix_jokerjoe_trade_target(trade_mode)
     endless = bool(market_mode == "ENDLESS")
 
-    markets = list(SEQVIX_JOKERJOE_MARKETS)
     initial = list(markets[:market_limit])
     remaining = list(markets[market_limit:]) if market_mode == "ENDLESS" else []
 
@@ -6581,12 +6717,23 @@ def start_seqvix_jokerjoe(state, client_id, market_mode, trade_mode="2"):
         "active_symbol": None,
         "market_mode": market_mode,
         "trade_mode": trade_mode,
+        "scan_pool": scan_pool,
         "signal_counter": 0,
         "open_trade_status": "",
     })
     if market_mode == "ENDLESS":
         run["remaining_markets"].extend(remaining)
-    _seqvix_jokerjoe_fill_markets(state)
+    bootstrap_guard = max(1, market_limit + 2)
+    for _ in range(bootstrap_guard):
+        before_count = len(run.get("active_syms", set()))
+        new_subs = _seqvix_jokerjoe_fill_markets(state, max_new_subscriptions=1)
+        after_count = len(run.get("active_syms", set()))
+        if after_count >= market_limit:
+            break
+        if after_count <= before_count and new_subs <= 0:
+            break
+        if new_subs > 0:
+            time.sleep(0.08)
     _seqvix_emit_progress(client_id, state, "JOKERJOE")
 
 def start_seqvix_koolkid(state, client_id, contract_type, barrier, trades_per_market=2):
@@ -6678,52 +6825,94 @@ def process_seqvix_tick(client_id, tick):
             if marker != market.get("last_tick_marker"):
                 market["last_tick_marker"] = marker
                 market["last_played_digit"] = int(d)
+                prior_watch_digits = [int(x) for x in (market.get("watch_digits") or [])]
+                buf = market.setdefault("buffer", [])
+                buf.append(int(d))
+                if len(buf) > SEQVIX_JOKERJOE_SAMPLE_SIZE:
+                    del buf[0 : len(buf) - SEQVIX_JOKERJOE_SAMPLE_SIZE]
+
                 current_state = str(market.get("state") or "scanning")
-                if current_state == "scanning":
-                    buf = market.setdefault("buffer", [])
-                    if len(buf) < SEQVIX_JOKERJOE_SAMPLE_SIZE:
-                        buf.append(int(d))
-                    if len(buf) >= SEQVIX_JOKERJOE_SAMPLE_SIZE:
-                        avoid_digit, dominant_count = _seqvix_jokerjoe_detect_overplayed_digit(buf)
-                        market["state"] = "waiting_for_digit"
-                        market["avoid_digit"] = avoid_digit
-                        market["dominant_count"] = dominant_count
-                        if avoid_digit is not None:
-                            market["status_text"] = f"Waiting • avoid {avoid_digit} ({dominant_count}/20)"
-                        else:
-                            market["status_text"] = "Waiting for fresh digit"
+                if len(buf) < SEQVIX_JOKERJOE_SAMPLE_SIZE:
+                    market["watch_digits"] = []
+                    market["watch_percentage"] = None
+                    market["avoid_digit"] = None
+                    market["dominant_count"] = 0
+                    if current_state != "trade_open":
+                        _seqvix_jokerjoe_clear_signal(
+                            market,
+                            next_state="scanning",
+                            status_text=f"Scanning {len(buf)}/{SEQVIX_JOKERJOE_SAMPLE_SIZE}",
+                        )
                         status_changed = True
-                elif current_state == "waiting_for_digit":
-                    avoid_digit = market.get("avoid_digit")
-                    if avoid_digit is not None and int(d) == int(avoid_digit):
-                        market["status_text"] = f"Overplayed {avoid_digit} skipped"
-                        status_changed = True
+                else:
+                    analysis = _seqvix_jokerjoe_refresh_market_analysis(market)
+                    watch_digits = [int(x) for x in (analysis.get("watch_digits") or [])]
+                    watch_label = _seqvix_jokerjoe_watch_label(market)
+
+                    if current_state == "trade_open":
+                        market["status_text"] = market.get("status_text") or "Trade open"
                     else:
-                        run["signal_counter"] = int(run.get("signal_counter", 0) or 0) + 1
-                        market["state"] = "ready_to_trade"
-                        market["signal_digit"] = int(d)
-                        market["signal_order"] = int(run["signal_counter"])
-                        market["signal_tick_marker"] = marker
-                        market["status_text"] = f"Queued DIFFER {int(d)} next tick"
-                        status_changed = True
-                elif current_state == "ready_to_trade":
-                    queued = _seqvix_jokerjoe_ready_queue(run)
-                    earliest = queued[0] if queued else None
-                    candidate = market.get("signal_digit")
-                    if sym != earliest or _seqvix_jokerjoe_is_busy(run):
-                        _seqvix_jokerjoe_clear_signal(market, next_state="waiting_for_digit", status_text="Signal expired • waiting fresh digit")
-                        status_changed = True
-                    elif candidate is not None:
-                        ok, msg = _seqvix_jokerjoe_try_trade(client_id, state, sym, candidate)
-                        if ok:
-                            market["state"] = "trade_open"
-                            market["status_text"] = f"Entering DIFFER {int(candidate)}"
+                        candidate = market.get("signal_digit")
+                        if (
+                            str(market.get("state") or "") == "ready_to_trade"
+                            and candidate is not None
+                            and not bool(market.get("signal_from_tie"))
+                            and int(candidate) not in watch_digits
+                        ):
+                            _seqvix_jokerjoe_clear_signal(
+                                market,
+                                next_state="waiting_for_digit",
+                                status_text=f"Watch swapped • {watch_label}",
+                            )
                             status_changed = True
-                        else:
-                            _seqvix_jokerjoe_clear_signal(market, next_state="waiting_for_digit", status_text=str(msg or "Trade failed"))
+
+                        current_state = str(market.get("state") or "waiting_for_digit")
+                        if current_state == "scanning":
+                            market["state"] = "waiting_for_digit"
+                            market["status_text"] = watch_label
                             status_changed = True
-                elif current_state == "trade_open":
-                    market["status_text"] = market.get("status_text") or "Trade open"
+                            current_state = "waiting_for_digit"
+
+                        if current_state == "waiting_for_digit":
+                            signal_from_tie = (len(prior_watch_digits) > 1 and int(d) in prior_watch_digits)
+                            signal_from_single = (len(prior_watch_digits) <= 1 and int(d) in watch_digits)
+                            if signal_from_tie or signal_from_single:
+                                run["signal_counter"] = int(run.get("signal_counter", 0) or 0) + 1
+                                market["state"] = "ready_to_trade"
+                                market["signal_digit"] = int(d)
+                                market["signal_order"] = int(run["signal_counter"])
+                                market["signal_tick_marker"] = marker
+                                market["signal_from_tie"] = bool(signal_from_tie)
+                                market["status_text"] = f"Queued DIFFER {int(d)} next tick"
+                                status_changed = True
+                            else:
+                                if str(market.get("status_text") or "") != watch_label:
+                                    market["status_text"] = watch_label
+                                    status_changed = True
+                        elif current_state == "ready_to_trade":
+                            queued = _seqvix_jokerjoe_ready_queue(run)
+                            earliest = queued[0] if queued else None
+                            candidate = market.get("signal_digit")
+                            if sym != earliest or _seqvix_jokerjoe_is_busy(run):
+                                _seqvix_jokerjoe_clear_signal(
+                                    market,
+                                    next_state="waiting_for_digit",
+                                    status_text=f"Signal expired • {watch_label}",
+                                )
+                                status_changed = True
+                            elif candidate is not None:
+                                ok, msg = _seqvix_jokerjoe_try_trade(client_id, state, sym, candidate)
+                                if ok:
+                                    market["state"] = "trade_open"
+                                    market["status_text"] = f"Entering DIFFER {int(candidate)}"
+                                    status_changed = True
+                                else:
+                                    _seqvix_jokerjoe_clear_signal(
+                                        market,
+                                        next_state="waiting_for_digit",
+                                        status_text=(str(msg).strip() or watch_label),
+                                    )
+                                    status_changed = True
             if status_changed:
                 _seqvix_emit_progress(client_id, state, "JOKERJOE")
 
@@ -9742,8 +9931,9 @@ def start_seqvix_jokerjoe_route():
 
     data = request.json or {}
     market_mode = data.get("market_mode", data.get("mode", "5"))
-    trade_mode = data.get("trade_mode", data.get("trade_count", "2"))
-    start_seqvix_jokerjoe(state, cid, market_mode, trade_mode=trade_mode)
+    trade_mode = data.get("trade_mode", data.get("trade_count", "1"))
+    scan_pool = data.get("scan_pool", data.get("market_pool", "ALL"))
+    start_seqvix_jokerjoe(state, cid, market_mode, trade_mode=trade_mode, scan_pool=scan_pool)
     return jsonify({"status": "success"})
 
 @app.route("/stop_seqvix_jokerjoe", methods=["POST"])
