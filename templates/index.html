@@ -3124,6 +3124,80 @@ function onDigitClicked(digit, ev){
 
 function hidePopup(){ digitPopup.style.display = "none"; }
 
+function getHalfAutoPopupKoolkid(){
+    return document.getElementById("halfAutoPopupKoolkid");
+}
+
+const HALF_AUTO_STAKES_STORAGE_KEY_KOOLKID = "koolkid_half_auto_stakes_v1";
+
+function readHalfAutoStakeDraftKoolkid(){
+    try{
+        const raw = window.localStorage.getItem(HALF_AUTO_STAKES_STORAGE_KEY_KOOLKID);
+        if(!raw) return null;
+        const parsed = JSON.parse(raw);
+        if(!parsed || typeof parsed !== "object") return null;
+        return {
+            under1: String(parsed.under1 || "").trim(),
+            over2: String(parsed.over2 || "").trim(),
+            over8: String(parsed.over8 || "").trim(),
+            under7: String(parsed.under7 || "").trim(),
+        };
+    }catch(_err){
+        return null;
+    }
+}
+
+function saveHalfAutoStakeDraftKoolkid(values){
+    try{
+        window.localStorage.setItem(HALF_AUTO_STAKES_STORAGE_KEY_KOOLKID, JSON.stringify({
+            under1: String(values && values.under1 || "").trim(),
+            over2: String(values && values.over2 || "").trim(),
+            over8: String(values && values.over8 || "").trim(),
+            under7: String(values && values.under7 || "").trim(),
+        }));
+    }catch(_err){
+        // Ignore storage failures and keep the popup usable.
+    }
+}
+
+function positionHalfAutoPopupKoolkid(){
+    const popup = getHalfAutoPopupKoolkid();
+    if(!popup) return;
+    popup.style.visibility = "hidden";
+    popup.style.display = "block";
+    const width = Math.max(popup.offsetWidth || 320, 280);
+    const height = Math.max(popup.offsetHeight || 240, 220);
+    const left = Math.max(10, Math.round((window.innerWidth - width) / 2));
+    const top = Math.max(20, Math.round((window.innerHeight - height) / 2));
+    popup.style.left = `${left}px`;
+    popup.style.top = `${top}px`;
+    popup.style.visibility = "visible";
+}
+
+function showHalfAutoPopupKoolkid(){
+    const popup = getHalfAutoPopupKoolkid();
+    if(!popup) return;
+    const baseStake = parseFloat((stakeInput && stakeInput.value) || "1");
+    const fallback = (Number.isFinite(baseStake) && baseStake >= 0.35 ? baseStake : 1).toFixed(2);
+    const saved = readHalfAutoStakeDraftKoolkid();
+    const values = {
+        halfAutoStakeUnder1Koolkid: saved && saved.under1 ? saved.under1 : fallback,
+        halfAutoStakeOver2Koolkid: saved && saved.over2 ? saved.over2 : fallback,
+        halfAutoStakeOver8Koolkid: saved && saved.over8 ? saved.over8 : fallback,
+        halfAutoStakeUnder7Koolkid: saved && saved.under7 ? saved.under7 : fallback,
+    };
+    Object.entries(values).forEach(([id, value]) => {
+        const node = document.getElementById(id);
+        if(node) node.value = value;
+    });
+    positionHalfAutoPopupKoolkid();
+}
+
+function hideHalfAutoPopupKoolkid(){
+    const popup = getHalfAutoPopupKoolkid();
+    if(popup) popup.style.display = "none";
+}
+
 document.addEventListener("click", (e) => {
     const isDigitCell = e.target.closest(".digit-cell");
     const isPopup = e.target.closest("#digitPopup");
@@ -3327,6 +3401,7 @@ async function toggleSeqVixJokerjoe(){
 
 async function startSeqVixJokerjoe(mode){
   hideSeqVixPopups();
+  await syncAutoStake();
   await fetch("/start_seqvix_jokerjoe", {
     method:"POST",
     headers: {"Content-Type":"application/json"},
@@ -3556,7 +3631,7 @@ async function disconnect(){
     if(differsDigitsRow) differsDigitsRow.innerHTML = "";
 
     // PATCH A: update disconnect reset with new auto modes
-    updateAutoModeButtons({kidracks:false, koolkidspeed:false, kidbagz:false, mpull:false, koolluck:false, sludgex:false, triplex:false, kidx:false, multig:false, kidpairs:false});
+    updateAutoModeButtons({kidracks:false, koolkidspeed:false, kidbagz:false, mpull:false, koolluck:false, auto_dollar:false, sludgex:false, triplex:false, kidx:false, multig:false, kidpairs:false});
 
     const autoBtn = document.getElementById("autoBtn");
     if(autoBtn){
@@ -3646,6 +3721,7 @@ function updateAutoModeButtons(modes){
     const kidBtn = document.getElementById("kidracksBtn");
     const speedBtn = document.getElementById("koolkidspeedBtn");
     const luckBtn = document.getElementById("koolluckBtn");
+    const autoDollarBtn = document.getElementById("autoDollarBtnKoolkid");
 
     // ==================== PATCH A: add new button variables ====================
     const bagzBtn = document.getElementById("kidBagzBtn");
@@ -3680,6 +3756,11 @@ function updateAutoModeButtons(modes){
     if(modes.koolluck !== undefined && luckBtn){
         luckBtn.innerText = modes.koolluck ? "KOOL🍀KID LUCK: ON" : "KOOL🍀KID LUCK: OFF";
         luckBtn.style.background = modes.koolluck ? "#22c55e" : "#1e293b";
+    }
+
+    if(modes.auto_dollar !== undefined && autoDollarBtn){
+        autoDollarBtn.innerText = modes.auto_dollar ? "AUTO$: ON" : "AUTO$: OFF";
+        autoDollarBtn.style.background = modes.auto_dollar ? "#22c55e" : "#1e293b";
     }
 
     const sludgeBtn = document.getElementById("sludgeXBtn");
@@ -3770,6 +3851,14 @@ async function toggleKoolluckAuto(){
     const data = await res.json();
     updateAutoModeButtons({koolluck: data.koolluck_auto});
     showToast("KOOL🍀KID LUCK: " + (data.koolluck_auto ? "ON" : "OFF"), data.koolluck_auto ? "success" : "error");
+}
+
+async function toggleAutoDollarKoolkid(){
+    await syncAutoStake();
+    const res = await fetch("/toggle_auto_dollar_koolkid", {method:"POST"});
+    const data = await res.json();
+    updateAutoModeButtons({auto_dollar: data.auto_dollar_auto});
+    showToast("AUTO$: " + (data.auto_dollar_auto ? "ON" : "OFF"), data.auto_dollar_auto ? "success" : "error");
 }
 
 // ==================== PATCH C: new toggle functions ====================
@@ -3944,6 +4033,58 @@ async function burst4(type){
 
     await fetch("/burst_4", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type, stake, symbol, barrier, duration, duration_unit:"t"})});
     showToast("⚡ BURST 4 SENT (" + type + ")", "warn");
+}
+
+async function confirmHalfAutoKoolkid(){
+    const under1Node = document.getElementById("halfAutoStakeUnder1Koolkid");
+    const over2Node = document.getElementById("halfAutoStakeOver2Koolkid");
+    const over8Node = document.getElementById("halfAutoStakeOver8Koolkid");
+    const under7Node = document.getElementById("halfAutoStakeUnder7Koolkid");
+    if(!under1Node || !over2Node || !over8Node || !under7Node) return;
+
+    const stakeDraft = {
+        under1: under1Node.value,
+        over2: over2Node.value,
+        over8: over8Node.value,
+        under7: under7Node.value,
+    };
+
+    const symbolNode = document.getElementById("symbol");
+    const payload = {
+        symbol: symbolNode ? symbolNode.value : "R_25",
+        duration: getManualDurationTicks(),
+        duration_unit: "t",
+        fallback_stake: (stakeInput && stakeInput.value) || "1",
+        under1_stake: stakeDraft.under1,
+        over2_stake: stakeDraft.over2,
+        over8_stake: stakeDraft.over8,
+        under7_stake: stakeDraft.under7,
+    };
+
+    try{
+        const res = await fetch("/koolkid_half_auto", {
+            method:"POST",
+            headers:{"Content-Type":"application/json"},
+            body:JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if(res.ok && data.status === "success"){
+            saveHalfAutoStakeDraftKoolkid(stakeDraft);
+            hideHalfAutoPopupKoolkid();
+            showToast(data.message || "HALF AUTO sent", "success");
+            return;
+        }
+        if(res.ok && data.status === "partial"){
+            saveHalfAutoStakeDraftKoolkid(stakeDraft);
+            hideHalfAutoPopupKoolkid();
+            showToast(data.message || "HALF AUTO partially sent", "warn");
+            return;
+        }
+        showToast((data && data.message) || "HALF AUTO failed", "error");
+    }catch(e){
+        console.error(e);
+        showToast("HALF AUTO request error", "error");
+    }
 }
 
 async function humanX(){

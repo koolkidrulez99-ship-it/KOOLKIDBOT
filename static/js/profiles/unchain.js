@@ -1471,12 +1471,7 @@
   }
 
   function attachKoolkidModal(root) {
-    const modal = el("unchainKoolkidBody");
-    if (!modal) return;
-    const host = (root && root.querySelector ? root.querySelector(".unchain-card--execute") : null)
-      || document.querySelector(".unchain-card--execute");
-    if (!host || modal.parentElement === host) return;
-    host.appendChild(modal);
+    return;
   }
 
   function bindKoolkidModal() {
@@ -2236,7 +2231,6 @@
         }
       }, "unchain_action_clicks_v2");
     }
-    attachKoolkidModal(root);
     applyDurationPresets(true);
     bindFormInputs();
     applyAutoSlBtn();

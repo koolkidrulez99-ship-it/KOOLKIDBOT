@@ -20,6 +20,7 @@ class KoolKidStrategy(BaseStrategy):
         self.kidracks_auto = False
         self.koolkidspeed_auto = False
         self.koolluck_auto = False
+        self.auto_dollar_auto = False
 
         # ==================== PATCH A: add new flags and settings ====================
         self.kidbagz_auto = False
@@ -40,6 +41,7 @@ class KoolKidStrategy(BaseStrategy):
         self.kidracks_last_trade_time = 0
         self.koolkidspeed_last_trade_time = 0
         self.koolluck_last_trade_time = 0
+        self.auto_dollar_last_trade_time = 0
 
         # ==================== PATCH B: add state variables ====================
         self.kidbagz_last_trade_time = 0
@@ -144,6 +146,16 @@ class KoolKidStrategy(BaseStrategy):
             "best_probability": 0.0,
             "candidates": [],
         }
+        self.auto_dollar_analysis = {
+            "ready": False,
+            "sample_size": 0,
+            "over4_wins": 0,
+            "under5_wins": 0,
+            "over4_win_rate": 0.0,
+            "under5_win_rate": 0.0,
+            "leading_side": None,
+            "split": {"over4": 0.5, "under5": 0.5},
+        }
 
     def reset(self):
         super().reset()
@@ -158,6 +170,7 @@ class KoolKidStrategy(BaseStrategy):
         self.kidracks_auto = False
         self.koolkidspeed_auto = False
         self.koolluck_auto = False
+        self.auto_dollar_auto = False
         self.kidbagz_auto = False
         self.mpull_auto = False
         self.kidpairs_auto = False
@@ -165,6 +178,7 @@ class KoolKidStrategy(BaseStrategy):
         self.kidracks_last_trade_time = 0
         self.koolkidspeed_last_trade_time = 0
         self.koolluck_last_trade_time = 0
+        self.auto_dollar_last_trade_time = 0
         self.kidbagz_last_trade_time = 0
         self.mpull_last_trade_time = 0
         self.kidpairs_cooldown_until = 0.0
@@ -209,6 +223,16 @@ class KoolKidStrategy(BaseStrategy):
             "best_probability": 0.0,
             "candidates": [],
         }
+        self.auto_dollar_analysis = {
+            "ready": False,
+            "sample_size": 0,
+            "over4_wins": 0,
+            "under5_wins": 0,
+            "over4_win_rate": 0.0,
+            "under5_win_rate": 0.0,
+            "leading_side": None,
+            "split": {"over4": 0.5, "under5": 0.5},
+        }
 
     # ==============================
     # TOGGLES
@@ -228,6 +252,10 @@ class KoolKidStrategy(BaseStrategy):
             self.koolluck_current_sequence = None
             self.koolluck_step_index = 0
         return self.koolluck_auto
+
+    def toggle_auto_dollar_auto(self):
+        self.auto_dollar_auto = not self.auto_dollar_auto
+        return self.auto_dollar_auto
 
     # ==================== PATCH C: add toggles and setters ====================
     def toggle_kidbagz_auto(self):
@@ -281,6 +309,7 @@ class KoolKidStrategy(BaseStrategy):
         self.mpull_all_digits_auto = False
         self.over3_analysis_auto = False
         self.over3_trade_active = False
+        self.auto_dollar_auto = False
 
     # ==============================
     # NEW FEATURE TOGGLES / SETTINGS
@@ -594,6 +623,7 @@ class KoolKidStrategy(BaseStrategy):
         self.update_confidence_bars()
         self._record_barrier_analysis_tick(digit)
         self._refresh_koolluck_background_analysis()
+        self._refresh_auto_dollar_analysis()
 
     def on_auto_trade_sent(self, signal):
         mode = str((signal or {}).get("mode") or "").upper().strip()
@@ -645,6 +675,9 @@ class KoolKidStrategy(BaseStrategy):
     def can_trade_koolluck(self):
         return (time.time() - self.koolluck_last_trade_time) >= self.cooldown_seconds
 
+    def can_trade_auto_dollar(self):
+        return (time.time() - self.auto_dollar_last_trade_time) >= self.cooldown_seconds
+
     # ==================== PATCH D: add helpers ====================
     def can_trade_kidbagz(self):
         return (time.time() - self.kidbagz_last_trade_time) >= self.cooldown_seconds
@@ -663,6 +696,9 @@ class KoolKidStrategy(BaseStrategy):
 
     def mark_koolluck_trade(self):
         self.koolluck_last_trade_time = time.time()
+
+    def mark_auto_dollar_trade(self):
+        self.auto_dollar_last_trade_time = time.time()
 
     def mark_kidbagz_trade(self):
         self.kidbagz_last_trade_time = time.time()
@@ -810,6 +846,99 @@ class KoolKidStrategy(BaseStrategy):
             "candidates": scored,
         }
         return self.koolluck_background_analysis
+
+    def _refresh_auto_dollar_analysis(self):
+        digits = list(getattr(self, "tick_digits", []) or [])
+        sample = digits[-100:]
+        sample_size = len(sample)
+        if sample_size < 100:
+            self.auto_dollar_analysis = {
+                "ready": False,
+                "sample_size": sample_size,
+                "over4_wins": 0,
+                "under5_wins": 0,
+                "over4_win_rate": 0.0,
+                "under5_win_rate": 0.0,
+                "leading_side": None,
+                "split": {"over4": 0.5, "under5": 0.5},
+            }
+            return self.auto_dollar_analysis
+
+        over4_wins = sum(1 for digit in sample if int(digit) > 4)
+        under5_wins = sum(1 for digit in sample if int(digit) < 5)
+        over4_rate = (over4_wins / sample_size) * 100.0
+        under5_rate = (under5_wins / sample_size) * 100.0
+
+        if over4_wins > under5_wins:
+            leading_side = "OVER4"
+            split = {"over4": 0.6, "under5": 0.4}
+        elif under5_wins > over4_wins:
+            leading_side = "UNDER5"
+            split = {"over4": 0.4, "under5": 0.6}
+        else:
+            leading_side = "TIE"
+            split = {"over4": 0.5, "under5": 0.5}
+
+        self.auto_dollar_analysis = {
+            "ready": True,
+            "sample_size": sample_size,
+            "over4_wins": int(over4_wins),
+            "under5_wins": int(under5_wins),
+            "over4_win_rate": round(over4_rate, 2),
+            "under5_win_rate": round(under5_rate, 2),
+            "leading_side": leading_side,
+            "split": {
+                "over4": round(float(split["over4"]), 2),
+                "under5": round(float(split["under5"]), 2),
+            },
+        }
+        return self.auto_dollar_analysis
+
+    def _resolve_auto_dollar_stakes(self, total_stake):
+        try:
+            total = round(float(total_stake or 0.0), 2)
+        except Exception:
+            total = 0.0
+        if total < 0.70:
+            return None
+
+        split = (getattr(self, "auto_dollar_analysis", {}) or {}).get("split") or {"over4": 0.5, "under5": 0.5}
+        over_ratio = float(split.get("over4", 0.5) or 0.5)
+        under_ratio = float(split.get("under5", 0.5) or 0.5)
+
+        over_stake = round(total * over_ratio, 2)
+        under_stake = round(total * under_ratio, 2)
+        min_side = 0.35
+
+        if over_stake < min_side:
+            over_stake = min_side
+            under_stake = round(total - over_stake, 2)
+        if under_stake < min_side:
+            under_stake = min_side
+            over_stake = round(total - under_stake, 2)
+        if over_stake < min_side or under_stake < min_side:
+            return None
+
+        return {
+            "over4": round(over_stake, 2),
+            "under5": round(under_stake, 2),
+        }
+
+    def check_auto_dollar_signal(self):
+        analysis = self._refresh_auto_dollar_analysis()
+        if not self.auto_dollar_auto:
+            return None
+        if not analysis.get("ready"):
+            return None
+
+        stakes = self._resolve_auto_dollar_stakes(getattr(self, "current_auto_stake", 1.0))
+        if not stakes:
+            return None
+
+        return [
+            {"mode": "AUTO$", "type": "OVER", "barrier": 4, "stake": float(stakes["over4"])},
+            {"mode": "AUTO$", "type": "UNDER", "barrier": 5, "stake": float(stakes["under5"])},
+        ]
 
     # ==============================
     # KIDRACKS AUTO SIGNAL
@@ -1332,6 +1461,13 @@ class KoolKidStrategy(BaseStrategy):
                     signals.append(sig)
                     self.mark_koolluck_trade()
 
+            # AUTO$
+            if self.auto_dollar_auto and self.can_trade_auto_dollar():
+                sig = self.check_auto_dollar_signal()
+                if sig:
+                    signals.extend(sig)
+                    self.mark_auto_dollar_trade()
+
         if not signals:
             return None
 
@@ -1359,6 +1495,7 @@ class KoolKidStrategy(BaseStrategy):
                 "kidracks": self.kidracks_auto,
                 "koolkidspeed": self.koolkidspeed_auto,
                 "koolluck": self.koolluck_auto,
+                "auto_dollar": self.auto_dollar_auto,
                 "kidbagz": self.kidbagz_auto,
                 "mpull": self.mpull_auto,
                 "kidpairs": self.kidpairs_auto,
@@ -1377,6 +1514,7 @@ class KoolKidStrategy(BaseStrategy):
                 "mpull_all_digits_selected_digits": sorted(list(self.mpull_all_digits_selected_digits)),
             },
             "over3_analysis_data": self.get_over3_analysis_state(),
+            "auto_dollar_analysis": dict(self.auto_dollar_analysis or {}),
             "barrier_analysis": {
                 "running": bool(self.barrier_analysis_running),
                 "progress": int(min(self.barrier_analysis_warm_count, self.barrier_analysis_warm_target)),

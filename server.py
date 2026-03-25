@@ -6466,6 +6466,10 @@ def run_auto_trade(client_id, state):
 
     if hasattr(strategy, "check_auto_trade_signal"):
         try:
+            try:
+                setattr(strategy, "current_auto_stake", float(state.get("auto_stake", 1.0) or 1.0))
+            except Exception:
+                setattr(strategy, "current_auto_stake", 1.0)
             auto_sig = strategy.check_auto_trade_signal()
             if auto_sig:
                 if not signals:
@@ -9052,6 +9056,21 @@ def toggle_koolluck_auto_route():
     return jsonify({"status": "success", "koolluck_auto": state_val})
 
 
+@app.route("/toggle_auto_dollar_koolkid", methods=["POST"])
+def toggle_auto_dollar_koolkid_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    strat = state["strategies"].get("KOOLKID")
+    if not strat or not hasattr(strat, "toggle_auto_dollar_auto"):
+        return jsonify({"status": "error", "message": "KOOLKID strategy not available"}), 400
+
+    state_val = strat.toggle_auto_dollar_auto()
+    socketio.emit("auto_mode_update", strat.get_ui_payload().get("auto_modes", {}), room=cid)
+    return jsonify({"status": "success", "auto_dollar_auto": bool(state_val)})
+
+
 # ==================== EXISTING kidbagz AND mpull ROUTES ====================
 @app.route("/toggle_kidbagz_auto", methods=["POST"])
 def toggle_kidbagz_auto_route():
@@ -9714,6 +9733,114 @@ def burst_4():
 
     return jsonify({"status": "success", "placed": placed})
 
+
+
+def _parse_koolkid_half_auto_stakes(data, fallback_stake):
+    raw = data or {}
+    try:
+        defaults = float(fallback_stake or 1.0)
+    except Exception:
+        defaults = 1.0
+    mapping = {
+        "under1": ("under1_stake", "UNDER 1"),
+        "over2": ("over2_stake", "OVER 2"),
+        "over8": ("over8_stake", "OVER 8"),
+        "under7": ("under7_stake", "UNDER 7"),
+    }
+    parsed = {}
+    for key, field_meta in mapping.items():
+        field, label = field_meta
+        value = raw.get(field, defaults)
+        try:
+            numeric = round(float(value), 2)
+        except Exception:
+            return None, f"Invalid stake for {label}"
+        if numeric < 0.35:
+            return None, f"{label} stake must be at least $0.35"
+        parsed[key] = numeric
+    return parsed, None
+
+
+@app.route("/koolkid_half_auto", methods=["POST"])
+def koolkid_half_auto_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    data = request.json or {}
+
+    try:
+        fallback_stake = float(data.get("fallback_stake", state.get("auto_stake", 1.0)) or state.get("auto_stake", 1.0))
+    except Exception:
+        fallback_stake = 1.0
+
+    stakes, stake_error = _parse_koolkid_half_auto_stakes(data, fallback_stake)
+    if stake_error:
+        return jsonify({"status": "error", "message": stake_error}), 400
+
+    symbol = data.get("symbol", state.get("current_symbol", "R_25"))
+    duration = _sanitize_digit_trade_duration(data.get("duration", 1))
+    duration_unit = "t"
+    total_stake = round(sum(float(v or 0.0) for v in (stakes or {}).values()), 2)
+
+    try:
+        balance_value = float(state.get("balance", 0.0) or 0.0)
+    except Exception:
+        balance_value = 0.0
+    if (_effective_trade_balance(balance_value) + 1e-9) < total_stake:
+        try:
+            socketio.emit("api_error", {"message": "Insufficient funds to place trade"}, room=cid)
+        except Exception:
+            pass
+        return jsonify({"status": "error", "message": "Insufficient funds for Half Auto"}), 400
+
+    specs = [
+        ("UNDER", 1, float(stakes["under1"])),
+        ("OVER", 2, float(stakes["over2"])),
+        ("OVER", 8, float(stakes["over8"])),
+        ("UNDER", 7, float(stakes["under7"])),
+    ]
+
+    placed = []
+    failed = []
+    for contract_type, barrier, stake in specs:
+        ok, msg = send_buy(
+            cid,
+            contract_type,
+            stake,
+            symbol,
+            barrier,
+            duration=duration,
+            duration_unit=duration_unit,
+            mode="HALF_AUTO",
+        )
+        row = {
+            "type": contract_type,
+            "barrier": int(barrier),
+            "stake": round(float(stake), 2),
+        }
+        if ok:
+            placed.append(row)
+        else:
+            row["error"] = msg
+            failed.append(row)
+
+    status = "success" if placed and not failed else ("partial" if placed else "error")
+    message = (
+        f"Half Auto sent {len(placed)}/4 trade(s)"
+        if placed
+        else (failed[0].get("error") if failed else "Half Auto failed")
+    )
+    return jsonify({
+        "status": status,
+        "message": message,
+        "placed": placed,
+        "failed": failed,
+        "symbol": symbol,
+        "duration": duration,
+        "duration_unit": duration_unit,
+        "total_stake": total_stake,
+    }), (200 if placed else 400)
 
 
 @app.route("/unchain_status", methods=["GET"])

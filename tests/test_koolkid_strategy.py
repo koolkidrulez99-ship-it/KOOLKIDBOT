@@ -40,3 +40,54 @@ def test_koolluck_scores_over3_as_tradable_when_upper_side_is_stronger():
     assert analysis["ready"] is True
     assert over3["qualified"] is True
     assert over3["probability"] > 60.0
+
+
+def test_auto_dollar_background_analysis_tracks_leading_side_while_off():
+    strat = KoolKidStrategy()
+    digits = ([0] * 8) + ([1] * 8) + ([2] * 9) + ([3] * 9) + ([4] * 10) + ([5] * 11) + ([6] * 13) + ([7] * 10) + ([8] * 11) + ([9] * 11)
+
+    _feed_digits(strat, digits)
+
+    analysis = strat.auto_dollar_analysis
+    assert analysis["ready"] is True
+    assert analysis["sample_size"] == 100
+    assert analysis["leading_side"] == "OVER4"
+    assert analysis["over4_wins"] == 56
+    assert analysis["under5_wins"] == 44
+    assert analysis["split"] == {"over4": 0.6, "under5": 0.4}
+    assert strat.check_auto_dollar_signal() is None
+
+
+def test_auto_dollar_returns_two_weighted_signals_when_enabled():
+    strat = KoolKidStrategy()
+    digits = ([0] * 8) + ([1] * 8) + ([2] * 9) + ([3] * 9) + ([4] * 10) + ([5] * 11) + ([6] * 13) + ([7] * 10) + ([8] * 11) + ([9] * 11)
+
+    _feed_digits(strat, digits)
+    strat.auto_dollar_auto = True
+    strat.current_auto_stake = 1.0
+
+    signals = strat.check_auto_dollar_signal()
+
+    assert signals == [
+        {"mode": "AUTO$", "type": "OVER", "barrier": 4, "stake": 0.6},
+        {"mode": "AUTO$", "type": "UNDER", "barrier": 5, "stake": 0.4},
+    ]
+
+
+def test_auto_dollar_uses_even_split_on_tie():
+    strat = KoolKidStrategy()
+    digits = ([0] * 10) + ([1] * 10) + ([2] * 10) + ([3] * 10) + ([4] * 10) + ([5] * 10) + ([6] * 10) + ([7] * 10) + ([8] * 10) + ([9] * 10)
+
+    _feed_digits(strat, digits)
+    strat.auto_dollar_auto = True
+    strat.current_auto_stake = 1.0
+
+    analysis = strat.auto_dollar_analysis
+    signals = strat.check_auto_dollar_signal()
+
+    assert analysis["leading_side"] == "TIE"
+    assert analysis["split"] == {"over4": 0.5, "under5": 0.5}
+    assert signals == [
+        {"mode": "AUTO$", "type": "OVER", "barrier": 4, "stake": 0.5},
+        {"mode": "AUTO$", "type": "UNDER", "barrier": 5, "stake": 0.5},
+    ]
