@@ -1,4 +1,5 @@
 import json
+import time
 
 import pytest
 from types import SimpleNamespace
@@ -10,9 +11,11 @@ from server import (
     _decorate_unchain_active_entry_countdown,
     _format_unchain_barrier,
     _format_unchain_market_default_barrier,
+    _get_profile_trade_history_snapshot,
     _get_unchain_visible_barrier,
     _half_unchain_barrier,
     _is_contract_settled_fast,
+    _serialize_profile_trade_history_entry,
     _send_unchain_hl_trade,
     _upsert_unchain_active_contract,
     process_contract,
@@ -197,6 +200,39 @@ def test_apply_unchain_market_default_barriers_updates_main_and_koolkid_setup(mo
     assert state["unchain_hl"]["market_default_key"] == "R_75|5|T"
 
 
+def test_apply_unchain_market_default_barriers_reverses_koolkid_barriers_when_enabled(monkeypatch):
+    state = {
+        "ws_connected": True,
+        "ws": object(),
+        "current_symbol": "R_75",
+        "unchain_hl": {
+            "higher_barrier": "+0.12",
+            "lower_barrier": "-0.12",
+            "higher_stake": 1.0,
+            "duration": 5,
+            "duration_unit": "t",
+            "koolkid_reversal_enabled": True,
+        },
+    }
+
+    monkeypatch.setattr(
+        server,
+        "_fetch_unchain_market_default_barrier",
+        lambda *args, **kwargs: ("+0.33", None),
+    )
+
+    ok, info = _apply_unchain_market_default_barriers(state, "R_75")
+
+    assert ok is True
+    assert info == "+0.33 / -0.33"
+    assert state["unchain_hl"]["higher_barrier"] == "+0.33"
+    assert state["unchain_hl"]["lower_barrier"] == "-0.33"
+    assert state["unchain_hl"]["koolkid_higher_barrier"] == "-0.33"
+    assert state["unchain_hl"]["koolkid_lower_barrier"] == "+0.33"
+    assert state["unchain_hl"]["market_default_symbol"] == "R_75"
+    assert state["unchain_hl"]["market_default_key"] == "R_75|5|T"
+
+
 def test_sync_unchain_market_default_barriers_only_refreshes_unsynced_symbol(monkeypatch):
     state = {
         "ws_connected": True,
@@ -293,6 +329,47 @@ def test_sync_unchain_market_default_barriers_force_refreshes_on_login(monkeypat
     assert info == "+0.33 / -0.33"
     assert state["unchain_hl"]["higher_barrier"] == "+0.33"
     assert state["unchain_hl"]["lower_barrier"] == "-0.33"
+
+
+def test_serialize_profile_trade_history_entry_preserves_real_contract_id():
+    entry = {
+        "contract_id": 123456,
+        "time": "10:00:00",
+        "result": "WIN",
+        "profit": 1.25,
+        "stake": 1.0,
+        "symbol": "R_10",
+        "type": "DIFFERS",
+    }
+
+    snapshot = _serialize_profile_trade_history_entry("JOKERJOE", entry, 0)
+
+    assert snapshot["profile"] == "JOKERJOE"
+    assert snapshot["contract_id"] == "123456"
+    assert snapshot["result"] == "WIN"
+    assert snapshot["pending"] is False
+
+
+def test_get_profile_trade_history_snapshot_builds_stable_ids_for_entries_without_contract_id():
+    trade_entry = {
+        "time": "10:15:00",
+        "result": "LOSS",
+        "profit": -1.0,
+        "stake": 1.0,
+        "symbol": "R_25",
+        "type": "OVER",
+    }
+    strat = SimpleNamespace(trade_history=[trade_entry])
+    state = {"strategies": {"KOOLKID": strat}}
+
+    first = _get_profile_trade_history_snapshot(state, "KOOLKID")
+    second = _get_profile_trade_history_snapshot(state, "KOOLKID")
+
+    first_item = first["KOOLKID"][0]
+    second_item = second["KOOLKID"][0]
+    assert first_item["contract_id"].startswith("SNAPSHOT-KOOLKID-")
+    assert first_item["contract_id"] == second_item["contract_id"]
+    assert first_item["result"] == "LOSS"
 
 
 def test_process_contract_forces_settled_result_off_pending_labels(monkeypatch):
@@ -413,6 +490,158 @@ def test_process_contract_extracts_exit_digit_from_current_spot_display_value(mo
     assert trade_events
     assert trade_events[-1]["contract_id"] == 54321
     assert trade_events[-1]["exit_digit"] == 4
+
+
+def test_process_contract_does_not_double_apply_profit_after_fresh_balance_update(monkeypatch):
+    emitted = []
+
+    class DummyStrategy:
+        def __init__(self):
+            self.last_trade_entry = {}
+
+        def on_contract(self, contract, balance):
+            self.last_trade_entry = {
+                "time": "10:00:00",
+                "result": "LOSS",
+                "profit": round(float(contract.get("profit", 0) or 0), 2),
+                "symbol": contract.get("underlying", ""),
+                "balance_seen": balance,
+            }
+
+        def get_last_trade_entry(self):
+            return self.last_trade_entry
+
+    state = {
+        "balance": 100.0,
+        "balance_updated_at": time.time(),
+        "active_profile": "KOOLKID",
+        "strategies": {"KOOLKID": DummyStrategy()},
+        "contract_meta": {
+            24680: {
+                "profile": "KOOLKID",
+                "type": "OVER",
+                "stake": 1.0,
+                "symbol": "R_10",
+                "time": "09:59:00",
+                "duration": 5,
+                "duration_unit": "t",
+            }
+        },
+    }
+
+    monkeypatch.setitem(server.clients, "test-fresh-balance", state)
+    monkeypatch.setattr(server.socketio, "emit", lambda event, payload, room=None: emitted.append((event, payload, room)))
+    monkeypatch.setattr(server, "send_stats_update", lambda client_id: None)
+
+    try:
+        process_contract(
+            "test-fresh-balance",
+            {
+                "contract_id": 24680,
+                "status": "sold",
+                "profit": -5.0,
+                "is_sold": True,
+                "underlying": "R_10",
+            },
+        )
+    finally:
+        server.clients.pop("test-fresh-balance", None)
+
+    assert state["balance"] == pytest.approx(100.0)
+    trade_events = [payload for event, payload, _room in emitted if event == "trade_result"]
+    assert trade_events
+    assert trade_events[-1]["profit"] == -5.0
+
+
+def test_process_contract_ignores_duplicate_non_unchain_settlement(monkeypatch):
+    emitted = []
+
+    class DummyStrategy:
+        def __init__(self):
+            self.calls = 0
+            self.last_trade_entry = {}
+
+        def on_contract(self, contract, balance):
+            self.calls += 1
+            self.last_trade_entry = {
+                "time": "10:00:00",
+                "result": "LOSS",
+                "profit": round(float(contract.get("profit", 0) or 0), 2),
+                "symbol": contract.get("underlying", ""),
+                "balance_seen": balance,
+            }
+
+        def get_last_trade_entry(self):
+            return self.last_trade_entry
+
+    strategy = DummyStrategy()
+    state = {
+        "balance": 100.0,
+        "balance_updated_at": 0.0,
+        "active_profile": "KOOLKID",
+        "strategies": {"KOOLKID": strategy},
+        "contract_meta": {
+            77777: {
+                "profile": "KOOLKID",
+                "type": "OVER",
+                "stake": 1.0,
+                "symbol": "R_10",
+                "time": "09:59:00",
+                "duration": 5,
+                "duration_unit": "t",
+            }
+        },
+    }
+
+    monkeypatch.setitem(server.clients, "test-duplicate-regular", state)
+    monkeypatch.setattr(server.socketio, "emit", lambda event, payload, room=None: emitted.append((event, payload, room)))
+    monkeypatch.setattr(server, "send_stats_update", lambda client_id: None)
+
+    contract = {
+        "contract_id": 77777,
+        "status": "sold",
+        "profit": -4.0,
+        "is_sold": True,
+        "underlying": "R_10",
+    }
+
+    try:
+        process_contract("test-duplicate-regular", contract)
+        process_contract("test-duplicate-regular", contract)
+    finally:
+        server.clients.pop("test-duplicate-regular", None)
+
+    assert strategy.calls == 1
+    assert state["balance"] == pytest.approx(96.0)
+    trade_events = [payload for event, payload, _room in emitted if event == "trade_result"]
+    assert len(trade_events) == 1
+
+
+def test_send_buy_allows_stake_equal_to_rounded_balance():
+    class DummyWs:
+        def __init__(self):
+            self.sent = []
+
+        def send(self, payload):
+            self.sent.append(json.loads(payload))
+
+    cid = "test-koolkid-send-buy-rounded"
+    server.clients.pop(cid, None)
+    server.init_client(cid)
+    state = server.clients[cid]
+    state["ws_connected"] = True
+    state["ws"] = DummyWs()
+    state["balance"] = 99.995
+    state["active_profile"] = "KOOLKID"
+
+    try:
+        ok, msg = server.send_buy(cid, "OVER", 100.0, "R_10", 5)
+    finally:
+        server.clients.pop(cid, None)
+
+    assert ok is True
+    assert msg == "Trade sent"
+    assert len(state["ws"].sent) == 1
 
 
 def test_send_unchain_hl_trade_uses_half_barrier_setting(monkeypatch):

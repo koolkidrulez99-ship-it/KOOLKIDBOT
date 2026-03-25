@@ -67,9 +67,10 @@ def test_start_seqvix_jokerjoe_slow_pool_only_uses_non_1s_markets(jokerjoe_clien
     assert run["scan_pool"] == "SLOW"
     assert run["market_limit"] == len(server.SEQVIX_JOKERJOE_SLOW_MARKETS)
     assert run["scan_markets"] == server.SEQVIX_JOKERJOE_SLOW_MARKETS
-    assert run["total"] == len(server.SEQVIX_JOKERJOE_SLOW_MARKETS) * 2
+    assert run["requested_market_limit"] == 10
+    assert run["total"] == 20
     assert set(run["active_syms"]) == set(server.SEQVIX_JOKERJOE_SLOW_MARKETS)
-    assert run["remaining_markets"] == []
+    assert run["remaining_markets"] == server.SEQVIX_JOKERJOE_SLOW_MARKETS
     assert len(state["ws"].sent) == len(server.SEQVIX_JOKERJOE_SLOW_MARKETS) - 1
 
 
@@ -101,6 +102,25 @@ def test_endless_slow_pool_stays_within_slow_markets(jokerjoe_client):
     assert set(run["active_syms"]) == set(server.SEQVIX_JOKERJOE_SLOW_MARKETS)
     assert run["remaining_markets"] == []
     assert len(state["ws"].sent) == len(server.SEQVIX_JOKERJOE_SLOW_MARKETS) - 1
+
+
+def test_slow_pool_non_endless_refills_from_rotation_queue_after_completion(jokerjoe_client):
+    cid, state = jokerjoe_client
+
+    server.start_seqvix_jokerjoe(state, cid, "10", trade_mode="1", scan_pool="SLOW")
+
+    run = state["seqvix"]["JOKERJOE"]
+    symbol = server.SEQVIX_JOKERJOE_SLOW_MARKETS[0]
+    assert symbol in run["active_syms"]
+    run["active_contract_id"] = "cid-slow-1"
+    run["active_symbol"] = symbol
+
+    meta = {"mode": server._seqvix_jokerjoe_mode_string(symbol, 4)}
+    assert server._seqvix_jokerjoe_on_contract_settled(state, cid, "cid-slow-1", meta) is True
+
+    assert run["done"] == 1
+    assert len(run["active_syms"]) == len(server.SEQVIX_JOKERJOE_SLOW_MARKETS)
+    assert symbol in run["active_syms"]
 
 
 def test_endless_market_mode_replaces_finished_market_with_next_unused(jokerjoe_client):
@@ -319,3 +339,14 @@ def test_send_buy_with_profile_emits_insufficient_funds_error(jokerjoe_client, m
     assert ok is False
     assert "Insufficient" in msg
     assert any(event == "api_error" and "Insufficient funds" in str(payload.get("message", "")) for event, payload, _room in emitted)
+
+
+def test_send_buy_with_profile_allows_stake_equal_to_rounded_balance(jokerjoe_client):
+    cid, state = jokerjoe_client
+    state["balance"] = 99.995
+
+    ok, msg = server.send_buy_with_profile(cid, "JOKERJOE", "DIFFERS", 100.0, "R_10", 5)
+
+    assert ok is True
+    assert msg == "Trade sent"
+    assert len(state["ws"].sent) == 1

@@ -1,4 +1,4 @@
-from collections import deque
+from collections import deque, Counter
 from strategies.base import BaseStrategy
 import time
 import random
@@ -137,6 +137,13 @@ class KoolKidStrategy(BaseStrategy):
         ]
         self.koolluck_current_sequence = None
         self.koolluck_step_index = 0
+        self.koolluck_probability_threshold = 60.0
+        self.koolluck_background_analysis = {
+            "ready": False,
+            "best_signal": None,
+            "best_probability": 0.0,
+            "candidates": [],
+        }
 
     def reset(self):
         super().reset()
@@ -196,6 +203,12 @@ class KoolKidStrategy(BaseStrategy):
 
         self.koolluck_current_sequence = None
         self.koolluck_step_index = 0
+        self.koolluck_background_analysis = {
+            "ready": False,
+            "best_signal": None,
+            "best_probability": 0.0,
+            "candidates": [],
+        }
 
     # ==============================
     # TOGGLES
@@ -580,6 +593,7 @@ class KoolKidStrategy(BaseStrategy):
         self.pattern_buffer.append(digit)
         self.update_confidence_bars()
         self._record_barrier_analysis_tick(digit)
+        self._refresh_koolluck_background_analysis()
 
     def on_auto_trade_sent(self, signal):
         mode = str((signal or {}).get("mode") or "").upper().strip()
@@ -655,6 +669,147 @@ class KoolKidStrategy(BaseStrategy):
 
     def mark_mpull_trade(self):
         self.mpull_last_trade_time = time.time()
+
+    def _koolluck_candidate_defs(self):
+        seen = set()
+        ordered = []
+        for seq in getattr(self, "koolluck_sequences", []) or []:
+            for step in seq or []:
+                try:
+                    key = (str(step.get("type") or "").upper().strip(), int(step.get("barrier")))
+                except Exception:
+                    continue
+                if key in seen:
+                    continue
+                seen.add(key)
+                ordered.append({"type": key[0], "barrier": key[1]})
+        return ordered
+
+    def _get_live_tick_percentages(self):
+        digits = [int(d) for d in list(getattr(self, "tick_digits", [])) if d is not None]
+        if len(digits) < 100:
+            return None, None
+        counter = Counter(digits[-100:])
+        counts = {digit: int(counter.get(digit, 0)) for digit in range(10)}
+        percentages = {digit: (counts[digit] / 100.0) * 100.0 for digit in range(10)}
+        return counts, percentages
+
+    def _koolluck_strength_bands(self, contract_type, barrier):
+        kind = str(contract_type or "").upper().strip()
+        barrier = int(barrier)
+        if kind == "OVER":
+            bands = {
+                0: (list(range(0, 2)), list(range(2, 10))),
+                1: (list(range(0, 3)), list(range(3, 10))),
+                2: (list(range(0, 4)), list(range(4, 10))),
+                3: (list(range(0, 5)), list(range(5, 10))),
+                5: (list(range(1, 7)), list(range(7, 10))),
+            }
+            return bands.get(
+                barrier,
+                (list(range(0, min(9, barrier + 1) + 1)), list(range(min(9, barrier + 2), 10))),
+            )
+
+        bands = {
+            9: (list(range(8, 10)), list(range(0, 8))),
+            8: (list(range(7, 10)), list(range(0, 7))),
+            7: (list(range(6, 10)), list(range(0, 6))),
+        }
+        return bands.get(barrier, (list(range(max(0, barrier - 1), 10)), list(range(0, max(0, barrier - 1)))))
+
+    def _score_koolluck_candidate(self, contract_type, barrier, counts, percentages):
+        kind = str(contract_type or "").upper().strip()
+        barrier = int(barrier)
+        if kind == "OVER":
+            losing_digits = list(range(0, barrier + 1))
+            winning_digits = list(range(barrier + 1, 10))
+        else:
+            losing_digits = list(range(barrier, 10))
+            winning_digits = list(range(0, barrier))
+
+        if not losing_digits or not winning_digits:
+            return None
+
+        losing_pct = sum(float(percentages.get(d, 0.0)) for d in losing_digits)
+        winning_pct = sum(float(percentages.get(d, 0.0)) for d in winning_digits)
+        losing_avg_pct = losing_pct / max(1, len(losing_digits))
+        losing_max_pct = max(float(percentages.get(d, 0.0)) for d in losing_digits)
+
+        opposing_band, favorable_band = self._koolluck_strength_bands(kind, barrier)
+        opposing_pct = sum(float(percentages.get(d, 0.0)) for d in opposing_band)
+        favorable_pct = sum(float(percentages.get(d, 0.0)) for d in favorable_band)
+        strength_diff = favorable_pct - opposing_pct
+        if strength_diff <= 0:
+            return {
+                "type": kind,
+                "barrier": barrier,
+                "probability": 0.0,
+                "qualified": False,
+                "reason": "favorable side is not stronger",
+            }
+
+        rarity_score = max(0.0, min(100.0, 82.0 - (losing_avg_pct * 5.0) - (losing_max_pct * 1.5)))
+        strength_score = max(0.0, min(100.0, 50.0 + (strength_diff * 2.8)))
+        probability = (winning_pct * 0.68) + (rarity_score * 0.17) + (strength_score * 0.15)
+        qualified = probability >= float(getattr(self, "koolluck_probability_threshold", 60.0))
+
+        return {
+            "type": kind,
+            "barrier": barrier,
+            "probability": round(probability, 2),
+            "qualified": bool(qualified),
+            "reason": "ok" if qualified else "probability below threshold",
+            "winning_pct": round(winning_pct, 2),
+            "losing_pct": round(losing_pct, 2),
+            "losing_avg_pct": round(losing_avg_pct, 2),
+            "favorable_pct": round(favorable_pct, 2),
+            "opposing_pct": round(opposing_pct, 2),
+            "strength_diff": round(strength_diff, 2),
+        }
+
+    def _refresh_koolluck_background_analysis(self):
+        counts, percentages = self._get_live_tick_percentages()
+        if not counts or not percentages:
+            self.koolluck_background_analysis = {
+                "ready": False,
+                "best_signal": None,
+                "best_probability": 0.0,
+                "candidates": [],
+            }
+            return self.koolluck_background_analysis
+
+        scored = []
+        for candidate in self._koolluck_candidate_defs():
+            row = self._score_koolluck_candidate(candidate.get("type"), candidate.get("barrier"), counts, percentages)
+            if row:
+                scored.append(row)
+
+        scored.sort(
+            key=lambda row: (
+                float(row.get("probability", 0.0)),
+                float(row.get("winning_pct", 0.0)),
+                -float(row.get("losing_avg_pct", 100.0)),
+                -int(row.get("barrier", 0)),
+            ),
+            reverse=True,
+        )
+
+        best = scored[0] if scored else None
+        self.koolluck_background_analysis = {
+            "ready": True,
+            "best_signal": (
+                {
+                    "mode": "KOOLLUCK",
+                    "type": str(best.get("type") or "").upper(),
+                    "barrier": int(best.get("barrier", 0)),
+                }
+                if best and best.get("qualified")
+                else None
+            ),
+            "best_probability": float(best.get("probability", 0.0)) if best else 0.0,
+            "candidates": scored,
+        }
+        return self.koolluck_background_analysis
 
     # ==============================
     # KIDRACKS AUTO SIGNAL
@@ -830,39 +985,22 @@ class KoolKidStrategy(BaseStrategy):
         """
         KOOL🍀LUCK:
 
-        - Uses your 5 given sequences.
-        - Always random sequence choice.
-        - Walks the sequence step by step.
-        - Each step: wait until that digit prints, then send that trade.
-        - Then move to next step; when sequence ends, pick a new random one.
+        - Always analyzes the latest 100 ticks in the background.
+        - Scores every KOOLLUCK contract candidate from the KOOLLUCK set.
+        - For UNDER setups, the losing digits must stay weak.
+        - For OVER setups, the losing digits must stay weak and the upper side must stay stronger.
+        - Uses a softer probability model and only trades the best setup above threshold.
+        - Background analysis keeps running even while the button is OFF.
         """
+        analysis = self._refresh_koolluck_background_analysis()
         if not self.koolluck_auto:
             return None
-
-        # If no current sequence or finished → pick new random one
-        if self.koolluck_current_sequence is None or \
-           self.koolluck_step_index >= len(self.koolluck_current_sequence):
-
-            self.koolluck_current_sequence = random.choice(self.koolluck_sequences)
-            self.koolluck_step_index = 0
-
-        step = self.koolluck_current_sequence[self.koolluck_step_index]
-
-        # Only trade when that digit just printed
-        if self.last_tick_digit != step["barrier"]:
+        if not analysis.get("ready"):
             return None
-
-        # Build signal
-        sig = {
-            "mode": "KOOLLUCK",
-            "type": step["type"],
-            "barrier": step["barrier"],
-        }
-
-        # Move to next step for next time
-        self.koolluck_step_index += 1
-
-        return sig
+        best_signal = analysis.get("best_signal")
+        if not best_signal:
+            return None
+        return dict(best_signal)
 
     # ==================== PATCH E: add the three signal functions ====================
     # (These replace any existing ones with the same name; the ones below are the exact versions requested)

@@ -202,6 +202,65 @@ def test_koolkid_hl_uses_saved_real_side_barrier(monkeypatch):
     assert sim["opposite_side"] == "LOWER"
     assert sim["live_barrier"] == "-0.22"
 
+
+def test_koolkid_live_barrier_respects_koolkid_half_toggle():
+    u = {
+        "koolkid_higher_barrier": "+0.20",
+        "koolkid_lower_barrier": "-0.30",
+        "koolkid_half_barrier_enabled": True,
+    }
+
+    assert float(server._get_unchain_koolkid_live_barrier(u, "HIGHER", "t")) == pytest.approx(0.10)
+    assert float(server._get_unchain_koolkid_live_barrier(u, "LOWER", "t")) == pytest.approx(-0.15)
+
+
+def test_koolkid_hl_supports_tick_sim_and_minute_live_units(monkeypatch):
+    state = {
+        "ws_connected": True,
+        "ws": object(),
+        "current_symbol": "R_25",
+        "strategies": {"UNCHAIN": SimpleNamespace(last_price=100.0, tick_count=120)},
+        "unchain_hl": {
+            "koolkid_hl_enabled": True,
+            "higher_stake": 10.0,
+            "lower_stake": 10.0,
+            "higher_barrier": "+0.12",
+            "lower_barrier": "-0.12",
+            "koolkid_sim_duration": 6,
+            "koolkid_sim_duration_unit": "t",
+            "koolkid_live_duration": 2,
+            "koolkid_live_duration_unit": "m",
+            "koolkid_hl_loss_trigger_pct": 50,
+        },
+    }
+    monkeypatch.setattr(server, "_check_unchain_hl_risk_block", lambda state: None)
+    monkeypatch.setattr(server, "_get_open_unchain_active_entries", lambda state: [])
+    monkeypatch.setattr(
+        server,
+        "_get_unchain_bias_payload",
+        lambda state, u=None: {"higher_pct": 35.0, "lower_pct": 65.0},
+    )
+    monkeypatch.setattr(
+        server,
+        "_compute_unchain_auto_metrics",
+        lambda state, u=None: {
+            "ready": True,
+            "avg_abs_tick_movement": 0.02,
+            "current_20_range": 0.18,
+            "compression_score": 35.0,
+        },
+    )
+
+    assert server._run_unchain_koolkid_hl("cid", state) is False
+    sim = state["unchain_hl"]["koolkid_hl_simulation"]
+
+    assert sim is not None
+    assert sim["simulation_duration_unit"] == "t"
+    assert sim["live_duration_unit"] == "m"
+    assert sim["started_tick"] == 120
+    assert sim["check_tick"] == 123
+    assert sim["end_tick"] == 126
+
 def test_koolkid_hl_uses_8_second_check_for_60pct_on_15_second_sim(monkeypatch):
     state = {
         "ws_connected": True,
@@ -355,6 +414,74 @@ def test_koolkid_hl_places_opposite_trade_after_losing_simulation(monkeypatch):
     assert placed[0]["duration"] == 5
     assert placed[0]["respect_half_barrier_toggle"] is False
     assert state["unchain_hl"]["koolkid_hl_simulation"] is None
+
+
+def test_koolkid_hl_uses_selected_live_duration_unit_when_firing(monkeypatch):
+    state = {
+        "ws_connected": True,
+        "ws": object(),
+        "current_symbol": "R_25",
+        "strategies": {
+            "UNCHAIN": SimpleNamespace(
+                last_price=99.7,
+                price_history=[100.5, 100.4, 100.2, 100.0, 99.9, 99.8, 99.7],
+            )
+        },
+        "unchain_hl": {
+            "koolkid_hl_enabled": True,
+            "higher_stake": 10.0,
+            "lower_stake": 10.0,
+            "koolkid_hl_simulation": {
+                "active": True,
+                "side": "HIGHER",
+                "opposite_side": "LOWER",
+                "symbol": "R_25",
+                "stake": 10.0,
+                "sim_barrier": "+0.12",
+                "sim_barrier_mag": 0.12,
+                "live_barrier": "-0.06",
+                "live_barrier_mag": 0.06,
+                "start_price": 100.0,
+                "current_price": 99.7,
+                "started_at": 1.0,
+                "check_at": 2.0,
+                "ends_at": 16.0,
+                "simulation_duration": 15,
+                "simulation_duration_unit": "s",
+                "live_duration": 2,
+                "live_duration_unit": "m",
+                "loss_trigger_pct": 50,
+                "time": "12:00:00",
+                "virtual_contract_id": "UNCHAIN-KOOLKID-HL-SIM",
+            },
+        },
+    }
+    placed = []
+
+    monkeypatch.setattr(server, "_check_unchain_hl_risk_block", lambda state: None)
+    monkeypatch.setattr(server, "_get_open_unchain_active_entries", lambda state: [])
+    monkeypatch.setattr(
+        server,
+        "_compute_unchain_auto_metrics",
+        lambda state, u=None: {
+            "ready": True,
+            "avg_abs_tick_movement": 0.04,
+            "current_20_range": 0.42,
+            "compression_score": 30.0,
+        },
+    )
+    monkeypatch.setattr(server.time, "time", lambda: 9.5)
+
+    def fake_send(client_id, **kwargs):
+        placed.append(kwargs)
+        return True, "ok"
+
+    monkeypatch.setattr(server, "_send_unchain_hl_trade", fake_send)
+
+    assert server._run_unchain_koolkid_hl("cid", state) is True
+    assert len(placed) == 1
+    assert placed[0]["duration"] == 2
+    assert placed[0]["duration_unit"] == "m"
 
 def test_koolkid_hl_60pct_trigger_waits_if_sim_not_losing_enough(monkeypatch):
     state = {
@@ -616,7 +743,7 @@ def test_koolkid_both_starts_dual_simulation(monkeypatch):
     assert {row["side"] for row in sim["sides"]} == {"HIGHER", "LOWER"}
 
 
-def test_koolkid_both_places_reduced_barrier_pair_on_strong_movement(monkeypatch):
+def test_koolkid_both_uses_saved_barriers_on_strong_movement(monkeypatch):
     state = {
         "ws_connected": True,
         "ws": object(),
@@ -697,8 +824,8 @@ def test_koolkid_both_places_reduced_barrier_pair_on_strong_movement(monkeypatch
 
     assert server._run_unchain_koolkid_both("cid", state) is True
     assert len(placed) == 2
-    assert placed[0]["barrier"] == "+0.05"
-    assert placed[1]["barrier"] == "-0.07"
+    assert placed[0]["barrier"] == "+0.1"
+    assert placed[1]["barrier"] == "-0.14"
     assert placed[0]["stake"] == 10.0
     assert placed[1]["stake"] == 10.0
     assert all(call["respect_half_barrier_toggle"] is False for call in placed)
@@ -790,7 +917,7 @@ def test_koolkid_both_uses_progress_to_pass_40pct_gate(monkeypatch):
     assert state["unchain_hl"]["koolkid_both_simulation"] is None
 
 
-def test_koolkid_both_rebalances_60_40_on_directional_flow(monkeypatch):
+def test_koolkid_both_keeps_user_stakes_on_directional_flow(monkeypatch):
     state = {
         "ws_connected": True,
         "ws": object(),
@@ -873,6 +1000,6 @@ def test_koolkid_both_rebalances_60_40_on_directional_flow(monkeypatch):
     assert len(placed) == 2
     assert placed[0]["barrier"] == "+0.1"
     assert placed[1]["barrier"] == "-0.14"
-    assert placed[0]["stake"] == 12.0
-    assert placed[1]["stake"] == 8.0
+    assert placed[0]["stake"] == 10.0
+    assert placed[1]["stake"] == 10.0
     assert state["unchain_hl"]["koolkid_both_simulation"] is None

@@ -1164,6 +1164,7 @@ def init_client(client_id):
             "total_ticks": 0,
         },
         "balance": 0.0,
+        "balance_updated_at": 0.0,
         "session_start_balance": None,
         "auto_stake": 1.0,
         "req_meta": {},          # req_id -> meta
@@ -1244,6 +1245,77 @@ def emit_profile_snapshot(cid):
             emit_jokerjoe_modes(cid, strat)
     except Exception:
         pass
+
+
+def _serialize_profile_trade_history_entry(profile, entry, index):
+    raw = dict(entry or {}) if isinstance(entry, dict) else {}
+    if not raw:
+        return None
+
+    profile_name = str(profile or "").upper().strip() or "KOOLKID"
+    try:
+        profit_value = float(raw.get("profit", 0) or 0)
+    except Exception:
+        profit_value = 0.0
+    try:
+        stake_value = float(raw.get("stake", raw.get("buy_price", 0)) or 0)
+    except Exception:
+        stake_value = 0.0
+
+    result = str(raw.get("result") or ("WIN" if profit_value >= 0 else "LOSS")).upper().strip() or "LOSS"
+    time_text = str(raw.get("time") or raw.get("date_start") or raw.get("purchase_time") or now_time()).strip()
+    symbol = str(raw.get("symbol") or raw.get("underlying") or "").strip()
+    trade_type = str(raw.get("type") or raw.get("contract_type") or "TRADE").strip()
+    contract_id = raw.get("contract_id")
+    if contract_id in (None, ""):
+        seed = f"{profile_name}|{index}|{time_text}|{trade_type}|{symbol}|{profit_value:.2f}|{stake_value:.2f}"
+        contract_id = f"SNAPSHOT-{profile_name}-{hashlib.sha1(seed.encode('utf-8')).hexdigest()[:16]}"
+
+    snapshot = {
+        "profile": profile_name,
+        "contract_id": str(contract_id),
+        "time": time_text,
+        "result": result,
+        "status": result,
+        "pending": False,
+        "profit": round(profit_value, 2),
+        "stake": round(stake_value, 2),
+        "symbol": symbol,
+        "type": trade_type,
+    }
+
+    if raw.get("barrier") not in (None, ""):
+        snapshot["barrier"] = raw.get("barrier")
+    if raw.get("duration") not in (None, ""):
+        snapshot["duration"] = raw.get("duration")
+    if raw.get("duration_unit") not in (None, ""):
+        snapshot["duration_unit"] = raw.get("duration_unit")
+    if raw.get("exit_digit") not in (None, ""):
+        snapshot["exit_digit"] = raw.get("exit_digit")
+    elif raw.get("exitDigit") not in (None, ""):
+        snapshot["exitDigit"] = raw.get("exitDigit")
+    return snapshot
+
+
+def _get_profile_trade_history_snapshot(state, profile=None):
+    strategies = (state or {}).get("strategies") or {}
+    targets = []
+    if profile:
+        targets = [str(profile).upper().strip()]
+    else:
+        targets = [str(name).upper().strip() for name in strategies.keys()]
+
+    snapshots = {}
+    for prof in targets:
+        strat = strategies.get(prof)
+        raw_history = list(getattr(strat, "trade_history", []) or []) if strat else []
+        items = []
+        for idx, entry in enumerate(raw_history):
+            serialized = _serialize_profile_trade_history_entry(prof, entry, idx)
+            if serialized:
+                items.append(serialized)
+        snapshots[prof] = items
+    return snapshots
 
 
 
@@ -1627,6 +1699,40 @@ def _is_insufficient_funds_error(message):
     )
 
 
+def _effective_trade_balance(balance):
+    try:
+        value = max(0.0, float(balance or 0.0))
+    except Exception:
+        value = 0.0
+    return round(value + 1e-9, 2)
+
+
+def _resolve_post_contract_balance(state, profit):
+    try:
+        current_balance = float(state.get("balance", 0.0) or 0.0)
+    except Exception:
+        current_balance = 0.0
+    try:
+        profit_value = float(profit or 0.0)
+    except Exception:
+        profit_value = 0.0
+    try:
+        last_balance_update_at = float(state.get("balance_updated_at", 0.0) or 0.0)
+    except Exception:
+        last_balance_update_at = 0.0
+
+    now_ts = time.time()
+    # If the Deriv balance stream refreshed moments ago, trust that value and
+    # avoid subtracting or adding the same settled profit twice.
+    if last_balance_update_at and (now_ts - last_balance_update_at) <= 0.75:
+        return current_balance
+
+    next_balance = current_balance + profit_value
+    state["balance"] = next_balance
+    state["balance_updated_at"] = now_ts
+    return next_balance
+
+
 # ---------------- DERIV BUY FUNCTION (PER CLIENT) ---------------- #
 def send_buy(client_id, contract_type, stake, symbol, barrier, duration=1, duration_unit="t", mode=None):
     state = clients.get(client_id)
@@ -1647,7 +1753,7 @@ def send_buy(client_id, contract_type, stake, symbol, barrier, duration=1, durat
         balance_value = float(state.get("balance", 0.0) or 0.0)
     except Exception:
         balance_value = 0.0
-    if stake_value > 0 and balance_value + 1e-9 < stake_value:
+    if stake_value > 0 and (_effective_trade_balance(balance_value) + 1e-9) < stake_value:
         try:
             socketio.emit("api_error", {"message": "Insufficient funds to place trade"}, room=client_id)
         except Exception:
@@ -1738,7 +1844,7 @@ def send_buy_with_profile(client_id, profile, contract_type, stake, symbol, barr
         balance_value = float(state.get("balance", 0.0) or 0.0)
     except Exception:
         balance_value = 0.0
-    if stake_value > 0 and balance_value + 1e-9 < stake_value:
+    if stake_value > 0 and (_effective_trade_balance(balance_value) + 1e-9) < stake_value:
         try:
             socketio.emit("api_error", {"message": "Insufficient funds to place trade"}, room=client_id)
         except Exception:
@@ -1919,8 +2025,12 @@ def _default_unchain_hl_state():
         "koolkid_both_cooldown_until": 0.0,
         "koolkid_both_last_reason": "KOOLKID Both is OFF.",
         "koolkid_sim_duration": 15,
+        "koolkid_sim_duration_unit": "s",
         "koolkid_live_duration": 5,
+        "koolkid_live_duration_unit": "t",
         "koolkid_hl_loss_trigger_pct": 50,
+        "koolkid_reversal_enabled": False,
+        "koolkid_half_barrier_enabled": False,
         "koolkid_higher_barrier": "",
         "koolkid_lower_barrier": "",
         "koolkid_hl_simulation": None,
@@ -1979,17 +2089,27 @@ def _ensure_unchain_hl_state(state):
     cur["koolkid_both_enabled"] = bool(cur.get("koolkid_both_enabled", False))
     cur["koolkid_both_last_reason"] = str(cur.get("koolkid_both_last_reason") or "KOOLKID Both is OFF.")
     try:
-        cur["koolkid_sim_duration"] = max(5, min(59, int(float(cur.get("koolkid_sim_duration", 15) or 15))))
+        cur["koolkid_sim_duration_unit"] = _clean_koolkid_duration_unit(cur.get("koolkid_sim_duration_unit", "s"))
+    except Exception:
+        cur["koolkid_sim_duration_unit"] = "s"
+    try:
+        cur["koolkid_sim_duration"] = _sanitize_koolkid_duration(cur.get("koolkid_sim_duration", 15), cur.get("koolkid_sim_duration_unit", "s"), kind="sim")
     except Exception:
         cur["koolkid_sim_duration"] = 15
     try:
-        cur["koolkid_live_duration"] = max(1, min(10, int(float(cur.get("koolkid_live_duration", 5) or 5))))
+        cur["koolkid_live_duration_unit"] = _clean_koolkid_duration_unit(cur.get("koolkid_live_duration_unit", "t"))
+    except Exception:
+        cur["koolkid_live_duration_unit"] = "t"
+    try:
+        cur["koolkid_live_duration"] = _sanitize_koolkid_duration(cur.get("koolkid_live_duration", 5), cur.get("koolkid_live_duration_unit", "t"), kind="live")
     except Exception:
         cur["koolkid_live_duration"] = 5
     try:
         cur["koolkid_hl_loss_trigger_pct"] = max(50, min(70, int(float(cur.get("koolkid_hl_loss_trigger_pct", 50) or 50))))
     except Exception:
         cur["koolkid_hl_loss_trigger_pct"] = 50
+    cur["koolkid_reversal_enabled"] = bool(cur.get("koolkid_reversal_enabled", False))
+    cur["koolkid_half_barrier_enabled"] = bool(cur.get("koolkid_half_barrier_enabled", False))
     cur["market_default_symbol"] = str(cur.get("market_default_symbol") or "").upper()
     cur["market_default_key"] = str(cur.get("market_default_key") or "").upper()
     cur["koolkid_higher_barrier"] = str(cur.get("koolkid_higher_barrier") or "").strip()
@@ -2023,11 +2143,27 @@ def _ensure_unchain_hl_state(state):
             sim["ends_at"] = 0.0
         sim["time"] = str(sim.get("time") or now_time())
         try:
-            sim["simulation_duration"] = max(5, min(59, int(float(sim.get("simulation_duration", cur.get("koolkid_sim_duration", 15)) or cur.get("koolkid_sim_duration", 15)))))
+            sim["simulation_duration_unit"] = _clean_koolkid_duration_unit(sim.get("simulation_duration_unit", cur.get("koolkid_sim_duration_unit", "s")))
+        except Exception:
+            sim["simulation_duration_unit"] = cur.get("koolkid_sim_duration_unit", "s")
+        try:
+            sim["simulation_duration"] = _sanitize_koolkid_duration(
+                sim.get("simulation_duration", cur.get("koolkid_sim_duration", 15)),
+                sim.get("simulation_duration_unit", cur.get("koolkid_sim_duration_unit", "s")),
+                kind="sim",
+            )
         except Exception:
             sim["simulation_duration"] = int(cur.get("koolkid_sim_duration", 15) or 15)
         try:
-            sim["live_duration"] = max(1, min(10, int(float(sim.get("live_duration", cur.get("koolkid_live_duration", 5)) or cur.get("koolkid_live_duration", 5)))))
+            sim["live_duration_unit"] = _clean_koolkid_duration_unit(sim.get("live_duration_unit", cur.get("koolkid_live_duration_unit", "t")))
+        except Exception:
+            sim["live_duration_unit"] = cur.get("koolkid_live_duration_unit", "t")
+        try:
+            sim["live_duration"] = _sanitize_koolkid_duration(
+                sim.get("live_duration", cur.get("koolkid_live_duration", 5)),
+                sim.get("live_duration_unit", cur.get("koolkid_live_duration_unit", "t")),
+                kind="live",
+            )
         except Exception:
             sim["live_duration"] = int(cur.get("koolkid_live_duration", 5) or 5)
         try:
@@ -2054,11 +2190,27 @@ def _ensure_unchain_hl_state(state):
             sim["ends_at"] = 0.0
         sim["time"] = str(sim.get("time") or now_time())
         try:
-            sim["simulation_duration"] = max(5, min(59, int(float(sim.get("simulation_duration", cur.get("koolkid_sim_duration", 15)) or cur.get("koolkid_sim_duration", 15)))))
+            sim["simulation_duration_unit"] = _clean_koolkid_duration_unit(sim.get("simulation_duration_unit", cur.get("koolkid_sim_duration_unit", "s")))
+        except Exception:
+            sim["simulation_duration_unit"] = cur.get("koolkid_sim_duration_unit", "s")
+        try:
+            sim["simulation_duration"] = _sanitize_koolkid_duration(
+                sim.get("simulation_duration", cur.get("koolkid_sim_duration", 15)),
+                sim.get("simulation_duration_unit", cur.get("koolkid_sim_duration_unit", "s")),
+                kind="sim",
+            )
         except Exception:
             sim["simulation_duration"] = int(cur.get("koolkid_sim_duration", 15) or 15)
         try:
-            sim["live_duration"] = max(1, min(10, int(float(sim.get("live_duration", cur.get("koolkid_live_duration", 5)) or cur.get("koolkid_live_duration", 5)))))
+            sim["live_duration_unit"] = _clean_koolkid_duration_unit(sim.get("live_duration_unit", cur.get("koolkid_live_duration_unit", "t")))
+        except Exception:
+            sim["live_duration_unit"] = cur.get("koolkid_live_duration_unit", "t")
+        try:
+            sim["live_duration"] = _sanitize_koolkid_duration(
+                sim.get("live_duration", cur.get("koolkid_live_duration", 5)),
+                sim.get("live_duration_unit", cur.get("koolkid_live_duration_unit", "t")),
+                kind="live",
+            )
         except Exception:
             sim["live_duration"] = int(cur.get("koolkid_live_duration", 5) or 5)
         sim["virtual_contract_id"] = str(sim.get("virtual_contract_id") or "UNCHAIN-KOOLKID-BOTH-SIM")
@@ -2138,8 +2290,10 @@ def _ensure_unchain_hl_state(state):
                 "HIGHER",
                 "t",
             )
+            if cur.get("koolkid_reversal_enabled"):
+                cur["koolkid_higher_barrier"] = _flip_unchain_barrier_sign(cur["koolkid_higher_barrier"], "t", "+0.06")
         except Exception:
-            cur["koolkid_higher_barrier"] = "+0.06"
+            cur["koolkid_higher_barrier"] = "-0.06" if cur.get("koolkid_reversal_enabled") else "+0.06"
     if not cur.get("koolkid_lower_barrier"):
         try:
             cur["koolkid_lower_barrier"] = _half_unchain_barrier(
@@ -2147,8 +2301,10 @@ def _ensure_unchain_hl_state(state):
                 "LOWER",
                 "t",
             )
+            if cur.get("koolkid_reversal_enabled"):
+                cur["koolkid_lower_barrier"] = _flip_unchain_barrier_sign(cur["koolkid_lower_barrier"], "t", "-0.06")
         except Exception:
-            cur["koolkid_lower_barrier"] = "-0.06"
+            cur["koolkid_lower_barrier"] = "+0.06" if cur.get("koolkid_reversal_enabled") else "-0.06"
     state["unchain_hl"] = cur
     return cur
 
@@ -2173,6 +2329,48 @@ def _sanitize_unchain_duration(value, duration_unit):
     if unit == "m":
         return max(1, min(59, duration))
     return max(1, min(24, duration))
+
+
+def _clean_koolkid_duration_unit(value):
+    unit = _clean_unchain_duration_unit(value)
+    return unit if unit in ("t", "s", "m") else "s"
+
+
+def _sanitize_koolkid_duration(value, duration_unit, *, kind="sim"):
+    unit = _clean_koolkid_duration_unit(duration_unit)
+    defaults = {"t": 5, "s": 15, "m": 1}
+    try:
+        duration = int(float(value))
+    except Exception:
+        duration = defaults.get(unit, 15)
+
+    if unit == "t":
+        max_ticks = 10 if str(kind or "").lower() == "live" else 20
+        return max(3, min(max_ticks, duration))
+    if unit == "s":
+        return max(5, min(59, duration))
+    return max(1, min(59, duration))
+
+
+def _format_koolkid_duration_text(value, unit):
+    cleaned_unit = _clean_koolkid_duration_unit(unit)
+    try:
+        amount = int(float(value))
+    except Exception:
+        amount = 0
+    if cleaned_unit == "t":
+        return f"{amount}T"
+    if cleaned_unit == "m":
+        return f"{amount}m"
+    return f"{amount}s"
+
+
+def _get_unchain_tick_counter(state):
+    try:
+        strat = ((state or {}).get("strategies") or {}).get("UNCHAIN")
+        return max(0, int(getattr(strat, "tick_count", 0) or 0))
+    except Exception:
+        return 0
 
 
 def _format_unchain_barrier(raw_value, side, duration_unit):
@@ -2215,6 +2413,21 @@ def _half_unchain_barrier(raw_value, side, duration_unit):
     return _format_unchain_barrier(half_raw, side, duration_unit)
 
 
+def _flip_unchain_barrier_sign(raw_value, duration_unit="t", fallback="+0.12"):
+    source = str(raw_value if raw_value is not None else "").strip() or str(fallback or "+0.12")
+    formatted = _format_unchain_barrier(source, "HIGHER", duration_unit)
+    try:
+        flipped_value = -float(formatted)
+        flipped_raw = f"{flipped_value:+.10f}" if formatted.startswith(("+", "-")) else str(flipped_value)
+        return _format_unchain_barrier(flipped_raw, "HIGHER", duration_unit)
+    except Exception:
+        if formatted.startswith("+"):
+            return f"-{formatted[1:]}"
+        if formatted.startswith("-"):
+            return f"+{formatted[1:]}"
+        return f"-{formatted}"
+
+
 def _get_unchain_visible_barrier(u, side, duration_unit="t"):
     unit = _clean_unchain_duration_unit(duration_unit or (u or {}).get("duration_unit", "t"))
     side_key = "higher_barrier" if str(side or "").upper() == "HIGHER" else "lower_barrier"
@@ -2239,17 +2452,30 @@ def _get_unchain_koolkid_live_barrier(u, side, duration_unit="t"):
         fallback = "-0.12"
     if raw:
         try:
-            return _format_unchain_barrier(raw, side_name, unit)
+            formatted = _format_unchain_barrier(raw, side_name, unit)
+            if bool((u or {}).get("koolkid_half_barrier_enabled")):
+                formatted = _half_unchain_barrier(formatted, side_name, unit)
+            return formatted
         except Exception:
             pass
     try:
-        return _half_unchain_barrier(
+        fallback_barrier = _half_unchain_barrier(
             _format_unchain_barrier((u or {}).get("higher_barrier" if side_name == "HIGHER" else "lower_barrier", fallback), side_name, unit),
             side_name,
             unit,
         )
+        if bool((u or {}).get("koolkid_reversal_enabled")):
+            fallback_barrier = _flip_unchain_barrier_sign(fallback_barrier, unit, fallback_barrier)
+        if bool((u or {}).get("koolkid_half_barrier_enabled")):
+            fallback_barrier = _half_unchain_barrier(fallback_barrier, side_name, unit)
+        return fallback_barrier
     except Exception:
-        return "+0.06" if side_name == "HIGHER" else "-0.06"
+        default_barrier = "+0.06" if side_name == "HIGHER" else "-0.06"
+        if bool((u or {}).get("koolkid_reversal_enabled")):
+            default_barrier = _flip_unchain_barrier_sign(default_barrier, unit, default_barrier)
+        if bool((u or {}).get("koolkid_half_barrier_enabled")):
+            default_barrier = _half_unchain_barrier(default_barrier, side_name, unit)
+        return default_barrier
 
 
 def _build_unchain_signed_barrier(side, magnitude, duration_unit="t"):
@@ -2336,6 +2562,36 @@ def _get_processed_unchain_contracts(state):
             seen = set()
         state["_processed_unchain_contracts"] = seen
     return seen
+
+
+def _get_processed_regular_contracts(state):
+    seen = state.setdefault("_processed_regular_contracts", set())
+    if not isinstance(seen, set):
+        try:
+            seen = set(seen)
+        except Exception:
+            seen = set()
+        state["_processed_regular_contracts"] = seen
+    return seen
+
+
+def _mark_regular_contract_processed(state, contract_id):
+    norm = _normalize_contract_id(contract_id)
+    if not norm:
+        return
+    seen = _get_processed_regular_contracts(state)
+    seen.add(norm)
+    if len(seen) > 2000:
+        while len(seen) > 1500:
+            try:
+                seen.pop()
+            except Exception:
+                break
+
+
+def _is_regular_contract_processed(state, contract_id):
+    norm = _normalize_contract_id(contract_id)
+    return bool(norm and norm in _get_processed_regular_contracts(state))
 
 
 def _mark_unchain_contract_processed(state, contract_id):
@@ -3014,13 +3270,25 @@ def _estimate_unchain_koolkid_hl_value(sim, current_price, metrics, *, max_balan
         started_at = float(sim.get("started_at", 0.0) or 0.0)
     except Exception:
         started_at = 0.0
-    elapsed = max(0.0, time.time() - started_at) if started_at > 0 else 0.0
-    sim_duration = 15.0
-    try:
-        sim_duration = max(5.0, float(sim.get("simulation_duration", 15.0) or 15.0))
-    except Exception:
+    sim_unit = _clean_koolkid_duration_unit(sim.get("simulation_duration_unit", "s"))
+    elapsed_ratio = 0.0
+    if sim_unit == "t":
+        try:
+            started_tick = int(sim.get("started_tick", 0) or 0)
+            current_tick = int(sim.get("current_tick_count", started_tick) or started_tick)
+            sim_duration_ticks = max(1, int(sim.get("simulation_duration", 5) or 5))
+            elapsed_ratio = min(1.0, max(0.0, (current_tick - started_tick) / max(sim_duration_ticks, 1)))
+        except Exception:
+            elapsed_ratio = 0.0
+    else:
+        elapsed = max(0.0, time.time() - started_at) if started_at > 0 else 0.0
         sim_duration = 15.0
-    elapsed_ratio = min(1.0, elapsed / sim_duration)
+        try:
+            raw_duration = float(sim.get("simulation_duration", 15.0) or 15.0)
+            sim_duration = max(5.0, raw_duration if sim_unit == "s" else (raw_duration * 60.0))
+        except Exception:
+            sim_duration = 15.0
+        elapsed_ratio = min(1.0, elapsed / sim_duration)
     balance_ratio = 1.0 + (signed_move / denom) - (max(0.0, elapsed_ratio - 0.35) * 0.18)
     try:
         cap = max(0.0, float(max_balance_ratio or 1.35))
@@ -3153,21 +3421,114 @@ def _get_unchain_koolkid_hl_loss_trigger_pct(u=None, sim=None):
         return 50
 
 
-def _get_unchain_koolkid_hl_check_after(sim_duration, loss_trigger_pct):
+def _get_unchain_koolkid_hl_check_after(sim_duration, loss_trigger_pct, sim_duration_unit="s"):
+    unit = _clean_koolkid_duration_unit(sim_duration_unit)
     try:
-        duration = max(5, int(float(sim_duration or 15)))
+        duration = _sanitize_koolkid_duration(sim_duration, unit, kind="sim")
     except Exception:
-        duration = 15
+        duration = 15 if unit == "s" else (5 if unit == "t" else 1)
     try:
         trigger_pct = max(50, min(70, int(float(loss_trigger_pct or 50))))
     except Exception:
         trigger_pct = 50
+    if unit == "t":
+        if trigger_pct >= 60 and duration >= 8:
+            return max(1, min(duration - 1, duration - 2))
+        return max(1, int(math.floor(duration / 2)))
+    if unit == "m":
+        duration_seconds = duration * 60
+        if trigger_pct >= 60:
+            return max(30, duration_seconds - 30)
+        return max(30, int(math.floor(duration_seconds / 2)))
     if trigger_pct >= 60:
         if duration >= 20:
             return max(1, min(duration - 1, 9))
         if duration >= 15:
             return max(1, min(duration - 1, 8))
     return max(1, int(math.floor(duration / 2)))
+
+
+def _get_unchain_koolkid_both_check_after(sim_duration, sim_duration_unit="s"):
+    unit = _clean_koolkid_duration_unit(sim_duration_unit)
+    duration = _sanitize_koolkid_duration(sim_duration, unit, kind="sim")
+    if unit == "t":
+        return max(1, duration - 1)
+    if unit == "m":
+        return max(30, (duration * 60) - 30)
+    return max(1, duration - 7)
+
+
+def _start_unchain_koolkid_simulation_clock(state, sim, duration, unit, decision_after):
+    if not isinstance(sim, dict):
+        return
+    cleaned_unit = _clean_koolkid_duration_unit(unit)
+    sim["simulation_duration"] = _sanitize_koolkid_duration(duration, cleaned_unit, kind="sim")
+    sim["simulation_duration_unit"] = cleaned_unit
+    sim["decision_after"] = max(1, int(float(decision_after or 1)))
+    now_ts = time.time()
+    sim["started_at"] = float(now_ts)
+    if cleaned_unit == "t":
+        started_tick = _get_unchain_tick_counter(state)
+        sim["started_tick"] = int(started_tick)
+        sim["check_tick"] = int(started_tick + sim["decision_after"])
+        sim["end_tick"] = int(started_tick + sim["simulation_duration"])
+        sim["check_at"] = 0.0
+        sim["ends_at"] = 0.0
+    else:
+        total_seconds = int(sim["simulation_duration"]) if cleaned_unit == "s" else int(sim["simulation_duration"]) * 60
+        sim["check_at"] = float(now_ts + sim["decision_after"])
+        sim["ends_at"] = float(now_ts + total_seconds)
+        sim["started_tick"] = _get_unchain_tick_counter(state)
+        sim["check_tick"] = 0
+        sim["end_tick"] = 0
+
+
+def _get_unchain_koolkid_sim_progress(sim, state):
+    if not isinstance(sim, dict):
+        return {
+            "remaining": 0,
+            "check_remaining": 0,
+            "elapsed_ratio": 0.0,
+            "duration_unit": "s",
+            "countdown_unit": "s",
+            "before_check": False,
+        }
+    unit = _clean_koolkid_duration_unit(sim.get("simulation_duration_unit", "s"))
+    duration = _sanitize_koolkid_duration(sim.get("simulation_duration", 15), unit, kind="sim")
+    if unit == "t":
+        current_tick = _get_unchain_tick_counter(state)
+        started_tick = int(sim.get("started_tick", current_tick) or current_tick)
+        elapsed = max(0, current_tick - started_tick)
+        remaining = max(0, duration - elapsed)
+        check_tick = int(sim.get("check_tick", started_tick + max(1, duration // 2)) or (started_tick + max(1, duration // 2)))
+        check_remaining = max(0, check_tick - current_tick)
+        elapsed_ratio = min(1.0, max(0.0, elapsed / max(duration, 1)))
+        return {
+            "remaining": int(remaining),
+            "check_remaining": int(check_remaining),
+            "elapsed_ratio": float(elapsed_ratio),
+            "duration_unit": "t",
+            "countdown_unit": "t",
+            "before_check": check_remaining > 0,
+        }
+
+    now_ts = time.time()
+    total_seconds = duration if unit == "s" else duration * 60
+    started_at = float(sim.get("started_at", now_ts) or now_ts)
+    ends_at = float(sim.get("ends_at", started_at + total_seconds) or (started_at + total_seconds))
+    check_at = float(sim.get("check_at", started_at + max(1, int(total_seconds / 2))) or (started_at + max(1, int(total_seconds / 2))))
+    remaining = max(0, int(math.ceil(max(0.0, ends_at - now_ts))))
+    check_remaining = max(0, int(math.ceil(max(0.0, check_at - now_ts))))
+    elapsed_seconds = max(0.0, now_ts - started_at)
+    elapsed_ratio = min(1.0, max(0.0, elapsed_seconds / max(total_seconds, 1)))
+    return {
+        "remaining": int(remaining),
+        "check_remaining": int(check_remaining),
+        "elapsed_ratio": float(elapsed_ratio),
+        "duration_unit": unit,
+        "countdown_unit": "s",
+        "before_check": check_remaining > 0,
+    }
 
 
 def _estimate_unchain_koolkid_both_value(sim, current_price, metrics):
@@ -3206,15 +3567,26 @@ def _estimate_unchain_koolkid_both_value(sim, current_price, metrics):
     signed_move = (live_price - start_price) if side_name == "HIGHER" else (start_price - live_price)
     progress_scale = max(barrier_mag * 0.50, avg_abs_move * 2.75, current_range * 0.12, 0.0000001)
     progress_profit_pct = (signed_move / progress_scale) * 100.0
-    try:
-        started_at = float((sim or {}).get("started_at", 0.0) or 0.0)
-    except Exception:
-        started_at = 0.0
-    try:
-        sim_duration = max(5.0, float((sim or {}).get("simulation_duration", 15.0) or 15.0))
-    except Exception:
-        sim_duration = 15.0
-    elapsed_ratio = min(1.0, max(0.0, (time.time() - started_at) / sim_duration)) if started_at > 0 else 0.0
+    sim_unit = _clean_koolkid_duration_unit((sim or {}).get("simulation_duration_unit", "s"))
+    if sim_unit == "t":
+        try:
+            started_tick = int((sim or {}).get("started_tick", 0) or 0)
+            current_tick = int((sim or {}).get("current_tick_count", started_tick) or started_tick)
+            sim_duration_ticks = max(1, int((sim or {}).get("simulation_duration", 5) or 5))
+            elapsed_ratio = min(1.0, max(0.0, (current_tick - started_tick) / max(sim_duration_ticks, 1)))
+        except Exception:
+            elapsed_ratio = 0.0
+    else:
+        try:
+            started_at = float((sim or {}).get("started_at", 0.0) or 0.0)
+        except Exception:
+            started_at = 0.0
+        try:
+            raw_duration = float((sim or {}).get("simulation_duration", 15.0) or 15.0)
+            sim_duration = max(5.0, raw_duration if sim_unit == "s" else (raw_duration * 60.0))
+        except Exception:
+            sim_duration = 15.0
+        elapsed_ratio = min(1.0, max(0.0, (time.time() - started_at) / sim_duration)) if started_at > 0 else 0.0
     if elapsed_ratio > 0.82:
         progress_profit_pct -= ((elapsed_ratio - 0.82) / 0.18) * 12.0
     progress_profit_pct = max(-100.0, min(160.0, progress_profit_pct))
@@ -3237,8 +3609,12 @@ def _serialize_unchain_koolkid_hl(state, u=None, active_count=None):
         "last_reason": str(u.get("koolkid_hl_last_reason") or "KOOLKID Higher/Lower is OFF."),
         "cooldown_remaining": float(cooldown_remaining),
         "simulation_duration": int(u.get("koolkid_sim_duration", 15) or 15),
+        "simulation_duration_unit": _clean_koolkid_duration_unit(u.get("koolkid_sim_duration_unit", "s")),
         "live_duration": int(u.get("koolkid_live_duration", 5) or 5),
+        "live_duration_unit": _clean_koolkid_duration_unit(u.get("koolkid_live_duration_unit", "t")),
         "loss_trigger_pct": int(u.get("koolkid_hl_loss_trigger_pct", 50) or 50),
+        "reversal_enabled": bool(u.get("koolkid_reversal_enabled", False)),
+        "half_barrier_enabled": bool(u.get("koolkid_half_barrier_enabled", False)),
         "simulation": None,
     }
     if not enabled:
@@ -3246,12 +3622,14 @@ def _serialize_unchain_koolkid_hl(state, u=None, active_count=None):
 
     if sim and bool(sim.get("active")):
         started_at = float(sim.get("started_at", 0.0) or 0.0)
-        ends_at = float(sim.get("ends_at", 0.0) or 0.0)
-        check_at = float(sim.get("check_at", 0.0) or 0.0)
+        sim_duration_unit = _clean_koolkid_duration_unit(sim.get("simulation_duration_unit", u.get("koolkid_sim_duration_unit", "s")))
+        live_duration_unit = _clean_koolkid_duration_unit(sim.get("live_duration_unit", u.get("koolkid_live_duration_unit", "t")))
         sim_duration = int(sim.get("simulation_duration", u.get("koolkid_sim_duration", 15)) or u.get("koolkid_sim_duration", 15) or 15)
         live_duration = int(sim.get("live_duration", u.get("koolkid_live_duration", 5)) or u.get("koolkid_live_duration", 5) or 5)
-        remaining = max(0, int(math.ceil(max(0.0, ends_at - now_ts)))) if ends_at else 0
-        check_remaining = max(0, int(math.ceil(max(0.0, check_at - now_ts)))) if check_at else 0
+        sim["current_tick_count"] = _get_unchain_tick_counter(state)
+        progress = _get_unchain_koolkid_sim_progress(sim, state)
+        remaining = int(progress.get("remaining", 0) or 0)
+        check_remaining = int(progress.get("check_remaining", 0) or 0)
         metrics = _compute_unchain_auto_metrics(state, u)
         price = None
         try:
@@ -3276,14 +3654,14 @@ def _serialize_unchain_koolkid_hl(state, u=None, active_count=None):
             "started_at": started_at,
             "contract_id": sim.get("virtual_contract_id") or "UNCHAIN-KOOLKID-HL-SIM",
             "duration": sim_duration,
-            "duration_unit": "s",
-            "check_after": max(1, int(round(max(0.0, check_at - started_at)))) if started_at and check_at else _get_unchain_koolkid_hl_check_after(sim_duration, sim.get("loss_trigger_pct", u.get("koolkid_hl_loss_trigger_pct", 50))),
+            "duration_unit": sim_duration_unit,
+            "check_after": int(sim.get("decision_after") or _get_unchain_koolkid_hl_check_after(sim_duration, sim.get("loss_trigger_pct", u.get("koolkid_hl_loss_trigger_pct", 50)), sim_duration_unit)),
             "countdown_remaining": remaining,
-            "countdown_unit": "s",
+            "countdown_unit": progress.get("countdown_unit", "s"),
             "countdown_seconds": remaining,
             "check_remaining": check_remaining,
             "live_duration": live_duration,
-            "live_duration_unit": "t",
+            "live_duration_unit": live_duration_unit,
             "loss_trigger_pct": _get_unchain_koolkid_hl_loss_trigger_pct(u, sim),
             "estimated_value": float(estimated_value),
             "estimated_pnl": float(estimated_pnl),
@@ -3326,7 +3704,10 @@ def _serialize_unchain_koolkid_both(state, u=None, active_count=None):
         "last_reason": str(u.get("koolkid_both_last_reason") or "KOOLKID Both is OFF."),
         "cooldown_remaining": float(cooldown_remaining),
         "simulation_duration": int(u.get("koolkid_sim_duration", 15) or 15),
+        "simulation_duration_unit": _clean_koolkid_duration_unit(u.get("koolkid_sim_duration_unit", "s")),
         "live_duration": int(u.get("koolkid_live_duration", 5) or 5),
+        "live_duration_unit": _clean_koolkid_duration_unit(u.get("koolkid_live_duration_unit", "t")),
+        "half_barrier_enabled": bool(u.get("koolkid_half_barrier_enabled", False)),
         "simulation": None,
     }
     if not enabled:
@@ -3334,12 +3715,14 @@ def _serialize_unchain_koolkid_both(state, u=None, active_count=None):
 
     if sim and bool(sim.get("active")):
         started_at = float(sim.get("started_at", 0.0) or 0.0)
-        ends_at = float(sim.get("ends_at", 0.0) or 0.0)
-        check_at = float(sim.get("check_at", 0.0) or 0.0)
+        sim_duration_unit = _clean_koolkid_duration_unit(sim.get("simulation_duration_unit", u.get("koolkid_sim_duration_unit", "s")))
+        live_duration_unit = _clean_koolkid_duration_unit(sim.get("live_duration_unit", u.get("koolkid_live_duration_unit", "t")))
         sim_duration = int(sim.get("simulation_duration", u.get("koolkid_sim_duration", 15)) or u.get("koolkid_sim_duration", 15) or 15)
         live_duration = int(sim.get("live_duration", u.get("koolkid_live_duration", 5)) or u.get("koolkid_live_duration", 5) or 5)
-        remaining = max(0, int(math.ceil(max(0.0, ends_at - now_ts)))) if ends_at else 0
-        check_remaining = max(0, int(math.ceil(max(0.0, check_at - now_ts)))) if check_at else 0
+        sim["current_tick_count"] = _get_unchain_tick_counter(state)
+        progress = _get_unchain_koolkid_sim_progress(sim, state)
+        remaining = int(progress.get("remaining", 0) or 0)
+        check_remaining = int(progress.get("check_remaining", 0) or 0)
         metrics = _compute_unchain_auto_metrics(state, u)
         price = None
         try:
@@ -3353,6 +3736,9 @@ def _serialize_unchain_koolkid_both(state, u=None, active_count=None):
         for item in list(sim.get("sides") or []):
             side_sim = dict(item or {})
             side_sim["simulation_duration"] = sim_duration
+            side_sim["simulation_duration_unit"] = sim_duration_unit
+            side_sim["started_tick"] = sim.get("started_tick")
+            side_sim["current_tick_count"] = sim.get("current_tick_count")
             estimated_value, estimated_pnl, balance_ratio, decision_profit_pct = _estimate_unchain_koolkid_both_value(
                 side_sim,
                 price,
@@ -3391,13 +3777,13 @@ def _serialize_unchain_koolkid_both(state, u=None, active_count=None):
             "started_at": started_at,
             "contract_id": sim.get("virtual_contract_id") or "UNCHAIN-KOOLKID-BOTH-SIM",
             "duration": sim_duration,
-            "duration_unit": "s",
+            "duration_unit": sim_duration_unit,
             "countdown_remaining": remaining,
-            "countdown_unit": "s",
+            "countdown_unit": progress.get("countdown_unit", "s"),
             "countdown_seconds": remaining,
             "check_remaining": check_remaining,
             "live_duration": live_duration,
-            "live_duration_unit": "t",
+            "live_duration_unit": live_duration_unit,
             "leading_side": leading_side,
             "leading_profit_pct": float(round(leading_profit_pct if leading_profit_pct > -9999.0 else 0.0, 2)),
             "message": str(sim.get("message") or payload["last_reason"]),
@@ -3424,9 +3810,9 @@ def _serialize_unchain_koolkid_both(state, u=None, active_count=None):
     return payload
 
 
-def _get_unchain_koolkid_both_market_signal(u, metrics, strat, strong_side):
+def _get_unchain_koolkid_both_market_signal(u, metrics, strat, strong_side, live_duration_unit="t"):
     strong_side = str(strong_side or "").upper()
-    live_barrier = _get_unchain_koolkid_live_barrier(u, strong_side, "t")
+    live_barrier = _get_unchain_koolkid_live_barrier(u, strong_side, live_duration_unit)
     try:
         live_barrier_mag = abs(float(live_barrier))
     except Exception:
@@ -3555,12 +3941,25 @@ def _run_unchain_koolkid_hl(client_id, state):
             sim = None
         else:
             sim["current_price"] = float(current_price)
-            sim_duration = int(sim.get("simulation_duration", u.get("koolkid_sim_duration", 15)) or u.get("koolkid_sim_duration", 15) or 15)
-            live_duration = int(sim.get("live_duration", u.get("koolkid_live_duration", 5)) or u.get("koolkid_live_duration", 5) or 5)
+            sim_duration_unit = _clean_koolkid_duration_unit(sim.get("simulation_duration_unit", u.get("koolkid_sim_duration_unit", "s")))
+            live_duration_unit = _clean_koolkid_duration_unit(sim.get("live_duration_unit", u.get("koolkid_live_duration_unit", "t")))
+            sim_duration = _sanitize_koolkid_duration(
+                sim.get("simulation_duration", u.get("koolkid_sim_duration", 15)),
+                sim_duration_unit,
+                kind="sim",
+            )
+            live_duration = _sanitize_koolkid_duration(
+                sim.get("live_duration", u.get("koolkid_live_duration", 5)),
+                live_duration_unit,
+                kind="live",
+            )
             loss_trigger_pct = _get_unchain_koolkid_hl_loss_trigger_pct(u, sim)
             sim["simulation_duration"] = sim_duration
+            sim["simulation_duration_unit"] = sim_duration_unit
             sim["live_duration"] = live_duration
+            sim["live_duration_unit"] = live_duration_unit
             sim["loss_trigger_pct"] = loss_trigger_pct
+            sim["current_tick_count"] = _get_unchain_tick_counter(state)
             estimated_value, estimated_pnl, balance_ratio = _estimate_unchain_koolkid_hl_value(sim, current_price, metrics)
             sim["estimated_value"] = float(estimated_value)
             sim["estimated_pnl"] = float(estimated_pnl)
@@ -3568,11 +3967,13 @@ def _run_unchain_koolkid_hl(client_id, state):
             stake_value = float(sim.get("stake", 0.0) or 0.0)
             loss_value_floor = max(0.0, stake_value * (1.0 - (float(loss_trigger_pct) / 100.0)))
             sim_losing = estimated_value <= loss_value_floor
+            progress = _get_unchain_koolkid_sim_progress(sim, state)
 
-            if now_ts < float(sim.get("check_at", 0.0) or 0.0):
-                seconds_left = max(0, int(math.ceil(float(sim.get("check_at", now_ts) or now_ts) - now_ts)))
+            if progress.get("before_check"):
+                remaining_to_check = int(progress.get("check_remaining", 0) or 0)
+                unit_label = "ticks" if sim_duration_unit == "t" else "s"
                 u["koolkid_hl_last_reason"] = (
-                    f"KOOLKID sim {sim.get('side')} running • check in {seconds_left}s • "
+                    f"KOOLKID sim {sim.get('side')} running • check in {remaining_to_check}{'t' if sim_duration_unit == 't' else 's'} • "
                     f"est ${estimated_value:.2f} ({estimated_pnl:+.2f}) • trigger {loss_trigger_pct}% loss"
                 )
                 return False
@@ -3591,13 +3992,13 @@ def _run_unchain_koolkid_hl(client_id, state):
                     symbol=symbol,
                     barrier=sim.get("live_barrier"),
                     duration=live_duration,
-                    duration_unit="t",
+                    duration_unit=live_duration_unit,
                     entry_source="KOOLKID_HL",
                     respect_half_barrier_toggle=False,
                 )
                 if ok:
                     u["last_action"] = (
-                        f"KOOLKID live {live_side} sent after weak {sim.get('side')} sim • {sim.get('live_barrier')} • {live_duration}T"
+                        f"KOOLKID live {live_side} sent after weak {sim.get('side')} sim • {sim.get('live_barrier')} • {_format_koolkid_duration_text(live_duration, live_duration_unit)}"
                     )
                     _clear_unchain_koolkid_hl_simulation(
                         u,
@@ -3642,10 +4043,12 @@ def _run_unchain_koolkid_hl(client_id, state):
         u["koolkid_hl_last_reason"] = f"KOOLKID waiting: weaker side is not clear yet (H {higher_pct:.1f}% / L {lower_pct:.1f}%)."
         return False
 
-    sim_duration = int(u.get("koolkid_sim_duration", 15) or 15)
-    live_duration = int(u.get("koolkid_live_duration", 5) or 5)
+    sim_duration_unit = _clean_koolkid_duration_unit(u.get("koolkid_sim_duration_unit", "s"))
+    live_duration_unit = _clean_koolkid_duration_unit(u.get("koolkid_live_duration_unit", "t"))
+    sim_duration = _sanitize_koolkid_duration(u.get("koolkid_sim_duration", 15), sim_duration_unit, kind="sim")
+    live_duration = _sanitize_koolkid_duration(u.get("koolkid_live_duration", 5), live_duration_unit, kind="live")
     loss_trigger_pct = _get_unchain_koolkid_hl_loss_trigger_pct(u)
-    decision_after = _get_unchain_koolkid_hl_check_after(sim_duration, loss_trigger_pct)
+    decision_after = _get_unchain_koolkid_hl_check_after(sim_duration, loss_trigger_pct, sim_duration_unit)
     weaker_side = "HIGHER" if higher_pct < lower_pct else "LOWER"
     opposite_side = "LOWER" if weaker_side == "HIGHER" else "HIGHER"
     stake_key = "higher_stake" if weaker_side == "HIGHER" else "lower_stake"
@@ -3655,7 +4058,7 @@ def _run_unchain_koolkid_hl(client_id, state):
         sim_barrier_mag = abs(float(sim_barrier))
     except Exception:
         sim_barrier_mag = 0.12
-    live_barrier = _get_unchain_koolkid_live_barrier(u, opposite_side, "t")
+    live_barrier = _get_unchain_koolkid_live_barrier(u, opposite_side, live_duration_unit)
     try:
         live_barrier_mag = abs(float(live_barrier))
     except Exception:
@@ -3673,18 +4076,18 @@ def _run_unchain_koolkid_hl(client_id, state):
         "live_barrier_mag": float(live_barrier_mag),
         "start_price": float(current_price),
         "current_price": float(current_price),
-        "started_at": float(now_ts),
-        "check_at": float(now_ts + decision_after),
-        "ends_at": float(now_ts + sim_duration),
         "simulation_duration": int(sim_duration),
+        "simulation_duration_unit": sim_duration_unit,
         "live_duration": int(live_duration),
+        "live_duration_unit": live_duration_unit,
         "loss_trigger_pct": int(loss_trigger_pct),
         "time": now_time(),
         "virtual_contract_id": "UNCHAIN-KOOLKID-HL-SIM",
-        "message": f"{sim_duration}s paper {weaker_side} sim started • trigger {loss_trigger_pct}% loss • opposite {opposite_side} live will use {live_barrier} for {live_duration}T if conditions pass.",
+        "message": f"{_format_koolkid_duration_text(sim_duration, sim_duration_unit)} paper {weaker_side} sim started • trigger {loss_trigger_pct}% loss • opposite {opposite_side} live will use {live_barrier} for {_format_koolkid_duration_text(live_duration, live_duration_unit)} if conditions pass.",
     }
+    _start_unchain_koolkid_simulation_clock(state, u["koolkid_hl_simulation"], sim_duration, sim_duration_unit, decision_after)
     u["koolkid_hl_last_reason"] = (
-        f"KOOLKID sim {weaker_side} started • check at {decision_after}s • trigger {loss_trigger_pct}% loss • live {opposite_side} would use {live_barrier} for {live_duration}T."
+        f"KOOLKID sim {weaker_side} started • check at {_format_koolkid_duration_text(decision_after, sim_duration_unit)} • trigger {loss_trigger_pct}% loss • live {opposite_side} would use {live_barrier} for {_format_koolkid_duration_text(live_duration, live_duration_unit)}."
     )
     u["last_action"] = u["koolkid_hl_last_reason"]
     return False
@@ -3734,11 +4137,16 @@ def _run_unchain_koolkid_both(client_id, state):
     metrics = _compute_unchain_auto_metrics(state, u)
 
     if sim and sim.get("active"):
-        sim_duration = int(sim.get("simulation_duration", u.get("koolkid_sim_duration", 15)) or u.get("koolkid_sim_duration", 15) or 15)
-        live_duration = int(sim.get("live_duration", u.get("koolkid_live_duration", 5)) or u.get("koolkid_live_duration", 5) or 5)
+        sim_duration_unit = _clean_koolkid_duration_unit(sim.get("simulation_duration_unit", u.get("koolkid_sim_duration_unit", "s")))
+        live_duration_unit = _clean_koolkid_duration_unit(sim.get("live_duration_unit", u.get("koolkid_live_duration_unit", "t")))
+        sim_duration = _sanitize_koolkid_duration(sim.get("simulation_duration", u.get("koolkid_sim_duration", 15)), sim_duration_unit, kind="sim")
+        live_duration = _sanitize_koolkid_duration(sim.get("live_duration", u.get("koolkid_live_duration", 5)), live_duration_unit, kind="live")
         sim["current_price"] = float(current_price)
         sim["simulation_duration"] = sim_duration
+        sim["simulation_duration_unit"] = sim_duration_unit
         sim["live_duration"] = live_duration
+        sim["live_duration_unit"] = live_duration_unit
+        sim["current_tick_count"] = _get_unchain_tick_counter(state)
 
         side_rows = []
         leading_side = None
@@ -3746,6 +4154,9 @@ def _run_unchain_koolkid_both(client_id, state):
         for item in list(sim.get("sides") or []):
             side_sim = dict(item or {})
             side_sim["simulation_duration"] = sim_duration
+            side_sim["simulation_duration_unit"] = sim_duration_unit
+            side_sim["started_tick"] = sim.get("started_tick")
+            side_sim["current_tick_count"] = sim.get("current_tick_count")
             estimated_value, estimated_pnl, balance_ratio, profit_pct = _estimate_unchain_koolkid_both_value(
                 side_sim,
                 current_price,
@@ -3763,14 +4174,15 @@ def _run_unchain_koolkid_both(client_id, state):
         sim["leading_side"] = leading_side
         sim["leading_profit_pct"] = float(round(leading_profit_pct if leading_profit_pct > -9999.0 else 0.0, 2))
 
-        if now_ts < float(sim.get("check_at", 0.0) or 0.0):
-            seconds_left = max(0, int(math.ceil(float(sim.get("check_at", now_ts) or now_ts) - now_ts)))
+        progress = _get_unchain_koolkid_sim_progress(sim, state)
+        if progress.get("before_check"):
+            check_left = int(progress.get("check_remaining", 0) or 0)
             hi = next((row for row in side_rows if str(row.get("side") or "").upper() == "HIGHER"), None)
             lo = next((row for row in side_rows if str(row.get("side") or "").upper() == "LOWER"), None)
             hi_pct = float((hi or {}).get("profit_pct", 0.0) or 0.0)
             lo_pct = float((lo or {}).get("profit_pct", 0.0) or 0.0)
             u["koolkid_both_last_reason"] = (
-                f"KOOLKID BOTH sim running • H {hi_pct:+.0f}% • L {lo_pct:+.0f}% • decision in {seconds_left}s"
+                f"KOOLKID BOTH sim running • H {hi_pct:+.0f}% • L {lo_pct:+.0f}% • decision in {check_left}{'t' if sim_duration_unit == 't' else 's'}"
             )
             return False
 
@@ -3789,30 +4201,33 @@ def _run_unchain_koolkid_both(client_id, state):
             u["last_action"] = u.get("koolkid_both_last_reason") or "KOOLKID BOTH skipped"
             return False
 
-        signal = _get_unchain_koolkid_both_market_signal(u, metrics, strat, strong_side)
+        signal = _get_unchain_koolkid_both_market_signal(u, metrics, strat, strong_side, live_duration_unit)
         movement_class = str(signal.get("movement_class") or "WEAK").upper()
         higher_stake = float(u.get("higher_stake", 1.0) or 1.0)
         lower_stake = float(u.get("lower_stake", 1.0) or 1.0)
-        higher_barrier = _get_unchain_koolkid_live_barrier(u, "HIGHER", "t")
-        lower_barrier = _get_unchain_koolkid_live_barrier(u, "LOWER", "t")
-        plan_note = ""
-        if movement_class == "STRONG":
-            higher_barrier = _half_unchain_barrier(higher_barrier, "HIGHER", "t")
-            lower_barrier = _half_unchain_barrier(lower_barrier, "LOWER", "t")
-            plan_note = "reduced barriers"
-        elif movement_class == "DIRECTIONAL":
-            split = _rebalance_unchain_pair_stakes(higher_stake + lower_stake, strong_side)
-            higher_stake = float(split.get("HIGHER", higher_stake))
-            lower_stake = float(split.get("LOWER", lower_stake))
-            plan_note = f"60:40 toward {strong_side}"
-        else:
+        try:
+            higher_barrier = _format_unchain_barrier(
+                (u or {}).get("koolkid_higher_barrier") or (u or {}).get("higher_barrier", "+0.12"),
+                "HIGHER",
+                live_duration_unit,
+            )
+        except Exception:
+            higher_barrier = "+0.12"
+        try:
+            lower_barrier = _format_unchain_barrier(
+                (u or {}).get("koolkid_lower_barrier") or (u or {}).get("lower_barrier", "-0.12"),
+                "LOWER",
+                live_duration_unit,
+            )
+        except Exception:
+            lower_barrier = "-0.12"
+        if movement_class == "WEAK":
             reasons = []
             if not signal.get("speed_ok"):
                 reasons.append("tick speed is not strong enough")
             if not signal.get("consistency_ok"):
                 reasons.append("recent ticks are not consistent enough")
-            if str(movement_class or "WEAK").upper() == "WEAK":
-                reasons.append("movement is weak")
+            reasons.append("movement is weak")
             _clear_unchain_koolkid_both_simulation(
                 u,
                 reason=f"KOOLKID BOTH skipped: {reasons[0] if reasons else 'movement is weak'}",
@@ -3846,7 +4261,7 @@ def _run_unchain_koolkid_both(client_id, state):
                 symbol=sim.get("symbol") or state.get("current_symbol"),
                 barrier=side_barrier,
                 duration=live_duration,
-                duration_unit="t",
+                duration_unit=live_duration_unit,
                 entry_source="KOOLKID_BOTH",
                 respect_half_barrier_toggle=False,
             )
@@ -3859,12 +4274,12 @@ def _run_unchain_koolkid_both(client_id, state):
         if len(placed) == 2:
             u["last_action"] = (
                 f"KOOLKID BOTH sent on {sim.get('symbol') or state.get('current_symbol')} • "
-                f"{live_duration}T • {plan_note or 'balanced both'}"
+                f"{_format_koolkid_duration_text(live_duration, live_duration_unit)} • your saved stakes and barriers"
             )
             _clear_unchain_koolkid_both_simulation(
                 u,
                 reason=(
-                    f"KOOLKID BOTH fired {plan_note or 'balanced both'} after {strong_side} led "
+                    f"KOOLKID BOTH fired with your saved stakes and barriers after {strong_side} led "
                     f"the paper sim by {float(sim.get('leading_profit_pct', 0.0) or 0.0):+.0f}%."
                 ),
                 cooldown_sec=5.0,
@@ -3884,9 +4299,11 @@ def _run_unchain_koolkid_both(client_id, state):
     if cooldown_until and now_ts < cooldown_until:
         return False
 
-    sim_duration = int(u.get("koolkid_sim_duration", 15) or 15)
-    live_duration = int(u.get("koolkid_live_duration", 5) or 5)
-    decision_after = max(1, sim_duration - 7)
+    sim_duration_unit = _clean_koolkid_duration_unit(u.get("koolkid_sim_duration_unit", "s"))
+    live_duration_unit = _clean_koolkid_duration_unit(u.get("koolkid_live_duration_unit", "t"))
+    sim_duration = _sanitize_koolkid_duration(u.get("koolkid_sim_duration", 15), sim_duration_unit, kind="sim")
+    live_duration = _sanitize_koolkid_duration(u.get("koolkid_live_duration", 5), live_duration_unit, kind="live")
+    decision_after = _get_unchain_koolkid_both_check_after(sim_duration, sim_duration_unit)
     higher_stake = float(u.get("higher_stake", 1.0) or 1.0)
     lower_stake = float(u.get("lower_stake", 1.0) or 1.0)
     higher_sim_barrier = _get_unchain_visible_barrier(u, "HIGHER", "t")
@@ -3905,15 +4322,14 @@ def _run_unchain_koolkid_both(client_id, state):
         "symbol": state.get("current_symbol"),
         "start_price": float(current_price),
         "current_price": float(current_price),
-        "started_at": float(now_ts),
-        "check_at": float(now_ts + decision_after),
-        "ends_at": float(now_ts + sim_duration),
         "simulation_duration": int(sim_duration),
+        "simulation_duration_unit": sim_duration_unit,
         "live_duration": int(live_duration),
+        "live_duration_unit": live_duration_unit,
         "time": now_time(),
         "virtual_contract_id": "UNCHAIN-KOOLKID-BOTH-SIM",
         "message": (
-            f"{sim_duration}s paper BOTH sim started • check when 7s remain • live BOTH would use {live_duration}T."
+            f"{_format_koolkid_duration_text(sim_duration, sim_duration_unit)} paper BOTH sim started • decision at {_format_koolkid_duration_text(decision_after, sim_duration_unit)} • live BOTH would use {_format_koolkid_duration_text(live_duration, live_duration_unit)}."
         ),
         "sides": [
             {
@@ -3936,8 +4352,9 @@ def _run_unchain_koolkid_both(client_id, state):
             },
         ],
     }
+    _start_unchain_koolkid_simulation_clock(state, u["koolkid_both_simulation"], sim_duration, sim_duration_unit, decision_after)
     u["koolkid_both_last_reason"] = (
-        f"KOOLKID BOTH sim started • decision when 7s remain • live BOTH would use {live_duration}T."
+        f"KOOLKID BOTH sim started • decision at {_format_koolkid_duration_text(decision_after, sim_duration_unit)} • live BOTH would use {_format_koolkid_duration_text(live_duration, live_duration_unit)}."
     )
     u["last_action"] = u["koolkid_both_last_reason"]
     return False
@@ -4648,8 +5065,12 @@ def _apply_unchain_market_default_barriers(state, symbol):
         return False, "Could not resolve market default barrier"
     u["higher_barrier"] = higher_default
     u["lower_barrier"] = lower_default
-    u["koolkid_higher_barrier"] = higher_default
-    u["koolkid_lower_barrier"] = lower_default
+    if bool(u.get("koolkid_reversal_enabled")):
+        u["koolkid_higher_barrier"] = _flip_unchain_barrier_sign(higher_default, active_duration_unit, higher_default)
+        u["koolkid_lower_barrier"] = _flip_unchain_barrier_sign(lower_default, active_duration_unit, lower_default)
+    else:
+        u["koolkid_higher_barrier"] = higher_default
+        u["koolkid_lower_barrier"] = lower_default
     u["market_default_symbol"] = str(symbol or state.get("current_symbol") or "").upper()
     u["market_default_key"] = _build_unchain_market_default_key(
         symbol or state.get("current_symbol"),
@@ -5715,10 +6136,14 @@ def _unchain_payload_response(state):
             "auto_both_enabled": bool(u.get("auto_both_enabled", False)),
             "ai_auto_trade_enabled": bool(u.get("ai_auto_trade_enabled", False)),
             "koolkid_sim_duration": int(u.get("koolkid_sim_duration", 15) or 15),
+            "koolkid_sim_duration_unit": _clean_koolkid_duration_unit(u.get("koolkid_sim_duration_unit", "s")),
             "koolkid_live_duration": int(u.get("koolkid_live_duration", 5) or 5),
+            "koolkid_live_duration_unit": _clean_koolkid_duration_unit(u.get("koolkid_live_duration_unit", "t")),
             "koolkid_hl_loss_trigger_pct": int(u.get("koolkid_hl_loss_trigger_pct", 50) or 50),
-            "koolkid_higher_barrier": _get_unchain_koolkid_live_barrier(u, "HIGHER", "t"),
-            "koolkid_lower_barrier": _get_unchain_koolkid_live_barrier(u, "LOWER", "t"),
+            "koolkid_reversal_enabled": bool(u.get("koolkid_reversal_enabled", False)),
+            "koolkid_half_barrier_enabled": bool(u.get("koolkid_half_barrier_enabled", False)),
+            "koolkid_higher_barrier": str(u.get("koolkid_higher_barrier") or _get_unchain_koolkid_live_barrier(u, "HIGHER", u.get("koolkid_live_duration_unit", "t"))),
+            "koolkid_lower_barrier": str(u.get("koolkid_lower_barrier") or _get_unchain_koolkid_live_barrier(u, "LOWER", u.get("koolkid_live_duration_unit", "t"))),
             "auto_both_cooldown": max(0, int(u.get("auto_both_cooldown", 3) or 3)),
             "auto_status": auto_both_meta.get("label", "OFF"),
             "auto_cooldown_remaining": float(auto_both_meta.get("cooldown_remaining", 0.0) or 0.0),
@@ -6291,6 +6716,23 @@ def _seqvix_jokerjoe_state_sort_key(run, symbol):
         return 9999
 
 
+def _seqvix_jokerjoe_rotation_candidates(run):
+    markets = list(run.get("scan_markets") or [])
+    if not markets:
+        return []
+    active = set(run.get("active_syms", set()) or set())
+    try:
+        cursor = int(run.get("rotation_cursor", 0) or 0)
+    except Exception:
+        cursor = 0
+    if cursor < 0:
+        cursor = 0
+    if markets:
+        cursor = cursor % len(markets)
+    ordered = markets[cursor:] + markets[:cursor]
+    return [sym for sym in ordered if sym not in active]
+
+
 def _seqvix_jokerjoe_clear_signal(market, next_state="waiting_for_digit", status_text=None):
     market["state"] = next_state
     market["signal_digit"] = None
@@ -6403,8 +6845,13 @@ def _seqvix_jokerjoe_fill_markets(state, max_new_subscriptions=None):
             break
         remaining = run.setdefault("remaining_markets", [])
         if not remaining:
-            if str(run.get("market_mode") or "").upper() == "ENDLESS":
-                pool = [sym for sym in (run.get("scan_markets") or []) if sym not in run.get("active_syms", set())]
+            total_target = int(run.get("total", 0) or 0)
+            done_count = int(run.get("done", 0) or 0)
+            if (
+                str(run.get("market_mode") or "").upper() == "ENDLESS"
+                or (bool(run.get("cycle_reuse")) and total_target > 0 and done_count < total_target)
+            ):
+                pool = _seqvix_jokerjoe_rotation_candidates(run)
                 if not pool:
                     break
                 run["remaining_markets"] = pool
@@ -6413,6 +6860,13 @@ def _seqvix_jokerjoe_fill_markets(state, max_new_subscriptions=None):
                 break
         sym = remaining.pop(0)
         _ok, subscribed = _seqvix_jokerjoe_activate_market(state, sym)
+        if _ok:
+            try:
+                scan_markets = list(run.get("scan_markets") or [])
+                if scan_markets:
+                    run["rotation_cursor"] = (scan_markets.index(sym) + 1) % len(scan_markets)
+            except Exception:
+                pass
         if subscribed:
             new_subscriptions += 1
     return new_subscriptions
@@ -6558,7 +7012,12 @@ def _seqvix_jokerjoe_on_contract_settled(state, client_id, contract_id, meta):
         run.get("market_states", {}).pop(symbol, None)
         run.get("active_syms", set()).discard(symbol)
         _seqvix_forget_symbol(state, "JOKERJOE", symbol)
-        if str(run.get("market_mode") or "").upper() == "ENDLESS" and run.get("running"):
+        total_target = int(run.get("total", 0) or 0)
+        done_count = int(run.get("done", 0) or 0)
+        if run.get("running") and (
+            str(run.get("market_mode") or "").upper() == "ENDLESS"
+            or (bool(run.get("cycle_reuse")) and total_target > 0 and done_count < total_target)
+        ):
             _seqvix_jokerjoe_fill_markets(state)
 
     if run.get("running"):
@@ -6667,6 +7126,9 @@ def stop_seqvix(state, client_id, profile, reason="stopped"):
     run["market_mode"] = "5"
     run["trade_mode"] = "1"
     run["scan_pool"] = "ALL"
+    run["requested_market_limit"] = 5
+    run["cycle_reuse"] = False
+    run["rotation_cursor"] = 0
     run["signal_counter"] = 0
     run["open_trade_status"] = ""
 
@@ -6685,14 +7147,18 @@ def start_seqvix_jokerjoe(state, client_id, market_mode, trade_mode="1", scan_po
     market_limit = min(requested_limit, len(markets))
     trade_target = _seqvix_jokerjoe_trade_target(trade_mode)
     endless = bool(market_mode == "ENDLESS")
+    cycle_reuse = bool((not endless) and requested_limit > len(markets))
 
     initial = list(markets[:market_limit])
     remaining = list(markets[market_limit:]) if market_mode == "ENDLESS" else []
+    if not endless and requested_limit > market_limit and markets:
+        extra_slots = max(0, int(requested_limit - market_limit))
+        remaining.extend([markets[i % len(markets)] for i in range(extra_slots)])
 
     run.update({
         "running": True,
         "endless": endless,
-        "total": (0 if endless else (market_limit * int(trade_target or 0))),
+        "total": (0 if endless else (requested_limit * int(trade_target or 0))),
         "done": 0,
         "batch_size": market_limit,
         "sample_size": SEQVIX_JOKERJOE_SAMPLE_SIZE,
@@ -6707,6 +7173,8 @@ def start_seqvix_jokerjoe(state, client_id, market_mode, trade_mode="1", scan_po
         "trades_per_market": trade_target,
         "cooldown_sec": 0.0,
         "market_limit": market_limit,
+        "requested_market_limit": requested_limit,
+        "cycle_reuse": cycle_reuse,
         "scan_markets": list(markets),
         "remaining_markets": list(initial),
         "market_states": {},
@@ -6718,10 +7186,11 @@ def start_seqvix_jokerjoe(state, client_id, market_mode, trade_mode="1", scan_po
         "market_mode": market_mode,
         "trade_mode": trade_mode,
         "scan_pool": scan_pool,
+        "rotation_cursor": 0,
         "signal_counter": 0,
         "open_trade_status": "",
     })
-    if market_mode == "ENDLESS":
+    if remaining:
         run["remaining_markets"].extend(remaining)
     bootstrap_guard = max(1, market_limit + 2)
     for _ in range(bootstrap_guard):
@@ -7588,6 +8057,7 @@ def handle_on_message(client_id, ws, message, expected_nonce):
 
             state["loginid"] = loginid
             state["balance"] = balance
+            state["balance_updated_at"] = time.time()
 
             if state["session_start_balance"] is None:
                 state["session_start_balance"] = balance
@@ -7623,6 +8093,7 @@ def handle_on_message(client_id, ws, message, expected_nonce):
             try:
                 balance = float(data["balance"]["balance"])
                 state["balance"] = balance
+                state["balance_updated_at"] = time.time()
                 socketio.emit("balance_update", {"balance": balance}, room=client_id)
                 send_stats_update(client_id)
             except Exception:
@@ -7991,16 +8462,18 @@ def process_contract(client_id, contract):
         if not _is_contract_settled_fast(contract):
             return
 
-        profit = float(contract.get("profit", 0) or 0)
-        state["balance"] = float(state.get("balance", 0.0)) + profit
-
         contract_id = contract.get("contract_id")
+        if _is_regular_contract_processed(state, contract_id):
+            return
         if _is_unchain_contract_processed(state, contract_id):
             _remove_unchain_active_contract(state, contract_id)
             _pull_contract_meta(state, contract_id)
             if state.get("active_profile") == "UNCHAIN":
                 socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
             return
+
+        profit = float(contract.get("profit", 0) or 0)
+        settled_balance = _resolve_post_contract_balance(state, profit)
 
         meta = _pull_contract_meta(state, contract_id) if contract_id is not None else None
         if _is_unchain_contract_known(state, contract_id, meta=meta):
@@ -8018,7 +8491,7 @@ def process_contract(client_id, contract):
             if not strategy:
                 return
             prev_block = getattr(strategy, "risk_block_reason", None)
-            strategy.on_contract(contract, state.get("balance", 0))
+            strategy.on_contract(contract, settled_balance)
             if hasattr(strategy, "on_contract_settled"):
                 try:
                     strategy.on_contract_settled(contract, meta=meta)
@@ -8060,6 +8533,8 @@ def process_contract(client_id, contract):
                 entry["exit_digit"] = exit_digit
 
         socketio.emit("trade_result", entry, room=client_id)
+        if profile_for_contract != "UNCHAIN":
+            _mark_regular_contract_processed(state, contract_id)
         try:
             _seqvix_jokerjoe_on_contract_settled(state, client_id, contract_id, meta)
         except Exception:
@@ -8361,6 +8836,20 @@ def market_state():
         "human_symbol": state.get("human_symbol") or state.get("current_symbol"),
         "symbol": (state.get("human_symbol") if prof == "HUMAN" else state.get("current_symbol")),
     })
+
+
+@app.route("/profile_history_snapshot", methods=["GET"])
+def profile_history_snapshot():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    _cid, state = get_client_state()
+    requested = str(request.args.get("profile") or "").upper().strip()
+    if requested and requested not in (state.get("strategies") or {}):
+        return jsonify({"error": "Invalid profile"}), 400
+
+    profiles = _get_profile_trade_history_snapshot(state, requested or None)
+    return jsonify({"status": "success", "profiles": profiles})
 
 
 @app.route("/change_market", methods=["POST"])
@@ -9341,12 +9830,28 @@ def unchain_settings_route():
             u["koolkid_higher_barrier"] = str(data.get("koolkid_higher_barrier") or "").strip()
         if "koolkid_lower_barrier" in data:
             u["koolkid_lower_barrier"] = str(data.get("koolkid_lower_barrier") or "").strip()
+        if "koolkid_sim_duration_unit" in data:
+            u["koolkid_sim_duration_unit"] = _clean_koolkid_duration_unit(data.get("koolkid_sim_duration_unit"))
         if "koolkid_sim_duration" in data:
-            u["koolkid_sim_duration"] = max(5, min(59, int(float(data.get("koolkid_sim_duration") or 15))))
+            u["koolkid_sim_duration"] = _sanitize_koolkid_duration(
+                data.get("koolkid_sim_duration") or 15,
+                u.get("koolkid_sim_duration_unit", "s"),
+                kind="sim",
+            )
+        if "koolkid_live_duration_unit" in data:
+            u["koolkid_live_duration_unit"] = _clean_koolkid_duration_unit(data.get("koolkid_live_duration_unit"))
         if "koolkid_live_duration" in data:
-            u["koolkid_live_duration"] = max(1, min(10, int(float(data.get("koolkid_live_duration") or 5))))
+            u["koolkid_live_duration"] = _sanitize_koolkid_duration(
+                data.get("koolkid_live_duration") or 5,
+                u.get("koolkid_live_duration_unit", "t"),
+                kind="live",
+            )
         if "koolkid_hl_loss_trigger_pct" in data:
             u["koolkid_hl_loss_trigger_pct"] = max(50, min(70, int(float(data.get("koolkid_hl_loss_trigger_pct") or 50))))
+        if "koolkid_reversal_enabled" in data:
+            u["koolkid_reversal_enabled"] = bool(data.get("koolkid_reversal_enabled"))
+        if "koolkid_half_barrier_enabled" in data:
+            u["koolkid_half_barrier_enabled"] = bool(data.get("koolkid_half_barrier_enabled"))
         if "duration_unit" in data:
             u["duration_unit"] = _clean_unchain_duration_unit(data.get("duration_unit"))
         if "duration" in data or "duration_unit" in data:

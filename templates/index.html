@@ -1071,6 +1071,9 @@ function bindSocketHandlers(){
         if(connected && !wasConnected){
             showToast("✅ API AUTHORIZED", "success");
         }
+        if(connected){
+            syncTradeHistorySnapshot().catch(()=>{});
+        }
     });
 
     socket.on("api_error", (data)=>{
@@ -1090,7 +1093,7 @@ function bindSocketHandlers(){
             return;
         }
         if(message){
-            showToast(message, "error");
+            console.warn("Suppressed api_error toast:", message);
         }
     });
 
@@ -1223,6 +1226,7 @@ function bindSocketHandlers(){
 
     socket.on("stats_update", (data)=>{
         const pnl = data.net_pnl || 0;
+        const statsProfile = normalizeProfileName((data && data.profile) || activeProfile);
         netPnlBox.innerText = (pnl >= 0 ? "+$" : "-$") + Math.abs(pnl).toFixed(2);
         netPnlBox.style.color = pnl >= 0 ? "#22c55e" : "#ef4444";
 
@@ -1254,6 +1258,7 @@ function bindSocketHandlers(){
                 netProfitLossEl.style.color = pnl > 0 ? "#22c55e" : (pnl < 0 ? "#ef4444" : "#e2e8f0");
             }
         }
+        maybeSyncTradeHistoryFromStats(statsProfile, Number(data.wins || 0) + Number(data.losses || 0));
     });
 
     // ==================== PATCH A: risk_block_update toast ====================
@@ -1331,6 +1336,7 @@ const tradeHistoryFilterByProfile = {};
 const TRADE_TOAST_MULTI_JOIN_MS = 900;
 const TRADE_TOAST_BATCH_STALE_MS = 15 * 60 * 1000;
 const tradeToastByProfile = {};
+const tradeHistorySnapshotSyncAt = {};
 const PROFILE_DRAFTS_STORAGE_KEY = "bot_profile_drafts_v1";
 let profileDrafts = {};
 let profileDraftSaveTimer = null;
@@ -1698,6 +1704,8 @@ function buildPendingTradeFromUnchainKoolkidSimulation(sim, payload){
         const cid = normalizeContractId(sim.contract_id || sim.virtual_contract_id || "UNCHAIN-KOOLKID-HL-SIM");
         if(!cid) return [];
         const estPnl = Number(sim.estimated_pnl);
+        const durationUnit = String((sim.duration_unit || "s")).toLowerCase();
+        const countdownUnit = String((sim.countdown_unit || (durationUnit === "t" ? "t" : "s"))).toLowerCase();
         return [{
             profile: "UNCHAIN",
             type: `KOOLKID SIM ${String(sim.side || "TRADE").toUpperCase()}`,
@@ -1707,9 +1715,9 @@ function buildPendingTradeFromUnchainKoolkidSimulation(sim, payload){
             time: sim.time || new Date().toLocaleTimeString(),
             contract_id: cid,
             duration: sim.duration || sim.simulation_duration || 15,
-            duration_unit: String((sim.duration_unit || "s")).toLowerCase(),
+            duration_unit: durationUnit,
             countdown_remaining: sim.countdown_remaining,
-            countdown_unit: String(sim.countdown_unit || "s").toLowerCase(),
+            countdown_unit: countdownUnit,
             countdown_seconds: sim.countdown_seconds,
             open_profit: Number.isFinite(estPnl) ? estPnl : null,
             status: sim.phase || "SIMULATING",
@@ -1723,6 +1731,8 @@ function buildPendingTradeFromUnchainKoolkidSimulation(sim, payload){
         const cid = normalizeContractId((item && item.contract_id) || `UNCHAIN-KOOLKID-HL-SIM-${String((item && item.side) || "").toUpperCase()}`);
         if(!cid) return null;
         const estPnl = Number(item && item.estimated_pnl);
+        const durationUnit = String((((item && item.duration_unit) || sim.duration_unit || "s"))).toLowerCase();
+        const countdownUnit = String((sim.countdown_unit || (durationUnit === "t" ? "t" : "s"))).toLowerCase();
         return {
             profile: "UNCHAIN",
             type: `KOOLKID SIM ${String((item && item.side) || "TRADE").toUpperCase()}`,
@@ -1732,9 +1742,9 @@ function buildPendingTradeFromUnchainKoolkidSimulation(sim, payload){
             time: sim.time || new Date().toLocaleTimeString(),
             contract_id: cid,
             duration: (item && item.duration) || sim.duration || 15,
-            duration_unit: String(((item && item.duration_unit) || sim.duration_unit || "s")).toLowerCase(),
+            duration_unit: durationUnit,
             countdown_remaining: sim.countdown_remaining,
-            countdown_unit: String(sim.countdown_unit || "s").toLowerCase(),
+            countdown_unit: countdownUnit,
             countdown_seconds: sim.countdown_seconds,
             open_profit: Number.isFinite(estPnl) ? estPnl : null,
             status: (item && item.phase) || sim.phase || "SIMULATING",
@@ -1834,6 +1844,72 @@ function syncUnchainPendingTradesFromStatus(payload){
     return changed;
 }
 window.syncUnchainPendingTradesFromStatus = syncUnchainPendingTradesFromStatus;
+
+function applyTradeHistorySnapshotProfiles(profiles){
+    const changedProfiles = new Set();
+    const source = (profiles && typeof profiles === "object") ? profiles : {};
+    Object.keys(source).forEach((profileKey)=>{
+        const profile = normalizeProfileName(profileKey);
+        const snapshotItems = Array.isArray(source[profileKey]) ? source[profileKey] : [];
+        const existing = Array.isArray(tradeStore[profile]) ? tradeStore[profile] : [];
+        const pendingOnly = existing.filter((trade)=>{
+            return isTradeResultPending(normalizeTradeResultLabel(trade && trade.result, trade && trade.status));
+        });
+        tradeStore[profile] = pendingOnly.slice();
+        snapshotItems.forEach((trade)=>{
+            upsertTradeInStore(Object.assign({}, trade, { profile }));
+        });
+        changedProfiles.add(profile);
+    });
+    return changedProfiles;
+}
+
+function countSettledTradesInStore(profile){
+    const key = normalizeProfileName(profile || activeProfile);
+    const arr = Array.isArray(tradeStore[key]) ? tradeStore[key] : [];
+    let count = 0;
+    arr.forEach((trade)=>{
+        if(!trade || typeof trade !== "object") return;
+        const label = normalizeTradeResultLabel(trade.result, trade.status);
+        if(!isTradeResultPending(label)) count += 1;
+    });
+    return count;
+}
+
+function maybeSyncTradeHistoryFromStats(profile, expectedSettledCount){
+    const key = normalizeProfileName(profile || activeProfile);
+    const target = Number(expectedSettledCount || 0);
+    if(target <= 0) return;
+    if(countSettledTradesInStore(key) >= target) return;
+    const nowTs = Date.now();
+    const lastTs = Number(tradeHistorySnapshotSyncAt[key] || 0);
+    if((nowTs - lastTs) < 1500) return;
+    tradeHistorySnapshotSyncAt[key] = nowTs;
+    syncTradeHistorySnapshot(key).catch(()=>{});
+}
+
+async function syncTradeHistorySnapshot(profile){
+    try{
+        const qp = profile ? `?profile=${encodeURIComponent(String(profile).toUpperCase())}` : "";
+        const res = await fetch(`/profile_history_snapshot${qp}`, { method: "GET", cache: "no-store" });
+        if(!res.ok) return false;
+        const data = await res.json();
+        const changedProfiles = applyTradeHistorySnapshotProfiles((data && data.profiles) || {});
+        if(profile){
+            tradeHistorySnapshotSyncAt[normalizeProfileName(profile)] = Date.now();
+        }else{
+            Object.keys((data && data.profiles) || {}).forEach((profileKey)=>{
+                tradeHistorySnapshotSyncAt[normalizeProfileName(profileKey)] = Date.now();
+            });
+        }
+        if(changedProfiles.has(normalizeProfileName(activeProfile))){
+            renderTradeList(activeProfile);
+        }
+        return true;
+    }catch(e){
+        return false;
+    }
+}
 
 function decrementPendingTickCountdowns(symbol){
     const market = String(symbol || "").toUpperCase().trim();
@@ -2344,6 +2420,7 @@ let durationTicksInput;
 let tpInput;
 let slInput;
 let digitGrid;
+let autoStakeSyncTimer = null;
 
 let differsAnalysisBox;
 let differsDigitsRow;
@@ -2528,6 +2605,7 @@ function refreshDynamicElements(){
     confUnder9Text = document.getElementById("confUnder9Text");
 
     if(stakeInput){
+        stakeInput.addEventListener("input", scheduleAutoStakeSync);
         stakeInput.addEventListener("change", syncAutoStake);
         stakeInput.addEventListener("blur", syncAutoStake);
     }
@@ -3418,6 +3496,7 @@ async function setProfile(profile){
 
     // ==================== PATCH 2D: refresh SeqVIX status ====================
     await refreshSeqVixStatus();
+    await syncTradeHistorySnapshot();
 
     fetch("/set_profile", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({profile})});
 
@@ -3521,6 +3600,14 @@ async function syncAutoStake(){
     if(isNaN(stake) || stake <= 0) return;
 
     await fetch("/set_auto_stake", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({stake})});
+}
+
+function scheduleAutoStakeSync(){
+    if(autoStakeSyncTimer) clearTimeout(autoStakeSyncTimer);
+    autoStakeSyncTimer = setTimeout(() => {
+        autoStakeSyncTimer = null;
+        syncAutoStake().catch(()=>{});
+    }, 180);
 }
 
 async function sendRiskControls(){
@@ -3678,6 +3765,7 @@ async function toggleKoolkidspeedAuto(){
 }
 
 async function toggleKoolluckAuto(){
+    await syncAutoStake();
     const res = await fetch("/toggle_koolluck_auto", {method:"POST"});
     const data = await res.json();
     updateAutoModeButtons({koolluck: data.koolluck_auto});

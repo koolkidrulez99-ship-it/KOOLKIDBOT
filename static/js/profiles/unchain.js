@@ -5,6 +5,8 @@
     lastSocket: null,
     auto_sl: true,
     half_barrier_enabled: false,
+    koolkid_reversal_enabled: false,
+    koolkid_half_barrier_enabled: false,
     pollTimer: null,
     lastPayload: null,
     scanner: null,
@@ -38,7 +40,9 @@
     "unchainKoolkidHigherBarrier",
     "unchainKoolkidLowerBarrier",
     "unchainKoolkidSimDuration",
+    "unchainKoolkidSimDurationUnit",
     "unchainKoolkidLiveDuration",
+    "unchainKoolkidLiveDurationUnit",
     "unchainKoolkidHlLossPct",
     "unchainDuration",
     "unchainDurationUnit",
@@ -169,6 +173,11 @@
   function scaleBarrierText(rawValue, factor, fallback) {
     const scaled = num(rawValue, fallback) * Number(factor || 1);
     return formatBarrierInputValue(scaled, num(fallback, 0));
+  }
+
+  function flipBarrierSignText(rawValue, fallback) {
+    const flipped = -num(rawValue, fallback);
+    return formatBarrierInputValue(flipped, num(fallback, 0));
   }
 
   function getDisplayedBarrierText(rawValue, fallback, halfEnabled) {
@@ -313,8 +322,8 @@
     const safe = buildMarketBarrierSettings(settings);
     setFieldValue("unchainHigherBarrier", getDisplayedBarrierText(safe.higher_barrier, 0.12, !!state.half_barrier_enabled), !!force);
     setFieldValue("unchainLowerBarrier", getDisplayedBarrierText(safe.lower_barrier, -0.12, !!state.half_barrier_enabled), !!force);
-    setFieldValue("unchainKoolkidHigherBarrier", safe.koolkid_higher_barrier, !!force);
-    setFieldValue("unchainKoolkidLowerBarrier", safe.koolkid_lower_barrier, !!force);
+    setFieldValue("unchainKoolkidHigherBarrier", getDisplayedBarrierText(safe.koolkid_higher_barrier, 0.06, !!state.koolkid_half_barrier_enabled), !!force);
+    setFieldValue("unchainKoolkidLowerBarrier", getDisplayedBarrierText(safe.koolkid_lower_barrier, -0.06, !!state.koolkid_half_barrier_enabled), !!force);
   }
 
   async function syncSavedMarketBarrierSettingsToServer(symbol, settings) {
@@ -387,18 +396,28 @@
     const autoMinRange = Math.max(0.00001, readNumber("unchainAutoMinRange", 0.12));
     const halfBarrierToggle = el("unchainHalfBarrierToggle");
     const halfBarrierEnabled = halfBarrierToggle ? !!halfBarrierToggle.checked : !!state.half_barrier_enabled;
+    const koolkidReversalToggle = el("unchainKoolkidReversalToggle");
+    const koolkidReversalEnabled = koolkidReversalToggle ? !!koolkidReversalToggle.checked : !!state.koolkid_reversal_enabled;
+    const koolkidHalfBarrierToggle = el("unchainKoolkidHalfBarrierToggle");
+    const koolkidHalfBarrierEnabled = koolkidHalfBarrierToggle ? !!koolkidHalfBarrierToggle.checked : !!state.koolkid_half_barrier_enabled;
     const higherBarrierRaw = readText("unchainHigherBarrier", "+0.12");
     const lowerBarrierRaw = readText("unchainLowerBarrier", "-0.12");
+    const koolkidHigherBarrierRaw = readText("unchainKoolkidHigherBarrier", "+0.06");
+    const koolkidLowerBarrierRaw = readText("unchainKoolkidLowerBarrier", "-0.06");
     return {
       higher_stake: readNumber("unchainHigherStake", 1),
       lower_stake: readNumber("unchainLowerStake", 1),
       higher_barrier: halfBarrierEnabled ? scaleBarrierText(higherBarrierRaw, 2, 0.12) : higherBarrierRaw,
       lower_barrier: halfBarrierEnabled ? scaleBarrierText(lowerBarrierRaw, 2, -0.12) : lowerBarrierRaw,
-      koolkid_higher_barrier: readText("unchainKoolkidHigherBarrier", "+0.06"),
-      koolkid_lower_barrier: readText("unchainKoolkidLowerBarrier", "-0.06"),
-      koolkid_sim_duration: Math.max(5, Math.min(59, readInteger("unchainKoolkidSimDuration", 15))),
-      koolkid_live_duration: Math.max(1, Math.min(10, readInteger("unchainKoolkidLiveDuration", 5))),
+      koolkid_higher_barrier: koolkidHalfBarrierEnabled ? scaleBarrierText(koolkidHigherBarrierRaw, 2, 0.06) : koolkidHigherBarrierRaw,
+      koolkid_lower_barrier: koolkidHalfBarrierEnabled ? scaleBarrierText(koolkidLowerBarrierRaw, 2, -0.06) : koolkidLowerBarrierRaw,
+      koolkid_sim_duration: Math.max(1, Math.min(59, readInteger("unchainKoolkidSimDuration", 15))),
+      koolkid_sim_duration_unit: readText("unchainKoolkidSimDurationUnit", "s").toLowerCase(),
+      koolkid_live_duration: Math.max(1, Math.min(59, readInteger("unchainKoolkidLiveDuration", 5))),
+      koolkid_live_duration_unit: readText("unchainKoolkidLiveDurationUnit", "t").toLowerCase(),
       koolkid_hl_loss_trigger_pct: Math.max(50, Math.min(70, readInteger("unchainKoolkidHlLossPct", 50))),
+      koolkid_reversal_enabled: koolkidReversalEnabled,
+      koolkid_half_barrier_enabled: koolkidHalfBarrierEnabled,
       duration: readInteger("unchainDuration", 5),
       duration_unit: readText("unchainDurationUnit", "t").toLowerCase(),
       tp: readNumber("unchainTp", 0),
@@ -438,6 +457,15 @@
     const safe = Number.isFinite(n) ? n : fallback;
     if (!Number.isFinite(safe)) return String(fallback);
     return String(safe.toFixed(10)).replace(/\.?0+$/, "");
+  }
+
+  function formatKoolkidDurationText(value, unit) {
+    const amount = Number(value);
+    const safe = Number.isFinite(amount) ? Math.max(0, Math.floor(amount)) : 0;
+    const cleaned = String(unit || "s").toLowerCase();
+    if (cleaned === "t") return `${safe}T`;
+    if (cleaned === "m") return `${safe}m`;
+    return `${safe}s`;
   }
 
   function isReasonableBaseSpot(base, live) {
@@ -733,6 +761,24 @@
     if (label) label.innerText = state.half_barrier_enabled ? "ON" : "OFF";
   }
 
+  function applyKoolkidReversalToggle() {
+    const wrap = el("unchainKoolkidReversalWrap");
+    const input = el("unchainKoolkidReversalToggle");
+    const label = el("unchainKoolkidReversalState");
+    if (input) input.checked = !!state.koolkid_reversal_enabled;
+    if (wrap) wrap.classList.toggle("is-on", !!state.koolkid_reversal_enabled);
+    if (label) label.innerText = state.koolkid_reversal_enabled ? "ON" : "OFF";
+  }
+
+  function applyKoolkidHalfBarrierToggle() {
+    const wrap = el("unchainKoolkidHalfBarrierWrap");
+    const input = el("unchainKoolkidHalfBarrierToggle");
+    const label = el("unchainKoolkidHalfBarrierState");
+    if (input) input.checked = !!state.koolkid_half_barrier_enabled;
+    if (wrap) wrap.classList.toggle("is-on", !!state.koolkid_half_barrier_enabled);
+    if (label) label.innerText = state.koolkid_half_barrier_enabled ? "ON" : "OFF";
+  }
+
   function applyAutoConfidenceLabel() {
     const slider = el("unchainAutoConfidence");
     const label = el("unchainAutoConfidenceValue");
@@ -769,14 +815,18 @@
     const halfEnabled = !!un.half_barrier_enabled;
     state.auto_sl = !!un.auto_sl;
     state.half_barrier_enabled = halfEnabled;
+    state.koolkid_reversal_enabled = !!un.koolkid_reversal_enabled;
+    state.koolkid_half_barrier_enabled = !!un.koolkid_half_barrier_enabled;
     setFieldValue("unchainHigherStake", formatInputNumber(un.higher_stake, 1), force);
     setFieldValue("unchainLowerStake", formatInputNumber(un.lower_stake, 1), force);
     setFieldValue("unchainHigherBarrier", getDisplayedBarrierText(un.higher_barrier || "+0.12", 0.12, halfEnabled), barrierForce);
     setFieldValue("unchainLowerBarrier", getDisplayedBarrierText(un.lower_barrier || "-0.12", -0.12, halfEnabled), barrierForce);
-    setFieldValue("unchainKoolkidHigherBarrier", String(un.koolkid_higher_barrier || "+0.06"), barrierForce);
-    setFieldValue("unchainKoolkidLowerBarrier", String(un.koolkid_lower_barrier || "-0.06"), barrierForce);
+    setFieldValue("unchainKoolkidHigherBarrier", getDisplayedBarrierText(String(un.koolkid_higher_barrier || "+0.06"), 0.06, !!state.koolkid_half_barrier_enabled), barrierForce);
+    setFieldValue("unchainKoolkidLowerBarrier", getDisplayedBarrierText(String(un.koolkid_lower_barrier || "-0.06"), -0.06, !!state.koolkid_half_barrier_enabled), barrierForce);
     setFieldValue("unchainKoolkidSimDuration", String(un.koolkid_sim_duration || 15), force);
+    setFieldValue("unchainKoolkidSimDurationUnit", String(un.koolkid_sim_duration_unit || "s"), force);
     setFieldValue("unchainKoolkidLiveDuration", String(un.koolkid_live_duration || 5), force);
+    setFieldValue("unchainKoolkidLiveDurationUnit", String(un.koolkid_live_duration_unit || "t"), force);
     setFieldValue("unchainKoolkidHlLossPct", String(un.koolkid_hl_loss_trigger_pct || 50), force);
     setFieldValue("unchainDurationUnit", (un.duration_unit || "t").toLowerCase(), force);
     setFieldValue("unchainDuration", String(un.duration || 5), force);
@@ -789,6 +839,8 @@
     setFieldValue("unchainAutoMinRange", formatInputNumber(un.auto_min_range, 0.12), force);
     applyAutoSlBtn();
     applyHalfBarrierToggle();
+    applyKoolkidReversalToggle();
+    applyKoolkidHalfBarrierToggle();
     applyAutoConfidenceLabel();
   }
 
@@ -810,6 +862,33 @@
     }
   }
 
+  function transformKoolkidReversalFieldValues() {
+    const higherEl = el("unchainKoolkidHigherBarrier");
+    const lowerEl = el("unchainKoolkidLowerBarrier");
+    if (higherEl) {
+      higherEl.value = flipBarrierSignText(higherEl.value, 0.06);
+      markDirty("unchainKoolkidHigherBarrier");
+    }
+    if (lowerEl) {
+      lowerEl.value = flipBarrierSignText(lowerEl.value, -0.06);
+      markDirty("unchainKoolkidLowerBarrier");
+    }
+  }
+
+  function transformKoolkidHalfBarrierFieldValues(enabled) {
+    const factor = enabled ? 0.5 : 2;
+    const higherEl = el("unchainKoolkidHigherBarrier");
+    const lowerEl = el("unchainKoolkidLowerBarrier");
+    if (higherEl) {
+      higherEl.value = scaleBarrierText(higherEl.value, factor, 0.06);
+      markDirty("unchainKoolkidHigherBarrier");
+    }
+    if (lowerEl) {
+      lowerEl.value = scaleBarrierText(lowerEl.value, factor, -0.06);
+      markDirty("unchainKoolkidLowerBarrier");
+    }
+  }
+
   function applyMainBarrierPreset(side, rawValue) {
     const sideName = String(side || "").toUpperCase();
     const targetId = sideName === "LOWER" ? "unchainLowerBarrier" : "unchainHigherBarrier";
@@ -828,16 +907,19 @@
     const node = el(targetId);
     if (!node) return;
     const raw = String(node.value || "").trim();
-    const isLower = String(targetId || "").toLowerCase().includes("lower");
-    const fallback = isLower ? -0.12 : 0.12;
+    const targetText = String(targetId || "");
+    const isKoolkidBarrier = targetText.toLowerCase().includes("koolkid");
+    const baseIsLower = targetText.toLowerCase().includes("lower");
+    const effectiveIsLower = isKoolkidBarrier && state.koolkid_reversal_enabled ? !baseIsLower : baseIsLower;
+    const fallback = effectiveIsLower ? (isKoolkidBarrier ? -0.06 : -0.12) : (isKoolkidBarrier ? 0.06 : 0.12);
     const current = num(raw || fallback, fallback);
     const delta = num(deltaValue, 0);
     let next = Math.round((current + delta) * 100) / 100;
-    if (isLower) {
+    if (effectiveIsLower) {
       const magnitude = Math.max(0.01, Math.round((Math.abs(current) + delta) * 100) / 100);
       next = -magnitude;
     } else {
-      next = Math.max(0.01, next);
+      next = Math.max(0.01, Math.round((Math.abs(current) + delta) * 100) / 100);
     }
     node.value = formatBarrierInputValue(next, fallback);
     markDirty(targetId);
@@ -872,6 +954,60 @@
           : previous;
         applyHalfBarrierToggle();
         syncHalfBarrierPreview();
+      }
+    });
+  }
+
+  function bindKoolkidReversalToggle() {
+    const input = el("unchainKoolkidReversalToggle");
+    if (!input || input.dataset.unchainBound === "1") return;
+    input.dataset.unchainBound = "1";
+    input.addEventListener("change", async () => {
+      const previous = !!state.koolkid_reversal_enabled;
+      const nextEnabled = !!input.checked;
+      const higherEl = el("unchainKoolkidHigherBarrier");
+      const lowerEl = el("unchainKoolkidLowerBarrier");
+      const previousHigher = higherEl ? String(higherEl.value || "") : "";
+      const previousLower = lowerEl ? String(lowerEl.value || "") : "";
+      state.koolkid_reversal_enabled = nextEnabled;
+      transformKoolkidReversalFieldValues();
+      applyKoolkidReversalToggle();
+      const r = await saveSettings(false);
+      if (!(r && r.ok)) {
+        const fallbackPayload = state.lastPayload && (state.lastPayload.unchain || state.lastPayload);
+        if (higherEl) higherEl.value = previousHigher;
+        if (lowerEl) lowerEl.value = previousLower;
+        state.koolkid_reversal_enabled = fallbackPayload && typeof fallbackPayload.koolkid_reversal_enabled !== "undefined"
+          ? !!fallbackPayload.koolkid_reversal_enabled
+          : previous;
+        applyKoolkidReversalToggle();
+      }
+    });
+  }
+
+  function bindKoolkidHalfBarrierToggle() {
+    const input = el("unchainKoolkidHalfBarrierToggle");
+    if (!input || input.dataset.unchainBound === "1") return;
+    input.dataset.unchainBound = "1";
+    input.addEventListener("change", async () => {
+      const previous = !!state.koolkid_half_barrier_enabled;
+      const nextEnabled = !!input.checked;
+      const higherEl = el("unchainKoolkidHigherBarrier");
+      const lowerEl = el("unchainKoolkidLowerBarrier");
+      const previousHigher = higherEl ? String(higherEl.value || "") : "";
+      const previousLower = lowerEl ? String(lowerEl.value || "") : "";
+      state.koolkid_half_barrier_enabled = nextEnabled;
+      transformKoolkidHalfBarrierFieldValues(nextEnabled);
+      applyKoolkidHalfBarrierToggle();
+      const r = await saveSettings(false);
+      if (!(r && r.ok)) {
+        const fallbackPayload = state.lastPayload && (state.lastPayload.unchain || state.lastPayload);
+        if (higherEl) higherEl.value = previousHigher;
+        if (lowerEl) lowerEl.value = previousLower;
+        state.koolkid_half_barrier_enabled = fallbackPayload && typeof fallbackPayload.koolkid_half_barrier_enabled !== "undefined"
+          ? !!fallbackPayload.koolkid_half_barrier_enabled
+          : previous;
+        applyKoolkidHalfBarrierToggle();
       }
     });
   }
@@ -1249,6 +1385,10 @@
     const isEnabled = !!data.enabled;
     const isBothEnabled = !!bothData.enabled;
     const anyEnabled = isEnabled || isBothEnabled;
+    state.koolkid_reversal_enabled = !!((un && un.koolkid_reversal_enabled) || data.reversal_enabled);
+    state.koolkid_half_barrier_enabled = !!((un && un.koolkid_half_barrier_enabled) || data.half_barrier_enabled || bothData.half_barrier_enabled);
+    applyKoolkidReversalToggle();
+    applyKoolkidHalfBarrierToggle();
 
     const panelBtn = el("unchainKoolkidBtn");
     if (panelBtn) {
@@ -1285,11 +1425,15 @@
       const remaining = Number(bothSim.countdown_remaining || 0);
       const checkRemaining = Number(bothSim.check_remaining || 0);
       const leader = String(bothSim.leading_side || "—").toUpperCase();
+      const countdownUnit = String(bothSim.countdown_unit || "s").toLowerCase();
+      const simUnit = String(bothSim.duration_unit || bothData.simulation_duration_unit || "s").toLowerCase();
+      const liveUnit = String(bothSim.live_duration_unit || bothData.live_duration_unit || "t").toLowerCase();
       status.innerText =
         `Paper BOTH sim • HIGHER ${Number.isFinite(hiPct) ? `${hiPct >= 0 ? "+" : ""}${hiPct.toFixed(0)}%` : "—"} • ` +
         `LOWER ${Number.isFinite(loPct) ? `${loPct >= 0 ? "+" : ""}${loPct.toFixed(0)}%` : "—"} • ` +
-        `${remaining}s left • ${checkRemaining > 0 ? `decision in ${checkRemaining}s` : "checking now"} • ` +
-        `leader ${leader} • strong flow sends reduced-barrier BOTH, directional flow sends 60:40 BOTH.`;
+        `${formatKoolkidDurationText(remaining, countdownUnit)} left • ${checkRemaining > 0 ? `decision in ${formatKoolkidDurationText(checkRemaining, countdownUnit)}` : "checking now"} • ` +
+        `sim ${formatKoolkidDurationText(bothSim.duration || bothData.simulation_duration || 0, simUnit)} • ` +
+        `leader ${leader} • if flow is strong enough, BOTH uses your saved Higher/Lower stakes and KOOLKID barriers.`;
       status.style.color = "#fcd34d";
       return;
     }
@@ -1301,11 +1445,13 @@
       const lossTriggerPct = Number(sim.loss_trigger_pct || data.loss_trigger_pct || 50);
       const valueText = Number.isFinite(estValue) ? `$${estValue.toFixed(2)}` : "—";
       const pnlText = Number.isFinite(estPnl) ? `${estPnl >= 0 ? "+" : "-"}$${Math.abs(estPnl).toFixed(2)}` : "—";
+      const countdownUnit = String(sim.countdown_unit || "s").toLowerCase();
+      const liveUnit = String(sim.live_duration_unit || data.live_duration_unit || "t").toLowerCase();
       status.innerText =
         `Paper ${String(sim.side || "—").toUpperCase()} sim live ${valueText} (${pnlText}) • ` +
-        `${remaining}s left • ${checkRemaining > 0 ? `decision in ${checkRemaining}s` : "checking now"} • ` +
+        `${formatKoolkidDurationText(remaining, countdownUnit)} left • ${checkRemaining > 0 ? `decision in ${formatKoolkidDurationText(checkRemaining, countdownUnit)}` : "checking now"} • ` +
         `needs ${Number.isFinite(lossTriggerPct) ? lossTriggerPct.toFixed(0) : "50"}% loss • ` +
-        `live ${String(sim.opposite_side || "—").toUpperCase()} ${Number(sim.live_duration || 5)}T will use ${sim.live_barrier || "—"}.`;
+        `live ${String(sim.opposite_side || "—").toUpperCase()} ${formatKoolkidDurationText(Number(sim.live_duration || 5), liveUnit)} will use ${sim.live_barrier || "—"}.`;
       status.style.color = "#93c5fd";
       return;
     }
@@ -1324,21 +1470,31 @@
     renderKoolkidHl(un || {});
   }
 
+  function attachKoolkidModal(root) {
+    const modal = el("unchainKoolkidBody");
+    if (!modal) return;
+    const host = (root && root.querySelector ? root.querySelector(".unchain-card--execute") : null)
+      || document.querySelector(".unchain-card--execute");
+    if (!host || modal.parentElement === host) return;
+    host.appendChild(modal);
+  }
+
   function bindKoolkidModal() {
     const modal = el("unchainKoolkidBody");
     if (!modal || modal.dataset.unchainModalBound === "1") return;
     modal.dataset.unchainModalBound = "1";
-    modal.addEventListener("click", (evt) => {
-      if (evt.target !== modal) return;
+    const closePanel = () => {
       state.koolkidPanelOpen = false;
       const un = state.lastPayload && (state.lastPayload.unchain || state.lastPayload);
       renderKoolkidHl(un || {});
+    };
+    modal.addEventListener("click", (evt) => {
+      if (evt.target !== modal) return;
+      closePanel();
     });
     document.addEventListener("keydown", (evt) => {
       if (evt.key !== "Escape" || !state.koolkidPanelOpen) return;
-      state.koolkidPanelOpen = false;
-      const un = state.lastPayload && (state.lastPayload.unchain || state.lastPayload);
-      renderKoolkidHl(un || {});
+      closePanel();
     });
   }
 
@@ -2080,12 +2236,17 @@
         }
       }, "unchain_action_clicks_v2");
     }
+    attachKoolkidModal(root);
     applyDurationPresets(true);
     bindFormInputs();
     applyAutoSlBtn();
     applyHalfBarrierToggle();
+    applyKoolkidReversalToggle();
+    applyKoolkidHalfBarrierToggle();
     applyAutoConfidenceLabel();
     bindHalfBarrierToggle();
+    bindKoolkidReversalToggle();
+    bindKoolkidHalfBarrierToggle();
     bindKoolkidModal();
     bindMarketBarrierPersistence();
   }
