@@ -147,6 +147,160 @@ def test_get_unchain_visible_barrier_respects_saved_half_toggle():
     assert _get_unchain_visible_barrier(u, "LOWER", "t") == "-0.06"
 
 
+def test_handle_on_message_error_cleans_failed_digit_buy_req_meta(monkeypatch):
+    emitted = []
+    cid = "cid-buy-error"
+    state = {
+        "ws_nonce": "nonce-1",
+        "req_meta": {101: {"profile": "KOOLKID", "type": "OVER", "stake": 1.0}},
+        "strategies": {},
+    }
+    server.clients[cid] = state
+    monkeypatch.setattr(server.socketio, "emit", lambda event, payload=None, room=None: emitted.append((event, payload, room)))
+
+    try:
+        server.handle_on_message(
+            cid,
+            None,
+            json.dumps({"error": {"message": "Buy rejected"}, "req_id": 101}),
+            "nonce-1",
+        )
+    finally:
+        server.clients.pop(cid, None)
+
+    assert state["req_meta"] == {}
+    assert any(event == "api_error" for event, _payload, _room in emitted)
+
+
+def test_handle_on_message_error_clears_failed_unchain_pending_request(monkeypatch):
+    emitted = []
+    cid = "cid-unchain-buy-error"
+    strat = server.UnchainStrategy()
+    strat.pending_trade_request = True
+    strat.pending_trade_mode = "AUTO"
+    strat.pending_trade_exit_ticks = 5
+    strat.pending_trade_stake = 2.5
+    state = {
+        "ws_nonce": "nonce-2",
+        "req_meta": {202: {"profile": "UNCHAIN", "type": "ACCU", "stake": 2.5}},
+        "strategies": {"UNCHAIN": strat},
+    }
+    server.clients[cid] = state
+    monkeypatch.setattr(server.socketio, "emit", lambda event, payload=None, room=None: emitted.append((event, payload, room)))
+
+    try:
+        server.handle_on_message(
+            cid,
+            None,
+            json.dumps({"error": {"message": "Insufficient funds"}, "req_id": 202}),
+            "nonce-2",
+        )
+    finally:
+        server.clients.pop(cid, None)
+
+    assert state["req_meta"] == {}
+    assert strat.pending_trade_request is False
+    assert strat.pending_trade_mode is None
+    assert strat.pending_trade_exit_ticks is None
+    assert strat.pending_trade_stake is None
+    assert any(event == "api_error" for event, _payload, _room in emitted)
+
+
+def test_unchain_zero_profit_counts_as_loss():
+    strat = server.UnchainStrategy()
+
+    strat.on_contract({"profit": 0, "buy_price": 1.0, "contract_id": 1}, 10.0)
+
+    assert strat.total_wins == 0
+    assert strat.total_losses == 1
+    assert strat.last_result == "LOSS"
+
+
+def test_serialize_profile_trade_history_entry_zero_profit_defaults_to_loss():
+    snapshot = _serialize_profile_trade_history_entry("UNCHAIN", {"profit": 0.0}, 0)
+
+    assert snapshot["result"] == "LOSS"
+
+
+def test_set_risk_controls_can_target_explicit_profile(monkeypatch):
+    class Recorder:
+        def __init__(self):
+            self.calls = []
+
+        def set_risk_controls(self, tp=0.0, sl=0.0, auto_sl=True):
+            self.calls.append({"tp": tp, "sl": sl, "auto_sl": auto_sl})
+
+    koolkid = Recorder()
+    jokerjoe = Recorder()
+    state = {
+        "active_profile": "KOOLKID",
+        "strategies": {"KOOLKID": koolkid, "JOKERJOE": jokerjoe},
+    }
+
+    monkeypatch.setattr(server, "login_required", lambda: True)
+    monkeypatch.setattr(server, "get_client_state", lambda: ("cid-risk", state))
+
+    with server.app.test_client() as client:
+        res = client.post(
+            "/set_risk_controls",
+            json={"profile": "JOKERJOE", "tp": 5, "sl": 3, "auto_sl": False},
+        )
+
+    assert res.status_code == 200
+    assert koolkid.calls == []
+    assert jokerjoe.calls == [{"tp": 5.0, "sl": 3.0, "auto_sl": False}]
+
+
+def test_clear_profile_history_resets_unchain_runtime_state(monkeypatch):
+    strat = server.UnchainStrategy()
+    strat.trade_history = [{"result": "WIN"}]
+    strat.total_wins = 3
+    strat.total_losses = 2
+    strat.session_profit = 4.5
+    strat.pending_trade_request = True
+    strat.pending_trade_mode = "AUTO"
+    strat.pending_trade_exit_ticks = 5
+    strat.pending_trade_stake = 2.0
+    strat.active_contract_id = "123"
+    strat.active_contract_open = True
+    strat.risk_block_reason = "TP hit (+4.50)"
+
+    state = {"active_profile": "UNCHAIN", "strategies": {"UNCHAIN": strat}}
+    u = server._ensure_unchain_hl_state(state)
+    u["stats"] = {"wins": 5, "losses": 4, "net_pnl": 3.0}
+    u["last_result"] = "LOSS"
+    u["last_action"] = "Blocked"
+    u["risk_block_reason"] = "Blocked"
+    u["active_contracts"] = {"abc": {"status": "OPEN"}}
+    u["auto_cycle_losses"] = 2
+    u["auto_last_cycle_had_loss"] = True
+    u["auto_pair_active"] = True
+    u["auto_both_pair_active"] = True
+
+    monkeypatch.setattr(server, "login_required", lambda: True)
+    monkeypatch.setattr(server, "get_client_state", lambda: ("cid-clear", state))
+    monkeypatch.setattr(server, "send_stats_update", lambda _cid: None)
+    monkeypatch.setattr(server.socketio, "emit", lambda *args, **kwargs: None)
+
+    with server.app.test_client() as client:
+        res = client.post("/clear_profile_history", json={"profile": "UNCHAIN"})
+
+    assert res.status_code == 200
+    assert strat.trade_history == []
+    assert strat.total_wins == 0
+    assert strat.total_losses == 0
+    assert strat.session_profit == 0.0
+    assert strat.pending_trade_request is False
+    assert strat.active_contract_id is None
+    assert strat.risk_block_reason is None
+    assert u["stats"] == {"wins": 0, "losses": 0, "net_pnl": 0.0}
+    assert u["active_contracts"] == {}
+    assert u["auto_cycle_losses"] == 0
+    assert u["auto_last_cycle_had_loss"] is False
+    assert u["auto_pair_active"] is False
+    assert u["auto_both_pair_active"] is False
+
+
 def test_ensure_unchain_state_keeps_standard_default_barriers():
     state = {"current_symbol": "1HZ75V"}
 

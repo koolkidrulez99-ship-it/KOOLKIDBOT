@@ -1,9 +1,425 @@
 # strategies/unchain.py
 from collections import deque
 from datetime import datetime
+from decimal import Decimal, ROUND_DOWN
 import time
 import math
 import statistics
+
+UNCHAIN_SCANNER_WINDOW_OPTIONS = [20]
+UNCHAIN_SCANNER_DEFAULT_WINDOW = 20
+UNCHAIN_SCANNER_MIN_HISTORY = 20
+
+
+def _clean_unchain_duration_unit(value):
+    unit = str(value or "t").strip().lower()
+    return unit if unit in ("t", "s", "m", "h") else "t"
+
+
+def _sanitize_unchain_duration(value, duration_unit):
+    unit = _clean_unchain_duration_unit(duration_unit)
+    try:
+        duration = int(float(value))
+    except Exception:
+        defaults = {"t": 5, "s": 15, "m": 1, "h": 1}
+        duration = defaults.get(unit, 5)
+
+    if unit == "t":
+        return max(3, min(10, duration))
+    if unit == "s":
+        return max(15, min(59, duration))
+    if unit == "m":
+        return max(1, min(59, duration))
+    return max(1, min(24, duration))
+
+
+def _clean_koolkid_duration_unit(value):
+    unit = _clean_unchain_duration_unit(value)
+    return unit if unit in ("t", "s", "m") else "s"
+
+
+def _sanitize_koolkid_duration(value, duration_unit, *, kind="sim"):
+    unit = _clean_koolkid_duration_unit(duration_unit)
+    defaults = {"t": 5, "s": 15, "m": 1}
+    try:
+        duration = int(float(value))
+    except Exception:
+        duration = defaults.get(unit, 15)
+
+    if unit == "t":
+        max_ticks = 10 if str(kind or "").lower() == "live" else 20
+        return max(3, min(max_ticks, duration))
+    if unit == "s":
+        return max(5, min(59, duration))
+    return max(1, min(59, duration))
+
+
+def _format_koolkid_duration_text(value, unit):
+    cleaned_unit = _clean_koolkid_duration_unit(unit)
+    try:
+        amount = int(float(value))
+    except Exception:
+        amount = 0
+    if cleaned_unit == "t":
+        return f"{amount}T"
+    if cleaned_unit == "m":
+        return f"{amount}m"
+    return f"{amount}s"
+
+
+def _format_unchain_barrier(raw_value, side, duration_unit):
+    raw = str(raw_value if raw_value is not None else "").strip()
+    if not raw:
+        raise ValueError("Barrier is required")
+
+    user_typed_sign = raw.startswith(("+", "-"))
+    numeric = float(raw) if user_typed_sign else abs(float(raw))
+    magnitude = abs(float(numeric))
+    formatted = f"{magnitude:.10f}".rstrip("0").rstrip(".") or "0"
+
+    unit = _clean_unchain_duration_unit(duration_unit)
+    if raw.startswith("+"):
+        out = f"+{formatted}"
+    elif raw.startswith("-"):
+        out = f"-{formatted}"
+    elif unit in ("t", "s", "m"):
+        out = f"+{formatted}"
+    else:
+        out = formatted
+    return out or "0"
+
+
+def _sanitize_digit_trade_duration(value):
+    try:
+        duration = int(float(value))
+    except Exception:
+        duration = 1
+    return max(1, min(10, duration))
+
+
+def _half_unchain_barrier(raw_value, side, duration_unit):
+    formatted = _format_unchain_barrier(raw_value, side, duration_unit)
+    try:
+        half_value = float(formatted) * 0.5
+    except Exception:
+        return formatted
+    half_raw = f"{half_value:+.10f}" if formatted.startswith(("+", "-")) else str(half_value)
+    return _format_unchain_barrier(half_raw, side, duration_unit)
+
+
+def _flip_unchain_barrier_sign(raw_value, duration_unit="t", fallback="+0.12"):
+    source = str(raw_value if raw_value is not None else "").strip() or str(fallback or "+0.12")
+    formatted = _format_unchain_barrier(source, "HIGHER", duration_unit)
+    try:
+        flipped_value = -float(formatted)
+        flipped_raw = f"{flipped_value:+.10f}" if formatted.startswith(("+", "-")) else str(flipped_value)
+        return _format_unchain_barrier(flipped_raw, "HIGHER", duration_unit)
+    except Exception:
+        if formatted.startswith("+"):
+            return f"-{formatted[1:]}"
+        if formatted.startswith("-"):
+            return f"+{formatted[1:]}"
+        return f"-{formatted}"
+
+
+def _get_unchain_visible_barrier(u, side, duration_unit="t"):
+    unit = _clean_unchain_duration_unit(duration_unit or (u or {}).get("duration_unit", "t"))
+    side_key = "higher_barrier" if str(side or "").upper() == "HIGHER" else "lower_barrier"
+    raw = (u or {}).get(side_key, "+0.12" if side_key == "higher_barrier" else "-0.12")
+    try:
+        formatted = _format_unchain_barrier(raw, side, unit)
+    except Exception:
+        formatted = "+0.12" if side_key == "higher_barrier" else "-0.12"
+    if bool((u or {}).get("half_barrier_enabled")):
+        return _half_unchain_barrier(formatted, side, unit)
+    return formatted
+
+
+def _get_unchain_koolkid_live_barrier(u, side, duration_unit="t"):
+    unit = _clean_unchain_duration_unit(duration_unit or "t")
+    side_name = str(side or "").upper()
+    if side_name == "HIGHER":
+        raw = str((u or {}).get("koolkid_higher_barrier") or "").strip()
+        fallback = "+0.12"
+    else:
+        raw = str((u or {}).get("koolkid_lower_barrier") or "").strip()
+        fallback = "-0.12"
+    if raw:
+        try:
+            formatted = _format_unchain_barrier(raw, side_name, unit)
+            if bool((u or {}).get("koolkid_half_barrier_enabled")):
+                formatted = _half_unchain_barrier(formatted, side_name, unit)
+            return formatted
+        except Exception:
+            pass
+    try:
+        fallback_barrier = _half_unchain_barrier(
+            _format_unchain_barrier((u or {}).get("higher_barrier" if side_name == "HIGHER" else "lower_barrier", fallback), side_name, unit),
+            side_name,
+            unit,
+        )
+        if bool((u or {}).get("koolkid_reversal_enabled")):
+            fallback_barrier = _flip_unchain_barrier_sign(fallback_barrier, unit, fallback_barrier)
+        if bool((u or {}).get("koolkid_half_barrier_enabled")):
+            fallback_barrier = _half_unchain_barrier(fallback_barrier, side_name, unit)
+        return fallback_barrier
+    except Exception:
+        default_barrier = "+0.06" if side_name == "HIGHER" else "-0.06"
+        if bool((u or {}).get("koolkid_reversal_enabled")):
+            default_barrier = _flip_unchain_barrier_sign(default_barrier, unit, default_barrier)
+        if bool((u or {}).get("koolkid_half_barrier_enabled")):
+            default_barrier = _half_unchain_barrier(default_barrier, side_name, unit)
+        return default_barrier
+
+
+def _build_unchain_signed_barrier(side, magnitude, duration_unit="t"):
+    side_name = str(side or "").upper()
+    sign = "+" if side_name == "HIGHER" else "-"
+    try:
+        mag = abs(float(magnitude))
+    except Exception:
+        mag = 0.0
+    raw = f"{sign}{mag:.10f}".rstrip("0").rstrip(".")
+    if raw in ("+", "-"):
+        raw = f"{sign}0"
+    return _format_unchain_barrier(raw, side_name, duration_unit)
+
+
+def _contracts_for_duration_to_scalar(spec):
+    raw = str(spec or "").strip().lower()
+    if not raw:
+        return None, None
+    num = ""
+    unit = ""
+    for ch in raw:
+        if ch.isdigit() or ch == ".":
+            num += ch
+        elif ch.isalpha():
+            unit += ch
+    if not num or not unit:
+        return None, None
+    try:
+        value = float(num)
+    except Exception:
+        return None, None
+    if unit == "t":
+        return value, "t"
+    if unit == "s":
+        return value, "s"
+    if unit == "m":
+        return value * 60.0, "s"
+    if unit == "h":
+        return value * 3600.0, "s"
+    if unit == "d":
+        return value * 86400.0, "s"
+    return None, None
+
+
+def _duration_matches_contracts_for(item, duration, duration_unit):
+    expiry_type = str((item or {}).get("expiry_type") or "").strip().lower()
+    if expiry_type == "tick":
+        if _clean_unchain_duration_unit(duration_unit) != "t":
+            return False
+        try:
+            target = float(int(duration))
+        except Exception:
+            return False
+        min_v, min_unit = _contracts_for_duration_to_scalar((item or {}).get("min_contract_duration"))
+        max_v, max_unit = _contracts_for_duration_to_scalar((item or {}).get("max_contract_duration"))
+        if min_unit not in (None, "t") or max_unit not in (None, "t"):
+            return False
+        if min_v is not None and target < min_v:
+            return False
+        if max_v is not None and max_v > 0 and target > max_v:
+            return False
+        return True
+
+    if _clean_unchain_duration_unit(duration_unit) == "t":
+        return False
+    try:
+        target_unit = _clean_unchain_duration_unit(duration_unit)
+        target = float(duration)
+    except Exception:
+        return False
+    if target_unit == "s":
+        target_seconds = target
+    elif target_unit == "m":
+        target_seconds = target * 60.0
+    elif target_unit == "h":
+        target_seconds = target * 3600.0
+    else:
+        return False
+    min_v, min_unit = _contracts_for_duration_to_scalar((item or {}).get("min_contract_duration"))
+    max_v, max_unit = _contracts_for_duration_to_scalar((item or {}).get("max_contract_duration"))
+    if min_unit not in (None, "s") or max_unit not in (None, "s"):
+        return False
+    if min_v is not None and target_seconds < min_v:
+        return False
+    if max_v is not None and max_v > 0 and target_seconds > max_v:
+        return False
+    return str(expiry_type or "").lower() in ("intraday", "daily")
+
+
+def _format_unchain_market_default_barrier(raw_barrier, side):
+    try:
+        barrier_value = Decimal(str(raw_barrier or "").strip()).copy_abs()
+    except Exception:
+        return None
+    try:
+        barrier_value = barrier_value.quantize(Decimal("0.00"), rounding=ROUND_DOWN)
+    except Exception:
+        return None
+    sign = "+" if str(side or "").upper() == "HIGHER" else "-"
+    return f"{sign}{barrier_value:.2f}"
+
+
+def _build_unchain_market_default_key(symbol, duration, duration_unit):
+    sym = str(symbol or "").upper().strip()
+    try:
+        dur = int(float(duration or 0))
+    except Exception:
+        dur = 0
+    unit = _clean_unchain_duration_unit(duration_unit)
+    return f"{sym}|{dur}|{unit}".upper()
+
+
+def _normalize_scanner_window(window_ticks):
+    try:
+        value = int(window_ticks or UNCHAIN_SCANNER_DEFAULT_WINDOW)
+    except Exception:
+        value = UNCHAIN_SCANNER_DEFAULT_WINDOW
+    return value if value in UNCHAIN_SCANNER_WINDOW_OPTIONS else UNCHAIN_SCANNER_DEFAULT_WINDOW
+
+
+def _scanner_market_label(symbol):
+    sym = str(symbol or "").strip().upper()
+    if sym.startswith("1HZ") and sym.endswith("V") and sym[3:-1].isdigit():
+        return f"Vol {int(sym[3:-1])} (1s)"
+    if sym.startswith("R_") and sym[2:].isdigit():
+        return f"Vol {int(sym[2:])}"
+    return sym or "Unknown"
+
+
+def _normalize_scanner_symbols(raw, max_symbols=10):
+    if raw is None:
+        raw = []
+    if isinstance(raw, str):
+        raw = raw.replace(";", ",").replace("|", ",").replace("\n", ",")
+        raw = [s.strip() for s in raw.split(",")]
+    symbols = []
+    for s in raw:
+        if not s:
+            continue
+        sym = str(s).strip().upper()
+        if sym and sym not in symbols:
+            symbols.append(sym)
+        if len(symbols) >= max_symbols:
+            break
+    return symbols[:max_symbols]
+
+
+def _build_unchain_scanner_analysis(buffer, window_ticks=UNCHAIN_SCANNER_DEFAULT_WINDOW, symbol=None, active_symbol=None):
+    prices = list(buffer or [])
+    window_ticks = _normalize_scanner_window(window_ticks)
+    if len(prices) < window_ticks:
+        return None
+
+    sample_count = len(prices) - window_ticks + 1
+    if sample_count <= 0:
+        return None
+
+    up_moves = []
+    down_moves = []
+    end_deltas = []
+    for start_idx in range(sample_count):
+        segment = prices[start_idx:start_idx + window_ticks]
+        if len(segment) < window_ticks:
+            continue
+        start_price = float(segment[0])
+        end_price = float(segment[-1])
+        up_moves.append(max(segment) - start_price)
+        down_moves.append(start_price - min(segment))
+        end_deltas.append(end_price - start_price)
+
+    if not up_moves or not down_moves or not end_deltas:
+        return None
+
+    avg_up = sum(up_moves) / len(up_moves)
+    avg_down = sum(down_moves) / len(down_moves)
+    avg_delta = sum(end_deltas) / len(end_deltas)
+    barrier_value = max(0.01, round(max(avg_up, avg_down) * 0.25, 2))
+    higher_prob = sum(1 for delta in end_deltas if delta >= barrier_value) / len(end_deltas)
+    lower_prob = sum(1 for delta in end_deltas if delta <= -barrier_value) / len(end_deltas)
+    middle_prob = max(0.0, 1.0 - higher_prob - lower_prob)
+    diff_move = avg_up - avg_down
+    combined_move = avg_up + avg_down
+    recent_segment = prices[-window_ticks:]
+    recent_drift = float(recent_segment[-1]) - float(recent_segment[0])
+    last_price = float(prices[-1])
+
+    if higher_prob > lower_prob:
+        best_side = "HIGHER"
+    elif lower_prob > higher_prob:
+        best_side = "LOWER"
+    else:
+        best_side = "HIGHER" if diff_move >= 0 else "LOWER"
+
+    return {
+        "symbol": symbol,
+        "display_name": _scanner_market_label(symbol),
+        "is_active": bool(symbol and str(symbol).upper() == str(active_symbol or "").upper()),
+        "ticks_ready": len(prices),
+        "sample_count": sample_count,
+        "window_ticks": window_ticks,
+        "last_price": round(last_price, 6),
+        "avg_move_up": round(avg_up, 2),
+        "avg_move_down": round(avg_down, 2),
+        "difference": round(diff_move, 2),
+        "combined_move": round(combined_move, 2),
+        "drift": round(avg_delta, 4),
+        "recent_drift": round(recent_drift, 4),
+        "higher_win_prob": round(higher_prob, 4),
+        "lower_win_prob": round(lower_prob, 4),
+        "middle_prob": round(middle_prob, 4),
+        "higher_win": round(higher_prob * 100.0, 1),
+        "lower_win": round(lower_prob * 100.0, 1),
+        "middle_win": round(middle_prob * 100.0, 1),
+        "barrier_value": round(barrier_value, 2),
+        "barrier_high": f"+{barrier_value:.2f}",
+        "barrier_low": f"-{barrier_value:.2f}",
+        "best_side": best_side,
+        "score": 0,
+        "rank": None,
+        "updated_at": datetime.now().strftime("%H:%M:%S"),
+    }
+
+
+def _rank_unchain_scanner_analyses(analyses):
+    rows = [row for row in analyses if isinstance(row, dict)]
+    if not rows:
+        return []
+    rows.sort(
+        key=lambda row: (
+            float(row.get("combined_move", 0.0) or 0.0),
+            float(row.get("higher_win_prob", 0.0) or 0.0) + float(row.get("lower_win_prob", 0.0) or 0.0),
+            max(float(row.get("higher_win_prob", 0.0) or 0.0), float(row.get("lower_win_prob", 0.0) or 0.0)),
+        ),
+        reverse=True,
+    )
+    max_combined = max(float(row.get("combined_move", 0.0) or 0.0) for row in rows) or 1.0
+    for idx, row in enumerate(rows):
+        move_norm = min(1.0, max(0.0, float(row.get("combined_move", 0.0) or 0.0) / max_combined))
+        win_sum = min(1.0, max(0.0, float(row.get("higher_win_prob", 0.0) or 0.0) + float(row.get("lower_win_prob", 0.0) or 0.0)))
+        best_prob = min(
+            1.0,
+            max(float(row.get("higher_win_prob", 0.0) or 0.0), float(row.get("lower_win_prob", 0.0) or 0.0)),
+        )
+        score = 44.0 + (move_norm * 16.0) + (win_sum * 14.0) + (best_prob * 8.0) + max(0.0, 10.0 - idx)
+        if row.get("is_active"):
+            score += 5.0
+        row["score"] = int(round(max(1.0, min(99.0, score))))
+        row["rank"] = idx + 1
+    return rows
 
 
 class UnchainStrategy:
@@ -567,28 +983,8 @@ class UnchainStrategy:
         return True, "OK"
 
     def check_auto_trade_signal(self):
-        if not self.auto_enabled:
-            return None
-        if self.mode != "AUTO":
-            return None
-        reason = self._trade_block_reason()
-        if reason:
-            return None
-        # Only one trade per strong TAKE NOW signal cycle
-        if self.signal_state != "TAKE NOW":
-            return None
-        if (self._consumed_signal_cycle_id is not None) and (self._consumed_signal_cycle_id == self.signal_cycle_id):
-            return None
-        if self.confidence < self.confidence_threshold:
-            return None
-        return {
-            "profile": "UNCHAIN",
-            "type": "ACCU",
-            "mode": "AUTO",
-            "exit_ticks": int(self.auto_exit_ticks),
-            "confidence": float(self.confidence),
-            "growth_rate": float(self.growth_rate),
-        }
+        # UNCHAIN accumulator entries are disabled.
+        return None
 
     def on_trade_request_sent(self, mode="AUTO", exit_ticks=5, manual=False, stake=None):
         self.pending_trade_request = True
@@ -715,7 +1111,7 @@ class UnchainStrategy:
         profit = self._to_float(contract.get("profit", 0.0), 0.0)
         sold = self._to_float(contract.get("sell_price", 0.0), 0.0)
         buy_price = self._to_float(contract.get("buy_price", 0.0), 0.0)
-        is_win = profit >= 0
+        is_win = profit > 0
 
         if is_win:
             self.total_wins += 1
@@ -778,6 +1174,40 @@ class UnchainStrategy:
 
     def get_last_trade_entry(self):
         return self.last_trade_entry
+
+    def clear_history(self):
+        self.trade_history = []
+        self.total_wins = 0
+        self.total_losses = 0
+        self.total_profit = 0.0
+        self.total_loss = 0.0
+        self.last_trade_entry = None
+        self.session_profit = 0.0
+        self.risk_block_reason = None
+        self.loss_streak = 0
+        self.win_streak = 0
+        self.last_result = None
+        self.last_result_time = None
+        self.cooldown_until = 0.0
+        self.pending_trade_request = False
+        self.pending_trade_mode = None
+        self.pending_trade_exit_ticks = None
+        self.pending_trade_stake = None
+        self.active_contract_id = None
+        self.active_contract_open = False
+        self.active_entry_tick_seq = None
+        self.active_entry_market_tick_counter = None
+        self.active_entry_symbol = None
+        self.active_mode = None
+        self.active_target_exit_ticks = None
+        self.active_stake_amount = None
+        self.exit_requested = False
+        self.exit_requested_reason = None
+        self.open_contract_profit = None
+        self.open_contract_sell_price = None
+        self.open_contract_entry_spot = None
+        self.open_contract_current_spot = None
+        self._consumed_signal_cycle_id = None
 
     def reset_tick_analysis(self):
         # preserve settings and session/risk controls

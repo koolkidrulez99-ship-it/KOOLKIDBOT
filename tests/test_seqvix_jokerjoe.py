@@ -350,3 +350,40 @@ def test_send_buy_with_profile_allows_stake_equal_to_rounded_balance(jokerjoe_cl
     assert ok is True
     assert msg == "Trade sent"
     assert len(state["ws"].sent) == 1
+
+
+def test_send_buy_with_profile_can_skip_local_balance_gate(jokerjoe_client):
+    cid, state = jokerjoe_client
+    state["balance"] = 0.25
+
+    ok, msg = server.send_buy_with_profile(
+        cid,
+        "JOKERJOE",
+        "DIFFERS",
+        1.0,
+        "R_10",
+        5,
+        skip_local_balance_check=True,
+    )
+
+    assert ok is True
+    assert msg == "Trade sent"
+    assert len(state["ws"].sent) == 1
+
+
+def test_seqvix_jokerjoe_try_trade_bypasses_local_balance_gate(jokerjoe_client):
+    cid, state = jokerjoe_client
+    state["balance"] = 0.25
+    state["auto_stake"] = 1.0
+    run = state["seqvix"]["JOKERJOE"]
+    run["awaiting_buy"] = False
+    run["active_contract_id"] = None
+
+    ok, msg = server._seqvix_jokerjoe_try_trade(cid, state, "R_10", 7)
+
+    assert ok is True
+    assert msg == "Trade sent"
+    assert run["awaiting_buy"] is True
+    assert run["awaiting_symbol"] == "R_10"
+    assert run["awaiting_digit"] == 7
+    assert len(state["ws"].sent) == 1

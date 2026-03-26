@@ -2,6 +2,251 @@ from collections import deque, Counter
 from datetime import datetime
 import time
 
+SEQVIX_JOKERJOE_MARKETS = [
+    "R_10", "R_25", "R_50", "R_75", "R_100",
+    "1HZ10V", "1HZ15V", "1HZ25V", "1HZ30V", "1HZ50V", "1HZ75V", "1HZ90V", "1HZ100V",
+]
+SEQVIX_JOKERJOE_SLOW_MARKETS = [
+    "R_10", "R_25", "R_50", "R_75", "R_100",
+]
+SEQVIX_JOKERJOE_SAMPLE_SIZE = 20
+SEQVIX_JOKERJOE_OVERPLAY_THRESHOLD = 4
+
+
+def _seqvix_jokerjoe_mode_string(symbol, digit):
+    return f"SEQVIX_JJ|{str(symbol or '').upper()}|{int(digit)}"
+
+
+def _parse_seqvix_jokerjoe_mode(mode_value):
+    raw = str(mode_value or "").strip()
+    if not raw.startswith("SEQVIX_JJ|"):
+        return None
+    parts = raw.split("|", 2)
+    if len(parts) != 3:
+        return None
+    sym = str(parts[1] or "").upper().strip()
+    try:
+        digit = int(parts[2])
+    except Exception:
+        return None
+    if not sym or digit < 0 or digit > 9:
+        return None
+    return {"symbol": sym, "digit": digit}
+
+
+def _seqvix_jokerjoe_make_market_state(trades_target):
+    return {
+        "buffer": [],
+        "state": "scanning",
+        "trades_done": 0,
+        "trades_target": trades_target,
+        "last_tick_marker": None,
+        "last_played_digit": None,
+        "watch_digits": [],
+        "watch_percentage": None,
+        "signal_digit": None,
+        "signal_order": None,
+        "signal_tick_marker": None,
+        "signal_from_tie": False,
+        "avoid_digit": None,
+        "dominant_count": 0,
+        "status_text": "Scanning 20 ticks",
+        "open_contract_id": None,
+    }
+
+
+def _seqvix_jokerjoe_detect_overplayed_digit(sample):
+    counts = {d: 0 for d in range(10)}
+    for value in sample or []:
+        try:
+            digit = int(value)
+        except Exception:
+            continue
+        if 0 <= digit <= 9:
+            counts[digit] += 1
+    ordered = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    if not ordered:
+        return None, 0
+    top_digit, top_count = ordered[0]
+    second_count = ordered[1][1] if len(ordered) > 1 else 0
+    if top_count >= SEQVIX_JOKERJOE_OVERPLAY_THRESHOLD and top_count > second_count:
+        return top_digit, top_count
+    return None, top_count
+
+
+def _seqvix_jokerjoe_digit_counts(sample):
+    counts = {d: 0 for d in range(10)}
+    for value in sample or []:
+        try:
+            digit = int(value)
+        except Exception:
+            continue
+        if 0 <= digit <= 9:
+            counts[digit] += 1
+    return counts
+
+
+def _seqvix_jokerjoe_refresh_market_analysis(market):
+    sample = list(market.get("buffer") or [])[-SEQVIX_JOKERJOE_SAMPLE_SIZE:]
+    counts = _seqvix_jokerjoe_digit_counts(sample)
+    avoid_digit, dominant_count = _seqvix_jokerjoe_detect_overplayed_digit(sample)
+    eligible_digits = [d for d in range(10) if d != avoid_digit]
+    if not eligible_digits:
+        eligible_digits = list(range(10))
+    min_count = min(counts[d] for d in eligible_digits) if eligible_digits else 0
+    lowest_digits = [d for d in eligible_digits if counts[d] == min_count]
+    if len(lowest_digits) > 1:
+        min_tie_count = min(counts[d] for d in lowest_digits)
+        narrower = [d for d in lowest_digits if counts[d] == min_tie_count]
+        if len(narrower) == 1:
+            lowest_digits = narrower
+    percentage = round((float(min_count) / float(SEQVIX_JOKERJOE_SAMPLE_SIZE)) * 100.0, 1) if SEQVIX_JOKERJOE_SAMPLE_SIZE else 0.0
+    market["avoid_digit"] = avoid_digit
+    market["dominant_count"] = dominant_count
+    market["watch_digits"] = list(lowest_digits)
+    market["watch_percentage"] = percentage
+    return {
+        "counts": counts,
+        "watch_digits": list(lowest_digits),
+        "watch_percentage": percentage,
+        "avoid_digit": avoid_digit,
+        "dominant_count": dominant_count,
+    }
+
+
+def _seqvix_jokerjoe_watch_label(market):
+    digits = list(market.get("watch_digits") or [])
+    pct = market.get("watch_percentage")
+    if not digits:
+        return "Waiting for low digit"
+    digit_text = "/".join(str(int(d)) for d in digits)
+    pct_text = f" ({float(pct):.1f}%)" if pct is not None else ""
+    avoid_digit = market.get("avoid_digit")
+    if avoid_digit is not None:
+        return f"Watching {digit_text}{pct_text} • avoid {int(avoid_digit)}"
+    return f"Watching {digit_text}{pct_text}"
+
+
+def _seqvix_jokerjoe_is_busy(run):
+    return bool(run.get("awaiting_buy") or run.get("active_contract_id"))
+
+
+def _seqvix_jokerjoe_normalize_market_mode(mode):
+    raw = str(mode or "").upper().strip()
+    return raw if raw in ("5", "10", "ENDLESS") else "5"
+
+
+def _seqvix_jokerjoe_normalize_trade_mode(mode):
+    raw = str(mode or "").upper().strip()
+    return raw if raw in ("1", "2") else "2"
+
+
+def _seqvix_jokerjoe_normalize_scan_pool(mode):
+    raw = str(mode or "").upper().strip()
+    return raw if raw in ("ALL", "SLOW") else "ALL"
+
+
+def _seqvix_jokerjoe_markets_for_pool(scan_pool):
+    pool = _seqvix_jokerjoe_normalize_scan_pool(scan_pool)
+    if pool == "SLOW":
+        return list(SEQVIX_JOKERJOE_SLOW_MARKETS)
+    return list(SEQVIX_JOKERJOE_MARKETS)
+
+
+def _seqvix_jokerjoe_trade_target(trade_mode):
+    trade_mode = _seqvix_jokerjoe_normalize_trade_mode(trade_mode)
+    return 1 if trade_mode == "1" else 2
+
+
+def _seqvix_jokerjoe_state_sort_key(run, symbol):
+    try:
+        return list(run.get("scan_markets") or []).index(symbol)
+    except Exception:
+        return 9999
+
+
+def _seqvix_jokerjoe_rotation_candidates(run):
+    markets = list(run.get("scan_markets") or [])
+    if not markets:
+        return []
+    active = set(run.get("active_syms", set()) or set())
+    try:
+        cursor = int(run.get("rotation_cursor", 0) or 0)
+    except Exception:
+        cursor = 0
+    if cursor < 0:
+        cursor = 0
+    if markets:
+        cursor = cursor % len(markets)
+    ordered = markets[cursor:] + markets[:cursor]
+    return [sym for sym in ordered if sym not in active]
+
+
+def _seqvix_jokerjoe_clear_signal(market, next_state="waiting_for_digit", status_text=None):
+    market["state"] = next_state
+    market["signal_digit"] = None
+    market["signal_order"] = None
+    market["signal_tick_marker"] = None
+    market["signal_from_tie"] = False
+    if status_text is not None:
+        market["status_text"] = status_text
+
+
+def _seqvix_jokerjoe_ready_queue(run):
+    queued = []
+    for sym, market in (run.get("market_states") or {}).items():
+        if not isinstance(market, dict):
+            continue
+        if str(market.get("state") or "") != "ready_to_trade":
+            continue
+        order = market.get("signal_order")
+        try:
+            order_key = int(order)
+        except Exception:
+            order_key = 10**9
+        queued.append((order_key, _seqvix_jokerjoe_state_sort_key(run, sym), sym))
+    queued.sort()
+    return [sym for _order, _idx, sym in queued]
+
+
+def _seqvix_jokerjoe_status_payload(run):
+    active_symbols = sorted(run.get("active_syms", set()), key=lambda sym: _seqvix_jokerjoe_state_sort_key(run, sym))
+    active_markets = []
+    for sym in active_symbols:
+        market = (run.get("market_states") or {}).get(sym) or {}
+        target = market.get("trades_target")
+        active_markets.append({
+            "symbol": sym,
+            "state": market.get("state", "scanning"),
+            "scan_count": len(market.get("buffer") or []),
+            "last_digit": market.get("last_played_digit"),
+            "watch_digits": list(market.get("watch_digits") or []),
+            "watch_percentage": market.get("watch_percentage"),
+            "signal_digit": market.get("signal_digit"),
+            "overplayed_digit": market.get("avoid_digit"),
+            "overplayed_count": int(market.get("dominant_count", 0) or 0),
+            "trades_done": int(market.get("trades_done", 0) or 0),
+            "trades_target": (None if target is None else int(target)),
+            "status_text": market.get("status_text", ""),
+        })
+    return {
+        "market_mode": run.get("market_mode", "5"),
+        "trade_mode": run.get("trade_mode", "1"),
+        "scan_pool": run.get("scan_pool", "ALL"),
+        "queued_signals": len(_seqvix_jokerjoe_ready_queue(run)),
+        "open_trade_status": run.get("open_trade_status", ""),
+        "active_markets": active_markets,
+    }
+
+
+def _seqvix_jokerjoe_tick_marker(tick):
+    try:
+        epoch = int(float(tick.get("epoch") or tick.get("timestamp") or tick.get("time") or 0))
+    except Exception:
+        epoch = 0
+    quote = tick.get("quote")
+    return f"{epoch}|{quote}"
+
 
 class JokerJoeStrategy:
     """

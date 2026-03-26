@@ -23,10 +23,34 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 # STRATEGIES
 from strategies.koolkid import KoolKidStrategy
-from strategies.jokerjoe import JokerJoeStrategy
+from strategies.jokerjoe import (
+    JokerJoeStrategy,
+    SEQVIX_JOKERJOE_MARKETS,
+    SEQVIX_JOKERJOE_SLOW_MARKETS,
+    SEQVIX_JOKERJOE_SAMPLE_SIZE,
+    SEQVIX_JOKERJOE_OVERPLAY_THRESHOLD,
+    _parse_seqvix_jokerjoe_mode,
+    _seqvix_jokerjoe_clear_signal,
+    _seqvix_jokerjoe_is_busy,
+    _seqvix_jokerjoe_make_market_state,
+    _seqvix_jokerjoe_markets_for_pool,
+    _seqvix_jokerjoe_mode_string,
+    _seqvix_jokerjoe_normalize_market_mode,
+    _seqvix_jokerjoe_normalize_scan_pool,
+    _seqvix_jokerjoe_normalize_trade_mode,
+    _seqvix_jokerjoe_ready_queue,
+    _seqvix_jokerjoe_refresh_market_analysis,
+    _seqvix_jokerjoe_rotation_candidates,
+    _seqvix_jokerjoe_state_sort_key,
+    _seqvix_jokerjoe_status_payload,
+    _seqvix_jokerjoe_tick_marker,
+    _seqvix_jokerjoe_trade_target,
+    _seqvix_jokerjoe_watch_label,
+)
 from strategies.human import HumanStrategy
 try:
-    from strategies.unchain import UnchainStrategy
+    import strategies.unchain as _unchain_module
+    UnchainStrategy = _unchain_module.UnchainStrategy
 except Exception:
     import importlib.util
     _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -35,9 +59,35 @@ except Exception:
         _spec = importlib.util.spec_from_file_location("unchain_fallback_strategy", _UNCHAIN_FALLBACK)
         _mod = importlib.util.module_from_spec(_spec)
         _spec.loader.exec_module(_mod)
+        _unchain_module = _mod
         UnchainStrategy = _mod.UnchainStrategy
     else:
         raise
+
+UNCHAIN_SCANNER_WINDOW_OPTIONS = _unchain_module.UNCHAIN_SCANNER_WINDOW_OPTIONS
+UNCHAIN_SCANNER_DEFAULT_WINDOW = _unchain_module.UNCHAIN_SCANNER_DEFAULT_WINDOW
+UNCHAIN_SCANNER_MIN_HISTORY = _unchain_module.UNCHAIN_SCANNER_MIN_HISTORY
+_build_unchain_market_default_key = _unchain_module._build_unchain_market_default_key
+_build_unchain_scanner_analysis = _unchain_module._build_unchain_scanner_analysis
+_build_unchain_signed_barrier = _unchain_module._build_unchain_signed_barrier
+_clean_koolkid_duration_unit = _unchain_module._clean_koolkid_duration_unit
+_clean_unchain_duration_unit = _unchain_module._clean_unchain_duration_unit
+_contracts_for_duration_to_scalar = _unchain_module._contracts_for_duration_to_scalar
+_duration_matches_contracts_for = _unchain_module._duration_matches_contracts_for
+_flip_unchain_barrier_sign = _unchain_module._flip_unchain_barrier_sign
+_format_koolkid_duration_text = _unchain_module._format_koolkid_duration_text
+_format_unchain_barrier = _unchain_module._format_unchain_barrier
+_format_unchain_market_default_barrier = _unchain_module._format_unchain_market_default_barrier
+_get_unchain_koolkid_live_barrier = _unchain_module._get_unchain_koolkid_live_barrier
+_get_unchain_visible_barrier = _unchain_module._get_unchain_visible_barrier
+_half_unchain_barrier = _unchain_module._half_unchain_barrier
+_normalize_scanner_symbols = _unchain_module._normalize_scanner_symbols
+_normalize_scanner_window = _unchain_module._normalize_scanner_window
+_rank_unchain_scanner_analyses = _unchain_module._rank_unchain_scanner_analyses
+_sanitize_digit_trade_duration = _unchain_module._sanitize_digit_trade_duration
+_sanitize_koolkid_duration = _unchain_module._sanitize_koolkid_duration
+_sanitize_unchain_duration = _unchain_module._sanitize_unchain_duration
+_scanner_market_label = _unchain_module._scanner_market_label
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -1262,7 +1312,7 @@ def _serialize_profile_trade_history_entry(profile, entry, index):
     except Exception:
         stake_value = 0.0
 
-    result = str(raw.get("result") or ("WIN" if profit_value >= 0 else "LOSS")).upper().strip() or "LOSS"
+    result = str(raw.get("result") or ("WIN" if profit_value > 0 else "LOSS")).upper().strip() or "LOSS"
     time_text = str(raw.get("time") or raw.get("date_start") or raw.get("purchase_time") or now_time()).strip()
     symbol = str(raw.get("symbol") or raw.get("underlying") or "").strip()
     trade_type = str(raw.get("type") or raw.get("contract_type") or "TRADE").strip()
@@ -1822,11 +1872,26 @@ def send_buy(client_id, contract_type, stake, symbol, barrier, duration=1, durat
         ws.send(json.dumps(payload))
         return True, "Trade sent"
     except Exception as e:
+        try:
+            _pull_req_meta_by_req_id(state, req_id)
+        except Exception:
+            pass
         return False, str(e)
 
 
 # ==================== PATCH 1C: send_buy_with_profile ====================
-def send_buy_with_profile(client_id, profile, contract_type, stake, symbol, barrier, duration=1, duration_unit="t", mode=None):
+def send_buy_with_profile(
+    client_id,
+    profile,
+    contract_type,
+    stake,
+    symbol,
+    barrier,
+    duration=1,
+    duration_unit="t",
+    mode=None,
+    skip_local_balance_check=False,
+):
     state = clients.get(client_id)
     if not state:
         return False, "No client state"
@@ -1844,7 +1909,11 @@ def send_buy_with_profile(client_id, profile, contract_type, stake, symbol, barr
         balance_value = float(state.get("balance", 0.0) or 0.0)
     except Exception:
         balance_value = 0.0
-    if stake_value > 0 and (_effective_trade_balance(balance_value) + 1e-9) < stake_value:
+    if (
+        not bool(skip_local_balance_check)
+        and stake_value > 0
+        and (_effective_trade_balance(balance_value) + 1e-9) < stake_value
+    ):
         try:
             socketio.emit("api_error", {"message": "Insufficient funds to place trade"}, room=client_id)
         except Exception:
@@ -1913,6 +1982,10 @@ def send_buy_with_profile(client_id, profile, contract_type, stake, symbol, barr
         ws.send(json.dumps(payload))
         return True, "Trade sent"
     except Exception as e:
+        try:
+            _pull_req_meta_by_req_id(state, req_id)
+        except Exception:
+            pass
         return False, str(e)
 
 
@@ -1978,6 +2051,10 @@ def place_risefall_order(client_id, signal):
         ws.send(json.dumps(payload))
         return True, "Trade sent"
     except Exception as e:
+        try:
+            _pull_req_meta_by_req_id(state, req_id)
+        except Exception:
+            pass
         return False, str(e)
 
 
@@ -2309,186 +2386,12 @@ def _ensure_unchain_hl_state(state):
     return cur
 
 
-def _clean_unchain_duration_unit(value):
-    unit = str(value or "t").strip().lower()
-    return unit if unit in ("t", "s", "m", "h") else "t"
-
-
-def _sanitize_unchain_duration(value, duration_unit):
-    unit = _clean_unchain_duration_unit(duration_unit)
-    try:
-        duration = int(float(value))
-    except Exception:
-        defaults = {"t": 5, "s": 15, "m": 1, "h": 1}
-        duration = defaults.get(unit, 5)
-
-    if unit == "t":
-        return max(3, min(10, duration))
-    if unit == "s":
-        return max(15, min(59, duration))
-    if unit == "m":
-        return max(1, min(59, duration))
-    return max(1, min(24, duration))
-
-
-def _clean_koolkid_duration_unit(value):
-    unit = _clean_unchain_duration_unit(value)
-    return unit if unit in ("t", "s", "m") else "s"
-
-
-def _sanitize_koolkid_duration(value, duration_unit, *, kind="sim"):
-    unit = _clean_koolkid_duration_unit(duration_unit)
-    defaults = {"t": 5, "s": 15, "m": 1}
-    try:
-        duration = int(float(value))
-    except Exception:
-        duration = defaults.get(unit, 15)
-
-    if unit == "t":
-        max_ticks = 10 if str(kind or "").lower() == "live" else 20
-        return max(3, min(max_ticks, duration))
-    if unit == "s":
-        return max(5, min(59, duration))
-    return max(1, min(59, duration))
-
-
-def _format_koolkid_duration_text(value, unit):
-    cleaned_unit = _clean_koolkid_duration_unit(unit)
-    try:
-        amount = int(float(value))
-    except Exception:
-        amount = 0
-    if cleaned_unit == "t":
-        return f"{amount}T"
-    if cleaned_unit == "m":
-        return f"{amount}m"
-    return f"{amount}s"
-
-
 def _get_unchain_tick_counter(state):
     try:
         strat = ((state or {}).get("strategies") or {}).get("UNCHAIN")
         return max(0, int(getattr(strat, "tick_count", 0) or 0))
     except Exception:
         return 0
-
-
-def _format_unchain_barrier(raw_value, side, duration_unit):
-    raw = str(raw_value if raw_value is not None else "").strip()
-    if not raw:
-        raise ValueError("Barrier is required")
-
-    user_typed_sign = raw.startswith(("+", "-"))
-    numeric = float(raw) if user_typed_sign else abs(float(raw))
-    magnitude = abs(float(numeric))
-    formatted = f"{magnitude:.10f}".rstrip("0").rstrip(".") or "0"
-
-    unit = _clean_unchain_duration_unit(duration_unit)
-    if raw.startswith("+"):
-        out = f"+{formatted}"
-    elif raw.startswith("-"):
-        out = f"-{formatted}"
-    elif unit in ("t", "s", "m"):
-        out = f"+{formatted}"
-    else:
-        out = formatted
-    return out or "0"
-
-
-def _sanitize_digit_trade_duration(value):
-    try:
-        duration = int(float(value))
-    except Exception:
-        duration = 1
-    return max(1, min(10, duration))
-
-
-def _half_unchain_barrier(raw_value, side, duration_unit):
-    formatted = _format_unchain_barrier(raw_value, side, duration_unit)
-    try:
-        half_value = float(formatted) * 0.5
-    except Exception:
-        return formatted
-    half_raw = f"{half_value:+.10f}" if formatted.startswith(("+", "-")) else str(half_value)
-    return _format_unchain_barrier(half_raw, side, duration_unit)
-
-
-def _flip_unchain_barrier_sign(raw_value, duration_unit="t", fallback="+0.12"):
-    source = str(raw_value if raw_value is not None else "").strip() or str(fallback or "+0.12")
-    formatted = _format_unchain_barrier(source, "HIGHER", duration_unit)
-    try:
-        flipped_value = -float(formatted)
-        flipped_raw = f"{flipped_value:+.10f}" if formatted.startswith(("+", "-")) else str(flipped_value)
-        return _format_unchain_barrier(flipped_raw, "HIGHER", duration_unit)
-    except Exception:
-        if formatted.startswith("+"):
-            return f"-{formatted[1:]}"
-        if formatted.startswith("-"):
-            return f"+{formatted[1:]}"
-        return f"-{formatted}"
-
-
-def _get_unchain_visible_barrier(u, side, duration_unit="t"):
-    unit = _clean_unchain_duration_unit(duration_unit or (u or {}).get("duration_unit", "t"))
-    side_key = "higher_barrier" if str(side or "").upper() == "HIGHER" else "lower_barrier"
-    raw = (u or {}).get(side_key, "+0.12" if side_key == "higher_barrier" else "-0.12")
-    try:
-        formatted = _format_unchain_barrier(raw, side, unit)
-    except Exception:
-        formatted = "+0.12" if side_key == "higher_barrier" else "-0.12"
-    if bool((u or {}).get("half_barrier_enabled")):
-        return _half_unchain_barrier(formatted, side, unit)
-    return formatted
-
-
-def _get_unchain_koolkid_live_barrier(u, side, duration_unit="t"):
-    unit = _clean_unchain_duration_unit(duration_unit or "t")
-    side_name = str(side or "").upper()
-    if side_name == "HIGHER":
-        raw = str((u or {}).get("koolkid_higher_barrier") or "").strip()
-        fallback = "+0.12"
-    else:
-        raw = str((u or {}).get("koolkid_lower_barrier") or "").strip()
-        fallback = "-0.12"
-    if raw:
-        try:
-            formatted = _format_unchain_barrier(raw, side_name, unit)
-            if bool((u or {}).get("koolkid_half_barrier_enabled")):
-                formatted = _half_unchain_barrier(formatted, side_name, unit)
-            return formatted
-        except Exception:
-            pass
-    try:
-        fallback_barrier = _half_unchain_barrier(
-            _format_unchain_barrier((u or {}).get("higher_barrier" if side_name == "HIGHER" else "lower_barrier", fallback), side_name, unit),
-            side_name,
-            unit,
-        )
-        if bool((u or {}).get("koolkid_reversal_enabled")):
-            fallback_barrier = _flip_unchain_barrier_sign(fallback_barrier, unit, fallback_barrier)
-        if bool((u or {}).get("koolkid_half_barrier_enabled")):
-            fallback_barrier = _half_unchain_barrier(fallback_barrier, side_name, unit)
-        return fallback_barrier
-    except Exception:
-        default_barrier = "+0.06" if side_name == "HIGHER" else "-0.06"
-        if bool((u or {}).get("koolkid_reversal_enabled")):
-            default_barrier = _flip_unchain_barrier_sign(default_barrier, unit, default_barrier)
-        if bool((u or {}).get("koolkid_half_barrier_enabled")):
-            default_barrier = _half_unchain_barrier(default_barrier, side_name, unit)
-        return default_barrier
-
-
-def _build_unchain_signed_barrier(side, magnitude, duration_unit="t"):
-    side_name = str(side or "").upper()
-    sign = "+" if side_name == "HIGHER" else "-"
-    try:
-        mag = abs(float(magnitude))
-    except Exception:
-        mag = 0.0
-    raw = f"{sign}{mag:.10f}".rstrip("0").rstrip(".")
-    if raw in ("+", "-"):
-        raw = f"{sign}0"
-    return _format_unchain_barrier(raw, side_name, duration_unit)
 
 
 def _normalize_contract_id(contract_id):
@@ -4787,6 +4690,60 @@ def _resolve_proposal_waiter(state, req_id, proposal=None, error=None):
     return True
 
 
+def _candidate_req_id_keys(req_id):
+    if req_id in (None, ""):
+        return []
+    keys = [req_id, str(req_id)]
+    try:
+        normalized_int = int(float(req_id))
+        keys.extend([normalized_int, str(normalized_int)])
+    except Exception:
+        pass
+    seen = set()
+    ordered = []
+    for key in keys:
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(key)
+    return ordered
+
+
+def _pull_req_meta_by_req_id(state, req_id):
+    req_meta = state.get("req_meta")
+    if not isinstance(req_meta, dict):
+        return None
+    for key in _candidate_req_id_keys(req_id):
+        if key in req_meta:
+            return req_meta.pop(key, None)
+    return None
+
+
+def _clear_unchain_pending_request_state(state):
+    strat = (state.get("strategies") or {}).get("UNCHAIN")
+    if not strat:
+        return
+    try:
+        strat.pending_trade_request = False
+        strat.pending_trade_mode = None
+        strat.pending_trade_exit_ticks = None
+        strat.pending_trade_stake = None
+    except Exception:
+        pass
+
+
+def _cleanup_failed_buy_request(state, req_id):
+    meta = _pull_req_meta_by_req_id(state, req_id)
+    if not isinstance(meta, dict):
+        return None
+    if (
+        str(meta.get("profile") or "").upper() == "UNCHAIN"
+        and str(meta.get("type") or "").upper() == "ACCU"
+    ):
+        _clear_unchain_pending_request_state(state)
+    return meta
+
+
 def _request_unchain_proposal_quote(state, *, side, stake, symbol, barrier, duration, duration_unit="t", timeout_sec=1.6):
     ws = state.get("ws")
     if not state.get("ws_connected") or not ws:
@@ -4885,81 +4842,6 @@ def _request_unchain_proposal_quote(state, *, side, stake, symbol, barrier, dura
 _UNCHAIN_MARKET_BARRIER_CACHE = {}
 
 
-def _contracts_for_duration_to_scalar(spec):
-    raw = str(spec or "").strip().lower()
-    if not raw:
-        return None, None
-    num = ""
-    unit = ""
-    for ch in raw:
-        if ch.isdigit() or ch == ".":
-            num += ch
-        elif ch.isalpha():
-            unit += ch
-    if not num or not unit:
-        return None, None
-    try:
-        value = float(num)
-    except Exception:
-        return None, None
-    if unit == "t":
-        return value, "t"
-    if unit == "s":
-        return value, "s"
-    if unit == "m":
-        return value * 60.0, "s"
-    if unit == "h":
-        return value * 3600.0, "s"
-    if unit == "d":
-        return value * 86400.0, "s"
-    return None, None
-
-
-def _duration_matches_contracts_for(item, duration, duration_unit):
-    expiry_type = str((item or {}).get("expiry_type") or "").strip().lower()
-    if expiry_type == "tick":
-        if _clean_unchain_duration_unit(duration_unit) != "t":
-            return False
-        try:
-            target = float(int(duration))
-        except Exception:
-            return False
-        min_v, min_unit = _contracts_for_duration_to_scalar((item or {}).get("min_contract_duration"))
-        max_v, max_unit = _contracts_for_duration_to_scalar((item or {}).get("max_contract_duration"))
-        if min_unit not in (None, "t") or max_unit not in (None, "t"):
-            return False
-        if min_v is not None and target < min_v:
-            return False
-        if max_v is not None and max_v > 0 and target > max_v:
-            return False
-        return True
-
-    if _clean_unchain_duration_unit(duration_unit) == "t":
-        return False
-    try:
-        target_unit = _clean_unchain_duration_unit(duration_unit)
-        target = float(duration)
-    except Exception:
-        return False
-    if target_unit == "s":
-        target_seconds = target
-    elif target_unit == "m":
-        target_seconds = target * 60.0
-    elif target_unit == "h":
-        target_seconds = target * 3600.0
-    else:
-        return False
-    min_v, min_unit = _contracts_for_duration_to_scalar((item or {}).get("min_contract_duration"))
-    max_v, max_unit = _contracts_for_duration_to_scalar((item or {}).get("max_contract_duration"))
-    if min_unit not in (None, "s") or max_unit not in (None, "s"):
-        return False
-    if min_v is not None and target_seconds < min_v:
-        return False
-    if max_v is not None and max_v > 0 and target_seconds > max_v:
-        return False
-    return str(expiry_type or "").lower() in ("intraday", "daily")
-
-
 def _fetch_unchain_market_default_barrier(symbol, duration, duration_unit):
     sym = str(symbol or "").strip().upper()
     unit = _clean_unchain_duration_unit(duration_unit)
@@ -5023,30 +4905,6 @@ def _fetch_unchain_market_default_barrier(symbol, duration, duration_unit):
                 ws.close()
         except Exception:
             pass
-
-
-def _format_unchain_market_default_barrier(raw_barrier, side):
-    try:
-        barrier_value = Decimal(str(raw_barrier or "").strip()).copy_abs()
-    except Exception:
-        return None
-    try:
-        barrier_value = barrier_value.quantize(Decimal("0.00"), rounding=ROUND_DOWN)
-    except Exception:
-        return None
-    sign = "+" if str(side or "").upper() == "HIGHER" else "-"
-    return f"{sign}{barrier_value:.2f}"
-
-
-def _build_unchain_market_default_key(symbol, duration, duration_unit):
-    sym = str(symbol or "").upper().strip()
-    try:
-        dur = int(float(duration or 0))
-    except Exception:
-        dur = 0
-    unit = _clean_unchain_duration_unit(duration_unit)
-    return f"{sym}|{dur}|{unit}".upper()
-
 
 def _apply_unchain_market_default_barriers(state, symbol):
     u = _ensure_unchain_hl_state(state)
@@ -6292,6 +6150,10 @@ def _send_unchain_buy(client_id, *, stake, symbol, growth_rate, mode="AUTO", exi
     if not strat:
         return False, "UNCHAIN strategy not loaded"
 
+    # UNCHAIN accumulator/ACCU entries are intentionally disabled.
+    _clear_unchain_pending_request_state(state)
+    return False, "UNCHAIN accumulator mode disabled"
+
     if hasattr(strat, "enforce_tp_sl"):
         try:
             strat.enforce_tp_sl()
@@ -6543,15 +6405,6 @@ SEQVIX_MARKETS = [
     "1HZ10V", "1HZ15V", "1HZ25V", "1HZ30V", "1HZ50V", "1HZ75V", "1HZ90V", "1HZ100V",
     "RDBULL", "RDBEAR",
 ]
-SEQVIX_JOKERJOE_MARKETS = [
-    "R_10", "R_25", "R_50", "R_75", "R_100",
-    "1HZ10V", "1HZ15V", "1HZ25V", "1HZ30V", "1HZ50V", "1HZ75V", "1HZ90V", "1HZ100V",
-]
-SEQVIX_JOKERJOE_SLOW_MARKETS = [
-    "R_10", "R_25", "R_50", "R_75", "R_100",
-]
-SEQVIX_JOKERJOE_SAMPLE_SIZE = 20
-SEQVIX_JOKERJOE_OVERPLAY_THRESHOLD = 4
 
 def _seqvix_emit_progress(client_id, state, profile, reason=None):
     run = state["seqvix"][profile]
@@ -6566,241 +6419,6 @@ def _seqvix_emit_progress(client_id, state, profile, reason=None):
     if reason:
         payload["reason"] = reason
     socketio.emit("seqvix_progress", payload, room=client_id)
-
-
-def _seqvix_jokerjoe_mode_string(symbol, digit):
-    return f"SEQVIX_JJ|{str(symbol or '').upper()}|{int(digit)}"
-
-
-def _parse_seqvix_jokerjoe_mode(mode_value):
-    raw = str(mode_value or "").strip()
-    if not raw.startswith("SEQVIX_JJ|"):
-        return None
-    parts = raw.split("|", 2)
-    if len(parts) != 3:
-        return None
-    sym = str(parts[1] or "").upper().strip()
-    try:
-        digit = int(parts[2])
-    except Exception:
-        return None
-    if not sym or digit < 0 or digit > 9:
-        return None
-    return {"symbol": sym, "digit": digit}
-
-
-def _seqvix_jokerjoe_make_market_state(trades_target):
-    return {
-        "buffer": [],
-        "state": "scanning",
-        "trades_done": 0,
-        "trades_target": trades_target,
-        "last_tick_marker": None,
-        "last_played_digit": None,
-        "watch_digits": [],
-        "watch_percentage": None,
-        "signal_digit": None,
-        "signal_order": None,
-        "signal_tick_marker": None,
-        "signal_from_tie": False,
-        "avoid_digit": None,
-        "dominant_count": 0,
-        "status_text": "Scanning 20 ticks",
-        "open_contract_id": None,
-    }
-
-
-def _seqvix_jokerjoe_detect_overplayed_digit(sample):
-    counts = {d: 0 for d in range(10)}
-    for value in sample or []:
-        try:
-            digit = int(value)
-        except Exception:
-            continue
-        if 0 <= digit <= 9:
-            counts[digit] += 1
-    ordered = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
-    if not ordered:
-        return None, 0
-    top_digit, top_count = ordered[0]
-    second_count = ordered[1][1] if len(ordered) > 1 else 0
-    if top_count >= SEQVIX_JOKERJOE_OVERPLAY_THRESHOLD and top_count > second_count:
-        return top_digit, top_count
-    return None, top_count
-
-
-def _seqvix_jokerjoe_digit_counts(sample):
-    counts = {d: 0 for d in range(10)}
-    for value in sample or []:
-        try:
-            digit = int(value)
-        except Exception:
-            continue
-        if 0 <= digit <= 9:
-            counts[digit] += 1
-    return counts
-
-
-def _seqvix_jokerjoe_refresh_market_analysis(market):
-    sample = list(market.get("buffer") or [])[-SEQVIX_JOKERJOE_SAMPLE_SIZE:]
-    counts = _seqvix_jokerjoe_digit_counts(sample)
-    avoid_digit, dominant_count = _seqvix_jokerjoe_detect_overplayed_digit(sample)
-    eligible_digits = [d for d in range(10) if d != avoid_digit]
-    if not eligible_digits:
-        eligible_digits = list(range(10))
-    min_count = min(counts[d] for d in eligible_digits) if eligible_digits else 0
-    lowest_digits = [d for d in eligible_digits if counts[d] == min_count]
-    if len(lowest_digits) > 1:
-        min_tie_count = min(counts[d] for d in lowest_digits)
-        narrower = [d for d in lowest_digits if counts[d] == min_tie_count]
-        if len(narrower) == 1:
-            lowest_digits = narrower
-    percentage = round((float(min_count) / float(SEQVIX_JOKERJOE_SAMPLE_SIZE)) * 100.0, 1) if SEQVIX_JOKERJOE_SAMPLE_SIZE else 0.0
-    market["avoid_digit"] = avoid_digit
-    market["dominant_count"] = dominant_count
-    market["watch_digits"] = list(lowest_digits)
-    market["watch_percentage"] = percentage
-    return {
-        "counts": counts,
-        "watch_digits": list(lowest_digits),
-        "watch_percentage": percentage,
-        "avoid_digit": avoid_digit,
-        "dominant_count": dominant_count,
-    }
-
-
-def _seqvix_jokerjoe_watch_label(market):
-    digits = list(market.get("watch_digits") or [])
-    pct = market.get("watch_percentage")
-    if not digits:
-        return "Waiting for low digit"
-    digit_text = "/".join(str(int(d)) for d in digits)
-    pct_text = f" ({float(pct):.1f}%)" if pct is not None else ""
-    avoid_digit = market.get("avoid_digit")
-    if avoid_digit is not None:
-        return f"Watching {digit_text}{pct_text} • avoid {int(avoid_digit)}"
-    return f"Watching {digit_text}{pct_text}"
-
-
-def _seqvix_jokerjoe_is_busy(run):
-    return bool(run.get("awaiting_buy") or run.get("active_contract_id"))
-
-
-def _seqvix_jokerjoe_normalize_market_mode(mode):
-    raw = str(mode or "").upper().strip()
-    return raw if raw in ("5", "10", "ENDLESS") else "5"
-
-
-def _seqvix_jokerjoe_normalize_trade_mode(mode):
-    raw = str(mode or "").upper().strip()
-    return raw if raw in ("1", "2") else "2"
-
-
-def _seqvix_jokerjoe_normalize_scan_pool(mode):
-    raw = str(mode or "").upper().strip()
-    return raw if raw in ("ALL", "SLOW") else "ALL"
-
-
-def _seqvix_jokerjoe_markets_for_pool(scan_pool):
-    pool = _seqvix_jokerjoe_normalize_scan_pool(scan_pool)
-    if pool == "SLOW":
-        return list(SEQVIX_JOKERJOE_SLOW_MARKETS)
-    return list(SEQVIX_JOKERJOE_MARKETS)
-
-
-def _seqvix_jokerjoe_trade_target(trade_mode):
-    trade_mode = _seqvix_jokerjoe_normalize_trade_mode(trade_mode)
-    return 1 if trade_mode == "1" else 2
-
-
-def _seqvix_jokerjoe_state_sort_key(run, symbol):
-    try:
-        return list(run.get("scan_markets") or []).index(symbol)
-    except Exception:
-        return 9999
-
-
-def _seqvix_jokerjoe_rotation_candidates(run):
-    markets = list(run.get("scan_markets") or [])
-    if not markets:
-        return []
-    active = set(run.get("active_syms", set()) or set())
-    try:
-        cursor = int(run.get("rotation_cursor", 0) or 0)
-    except Exception:
-        cursor = 0
-    if cursor < 0:
-        cursor = 0
-    if markets:
-        cursor = cursor % len(markets)
-    ordered = markets[cursor:] + markets[:cursor]
-    return [sym for sym in ordered if sym not in active]
-
-
-def _seqvix_jokerjoe_clear_signal(market, next_state="waiting_for_digit", status_text=None):
-    market["state"] = next_state
-    market["signal_digit"] = None
-    market["signal_order"] = None
-    market["signal_tick_marker"] = None
-    market["signal_from_tie"] = False
-    if status_text is not None:
-        market["status_text"] = status_text
-
-
-def _seqvix_jokerjoe_ready_queue(run):
-    queued = []
-    for sym, market in (run.get("market_states") or {}).items():
-        if not isinstance(market, dict):
-            continue
-        if str(market.get("state") or "") != "ready_to_trade":
-            continue
-        order = market.get("signal_order")
-        try:
-            order_key = int(order)
-        except Exception:
-            order_key = 10**9
-        queued.append((order_key, _seqvix_jokerjoe_state_sort_key(run, sym), sym))
-    queued.sort()
-    return [sym for _order, _idx, sym in queued]
-
-
-def _seqvix_jokerjoe_status_payload(run):
-    active_symbols = sorted(run.get("active_syms", set()), key=lambda sym: _seqvix_jokerjoe_state_sort_key(run, sym))
-    active_markets = []
-    for sym in active_symbols:
-        market = (run.get("market_states") or {}).get(sym) or {}
-        target = market.get("trades_target")
-        active_markets.append({
-            "symbol": sym,
-            "state": market.get("state", "scanning"),
-            "scan_count": len(market.get("buffer") or []),
-            "last_digit": market.get("last_played_digit"),
-            "watch_digits": list(market.get("watch_digits") or []),
-            "watch_percentage": market.get("watch_percentage"),
-            "signal_digit": market.get("signal_digit"),
-            "overplayed_digit": market.get("avoid_digit"),
-            "overplayed_count": int(market.get("dominant_count", 0) or 0),
-            "trades_done": int(market.get("trades_done", 0) or 0),
-            "trades_target": (None if target is None else int(target)),
-            "status_text": market.get("status_text", ""),
-        })
-    return {
-        "market_mode": run.get("market_mode", "5"),
-        "trade_mode": run.get("trade_mode", "1"),
-        "scan_pool": run.get("scan_pool", "ALL"),
-        "queued_signals": len(_seqvix_jokerjoe_ready_queue(run)),
-        "open_trade_status": run.get("open_trade_status", ""),
-        "active_markets": active_markets,
-    }
-
-
-def _seqvix_jokerjoe_tick_marker(tick):
-    try:
-        epoch = int(float(tick.get("epoch") or tick.get("timestamp") or tick.get("time") or 0))
-    except Exception:
-        epoch = 0
-    quote = tick.get("quote")
-    return f"{epoch}|{quote}"
 
 
 def _seqvix_jokerjoe_activate_market(state, sym):
@@ -6897,6 +6515,7 @@ def _seqvix_jokerjoe_try_trade(client_id, state, sym, digit):
         duration=1,
         duration_unit="t",
         mode=_seqvix_jokerjoe_mode_string(sym, digit),
+        skip_local_balance_check=True,
     )
     if ok:
         run["awaiting_buy"] = True
@@ -7461,24 +7080,6 @@ UNCHAIN_SCANNER_HISTORY_TICKS = 320
 UNCHAIN_SCANNER_MIN_HISTORY = 20
 UNCHAIN_SCANNER_EMIT_INTERVAL = 2.0
 
-
-def _normalize_scanner_window(window_ticks):
-    try:
-        value = int(window_ticks or UNCHAIN_SCANNER_DEFAULT_WINDOW)
-    except Exception:
-        value = UNCHAIN_SCANNER_DEFAULT_WINDOW
-    return value if value in UNCHAIN_SCANNER_WINDOW_OPTIONS else UNCHAIN_SCANNER_DEFAULT_WINDOW
-
-
-def _scanner_market_label(symbol):
-    sym = str(symbol or "").strip().upper()
-    if sym.startswith("1HZ") and sym.endswith("V") and sym[3:-1].isdigit():
-        return f"Vol {int(sym[3:-1])} (1s)"
-    if sym.startswith("R_") and sym[2:].isdigit():
-        return f"Vol {int(sym[2:])}"
-    return sym or "Unknown"
-
-
 def _ensure_unchain_scanner(state):
     scan = state.setdefault("unchain_scanner", {}) or {}
     scan.setdefault("running", False)
@@ -7502,128 +7103,6 @@ def _ensure_unchain_scanner(state):
     scan["max_symbols"] = 10
     scan["symbols"] = _normalize_scanner_symbols(scan.get("symbols") or [], max_symbols=scan["max_symbols"])
     return scan
-
-
-def _normalize_scanner_symbols(raw, max_symbols=10):
-    if raw is None:
-        raw = []
-    if isinstance(raw, str):
-        raw = raw.replace(";", ",").replace("|", ",").replace("\n", ",")
-        raw = [s.strip() for s in raw.split(",")]
-    symbols = []
-    for s in raw:
-        if not s:
-            continue
-        sym = str(s).strip().upper()
-        if sym and sym not in symbols:
-            symbols.append(sym)
-        if len(symbols) >= max_symbols:
-            break
-    return symbols[:max_symbols]
-
-
-def _build_unchain_scanner_analysis(buffer, window_ticks=UNCHAIN_SCANNER_DEFAULT_WINDOW, symbol=None, active_symbol=None):
-    prices = list(buffer or [])
-    window_ticks = _normalize_scanner_window(window_ticks)
-    if len(prices) < window_ticks:
-        return None
-
-    sample_count = len(prices) - window_ticks + 1
-    if sample_count <= 0:
-        return None
-
-    up_moves = []
-    down_moves = []
-    end_deltas = []
-    for start_idx in range(sample_count):
-        segment = prices[start_idx:start_idx + window_ticks]
-        if len(segment) < window_ticks:
-            continue
-        start_price = float(segment[0])
-        end_price = float(segment[-1])
-        up_moves.append(max(segment) - start_price)
-        down_moves.append(start_price - min(segment))
-        end_deltas.append(end_price - start_price)
-
-    if not up_moves or not down_moves or not end_deltas:
-        return None
-
-    avg_up = sum(up_moves) / len(up_moves)
-    avg_down = sum(down_moves) / len(down_moves)
-    avg_delta = sum(end_deltas) / len(end_deltas)
-    barrier_value = max(0.01, round(max(avg_up, avg_down) * 0.25, 2))
-    higher_prob = sum(1 for delta in end_deltas if delta >= barrier_value) / len(end_deltas)
-    lower_prob = sum(1 for delta in end_deltas if delta <= -barrier_value) / len(end_deltas)
-    middle_prob = max(0.0, 1.0 - higher_prob - lower_prob)
-    diff_move = avg_up - avg_down
-    combined_move = avg_up + avg_down
-    recent_segment = prices[-window_ticks:]
-    recent_drift = float(recent_segment[-1]) - float(recent_segment[0])
-    last_price = float(prices[-1])
-
-    if higher_prob > lower_prob:
-        best_side = "HIGHER"
-    elif lower_prob > higher_prob:
-        best_side = "LOWER"
-    else:
-        best_side = "HIGHER" if diff_move >= 0 else "LOWER"
-
-    return {
-        "symbol": symbol,
-        "display_name": _scanner_market_label(symbol),
-        "is_active": bool(symbol and str(symbol).upper() == str(active_symbol or "").upper()),
-        "ticks_ready": len(prices),
-        "sample_count": sample_count,
-        "window_ticks": window_ticks,
-        "last_price": round(last_price, 6),
-        "avg_move_up": round(avg_up, 2),
-        "avg_move_down": round(avg_down, 2),
-        "difference": round(diff_move, 2),
-        "combined_move": round(combined_move, 2),
-        "drift": round(avg_delta, 4),
-        "recent_drift": round(recent_drift, 4),
-        "higher_win_prob": round(higher_prob, 4),
-        "lower_win_prob": round(lower_prob, 4),
-        "middle_prob": round(middle_prob, 4),
-        "higher_win": round(higher_prob * 100.0, 1),
-        "lower_win": round(lower_prob * 100.0, 1),
-        "middle_win": round(middle_prob * 100.0, 1),
-        "barrier_value": round(barrier_value, 2),
-        "barrier_high": f"+{barrier_value:.2f}",
-        "barrier_low": f"-{barrier_value:.2f}",
-        "best_side": best_side,
-        "score": 0,
-        "rank": None,
-        "updated_at": now_time(),
-    }
-
-
-def _rank_unchain_scanner_analyses(analyses):
-    rows = [row for row in analyses if isinstance(row, dict)]
-    if not rows:
-        return []
-    rows.sort(
-        key=lambda row: (
-            float(row.get("combined_move", 0.0) or 0.0),
-            float(row.get("higher_win_prob", 0.0) or 0.0) + float(row.get("lower_win_prob", 0.0) or 0.0),
-            max(float(row.get("higher_win_prob", 0.0) or 0.0), float(row.get("lower_win_prob", 0.0) or 0.0)),
-        ),
-        reverse=True,
-    )
-    max_combined = max(float(row.get("combined_move", 0.0) or 0.0) for row in rows) or 1.0
-    for idx, row in enumerate(rows):
-        move_norm = min(1.0, max(0.0, float(row.get("combined_move", 0.0) or 0.0) / max_combined))
-        win_sum = min(1.0, max(0.0, float(row.get("higher_win_prob", 0.0) or 0.0) + float(row.get("lower_win_prob", 0.0) or 0.0)))
-        best_prob = min(
-            1.0,
-            max(float(row.get("higher_win_prob", 0.0) or 0.0), float(row.get("lower_win_prob", 0.0) or 0.0)),
-        )
-        score = 44.0 + (move_norm * 16.0) + (win_sum * 14.0) + (best_prob * 8.0) + max(0.0, 10.0 - idx)
-        if row.get("is_active"):
-            score += 5.0
-        row["score"] = int(round(max(1.0, min(99.0, score))))
-        row["rank"] = idx + 1
-    return rows
 
 
 def _get_top_unchain_scanner_recs(scanner, limit=4):
@@ -8010,6 +7489,10 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 _seqvix_jokerjoe_handle_buy_error(state, req_id)
             except Exception:
                 pass
+            try:
+                _cleanup_failed_buy_request(state, req_id)
+            except Exception:
+                pass
             msg = data["error"].get("message", "Unknown API Error")
             sell_req_cid = None
             try:
@@ -8113,8 +7596,8 @@ def handle_on_message(client_id, ws, message, expected_nonce):
 
                 req_id = data.get("req_id")
                 meta = None
-                if req_id and req_id in state.get("req_meta", {}):
-                    meta = state["req_meta"].pop(req_id, None)
+                if req_id not in (None, ""):
+                    meta = _pull_req_meta_by_req_id(state, req_id)
 
                 if meta and meta.get("kind") in ("human_5m_seed", "human_1h_seed"):
                     strat = state.get("strategies", {}).get("HUMAN")
@@ -8153,9 +7636,7 @@ def handle_on_message(client_id, ws, message, expected_nonce):
             contract_id = buy.get("contract_id")
             req_id = data.get("req_id")
 
-            meta = None
-            if req_id and req_id in state["req_meta"]:
-                meta = state["req_meta"].pop(req_id, None)
+            meta = _pull_req_meta_by_req_id(state, req_id)
 
             if contract_id and meta:
                 state["contract_meta"][contract_id] = meta
@@ -8792,6 +8273,23 @@ def clear_profile_history():
         u["last_result"] = None
         u["last_action"] = "Ready"
         u["risk_block_reason"] = None
+        u["active_contracts"] = {}
+        u["auto_pair_active"] = False
+        u["auto_next_fire_at"] = 0.0
+        u["auto_last_cycle_closed_at"] = 0.0
+        u["auto_wait_for_reset"] = False
+        u["auto_reset_drop_seen"] = False
+        u["auto_cycle_id"] = 0
+        u["auto_cycle_settled"] = 0
+        u["auto_cycle_losses"] = 0
+        u["auto_last_cycle_had_loss"] = False
+        u["auto_both_pair_active"] = False
+        u["auto_both_next_fire_at"] = 0.0
+        u["auto_both_last_cycle_closed_at"] = 0.0
+        u["koolkid_hl_simulation"] = None
+        u["koolkid_both_simulation"] = None
+        u["pair_failure_toast_at"] = 0.0
+        u["pair_failure_toast_message"] = ""
 
     if profile == state.get("active_profile"):
         send_stats_update(cid)
@@ -8986,12 +8484,12 @@ def set_risk_controls():
     tp = float(data.get("tp", 0))
     sl = float(data.get("sl", 0))
     auto_sl = bool(data.get("auto_sl", True))
-
-    strategy = state["strategies"].get(state["active_profile"])
+    target_profile = str(data.get("profile") or state.get("active_profile") or "KOOLKID").upper().strip()
+    strategy = state["strategies"].get(target_profile)
     if strategy and hasattr(strategy, "set_risk_controls"):
         strategy.set_risk_controls(tp=tp, sl=sl, auto_sl=auto_sl)
 
-    return jsonify({"status": "success"})
+    return jsonify({"status": "success", "profile": target_profile})
 
 
 @app.route("/toggle_auto", methods=["POST"])

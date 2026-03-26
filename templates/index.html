@@ -3507,12 +3507,45 @@ function loadMarketList(){
     });
 
     symbolSelect.value = "R_10";
+    symbolSelect.dataset.confirmedSymbol = "R_10";
 }
 loadMarketList();
 
-document.getElementById("symbol").addEventListener("change", function(){
-    fetch("/change_market", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({symbol:this.value})});
-    showToast("📊 Market Changed: " + this.value, "warn");
+function getConfirmedMarketSymbol(){
+    const symbolSelect = document.getElementById("symbol");
+    if(!symbolSelect) return "R_10";
+    return symbolSelect.dataset.confirmedSymbol || symbolSelect.value || "R_10";
+}
+
+function setConfirmedMarketSymbol(symbol){
+    const symbolSelect = document.getElementById("symbol");
+    const safeSymbol = String(symbol || "").trim();
+    if(!symbolSelect || !safeSymbol) return;
+    symbolSelect.value = safeSymbol;
+    symbolSelect.dataset.confirmedSymbol = safeSymbol;
+}
+
+document.getElementById("symbol").addEventListener("change", async function(){
+    const nextSymbol = this.value;
+    const previousSymbol = this.dataset.confirmedSymbol || nextSymbol || "R_10";
+    const endpoint = activeProfile === "HUMAN" ? "/change_human_market" : "/change_market";
+    try{
+        const res = await fetch(endpoint, {
+            method:"POST",
+            headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({symbol: nextSymbol})
+        });
+        const data = await res.json().catch(()=>({}));
+        if(!res.ok || String(data.status || "").toLowerCase() !== "success"){
+            throw new Error(data.error || data.message || "Market change failed");
+        }
+        const confirmedSymbol = data.symbol || nextSymbol;
+        setConfirmedMarketSymbol(confirmedSymbol);
+        showToast("📊 Market Changed: " + confirmedSymbol, "warn");
+    }catch(e){
+        setConfirmedMarketSymbol(previousSymbol);
+        showToast((e && e.message) ? e.message : "Failed to change market", "error");
+    }
 });
 
 /* ✅ hide LIVE TICK INFO on HUMAN + UNCHAIN */
@@ -3525,6 +3558,21 @@ function applyLiveTickVisibility(){
 async function setProfile(profile){
     const previousProfile = activeProfile;
     captureProfileDraft(previousProfile);
+    let profileData = {};
+    try{
+        const res = await fetch("/set_profile", {
+            method:"POST",
+            headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({profile})
+        });
+        profileData = await res.json().catch(()=>({}));
+        if(!res.ok || String(profileData.status || "").toLowerCase() !== "success"){
+            throw new Error(profileData.error || profileData.message || "Failed to change profile");
+        }
+    }catch(e){
+        showToast((e && e.message) ? e.message : "Failed to change profile", "error");
+        return;
+    }
     activeProfile = profile;
     await ensureProfileModuleScript(profile);
 
@@ -3560,8 +3608,9 @@ async function setProfile(profile){
     await loadProfileUI(profile);
     try{ await runProfileModuleHook(profile, "onActivate", { profile }); }catch(e){}
     applyProfileDraft(profile);
-    syncAutoStake();
-    sendRiskControls();
+    setConfirmedMarketSymbol(profileData.symbol || (profile === "HUMAN" ? profileData.human_symbol : profileData.main_symbol) || getConfirmedMarketSymbol());
+    await syncAutoStake();
+    await sendRiskControls(profile);
     scheduleProfileDraftSave(profile);
 
     // ==================== PATCH C: refresh keep-alive UI when switching to HUMAN ====================
@@ -3572,8 +3621,6 @@ async function setProfile(profile){
     // ==================== PATCH 2D: refresh SeqVIX status ====================
     await refreshSeqVixStatus();
     await syncTradeHistorySnapshot();
-
-    fetch("/set_profile", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({profile})});
 
     refreshHowTo();
     showToast("🎮 Profile Changed: " + profile, "info");
@@ -3685,15 +3732,16 @@ function scheduleAutoStakeSync(){
     }, 180);
 }
 
-async function sendRiskControls(){
+async function sendRiskControls(profileOverride){
     if(!tpInput || !slInput) return;
     const tp = parseFloat(tpInput.value || "0");
     const sl = parseFloat(slInput.value || "0");
+    const profile = String(profileOverride || activeProfile || "KOOLKID").toUpperCase();
 
     await fetch("/set_risk_controls", {
         method:"POST",
         headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({ tp, sl, auto_sl: autoSL })
+        body: JSON.stringify({ tp, sl, auto_sl: autoSL, profile })
     });
 }
 
