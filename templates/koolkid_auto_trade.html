@@ -291,7 +291,7 @@
       .desktop-trade-history{display:none}
       .mobile-trade-history-panel{display:block}
       .mobile-trade-history-panel .trade-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}
-      .mobile-trade-history-panel .trade-actions{display:flex;align-items:center;gap:8px;flex-shrink:0}
+      .mobile-trade-history-panel .trade-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-shrink:0;flex-wrap:wrap}
       .mobile-trade-history-panel .view-all,
       .mobile-trade-history-panel .history-clear{display:inline-flex;align-items:center;justify-content:center;padding:8px 12px;font-size:11px;white-space:nowrap}
       .live-panel .section-head{margin-bottom:10px}
@@ -307,7 +307,8 @@
       .mobile-live-history .mini-box{padding:10px 6px;border-radius:14px}
       .mobile-live-history .mini-box .value{font-size:18px;margin-bottom:4px}
       .mobile-live-history .mini-box .label{font-size:10px}
-      .mobile-live-history .history-list{max-height:none;padding-right:0}
+      .mobile-live-history .history-list{max-height:320px;overflow-y:auto;-webkit-overflow-scrolling:touch;scrollbar-gutter:stable;padding-right:0}
+      .mobile-trade-history-panel.history-swipe-off .mobile-live-history .history-list{max-height:none;overflow:visible}
       .history-item{grid-template-columns:auto 1fr;gap:10px;align-items:start;padding:12px}
       .history-details strong{font-size:13px}
       .history-details span{font-size:11px}
@@ -381,7 +382,7 @@
               <div class="select-field-head"><span class="select-field-title">Primary Profile</span><span class="select-field-pill">Selected</span></div>
               <select class="select" id="autoSessionStrategy1">
                 {% for item in auto_session_catalog %}
-                <option value="{{ item.id }}">{{ item.label }}</option>
+                <option value="{{ item.id }}" {% if item.id == 'KOOLKID' %}selected{% endif %}>{{ item.label }}</option>
                 {% endfor %}
               </select>
             </div>

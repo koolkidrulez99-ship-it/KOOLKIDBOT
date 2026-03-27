@@ -27,6 +27,7 @@ AUTO_SESSION_HISTORY_BUFFER = 140
 AUTO_SESSION_PENDING_TIMEOUT_SEC = 12.0
 AUTO_SESSION_OPEN_CONTRACT_TIMEOUT_SEC = 180.0
 AUTO_SESSION_DUAL_ROTATION_TOLERANCE = 12.0
+AUTO_SESSION_DEFAULT_PROFILE = "KOOLKID"
 
 _PROFILE_DEFS = {
     "KOOLKID": {"id": "KOOLKID", "label": "KOOLKID Profile", "copy": "Scan all KOOLKID buttons"},
@@ -76,7 +77,7 @@ def get_auto_session_catalog():
         row = dict(item)
         row["button_count"] = sum(1 for candidate in _CANDIDATE_DEFS.values() if candidate.get("profile") == key)
         items.append(row)
-    items.sort(key=lambda row: row.get("label", ""))
+    items.sort(key=lambda row: (0 if row.get("id") == AUTO_SESSION_DEFAULT_PROFILE else 1, row.get("label", "")))
     return items
 
 
@@ -93,7 +94,7 @@ def _new_session_state():
         "running": False,
         "token": None,
         "mode": "single",
-        "selected_strategy_ids": [],
+        "selected_strategy_ids": [AUTO_SESSION_DEFAULT_PROFILE],
         "allowed_strategy_ids": [],
         "budget": 0.0,
         "remaining_budget": 0.0,
@@ -424,6 +425,11 @@ def get_auto_session_status(state):
         row["id"] = key
         row["button_count"] = sum(1 for candidate in _CANDIDATE_DEFS.values() if candidate.get("profile") == key)
         selected.append(row)
+    if not selected and AUTO_SESSION_DEFAULT_PROFILE in _PROFILE_DEFS:
+        defs = dict(_PROFILE_DEFS[AUTO_SESSION_DEFAULT_PROFILE])
+        defs["id"] = AUTO_SESSION_DEFAULT_PROFILE
+        defs["button_count"] = sum(1 for candidate in _CANDIDATE_DEFS.values() if candidate.get("profile") == AUTO_SESSION_DEFAULT_PROFILE)
+        selected.append(defs)
     seeded_count = len(session.get("seeded_markets", set()) or set())
     total_markets = len(session.get("market_order", []) or AUTO_SESSION_MARKETS)
     return {

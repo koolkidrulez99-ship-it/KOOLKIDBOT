@@ -4,6 +4,7 @@
   const initialDashboard = window.KOOLKID_AUTO_TRADE_DASHBOARD || {};
   const marketUniverse = Array.isArray(window.AUTO_SESSION_MARKETS) ? window.AUTO_SESSION_MARKETS : [];
   const username = String(window.AUTO_SESSION_USERNAME || 'Trader');
+  const DEFAULT_PROFILE_ID = 'KOOLKID';
 
   const refs = {
     mode: document.getElementById('autoSessionMode'),
@@ -66,6 +67,7 @@
     tierMax: document.getElementById('autoSessionStakeTierMax'),
     historyClear: document.getElementById('autoTradeHistoryClearBtn'),
     historyClearMobile: document.getElementById('autoTradeHistoryClearBtnMobile'),
+    historySwipeToggleMobile: document.getElementById('autoTradeHistorySwipeToggleMobile'),
     historyTotal: document.getElementById('autoTradeHistoryTotal'),
     historyWins: document.getElementById('autoTradeHistoryWins'),
     historyLosses: document.getElementById('autoTradeHistoryLosses'),
@@ -81,12 +83,13 @@
 
   const runtime = {
     lastStatus: initialStatus || {},
-    chartTick: 0
+    chartTick: 0,
+    mobileHistorySwipeOn: true
   };
 
   const draftConfig = {
     mode: initialStatus.mode === 'dual' ? 'dual' : 'single',
-    strategy1: Array.isArray(initialStatus.selected_strategies) && initialStatus.selected_strategies[0] ? String(initialStatus.selected_strategies[0].id || '') : '',
+    strategy1: Array.isArray(initialStatus.selected_strategies) && initialStatus.selected_strategies[0] ? String(initialStatus.selected_strategies[0].id || '') : DEFAULT_PROFILE_ID,
     strategy2: Array.isArray(initialStatus.selected_strategies) && initialStatus.selected_strategies[1] ? String(initialStatus.selected_strategies[1].id || '') : '',
     budget: Number(initialStatus.budget || 100),
     sl: Number(initialStatus.sl || 0),
@@ -167,6 +170,16 @@
     if (refs.notice) refs.notice.textContent = text || 'Ready';
   }
 
+  function syncMobileHistorySwipe() {
+    const panel = refs.historyBodyMobile ? refs.historyBodyMobile.closest('.mobile-trade-history-panel') : null;
+    if (panel) panel.classList.toggle('history-swipe-off', !runtime.mobileHistorySwipeOn);
+    if (refs.historySwipeToggleMobile) {
+      refs.historySwipeToggleMobile.classList.toggle('active', !!runtime.mobileHistorySwipeOn);
+      refs.historySwipeToggleMobile.setAttribute('aria-pressed', runtime.mobileHistorySwipeOn ? 'true' : 'false');
+      refs.historySwipeToggleMobile.setAttribute('title', runtime.mobileHistorySwipeOn ? 'Swipe scrolling enabled' : 'Swipe scrolling disabled');
+    }
+  }
+
   function optionExists(select, value) {
     if (!select || value === undefined || value === null || value === '') return false;
     return Array.from(select.options || []).some(function (option) { return option.value === String(value); });
@@ -205,7 +218,7 @@
     const selected = Array.isArray(status && status.selected_strategies) ? status.selected_strategies : [];
     draftConfig.mode = status && status.mode === 'dual' ? 'dual' : 'single';
     if (selected[0] && selected[0].id) draftConfig.strategy1 = String(selected[0].id);
-    else if (!draftConfig.strategy1 && refs.strategy1) draftConfig.strategy1 = String(refs.strategy1.value || '');
+    else if (!draftConfig.strategy1) draftConfig.strategy1 = DEFAULT_PROFILE_ID;
     if (selected[1] && selected[1].id) draftConfig.strategy2 = String(selected[1].id);
     else if (!draftConfig.strategy2 && refs.strategy2) draftConfig.strategy2 = String(refs.strategy2.value || '');
     draftConfig.budget = Number((status && status.budget) || draftConfig.budget || 100);
@@ -559,9 +572,16 @@
   if (refs.stop) refs.stop.addEventListener('click', stopSession);
   if (refs.historyClear) refs.historyClear.addEventListener('click', clearHistory);
   if (refs.historyClearMobile) refs.historyClearMobile.addEventListener('click', clearHistory);
+  if (refs.historySwipeToggleMobile) {
+    refs.historySwipeToggleMobile.addEventListener('click', function () {
+      runtime.mobileHistorySwipeOn = !runtime.mobileHistorySwipeOn;
+      syncMobileHistorySwipe();
+    });
+  }
 
   applyStatus(initialStatus);
   renderHistory(initialDashboard);
+  syncMobileHistorySwipe();
   syncMode();
   tickClock();
   animateChart();
