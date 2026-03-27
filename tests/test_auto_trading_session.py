@@ -362,6 +362,84 @@ def test_dual_profile_mode_rotates_away_from_last_profile_when_close(monkeypatch
     assert "dual confirm" in plan["label"].lower()
 
 
+def test_human_profile_candidate_can_build_session_plan_without_consuming_preview(monkeypatch):
+    state = {"strategies": {}, "balance": 100.0}
+    session = auto_session.start_auto_session(state, "HUMAN", budget=100, sl=0, tp=0)
+    session["market_order"] = ["R_10"]
+    session["allowed_strategy_ids"] = ["HUMAN_RF"]
+    session["markets"] = {"R_10": auto_session._make_market_runtime("R_10", ["HUMAN_RF"])}
+    session["markets"]["R_10"]["ready"] = True
+
+    class DummyHuman:
+        rf_duration_ticks = 5
+        stake = 1.0
+        rf_conf_threshold = 70.0
+
+        def get_human_rf_payload(self):
+            return {
+                "signal": "TAKE NOW",
+                "trade_direction": "RISE",
+                "confidence": 82.0,
+                "cooldown_sec": 0.0,
+                "reason": "Clean trend",
+            }
+
+        def build_human_rf_trade_signal(self, force_direction=None, require_threshold=True):
+            return {
+                "direction": "RISE",
+                "contract_type": "CALL",
+                "stake": 1.0,
+                "duration": 5,
+                "duration_unit": "t",
+                "mode": "human_rf",
+                "profile": "HUMAN",
+            }
+
+    runtime = session["markets"]["R_10"]["candidates"]["HUMAN_RF"]
+    runtime["strategy"] = DummyHuman()
+
+    preview_plan = auto_session._select_best_execution_plan(state, preview_only=True)
+    live_plan = auto_session._select_best_execution_plan(state, preview_only=False)
+
+    assert preview_plan is not None
+    assert live_plan is not None
+    assert live_plan["actions"][0]["profile"] == "HUMAN"
+    assert live_plan["confidence"] >= 60.0
+
+
+def test_unchain_profile_candidate_accepts_text_barrier_and_builds_plan(monkeypatch):
+    state = {"strategies": {}, "balance": 100.0}
+    session = auto_session.start_auto_session(state, "UNCHAIN", budget=100, sl=0, tp=0)
+    session["market_order"] = ["R_10"]
+    session["allowed_strategy_ids"] = ["UNCHAIN_HIGHER"]
+    session["markets"] = {"R_10": auto_session._make_market_runtime("R_10", ["UNCHAIN_HIGHER"])}
+    session["markets"]["R_10"]["ready"] = True
+
+    def fake_eval(strategy_id, runtime, market, state_obj, per_trade_stake, preview_only=False):
+        return {
+            "profile": "UNCHAIN",
+            "strategy_id": strategy_id,
+            "label": auto_session._CANDIDATE_DEFS[strategy_id]["label"],
+            "market": market["symbol"],
+            "confidence": 72.0,
+            "signal": {
+                "type": "HIGHER",
+                "barrier": "+0.17",
+                "duration": 5,
+                "duration_unit": "t",
+                "confidence": 72.0,
+            },
+        }
+
+    monkeypatch.setattr(auto_session, "_evaluate_candidate", fake_eval)
+
+    plan = auto_session._select_best_execution_plan(state)
+
+    assert plan is not None
+    assert plan["actions"][0]["profile"] == "UNCHAIN"
+    assert plan["actions"][0]["barrier"] == "+0.17"
+
+
 def test_auto_session_clear_history_route_only_clears_session_dashboard(monkeypatch):
     cid = "auto-session-clear"
     server.clients.pop(cid, None)

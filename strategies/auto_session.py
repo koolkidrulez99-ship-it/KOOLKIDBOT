@@ -26,7 +26,7 @@ AUTO_SESSION_TRADE_COOLDOWN_SEC = 1.2
 AUTO_SESSION_HISTORY_BUFFER = 140
 AUTO_SESSION_PENDING_TIMEOUT_SEC = 12.0
 AUTO_SESSION_OPEN_CONTRACT_TIMEOUT_SEC = 180.0
-AUTO_SESSION_DUAL_ROTATION_TOLERANCE = 4.0
+AUTO_SESSION_DUAL_ROTATION_TOLERANCE = 12.0
 
 _PROFILE_DEFS = {
     "KOOLKID": {"id": "KOOLKID", "label": "KOOLKID Profile", "copy": "Scan all KOOLKID buttons"},
@@ -1161,7 +1161,7 @@ def _evaluate_candidate(strategy_id, runtime, market, state, per_trade_stake, pr
         setattr(strat, "_auto_session_state", state)
     except Exception:
         pass
-    signal = _candidate_signal(strategy_id, strat)
+    signal = _candidate_signal(strategy_id, strat, state, preview_only=preview_only)
     if not signal:
         runtime["last_signal"] = None
         runtime["last_confidence"] = 0.0
@@ -1177,7 +1177,7 @@ def _evaluate_candidate(strategy_id, runtime, market, state, per_trade_stake, pr
     return result
 
 
-def _candidate_signal(strategy_id, strat):
+def _candidate_signal(strategy_id, strat, state, preview_only=False):
     if strategy_id in ("UNCHAIN_HIGHER", "UNCHAIN_LOWER"):
         config = _get_unchain_session_config(getattr(strat, "_auto_session_state", None))
         bias = strat.get_bias_payload(config)
@@ -1292,7 +1292,45 @@ def _candidate_signal(strategy_id, strat):
         return strat.check_auto_trade_signal()
 
     if strategy_id == "HUMAN_RF":
-        return strat.build_human_rf_trade_signal(force_direction=None, require_threshold=True)
+        session = ensure_auto_session_state(state)
+        try:
+            strat.rf_conf_threshold = float(_required_confidence(session))
+        except Exception:
+            pass
+        if preview_only:
+            payload = strat.get_human_rf_payload() or {}
+            signal_state = str(payload.get("signal") or "WAIT").upper().strip()
+            direction = str(payload.get("trade_direction") or "").upper().strip()
+            confidence = float(payload.get("confidence", 0.0) or 0.0)
+            cooldown = float(payload.get("cooldown_sec", 0.0) or 0.0)
+            if signal_state != "TAKE NOW" or direction not in ("RISE", "FALL"):
+                return None
+            if confidence < float(getattr(strat, "rf_conf_threshold", _required_confidence(session)) or 0.0):
+                return None
+            if cooldown > 0:
+                return None
+            return {
+                "direction": direction,
+                "contract_type": "CALL" if direction == "RISE" else "PUT",
+                "stake": float(getattr(strat, "stake", 1.0) or 1.0),
+                "duration": int(getattr(strat, "rf_duration_ticks", 5) or 5),
+                "duration_unit": "t",
+                "mode": "human_rf",
+                "profile": "HUMAN",
+                "confidence": confidence,
+                "signal_state": signal_state,
+                "reason": payload.get("reason"),
+            }
+        payload = strat.get_human_rf_payload() or {}
+        confidence = float(payload.get("confidence", 0.0) or 0.0)
+        signal_state = str(payload.get("signal") or "WAIT").upper().strip()
+        signal = strat.build_human_rf_trade_signal(force_direction=None, require_threshold=True)
+        if not signal:
+            return None
+        signal["confidence"] = confidence
+        signal["signal_state"] = signal_state
+        signal["reason"] = payload.get("reason")
+        return signal
     return None
 
 def _normalize_signal_list(signal):
@@ -1370,6 +1408,7 @@ def _select_best_execution_plan(state, preview_only=False):
 
     best = None
     best_dual = None
+    best_by_profile = {}
     live_balance = float((state or {}).get("balance", 0.0) or 0.0)
     dual_mode = str(session.get("mode") or "").lower().strip() == "dual"
     selected_profiles = {
@@ -1398,6 +1437,11 @@ def _select_best_execution_plan(state, preview_only=False):
                 continue
             if _should_replace_best_plan(session, best, plan, dual_mode=dual_mode):
                 best = plan
+            profile_key = _plan_primary_profile(plan)
+            if profile_key:
+                current_profile_best = best_by_profile.get(profile_key)
+                if current_profile_best is None or float(plan.get("confidence", 0.0) or 0.0) > float(current_profile_best.get("confidence", 0.0) or 0.0):
+                    best_by_profile[profile_key] = plan
 
         if dual_mode and len(selected_profiles) >= 2 and market_results:
             for idx, first in enumerate(market_results):
@@ -1414,8 +1458,12 @@ def _select_best_execution_plan(state, preview_only=False):
                     if _should_replace_best_plan(session, best_dual, plan, dual_mode=dual_mode):
                         best_dual = plan
 
-    if best_dual and (best is None or float(best_dual.get("confidence", 0.0)) >= float(best.get("confidence", 0.0))):
-        best = best_dual
+    fair_single = _select_fair_dual_profile_single_plan(session, best_by_profile) if dual_mode else None
+    if fair_single is not None:
+        best = _prefer_dual_profile_plan(session, best, fair_single)
+
+    if best_dual is not None:
+        best = _prefer_dual_profile_plan(session, best, best_dual)
 
     if best and float(best.get("confidence", 0.0) or 0.0) < _required_confidence(session):
         if preview_only:
@@ -1541,6 +1589,58 @@ def _should_replace_best_plan(session, current_best, candidate_plan, dual_mode=F
     return False
 
 
+def _select_fair_dual_profile_single_plan(session, best_by_profile):
+    selected_profiles = [
+        str(profile_id or "").upper().strip()
+        for profile_id in (session.get("selected_strategy_ids") or [])
+        if str(profile_id or "").strip()
+    ]
+    available = [best_by_profile.get(profile) for profile in selected_profiles if best_by_profile.get(profile)]
+    if not available:
+        return None
+    strongest = max(available, key=lambda plan: float(plan.get("confidence", 0.0) or 0.0))
+    if len(available) < 2:
+        return strongest
+    last_dual_profile = str(session.get("last_dual_profile") or "").upper().strip()
+    strongest_profile = _plan_primary_profile(strongest)
+    if not last_dual_profile or strongest_profile != last_dual_profile:
+        return strongest
+    alternate = None
+    for plan in available:
+        plan_profile = _plan_primary_profile(plan)
+        if plan_profile and plan_profile != last_dual_profile:
+            if alternate is None or float(plan.get("confidence", 0.0) or 0.0) > float(alternate.get("confidence", 0.0) or 0.0):
+                alternate = plan
+    if alternate is None:
+        return strongest
+    confidence_gap = float(strongest.get("confidence", 0.0) or 0.0) - float(alternate.get("confidence", 0.0) or 0.0)
+    if confidence_gap <= AUTO_SESSION_DUAL_ROTATION_TOLERANCE:
+        return alternate
+    return strongest
+
+
+def _prefer_dual_profile_plan(session, current_plan, candidate_plan):
+    if candidate_plan is None:
+        return current_plan
+    if current_plan is None:
+        return candidate_plan
+    current_conf = float(current_plan.get("confidence", 0.0) or 0.0)
+    candidate_conf = float(candidate_plan.get("confidence", 0.0) or 0.0)
+    current_profile = _plan_primary_profile(current_plan)
+    candidate_profile = _plan_primary_profile(candidate_plan)
+    last_dual_profile = str(session.get("last_dual_profile") or "").upper().strip()
+    if last_dual_profile and candidate_profile and current_profile:
+        if current_profile == last_dual_profile and candidate_profile != last_dual_profile:
+            if (current_conf - candidate_conf) <= AUTO_SESSION_DUAL_ROTATION_TOLERANCE:
+                return candidate_plan
+        if candidate_profile == last_dual_profile and current_profile != last_dual_profile:
+            if (candidate_conf - current_conf) <= AUTO_SESSION_DUAL_ROTATION_TOLERANCE:
+                return current_plan
+    if candidate_conf > current_conf:
+        return candidate_plan
+    return current_plan
+
+
 def _build_actions_for_signals(result, signals, per_trade_stake):
     actions = []
     profile = result.get("profile")
@@ -1582,11 +1682,25 @@ def _pick_best_signal(signals):
         key=lambda item: (
             float(item.get("confidence", 0.0) or 0.0),
             1 if str(item.get("type") or item.get("contract_type") or "").upper().strip() == "DIFFERS" else 0,
-            -abs(int(item.get("barrier", 5) or 5) - 5) if item.get("barrier") not in (None, "") else 0,
+            _signal_barrier_sort_score(item),
         ),
         reverse=True,
     )
     return ranked[0]
+
+
+def _signal_barrier_sort_score(item):
+    barrier = (item or {}).get("barrier")
+    if barrier in (None, ""):
+        return 0
+    try:
+        return -abs(int(barrier) - 5)
+    except Exception:
+        try:
+            text = str(barrier).strip()
+            return -abs(int(float(text)) - 5)
+        except Exception:
+            return 0
 
 
 def _dedupe_actions(actions):
