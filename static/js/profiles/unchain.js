@@ -31,6 +31,9 @@
     marketBarrierSyncSignature: "",
     marketBarrierSyncTimer: null,
     marketBarrierStore: {},
+    expectedProfitTimer: null,
+    expectedProfitSignature: "",
+    expectedProfitLoading: false,
   };
 
   const FORM_FIELDS = [
@@ -1140,6 +1143,69 @@
     return Number.isFinite(n) ? `$${n.toFixed(2)}` : "—";
   }
 
+  function fmtSignedUsd(v) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return "—";
+    return `${n >= 0 ? "+" : "-"}$${Math.abs(n).toFixed(2)}`;
+  }
+
+  function renderExpectedProfitPreview(preview) {
+    const higher = preview && preview.higher ? preview.higher : {};
+    const lower = preview && preview.lower ? preview.lower : {};
+    const both = preview && preview.both ? preview.both : {};
+    const higherText = Number.isFinite(Number(higher.profit))
+      ? `Expected profit ${fmtSignedUsd(higher.profit)}`
+      : "Expected profit —";
+    const lowerText = Number.isFinite(Number(lower.profit))
+      ? `Expected profit ${fmtSignedUsd(lower.profit)}`
+      : "Expected profit —";
+    const bothText = Number.isFinite(Number(both.net_profit))
+      ? `Net expected ${fmtSignedUsd(both.net_profit)}`
+      : "Net expected —";
+    setText("unchainHigherExpectedProfit", higherText);
+    setText("unchainLowerExpectedProfit", lowerText);
+    setText("unchainBothExpectedProfit", bothText);
+  }
+
+  async function refreshExpectedProfitPreview() {
+    if (!isActive() || state.expectedProfitLoading) return;
+    const form = readForm();
+    const signature = JSON.stringify([
+      form.symbol,
+      form.higher_stake,
+      form.lower_stake,
+      form.higher_barrier,
+      form.lower_barrier,
+      form.duration,
+      form.duration_unit,
+    ]);
+    state.expectedProfitSignature = signature;
+    state.expectedProfitLoading = true;
+    try {
+      const r = await postJSON("/unchain_expected_profit", form);
+      if (!r.ok || !r.data) {
+        renderExpectedProfitPreview(null);
+        return;
+      }
+      if (signature !== state.expectedProfitSignature) return;
+      renderExpectedProfitPreview(r.data.preview || null);
+    } catch (e) {
+      renderExpectedProfitPreview(null);
+    } finally {
+      state.expectedProfitLoading = false;
+    }
+  }
+
+  function scheduleExpectedProfitPreview(delay) {
+    if (state.expectedProfitTimer) {
+      clearTimeout(state.expectedProfitTimer);
+      state.expectedProfitTimer = null;
+    }
+    state.expectedProfitTimer = setTimeout(() => {
+      refreshExpectedProfitPreview().catch(() => {});
+    }, Math.max(60, Number(delay || 180)));
+  }
+
   function renderBothAnalyzer(un) {
     const data = (un && un.both_analyzer) || {};
     const rec = data && typeof data.recommended === "object" ? data.recommended : null;
@@ -1943,6 +2009,7 @@
     renderKoolkidHl(un);
     renderBias(un);
     renderBarrierMarketChart(un, payload);
+    scheduleExpectedProfitPreview(80);
     try {
       if (typeof window.syncUnchainPendingTradesFromStatus === "function") {
         const changed = window.syncUnchainPendingTradesFromStatus(payload);
@@ -2212,6 +2279,7 @@
         if (id === "unchainHigherStake") mirrorHigherStakeToLower();
         if (id === "unchainHigherBarrier" || id === "unchainLowerBarrier") renderBarrierMarketChart(state.lastPayload && (state.lastPayload.unchain || state.lastPayload) || {}, state.lastPayload || {});
         if (id === "unchainAutoConfidence") applyAutoConfidenceLabel();
+        scheduleExpectedProfitPreview(180);
       });
       node.addEventListener("change", () => {
         markDirty(id);
@@ -2223,6 +2291,7 @@
           persistCurrentMarketBarrierSettings(null, { custom: true });
           scheduleCurrentMarketBarrierSync(null, { custom: true });
         }
+        scheduleExpectedProfitPreview(100);
       });
       node.addEventListener("keydown", (evt) => {
         if (evt.key === "Enter") {

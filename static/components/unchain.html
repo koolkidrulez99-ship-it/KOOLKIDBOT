@@ -1631,9 +1631,18 @@
       <button id="unchainKoolkidBtn" data-action="unchain-koolkid-panel" style="background:#2563eb;">KOOLKID</button>
       <button id="unchainAutoBothBtn" data-action="unchain-toggle-auto-both" style="background:#0284c7;">🤖 AUTO BOTH: OFF</button>
       <button id="unchainAiAutoTradeBtn" data-action="unchain-toggle-ai-auto-trade" style="background:#0ea5e9;">🤖 AI AUTO TRADE: OFF</button>
-      <button data-action="unchain-trade-higher" style="background:#22c55e;">📈 HIGHER</button>
-      <button data-action="unchain-trade-lower" style="background:#ef4444;">📉 LOWER</button>
-      <button data-action="unchain-trade-both" style="background:#f59e0b;color:#111827;">⚖️ BOTH</button>
+      <button data-action="unchain-trade-higher" style="background:#22c55e;">
+        <span style="display:block;font-weight:900;">📈 HIGHER</span>
+        <span id="unchainHigherExpectedProfit" style="display:block;font-size:11px;font-weight:700;opacity:.92;margin-top:4px;">Expected profit —</span>
+      </button>
+      <button data-action="unchain-trade-lower" style="background:#ef4444;">
+        <span style="display:block;font-weight:900;">📉 LOWER</span>
+        <span id="unchainLowerExpectedProfit" style="display:block;font-size:11px;font-weight:700;opacity:.92;margin-top:4px;">Expected profit —</span>
+      </button>
+      <button data-action="unchain-trade-both" style="background:#f59e0b;color:#111827;">
+        <span style="display:block;font-weight:900;">⚖️ BOTH</span>
+        <span id="unchainBothExpectedProfit" style="display:block;font-size:11px;font-weight:700;opacity:.92;margin-top:4px;">Net expected —</span>
+      </button>
       <button data-action="unchain-close-all" style="background:#7c3aed;">💸 CLOSE UNCHAIN TRADES</button>
     </div>
     <details class="unchain-collapse">

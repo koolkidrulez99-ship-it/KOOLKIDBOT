@@ -308,7 +308,10 @@
     const total = Number(status.total_markets || marketUniverse.length || 0);
     const seeded = Number(status.seeded_markets || 0);
     const scanRatio = total > 0 ? seeded / total : 0;
-    const ordered = active ? [active].concat(marketUniverse.filter(function (symbol) { return symbol !== active; })) : marketUniverse.slice();
+    const rotatingBatch = Array.isArray(status.scan_markets) && status.scan_markets.length ? status.scan_markets.slice() : null;
+    const ordered = rotatingBatch && rotatingBatch.length
+      ? rotatingBatch
+      : (active ? [active].concat(marketUniverse.filter(function (symbol) { return symbol !== active; })) : marketUniverse.slice());
     const visible = ordered.slice(0, 5);
     const confidence = clamp(status.confidence || 0, 0, 99);
     const volatility = clamp(Math.round((confidence * 0.55) + (scanRatio * 45)), 18, 99);
@@ -414,7 +417,12 @@
     if (refs.status) refs.status.textContent = status.status || 'IDLE';
     if (refs.statusDetail) refs.statusDetail.textContent = detail;
     if (refs.liveFlag) refs.liveFlag.textContent = status.running ? 'Session Active' : 'Session Idle';
-    if (refs.scannerStatus) refs.scannerStatus.textContent = detail;
+    if (refs.scannerStatus) {
+      const batch = Array.isArray(status.scan_markets) && status.scan_markets.length
+        ? ' • Batch: ' + status.scan_markets.map(formatMarketLabel).slice(0, 2).join(', ')
+        : '';
+      refs.scannerStatus.textContent = detail + batch;
+    }
     if (refs.confidence) refs.confidence.textContent = Math.round(confidence) + '%';
     if (refs.confidenceMirror) refs.confidenceMirror.textContent = Math.round(confidence) + '%';
     if (refs.confidenceGrade) refs.confidenceGrade.textContent = grade;
@@ -428,14 +436,14 @@
     if (refs.tag2) refs.tag2.textContent = confidence >= 80 ? 'High Confidence' : confidence >= 60 ? 'Qualified Setup' : 'Waiting Edge';
     if (refs.tag3) refs.tag3.textContent = (refs.mode && refs.mode.value === 'dual') ? 'Dual Profile' : 'Single Profile';
     if (refs.chartLeftCopy) refs.chartLeftCopy.textContent = 'Active button: ' + (status.active_strategy || 'Scanning profile buttons');
-    if (refs.chartRightCopy) refs.chartRightCopy.textContent = 'Remaining budget: ' + money(status.remaining_budget || 0) + ' with SL/TP locked.';
+    if (refs.chartRightCopy) refs.chartRightCopy.textContent = 'Remaining budget: ' + money(status.remaining_budget || 0) + ' • Protected profit: ' + money(status.profit_bank || 0);
 
     if (refs.budgetValue) refs.budgetValue.textContent = money(status.budget || 0);
     if (refs.budgetHero) refs.budgetHero.textContent = money(status.budget || 0);
     if (refs.remaining) refs.remaining.textContent = money(status.remaining_budget || 0);
     if (refs.stake) refs.stake.textContent = money(status.current_stake || 0.35);
     if (refs.pnl) {
-      const pnl = Number(status.profit_loss || 0);
+      const pnl = Number(status.profit_bank != null ? status.profit_bank : (status.profit_loss || 0));
       refs.pnl.textContent = money(pnl);
       refs.pnl.classList.remove('green', 'red');
       refs.pnl.classList.add(pnl >= 0 ? 'green' : 'red');

@@ -31,6 +31,20 @@ def test_start_auto_session_clamps_budget_and_builds_profile_button_pool():
     assert "KOOLKID_MPULL" in session["markets"]["R_10"]["candidates"]
 
 
+def test_start_auto_session_uses_profile_market_allowlist():
+    state = {"strategies": {}}
+    session = auto_session.start_auto_session(
+        state,
+        "JOKERJOE",
+        budget=100,
+        sl=10,
+        tp=20,
+    )
+
+    assert session["market_order"] == list(auto_session.SEQVIX_JOKERJOE_SLOW_MARKETS)
+    assert set(session["markets"].keys()) == set(auto_session.SEQVIX_JOKERJOE_SLOW_MARKETS)
+
+
 def test_auto_session_catalog_returns_profiles():
     catalog = auto_session.get_auto_session_catalog()
     catalog_ids = {item["id"] for item in catalog}
@@ -61,17 +75,55 @@ def test_compute_session_stake_uses_ramp_and_confidence_sizing():
 
     session["trade_index"] = 3
     assert auto_session.compute_session_stake(session, live_balance=100.0, leg_count=1, confidence=65.0) == 10.0
-    assert auto_session.compute_session_stake(session, live_balance=100.0, leg_count=1, confidence=85.0) == 35.0
-    assert auto_session.compute_session_stake(session, live_balance=100.0, leg_count=1, confidence=95.0) == 100.0
+    assert auto_session.compute_session_stake(session, live_balance=100.0, leg_count=1, confidence=75.0) == 15.0
+    assert auto_session.compute_session_stake(session, live_balance=100.0, leg_count=1, confidence=85.0) == 25.0
+    assert auto_session.compute_session_stake(session, live_balance=100.0, leg_count=1, confidence=95.0) == 40.0
 
 
-def test_compute_session_stake_recovery_mode_stays_smaller():
+def test_compute_session_stake_budget_states_scale_down_risk():
     session = auto_session.start_auto_session({"strategies": {}}, "KOOLKID", budget=100, sl=0, tp=0)
     session["trade_index"] = 3
-    session["recovery_mode"] = True
+    session["budget_used"] = 21.0
+    auto_session._sync_session_totals(session)
+    assert session["health_state"] == "CAUTION"
+    assert auto_session.compute_session_stake(session, live_balance=100.0, leg_count=1, confidence=85.0) == 16.79
 
-    assert auto_session.compute_session_stake(session, live_balance=100.0, leg_count=1, confidence=72.0) == 10.0
-    assert auto_session.compute_session_stake(session, live_balance=100.0, leg_count=1, confidence=85.0) == 18.0
+    session["budget_used"] = 41.0
+    auto_session._sync_session_totals(session)
+    assert session["health_state"] == "BUDGET_RECOVERY"
+    assert auto_session.compute_session_stake(session, live_balance=100.0, leg_count=1, confidence=85.0) == 8.85
+
+    session["budget_used"] = 61.0
+    auto_session._sync_session_totals(session)
+    assert session["health_state"] == "CRITICAL"
+    assert auto_session.compute_session_stake(session, live_balance=100.0, leg_count=1, confidence=85.0) == 3.9
+
+
+def test_required_confidence_matches_budget_health_states_and_loss_response():
+    session = auto_session.start_auto_session({"strategies": {}}, "KOOLKID", budget=100, sl=0, tp=0)
+
+    assert auto_session._required_confidence(session) == 60.0
+
+    session["budget_used"] = 21.0
+    auto_session._sync_session_totals(session)
+    assert auto_session._required_confidence(session) == 68.0
+
+    session["budget_used"] = 41.0
+    auto_session._sync_session_totals(session)
+    assert auto_session._required_confidence(session) == 75.0
+
+    session["budget_used"] = 61.0
+    auto_session._sync_session_totals(session)
+    assert auto_session._required_confidence(session) == 82.0
+
+    session["budget_used"] = 0.0
+    session["loss_streak"] = 1
+    auto_session._sync_session_totals(session)
+    assert auto_session._required_confidence(session) == 63.0
+
+    session["loss_streak"] = 2
+    auto_session._sync_session_totals(session)
+    assert auto_session._required_confidence(session) == 75.0
 
 
 def test_feed_history_marks_market_ready():
@@ -86,7 +138,56 @@ def test_feed_history_marks_market_ready():
     market = session["markets"]["R_10"]
     assert market["ready"] is True
     assert "R_10" in session["seeded_markets"]
-    assert len(market["digits"]) >= 100
+    assert len(market["digits"]) >= auto_session.AUTO_SESSION_MIN_HISTORY
+
+
+def test_budget_and_profit_stay_separate_after_wins_and_losses():
+    state = {"strategies": {}}
+    session = auto_session.start_auto_session(state, "KOOLKID", budget=100, sl=20, tp=40)
+    token = session["token"]
+
+    win_mode = f"AUTO_SESSION|{token}|B1|KOOLKID_MPULL|1|R_10"
+    session["open_contracts"] = {"101": {"mode": win_mode}}
+    auto_session.handle_auto_session_contract_settled(
+        state,
+        {"contract_id": "101", "profit": 30.0, "sell_price": 60.0},
+        {"mode": win_mode, "profile": "KOOLKID", "stake": 30.0, "symbol": "R_10", "type": "OVER"},
+    )
+
+    loss_mode = f"AUTO_SESSION|{token}|B2|KOOLKID_MPULL|1|R_10"
+    session["running"] = True
+    session["open_contracts"] = {"102": {"mode": loss_mode}}
+    auto_session.handle_auto_session_contract_settled(
+        state,
+        {"contract_id": "102", "profit": -10.0, "sell_price": 0.0},
+        {"mode": loss_mode, "profile": "KOOLKID", "stake": 10.0, "symbol": "R_10", "type": "OVER"},
+    )
+
+    assert session["protected_profit"] == 30.0
+    assert session["budget_used"] == 10.0
+    assert session["remaining_budget"] == 90.0
+    assert session["session_profit"] == 20.0
+
+
+def test_jokerjoe_candidates_are_blocked_on_1s_markets():
+    assert auto_session._candidate_allowed_on_market("JOKERJOE_MULTIG", "1HZ10V") is False
+    assert auto_session._candidate_allowed_on_market("JOKERJOE_MULTIG", "R_75") is True
+    assert auto_session._candidate_allowed_on_market("KOOLKID_MPULL", "1HZ10V") is True
+
+
+def test_market_scan_batch_rotates_in_groups_of_five():
+    state = {"strategies": {}}
+    session = auto_session.start_auto_session(state, "KOOLKID", budget=100, sl=0, tp=0)
+    first_batch = auto_session._scan_batch_symbols(session)
+    auto_session._maybe_rotate_scan_batch(
+        session,
+        now_ts=float(session.get("last_scan_rotate_at", 0.0) or 0.0) + auto_session.AUTO_SESSION_SCAN_ROTATE_SEC + 0.5,
+    )
+    second_batch = auto_session._scan_batch_symbols(session)
+
+    assert len(first_batch) == min(auto_session.AUTO_SESSION_SCAN_BATCH_SIZE, len(auto_session.AUTO_SESSION_MARKETS))
+    assert len(second_batch) == len(first_batch)
+    assert first_batch != second_batch
 
 
 def test_jokerjoe_seqvix_candidate_can_arm_and_build_plan():
@@ -225,7 +326,7 @@ def test_auto_session_plan_uses_one_trade_at_a_time_and_session_stake_only():
 
     assert plan is not None
     assert len(plan["actions"]) == 1
-    assert plan["actions"][0]["stake"] == 100.0
+    assert plan["actions"][0]["stake"] == 40.0
 
 
 def test_process_auto_session_tick_recovers_from_stale_pending_request(monkeypatch):
@@ -281,6 +382,59 @@ def test_process_auto_session_tick_recovers_from_stale_pending_request(monkeypat
     assert session["pending_modes"]
     assert session["busy"] is True
     assert "resumed scanning" in session["events"][-2]["text"].lower()
+
+
+def test_three_losses_trigger_cooldown_and_recovery_rules(monkeypatch):
+    state = {"strategies": {}}
+    session = auto_session.start_auto_session(state, "KOOLKID", budget=100, sl=0, tp=0)
+    token = session["token"]
+    base_ts = 500.0
+    monkeypatch.setattr(auto_session.time, "time", lambda: base_ts)
+
+    for idx in range(1, 4):
+        mode = f"AUTO_SESSION|{token}|B{idx}|KOOLKID_MPULL|1|R_10"
+        session["running"] = True
+        session["open_contracts"] = {str(100 + idx): {"mode": mode}}
+        auto_session.handle_auto_session_contract_settled(
+            state,
+            {"contract_id": str(100 + idx), "profit": -5.0, "sell_price": 0.0},
+            {"mode": mode, "profile": "KOOLKID", "stake": 5.0, "symbol": "R_10", "type": "OVER"},
+        )
+
+    assert session["loss_streak"] == 3
+    assert session["recovery_mode"] is True
+    assert session["cooldown_until"] == base_ts + auto_session.AUTO_SESSION_THREE_LOSS_COOLDOWN_SEC
+
+
+def test_final_confidence_score_uses_45_45_10_weighting():
+    assert auto_session._final_confidence_score(70.0, 80.0, 50.0) == 72.5
+
+
+def test_unchain_expected_profit_preview_uses_single_net_expected_for_both(monkeypatch):
+    quotes = {
+        "HIGHER": ({"ask_price": 20.0, "payout": 42.0, "barrier": "+0.12"}, None),
+        "LOWER": ({"ask_price": 20.0, "payout": 38.0, "barrier": "-0.12"}, None),
+    }
+
+    def fake_quote(state, side, stake, symbol, barrier, duration, duration_unit):
+        return quotes[side]
+
+    monkeypatch.setattr(server, "_request_unchain_proposal_quote", fake_quote)
+
+    preview = server._build_unchain_expected_profit_preview(
+        {},
+        symbol="R_10",
+        higher_stake=20,
+        lower_stake=20,
+        higher_barrier="+0.12",
+        lower_barrier="-0.12",
+        duration=5,
+        duration_unit="t",
+    )
+
+    assert preview["both"]["higher_profit"] == 22.0
+    assert preview["both"]["lower_profit"] == 18.0
+    assert preview["both"]["net_profit"] == 2.0
 
 
 def test_dual_profile_mode_can_trade_from_shared_market_consensus(monkeypatch):

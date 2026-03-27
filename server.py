@@ -5021,6 +5021,66 @@ def _request_unchain_proposal_quote(state, *, side, stake, symbol, barrier, dura
     return quote, None
 
 
+def _build_unchain_expected_profit_preview(state, *, symbol, higher_stake, lower_stake, higher_barrier, lower_barrier, duration, duration_unit):
+    preview = {
+        "higher": {"stake": 0.0, "payout": None, "profit": None, "error": None},
+        "lower": {"stake": 0.0, "payout": None, "profit": None, "error": None},
+        "both": {"net_profit": None, "higher_profit": None, "lower_profit": None, "total_stake": 0.0, "error": None},
+    }
+
+    def normalize_quote(side, stake, barrier):
+        quote, err = _request_unchain_proposal_quote(
+            state,
+            side=side,
+            stake=stake,
+            symbol=symbol,
+            barrier=barrier,
+            duration=duration,
+            duration_unit=duration_unit,
+        )
+        if err:
+            return None, str(err)
+        ask_price = _safe_float((quote or {}).get("ask_price"), _safe_float(stake, 0.0))
+        payout = _safe_float((quote or {}).get("payout"), ask_price)
+        profit = payout - ask_price if ask_price is not None and payout is not None else None
+        return {
+            "stake": round(float(max(0.0, ask_price or 0.0)), 2),
+            "payout": round(float(max(0.0, payout or 0.0)), 2) if payout is not None else None,
+            "profit": round(float(profit or 0.0), 2) if profit is not None else None,
+            "barrier": (quote or {}).get("barrier"),
+        }, None
+
+    higher_quote, higher_err = normalize_quote("HIGHER", higher_stake, higher_barrier)
+    lower_quote, lower_err = normalize_quote("LOWER", lower_stake, lower_barrier)
+    if higher_quote:
+        preview["higher"].update(higher_quote)
+    else:
+        preview["higher"]["stake"] = round(float(_safe_float(higher_stake, 0.0) or 0.0), 2)
+        preview["higher"]["error"] = higher_err
+    if lower_quote:
+        preview["lower"].update(lower_quote)
+    else:
+        preview["lower"]["stake"] = round(float(_safe_float(lower_stake, 0.0) or 0.0), 2)
+        preview["lower"]["error"] = lower_err
+
+    higher_profit = _safe_float((higher_quote or {}).get("profit"), None)
+    lower_profit = _safe_float((lower_quote or {}).get("profit"), None)
+    higher_payout = _safe_float((higher_quote or {}).get("payout"), None)
+    lower_payout = _safe_float((lower_quote or {}).get("payout"), None)
+    higher_cost = _safe_float((higher_quote or {}).get("stake"), _safe_float(higher_stake, 0.0))
+    lower_cost = _safe_float((lower_quote or {}).get("stake"), _safe_float(lower_stake, 0.0))
+    total_stake = max(0.0, float(higher_cost or 0.0)) + max(0.0, float(lower_cost or 0.0))
+    preview["both"]["total_stake"] = round(total_stake, 2)
+    preview["both"]["higher_profit"] = round(float(higher_profit), 2) if higher_profit is not None else None
+    preview["both"]["lower_profit"] = round(float(lower_profit), 2) if lower_profit is not None else None
+    if higher_payout is not None and lower_payout is not None:
+        net_profit = max(float(higher_payout), float(lower_payout)) - total_stake
+        preview["both"]["net_profit"] = round(float(net_profit), 2)
+    else:
+        preview["both"]["error"] = higher_err or lower_err or "Quote unavailable"
+    return preview
+
+
 _UNCHAIN_MARKET_BARRIER_CACHE = {}
 
 
@@ -9825,6 +9885,32 @@ def unchain_trade_route():
     if state.get("active_profile") == "UNCHAIN":
         socketio.emit("unchain_status", payload, room=cid)
     return jsonify({"status": "success", "message": f"Sent {' + '.join(placed)}", "payload": payload, "placed": placed})
+
+
+@app.route("/unchain_expected_profit", methods=["POST"])
+def unchain_expected_profit_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    _cid, state = get_client_state()
+    if not state.get("ws_connected") or not state.get("ws"):
+        return jsonify({"status": "error", "message": "Connect your API first"}), 400
+
+    u = _ensure_unchain_hl_state(state)
+    data = request.json or {}
+    symbol = data.get("symbol") or state.get("current_symbol", "R_25")
+    duration = data.get("duration", u.get("duration", 5))
+    duration_unit = data.get("duration_unit", u.get("duration_unit", "t"))
+    preview = _build_unchain_expected_profit_preview(
+        state,
+        symbol=symbol,
+        higher_stake=data.get("higher_stake", u.get("higher_stake", 1.0)),
+        lower_stake=data.get("lower_stake", u.get("lower_stake", 1.0)),
+        higher_barrier=data.get("higher_barrier", u.get("higher_barrier", "+0.12")),
+        lower_barrier=data.get("lower_barrier", u.get("lower_barrier", "-0.12")),
+        duration=duration,
+        duration_unit=duration_unit,
+    )
+    return jsonify({"status": "success", "preview": preview})
 
 
 def _toggle_unchain_auto(cid, state, data):

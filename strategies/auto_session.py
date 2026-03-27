@@ -6,6 +6,7 @@ from strategies.jokerjoe import (
     JokerJoeStrategy,
     SEQVIX_JOKERJOE_MARKETS,
     SEQVIX_JOKERJOE_SAMPLE_SIZE,
+    SEQVIX_JOKERJOE_SLOW_MARKETS,
     _seqvix_jokerjoe_refresh_market_analysis,
 )
 from strategies.koolkid import KoolKidStrategy
@@ -15,11 +16,12 @@ AUTO_SESSION_MARKETS = list(SEQVIX_JOKERJOE_MARKETS)
 AUTO_SESSION_BUDGET_MIN = 1.0
 AUTO_SESSION_BUDGET_MAX = 2000.0
 AUTO_SESSION_FIRST_STAKE = 0.35
-AUTO_SESSION_MIN_HISTORY = 100
-AUTO_SESSION_HISTORY_COUNT = 120
+AUTO_SESSION_MIN_HISTORY = 30
+AUTO_SESSION_HISTORY_COUNT = 40
 AUTO_SESSION_CONFIDENCE_THRESHOLD = 60.0
+AUTO_SESSION_CAUTION_CONFIDENCE_THRESHOLD = 68.0
 AUTO_SESSION_RECOVERY_CONFIDENCE_THRESHOLD = 75.0
-AUTO_SESSION_HIGH_CONFIDENCE_THRESHOLD = 90.0
+AUTO_SESSION_CRITICAL_CONFIDENCE_THRESHOLD = 82.0
 AUTO_SESSION_MIN_BALANCE = 0.35
 AUTO_SESSION_MIN_ACTION_STAKE = 0.35
 AUTO_SESSION_TRADE_COOLDOWN_SEC = 1.2
@@ -27,6 +29,20 @@ AUTO_SESSION_HISTORY_BUFFER = 140
 AUTO_SESSION_PENDING_TIMEOUT_SEC = 12.0
 AUTO_SESSION_OPEN_CONTRACT_TIMEOUT_SEC = 180.0
 AUTO_SESSION_DUAL_ROTATION_TOLERANCE = 12.0
+AUTO_SESSION_SCAN_BATCH_SIZE = 5
+AUTO_SESSION_SCAN_ROTATE_SEC = 3.0
+AUTO_SESSION_CAUTION_RATIO = 0.80
+AUTO_SESSION_BUDGET_RECOVERY_RATIO = 0.60
+AUTO_SESSION_CRITICAL_RATIO = 0.40
+AUTO_SESSION_CAUTION_STAKE_FACTOR = 0.85
+AUTO_SESSION_RECOVERY_STAKE_FACTOR = 0.60
+AUTO_SESSION_CRITICAL_STAKE_FACTOR = 0.40
+AUTO_SESSION_ONE_LOSS_STAKE_FACTOR = 0.80
+AUTO_SESSION_TWO_LOSS_STAKE_FACTOR = 0.65
+AUTO_SESSION_THREE_LOSS_STAKE_FACTOR = 0.50
+AUTO_SESSION_ONE_LOSS_COOLDOWN_SEC = 4.0
+AUTO_SESSION_TWO_LOSS_COOLDOWN_SEC = 8.0
+AUTO_SESSION_THREE_LOSS_COOLDOWN_SEC = 18.0
 AUTO_SESSION_DEFAULT_PROFILE = "KOOLKID"
 
 _PROFILE_DEFS = {
@@ -34,6 +50,13 @@ _PROFILE_DEFS = {
     "JOKERJOE": {"id": "JOKERJOE", "label": "JOKERJOE Profile", "copy": "Scan all JOKERJOE buttons"},
     "HUMAN": {"id": "HUMAN", "label": "HUMAN Profile", "copy": "Scan HUMAN Smart Assist"},
     "UNCHAIN": {"id": "UNCHAIN", "label": "UNCHAIN Profile", "copy": "Scan UNCHAIN Higher / Lower"},
+}
+
+_PROFILE_ALLOWED_MARKETS = {
+    "KOOLKID": list(AUTO_SESSION_MARKETS),
+    "JOKERJOE": list(SEQVIX_JOKERJOE_SLOW_MARKETS),
+    "HUMAN": list(AUTO_SESSION_MARKETS),
+    "UNCHAIN": list(AUTO_SESSION_MARKETS),
 }
 
 _CANDIDATE_DEFS = {
@@ -68,6 +91,7 @@ _CANDIDATE_DEFS = {
     "HUMAN_RF": {"profile": "HUMAN", "label": "HUMAN - Smart Assist", "kind": "human_rf", "dual_ok": False, "multi_leg": False},
     "UNCHAIN_HIGHER": {"profile": "UNCHAIN", "label": "UNCHAIN - Higher", "kind": "unchain_hl", "dual_ok": True, "multi_leg": False},
     "UNCHAIN_LOWER": {"profile": "UNCHAIN", "label": "UNCHAIN - Lower", "kind": "unchain_hl", "dual_ok": True, "multi_leg": False},
+    "UNCHAIN_BOTH": {"profile": "UNCHAIN", "label": "UNCHAIN - Both", "kind": "unchain_both", "dual_ok": False, "multi_leg": True},
 }
 
 
@@ -84,24 +108,32 @@ def get_auto_session_catalog():
 def ensure_auto_session_state(state):
     session = state.get("auto_session")
     if isinstance(session, dict):
+        if session.get("_root_state") is None:
+            session["_root_state"] = state
         return session
     state["auto_session"] = _new_session_state()
+    state["auto_session"]["_root_state"] = state
     return state["auto_session"]
 
 
 def _new_session_state():
     return {
         "running": False,
+        "_root_state": None,
         "token": None,
         "mode": "single",
         "selected_strategy_ids": [AUTO_SESSION_DEFAULT_PROFILE],
         "allowed_strategy_ids": [],
         "budget": 0.0,
         "remaining_budget": 0.0,
+        "budget_used": 0.0,
         "sl": 0.0,
         "tp": 0.0,
+        "protected_profit": 0.0,
         "session_profit": 0.0,
+        "health_state": "NORMAL",
         "recovery_mode": False,
+        "loss_streak": 0,
         "wins": 0,
         "losses": 0,
         "current_stake": AUTO_SESSION_FIRST_STAKE,
@@ -113,6 +145,9 @@ def _new_session_state():
         "stop_reason": None,
         "markets": {},
         "market_order": list(AUTO_SESSION_MARKETS),
+        "scan_cursor": 0,
+        "scan_batch_size": AUTO_SESSION_SCAN_BATCH_SIZE,
+        "last_scan_rotate_at": 0.0,
         "seed_pending": set(),
         "seeded_markets": set(),
         "pending_modes": set(),
@@ -137,6 +172,9 @@ def _new_dashboard_state():
             "losses": 0,
             "total_trades": 0,
             "winrate": 0.0,
+            "protected_profit": 0.0,
+            "budget_used": 0.0,
+            "remaining_budget": 0.0,
             "net_pnl": 0.0,
         },
         "history": [],
@@ -160,9 +198,13 @@ def clear_auto_session_dashboard(state):
 
 def clear_auto_session_progress(state):
     session = ensure_auto_session_state(state)
+    session["protected_profit"] = 0.0
+    session["budget_used"] = 0.0
     session["session_profit"] = 0.0
     session["remaining_budget"] = round(float(session.get("budget", 0.0) or 0.0), 2)
+    session["health_state"] = "NORMAL"
     session["recovery_mode"] = False
+    session["loss_streak"] = 0
     session["wins"] = 0
     session["losses"] = 0
     session["current_stake"] = AUTO_SESSION_FIRST_STAKE
@@ -202,6 +244,9 @@ def get_auto_session_dashboard_payload(state, limit=40):
             "losses": int(stats.get("losses", 0) or 0),
             "total_trades": int(stats.get("total_trades", 0) or 0),
             "winrate": round(float(stats.get("winrate", 0.0) or 0.0), 1),
+            "protected_profit": round(float(stats.get("protected_profit", 0.0) or 0.0), 2),
+            "budget_used": round(float(stats.get("budget_used", 0.0) or 0.0), 2),
+            "remaining_budget": round(float(stats.get("remaining_budget", 0.0) or 0.0), 2),
             "net_pnl": round(float(stats.get("net_pnl", 0.0) or 0.0), 2),
         },
         "history": capped_history,
@@ -238,6 +283,91 @@ def _normalize_nonnegative(value):
     except Exception:
         amount = 0.0
     return round(max(0.0, amount), 2)
+
+
+def _allowed_markets_for_profiles(profile_ids):
+    selected = [
+        str(profile_id or "").upper().strip()
+        for profile_id in (profile_ids or [])
+        if str(profile_id or "").strip()
+    ]
+    if not selected:
+        return list(AUTO_SESSION_MARKETS)
+    allowed = set()
+    for profile_id in selected:
+        for symbol in (_PROFILE_ALLOWED_MARKETS.get(profile_id) or AUTO_SESSION_MARKETS):
+            allowed.add(str(symbol or "").upper().strip())
+    ordered = [symbol for symbol in AUTO_SESSION_MARKETS if symbol in allowed]
+    return ordered or list(AUTO_SESSION_MARKETS)
+
+
+def _candidate_allowed_on_market(strategy_id, symbol):
+    defs = _CANDIDATE_DEFS.get(strategy_id) or {}
+    profile = str(defs.get("profile") or "").upper().strip()
+    sym = str(symbol or "").upper().strip()
+    if profile == "JOKERJOE" and sym not in SEQVIX_JOKERJOE_SLOW_MARKETS:
+        return False
+    return True
+
+
+def _budget_ratio(session):
+    budget = max(0.0, float(session.get("budget", 0.0) or 0.0))
+    if budget <= 0:
+        return 0.0
+    return max(0.0, min(1.0, float(session.get("remaining_budget", 0.0) or 0.0) / budget))
+
+
+def _health_state(session):
+    ratio = _budget_ratio(session)
+    if ratio < AUTO_SESSION_CRITICAL_RATIO:
+        return "CRITICAL"
+    if ratio < AUTO_SESSION_BUDGET_RECOVERY_RATIO:
+        return "BUDGET_RECOVERY"
+    if ratio < AUTO_SESSION_CAUTION_RATIO:
+        return "CAUTION"
+    return "NORMAL"
+
+
+def _sync_session_totals(session):
+    protected_profit = max(0.0, float(session.get("protected_profit", 0.0) or 0.0))
+    budget_used = max(0.0, float(session.get("budget_used", 0.0) or 0.0))
+    session["protected_profit"] = round(protected_profit, 2)
+    session["budget_used"] = round(budget_used, 2)
+    session["session_profit"] = round(protected_profit - budget_used, 2)
+    session["remaining_budget"] = _compute_remaining_budget(session)
+    health_state = _health_state(session)
+    loss_streak = int(session.get("loss_streak", 0) or 0)
+    session["health_state"] = health_state
+    session["recovery_mode"] = bool(
+        health_state in ("BUDGET_RECOVERY", "CRITICAL")
+        or loss_streak >= 2
+    )
+    return session
+
+
+def _scan_batch_symbols(session):
+    order = list(session.get("market_order") or [])
+    if not order:
+        return []
+    batch_size = max(1, min(int(session.get("scan_batch_size", AUTO_SESSION_SCAN_BATCH_SIZE) or AUTO_SESSION_SCAN_BATCH_SIZE), len(order)))
+    cursor = int(session.get("scan_cursor", 0) or 0) % len(order)
+    return [order[(cursor + idx) % len(order)] for idx in range(batch_size)]
+
+
+def _maybe_rotate_scan_batch(session, now_ts=None, force=False):
+    order = list(session.get("market_order") or [])
+    if not order:
+        return []
+    batch_size = max(1, min(int(session.get("scan_batch_size", AUTO_SESSION_SCAN_BATCH_SIZE) or AUTO_SESSION_SCAN_BATCH_SIZE), len(order)))
+    now_ts = float(now_ts if now_ts is not None else time.time())
+    last = float(session.get("last_scan_rotate_at", 0.0) or 0.0)
+    if force or last <= 0.0 or (now_ts - last) >= AUTO_SESSION_SCAN_ROTATE_SEC:
+        cursor = int(session.get("scan_cursor", 0) or 0)
+        if not force:
+            cursor = (cursor + batch_size) % len(order)
+        session["scan_cursor"] = cursor
+        session["last_scan_rotate_at"] = now_ts
+    return _scan_batch_symbols(session)
 
 
 def _normalize_selected_strategies(primary_id, secondary_id=None):
@@ -278,7 +408,11 @@ def _make_market_runtime(symbol, strategy_ids):
             "last_signal": None,
             "last_confidence": 0.0,
             "last_reason": "Scanning",
-            "runtime_state": {},
+            "runtime_state": {
+                "paper_stats": {"wins": 0, "losses": 0, "total_trades": 0, "winrate": 50.0},
+                "paper_open": [],
+                "last_paper_key": None,
+            },
         }
     return {
         "symbol": symbol,
@@ -337,7 +471,8 @@ def start_auto_session(state, primary_id, secondary_id=None, budget=100.0, sl=0.
     previous_session = ensure_auto_session_state(state)
     dashboard = ensure_auto_session_dashboard(state)
     dashboard_stats = dict(dashboard.get("stats") or {})
-    carried_profit = round(float(dashboard_stats.get("net_pnl", 0.0) or 0.0), 2)
+    carried_profit = round(float(dashboard_stats.get("protected_profit", dashboard_stats.get("net_pnl", 0.0)) or 0.0), 2)
+    carried_budget_used = round(float(dashboard_stats.get("budget_used", 0.0) or 0.0), 2)
     carried_wins = int(dashboard_stats.get("wins", 0) or 0)
     carried_losses = int(dashboard_stats.get("losses", 0) or 0)
     carried_total = int(dashboard_stats.get("total_trades", 0) or 0)
@@ -351,27 +486,35 @@ def start_auto_session(state, primary_id, secondary_id=None, budget=100.0, sl=0.
     sl = _normalize_nonnegative(sl)
     tp = _normalize_nonnegative(tp)
     mode = "dual" if len(profile_ids) == 2 else "single"
+    allowed_markets = _allowed_markets_for_profiles(profile_ids)
 
     session.update({
         "running": True,
+        "_root_state": state,
         "token": str(int(time.time() * 1000)),
         "mode": mode,
         "selected_strategy_ids": profile_ids,
         "allowed_strategy_ids": candidate_ids,
         "budget": budget,
         "remaining_budget": budget,
+        "budget_used": carried_budget_used,
         "sl": sl,
         "tp": tp,
+        "protected_profit": carried_profit,
         "session_profit": carried_profit,
+        "health_state": "NORMAL",
         "wins": carried_wins,
         "losses": carried_losses,
         "current_stake": AUTO_SESSION_FIRST_STAKE,
         "status": "SCANNING",
         "status_detail": "Scanning markets and profiling button setups",
         "stop_reason": None,
-        "markets": {sym: _make_market_runtime(sym, candidate_ids) for sym in AUTO_SESSION_MARKETS},
-        "market_order": list(AUTO_SESSION_MARKETS),
-        "seed_pending": set(AUTO_SESSION_MARKETS),
+        "markets": {sym: _make_market_runtime(sym, candidate_ids) for sym in allowed_markets},
+        "market_order": list(allowed_markets),
+        "scan_cursor": 0,
+        "scan_batch_size": AUTO_SESSION_SCAN_BATCH_SIZE,
+        "last_scan_rotate_at": 0.0,
+        "seed_pending": set(allowed_markets),
         "seeded_markets": set(),
         "pending_modes": set(),
         "pending_batches": {},
@@ -384,12 +527,14 @@ def start_auto_session(state, primary_id, secondary_id=None, budget=100.0, sl=0.
         "last_batch": None,
         "last_dual_profile": carried_last_dual_profile,
         "recovery_mode": False,
+        "loss_streak": 0,
         "button_stats": carried_button_stats,
         "events": [],
     })
-    session["remaining_budget"] = _compute_remaining_budget(session)
     if carried_total and bool(previous_session.get("recovery_mode", False)):
-        session["recovery_mode"] = True
+        session["loss_streak"] = max(1, int(previous_session.get("loss_streak", 0) or 0))
+    _sync_session_totals(session)
+    _maybe_rotate_scan_batch(session, force=True)
     if session_should_stop(session):
         session["running"] = False
         session["status"] = "STOPPED"
@@ -438,9 +583,12 @@ def get_auto_session_status(state):
         "selected_strategies": selected,
         "budget": round(float(session.get("budget", 0.0) or 0.0), 2),
         "remaining_budget": round(float(session.get("remaining_budget", 0.0) or 0.0), 2),
+        "budget_used": round(float(session.get("budget_used", 0.0) or 0.0), 2),
         "current_stake": round(float(session.get("current_stake", AUTO_SESSION_FIRST_STAKE) or 0.0), 2),
         "sl": round(float(session.get("sl", 0.0) or 0.0), 2),
         "tp": round(float(session.get("tp", 0.0) or 0.0), 2),
+        "health_state": str(session.get("health_state", _health_state(session)) or "NORMAL"),
+        "loss_streak": int(session.get("loss_streak", 0) or 0),
         "active_market": session.get("active_market"),
         "active_strategy": session.get("active_strategy"),
         "confidence": round(float(session.get("confidence", 0.0) or 0.0), 1),
@@ -449,16 +597,43 @@ def get_auto_session_status(state):
         "wins": int(session.get("wins", 0) or 0),
         "losses": int(session.get("losses", 0) or 0),
         "profit_loss": round(float(session.get("session_profit", 0.0) or 0.0), 2),
+        "profit_bank": round(float(session.get("protected_profit", 0.0) or 0.0), 2),
         "recovery_mode": bool(session.get("recovery_mode", False)),
         "seeded_markets": seeded_count,
         "total_markets": total_markets,
+        "scan_markets": _scan_batch_symbols(session),
         "events": list(session.get("events", []) or []),
         "last_batch": dict(session.get("last_batch") or {}),
     }
 
 
 def _required_confidence(session):
-    return AUTO_SESSION_RECOVERY_CONFIDENCE_THRESHOLD if bool(session.get("recovery_mode", False)) else AUTO_SESSION_CONFIDENCE_THRESHOLD
+    state = str(session.get("health_state", _health_state(session)) or "NORMAL").upper().strip()
+    if state == "CRITICAL":
+        base = AUTO_SESSION_CRITICAL_CONFIDENCE_THRESHOLD
+    elif state == "BUDGET_RECOVERY":
+        base = AUTO_SESSION_RECOVERY_CONFIDENCE_THRESHOLD
+    elif state == "CAUTION":
+        base = AUTO_SESSION_CAUTION_CONFIDENCE_THRESHOLD
+    else:
+        base = AUTO_SESSION_CONFIDENCE_THRESHOLD
+    loss_streak = int(session.get("loss_streak", 0) or 0)
+    if loss_streak == 1:
+        base += 3.0
+    elif loss_streak >= 2:
+        base = max(base, AUTO_SESSION_RECOVERY_CONFIDENCE_THRESHOLD if state != "CRITICAL" else AUTO_SESSION_CRITICAL_CONFIDENCE_THRESHOLD)
+    return round(min(95.0, base), 1)
+
+
+def _loss_cooldown_seconds(session, was_loss=False):
+    if not was_loss:
+        return AUTO_SESSION_TRADE_COOLDOWN_SEC
+    loss_streak = int(session.get("loss_streak", 0) or 0)
+    if loss_streak >= 3:
+        return AUTO_SESSION_THREE_LOSS_COOLDOWN_SEC
+    if loss_streak == 2:
+        return AUTO_SESSION_TWO_LOSS_COOLDOWN_SEC
+    return AUTO_SESSION_ONE_LOSS_COOLDOWN_SEC
 
 
 def compute_session_stake(session, live_balance, leg_count=1, confidence=None):
@@ -469,8 +644,8 @@ def compute_session_stake(session, live_balance, leg_count=1, confidence=None):
         balance = 0.0
     remaining_budget = max(0.0, float(session.get("remaining_budget", 0.0) or 0.0))
     sl = max(0.0, float(session.get("sl", 0.0) or 0.0))
-    tp = max(0.0, float(session.get("tp", 0.0) or 0.0))
-    pnl = float(session.get("session_profit", 0.0) or 0.0)
+    budget = max(0.0, float(session.get("budget", 0.0) or 0.0))
+    budget_used = max(0.0, float(session.get("budget_used", 0.0) or 0.0))
     trades_done = int(session.get("trade_index", 0) or 0)
     required_confidence = _required_confidence(session)
     try:
@@ -478,30 +653,46 @@ def compute_session_stake(session, live_balance, leg_count=1, confidence=None):
     except Exception:
         confidence_value = required_confidence
 
-    sl_room = (sl - abs(min(0.0, pnl))) if sl > 0 else remaining_budget
-    tp_room = (tp - max(0.0, pnl)) if tp > 0 else remaining_budget
-    allowed = max(0.0, min(remaining_budget, max(0.0, sl_room), max(0.0, tp_room), balance))
+    sl_room = (sl - budget_used) if sl > 0 else remaining_budget
+    allowed = max(0.0, min(remaining_budget, max(0.0, sl_room), balance))
     if allowed <= 0.0:
         return 0.0
+    health_state = str(session.get("health_state", _health_state(session)) or "NORMAL").upper().strip()
+    loss_streak = int(session.get("loss_streak", 0) or 0)
 
     if trades_done <= 0:
-        per_leg = AUTO_SESSION_FIRST_STAKE
+        total_target = AUTO_SESSION_FIRST_STAKE * float(legs)
     elif trades_done == 1:
-        per_leg = round(max(AUTO_SESSION_FIRST_STAKE, float(session.get("budget", 0.0) or 0.0) * 0.10), 2)
+        total_target = max(AUTO_SESSION_FIRST_STAKE * float(legs), budget * 0.10)
     elif trades_done == 2:
-        per_leg = round(max(AUTO_SESSION_FIRST_STAKE, float(session.get("budget", 0.0) or 0.0) * 0.20), 2)
+        total_target = max(AUTO_SESSION_FIRST_STAKE * float(legs), budget * 0.20)
     else:
-        if confidence_value >= AUTO_SESSION_HIGH_CONFIDENCE_THRESHOLD:
-            per_leg = round(max(AUTO_SESSION_FIRST_STAKE, remaining_budget), 2)
+        if confidence_value >= 90.0:
+            total_target = remaining_budget * 0.40
         elif confidence_value >= 80.0:
-            per_leg = round(max(AUTO_SESSION_FIRST_STAKE, float(session.get("budget", 0.0) or 0.0) * (0.18 if bool(session.get("recovery_mode", False)) else 0.35)), 2)
+            total_target = remaining_budget * 0.25
         elif confidence_value >= 70.0:
-            per_leg = round(max(AUTO_SESSION_FIRST_STAKE, float(session.get("budget", 0.0) or 0.0) * (0.10 if bool(session.get("recovery_mode", False)) else 0.20)), 2)
+            total_target = remaining_budget * 0.15
         else:
-            per_leg = round(max(AUTO_SESSION_FIRST_STAKE, float(session.get("budget", 0.0) or 0.0) * (0.05 if bool(session.get("recovery_mode", False)) else 0.10)), 2)
+            total_target = remaining_budget * 0.10
 
-    hard_cap = allowed / float(legs)
-    per_leg = min(per_leg, hard_cap)
+        if health_state == "CRITICAL":
+            total_target *= AUTO_SESSION_CRITICAL_STAKE_FACTOR
+        elif health_state == "BUDGET_RECOVERY":
+            total_target *= AUTO_SESSION_RECOVERY_STAKE_FACTOR
+        elif health_state == "CAUTION":
+            total_target *= AUTO_SESSION_CAUTION_STAKE_FACTOR
+
+    if loss_streak >= 3:
+        total_target *= AUTO_SESSION_THREE_LOSS_STAKE_FACTOR
+    elif loss_streak == 2:
+        total_target *= AUTO_SESSION_TWO_LOSS_STAKE_FACTOR
+    elif loss_streak == 1:
+        total_target *= AUTO_SESSION_ONE_LOSS_STAKE_FACTOR
+
+    total_target = max(AUTO_SESSION_FIRST_STAKE * float(legs), float(total_target or 0.0))
+    total_target = min(total_target, allowed)
+    per_leg = round(total_target / float(legs), 2)
     if per_leg < AUTO_SESSION_MIN_ACTION_STAKE:
         return 0.0
     return round(per_leg, 2)
@@ -541,6 +732,7 @@ def process_auto_session_tick(state, tick, digit):
     except Exception:
         epoch = int(time.time())
     _feed_market_tick(session, market, symbol, quote, int(digit), epoch)
+    _maybe_rotate_scan_batch(session)
 
     if session_should_stop(session):
         stop_auto_session(state, session.get("stop_reason") or "Session limit reached")
@@ -613,48 +805,50 @@ def handle_auto_session_contract_settled(state, contract, meta):
         profit = float(contract.get("profit", 0.0) or 0.0)
     except Exception:
         profit = 0.0
-    session["session_profit"] = round(float(session.get("session_profit", 0.0) or 0.0) + profit, 2)
     strategy_id = parsed.get("strategy_id")
     button_stats = session.setdefault("button_stats", {})
     button_entry = button_stats.setdefault(strategy_id, {"wins": 0, "losses": 0, "total_trades": 0, "net_pnl": 0.0, "winrate": 0.0})
     button_entry["total_trades"] = int(button_entry.get("total_trades", 0) or 0) + 1
     button_entry["net_pnl"] = round(float(button_entry.get("net_pnl", 0.0) or 0.0) + profit, 2)
     if profit > 0:
+        session["protected_profit"] = round(float(session.get("protected_profit", 0.0) or 0.0) + profit, 2)
         session["wins"] = int(session.get("wins", 0) or 0) + 1
-        session["recovery_mode"] = False
+        session["loss_streak"] = 0
         button_entry["wins"] = int(button_entry.get("wins", 0) or 0) + 1
         _push_event(session, f"Win +${profit:.2f}")
     else:
+        session["budget_used"] = round(float(session.get("budget_used", 0.0) or 0.0) + abs(profit), 2)
         session["losses"] = int(session.get("losses", 0) or 0) + 1
-        session["recovery_mode"] = True
+        session["loss_streak"] = int(session.get("loss_streak", 0) or 0) + 1
         button_entry["losses"] = int(button_entry.get("losses", 0) or 0) + 1
         _push_event(session, f"Loss ${profit:.2f}")
     total_button_trades = int(button_entry.get("wins", 0) or 0) + int(button_entry.get("losses", 0) or 0)
     button_entry["winrate"] = round((float(button_entry.get("wins", 0) or 0) / total_button_trades) * 100.0, 1) if total_button_trades else 0.0
     session["trade_index"] = int(session.get("trade_index", 0) or 0) + 1
+    _sync_session_totals(session)
     _record_auto_session_dashboard_trade(state, contract, meta, profit)
-    session["remaining_budget"] = _compute_remaining_budget(session)
     if session_should_stop(session):
         stop_auto_session(state, session.get("stop_reason") or "Session target reached")
         return
     if _release_session_busy_if_idle(session, "Scanning for next high-confidence setup"):
-        session["cooldown_until"] = time.time() + AUTO_SESSION_TRADE_COOLDOWN_SEC
+        session["cooldown_until"] = time.time() + _loss_cooldown_seconds(session, was_loss=(profit <= 0))
     _refresh_best_hint(state)
 
 
 def session_should_stop(session):
-    remaining_budget = _compute_remaining_budget(session)
-    session["remaining_budget"] = remaining_budget
-    pnl = float(session.get("session_profit", 0.0) or 0.0)
+    _sync_session_totals(session)
+    remaining_budget = float(session.get("remaining_budget", 0.0) or 0.0)
+    protected_profit = float(session.get("protected_profit", 0.0) or 0.0)
+    budget_used = float(session.get("budget_used", 0.0) or 0.0)
     sl = float(session.get("sl", 0.0) or 0.0)
     tp = float(session.get("tp", 0.0) or 0.0)
     if remaining_budget < AUTO_SESSION_MIN_BALANCE:
         session["stop_reason"] = "Budget exhausted"
         return True
-    if sl > 0 and pnl <= -abs(sl):
+    if sl > 0 and budget_used >= abs(sl):
         session["stop_reason"] = "Stop loss reached"
         return True
-    if tp > 0 and pnl >= tp:
+    if tp > 0 and protected_profit >= tp:
         session["stop_reason"] = "Take profit reached"
         return True
     return False
@@ -662,9 +856,8 @@ def session_should_stop(session):
 
 def _compute_remaining_budget(session):
     budget = max(0.0, float(session.get("budget", 0.0) or 0.0))
-    pnl = float(session.get("session_profit", 0.0) or 0.0)
-    loss_used = abs(min(0.0, pnl))
-    return round(max(0.0, budget - loss_used), 2)
+    budget_used = max(0.0, float(session.get("budget_used", 0.0) or 0.0))
+    return round(max(0.0, budget - budget_used), 2)
 
 
 def _record_auto_session_dashboard_trade(state, contract, meta, profit):
@@ -727,12 +920,18 @@ def _record_auto_session_dashboard_trade(state, contract, meta, profit):
     else:
         losses += 1
     total = wins + losses
-    net_pnl = round(float(stats.get("net_pnl", 0.0) or 0.0) + float(profit or 0.0), 2)
+    protected_profit = round(float(stats.get("protected_profit", 0.0) or 0.0) + (float(profit or 0.0) if profit > 0 else 0.0), 2)
+    budget_used = round(float(stats.get("budget_used", 0.0) or 0.0) + (abs(float(profit or 0.0)) if profit <= 0 else 0.0), 2)
+    remaining_budget = round(max(0.0, float((ensure_auto_session_state(state).get("budget", 0.0) or 0.0)) - budget_used), 2)
+    net_pnl = round(protected_profit - budget_used, 2)
     stats.update({
         "wins": wins,
         "losses": losses,
         "total_trades": total,
         "winrate": round((wins / total) * 100.0, 1) if total else 0.0,
+        "protected_profit": protected_profit,
+        "budget_used": budget_used,
+        "remaining_budget": remaining_budget,
         "net_pnl": net_pnl,
     })
 
@@ -879,8 +1078,11 @@ def _feed_market_tick(session, market, symbol, quote, digit, epoch):
         "pip_size": 2,
     }
     for strategy_id, runtime in (market.get("candidates") or {}).items():
+        if not _candidate_allowed_on_market(strategy_id, symbol):
+            continue
         if _CANDIDATE_DEFS.get(strategy_id, {}).get("kind") == "seqvix":
             _update_seqvix_candidate_runtime(strategy_id, runtime, market, epoch)
+            _update_candidate_background_simulation(session, market, strategy_id, runtime, epoch, quote, digit)
             continue
         strat = runtime.get("strategy")
         if not strat:
@@ -892,6 +1094,154 @@ def _feed_market_tick(session, market, symbol, quote, digit, epoch):
                 strat.on_tick(fake_tick, digit)
         except Exception:
             continue
+        _update_candidate_background_simulation(session, market, strategy_id, runtime, epoch, quote, digit)
+
+
+def _paper_score_from_stats(stats):
+    stats = stats or {}
+    total = int(stats.get("total_trades", 0) or 0)
+    if total <= 0:
+        return 50.0
+    winrate = float(stats.get("winrate", 50.0) or 50.0)
+    weight = min(1.0, total / 12.0)
+    return round(50.0 + ((winrate - 50.0) * weight), 1)
+
+
+def _paper_signal_key(strategy_id, signal):
+    item = signal or {}
+    kind = str(item.get("type") or item.get("contract_type") or item.get("side") or "").upper().strip()
+    barrier = str(item.get("barrier") or "")
+    duration = int(item.get("duration", 1) or 1)
+    duration_unit = str(item.get("duration_unit") or "t")
+    return f"{strategy_id}|{kind}|{barrier}|{duration}{duration_unit}"
+
+
+def _paper_duration_ticks(signal):
+    item = signal or {}
+    try:
+        duration = int(item.get("duration", 1) or 1)
+    except Exception:
+        duration = 1
+    unit = str(item.get("duration_unit") or "t").lower().strip()
+    if unit == "t":
+        return max(1, duration)
+    return max(1, min(10, duration))
+
+
+def _paper_leg_wins(signal, exit_digit, exit_quote):
+    item = signal or {}
+    signal_type = str(item.get("type") or item.get("contract_type") or item.get("side") or "").upper().strip()
+    barrier = item.get("barrier")
+    if signal_type == "HIGHER":
+        try:
+            return float(exit_quote) > float(item.get("entry_quote", exit_quote) or 0.0) + abs(float(barrier or 0.0))
+        except Exception:
+            return False
+    if signal_type == "LOWER":
+        try:
+            return float(exit_quote) < float(item.get("entry_quote", exit_quote) or 0.0) - abs(float(barrier or 0.0))
+        except Exception:
+            return False
+    try:
+        barrier_digit = int(barrier)
+    except Exception:
+        barrier_digit = None
+    if barrier_digit is None:
+        return False
+    if signal_type == "OVER":
+        return int(exit_digit) > barrier_digit
+    if signal_type == "UNDER":
+        return int(exit_digit) < barrier_digit
+    if signal_type == "DIFFERS":
+        return int(exit_digit) != barrier_digit
+    if signal_type == "MATCHES":
+        return int(exit_digit) == barrier_digit
+    return False
+
+
+def _open_paper_trade(strategy_id, runtime, signals, epoch, quote, digit):
+    runtime_state = runtime.setdefault("runtime_state", {})
+    runtime_state.setdefault("paper_open", [])
+    signal_key = "|".join(_paper_signal_key(strategy_id, item) for item in signals)
+    runtime_state["last_paper_key"] = signal_key
+    paper_entry = {
+        "entry_epoch": int(epoch),
+        "exit_epoch": int(epoch) + max(_paper_duration_ticks(item) for item in signals),
+        "signals": [],
+        "signal_key": signal_key,
+    }
+    for item in signals:
+        copied = dict(item)
+        copied["entry_digit"] = int(digit)
+        copied["entry_quote"] = float(quote if quote is not None else (100.0 + (int(digit) / 100.0)))
+        paper_entry["signals"].append(copied)
+    runtime_state["paper_open"].append(paper_entry)
+
+
+def _settle_runtime_paper_trades(runtime, epoch, quote, digit):
+    runtime_state = runtime.setdefault("runtime_state", {})
+    open_trades = list(runtime_state.get("paper_open") or [])
+    if not open_trades:
+        return
+    remaining = []
+    stats = runtime_state.setdefault("paper_stats", {"wins": 0, "losses": 0, "total_trades": 0, "winrate": 50.0})
+    for paper in open_trades:
+        if int(epoch) < int(paper.get("exit_epoch", epoch)):
+            remaining.append(paper)
+            continue
+        signals = list(paper.get("signals") or [])
+        if not signals:
+            continue
+        if len(signals) == 1:
+            won = _paper_leg_wins(signals[0], digit, quote)
+        else:
+            wins = sum(1 for item in signals if _paper_leg_wins(item, digit, quote))
+            won = wins == 1
+        stats["total_trades"] = int(stats.get("total_trades", 0) or 0) + 1
+        if won:
+            stats["wins"] = int(stats.get("wins", 0) or 0) + 1
+        else:
+            stats["losses"] = int(stats.get("losses", 0) or 0) + 1
+        total = int(stats.get("total_trades", 0) or 0)
+        stats["winrate"] = round((float(stats.get("wins", 0) or 0) / total) * 100.0, 1) if total else 50.0
+    runtime_state["paper_open"] = remaining
+
+
+def _candidate_paper_signals(strategy_id, runtime, market, state):
+    defs = _CANDIDATE_DEFS.get(strategy_id) or {}
+    if defs.get("kind") == "seqvix":
+        signal = (runtime.setdefault("runtime_state", {}) or {}).get("ready_signal")
+        return _normalize_signal_list(signal)
+    strat = runtime.get("strategy")
+    if not strat:
+        return []
+    _configure_candidate(strategy_id, strat, market, AUTO_SESSION_FIRST_STAKE)
+    try:
+        setattr(strat, "_auto_session_state", state)
+    except Exception:
+        pass
+    signal = _candidate_signal(strategy_id, strat, state, runtime=runtime, preview_only=True, market=market)
+    signals = _normalize_signal_list(signal)
+    if defs.get("kind") == "unchain_both" and len(signals) >= 2:
+        return signals[:2]
+    picked = _pick_best_signal(signals)
+    return [picked] if picked else []
+
+
+def _update_candidate_background_simulation(session, market, strategy_id, runtime, epoch, quote, digit):
+    runtime_state = runtime.setdefault("runtime_state", {})
+    _settle_runtime_paper_trades(runtime, epoch, quote, digit)
+    if not market.get("ready"):
+        return
+    if runtime_state.get("paper_open"):
+        return
+    signals = _candidate_paper_signals(strategy_id, runtime, market, session.get("_root_state", session))
+    if not signals:
+        return
+    signal_key = "|".join(_paper_signal_key(strategy_id, item) for item in signals)
+    if signal_key and signal_key == runtime_state.get("last_paper_key"):
+        return
+    _open_paper_trade(strategy_id, runtime, signals, epoch, quote, digit)
 
 
 def _build_market_analysis(digits):
@@ -921,12 +1271,23 @@ def _build_market_analysis(digits):
 def _refresh_best_hint(state):
     session = ensure_auto_session_state(state)
     best = _select_best_execution_plan(state, preview_only=True)
+    scan_batch = _scan_batch_symbols(session)
+    batch_text = ", ".join(str(sym) for sym in scan_batch[:3])
+    if len(scan_batch) > 3:
+        batch_text += "..."
+    cooldown_remaining = max(0.0, float(session.get("cooldown_until", 0.0) or 0.0) - time.time())
     if best:
         session["active_market"] = best.get("market")
         session["active_strategy"] = best.get("label")
         session["confidence"] = round(float(best.get("confidence", 0.0) or 0.0), 1)
         if not session.get("busy"):
-            if best.get("below_threshold"):
+            if cooldown_remaining > 0.0:
+                session["status"] = "WAITING"
+                session["status_detail"] = (
+                    f"Cooling down {cooldown_remaining:.1f}s • "
+                    f"{str(session.get('health_state', _health_state(session)) or 'NORMAL').replace('_', ' ')} mode"
+                )
+            elif best.get("below_threshold"):
                 session["status"] = "WAITING"
                 session["status_detail"] = (
                     f"Best button {best.get('label')} is {float(best.get('confidence', 0.0) or 0.0):.1f}% "
@@ -940,11 +1301,17 @@ def _refresh_best_hint(state):
         total = len(session.get("market_order", []) or AUTO_SESSION_MARKETS)
         if seeded < total:
             session["status"] = "SCANNING"
-            session["status_detail"] = f"Scanning markets ({seeded}/{total} ready)"
+            session["status_detail"] = f"Scanning 30-tick batches ({seeded}/{total} ready) • {batch_text or 'warming markets'}"
+        elif cooldown_remaining > 0.0 and not session.get("busy"):
+            session["status"] = "WAITING"
+            session["status_detail"] = (
+                f"Cooling down {cooldown_remaining:.1f}s • "
+                f"{str(session.get('health_state', _health_state(session)) or 'NORMAL').replace('_', ' ')} mode"
+            )
         elif not session.get("busy"):
             session["status"] = "WAITING"
             session["status_detail"] = (
-                f"Scanning selected profile buttons for {_required_confidence(session):.0f}%+ confidence"
+                f"Scanning selected profile buttons for {_required_confidence(session):.0f}%+ confidence • batch {batch_text or 'rotating'}"
             )
         session["active_market"] = None
         session["active_strategy"] = None
@@ -1047,13 +1414,94 @@ def _profile_live_winrate(state, profile):
     return round((wins / total) * 100.0, 1)
 
 
-def _button_live_score(session, strategy_id):
+def _button_live_score(session, strategy_id, runtime=None):
     button_stats = (session or {}).get("button_stats") or {}
     stats = button_stats.get(strategy_id) or {}
     total = int(stats.get("total_trades", 0) or 0)
+    live_score = round(float(stats.get("winrate", 0.0) or 0.0), 1) if total > 0 else 50.0
+    if not isinstance(runtime, dict):
+        return live_score
+    paper_stats = (runtime.get("runtime_state") or {}).get("paper_stats") or {}
+    paper_score = _paper_score_from_stats(paper_stats)
     if total <= 0:
-        return 50.0
-    return round(float(stats.get("winrate", 0.0) or 0.0), 1)
+        return paper_score
+    return round((live_score * 0.45) + (paper_score * 0.55), 1)
+
+
+def _button_confidence(state, session, strategy_id, runtime=None, setup_confidence=50.0):
+    defs = _CANDIDATE_DEFS.get(strategy_id) or {}
+    profile_score = _profile_live_winrate(state, defs.get("profile"))
+    button_score = _button_live_score(session, strategy_id, runtime=runtime)
+    return round(
+        min(
+            99.0,
+            max(
+                40.0,
+                (float(setup_confidence or 0.0) * 0.55)
+                + (button_score * 0.30)
+                + (profile_score * 0.15),
+            ),
+        ),
+        1,
+    )
+
+
+def _market_confidence(snapshot, symbol, profile):
+    snapshot = snapshot or {}
+    rare_bonus = max(0.0, 10.0 - float(snapshot.get("rarest_pct", 10.0) or 10.0)) * 2.2
+    edge_bonus = max(0.0, float(snapshot.get("edge_gap", 0.0) or 0.0)) * 4.0
+    imbalance = abs(float(snapshot.get("high_sum", 0.0) or 0.0) - float(snapshot.get("low_sum", 0.0) or 0.0)) * 0.5
+    score = 54.0 + rare_bonus + edge_bonus + imbalance
+    sym = str(symbol or "").upper().strip()
+    if sym.startswith("1HZ") and str(profile or "").upper().strip() != "JOKERJOE":
+        score -= 3.0
+    return round(min(99.0, max(40.0, score)), 1)
+
+
+def _session_modifier_score(session):
+    health_state = str(session.get("health_state", _health_state(session)) or "NORMAL").upper().strip()
+    if health_state == "CRITICAL":
+        score = 38.0
+    elif health_state == "BUDGET_RECOVERY":
+        score = 45.0
+    elif health_state == "CAUTION":
+        score = 53.0
+    else:
+        score = 60.0
+
+    loss_streak = int(session.get("loss_streak", 0) or 0)
+    if loss_streak >= 3:
+        score -= 18.0
+    elif loss_streak == 2:
+        score -= 12.0
+    elif loss_streak == 1:
+        score -= 6.0
+
+    cooldown_remaining = max(0.0, float(session.get("cooldown_until", 0.0) or 0.0) - time.time())
+    if cooldown_remaining > 0.0:
+        score -= min(10.0, cooldown_remaining)
+
+    if int(session.get("trade_index", 0) or 0) >= 3:
+        last_action_at = float(session.get("last_action_at", 0.0) or 0.0)
+        if last_action_at > 0.0 and (time.time() - last_action_at) < 6.0:
+            score -= 4.0
+
+    return round(min(95.0, max(20.0, score)), 1)
+
+
+def _final_confidence_score(market_confidence, button_confidence, session_modifier):
+    return round(
+        min(
+            99.0,
+            max(
+                0.0,
+                (float(market_confidence or 0.0) * 0.45)
+                + (float(button_confidence or 0.0) * 0.45)
+                + (float(session_modifier or 0.0) * 0.10),
+            ),
+        ),
+        1,
+    )
 
 
 def _get_unchain_session_config(state):
@@ -1065,6 +1513,73 @@ def _get_unchain_session_config(state):
         "higher_barrier": str(config.get("higher_barrier") or "+0.12"),
         "lower_barrier": str(config.get("lower_barrier") or "-0.12"),
     }
+
+
+def _simulate_unchain_market_config(strat, runtime, state, market):
+    base = _get_unchain_session_config(state)
+    runtime_state = runtime.setdefault("runtime_state", {})
+    cache_key = (
+        str((market or {}).get("symbol") or ""),
+        len((market or {}).get("prices") or []),
+        str(base.get("duration")),
+        str(base.get("duration_unit")),
+        str(base.get("higher_barrier")),
+        str(base.get("lower_barrier")),
+    )
+    cached = runtime_state.get("unchain_sim_cache")
+    if isinstance(cached, dict) and cached.get("key") == cache_key:
+        return dict(cached.get("config") or base)
+
+    magnitudes = []
+    for raw in (
+        base.get("higher_barrier"),
+        base.get("lower_barrier"),
+        "0.06",
+        "0.08",
+        "0.12",
+        "0.17",
+        "0.22",
+        "0.28",
+    ):
+        try:
+            magnitudes.append(round(abs(float(raw)), 2))
+        except Exception:
+            continue
+    magnitudes = sorted(set(v for v in magnitudes if v > 0.0)) or [0.12]
+
+    best_higher = {"score": -1.0, "barrier": base.get("higher_barrier", "+0.12")}
+    best_lower = {"score": -1.0, "barrier": base.get("lower_barrier", "-0.12")}
+    best_both = {"score": -1.0, "higher_barrier": base.get("higher_barrier", "+0.12"), "lower_barrier": base.get("lower_barrier", "-0.12")}
+    for magnitude in magnitudes:
+        probe = dict(base)
+        probe["higher_barrier"] = f"+{magnitude:.2f}"
+        probe["lower_barrier"] = f"-{magnitude:.2f}"
+        bias = strat.get_bias_payload(probe) or {}
+        shared_conf = float(bias.get("shared_confidence", 0.0) or 0.0)
+        status = str(bias.get("status") or "").upper().strip()
+        higher_edge = max(0.0, float(bias.get("higher_pct", 50.0) or 50.0) - 50.0)
+        lower_edge = max(0.0, float(bias.get("lower_pct", 50.0) or 50.0) - 50.0)
+        higher_score = shared_conf + higher_edge + (5.0 if "HIGHER" in status else 0.0)
+        lower_score = shared_conf + lower_edge + (5.0 if "LOWER" in status else 0.0)
+        both_score = shared_conf + min(higher_edge, lower_edge)
+        if higher_score > best_higher["score"]:
+            best_higher = {"score": higher_score, "barrier": probe["higher_barrier"]}
+        if lower_score > best_lower["score"]:
+            best_lower = {"score": lower_score, "barrier": probe["lower_barrier"]}
+        if both_score > best_both["score"]:
+            best_both = {
+                "score": both_score,
+                "higher_barrier": probe["higher_barrier"],
+                "lower_barrier": probe["lower_barrier"],
+            }
+
+    resolved = dict(base)
+    resolved["higher_barrier"] = best_higher["barrier"]
+    resolved["lower_barrier"] = best_lower["barrier"]
+    resolved["both_higher_barrier"] = best_both["higher_barrier"]
+    resolved["both_lower_barrier"] = best_both["lower_barrier"]
+    runtime_state["unchain_sim_cache"] = {"key": cache_key, "config": dict(resolved)}
+    return resolved
 
 
 def _suggest_koolkid_barrier(snapshot):
@@ -1167,14 +1682,14 @@ def _evaluate_candidate(strategy_id, runtime, market, state, per_trade_stake, pr
         setattr(strat, "_auto_session_state", state)
     except Exception:
         pass
-    signal = _candidate_signal(strategy_id, strat, state, runtime=runtime, preview_only=preview_only)
+    signal = _candidate_signal(strategy_id, strat, state, runtime=runtime, preview_only=preview_only, market=market)
     if not signal:
         runtime["last_signal"] = None
         runtime["last_confidence"] = 0.0
         runtime["last_reason"] = "No live setup"
         return None
 
-    confidence = _score_signal(strategy_id, signal, strat, market, state)
+    confidence = _score_signal(strategy_id, signal, strat, market, state, runtime=runtime)
     label = _CANDIDATE_DEFS[strategy_id]["label"]
     result = {"strategy_id": strategy_id, "profile": _CANDIDATE_DEFS[strategy_id]["profile"], "label": label, "market": market.get("symbol"), "signal": signal, "confidence": confidence}
     runtime["last_signal"] = signal
@@ -1183,9 +1698,14 @@ def _evaluate_candidate(strategy_id, runtime, market, state, per_trade_stake, pr
     return result
 
 
-def _candidate_signal(strategy_id, strat, state, runtime=None, preview_only=False):
-    if strategy_id in ("UNCHAIN_HIGHER", "UNCHAIN_LOWER"):
-        config = _get_unchain_session_config(getattr(strat, "_auto_session_state", None))
+def _candidate_signal(strategy_id, strat, state, runtime=None, preview_only=False, market=None):
+    if strategy_id in ("UNCHAIN_HIGHER", "UNCHAIN_LOWER", "UNCHAIN_BOTH"):
+        config = _simulate_unchain_market_config(
+            strat,
+            runtime if isinstance(runtime, dict) else {},
+            getattr(strat, "_auto_session_state", None),
+            market or {},
+        )
         bias = strat.get_bias_payload(config)
         status = str((bias or {}).get("status") or "").upper().strip()
         confidence = float((bias or {}).get("shared_confidence", 0.0) or 0.0)
@@ -1207,6 +1727,25 @@ def _candidate_signal(strategy_id, strat, state, runtime=None, preview_only=Fals
                 "duration_unit": duration_unit,
                 "confidence": confidence,
             }
+        if strategy_id == "UNCHAIN_BOTH" and confidence >= 65.0 and "NEUTRAL" not in status:
+            higher_barrier = config.get("both_higher_barrier", config.get("higher_barrier", "+0.12"))
+            lower_barrier = config.get("both_lower_barrier", config.get("lower_barrier", "-0.12"))
+            return [
+                {
+                    "type": "HIGHER",
+                    "barrier": higher_barrier,
+                    "duration": duration,
+                    "duration_unit": duration_unit,
+                    "confidence": max(55.0, confidence - 4.0),
+                },
+                {
+                    "type": "LOWER",
+                    "barrier": lower_barrier,
+                    "duration": duration,
+                    "duration_unit": duration_unit,
+                    "confidence": max(55.0, confidence - 4.0),
+                },
+            ]
         return None
 
     if strategy_id == "KOOLKID_KIDRACKS":
@@ -1355,26 +1894,20 @@ def _normalize_signal_list(signal):
     return []
 
 
-def _score_signal(strategy_id, signal, strat, market, state):
+def _score_signal(strategy_id, signal, strat, market, state, runtime=None):
     defs = _CANDIDATE_DEFS[strategy_id]
     snapshot = market.get("analysis") or {}
-    profile_score = _profile_live_winrate(state, defs["profile"])
-    button_score = _button_live_score(ensure_auto_session_state(state), strategy_id)
+    market_score = _market_confidence(snapshot, market.get("symbol"), defs.get("profile"))
+    session = ensure_auto_session_state(state)
+    session_modifier = _session_modifier_score(session)
     signals = _normalize_signal_list(signal)
     if not signals:
         return 0.0
 
-    if defs["kind"] == "seqvix":
+    if defs["kind"] in ("seqvix", "unchain_hl", "unchain_both", "human_rf"):
         base = max(float(item.get("confidence", 0.0) or 0.0) for item in signals)
-        return round(min(99.0, base * 0.68 + profile_score * 0.18 + button_score * 0.14), 1)
-
-    if defs["kind"] == "unchain_hl":
-        base = max(float(item.get("confidence", 0.0) or 0.0) for item in signals)
-        return round(min(99.0, base * 0.64 + profile_score * 0.18 + button_score * 0.18), 1)
-
-    if defs["kind"] == "human_rf":
-        base = float(signal.get("confidence", 0.0) or 0.0)
-        return round(min(99.0, base * 0.6 + profile_score * 0.22 + button_score * 0.18), 1)
+        button_score = _button_confidence(state, session, strategy_id, runtime=runtime, setup_confidence=base)
+        return _final_confidence_score(market_score, button_score, session_modifier)
 
     meta_brain = None
     try:
@@ -1383,7 +1916,8 @@ def _score_signal(strategy_id, signal, strat, market, state):
         meta_brain = None
     if isinstance(meta_brain, dict):
         base = float(meta_brain.get("confidence_pct", 0.0) or 0.0)
-        return round(min(99.0, base * 0.62 + profile_score * 0.20 + button_score * 0.18), 1)
+        button_score = _button_confidence(state, session, strategy_id, runtime=runtime, setup_confidence=base)
+        return _final_confidence_score(market_score, button_score, session_modifier)
 
     signal_scores = []
     for item in signals:
@@ -1406,7 +1940,8 @@ def _score_signal(strategy_id, signal, strat, market, state):
             side_bonus = max(0.0, float(snapshot.get("dominant_pct", 0.0) or 0.0) - 10.0) * 1.1
         signal_scores.append(52.0 + rare_bonus + edge_bonus + side_bonus)
     base = max(signal_scores) if signal_scores else 0.0
-    return round(min(99.0, base * 0.60 + profile_score * 0.22 + button_score * 0.18), 1)
+    button_score = _button_confidence(state, session, strategy_id, runtime=runtime, setup_confidence=base)
+    return _final_confidence_score(market_score, button_score, session_modifier)
 
 
 def _select_best_execution_plan(state, preview_only=False):
@@ -1429,13 +1964,15 @@ def _select_best_execution_plan(state, preview_only=False):
         if str(profile_id or "").strip()
     }
 
-    for symbol in session.get("market_order", []) or []:
+    for symbol in _scan_batch_symbols(session):
         market = (session.get("markets") or {}).get(symbol)
         if not market or not market.get("ready"):
             continue
 
         market_results = []
         for strategy_id in strategy_ids:
+            if not _candidate_allowed_on_market(strategy_id, symbol):
+                continue
             runtime = (market.get("candidates") or {}).get(strategy_id)
             if not runtime:
                 continue
@@ -1490,13 +2027,15 @@ def _build_plan_from_result(session, result, live_balance):
     signals = _normalize_signal_list(result.get("signal"))
     if not signals:
         return None
-    picked_signal = _pick_best_signal(signals)
-    if not picked_signal:
+    defs = _CANDIDATE_DEFS.get(result.get("strategy_id"), {})
+    chosen_signals = signals[:2] if defs.get("kind") == "unchain_both" else [_pick_best_signal(signals)]
+    chosen_signals = [item for item in chosen_signals if isinstance(item, dict)]
+    if not chosen_signals:
         return None
-    per_trade = compute_session_stake(session, live_balance, 1, confidence=result.get("confidence"))
+    per_trade = compute_session_stake(session, live_balance, len(chosen_signals), confidence=result.get("confidence"))
     if per_trade < AUTO_SESSION_MIN_ACTION_STAKE:
         return None
-    actions = _build_actions_for_signals(result, [picked_signal], per_trade)
+    actions = _build_actions_for_signals(result, chosen_signals, per_trade)
     if not actions or _actions_conflict(actions):
         return None
     return {"market": result.get("market"), "label": result.get("label"), "strategy_ids": [result.get("strategy_id")], "confidence": float(result.get("confidence", 0.0) or 0.0), "actions": actions}
@@ -1672,7 +2211,7 @@ def _build_actions_for_signals(result, signals, per_trade_stake):
             action["duration"] = int(item.get("duration", 5) or 5)
             action["duration_unit"] = str(item.get("duration_unit") or "t")
             action["stake"] = round(float(per_trade_stake or AUTO_SESSION_FIRST_STAKE), 2)
-        elif defs.get("kind") == "unchain_hl":
+        elif defs.get("kind") in ("unchain_hl", "unchain_both"):
             action["kind"] = "unchain_hl"
             action["side"] = str(item.get("type") or item.get("side") or "").upper().strip()
             action["barrier"] = item.get("barrier")
