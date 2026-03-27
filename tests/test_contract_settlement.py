@@ -207,6 +207,32 @@ def test_handle_on_message_error_clears_failed_unchain_pending_request(monkeypat
     assert any(event == "api_error" for event, _payload, _room in emitted)
 
 
+def test_disconnect_client_rebuilds_fresh_default_state():
+    cid = "cid-disconnect-reset"
+    server.clients.pop(cid, None)
+    server.init_client(cid)
+    state = server.clients[cid]
+    state["active_profile"] = "JOKERJOE"
+    state["current_symbol"] = "R_75"
+    state["human_symbol"] = "R_100"
+    state["auto_stake"] = 9.5
+    state["balance"] = 88.0
+    state["api_token"] = "token"
+    state["unchain_hl"]["higher_barrier"] = "+0.33"
+    state["strategies"]["KOOLKID"].stake = 7.0
+
+    server.disconnect_client(cid, emit=False)
+
+    fresh = server.clients[cid]
+    assert fresh["active_profile"] == "KOOLKID"
+    assert fresh["current_symbol"] == "R_10"
+    assert fresh["human_symbol"] == "R_10"
+    assert fresh["auto_stake"] == 1.0
+    assert fresh["balance"] == 0.0
+    assert fresh["api_token"] == ""
+    assert fresh["unchain_hl"]["higher_barrier"] == "+0.12"
+
+
 def test_unchain_zero_profit_counts_as_loss():
     strat = server.UnchainStrategy()
 

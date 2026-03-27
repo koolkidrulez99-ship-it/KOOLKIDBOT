@@ -52,6 +52,7 @@ from strategies.auto_session import (
     AUTO_SESSION_HISTORY_COUNT,
     AUTO_SESSION_MARKETS,
     clear_auto_session_dashboard,
+    clear_auto_session_progress,
     ensure_auto_session_state,
     feed_auto_session_history,
     get_auto_session_catalog,
@@ -1097,53 +1098,8 @@ def _hard_stop_all_strategies(state):
                     pass
 
 
-def disconnect_client(client_id, reason="manual", emit=True):
-    state = clients.get(client_id)
-    if not state:
-        return
-
-    logger.info(f"[{client_id}] 🔻 disconnect_client: reason={reason}")
-
-    # stop websocket
-    try:
-        state["ws_stop_event"].set()
-    except Exception:
-        pass
-
-    ws = state.get("ws")
-    if ws:
-        try:
-            ws.close()
-        except Exception:
-            pass
-
-    state["ws"] = None
-    state["ws_connected"] = False
-    state["ws_transport_connected"] = False
-    state["api_token"] = ""
-    state["balance"] = 0.0
-    state["session_start_balance"] = None
-    state["req_meta"].clear()
-    state["contract_meta"].clear()
-
-    _hard_stop_all_strategies(state)
-
-    if emit:
-        socketio.emit("connection_status", {"connected": False, "loginid": "UNKNOWN", "balance": 0.0}, room=client_id)
-        socketio.emit("reset_ui", room=client_id)
-
-        # keep stats consistent for current profile (will show zeros)
-        send_stats_update(client_id)
-
-
-def init_client(client_id):
-    """
-    Initialize a fresh client state.
-    """
-    if client_id in clients:
-        return
-
-    clients[client_id] = {
+def _build_default_client_state():
+    return {
         "api_token": "",
         "ws": None,
         "ws_thread": None,
@@ -1246,6 +1202,50 @@ def init_client(client_id):
         # PATCH A: human_keep_alive flag
         "human_keep_alive": False,
     }
+
+
+def disconnect_client(client_id, reason="manual", emit=True):
+    state = clients.get(client_id)
+    if not state:
+        return
+
+    logger.info(f"[{client_id}] 🔻 disconnect_client: reason={reason}")
+
+    try:
+        state["ws_stop_event"].set()
+    except Exception:
+        pass
+
+    ws = state.get("ws")
+    if ws:
+        try:
+            ws.close()
+        except Exception:
+            pass
+
+    try:
+        _stop_unchain_scanner_worker(state)
+    except Exception:
+        pass
+
+    _hard_stop_all_strategies(state)
+
+    clients[client_id] = _build_default_client_state()
+
+    if emit:
+        socketio.emit("connection_status", {"connected": False, "loginid": "UNKNOWN", "balance": 0.0}, room=client_id)
+        socketio.emit("reset_ui", room=client_id)
+        send_stats_update(client_id)
+
+
+def init_client(client_id):
+    """
+    Initialize a fresh client state.
+    """
+    if client_id in clients:
+        return
+
+    clients[client_id] = _build_default_client_state()
 
 
 def get_client_state():
@@ -1856,6 +1856,7 @@ def auto_session_clear_history():
         return jsonify({"error": "Unauthorized"}), 403
     _cid, state = get_client_state()
     clear_auto_session_dashboard(state)
+    clear_auto_session_progress(state)
     return jsonify({"ok": True, "dashboard": _get_koolkid_auto_trade_dashboard_payload(state)})
 
 

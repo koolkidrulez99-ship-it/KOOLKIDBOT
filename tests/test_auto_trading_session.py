@@ -140,6 +140,38 @@ def test_session_stops_when_take_profit_is_hit():
     assert session["stop_reason"] == "Take profit reached"
 
 
+def test_auto_session_resume_keeps_profit_history_until_clear():
+    state = {"strategies": {}}
+    auto_session.ensure_auto_session_dashboard(state)["stats"] = {
+        "wins": 3,
+        "losses": 1,
+        "total_trades": 4,
+        "winrate": 75.0,
+        "net_pnl": 9.0,
+    }
+
+    session = auto_session.start_auto_session(state, "KOOLKID", budget=15, sl=15, tp=10)
+
+    assert session["running"] is True
+    assert session["session_profit"] == 9.0
+    assert session["wins"] == 3
+    assert session["losses"] == 1
+    assert session["trade_index"] == 4
+
+    token = session["token"]
+    mode = f"AUTO_SESSION|{token}|B1|KOOLKID_MPULL|1|R_10"
+    session["open_contracts"] = {"123": {"mode": mode}}
+
+    auto_session.handle_auto_session_contract_settled(
+        state,
+        {"contract_id": "123", "profit": 1.0, "sell_price": 2.0},
+        {"mode": mode, "profile": "KOOLKID", "stake": 1.0, "symbol": "R_10", "type": "OVER"},
+    )
+
+    assert session["running"] is False
+    assert session["stop_reason"] == "Take profit reached"
+
+
 def test_auto_session_dashboard_tracks_settled_trades_separately():
     state = {"strategies": {}}
     session = auto_session.start_auto_session(state, "KOOLKID", budget=100, sl=10, tp=20)
@@ -196,6 +228,140 @@ def test_auto_session_plan_uses_one_trade_at_a_time_and_session_stake_only():
     assert plan["actions"][0]["stake"] == 100.0
 
 
+def test_process_auto_session_tick_recovers_from_stale_pending_request(monkeypatch):
+    state = {"strategies": {}, "balance": 100.0}
+    session = auto_session.start_auto_session(state, "KOOLKID", budget=100, sl=0, tp=0)
+    session["market_order"] = ["R_10"]
+    session["markets"] = {"R_10": auto_session._make_market_runtime("R_10", ["KOOLKID_MPULL"])}
+
+    stale_mode = f"AUTO_SESSION|{session['token']}|B1|KOOLKID_MPULL|1|R_10"
+    session["busy"] = True
+    session["pending_modes"] = {stale_mode}
+    session["pending_batches"] = {
+        "B1": {
+            "batch_id": "B1",
+            "market": "R_10",
+            "label": "KOOLKID - MPull",
+            "confidence": 82.0,
+            "expected": 1,
+            "failed": 0,
+            "created_at": 1.0,
+            "updated_at": 1.0,
+            "modes": [stale_mode],
+        }
+    }
+    session["last_action_at"] = 1.0
+
+    def fake_select_best_execution_plan(_state, preview_only=False):
+        if preview_only:
+            return {
+                "market": "R_10",
+                "label": "KOOLKID - MPull",
+                "confidence": 82.0,
+                "actions": [{"profile": "KOOLKID", "strategy_id": "KOOLKID_MPULL", "kind": "digit", "contract_type": "OVER", "barrier": 4, "symbol": "R_10", "duration": 1, "duration_unit": "t", "stake": 10.0}],
+            }
+        return {
+            "market": "R_10",
+            "label": "KOOLKID - MPull",
+            "confidence": 82.0,
+            "actions": [{"profile": "KOOLKID", "strategy_id": "KOOLKID_MPULL", "kind": "digit", "contract_type": "OVER", "barrier": 4, "symbol": "R_10", "duration": 1, "duration_unit": "t", "stake": 10.0}],
+            "strategy_ids": ["KOOLKID_MPULL"],
+        }
+
+    monkeypatch.setattr(auto_session, "_select_best_execution_plan", fake_select_best_execution_plan)
+    monkeypatch.setattr(auto_session.time, "time", lambda: auto_session.AUTO_SESSION_PENDING_TIMEOUT_SEC + 50.0)
+
+    plan = auto_session.process_auto_session_tick(
+        state,
+        {"symbol": "R_10", "quote": 100.04, "epoch": 1004},
+        4,
+    )
+
+    assert plan is not None
+    assert session["pending_modes"]
+    assert session["busy"] is True
+    assert "resumed scanning" in session["events"][-2]["text"].lower()
+
+
+def test_dual_profile_mode_can_trade_from_shared_market_consensus(monkeypatch):
+    state = {"strategies": {}, "balance": 100.0}
+    session = auto_session.start_auto_session(state, "KOOLKID", "JOKERJOE", budget=100, sl=0, tp=0)
+    session["market_order"] = ["R_10"]
+    session["allowed_strategy_ids"] = ["KOOLKID_MPULL", "JOKERJOE_MULTIG"]
+    session["markets"] = {"R_10": auto_session._make_market_runtime("R_10", session["allowed_strategy_ids"])}
+    session["markets"]["R_10"]["ready"] = True
+
+    def fake_eval(strategy_id, runtime, market, state_obj, per_trade_stake, preview_only=False):
+        if strategy_id == "KOOLKID_MPULL":
+            return {
+                "profile": "KOOLKID",
+                "strategy_id": strategy_id,
+                "label": auto_session._CANDIDATE_DEFS[strategy_id]["label"],
+                "market": market["symbol"],
+                "confidence": 58.0,
+                "signal": {"type": "OVER", "barrier": 4, "duration": 1, "duration_unit": "t", "confidence": 58.0},
+            }
+        if strategy_id == "JOKERJOE_MULTIG":
+            return {
+                "profile": "JOKERJOE",
+                "strategy_id": strategy_id,
+                "label": auto_session._CANDIDATE_DEFS[strategy_id]["label"],
+                "market": market["symbol"],
+                "confidence": 59.0,
+                "signal": {"type": "DIFFERS", "barrier": 4, "duration": 1, "duration_unit": "t", "confidence": 59.0},
+            }
+        return None
+
+    monkeypatch.setattr(auto_session, "_evaluate_candidate", fake_eval)
+
+    plan = auto_session._select_best_execution_plan(state)
+
+    assert plan is not None
+    assert len(plan["actions"]) == 1
+    assert len(plan["strategy_ids"]) == 2
+    assert plan["confidence"] >= 60.0
+    assert "dual confirm" in plan["label"].lower()
+
+
+def test_dual_profile_mode_rotates_away_from_last_profile_when_close(monkeypatch):
+    state = {"strategies": {}, "balance": 100.0}
+    session = auto_session.start_auto_session(state, "KOOLKID", "JOKERJOE", budget=100, sl=0, tp=0)
+    session["market_order"] = ["R_10"]
+    session["allowed_strategy_ids"] = ["KOOLKID_MPULL", "JOKERJOE_MULTIG"]
+    session["markets"] = {"R_10": auto_session._make_market_runtime("R_10", session["allowed_strategy_ids"])}
+    session["markets"]["R_10"]["ready"] = True
+    session["last_dual_profile"] = "KOOLKID"
+
+    def fake_eval(strategy_id, runtime, market, state_obj, per_trade_stake, preview_only=False):
+        if strategy_id == "KOOLKID_MPULL":
+            return {
+                "profile": "KOOLKID",
+                "strategy_id": strategy_id,
+                "label": auto_session._CANDIDATE_DEFS[strategy_id]["label"],
+                "market": market["symbol"],
+                "confidence": 61.0,
+                "signal": {"type": "OVER", "barrier": 4, "duration": 1, "duration_unit": "t", "confidence": 61.0},
+            }
+        if strategy_id == "JOKERJOE_MULTIG":
+            return {
+                "profile": "JOKERJOE",
+                "strategy_id": strategy_id,
+                "label": auto_session._CANDIDATE_DEFS[strategy_id]["label"],
+                "market": market["symbol"],
+                "confidence": 60.0,
+                "signal": {"type": "DIFFERS", "barrier": 4, "duration": 1, "duration_unit": "t", "confidence": 60.0},
+            }
+        return None
+
+    monkeypatch.setattr(auto_session, "_evaluate_candidate", fake_eval)
+
+    plan = auto_session._select_best_execution_plan(state)
+
+    assert plan is not None
+    assert plan["actions"][0]["profile"] == "JOKERJOE"
+    assert "dual confirm" in plan["label"].lower()
+
+
 def test_auto_session_clear_history_route_only_clears_session_dashboard(monkeypatch):
     cid = "auto-session-clear"
     server.clients.pop(cid, None)
@@ -209,6 +375,13 @@ def test_auto_session_clear_history_route_only_clears_session_dashboard(monkeypa
         "winrate": 100.0,
         "net_pnl": 1.0,
     }
+    session_state = auto_session.ensure_auto_session_state(state)
+    session_state["running"] = False
+    session_state["session_profit"] = 1.0
+    session_state["wins"] = 1
+    session_state["losses"] = 0
+    session_state["trade_index"] = 1
+    session_state["button_stats"] = {"KOOLKID_MPULL": {"wins": 1}}
     monkeypatch.setattr(server, "login_required", lambda: True)
 
     with server.app.test_client() as client:
@@ -224,6 +397,10 @@ def test_auto_session_clear_history_route_only_clears_session_dashboard(monkeypa
     assert payload["ok"] is True
     assert payload["dashboard"]["stats"]["total_trades"] == 0
     assert payload["dashboard"]["history"] == []
+    assert state["auto_session"]["session_profit"] == 0.0
+    assert state["auto_session"]["wins"] == 0
+    assert state["auto_session"]["trade_index"] == 0
+    assert state["auto_session"]["button_stats"] == {}
 
     server.clients.pop(cid, None)
 

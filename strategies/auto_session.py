@@ -24,6 +24,9 @@ AUTO_SESSION_MIN_BALANCE = 0.35
 AUTO_SESSION_MIN_ACTION_STAKE = 0.35
 AUTO_SESSION_TRADE_COOLDOWN_SEC = 1.2
 AUTO_SESSION_HISTORY_BUFFER = 140
+AUTO_SESSION_PENDING_TIMEOUT_SEC = 12.0
+AUTO_SESSION_OPEN_CONTRACT_TIMEOUT_SEC = 180.0
+AUTO_SESSION_DUAL_ROTATION_TOLERANCE = 4.0
 
 _PROFILE_DEFS = {
     "KOOLKID": {"id": "KOOLKID", "label": "KOOLKID Profile", "copy": "Scan all KOOLKID buttons"},
@@ -120,6 +123,7 @@ def _new_session_state():
         "cooldown_until": 0.0,
         "last_action_at": 0.0,
         "last_batch": None,
+        "last_dual_profile": None,
         "button_stats": {},
         "events": [],
     }
@@ -151,6 +155,39 @@ def ensure_auto_session_dashboard(state):
 def clear_auto_session_dashboard(state):
     state["auto_session_dashboard"] = _new_dashboard_state()
     return state["auto_session_dashboard"]
+
+
+def clear_auto_session_progress(state):
+    session = ensure_auto_session_state(state)
+    session["session_profit"] = 0.0
+    session["remaining_budget"] = round(float(session.get("budget", 0.0) or 0.0), 2)
+    session["recovery_mode"] = False
+    session["wins"] = 0
+    session["losses"] = 0
+    session["current_stake"] = AUTO_SESSION_FIRST_STAKE
+    session["active_market"] = None
+    session["active_strategy"] = None
+    session["confidence"] = 0.0
+    session["stop_reason"] = None
+    session["trade_index"] = 0
+    session["batch_index"] = 0
+    session["cooldown_until"] = 0.0
+    session["last_action_at"] = 0.0
+    session["last_batch"] = None
+    session["last_dual_profile"] = None
+    session["button_stats"] = {}
+    session["events"] = []
+    session["pending_modes"] = set()
+    session["pending_batches"] = {}
+    session["open_contracts"] = {}
+    session["busy"] = False
+    if session.get("running"):
+        session["status"] = "SCANNING"
+        session["status_detail"] = "Scanning markets and profiling button setups"
+    else:
+        session["status"] = "IDLE"
+        session["status_detail"] = "Ready"
+    return session
 
 
 def get_auto_session_dashboard_payload(state, limit=40):
@@ -296,6 +333,18 @@ def start_auto_session(state, primary_id, secondary_id=None, budget=100.0, sl=0.
     candidate_ids = _candidate_ids_for_profiles(profile_ids)
     if not candidate_ids:
         raise ValueError("No valid profile buttons are available for this session")
+    previous_session = ensure_auto_session_state(state)
+    dashboard = ensure_auto_session_dashboard(state)
+    dashboard_stats = dict(dashboard.get("stats") or {})
+    carried_profit = round(float(dashboard_stats.get("net_pnl", 0.0) or 0.0), 2)
+    carried_wins = int(dashboard_stats.get("wins", 0) or 0)
+    carried_losses = int(dashboard_stats.get("losses", 0) or 0)
+    carried_total = int(dashboard_stats.get("total_trades", 0) or 0)
+    carried_button_stats = {}
+    carried_last_dual_profile = str(previous_session.get("last_dual_profile") or "").upper().strip() or None
+    for key, value in (previous_session.get("button_stats") or {}).items():
+        if isinstance(value, dict):
+            carried_button_stats[key] = dict(value)
     session = reset_auto_session(state)
     budget = _normalize_budget(budget)
     sl = _normalize_nonnegative(sl)
@@ -312,9 +361,9 @@ def start_auto_session(state, primary_id, secondary_id=None, budget=100.0, sl=0.
         "remaining_budget": budget,
         "sl": sl,
         "tp": tp,
-        "session_profit": 0.0,
-        "wins": 0,
-        "losses": 0,
+        "session_profit": carried_profit,
+        "wins": carried_wins,
+        "losses": carried_losses,
         "current_stake": AUTO_SESSION_FIRST_STAKE,
         "status": "SCANNING",
         "status_detail": "Scanning markets and profiling button setups",
@@ -327,15 +376,25 @@ def start_auto_session(state, primary_id, secondary_id=None, budget=100.0, sl=0.
         "pending_batches": {},
         "open_contracts": {},
         "busy": False,
-        "trade_index": 0,
+        "trade_index": carried_total,
         "batch_index": 0,
         "cooldown_until": 0.0,
         "last_action_at": 0.0,
         "last_batch": None,
+        "last_dual_profile": carried_last_dual_profile,
         "recovery_mode": False,
-        "button_stats": {},
+        "button_stats": carried_button_stats,
         "events": [],
     })
+    session["remaining_budget"] = _compute_remaining_budget(session)
+    if carried_total and bool(previous_session.get("recovery_mode", False)):
+        session["recovery_mode"] = True
+    if session_should_stop(session):
+        session["running"] = False
+        session["status"] = "STOPPED"
+        session["status_detail"] = session.get("stop_reason") or "Session limit reached"
+        _push_event(session, session["status_detail"])
+        return session
     _push_event(session, "Auto Trading Session started")
     return session
 
@@ -481,6 +540,8 @@ def process_auto_session_tick(state, tick, digit):
         stop_auto_session(state, session.get("stop_reason") or "Session limit reached")
         return None
 
+    _recover_stale_session_runtime(session)
+
     if session.get("busy"):
         _refresh_best_hint(state)
         return None
@@ -503,7 +564,7 @@ def handle_auto_session_buy_confirmed(state, contract_id, meta):
     if not parsed or parsed.get("token") != session.get("token"):
         return
     mode = parsed["mode"]
-    session.setdefault("pending_modes", set()).discard(mode)
+    _discard_pending_mode(session, mode, parsed.get("batch_id"))
     session.setdefault("open_contracts", {})[str(contract_id)] = {
         "mode": mode,
         "profile": meta.get("profile"),
@@ -511,6 +572,7 @@ def handle_auto_session_buy_confirmed(state, contract_id, meta):
         "batch_id": parsed.get("batch_id"),
         "stake": float(meta.get("stake", 0.0) or 0.0),
         "symbol": meta.get("symbol"),
+        "opened_at": time.time(),
     }
     session["busy"] = True
     session["status"] = "TRADING"
@@ -523,17 +585,14 @@ def handle_auto_session_buy_failed(state, meta, reason):
     if not parsed or parsed.get("token") != session.get("token"):
         return
     mode = parsed["mode"]
-    session.setdefault("pending_modes", set()).discard(mode)
     batch_id = parsed.get("batch_id")
+    _discard_pending_mode(session, mode, batch_id)
     pending = session.setdefault("pending_batches", {}).get(batch_id)
     if pending:
         pending.setdefault("failed", 0)
         pending["failed"] += 1
-    if not session.get("pending_modes") and not session.get("open_contracts"):
-        session["busy"] = False
+    if _release_session_busy_if_idle(session, f"Last order failed: {reason}"):
         session["cooldown_until"] = time.time() + AUTO_SESSION_TRADE_COOLDOWN_SEC
-        session["status"] = "WAITING"
-        session["status_detail"] = f"Last order failed: {reason}"
     _push_event(session, f"Order blocked: {reason}")
 
 
@@ -572,11 +631,8 @@ def handle_auto_session_contract_settled(state, contract, meta):
     if session_should_stop(session):
         stop_auto_session(state, session.get("stop_reason") or "Session target reached")
         return
-    if not session.get("pending_modes") and not session.get("open_contracts"):
-        session["busy"] = False
+    if _release_session_busy_if_idle(session, "Scanning for next high-confidence setup"):
         session["cooldown_until"] = time.time() + AUTO_SESSION_TRADE_COOLDOWN_SEC
-        session["status"] = "WAITING"
-        session["status_detail"] = "Scanning for next high-confidence setup"
     _refresh_best_hint(state)
 
 
@@ -887,6 +943,90 @@ def _refresh_best_hint(state):
         session["active_market"] = None
         session["active_strategy"] = None
         session["confidence"] = 0.0
+
+
+def _discard_pending_mode(session, mode, batch_id=None):
+    session.setdefault("pending_modes", set()).discard(mode)
+    if not batch_id:
+        return
+    pending = session.setdefault("pending_batches", {}).get(batch_id)
+    if not pending:
+        return
+    modes = set(pending.get("modes") or [])
+    modes.discard(mode)
+    if modes:
+        pending["modes"] = sorted(modes)
+        pending["updated_at"] = time.time()
+        return
+    session["pending_batches"].pop(batch_id, None)
+
+
+def _release_session_busy_if_idle(session, detail):
+    if session.get("pending_modes") or session.get("open_contracts"):
+        session["busy"] = True
+        return False
+    session["busy"] = False
+    session["status"] = "WAITING"
+    session["status_detail"] = str(detail or "Scanning for next high-confidence setup")
+    return True
+
+
+def _recover_stale_session_runtime(session):
+    now = time.time()
+    recovered = False
+
+    pending_batches = session.setdefault("pending_batches", {})
+    stale_batches = []
+    for batch_id, pending in list(pending_batches.items()):
+        modes = set(pending.get("modes") or [])
+        if not modes:
+            pending_batches.pop(batch_id, None)
+            continue
+        created_at = float(
+            pending.get("updated_at")
+            or pending.get("created_at")
+            or session.get("last_action_at", 0.0)
+            or 0.0
+        )
+        if created_at and (now - created_at) >= AUTO_SESSION_PENDING_TIMEOUT_SEC:
+            stale_batches.append((batch_id, modes))
+
+    for batch_id, modes in stale_batches:
+        session["pending_modes"] = set(session.get("pending_modes") or set()) - set(modes)
+        pending_batches.pop(batch_id, None)
+        recovered = True
+
+    open_contracts = session.setdefault("open_contracts", {})
+    stale_contract_ids = []
+    for contract_id, info in list(open_contracts.items()):
+        info = info or {}
+        opened_at = float(
+            info.get("opened_at")
+            or info.get("updated_at")
+            or session.get("last_action_at", 0.0)
+            or 0.0
+        )
+        if opened_at and (now - opened_at) >= AUTO_SESSION_OPEN_CONTRACT_TIMEOUT_SEC:
+            stale_contract_ids.append(contract_id)
+
+    for contract_id in stale_contract_ids:
+        open_contracts.pop(contract_id, None)
+        recovered = True
+
+    if session.get("busy") and not session.get("pending_modes") and not open_contracts:
+        recovered = True
+
+    if recovered:
+        session["busy"] = False
+        session["status"] = "WAITING"
+        session["status_detail"] = "Scanning for next high-confidence setup"
+        if stale_batches:
+            _push_event(session, "Recovered a stale trade request and resumed scanning")
+        elif stale_contract_ids:
+            _push_event(session, "Recovered a stale open trade and resumed scanning")
+        else:
+            _push_event(session, "Recovered a stalled session and resumed scanning")
+    return recovered
 
 
 def _profile_live_winrate(state, profile):
@@ -1229,13 +1369,21 @@ def _select_best_execution_plan(state, preview_only=False):
         return None
 
     best = None
+    best_dual = None
     live_balance = float((state or {}).get("balance", 0.0) or 0.0)
+    dual_mode = str(session.get("mode") or "").lower().strip() == "dual"
+    selected_profiles = {
+        str(profile_id or "").upper().strip()
+        for profile_id in (session.get("selected_strategy_ids") or [])
+        if str(profile_id or "").strip()
+    }
 
     for symbol in session.get("market_order", []) or []:
         market = (session.get("markets") or {}).get(symbol)
         if not market or not market.get("ready"):
             continue
 
+        market_results = []
         for strategy_id in strategy_ids:
             runtime = (market.get("candidates") or {}).get(strategy_id)
             if not runtime:
@@ -1244,11 +1392,30 @@ def _select_best_execution_plan(state, preview_only=False):
             result = _evaluate_candidate(strategy_id, runtime, market, state, probe_stake, preview_only=preview_only)
             if not result:
                 continue
+            market_results.append(result)
             plan = _build_plan_from_result(session, result, live_balance)
             if not plan:
                 continue
-            if best is None or float(plan.get("confidence", 0.0)) > float(best.get("confidence", 0.0)):
+            if _should_replace_best_plan(session, best, plan, dual_mode=dual_mode):
                 best = plan
+
+        if dual_mode and len(selected_profiles) >= 2 and market_results:
+            for idx, first in enumerate(market_results):
+                first_profile = str(first.get("profile") or "").upper().strip()
+                if first_profile not in selected_profiles:
+                    continue
+                for second in market_results[idx + 1:]:
+                    second_profile = str(second.get("profile") or "").upper().strip()
+                    if second_profile not in selected_profiles or second_profile == first_profile:
+                        continue
+                    plan = _build_dual_plan(session, first, second, live_balance)
+                    if not plan:
+                        continue
+                    if _should_replace_best_plan(session, best_dual, plan, dual_mode=dual_mode):
+                        best_dual = plan
+
+    if best_dual and (best is None or float(best_dual.get("confidence", 0.0)) >= float(best.get("confidence", 0.0))):
+        best = best_dual
 
     if best and float(best.get("confidence", 0.0) or 0.0) < _required_confidence(session):
         if preview_only:
@@ -1276,21 +1443,102 @@ def _build_plan_from_result(session, result, live_balance):
 
 
 def _build_dual_plan(session, first, second, live_balance):
-    first_signals = _normalize_signal_list(first.get("signal"))
-    second_signals = _normalize_signal_list(second.get("signal"))
-    if not first_signals or not second_signals:
+    if not first or not second:
         return None
-    total_legs = len(first_signals) + len(second_signals)
-    per_trade = compute_session_stake(session, live_balance, total_legs)
-    if per_trade < AUTO_SESSION_MIN_ACTION_STAKE:
+    first_defs = _CANDIDATE_DEFS.get(first.get("strategy_id"), {})
+    second_defs = _CANDIDATE_DEFS.get(second.get("strategy_id"), {})
+    if not first_defs.get("dual_ok") or not second_defs.get("dual_ok"):
         return None
-    actions = _build_actions_for_signals(first, first_signals, per_trade)
-    actions.extend(_build_actions_for_signals(second, second_signals, per_trade))
-    actions = _dedupe_actions(actions)
-    if not actions or _actions_conflict(actions):
+    if str(first.get("market") or "") != str(second.get("market") or ""):
         return None
-    combo_conf = min(99.0, ((float(first.get("confidence", 0.0)) + float(second.get("confidence", 0.0))) / 2.0) + 3.0)
-    return {"market": first.get("market"), "label": f"{first.get('label')} + {second.get('label')}", "strategy_ids": [first.get("strategy_id"), second.get("strategy_id")], "confidence": combo_conf, "actions": actions}
+    if str(first.get("profile") or "").upper().strip() == str(second.get("profile") or "").upper().strip():
+        return None
+
+    first_plan = _build_plan_from_result(session, first, live_balance)
+    second_plan = _build_plan_from_result(session, second, live_balance)
+    if not first_plan or not second_plan:
+        return None
+
+    first_conf = float(first_plan.get("confidence", 0.0) or 0.0)
+    second_conf = float(second_plan.get("confidence", 0.0) or 0.0)
+    support_floor = max(45.0, _required_confidence(session) - 10.0)
+    if min(first_conf, second_conf) < support_floor:
+        return None
+
+    primary_plan, primary_result = _pick_dual_primary_plan(
+        session,
+        first,
+        first_plan,
+        first_conf,
+        second,
+        second_plan,
+        second_conf,
+    )
+    secondary_result = second if primary_result is first else first
+    support_bonus = max(3.0, min(8.0, ((min(first_conf, second_conf) - support_floor) * 0.6) + 3.0))
+
+    combined = dict(primary_plan)
+    combined["label"] = (
+        f"{primary_result.get('label')} "
+        f"(dual confirm: {str(secondary_result.get('profile') or '').upper().strip()})"
+    )
+    combined["strategy_ids"] = [primary_result.get("strategy_id"), secondary_result.get("strategy_id")]
+    combined["confidence"] = round(min(99.0, max(first_conf, second_conf) + support_bonus), 1)
+    combined["dual_confirm"] = str(secondary_result.get("profile") or "").upper().strip()
+    return combined
+
+
+def _pick_dual_primary_plan(session, first_result, first_plan, first_conf, second_result, second_plan, second_conf):
+    first_profile = str(first_result.get("profile") or "").upper().strip()
+    second_profile = str(second_result.get("profile") or "").upper().strip()
+    last_dual_profile = str(session.get("last_dual_profile") or "").upper().strip()
+    if abs(float(first_conf) - float(second_conf)) <= AUTO_SESSION_DUAL_ROTATION_TOLERANCE and last_dual_profile:
+        if first_profile == last_dual_profile and second_profile != last_dual_profile:
+            return second_plan, second_result
+        if second_profile == last_dual_profile and first_profile != last_dual_profile:
+            return first_plan, first_result
+    if float(first_conf) > float(second_conf):
+        return first_plan, first_result
+    if float(second_conf) > float(first_conf):
+        return second_plan, second_result
+    if last_dual_profile:
+        if first_profile == last_dual_profile and second_profile != last_dual_profile:
+            return second_plan, second_result
+        if second_profile == last_dual_profile and first_profile != last_dual_profile:
+            return first_plan, first_result
+    return first_plan, first_result
+
+
+def _plan_primary_profile(plan):
+    if not isinstance(plan, dict):
+        return ""
+    actions = list(plan.get("actions") or [])
+    if actions:
+        return str(actions[0].get("profile") or "").upper().strip()
+    strategy_ids = list(plan.get("strategy_ids") or [])
+    if strategy_ids:
+        return str((_CANDIDATE_DEFS.get(strategy_ids[0]) or {}).get("profile") or "").upper().strip()
+    return ""
+
+
+def _should_replace_best_plan(session, current_best, candidate_plan, dual_mode=False):
+    if current_best is None:
+        return True
+    candidate_conf = float(candidate_plan.get("confidence", 0.0) or 0.0)
+    best_conf = float(current_best.get("confidence", 0.0) or 0.0)
+    if candidate_conf > best_conf:
+        return True
+    if candidate_conf < best_conf:
+        return False
+    if not dual_mode:
+        return False
+    current_profile = _plan_primary_profile(current_best)
+    candidate_profile = _plan_primary_profile(candidate_plan)
+    last_dual_profile = str(session.get("last_dual_profile") or "").upper().strip()
+    if candidate_profile and candidate_profile != current_profile and last_dual_profile:
+        if current_profile == last_dual_profile and candidate_profile != last_dual_profile:
+            return True
+    return False
 
 
 def _build_actions_for_signals(result, signals, per_trade_stake):
@@ -1396,7 +1644,17 @@ def _mark_plan_pending(session, plan):
         pending_modes.add(mode)
 
     session["pending_modes"] = pending_modes
-    session.setdefault("pending_batches", {})[batch_id] = {"batch_id": batch_id, "market": plan.get("market"), "label": plan.get("label"), "confidence": float(plan.get("confidence", 0.0) or 0.0), "expected": len(actions), "failed": 0}
+    session.setdefault("pending_batches", {})[batch_id] = {
+        "batch_id": batch_id,
+        "market": plan.get("market"),
+        "label": plan.get("label"),
+        "confidence": float(plan.get("confidence", 0.0) or 0.0),
+        "expected": len(actions),
+        "failed": 0,
+        "created_at": time.time(),
+        "updated_at": time.time(),
+        "modes": sorted(pending_modes),
+    }
     session["busy"] = True
     session["last_action_at"] = time.time()
     session["last_batch"] = {"market": plan.get("market"), "label": plan.get("label"), "confidence": round(float(plan.get("confidence", 0.0) or 0.0), 1), "legs": len(actions)}
@@ -1404,6 +1662,8 @@ def _mark_plan_pending(session, plan):
     session["active_strategy"] = plan.get("label")
     session["confidence"] = round(float(plan.get("confidence", 0.0) or 0.0), 1)
     session["current_stake"] = round(min(float(action.get("stake", 0.0) or 0.0) for action in actions), 2) if actions else AUTO_SESSION_FIRST_STAKE
+    if str(session.get("mode") or "").lower().strip() == "dual" and actions:
+        session["last_dual_profile"] = str(actions[0].get("profile") or "").upper().strip() or session.get("last_dual_profile")
     session["status"] = "EXECUTING"
     session["status_detail"] = f"Submitting {len(actions)} trade(s) on {plan.get('market')}"
     _push_event(session, f"Executing {plan.get('label')} on {plan.get('market')}")

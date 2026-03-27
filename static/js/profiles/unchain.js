@@ -30,6 +30,7 @@
     marketBarrierSyncInFlight: false,
     marketBarrierSyncSignature: "",
     marketBarrierSyncTimer: null,
+    marketBarrierStore: {},
   };
 
   const FORM_FIELDS = [
@@ -54,6 +55,9 @@
     "unchainAutoMinRange",
   ];
   const MARKET_BARRIER_STORAGE_KEY = "unchainMarketBarrierSettingsV2";
+  try {
+    if (window.localStorage) window.localStorage.removeItem(MARKET_BARRIER_STORAGE_KEY);
+  } catch (e) {}
   const BARRIER_FIELD_IDS = new Set([
     "unchainHigherBarrier",
     "unchainLowerBarrier",
@@ -202,21 +206,12 @@
   }
 
   function getMarketBarrierStore() {
-    try {
-      const raw = window.localStorage ? window.localStorage.getItem(MARKET_BARRIER_STORAGE_KEY) : "";
-      if (!raw) return {};
-      const parsed = JSON.parse(raw);
-      return parsed && typeof parsed === "object" ? parsed : {};
-    } catch (e) {
-      return {};
-    }
+    const store = state.marketBarrierStore;
+    return store && typeof store === "object" ? store : {};
   }
 
   function setMarketBarrierStore(store) {
-    try {
-      if (!window.localStorage) return;
-      window.localStorage.setItem(MARKET_BARRIER_STORAGE_KEY, JSON.stringify(store || {}));
-    } catch (e) {}
+    state.marketBarrierStore = store && typeof store === "object" ? JSON.parse(JSON.stringify(store)) : {};
   }
 
   function buildMarketBarrierSettings(raw) {
@@ -267,6 +262,12 @@
     if (!store || !store[sym]) return null;
     return buildMarketBarrierSettings(store[sym]);
   }
+
+  window.addEventListener("bot-transient-reset", () => {
+    state.marketBarrierStore = {};
+    state.lastBarrierKey = null;
+    state.marketBarrierSyncSignature = "";
+  });
 
   function persistMarketBarrierSettings(symbol, settings, opts) {
     const sym = normalizeMarketSymbol(symbol);

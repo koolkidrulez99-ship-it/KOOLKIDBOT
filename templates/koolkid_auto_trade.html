@@ -88,6 +88,10 @@
     .field-stack{display:grid;gap:12px}
     .field.hidden{display:none !important}
     .field label{display:block;margin-bottom:6px;color:#c1d5f1;font-size:11px;font-weight:800;letter-spacing:.05em;text-transform:uppercase}
+    .select-field-head{display:none}
+    .select-field-title{font-size:11px;font-weight:900;letter-spacing:.05em;text-transform:uppercase;color:#f2f7ff}
+    .select-field-pill{display:inline-flex;align-items:center;justify-content:center;border-radius:999px;padding:4px 9px;background:rgba(88,226,153,.15);border:1px solid rgba(88,226,153,.22);font-size:10px;font-weight:900;letter-spacing:.05em;text-transform:uppercase;color:#9cf0bf}
+    .select-field-pill.alt{background:rgba(255,206,116,.14);border-color:rgba(255,206,116,.24);color:#ffd788}
     .select,.input{width:100%;border:none;outline:none;color:#fff;font-size:14px;font-weight:700;border-radius:12px;padding:12px 13px;background:linear-gradient(180deg, rgba(15,29,48,.98), rgba(9,17,29,.98));box-shadow:inset 0 0 0 1px rgba(95,150,255,.16)}
     .select option{background:#081321;color:#eef5ff}
     .help-card{margin-top:14px;border-radius:16px;padding:14px;background:linear-gradient(180deg, rgba(10,20,34,.96), rgba(8,14,24,.98));border:1px solid rgba(95,150,255,.12);position:relative;z-index:1}
@@ -103,9 +107,8 @@
     .risk-card.sl .sub{color:#ff8c95}
     .action-btn{width:100%;border:none;border-radius:14px;padding:15px 16px 12px;font-size:14px;font-weight:900;color:#fff;cursor:pointer;text-transform:uppercase;letter-spacing:.04em;position:relative;overflow:hidden}
     .action-btn span{display:block;margin-top:6px;font-size:12px;text-transform:none;letter-spacing:0;color:rgba(236,246,255,.82);font-weight:700}
-    .action-btn.start{background:linear-gradient(180deg, rgba(35,44,59,.98), rgba(15,23,33,.98));box-shadow:0 12px 26px rgba(0,0,0,.25), inset 0 0 0 1px rgba(255,255,255,.04);margin-top:12px}
+    .action-btn.start{background:linear-gradient(180deg, rgba(46,118,255,.98), rgba(21,66,179,.99));box-shadow:0 16px 34px rgba(28,85,214,.28), inset 0 0 0 1px rgba(176,216,255,.16);margin-top:12px}
     .action-btn.start.is-on{background:linear-gradient(180deg, rgba(96,195,120,.98), rgba(30,123,58,.98));box-shadow:0 16px 34px rgba(37,128,60,.28), inset 0 0 0 1px rgba(175,255,190,.18)}
-    .action-btn.stop{background:linear-gradient(180deg, rgba(35,44,59,.98), rgba(15,23,33,.98));box-shadow:0 12px 26px rgba(0,0,0,.25), inset 0 0 0 1px rgba(255,255,255,.04);margin-top:12px}
     .action-btn:disabled{opacity:.72;cursor:not-allowed}
     .notice-box{margin-top:12px;border-radius:15px;padding:12px 13px;background:linear-gradient(180deg, rgba(10,22,38,.96), rgba(7,14,26,.98));border:1px solid rgba(95,150,255,.14);color:#dbe9ff;font-weight:700;line-height:1.45;min-height:64px}
     .safe-card{margin-top:14px;border-radius:16px;padding:14px;background:linear-gradient(180deg, rgba(9,23,31,.96), rgba(7,15,23,.98));position:relative;z-index:1}
@@ -189,6 +192,9 @@
     .mini-box .value{font-size:24px;font-weight:900;line-height:1;margin-bottom:6px}
     .mini-box .label{color:#cfe0fb;font-size:12px;text-transform:uppercase;letter-spacing:.05em}
     .history-list{display:grid;gap:10px;position:relative;z-index:1;max-height:540px;overflow:auto;padding-right:4px}
+    .mobile-live-history{display:none;margin-top:14px;position:relative;z-index:1}
+    .mobile-live-history .history-stats{grid-template-columns:repeat(4, minmax(0, 1fr));margin-bottom:10px}
+    .mobile-live-history .history-list{max-height:260px}
     .stake-side-shell .subtitle{font-size:12px;margin:6px 0 12px}
     .stake-side-shell .stake-grid{grid-template-columns:repeat(2, minmax(0, 1fr));gap:10px}
     .stake-side-shell .stake-band{padding:12px 10px}
@@ -203,8 +209,11 @@
     .history-result.pending{background:rgba(255,191,98,.16);color:#ffd594}
     .history-details strong{display:block;font-size:14px;margin-bottom:3px;color:#f1f6ff}
     .history-details span{display:block;color:#b9cbe7;font-size:12px;line-height:1.45}
-    .history-money{text-align:right;font-weight:800;font-size:13px;line-height:1.45}
-    .history-money .profit{display:block;font-size:16px;margin-top:2px}
+    .history-money{display:grid;grid-template-columns:repeat(3, minmax(88px, 1fr));gap:8px;min-width:300px}
+    .history-metric{border-radius:12px;padding:8px 10px;background:rgba(8,18,31,.78);border:1px solid rgba(95,150,255,.12);text-align:left}
+    .history-metric .metric-label{display:block;color:#9fb6d8;font-size:10px;font-weight:900;letter-spacing:.06em;text-transform:uppercase;margin-bottom:4px}
+    .history-metric .metric-value{display:block;color:#f4f8ff;font-size:15px;font-weight:900;line-height:1.2}
+    .history-metric .metric-value.profit{font-size:16px}
     .profit-green{color:#8ff2b9}
     .profit-red{color:#ff9aa5}
     .empty-state{border-radius:16px;padding:20px 16px;background:rgba(8,18,31,.88);color:var(--muted);text-align:center;line-height:1.6}
@@ -215,7 +224,100 @@
     .hidden{display:none !important}
     @media (max-width: 1380px){.main-grid{grid-template-columns:320px 1fr 300px}.scanner-card-grid{grid-template-columns:repeat(3, minmax(0, 1fr))}.stake-grid{grid-template-columns:repeat(2, minmax(0, 1fr))}.best-grid{grid-template-columns:1fr}.confidence-orb{width:150px;height:150px}}
     @media (max-width: 1120px){.topbar{grid-template-columns:1fr;justify-items:start}.hero{text-align:left}.status-stack{justify-content:flex-start;max-width:none}.main-grid{grid-template-columns:1fr}.scanner-card-grid{grid-template-columns:repeat(2, minmax(0, 1fr))}.history-stats{grid-template-columns:repeat(2, minmax(0, 1fr))}.confidence-orb-wrap{grid-template-columns:1fr}.stake-side-shell .stake-grid{grid-template-columns:repeat(2, minmax(0, 1fr))}}
-    @media (max-width: 760px){.page{padding:18px 14px 24px}.hero h1{font-size:30px}.risk-grid,.mode-grid,.summary-grid,.scanner-card-grid,.stake-grid,.history-stats,.safe-grid{grid-template-columns:1fr}.trade-head,.section-head,.scanner-top{flex-direction:column;align-items:flex-start}.status-stack{width:100%}.user-card{width:100%}.history-item{grid-template-columns:1fr}.history-money{text-align:left}}
+    @media (max-width: 760px){
+      body{height:auto;overflow:auto}
+      .page{max-width:430px;min-height:100vh;height:auto;padding:18px 14px 28px}
+      .topbar{grid-template-columns:1fr auto;grid-template-areas:"hero hero" "back user";align-items:center;gap:12px;margin-bottom:14px}
+      .hero{grid-area:hero;text-align:center;padding-top:6px}
+      .hero h1{font-size:28px;line-height:1.08}
+      .hero p{font-size:12px;line-height:1.45;margin-top:6px}
+      .back-btn{grid-area:back;border-radius:14px;padding:11px 15px}
+      .status-stack{grid-area:user;width:auto;max-width:none;justify-content:flex-end}
+      .connection-chip,.server-time-chip,.section-pill,.safe-card,.help-card{display:none}
+      .user-card{width:auto;min-width:0;padding:8px 10px;border-radius:14px}
+      .user-avatar{width:38px;height:38px}
+      .user-meta strong{font-size:13px;max-width:138px}
+      .user-meta span{font-size:12px}
+      .info-banner{padding:12px 14px;border-radius:18px;margin-bottom:14px}
+      .main-grid{grid-template-columns:1fr;gap:14px}
+      .setup-panel,.scanner-shell,.trade-history,.live-panel,.stake-shell{padding:14px}
+      .analysis-panel,.side-stack{gap:14px}
+      .panel{border-radius:20px}
+      .section-head,.scanner-top{flex-direction:column;align-items:flex-start}
+      .setup-block{padding:14px;border-radius:18px;margin-bottom:12px}
+      .block-title{margin-bottom:10px}
+      .mode-grid{grid-template-columns:1fr 1fr;gap:10px}
+      .mode-card{min-height:72px;padding:13px 14px 13px 42px;border-radius:16px;justify-content:center;gap:4px;position:relative;overflow:hidden}
+      .mode-card::before{content:"";position:absolute;left:14px;top:50%;transform:translateY(-50%);width:16px;height:16px;border-radius:50%;border:2px solid rgba(174,203,255,.72);box-shadow:0 0 0 3px rgba(76,108,170,.16) inset}
+      .mode-card.active.single{background:linear-gradient(180deg, rgba(34,91,206,.98), rgba(20,54,122,.99));border-color:rgba(117,187,255,.48)}
+      .mode-card.active.dual{background:linear-gradient(180deg, rgba(130,91,36,.98), rgba(75,49,17,.99));border-color:rgba(244,195,92,.40)}
+      .mode-card.active::before{background:radial-gradient(circle, #f3fbff 0 42%, transparent 44%), linear-gradient(180deg, rgba(255,255,255,.22), rgba(255,255,255,.08))}
+      .mode-card .mode-label{font-size:13px;line-height:1.15}
+      .mode-card .mode-copy{font-size:11px;line-height:1.2}
+      .field-stack{gap:10px}
+      .profile-select-field{padding:11px 12px;border-radius:16px;background:linear-gradient(180deg, rgba(18,26,40,.96), rgba(10,17,28,.98));border:1px solid rgba(122,92,48,.24);box-shadow:inset 0 0 0 1px rgba(255,220,160,.04)}
+      .profile-select-field label{display:none}
+      .select-field-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}
+      .select-field-title{font-size:11px}
+      .select,.input{padding:11px 12px;font-size:14px;border-radius:12px}
+      .profile-select-field .select{padding:12px 42px 12px 12px;background:linear-gradient(180deg, rgba(15,23,35,.98), rgba(10,17,29,.99));box-shadow:inset 0 0 0 1px rgba(133,161,219,.12)}
+      .risk-grid{grid-template-columns:repeat(3, minmax(0, 1fr));gap:9px;margin-top:12px}
+      .risk-card{padding:11px 8px;border-radius:14px}
+      .risk-card .label{font-size:10px}
+      .risk-card .value{font-size:20px;margin-bottom:4px}
+      .risk-card .sub{font-size:10px}
+      .action-btn{padding:14px 14px 11px;font-size:13px}
+      .action-btn span{font-size:11px}
+      .notice-box{min-height:0;font-size:13px}
+      .scanner-title h2,.stake-shell h2,.trade-history h2,.live-panel h2{font-size:16px}
+      .scanner-status{font-size:12px;margin-top:8px;gap:10px}
+      .volatility-box{width:100%;min-width:0;text-align:left}
+      .volatility-box .top-line{margin-bottom:8px}
+      .scanner-card-grid{grid-template-columns:repeat(2, minmax(0, 1fr));gap:10px}
+      .scanner-card{min-height:72px;border-radius:14px;padding:10px 11px}
+      .scanner-card .score{font-size:22px}
+      .best-ribbon{padding:10px 14px;font-size:13px}
+      .best-grid{grid-template-columns:1fr;gap:12px;padding:14px}
+      .best-market-name{font-size:18px}
+      .confidence-big{font-size:40px}
+      .confidence-grade{font-size:12px;padding:6px 9px}
+      .setup-tag{font-size:11px;padding:6px 9px}
+      .why-box{padding:12px 13px}
+      .why-box p{font-size:13px}
+      .chart-card{min-height:212px;border-radius:16px;padding:12px}
+      .chart-footer{grid-template-columns:1fr 1fr;gap:10px;font-size:11px}
+      .trade-history{display:none}
+      .live-panel .section-head{margin-bottom:10px}
+      .confidence-orb-wrap{grid-template-columns:1fr;gap:10px;margin-bottom:10px}
+      .confidence-orb{display:none}
+      .session-card-grid{grid-template-columns:repeat(2, minmax(0, 1fr));gap:9px}
+      .session-card{padding:10px 11px;border-radius:14px}
+      .session-card .label{font-size:10px}
+      .session-card .value{font-size:17px;white-space:normal}
+      .status-box,.live-panel .summary-grid{display:none}
+      .mobile-live-history{display:block;margin-top:12px}
+      .mobile-live-history .history-stats{grid-template-columns:repeat(4, minmax(0, 1fr));gap:8px;margin-bottom:10px}
+      .mobile-live-history .mini-box{padding:10px 6px;border-radius:14px}
+      .mobile-live-history .mini-box .value{font-size:18px;margin-bottom:4px}
+      .mobile-live-history .mini-box .label{font-size:10px}
+      .mobile-live-history .history-list{max-height:none;padding-right:0}
+      .history-item{grid-template-columns:auto 1fr;gap:10px;align-items:start;padding:12px}
+      .history-details strong{font-size:13px}
+      .history-details span{font-size:11px}
+      .history-money{grid-column:1 / -1;min-width:0;grid-template-columns:1fr 1fr 1fr;padding-top:8px;border-top:1px solid rgba(95,150,255,.12)}
+      .history-metric{padding:8px 9px}
+      .history-metric .metric-label{font-size:9px}
+      .history-metric .metric-value{font-size:13px}
+      .history-metric .metric-value.profit{font-size:14px}
+      .stake-side-shell .subtitle{font-size:12px;line-height:1.45}
+      .stake-side-shell .stake-grid{grid-template-columns:repeat(2, minmax(0, 1fr));gap:10px}
+      .stake-side-shell .stake-band{padding:12px 10px;border-radius:16px}
+      .stake-side-shell .stake-band .range{font-size:11px}
+      .stake-side-shell .stake-band .copy{min-height:0;font-size:10px}
+      .stake-side-shell .stake-band .percent{font-size:24px}
+      .stake-side-shell .stake-band .amount{font-size:17px}
+      .footer-ribbon{margin-top:14px;border-radius:18px;padding:12px 14px;font-size:12px;line-height:1.6}
+    }
   </style>
 </head>
 <body>
@@ -227,8 +329,8 @@
       <p>Fully Automatic &bull; Scan All Markets &bull; Pick Best Button &bull; Trade by Confidence</p>
       </div>
       <div class="status-stack">
-        <div class="status-chip disconnected" id="autoSessionConnectionValue">API Connecting</div>
-        <div class="status-chip">Server Time: <span id="autoSessionServerTime">--:--:-- UTC</span></div>
+        <div class="status-chip connection-chip disconnected" id="autoSessionConnectionValue">API Connecting</div>
+        <div class="status-chip server-time-chip">Server Time: <span id="autoSessionServerTime">--:--:-- UTC</span></div>
         <div class="user-card">
           <div class="user-avatar" id="autoSessionUserInitials">{{ (username or 'K')[0:2]|upper }}</div>
           <div class="user-meta">
@@ -267,16 +369,18 @@
         </div>
         <div class="setup-block">
           <div class="field-stack">
-            <div class="field">
+            <div class="field profile-select-field">
               <label for="autoSessionStrategy1">Primary Profile</label>
+              <div class="select-field-head"><span class="select-field-title">Primary Profile</span><span class="select-field-pill">Selected</span></div>
               <select class="select" id="autoSessionStrategy1">
                 {% for item in auto_session_catalog %}
                 <option value="{{ item.id }}">{{ item.label }}</option>
                 {% endfor %}
               </select>
             </div>
-            <div class="field hidden" id="autoSessionStrategy2Wrap">
+            <div class="field profile-select-field hidden" id="autoSessionStrategy2Wrap">
               <label for="autoSessionStrategy2">Secondary Profile</label>
+              <div class="select-field-head"><span class="select-field-title">Secondary Profile</span><span class="select-field-pill alt">Dual</span></div>
               <select class="select" id="autoSessionStrategy2">
                 {% for item in auto_session_catalog %}
                 <option value="{{ item.id }}">{{ item.label }}</option>
@@ -298,7 +402,6 @@
             <div class="risk-card tp"><div class="label">Take Profit</div><div class="value" id="autoSessionTpHero">$25.00</div><div class="sub">Target</div></div>
           </div>
           <button class="action-btn start" id="autoSessionStartBtn" type="button">Start Auto Session<span>AI will scan and wait for the strongest valid setup.</span></button>
-          <button class="action-btn stop" id="autoSessionStopBtn" type="button">Stop Session<span>Stop the live auto session without changing existing bot logic.</span></button>
         </div>
         <div class="notice-box" id="autoSessionNotice">Session ready. First trade always starts at $0.35.</div>
         <div class="safe-card">
@@ -373,7 +476,11 @@
               <div class="history-item">
                 <div class="history-result {% if row.pending %}pending{% elif row.result == 'WIN' %}won{% else %}lost{% endif %}">{{ 'PENDING' if row.pending else row.result }}</div>
                 <div class="history-details"><strong>{% if row.button_label %}{{ row.button_label }} &bull; {% endif %}{{ row.symbol or '-' }}{% if row.type %} - {{ row.type }}{% endif %}{% if row.barrier is defined %} {{ row.barrier }}{% endif %}</strong><span>{{ row.time }}{% if row.duration is defined %} &bull; {{ row.duration }}{{ row.duration_unit or '' }}{% endif %}</span></div>
-                <div class="history-money"><span>Stake {{ '$%.2f'|format(row.stake or 0) }}</span><span>{% if row.payout is defined %}Payout {{ '$%.2f'|format(row.payout or 0) }}{% else %}Payout --{% endif %}</span><span class="profit {% if (row.profit or 0) >= 0 %}profit-green{% else %}profit-red{% endif %}">{% if (row.profit or 0) >= 0 %}+{% endif %}${{ '%.2f'|format(row.profit or 0) }}</span></div>
+                <div class="history-money">
+                  <div class="history-metric"><span class="metric-label">Stake</span><span class="metric-value">{{ '$%.2f'|format(row.stake or 0) }}</span></div>
+                  <div class="history-metric"><span class="metric-label">Payout</span><span class="metric-value">{% if row.payout is defined %}{{ '$%.2f'|format(row.payout or 0) }}{% else %}--{% endif %}</span></div>
+                  <div class="history-metric"><span class="metric-label">Profit</span><span class="metric-value profit {% if (row.profit or 0) >= 0 %}profit-green{% else %}profit-red{% endif %}">{% if (row.profit or 0) >= 0 %}+{% endif %}${{ '%.2f'|format(row.profit or 0) }}</span></div>
+                </div>
               </div>
               {% endfor %}
             {% else %}
@@ -403,6 +510,31 @@
             <div class="summary-box"><div class="label">Active Button</div><div class="value" id="autoSessionStrategyValueMirror">-</div></div>
             <div class="summary-box"><div class="label">Wins</div><div class="value" id="autoSessionWinsValue">0</div></div>
             <div class="summary-box"><div class="label">Losses</div><div class="value" id="autoSessionLossesValue">0</div></div>
+          </div>
+          <div class="mobile-live-history">
+            <div class="history-stats">
+              <div class="mini-box"><div class="value green" id="autoTradeHistoryWinsMobile">{{ koolkid_dashboard.stats.wins or 0 }}</div><div class="label">Wins</div></div>
+              <div class="mini-box"><div class="value red" id="autoTradeHistoryLossesMobile">{{ koolkid_dashboard.stats.losses or 0 }}</div><div class="label">Losses</div></div>
+              <div class="mini-box"><div class="value" id="autoTradeHistoryWinRateMobile">{{ '%.1f'|format(koolkid_dashboard.stats.winrate or 0) }}%</div><div class="label">Win Rate</div></div>
+              <div class="mini-box"><div class="value {% if (koolkid_dashboard.stats.net_pnl or 0) >= 0 %}green{% else %}red{% endif %}" id="autoTradeHistoryNetPnlMobile">${{ '%.2f'|format(koolkid_dashboard.stats.net_pnl or 0) }}</div><div class="label">Net P/L</div></div>
+            </div>
+            <div class="history-list" id="autoTradeHistoryBodyMobile">
+              {% if koolkid_dashboard.history %}
+                {% for row in koolkid_dashboard.history %}
+                <div class="history-item">
+                  <div class="history-result {% if row.pending %}pending{% elif row.result == 'WIN' %}won{% else %}lost{% endif %}">{{ 'PENDING' if row.pending else row.result }}</div>
+                  <div class="history-details"><strong>{% if row.button_label %}{{ row.button_label }} &bull; {% endif %}{{ row.symbol or '-' }}{% if row.type %} - {{ row.type }}{% endif %}{% if row.barrier is defined %} {{ row.barrier }}{% endif %}</strong><span>{{ row.time }}{% if row.duration is defined %} &bull; {{ row.duration }}{{ row.duration_unit or '' }}{% endif %}</span></div>
+                  <div class="history-money">
+                    <div class="history-metric"><span class="metric-label">Stake</span><span class="metric-value">{{ '$%.2f'|format(row.stake or 0) }}</span></div>
+                    <div class="history-metric"><span class="metric-label">Payout</span><span class="metric-value">{% if row.payout is defined %}{{ '$%.2f'|format(row.payout or 0) }}{% else %}--{% endif %}</span></div>
+                    <div class="history-metric"><span class="metric-label">Profit</span><span class="metric-value profit {% if (row.profit or 0) >= 0 %}profit-green{% else %}profit-red{% endif %}">{% if (row.profit or 0) >= 0 %}+{% endif %}${{ '%.2f'|format(row.profit or 0) }}</span></div>
+                  </div>
+                </div>
+                {% endfor %}
+              {% else %}
+                <div class="empty-state">No Auto Trading Session trades yet.</div>
+              {% endif %}
+            </div>
           </div>
         </div>
         <div class="panel stake-shell stake-side-shell">

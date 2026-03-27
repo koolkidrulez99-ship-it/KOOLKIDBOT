@@ -70,7 +70,12 @@
     historyLosses: document.getElementById('autoTradeHistoryLosses'),
     historyWinRate: document.getElementById('autoTradeHistoryWinRate'),
     historyNetPnl: document.getElementById('autoTradeHistoryNetPnl'),
-    historyBody: document.getElementById('autoTradeHistoryBody')
+    historyBody: document.getElementById('autoTradeHistoryBody'),
+    historyWinsMobile: document.getElementById('autoTradeHistoryWinsMobile'),
+    historyLossesMobile: document.getElementById('autoTradeHistoryLossesMobile'),
+    historyWinRateMobile: document.getElementById('autoTradeHistoryWinRateMobile'),
+    historyNetPnlMobile: document.getElementById('autoTradeHistoryNetPnlMobile'),
+    historyBodyMobile: document.getElementById('autoTradeHistoryBodyMobile')
   };
 
   const runtime = {
@@ -230,25 +235,7 @@
   function renderHistory(dashboard) {
     const stats = (dashboard && dashboard.stats) || {};
     const history = Array.isArray(dashboard && dashboard.history) ? dashboard.history : [];
-
-    if (refs.historyTotal) refs.historyTotal.textContent = String(stats.total_trades || 0);
-    if (refs.historyWins) refs.historyWins.textContent = String(stats.wins || 0);
-    if (refs.historyLosses) refs.historyLosses.textContent = String(stats.losses || 0);
-    if (refs.historyWinRate) refs.historyWinRate.textContent = formatPercent(stats.winrate || 0);
-    if (refs.historyNetPnl) {
-      const pnl = Number(stats.net_pnl || 0);
-      refs.historyNetPnl.textContent = money(pnl);
-      refs.historyNetPnl.classList.remove('green', 'red');
-      refs.historyNetPnl.classList.add(pnl >= 0 ? 'green' : 'red');
-    }
-
-    if (!refs.historyBody) return;
-    if (!history.length) {
-      refs.historyBody.innerHTML = '<div class="empty-state">No Auto Trading Session trades yet.</div>';
-      return;
-    }
-
-    refs.historyBody.innerHTML = history.map(function (row) {
+    const historyMarkup = history.length ? history.map(function (row) {
       const payout = row && row.payout !== undefined && row.payout !== null ? money(row.payout) : 'Payout --';
       const profitNum = Number((row && row.profit) || 0);
       const profitText = (profitNum >= 0 ? '+' : '-') + '$' + Math.abs(profitNum).toFixed(2);
@@ -262,12 +249,43 @@
             '<span>' + String((row && row.time) || '-') + '</span>' +
           '</div>' +
           '<div class="history-money">' +
-            '<span>Stake ' + money((row && row.stake) || 0) + '</span>' +
-            '<span>' + payout + '</span>' +
-            '<span class="profit ' + profitClass + '">' + profitText + '</span>' +
+            '<div class="history-metric">' +
+              '<span class="metric-label">Stake</span>' +
+              '<span class="metric-value">' + money((row && row.stake) || 0) + '</span>' +
+            '</div>' +
+            '<div class="history-metric">' +
+              '<span class="metric-label">Payout</span>' +
+              '<span class="metric-value">' + payout.replace('Payout ', '') + '</span>' +
+            '</div>' +
+            '<div class="history-metric">' +
+              '<span class="metric-label">Profit</span>' +
+              '<span class="metric-value profit ' + profitClass + '">' + profitText + '</span>' +
+            '</div>' +
           '</div>' +
         '</div>';
-    }).join('');
+    }).join('') : '<div class="empty-state">No Auto Trading Session trades yet.</div>';
+
+    if (refs.historyTotal) refs.historyTotal.textContent = String(stats.total_trades || 0);
+    if (refs.historyWins) refs.historyWins.textContent = String(stats.wins || 0);
+    if (refs.historyWinsMobile) refs.historyWinsMobile.textContent = String(stats.wins || 0);
+    if (refs.historyLosses) refs.historyLosses.textContent = String(stats.losses || 0);
+    if (refs.historyLossesMobile) refs.historyLossesMobile.textContent = String(stats.losses || 0);
+    if (refs.historyWinRate) refs.historyWinRate.textContent = formatPercent(stats.winrate || 0);
+    if (refs.historyWinRateMobile) refs.historyWinRateMobile.textContent = formatPercent(stats.winrate || 0);
+    if (refs.historyNetPnl) {
+      const pnl = Number(stats.net_pnl || 0);
+      refs.historyNetPnl.textContent = money(pnl);
+      refs.historyNetPnl.classList.remove('green', 'red');
+      refs.historyNetPnl.classList.add(pnl >= 0 ? 'green' : 'red');
+      if (refs.historyNetPnlMobile) {
+        refs.historyNetPnlMobile.textContent = money(pnl);
+        refs.historyNetPnlMobile.classList.remove('green', 'red');
+        refs.historyNetPnlMobile.classList.add(pnl >= 0 ? 'green' : 'red');
+      }
+    }
+
+    if (refs.historyBody) refs.historyBody.innerHTML = historyMarkup;
+    if (refs.historyBodyMobile) refs.historyBodyMobile.innerHTML = historyMarkup;
   }
 
   function renderScanner(status) {
@@ -358,12 +376,10 @@
     const running = !!(status && status.running);
     if (refs.start) {
       refs.start.classList.toggle('is-on', running);
-      refs.start.disabled = running;
       refs.start.innerHTML = running
-        ? 'AUTO SESSION: ON<span>Session is active and scanning live setups.</span>'
+        ? 'AUTO SESSION: ON<span>Tap again to stop the live session.</span>'
         : 'Start Auto Session<span>AI will scan and wait for the strongest valid setup.</span>';
     }
-    if (refs.stop) refs.stop.disabled = !running;
   }
 
   function applyStatus(status) {
@@ -529,7 +545,16 @@
     refs.tp.addEventListener('input', captureDraftConfig);
     refs.tp.addEventListener('change', captureDraftConfig);
   }
-  if (refs.start) refs.start.addEventListener('click', startSession);
+  if (refs.start) {
+    refs.start.addEventListener('click', function () {
+      const running = !!(runtime.lastStatus && runtime.lastStatus.running);
+      if (running) {
+        stopSession();
+      } else {
+        startSession();
+      }
+    });
+  }
   if (refs.stop) refs.stop.addEventListener('click', stopSession);
   if (refs.historyClear) refs.historyClear.addEventListener('click', clearHistory);
 
