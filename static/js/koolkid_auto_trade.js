@@ -65,6 +65,7 @@
     tierHigh: document.getElementById('autoSessionStakeTierHigh'),
     tierMax: document.getElementById('autoSessionStakeTierMax'),
     historyClear: document.getElementById('autoTradeHistoryClearBtn'),
+    historyClearMobile: document.getElementById('autoTradeHistoryClearBtnMobile'),
     historyTotal: document.getElementById('autoTradeHistoryTotal'),
     historyWins: document.getElementById('autoTradeHistoryWins'),
     historyLosses: document.getElementById('autoTradeHistoryLosses'),
@@ -557,6 +558,7 @@
   }
   if (refs.stop) refs.stop.addEventListener('click', stopSession);
   if (refs.historyClear) refs.historyClear.addEventListener('click', clearHistory);
+  if (refs.historyClearMobile) refs.historyClearMobile.addEventListener('click', clearHistory);
 
   applyStatus(initialStatus);
   renderHistory(initialDashboard);

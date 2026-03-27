@@ -184,6 +184,8 @@
     .summary-box .label{color:#c9dbf7;font-size:12px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px}
     .summary-box .value{font-size:18px;font-weight:900;line-height:1.2}
     .trade-history{margin-top:0}
+    .desktop-trade-history{display:block}
+    .mobile-trade-history-panel{display:none}
     .trade-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px;position:relative;z-index:1}
     .trade-actions{display:flex;align-items:center;gap:10px}
     .view-all,.history-clear{border:none;border-radius:999px;background:rgba(8,18,31,.9);color:#e4efff;padding:9px 14px;font-weight:800;font-size:12px;cursor:pointer}
@@ -286,7 +288,12 @@
       .why-box p{font-size:13px}
       .chart-card{min-height:212px;border-radius:16px;padding:12px}
       .chart-footer{grid-template-columns:1fr 1fr;gap:10px;font-size:11px}
-      .trade-history{display:none}
+      .desktop-trade-history{display:none}
+      .mobile-trade-history-panel{display:block}
+      .mobile-trade-history-panel .trade-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}
+      .mobile-trade-history-panel .trade-actions{display:flex;align-items:center;gap:8px;flex-shrink:0}
+      .mobile-trade-history-panel .view-all,
+      .mobile-trade-history-panel .history-clear{display:inline-flex;align-items:center;justify-content:center;padding:8px 12px;font-size:11px;white-space:nowrap}
       .live-panel .section-head{margin-bottom:10px}
       .confidence-orb-wrap{grid-template-columns:1fr;gap:10px;margin-bottom:10px}
       .confidence-orb{display:none}
@@ -459,7 +466,7 @@
             </div>
           </div>
         </div>
-        <div class="panel trade-history">
+        <div class="panel trade-history desktop-trade-history">
           <div class="trade-head">
             <h2>Trade History</h2>
             <div class="trade-actions"><button class="view-all" type="button">Live Only</button><button class="history-clear" id="autoTradeHistoryClearBtn" type="button">Clear History</button></div>
@@ -510,6 +517,12 @@
             <div class="summary-box"><div class="label">Active Button</div><div class="value" id="autoSessionStrategyValueMirror">-</div></div>
             <div class="summary-box"><div class="label">Wins</div><div class="value" id="autoSessionWinsValue">0</div></div>
             <div class="summary-box"><div class="label">Losses</div><div class="value" id="autoSessionLossesValue">0</div></div>
+          </div>
+        </div>
+        <div class="panel trade-history mobile-trade-history-panel">
+          <div class="trade-head">
+            <h2>Trade History</h2>
+            <div class="trade-actions"><button class="view-all" type="button">Live Only</button><button class="history-clear" id="autoTradeHistoryClearBtnMobile" type="button">Clear History</button></div>
           </div>
           <div class="mobile-live-history">
             <div class="history-stats">

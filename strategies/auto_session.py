@@ -1161,7 +1161,7 @@ def _evaluate_candidate(strategy_id, runtime, market, state, per_trade_stake, pr
         setattr(strat, "_auto_session_state", state)
     except Exception:
         pass
-    signal = _candidate_signal(strategy_id, strat, state, preview_only=preview_only)
+    signal = _candidate_signal(strategy_id, strat, state, runtime=runtime, preview_only=preview_only)
     if not signal:
         runtime["last_signal"] = None
         runtime["last_confidence"] = 0.0
@@ -1177,7 +1177,7 @@ def _evaluate_candidate(strategy_id, runtime, market, state, per_trade_stake, pr
     return result
 
 
-def _candidate_signal(strategy_id, strat, state, preview_only=False):
+def _candidate_signal(strategy_id, strat, state, runtime=None, preview_only=False):
     if strategy_id in ("UNCHAIN_HIGHER", "UNCHAIN_LOWER"):
         config = _get_unchain_session_config(getattr(strat, "_auto_session_state", None))
         bias = strat.get_bias_payload(config)
@@ -1297,40 +1297,46 @@ def _candidate_signal(strategy_id, strat, state, preview_only=False):
             strat.rf_conf_threshold = float(_required_confidence(session))
         except Exception:
             pass
-        if preview_only:
-            payload = strat.get_human_rf_payload() or {}
-            signal_state = str(payload.get("signal") or "WAIT").upper().strip()
-            direction = str(payload.get("trade_direction") or "").upper().strip()
-            confidence = float(payload.get("confidence", 0.0) or 0.0)
-            cooldown = float(payload.get("cooldown_sec", 0.0) or 0.0)
-            if signal_state != "TAKE NOW" or direction not in ("RISE", "FALL"):
-                return None
-            if confidence < float(getattr(strat, "rf_conf_threshold", _required_confidence(session)) or 0.0):
-                return None
-            if cooldown > 0:
-                return None
-            return {
-                "direction": direction,
-                "contract_type": "CALL" if direction == "RISE" else "PUT",
-                "stake": float(getattr(strat, "stake", 1.0) or 1.0),
-                "duration": int(getattr(strat, "rf_duration_ticks", 5) or 5),
-                "duration_unit": "t",
-                "mode": "human_rf",
-                "profile": "HUMAN",
-                "confidence": confidence,
-                "signal_state": signal_state,
-                "reason": payload.get("reason"),
-            }
         payload = strat.get_human_rf_payload() or {}
-        confidence = float(payload.get("confidence", 0.0) or 0.0)
         signal_state = str(payload.get("signal") or "WAIT").upper().strip()
-        signal = strat.build_human_rf_trade_signal(force_direction=None, require_threshold=True)
-        if not signal:
+        direction = str(payload.get("trade_direction") or "").upper().strip()
+        confidence = float(payload.get("confidence", 0.0) or 0.0)
+        cooldown = float(payload.get("cooldown_sec", 0.0) or 0.0)
+        signal_key = str(payload.get("signal_key") or f"{direction}:{signal_state}:{payload.get('reason') or ''}").strip()
+
+        if signal_state not in ("TAKE NOW", "LATE"):
+            try:
+                setattr(strat, "_auto_session_consumed_signal_key", None)
+            except Exception:
+                pass
             return None
-        signal["confidence"] = confidence
-        signal["signal_state"] = signal_state
-        signal["reason"] = payload.get("reason")
-        return signal
+        if direction not in ("RISE", "FALL"):
+            return None
+        if confidence < float(getattr(strat, "rf_conf_threshold", _required_confidence(session)) or 0.0):
+            return None
+        if cooldown > 0:
+            return None
+        if not preview_only:
+            consumed_key = str(getattr(strat, "_auto_session_consumed_signal_key", "") or "").strip()
+            if signal_key and consumed_key and signal_key == consumed_key:
+                return None
+            try:
+                setattr(strat, "_auto_session_consumed_signal_key", signal_key)
+            except Exception:
+                pass
+        return {
+            "direction": direction,
+            "contract_type": "CALL" if direction == "RISE" else "PUT",
+            "stake": float(getattr(strat, "stake", 1.0) or 1.0),
+            "duration": int(getattr(strat, "rf_duration_ticks", 5) or 5),
+            "duration_unit": "t",
+            "mode": "human_rf",
+            "profile": "HUMAN",
+            "confidence": confidence,
+            "signal_state": signal_state,
+            "reason": payload.get("reason"),
+            "signal_key": signal_key,
+        }
     return None
 
 def _normalize_signal_list(signal):
@@ -1602,21 +1608,17 @@ def _select_fair_dual_profile_single_plan(session, best_by_profile):
     if len(available) < 2:
         return strongest
     last_dual_profile = str(session.get("last_dual_profile") or "").upper().strip()
-    strongest_profile = _plan_primary_profile(strongest)
-    if not last_dual_profile or strongest_profile != last_dual_profile:
+    required_confidence = float(_required_confidence(session))
+    qualified = [plan for plan in available if float(plan.get("confidence", 0.0) or 0.0) >= required_confidence]
+    if len(qualified) < 2:
         return strongest
-    alternate = None
-    for plan in available:
+    if not last_dual_profile:
+        return max(qualified, key=lambda plan: float(plan.get("confidence", 0.0) or 0.0))
+    for plan in qualified:
         plan_profile = _plan_primary_profile(plan)
         if plan_profile and plan_profile != last_dual_profile:
-            if alternate is None or float(plan.get("confidence", 0.0) or 0.0) > float(alternate.get("confidence", 0.0) or 0.0):
-                alternate = plan
-    if alternate is None:
-        return strongest
-    confidence_gap = float(strongest.get("confidence", 0.0) or 0.0) - float(alternate.get("confidence", 0.0) or 0.0)
-    if confidence_gap <= AUTO_SESSION_DUAL_ROTATION_TOLERANCE:
-        return alternate
-    return strongest
+            return plan
+    return max(qualified, key=lambda plan: float(plan.get("confidence", 0.0) or 0.0))
 
 
 def _prefer_dual_profile_plan(session, current_plan, candidate_plan):
@@ -1629,6 +1631,15 @@ def _prefer_dual_profile_plan(session, current_plan, candidate_plan):
     current_profile = _plan_primary_profile(current_plan)
     candidate_profile = _plan_primary_profile(candidate_plan)
     last_dual_profile = str(session.get("last_dual_profile") or "").upper().strip()
+    required_confidence = float(_required_confidence(session))
+    if (
+        last_dual_profile
+        and current_profile == last_dual_profile
+        and candidate_profile
+        and candidate_profile != last_dual_profile
+        and candidate_conf >= required_confidence
+    ):
+        return candidate_plan
     if last_dual_profile and candidate_profile and current_profile:
         if current_profile == last_dual_profile and candidate_profile != last_dual_profile:
             if (current_conf - candidate_conf) <= AUTO_SESSION_DUAL_ROTATION_TOLERANCE:
