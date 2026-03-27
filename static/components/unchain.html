@@ -320,6 +320,10 @@
     .unchain-profile .unchain-koolkid-button-stack button{
       width:100%;
     }
+    .unchain-profile .unchain-koolkid-control-row{
+      display:grid;
+      gap:12px;
+    }
     .unchain-profile .unchain-koolkid-section{
       display:grid;
       gap:12px;
@@ -333,6 +337,9 @@
       align-items:center;
       justify-content:flex-start;
       min-height:0;
+    }
+    .unchain-profile .unchain-koolkid-barrier-toggle-row{
+      margin-bottom:8px;
     }
     .unchain-profile .unchain-koolkid-toggle-pair{
       display:flex;
@@ -535,6 +542,71 @@
       color:#94a3b8;
       font-size:12px;
       line-height:1.6;
+    }
+    @media (min-width: 900px){
+      .unchain-profile .unchain-koolkid-modal{
+        width:min(900px, calc(100vw - 96px));
+        max-height:min(64vh, 620px);
+        padding:18px 22px;
+      }
+      .unchain-profile .unchain-koolkid-header{
+        gap:18px;
+        padding-bottom:12px;
+      }
+      .unchain-profile .unchain-koolkid-scroll{
+        padding-top:12px;
+      }
+      .unchain-profile .unchain-koolkid-stack{
+        gap:12px;
+      }
+      .unchain-profile .unchain-koolkid-button-stack{
+        grid-template-columns:repeat(2, minmax(0, 1fr));
+        gap:14px;
+      }
+      .unchain-profile .unchain-koolkid-section--controls{
+        grid-template-columns:repeat(5, minmax(0, 160px));
+        justify-content:space-between;
+        align-items:end;
+        gap:10px;
+      }
+      .unchain-profile .unchain-koolkid-section--controls .unchain-field{
+        min-width:0;
+      }
+      .unchain-profile .unchain-koolkid-section--barriers{
+        gap:10px;
+      }
+      .unchain-profile .unchain-koolkid-toggle-pair{
+        display:flex;
+        justify-content:space-between;
+        gap:16px;
+        align-items:center;
+      }
+      .unchain-profile .unchain-koolkid-toggle-row{
+        width:auto;
+      }
+      .unchain-profile .unchain-koolkid-toggle-row .unchain-inline-toggle--tiny{
+        min-width:0;
+        width:max-content;
+      }
+      .unchain-profile #unchainKoolkidHalfBarrierWrap{
+        margin-left:0;
+      }
+      .unchain-profile .unchain-koolkid-barrier-grid{
+        grid-template-columns:repeat(2, minmax(0, 360px));
+        justify-content:space-between;
+        align-items:start;
+        gap:18px;
+      }
+      .unchain-profile .unchain-koolkid-barrier-grid .unchain-field{
+        min-width:0;
+      }
+      .unchain-profile .unchain-koolkid-barrier-inline{
+        max-width:360px;
+        gap:6px;
+      }
+      .unchain-profile .unchain-koolkid-note{
+        margin-top:2px;
+      }
     }
     .unchain-profile .unchain-trade-list{
       margin-top:14px;
@@ -1546,6 +1618,9 @@
             <input id="unchainSl" type="number" min="0" step="0.01" value="0">
           </div>
         </div>
+        <div style="margin-top:12px;display:flex;justify-content:flex-start;">
+          <button data-action="unchain-refresh-barriers" style="background:#0f766e;color:#ecfeff;min-width:170px;">Refresh Barrier</button>
+        </div>
       </div>
     </div>
   </div>
@@ -1643,7 +1718,7 @@
             <button id="unchainKoolkidBothBtn" data-action="unchain-koolkid-both" style="background:#475569;">⚖️ BOTH: OFF</button>
           </div>
 
-          <div class="unchain-koolkid-section">
+          <div class="unchain-koolkid-section unchain-koolkid-section--controls">
             <div class="unchain-field">
               <label class="unchain-label" for="unchainKoolkidSimDuration">Simulation</label>
               <input id="unchainKoolkidSimDuration" type="number" min="1" max="59" step="1" value="15" style="width:100%;min-height:44px;padding:10px 12px;font-size:14px;">
@@ -1680,9 +1755,10 @@
             </div>
           </div>
 
-          <div class="unchain-koolkid-section">
-            <div class="unchain-koolkid-toggle-pair">
-              <div class="unchain-koolkid-toggle-row">
+          <div class="unchain-koolkid-section unchain-koolkid-section--barriers">
+            <div class="unchain-koolkid-barrier-grid">
+              <div class="unchain-field">
+                <div class="unchain-koolkid-toggle-row unchain-koolkid-barrier-toggle-row">
                 <label id="unchainKoolkidReversalWrap" class="unchain-inline-toggle unchain-inline-toggle--tiny" for="unchainKoolkidReversalToggle">
                   <span class="unchain-inline-toggle__text">REVERSAL</span>
                   <span class="unchain-inline-toggle__control">
@@ -1693,23 +1769,7 @@
                     <span id="unchainKoolkidReversalState" class="unchain-inline-toggle__state">OFF</span>
                   </span>
                 </label>
-              </div>
-              <div class="unchain-koolkid-toggle-row">
-                <label id="unchainKoolkidHalfBarrierWrap" class="unchain-inline-toggle unchain-inline-toggle--tiny" for="unchainKoolkidHalfBarrierToggle">
-                  <span class="unchain-inline-toggle__text">HALF BARRIER</span>
-                  <span class="unchain-inline-toggle__control">
-                    <input id="unchainKoolkidHalfBarrierToggle" class="unchain-inline-toggle__input" type="checkbox" role="switch" aria-label="KOOLKID Half Barrier toggle">
-                    <span class="unchain-inline-toggle__track" aria-hidden="true">
-                      <span class="unchain-inline-toggle__thumb"></span>
-                    </span>
-                    <span id="unchainKoolkidHalfBarrierState" class="unchain-inline-toggle__state">OFF</span>
-                  </span>
-                </label>
-              </div>
-            </div>
-
-            <div class="unchain-koolkid-barrier-grid">
-              <div class="unchain-field">
+                </div>
                 <label class="unchain-label" for="unchainKoolkidHigherBarrier">KOOLKID Higher Barrier</label>
                 <div class="unchain-koolkid-barrier-inline">
                   <button class="unchain-koolkid-barrier-stepper" data-action="unchain-barrier-step" data-target="unchainKoolkidHigherBarrier" data-delta="-0.01" style="background:#14532d;color:#dcfce7;">-</button>
@@ -1719,6 +1779,18 @@
               </div>
 
               <div class="unchain-field">
+                <div class="unchain-koolkid-toggle-row unchain-koolkid-barrier-toggle-row">
+                  <label id="unchainKoolkidHalfBarrierWrap" class="unchain-inline-toggle unchain-inline-toggle--tiny" for="unchainKoolkidHalfBarrierToggle">
+                    <span class="unchain-inline-toggle__text">HALF BARRIER</span>
+                    <span class="unchain-inline-toggle__control">
+                      <input id="unchainKoolkidHalfBarrierToggle" class="unchain-inline-toggle__input" type="checkbox" role="switch" aria-label="KOOLKID Half Barrier toggle">
+                      <span class="unchain-inline-toggle__track" aria-hidden="true">
+                        <span class="unchain-inline-toggle__thumb"></span>
+                      </span>
+                      <span id="unchainKoolkidHalfBarrierState" class="unchain-inline-toggle__state">OFF</span>
+                    </span>
+                  </label>
+                </div>
                 <label class="unchain-label" for="unchainKoolkidLowerBarrier">KOOLKID Lower Barrier</label>
                 <div class="unchain-koolkid-barrier-inline">
                   <button class="unchain-koolkid-barrier-stepper" data-action="unchain-barrier-step" data-target="unchainKoolkidLowerBarrier" data-delta="-0.01" style="background:#7f1d1d;color:#fee2e2;">-</button>

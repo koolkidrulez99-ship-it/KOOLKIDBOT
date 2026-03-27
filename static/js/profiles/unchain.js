@@ -2002,6 +2002,29 @@
     }
   }
 
+  async function refreshMarketBarriers() {
+    const r = await postJSON("/unchain_refresh_barriers", {});
+    if (r.ok && r.data) {
+      const payload = r.data.payload || {};
+      const un = payload.unchain || payload;
+      const symbol = normalizeMarketSymbol(
+        payload.main_symbol || payload.symbol || un.main_symbol || un.symbol || state.lastMainSymbol || getCurrentMarketSymbol()
+      );
+      persistMarketBarrierSettings(symbol, {
+        higher_barrier: un.higher_barrier,
+        lower_barrier: un.lower_barrier,
+        koolkid_higher_barrier: un.koolkid_higher_barrier,
+        koolkid_lower_barrier: un.koolkid_lower_barrier,
+      }, { custom: false });
+      BARRIER_FIELD_IDS.forEach((id) => state.dirtyFields.delete(id));
+      renderPayload(payload, { forceForm: true });
+      toast(r.data.message || "Barrier refreshed", "success");
+    } else {
+      toast((r.data && (r.data.message || r.data.error)) || "Failed to refresh barrier", "error");
+      if (r.data && r.data.payload) renderPayload(r.data.payload, { forceForm: true });
+    }
+  }
+
   async function closeAll() {
     const r = await postJSON("/unchain_close_now", {});
     if (r.ok && r.data) {
@@ -2129,6 +2152,9 @@
         if (btn && btn.dataset && btn.dataset.symbol) {
           await applyScannerSymbol(btn.dataset.symbol);
         }
+        break;
+      case "unchain-refresh-barriers":
+        await refreshMarketBarriers();
         break;
       default:
         break;

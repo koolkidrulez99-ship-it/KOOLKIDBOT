@@ -5,6 +5,7 @@ import pytest
 from types import SimpleNamespace
 
 import server
+from strategies import auto_session
 from server import (
     _apply_unchain_market_default_barriers,
     _ensure_unchain_hl_state,
@@ -220,6 +221,69 @@ def test_serialize_profile_trade_history_entry_zero_profit_defaults_to_loss():
     snapshot = _serialize_profile_trade_history_entry("UNCHAIN", {"profit": 0.0}, 0)
 
     assert snapshot["result"] == "LOSS"
+
+
+def test_process_contract_keeps_auto_session_trade_out_of_profile_history(monkeypatch):
+    class GuardStrategy:
+        def __init__(self):
+            self.trade_history = []
+
+        def on_contract(self, _contract, _balance):
+            raise AssertionError("auto-session trade should not hit normal profile strategy history")
+
+        def get_stats_payload(self, _balance, _session_start_balance):
+            return {"wins": 0, "losses": 0, "winrate": 0.0, "net_pnl": 0.0}
+
+    cid = "cid-auto-session-history"
+    server.clients.pop(cid, None)
+    server.init_client(cid)
+    state = server.clients[cid]
+    state["active_profile"] = "KOOLKID"
+    state["strategies"]["KOOLKID"] = GuardStrategy()
+    state["balance"] = 100.0
+    state["session_start_balance"] = 100.0
+
+    session_state = auto_session.start_auto_session(state, "KOOLKID_KIDRACKS", budget=100, sl=10, tp=20)
+    token = session_state["token"]
+    mode = f"AUTO_SESSION|{token}|B1|KOOLKID_KIDRACKS|1|R_10"
+    session_state["open_contracts"] = {"12345": {"mode": mode}}
+    state["contract_meta"]["12345"] = {
+        "mode": mode,
+        "profile": "KOOLKID",
+        "type": "OVER",
+        "barrier": 2,
+        "stake": 0.35,
+        "symbol": "R_10",
+        "duration": 1,
+        "duration_unit": "t",
+        "time": "10:00:00",
+    }
+
+    emitted = []
+    monkeypatch.setattr(server.socketio, "emit", lambda event, payload=None, room=None: emitted.append((event, payload, room)))
+    monkeypatch.setattr(server, "send_stats_update", lambda _cid: None)
+
+    try:
+        process_contract(
+            cid,
+            {
+                "contract_id": "12345",
+                "status": "won",
+                "profit": 0.31,
+                "sell_price": 0.66,
+                "buy_price": 0.35,
+                "is_sold": True,
+            },
+        )
+
+        dashboard = auto_session.get_auto_session_dashboard_payload(state)
+
+        assert dashboard["stats"]["total_trades"] == 1
+        assert dashboard["history"][0]["contract_id"] == "12345"
+        assert state["strategies"]["KOOLKID"].trade_history == []
+        assert not any(event == "trade_result" for event, _payload, _room in emitted)
+    finally:
+        server.clients.pop(cid, None)
 
 
 def test_set_risk_controls_can_target_explicit_profile(monkeypatch):

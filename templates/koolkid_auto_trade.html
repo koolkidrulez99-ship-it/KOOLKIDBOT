@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>KOOLKID Auto Trade</title>
+  <style>
+    :root{
+      --bg:#030813;
+      --bg-2:#071426;
+      --panel:#0a1423;
+      --line:rgba(94,146,255,.18);
+      --text:#eef5ff;
+      --muted:#93a8c7;
+      --green:#44e094;
+      --red:#ff6676;
+      --shadow:0 0 0 1px rgba(88,144,255,.08), 0 24px 70px rgba(0,0,0,.45), 0 0 36px rgba(43,109,255,.12);
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      color:var(--text);
+      font-family:"Segoe UI",Inter,Arial,sans-serif;
+      background:
+        radial-gradient(circle at 18% 0%, rgba(54,122,255,.18), transparent 28%),
+        radial-gradient(circle at 100% 14%, rgba(64,218,255,.10), transparent 24%),
+        radial-gradient(circle at 50% 100%, rgba(19,71,170,.18), transparent 30%),
+        linear-gradient(180deg, #020712 0%, #061121 100%);
+      min-height:100vh;
+      height:100vh;
+      overflow:hidden;
+    }
+    body::before{
+      content:"";
+      position:fixed;
+      inset:0;
+      pointer-events:none;
+      background:
+        linear-gradient(rgba(87,139,255,.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(87,139,255,.04) 1px, transparent 1px);
+      background-size:100% 72px, 72px 100%;
+      mask-image:linear-gradient(180deg, rgba(0,0,0,.55), transparent 92%);
+    }
+    a{color:inherit;text-decoration:none}
+    .page{max-width:1360px;margin:0 auto;padding:14px 16px 16px;position:relative;z-index:1;height:100vh;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable}
+    .page::-webkit-scrollbar,.history-list::-webkit-scrollbar{width:10px}
+    .page::-webkit-scrollbar-track,.history-list::-webkit-scrollbar-track{background:rgba(7,16,29,.76);border-radius:999px}
+    .page::-webkit-scrollbar-thumb,.history-list::-webkit-scrollbar-thumb{background:linear-gradient(180deg, rgba(59,128,255,.92), rgba(31,78,180,.96));border-radius:999px;border:2px solid rgba(7,16,29,.76)}
+    .topbar{display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:start;margin-bottom:8px}
+    .back-btn,.history-clear,.view-all,.status-chip,.mode-card,.risk-card,.scanner-card,.stake-band,.history-item,.safe-card,.session-card,.info-banner,.summary-box,.mini-box,.panel,.section-pill{border:1px solid var(--line);box-shadow:var(--shadow)}
+    .back-btn{display:inline-flex;align-items:center;gap:10px;border-radius:16px;padding:11px 15px;background:linear-gradient(180deg, rgba(17,31,54,.92), rgba(10,19,34,.96));font-weight:800;font-size:13px}
+    .hero{text-align:center;padding-top:2px}
+    .hero h1{margin:0;font-size:34px;line-height:1;letter-spacing:.05em;font-weight:900;text-transform:uppercase;color:#f3f8ff;text-shadow:0 0 24px rgba(77,187,255,.16)}
+    .hero p{margin:8px 0 0;color:#d7e6ff;font-size:13px;letter-spacing:.03em}
+    .status-stack{display:flex;justify-content:flex-end;align-items:flex-start;gap:10px;flex-wrap:wrap;max-width:390px}
+    .status-chip{border-radius:999px;background:rgba(10,20,34,.92);padding:10px 14px;font-size:12px;font-weight:800;color:#dce9ff;display:flex;align-items:center;gap:8px;min-height:40px}
+    .status-chip.connected::before,.status-chip.disconnected::before{content:"";width:9px;height:9px;border-radius:50%;display:inline-block;flex-shrink:0}
+    .status-chip.connected::before{background:var(--green)}
+    .status-chip.disconnected::before{background:var(--red)}
+    .user-card{display:flex;align-items:center;gap:10px;min-width:220px;padding:9px 12px;border-radius:16px;background:linear-gradient(180deg, rgba(14,23,39,.96), rgba(8,15,27,.98));border:1px solid var(--line);box-shadow:var(--shadow)}
+    .user-avatar{width:42px;height:42px;border-radius:50%;display:grid;place-items:center;font-weight:900;font-size:16px;background:linear-gradient(180deg, rgba(31,51,83,.95), rgba(17,28,49,.98));border:1px solid rgba(136,182,255,.14)}
+    .user-meta{display:flex;flex-direction:column;gap:3px;min-width:0}
+    .user-meta strong{font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .user-meta span{color:#d9e8ff;font-size:13px}
+    .section-pill{display:inline-flex;align-items:center;justify-content:center;margin-bottom:10px;border-radius:14px;padding:9px 15px;background:linear-gradient(180deg, rgba(43,111,255,.82), rgba(26,76,191,.94));font-size:13px;font-weight:900;letter-spacing:.06em;text-transform:uppercase;color:#fff}
+    .info-banner{display:flex;align-items:center;gap:10px;padding:10px 13px;border-radius:14px;background:linear-gradient(180deg, rgba(9,18,30,.96), rgba(8,16,28,.98));margin-bottom:12px}
+    .info-icon{width:28px;height:28px;border-radius:9px;display:grid;place-items:center;font-weight:900;color:#fff;background:linear-gradient(180deg, rgba(44,109,255,.92), rgba(25,72,190,.98));flex-shrink:0}
+    .info-banner strong{font-size:14px}
+    .info-banner span{color:#dbe8ff;font-size:13px;line-height:1.45}
+    .main-grid{display:grid;grid-template-columns:330px 1fr 300px;gap:12px;align-items:start}
+    .panel{position:relative;background:linear-gradient(180deg, rgba(10,19,32,.96), rgba(8,14,24,.98));border-radius:20px;overflow:hidden}
+    .panel::after{content:"";position:absolute;inset:auto -12% -34% auto;width:220px;height:220px;background:radial-gradient(circle, rgba(55,128,255,.16), transparent 66%);pointer-events:none}
+    .setup-panel,.analysis-panel,.live-panel,.trade-history{padding:12px}
+    .section-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;position:relative;z-index:1}
+    .section-title{display:flex;align-items:center;gap:9px;font-size:16px;font-weight:900;letter-spacing:.03em;text-transform:uppercase}
+    .section-title .icon-dot{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(180deg, rgba(47,121,255,.9), rgba(22,69,182,.98));font-size:11px;font-weight:900}
+    .setup-block{position:relative;z-index:1;padding:12px;border-radius:16px;background:rgba(7,14,25,.78);border:1px solid rgba(89,148,255,.12);margin-bottom:12px}
+    .block-title{display:flex;align-items:center;gap:9px;font-size:13px;font-weight:900;margin-bottom:12px}
+    .block-title .step{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-size:12px;font-weight:900;background:linear-gradient(180deg, rgba(52,125,255,.95), rgba(23,71,188,.98))}
+    .mode-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    .mode-card{border-radius:14px;background:linear-gradient(180deg, rgba(13,28,49,.94), rgba(11,21,36,.98));padding:12px 13px;cursor:pointer;min-height:72px;display:flex;flex-direction:column;justify-content:center;gap:5px;transition:transform .16s ease, border-color .16s ease, box-shadow .16s ease}
+    .mode-card:hover{transform:translateY(-1px)}
+    .mode-card.active{border-color:rgba(100,174,255,.42);box-shadow:0 0 0 1px rgba(96,170,255,.20), 0 16px 32px rgba(0,0,0,.34), 0 0 28px rgba(43,109,255,.18)}
+    .mode-card.single.active{background:linear-gradient(180deg, rgba(28,85,189,.96), rgba(20,50,112,.98))}
+    .mode-card.dual.active{background:linear-gradient(180deg, rgba(118,79,25,.96), rgba(70,46,12,.98));border-color:rgba(244,195,92,.38)}
+    .mode-card .mode-label{font-size:14px;font-weight:900}
+    .mode-card .mode-copy{font-size:12px;color:#d2e2ff;opacity:.88}
+    .field-stack{display:grid;gap:12px}
+    .field.hidden{display:none !important}
+    .field label{display:block;margin-bottom:6px;color:#c1d5f1;font-size:11px;font-weight:800;letter-spacing:.05em;text-transform:uppercase}
+    .select,.input{width:100%;border:none;outline:none;color:#fff;font-size:14px;font-weight:700;border-radius:12px;padding:12px 13px;background:linear-gradient(180deg, rgba(15,29,48,.98), rgba(9,17,29,.98));box-shadow:inset 0 0 0 1px rgba(95,150,255,.16)}
+    .select option{background:#081321;color:#eef5ff}
+    .help-card{margin-top:14px;border-radius:16px;padding:14px;background:linear-gradient(180deg, rgba(10,20,34,.96), rgba(8,14,24,.98));border:1px solid rgba(95,150,255,.12);position:relative;z-index:1}
+    .help-card h4{margin:0 0 10px;font-size:14px;font-weight:900;text-transform:uppercase;letter-spacing:.04em}
+    .help-list{display:grid;gap:8px;color:#d7e7ff;font-size:13px;line-height:1.45}
+    .help-list div::before{content:"•";color:#7cc8ff;margin-right:8px}
+    .risk-grid{display:grid;grid-template-columns:repeat(3, minmax(0, 1fr));gap:12px;margin-top:14px}
+    .risk-card{border-radius:16px;padding:12px 10px;text-align:center;background:linear-gradient(180deg, rgba(12,22,36,.94), rgba(9,15,25,.98))}
+    .risk-card .label{color:#cad9ef;font-size:12px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px}
+    .risk-card .value{font-size:24px;font-weight:900;line-height:1;margin-bottom:6px}
+    .risk-card .sub{font-size:12px;font-weight:700}
+    .risk-card.budget .sub,.risk-card.tp .sub{color:#72e9a5}
+    .risk-card.sl .sub{color:#ff8c95}
+    .action-btn{width:100%;border:none;border-radius:14px;padding:15px 16px 12px;font-size:14px;font-weight:900;color:#fff;cursor:pointer;text-transform:uppercase;letter-spacing:.04em;position:relative;overflow:hidden}
+    .action-btn span{display:block;margin-top:6px;font-size:12px;text-transform:none;letter-spacing:0;color:rgba(236,246,255,.82);font-weight:700}
+    .action-btn.start{background:linear-gradient(180deg, rgba(35,44,59,.98), rgba(15,23,33,.98));box-shadow:0 12px 26px rgba(0,0,0,.25), inset 0 0 0 1px rgba(255,255,255,.04);margin-top:12px}
+    .action-btn.start.is-on{background:linear-gradient(180deg, rgba(96,195,120,.98), rgba(30,123,58,.98));box-shadow:0 16px 34px rgba(37,128,60,.28), inset 0 0 0 1px rgba(175,255,190,.18)}
+    .action-btn.stop{background:linear-gradient(180deg, rgba(35,44,59,.98), rgba(15,23,33,.98));box-shadow:0 12px 26px rgba(0,0,0,.25), inset 0 0 0 1px rgba(255,255,255,.04);margin-top:12px}
+    .action-btn:disabled{opacity:.72;cursor:not-allowed}
+    .notice-box{margin-top:12px;border-radius:15px;padding:12px 13px;background:linear-gradient(180deg, rgba(10,22,38,.96), rgba(7,14,26,.98));border:1px solid rgba(95,150,255,.14);color:#dbe9ff;font-weight:700;line-height:1.45;min-height:64px}
+    .safe-card{margin-top:14px;border-radius:16px;padding:14px;background:linear-gradient(180deg, rgba(9,23,31,.96), rgba(7,15,23,.98));position:relative;z-index:1}
+    .safe-card h4{margin:0 0 12px;display:flex;align-items:center;gap:10px;font-size:15px;font-weight:900;text-transform:uppercase}
+    .safe-icon{width:28px;height:28px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(180deg, rgba(66,224,148,.95), rgba(20,131,74,.98));color:#fff;font-weight:900}
+    .safe-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;color:#d6ebff;font-size:14px}
+    .safe-grid div::before{content:"+";color:var(--green);margin-right:8px;font-weight:900}
+    .analysis-panel{display:grid;gap:14px}
+    .side-stack{display:grid;gap:14px}
+    .scanner-shell,.stake-shell{padding:14px}
+    .scanner-top{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;margin-bottom:14px;position:relative;z-index:1}
+    .scanner-title h2,.stake-shell h2,.trade-history h2,.live-panel h2{margin:0;font-size:18px;font-weight:900;text-transform:uppercase;letter-spacing:.03em}
+    .scanner-status{display:flex;align-items:center;gap:12px;color:#dbe8ff;font-size:14px;margin-top:10px}
+    .live-dot{display:inline-flex;align-items:center;gap:8px;color:var(--green);font-weight:900;text-transform:uppercase;font-size:12px}
+    .live-dot::before{content:"";width:10px;height:10px;border-radius:50%;background:var(--green);box-shadow:0 0 12px rgba(68,224,148,.45)}
+    .volatility-box{min-width:240px;text-align:right}
+    .volatility-box .top-line{font-size:13px;color:#dce9ff;margin-bottom:10px;font-weight:700}
+    .volatility-bar{height:12px;border-radius:999px;background:rgba(8,18,31,.96);box-shadow:inset 0 0 0 1px rgba(103,159,255,.12);overflow:hidden}
+    .volatility-fill{height:100%;width:0%;background:linear-gradient(90deg, #6ae3a0, #f0cc65, #f07a61);border-radius:999px;transition:width .25s ease}
+    .scanner-card-grid{display:grid;grid-template-columns:repeat(5, minmax(0, 1fr));gap:12px;position:relative;z-index:1}
+    .scanner-card{border-radius:16px;padding:11px 12px;background:linear-gradient(180deg, rgba(12,24,42,.96), rgba(8,15,27,.98));min-height:78px;transition:transform .16s ease, border-color .16s ease, box-shadow .16s ease}
+    .scanner-card.active{border-color:rgba(104,255,171,.45);box-shadow:0 0 0 1px rgba(104,255,171,.18), 0 14px 26px rgba(0,0,0,.28), 0 0 24px rgba(87,237,158,.14);transform:translateY(-1px)}
+    .scanner-card .market-name{display:block;font-size:13px;font-weight:800;margin-bottom:8px}
+    .scanner-card .score{font-size:28px;line-height:1;font-weight:900;color:#7ef0a7}
+    .scanner-card .meta{margin-top:8px;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.05em}
+    .best-setup{margin-top:16px;border-radius:20px;background:linear-gradient(180deg, rgba(11,19,32,.96), rgba(8,14,24,.98));border:1px solid rgba(95,150,255,.18);padding:0;overflow:hidden;position:relative;z-index:1}
+    .best-ribbon{padding:12px 18px;text-align:center;font-size:15px;font-weight:900;text-transform:uppercase;letter-spacing:.08em;color:#ffe8bc;background:linear-gradient(180deg, rgba(73,49,16,.96), rgba(38,26,9,.98));border-bottom:1px solid rgba(240,193,97,.20)}
+    .best-grid{display:grid;grid-template-columns:1fr 280px;gap:16px;padding:16px}
+    .best-market-name{font-size:20px;font-weight:900;margin:8px 0 10px}
+    .best-inline{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+    .strategy-chip{border-radius:999px;padding:8px 12px;background:linear-gradient(180deg, rgba(33,86,193,.94), rgba(22,57,126,.98));font-size:12px;font-weight:900;color:#ecf4ff}
+    .confidence-row{display:flex;align-items:flex-end;gap:12px;margin-bottom:14px}
+    .confidence-big{font-size:48px;line-height:.9;font-weight:900;color:#7ef0a7}
+    .confidence-grade{border-radius:10px;padding:7px 10px;background:rgba(86,217,145,.14);color:#d9ffec;font-size:13px;font-weight:900;text-transform:uppercase}
+    .tag-row{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px}
+    .setup-tag{border-radius:10px;padding:7px 10px;background:rgba(9,21,38,.9);border:1px solid rgba(95,150,255,.14);font-size:12px;font-weight:800;color:#dce9ff}
+    .why-box{border-radius:16px;padding:14px 15px;background:rgba(8,18,31,.88);border:1px solid rgba(95,150,255,.12)}
+    .why-box strong{display:block;margin-bottom:8px;font-size:14px;text-transform:uppercase}
+    .why-box p{margin:0;color:#d9e8ff;line-height:1.55;font-size:14px}
+    .chart-card{border-radius:18px;border:1px solid rgba(95,150,255,.16);background:linear-gradient(rgba(80,137,255,.08) 1px, transparent 1px),linear-gradient(90deg, rgba(80,137,255,.08) 1px, transparent 1px),linear-gradient(180deg, rgba(9,18,31,.96), rgba(6,12,21,.98));background-size:100% 58px, 58px 100%, auto;overflow:hidden;position:relative;min-height:228px;display:flex;flex-direction:column;justify-content:flex-end;padding:14px}
+    .chart-svg{position:absolute;inset:0;width:100%;height:100%}
+    .chart-footer{position:relative;z-index:1;display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:12px;color:#dce9ff}
+    .chart-footer strong{display:block;margin-bottom:4px;font-size:13px}
+    .stake-shell .subtitle{margin:8px 0 14px;color:#d9e8ff;font-size:13px}
+    .stake-grid{display:grid;grid-template-columns:repeat(4, minmax(0, 1fr));gap:12px;position:relative;z-index:1}
+    .stake-band{border-radius:18px;padding:14px 12px;background:linear-gradient(180deg, rgba(10,20,33,.96), rgba(8,15,25,.98));text-align:center}
+    .stake-band.gold{background:linear-gradient(180deg, rgba(92,66,21,.98), rgba(42,29,8,.98));border-color:rgba(240,193,97,.28)}
+    .stake-band .range{font-size:14px;font-weight:900;margin-bottom:8px;text-transform:uppercase;letter-spacing:.04em}
+    .stake-band .copy{min-height:30px;color:#d2e3ff;font-size:12px;line-height:1.35;margin-bottom:8px}
+    .stake-band .percent{font-size:34px;font-weight:900;line-height:1;margin-bottom:8px}
+    .stake-band .amount{font-size:24px;font-weight:900;color:#f5fbff}
+    .live-panel .section-head{margin-bottom:12px}
+    .session-live{color:#78f7a6;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.06em}
+    .confidence-orb-wrap{display:grid;grid-template-columns:124px minmax(0, 1fr);gap:10px;align-items:start;margin-bottom:14px;position:relative;z-index:1}
+    .confidence-orb{--confidence:0;width:142px;height:142px;margin:0 auto;border-radius:50%;display:grid;place-items:center;background:radial-gradient(circle at center, rgba(8,18,31,.98) 0 58%, transparent 59%),conic-gradient(#63dbff calc(var(--confidence) * 1%), rgba(47,74,116,.38) 0);box-shadow:0 0 0 8px rgba(19,47,89,.48), 0 0 30px rgba(74,189,255,.14);position:relative}
+    .confidence-orb::after{content:"";position:absolute;inset:16px;border-radius:50%;box-shadow:inset 0 0 0 1px rgba(127,201,255,.12)}
+    .confidence-orb .inner{position:relative;z-index:1;text-align:center}
+    .confidence-orb .big{font-size:42px;line-height:1;font-weight:900}
+    .confidence-orb .label{color:#dce9ff;font-size:12px;margin-top:6px;text-transform:uppercase;letter-spacing:.08em}
+    .session-card-grid{display:grid;gap:9px;min-width:0}
+    .session-card{border-radius:14px;padding:11px 12px;background:rgba(8,18,31,.88);display:grid;grid-template-columns:1fr;align-items:start;gap:6px;min-width:0}
+    .session-card .label{color:#dce9ff;font-size:11px;text-transform:uppercase;letter-spacing:.04em;line-height:1.15}
+    .session-card .value{font-size:18px;font-weight:900;line-height:1.1;text-align:left;white-space:nowrap}
+    .session-card .value.green{color:#94f0b5}
+    .session-card .value.red{color:#ff8e97}
+    .session-card .value.blue{color:#7fd8ff}
+    .status-box{margin-top:14px;border-radius:16px;padding:14px 15px;background:rgba(8,18,31,.88);border:1px solid rgba(95,150,255,.12);position:relative;z-index:1}
+    .status-box .line-1{display:flex;align-items:center;gap:10px;font-size:16px;font-weight:800;margin-bottom:6px}
+    .status-box .line-1::before{content:">";color:#6ed9ff;font-weight:900}
+    .status-box .line-2{color:#cfe0fb;line-height:1.5;font-size:14px}
+    .summary-grid{margin-top:14px;display:grid;grid-template-columns:1fr 1fr;gap:12px;position:relative;z-index:1}
+    .summary-box{border-radius:16px;padding:14px;background:rgba(8,18,31,.88)}
+    .summary-box .label{color:#c9dbf7;font-size:12px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px}
+    .summary-box .value{font-size:18px;font-weight:900;line-height:1.2}
+    .trade-history{margin-top:0}
+    .trade-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px;position:relative;z-index:1}
+    .trade-actions{display:flex;align-items:center;gap:10px}
+    .view-all,.history-clear{border:none;border-radius:999px;background:rgba(8,18,31,.9);color:#e4efff;padding:9px 14px;font-weight:800;font-size:12px;cursor:pointer}
+    .history-stats{display:grid;grid-template-columns:repeat(4, minmax(0, 1fr));gap:10px;margin-bottom:14px;position:relative;z-index:1}
+    .mini-box{border-radius:16px;padding:12px 10px;background:rgba(8,18,31,.88);text-align:center}
+    .mini-box .value{font-size:24px;font-weight:900;line-height:1;margin-bottom:6px}
+    .mini-box .label{color:#cfe0fb;font-size:12px;text-transform:uppercase;letter-spacing:.05em}
+    .history-list{display:grid;gap:10px;position:relative;z-index:1;max-height:540px;overflow:auto;padding-right:4px}
+    .stake-side-shell .subtitle{font-size:12px;margin:6px 0 12px}
+    .stake-side-shell .stake-grid{grid-template-columns:repeat(2, minmax(0, 1fr));gap:10px}
+    .stake-side-shell .stake-band{padding:12px 10px}
+    .stake-side-shell .stake-band .range{font-size:12px}
+    .stake-side-shell .stake-band .copy{min-height:26px;font-size:11px}
+    .stake-side-shell .stake-band .percent{font-size:26px}
+    .stake-side-shell .stake-band .amount{font-size:18px}
+    .history-item{border-radius:16px;padding:12px 13px;background:linear-gradient(180deg, rgba(11,22,37,.96), rgba(8,15,26,.98));display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center}
+    .history-result{min-width:56px;border-radius:10px;padding:8px 10px;text-align:center;font-size:12px;font-weight:900;text-transform:uppercase}
+    .history-result.won{background:rgba(68,224,148,.16);color:#8ff2b9}
+    .history-result.lost{background:rgba(255,102,118,.16);color:#ff9aa5}
+    .history-result.pending{background:rgba(255,191,98,.16);color:#ffd594}
+    .history-details strong{display:block;font-size:14px;margin-bottom:3px;color:#f1f6ff}
+    .history-details span{display:block;color:#b9cbe7;font-size:12px;line-height:1.45}
+    .history-money{text-align:right;font-weight:800;font-size:13px;line-height:1.45}
+    .history-money .profit{display:block;font-size:16px;margin-top:2px}
+    .profit-green{color:#8ff2b9}
+    .profit-red{color:#ff9aa5}
+    .empty-state{border-radius:16px;padding:20px 16px;background:rgba(8,18,31,.88);color:var(--muted);text-align:center;line-height:1.6}
+    .footer-ribbon{margin-top:18px;border-radius:999px;padding:13px 22px;text-align:center;font-size:14px;color:#dde9ff;background:linear-gradient(180deg, rgba(16,28,48,.98), rgba(10,17,30,.98));border:1px solid rgba(95,150,255,.16);box-shadow:var(--shadow)}
+    .footer-ribbon strong{color:#fff6d5}
+    .footer-ribbon .green{color:#8ff2b9}
+    .footer-ribbon .gold{color:#ffd17e}
+    .hidden{display:none !important}
+    @media (max-width: 1380px){.main-grid{grid-template-columns:320px 1fr 300px}.scanner-card-grid{grid-template-columns:repeat(3, minmax(0, 1fr))}.stake-grid{grid-template-columns:repeat(2, minmax(0, 1fr))}.best-grid{grid-template-columns:1fr}.confidence-orb{width:150px;height:150px}}
+    @media (max-width: 1120px){.topbar{grid-template-columns:1fr;justify-items:start}.hero{text-align:left}.status-stack{justify-content:flex-start;max-width:none}.main-grid{grid-template-columns:1fr}.scanner-card-grid{grid-template-columns:repeat(2, minmax(0, 1fr))}.history-stats{grid-template-columns:repeat(2, minmax(0, 1fr))}.confidence-orb-wrap{grid-template-columns:1fr}.stake-side-shell .stake-grid{grid-template-columns:repeat(2, minmax(0, 1fr))}}
+    @media (max-width: 760px){.page{padding:18px 14px 24px}.hero h1{font-size:30px}.risk-grid,.mode-grid,.summary-grid,.scanner-card-grid,.stake-grid,.history-stats,.safe-grid{grid-template-columns:1fr}.trade-head,.section-head,.scanner-top{flex-direction:column;align-items:flex-start}.status-stack{width:100%}.user-card{width:100%}.history-item{grid-template-columns:1fr}.history-money{text-align:left}}
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="topbar">
+      <a class="back-btn" href="/">&lt; Back to Bot</a>
+      <div class="hero">
+        <h1>AI AUTO TRADING SESSION</h1>
+      <p>Fully Automatic &bull; Scan All Markets &bull; Pick Best Button &bull; Trade by Confidence</p>
+      </div>
+      <div class="status-stack">
+        <div class="status-chip disconnected" id="autoSessionConnectionValue">API Connecting</div>
+        <div class="status-chip">Server Time: <span id="autoSessionServerTime">--:--:-- UTC</span></div>
+        <div class="user-card">
+          <div class="user-avatar" id="autoSessionUserInitials">{{ (username or 'K')[0:2]|upper }}</div>
+          <div class="user-meta">
+            <strong>{{ username or "Trader" }}</strong>
+            <span>Balance: <span id="autoSessionBalanceValue">$0.00</span></span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="section-pill">KOOLKID AUTO TRADING</div>
+    <div class="info-banner">
+      <div class="info-icon">i</div>
+      <span><strong>How It Works:</strong> AI scans all {{ auto_session_markets|length }} markets, checks every button inside your selected profile set, ranks each valid setup, and only trades when confidence is strong enough.</span>
+    </div>
+    <div class="main-grid">
+      <div class="panel setup-panel">
+        <div class="section-head">
+          <div class="section-title"><span class="icon-dot">1</span> Session Setup</div>
+        </div>
+        <div class="setup-block">
+          <div class="block-title"><span class="step">1</span> Select Profile Mode</div>
+          <select class="hidden" id="autoSessionMode" aria-hidden="true">
+            <option value="single">1 Profile</option>
+            <option value="dual">2 Profiles</option>
+          </select>
+          <div class="mode-grid">
+            <button class="mode-card single" id="autoSessionModeSingleBtn" type="button">
+              <span class="mode-label">Single Profile</span>
+              <span class="mode-copy">Scan one profile</span>
+            </button>
+            <button class="mode-card dual" id="autoSessionModeDualBtn" type="button">
+              <span class="mode-label">Dual Profile</span>
+              <span class="mode-copy">Scan two profiles</span>
+            </button>
+          </div>
+        </div>
+        <div class="setup-block">
+          <div class="field-stack">
+            <div class="field">
+              <label for="autoSessionStrategy1">Primary Profile</label>
+              <select class="select" id="autoSessionStrategy1">
+                {% for item in auto_session_catalog %}
+                <option value="{{ item.id }}">{{ item.label }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="field hidden" id="autoSessionStrategy2Wrap">
+              <label for="autoSessionStrategy2">Secondary Profile</label>
+              <select class="select" id="autoSessionStrategy2">
+                {% for item in auto_session_catalog %}
+                <option value="{{ item.id }}">{{ item.label }}</option>
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="setup-block">
+          <div class="block-title"><span class="step">2</span> Budget &amp; Risk</div>
+          <div class="field-stack">
+            <div class="field"><label for="autoSessionBudget">Session Budget</label><input class="input" id="autoSessionBudget" type="number" min="1" max="2000" step="0.01" value="100"></div>
+            <div class="field"><label for="autoSessionSl">Stop Loss</label><input class="input" id="autoSessionSl" type="number" min="0" step="0.01" value="15"></div>
+            <div class="field"><label for="autoSessionTp">Take Profit</label><input class="input" id="autoSessionTp" type="number" min="0" step="0.01" value="25"></div>
+          </div>
+          <div class="risk-grid">
+            <div class="risk-card budget"><div class="label">Session Budget</div><div class="value" id="autoSessionBudgetHero">$100.00</div><div class="sub">Hard cap</div></div>
+            <div class="risk-card sl"><div class="label">Stop Loss</div><div class="value" id="autoSessionSlHero">$15.00</div><div class="sub">Max risk</div></div>
+            <div class="risk-card tp"><div class="label">Take Profit</div><div class="value" id="autoSessionTpHero">$25.00</div><div class="sub">Target</div></div>
+          </div>
+          <button class="action-btn start" id="autoSessionStartBtn" type="button">Start Auto Session<span>AI will scan and wait for the strongest valid setup.</span></button>
+          <button class="action-btn stop" id="autoSessionStopBtn" type="button">Stop Session<span>Stop the live auto session without changing existing bot logic.</span></button>
+        </div>
+        <div class="notice-box" id="autoSessionNotice">Session ready. First trade always starts at $0.35.</div>
+        <div class="safe-card">
+          <h4><span class="safe-icon">V</span> Safe Mode Enabled</h4>
+          <div class="safe-grid"><div>Never risks profit</div><div>Respects SL / TP</div><div>No overtrading</div><div>Budget stays isolated</div></div>
+        </div>
+        <div class="help-card">
+          <h4>How To Use</h4>
+          <div class="help-list">
+            <div>Pick 1 profile or 2 profiles, then the session scans the buttons inside those profiles.</div>
+            <div>Session Budget is the only risk pool. The bot does not spend outside that budget.</div>
+            <div>First trade always starts at $0.35, then stake ramps with confidence and remaining budget.</div>
+            <div>After a loss, recovery mode becomes stricter and waits for stronger setups.</div>
+          </div>
+        </div>
+      </div>
+      <div class="analysis-panel">
+        <div class="panel scanner-shell">
+          <div class="scanner-top">
+            <div class="scanner-title">
+              <h2>Market Scanner &amp; AI Analysis</h2>
+              <div class="scanner-status"><span class="live-dot">Active</span><span id="autoSessionScannerStatusText">Scanning markets and ranking live setups...</span></div>
+            </div>
+            <div class="volatility-box">
+              <div class="top-line">Market Volatility: <strong id="autoSessionVolatilityValue">0/100</strong></div>
+              <div class="volatility-bar"><div class="volatility-fill" id="autoSessionVolatilityFill"></div></div>
+            </div>
+          </div>
+          <div class="scanner-card-grid" id="autoSessionScannerCards"></div>
+          <div class="best-setup">
+            <div class="best-ribbon">Best Setup Identified</div>
+            <div class="best-grid">
+              <div>
+                <div class="best-market-name" id="autoSessionMarketValue">Scanning markets...</div>
+                <div class="best-inline"><span class="strategy-chip" id="autoSessionStrategyValue">Scanning selected profile buttons</span></div>
+                <div class="confidence-row"><div class="confidence-big" id="autoSessionConfidenceValue">0%</div><div class="confidence-grade" id="autoSessionConfidenceGrade">Standby</div></div>
+                <div class="tag-row"><span class="setup-tag" id="autoSessionSetupTag1">Scanning</span><span class="setup-tag" id="autoSessionSetupTag2">Protected Budget</span><span class="setup-tag" id="autoSessionSetupTag3">Live Filter</span></div>
+                <div class="why-box"><strong>Why This Setup?</strong><p id="autoSessionWhyValue">The session is watching all markets and profile buttons for the cleanest low-noise opportunity.</p></div>
+              </div>
+              <div class="chart-card">
+                <svg class="chart-svg" id="autoSessionChartSvg" viewBox="0 0 320 264" preserveAspectRatio="none" aria-hidden="true">
+                  <defs><linearGradient id="lineGlow" x1="0" x2="1" y1="0" y2="0"><stop offset="0%" stop-color="#77e2ff" /><stop offset="55%" stop-color="#ffcf67" /><stop offset="100%" stop-color="#ff6f76" /></linearGradient></defs>
+                  <polyline id="autoSessionChartLinePrimary" fill="none" stroke="url(#lineGlow)" stroke-width="3" points="0,208 26,196 44,200 70,170 96,186 122,138 148,150 176,108 202,118 228,88 252,102 276,64 300,82 320,60"/>
+                  <polyline id="autoSessionChartLineSecondary" fill="none" stroke="#ffc84e" stroke-width="2" points="0,220 26,214 44,206 70,198 96,190 122,180 148,170 176,160 202,149 228,138 252,126 276,116 300,108 320,98" opacity=".9"/>
+                  <polyline id="autoSessionChartLineTertiary" fill="none" stroke="#ff525f" stroke-width="2" points="0,232 26,228 44,224 70,220 96,214 122,206 148,198 176,189 202,178 228,168 252,160 276,154 300,148 320,144" opacity=".85"/>
+                  <g id="autoSessionChartBars">
+                    <rect x="20" y="198" width="12" height="44" fill="rgba(85,163,255,.35)"/><rect x="42" y="188" width="12" height="54" fill="rgba(85,163,255,.35)"/><rect x="64" y="176" width="12" height="66" fill="rgba(85,163,255,.35)"/><rect x="86" y="168" width="12" height="74" fill="rgba(85,163,255,.35)"/><rect x="108" y="152" width="12" height="90" fill="rgba(85,163,255,.35)"/><rect x="130" y="164" width="12" height="78" fill="rgba(85,163,255,.35)"/><rect x="152" y="142" width="12" height="100" fill="rgba(85,163,255,.35)"/><rect x="174" y="136" width="12" height="106" fill="rgba(85,163,255,.35)"/><rect x="196" y="124" width="12" height="118" fill="rgba(85,163,255,.35)"/><rect x="218" y="130" width="12" height="112" fill="rgba(85,163,255,.35)"/><rect x="240" y="116" width="12" height="126" fill="rgba(85,163,255,.35)"/><rect x="262" y="108" width="12" height="134" fill="rgba(85,163,255,.35)"/><rect x="284" y="120" width="12" height="122" fill="rgba(85,163,255,.35)"/>
+                  </g>
+                </svg>
+                <div class="chart-footer">
+                  <div><strong id="autoSessionChartLeftTitle">Automation</strong><span id="autoSessionChartLeftCopy">Session is waiting for the strongest profile-button match.</span></div>
+                  <div><strong id="autoSessionChartRightTitle">Protection</strong><span id="autoSessionChartRightCopy">Budget and SL/TP stay locked while the AI scans.</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="panel trade-history">
+          <div class="trade-head">
+            <h2>Trade History</h2>
+            <div class="trade-actions"><button class="view-all" type="button">Live Only</button><button class="history-clear" id="autoTradeHistoryClearBtn" type="button">Clear History</button></div>
+          </div>
+          <div class="history-stats">
+            <div class="mini-box"><div class="value green" id="autoTradeHistoryWins">{{ koolkid_dashboard.stats.wins or 0 }}</div><div class="label">Wins</div></div>
+            <div class="mini-box"><div class="value red" id="autoTradeHistoryLosses">{{ koolkid_dashboard.stats.losses or 0 }}</div><div class="label">Losses</div></div>
+            <div class="mini-box"><div class="value" id="autoTradeHistoryWinRate">{{ '%.1f'|format(koolkid_dashboard.stats.winrate or 0) }}%</div><div class="label">Win Rate</div></div>
+            <div class="mini-box"><div class="value {% if (koolkid_dashboard.stats.net_pnl or 0) >= 0 %}green{% else %}red{% endif %}" id="autoTradeHistoryNetPnl">${{ '%.2f'|format(koolkid_dashboard.stats.net_pnl or 0) }}</div><div class="label">Net P/L</div></div>
+          </div>
+          <div class="history-list" id="autoTradeHistoryBody">
+            {% if koolkid_dashboard.history %}
+              {% for row in koolkid_dashboard.history %}
+              <div class="history-item">
+                <div class="history-result {% if row.pending %}pending{% elif row.result == 'WIN' %}won{% else %}lost{% endif %}">{{ 'PENDING' if row.pending else row.result }}</div>
+                <div class="history-details"><strong>{% if row.button_label %}{{ row.button_label }} &bull; {% endif %}{{ row.symbol or '-' }}{% if row.type %} - {{ row.type }}{% endif %}{% if row.barrier is defined %} {{ row.barrier }}{% endif %}</strong><span>{{ row.time }}{% if row.duration is defined %} &bull; {{ row.duration }}{{ row.duration_unit or '' }}{% endif %}</span></div>
+                <div class="history-money"><span>Stake {{ '$%.2f'|format(row.stake or 0) }}</span><span>{% if row.payout is defined %}Payout {{ '$%.2f'|format(row.payout or 0) }}{% else %}Payout --{% endif %}</span><span class="profit {% if (row.profit or 0) >= 0 %}profit-green{% else %}profit-red{% endif %}">{% if (row.profit or 0) >= 0 %}+{% endif %}${{ '%.2f'|format(row.profit or 0) }}</span></div>
+              </div>
+              {% endfor %}
+            {% else %}
+              <div class="empty-state">No Auto Trading Session trades yet.</div>
+            {% endif %}
+          </div>
+          <div style="display:none" id="autoTradeHistoryTotal">{{ koolkid_dashboard.stats.total_trades or 0 }}</div>
+        </div>
+      </div>
+      <div class="side-stack">
+        <div class="panel live-panel">
+          <div class="section-head"><div class="section-title">Live Session Dashboard</div><div class="session-live" id="autoSessionLiveFlag">Session Idle</div></div>
+          <div class="confidence-orb-wrap">
+            <div class="confidence-orb" id="autoSessionConfidenceRing"><div class="inner"><div class="big" id="autoSessionConfidenceValueMirror">0%</div><div class="label">Confidence</div></div></div>
+            <div class="session-card-grid">
+              <div class="session-card"><div class="label">Session Budget</div><div class="value" id="autoSessionBudgetValue">$0.00</div></div>
+              <div class="session-card"><div class="label">Remaining</div><div class="value green" id="autoSessionRemainingValue">$0.00</div></div>
+              <div class="session-card"><div class="label">Current Stake</div><div class="value blue" id="autoSessionStakeValue">$0.35</div></div>
+              <div class="session-card"><div class="label">Profit / Loss</div><div class="value" id="autoSessionPnlValue">$0.00</div></div>
+              <div class="session-card"><div class="label">Take Profit</div><div class="value green" id="autoSessionTpValue">$0.00</div></div>
+              <div class="session-card"><div class="label">Stop Loss</div><div class="value red" id="autoSessionSlValue">$0.00</div></div>
+            </div>
+          </div>
+          <div class="status-box"><div class="line-1"><span id="autoSessionStatusValue">IDLE</span></div><div class="line-2" id="autoSessionStatusDetailValue">Looking for a valid setup...</div></div>
+          <div class="summary-grid">
+            <div class="summary-box"><div class="label">Active Market</div><div class="value" id="autoSessionMarketValueMirror">-</div></div>
+            <div class="summary-box"><div class="label">Active Button</div><div class="value" id="autoSessionStrategyValueMirror">-</div></div>
+            <div class="summary-box"><div class="label">Wins</div><div class="value" id="autoSessionWinsValue">0</div></div>
+            <div class="summary-box"><div class="label">Losses</div><div class="value" id="autoSessionLossesValue">0</div></div>
+          </div>
+        </div>
+        <div class="panel stake-shell stake-side-shell">
+          <h2>Dynamic Stake By Confidence</h2>
+          <div class="subtitle" id="autoSessionStakeGuideCopy">First trade always starts at $0.35, then sizing adapts to budget and risk room.</div>
+          <div class="stake-grid">
+            <div class="stake-band"><div class="range">60-69%</div><div class="copy">Setup only if the edge stays clean.</div><div class="percent">10%</div><div class="amount" id="autoSessionStakeTierLow">$0.00</div></div>
+            <div class="stake-band"><div class="range">70-79%</div><div class="copy">Stronger setup with controlled sizing.</div><div class="percent">25%</div><div class="amount" id="autoSessionStakeTierMid">$0.00</div></div>
+            <div class="stake-band"><div class="range">80-89%</div><div class="copy">High-quality conditions with more conviction.</div><div class="percent">50%</div><div class="amount" id="autoSessionStakeTierHigh">$0.00</div></div>
+            <div class="stake-band gold"><div class="range">Max Stake</div><div class="copy">Reserved for the strongest valid setup only.</div><div class="percent">100%</div><div class="amount" id="autoSessionStakeTierMax">$0.00</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="footer-ribbon"><strong>FIRST TRADE ALWAYS $0.35</strong> &bull; After losses: <span class="gold">Recovery mode stays smaller</span> &bull; Profit <span class="green">never</span> gets forced into risk &bull; Only budget is at risk</div>
+  </div>
+  <script>
+    window.AUTO_SESSION_CATALOG = {{ auto_session_catalog|tojson }};
+    window.AUTO_SESSION_INITIAL_STATUS = {{ auto_session_status|tojson }};
+    window.KOOLKID_AUTO_TRADE_DASHBOARD = {{ koolkid_dashboard|tojson }};
+    window.AUTO_SESSION_MARKETS = {{ auto_session_markets|tojson }};
+    window.AUTO_SESSION_USERNAME = {{ (username or 'Trader')|tojson }};
+  </script>
+  <script src="{{ url_for('static', filename='js/koolkid_auto_trade.js') }}"></script>
+</body>
+</html>

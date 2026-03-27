@@ -1,6 +1,6 @@
 (function () {
   const PROFILE = "JOKERJOE";
-  const state = { lastSocket: null, socketBound: false, autoModes: {}, kidgxBarrier: 5, matchesAnalysisOn: false, matchesLastKey: "", matchesObserverBound: false, matchSniperOn: false, matchSniperCooldownUntil: 0, matchSniperActiveDigit: null, matchSniperConsumed: false, matchSniperBusy: false, matchesSnapshot: null, matchesSorted: [], matchSniper5xOn: false, matchSniper5xCooldownUntil: 0, matchSniper5xBusy: false, matchSniper5xLastTopKey: "", aiAutoModeChoice: "golden_digits", aiAutoLowestTradeCountChoice: 5, aiAutoLowestLocalOn: false, aiAutoModalOpen: false, aiLowestLastTickCount: 0, aiLowestTouches: {}, aiLowestArmed: null, aiLowestBatchActive: false, aiLowestBatchPending: 0, aiLowestBatchBarrier: null, aiLowestBatchProfit: 0, aiLowestCooldownUntil: 0, aiLowestSubmitting: false, aiLowestRecoveryDeficit: 0, aiLowestRecoveryOnly: false };
+  const state = { lastSocket: null, socketBound: false, autoModes: {}, kidgxBarrier: 5, matchesAnalysisOn: false, matchesLastKey: "", matchesObserverBound: false, matchSniperOn: false, matchSniperCooldownUntil: 0, matchSniperActiveDigit: null, matchSniperConsumed: false, matchSniperBusy: false, matchesSnapshot: null, matchesSorted: [], matchSniper5xOn: false, matchSniper5xCooldownUntil: 0, matchSniper5xBusy: false, matchSniper5xLastTopKey: "", matchSniper5xRotationSets: null, matchSniper5xRotationIndex: 0, matchSniper5xCurrentDigits: [], aiAutoModeChoice: "golden_digits", aiAutoLowestTradeCountChoice: 5, aiAutoLowestLocalOn: false, aiAutoModalOpen: false, aiLowestLastTickCount: 0, aiLowestTouches: {}, aiLowestArmed: null, aiLowestBatchActive: false, aiLowestBatchPending: 0, aiLowestBatchBarrier: null, aiLowestBatchProfit: 0, aiLowestCooldownUntil: 0, aiLowestSubmitting: false, aiLowestRecoveryDeficit: 0, aiLowestRecoveryOnly: false };
 
   function App() { return window.BotApp || {}; }
   function isActive() { try { return typeof activeProfile !== "undefined" && activeProfile === PROFILE; } catch (e) { return false; } }
@@ -11,6 +11,49 @@
   function setText(id, value) {
     const el = getEl(id);
     if (el) el.innerText = value;
+  }
+
+  function shuffleDigitsJokerjoe() {
+    const digits = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+    for (let i = digits.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const tmp = digits[i];
+      digits[i] = digits[j];
+      digits[j] = tmp;
+    }
+    return digits;
+  }
+
+  function ensureMatchSniper5xRotationJokerjoe(reset) {
+    if (!reset && Array.isArray(state.matchSniper5xRotationSets) && state.matchSniper5xRotationSets.length === 2) {
+      return;
+    }
+    const shuffled = shuffleDigitsJokerjoe();
+    state.matchSniper5xRotationSets = [
+      shuffled.slice(0, 5).sort((a, b) => a - b),
+      shuffled.slice(5, 10).sort((a, b) => a - b),
+    ];
+    state.matchSniper5xRotationIndex = 0;
+    state.matchSniper5xCurrentDigits = [];
+    state.matchSniper5xLastTopKey = "";
+  }
+
+  function activateNextMatchSniper5xDigitsJokerjoe(opts) {
+    ensureMatchSniper5xRotationJokerjoe(!!(opts && opts.reset));
+    const sets = Array.isArray(state.matchSniper5xRotationSets) ? state.matchSniper5xRotationSets : [];
+    if (sets.length !== 2) return [];
+    const idx = Number(state.matchSniper5xRotationIndex) === 1 ? 1 : 0;
+    const nextDigits = Array.isArray(sets[idx]) ? sets[idx].slice() : [];
+    state.matchSniper5xCurrentDigits = nextDigits;
+    state.matchSniper5xRotationIndex = idx === 0 ? 1 : 0;
+    return nextDigits.slice();
+  }
+
+  function getActiveMatchSniper5xDigitsJokerjoe() {
+    if (!Array.isArray(state.matchSniper5xCurrentDigits) || state.matchSniper5xCurrentDigits.length !== 5) {
+      return activateNextMatchSniper5xDigitsJokerjoe();
+    }
+    return state.matchSniper5xCurrentDigits.slice();
   }
 
 
@@ -332,30 +375,25 @@
     if (!el) return;
     const now = Date.now();
     const cdMs = Math.max(0, (state.matchSniper5xCooldownUntil || 0) - now);
-    const data = Array.isArray(sorted) ? sorted : (Array.isArray(state.matchesSorted) ? state.matchesSorted : []);
     if (!state.matchSniper5xOn) {
       el.style.color = "#94a3b8";
-      el.innerText = "OFF • Top 5 MATCHES digits • same-tick batch • 10s cooldown";
+      el.innerText = "OFF • 5 random MATCHES digits • same-tick batch • 10s cooldown";
       return;
     }
+    const digits = getActiveMatchSniper5xDigitsJokerjoe();
+    const digitText = digits.length ? digits.join(", ") : "building set";
     if (state.matchSniper5xBusy) {
       el.style.color = "#38bdf8";
-      el.innerText = "Placing 5 MATCHES trades (same tick request)…";
+      el.innerText = `Placing 5 MATCHES trades (${digitText})…`;
       return;
     }
     if (cdMs > 0) {
       el.style.color = "#facc15";
-      el.innerText = `Cooldown: ${(cdMs/1000).toFixed(1)}s • waiting for next top-5 set`;
+      el.innerText = `Cooldown: ${(cdMs/1000).toFixed(1)}s • next set ${digitText}`;
       return;
     }
-    if (!data || data.length < 5) {
-      el.style.color = "#94a3b8";
-      el.innerText = "Armed • waiting for top 5 MATCHES digits";
-      return;
-    }
-    const top5 = data.slice(0,5).map(x => `${x.digit} (${Number(x.pct).toFixed(1)}%)`).join(", ");
     el.style.color = "#22c55e";
-    el.innerText = `ARMED • Top 5 = ${top5}`;
+    el.innerText = `ARMED • Random 5 = ${digitText}`;
   }
 
   async function tryMatchSniper5xTradeJokerjoe(sorted) {
@@ -363,20 +401,22 @@
     const now = Date.now();
     if ((state.matchSniper5xCooldownUntil || 0) > now) return;
     if (!Array.isArray(sorted) || sorted.length < 5) return;
-    const top5 = sorted.slice(0, 5).map((x) => ({ digit: Number(x.digit), pct: Number(x.pct) }));
-    const uniq = Array.from(new Set(top5.map(x => x.digit)));
+    const currentSet = getActiveMatchSniper5xDigitsJokerjoe();
+    if (currentSet.length !== 5) return;
+    const uniq = Array.from(new Set(currentSet));
     if (uniq.length < 5) return;
-    const key = top5.map(x => `${x.digit}:${x.pct.toFixed(1)}`).join("|");
+    const key = currentSet.join("|");
     if (state.matchSniper5xLastTopKey === key) return;
 
     state.matchSniper5xBusy = true;
     updateMatchSniper5xStatusJokerjoe(sorted);
     try {
-      const r = await placeBatchManualTradesJokerjoe("MATCHES", top5.map(x => x.digit));
+      const r = await placeBatchManualTradesJokerjoe("MATCHES", currentSet);
       if (r.placed === 5) {
         state.matchSniper5xLastTopKey = key;
         state.matchSniper5xCooldownUntil = Date.now() + 10000;
-        safeToast(`🎯 MatchSniper 5x: MATCHES ${top5.map(x => x.digit).join(', ')} (same-tick request)`, "success");
+        safeToast(`🎯 MatchSniper 5x: MATCHES ${currentSet.join(', ')} (same-tick request)`, "success");
+        activateNextMatchSniper5xDigitsJokerjoe();
       } else {
         safeToast(`🎯 MatchSniper 5x partial (${r.placed}/5)`, "error");
       }
@@ -717,6 +757,9 @@
       state.matchesAnalysisOn = true;
       updateMatchesAnalysisButtonJokerjoe();
     }
+    if (state.matchSniper5xOn) {
+      activateNextMatchSniper5xDigitsJokerjoe();
+    }
     if (!state.matchSniper5xOn) {
       state.matchSniper5xBusy = false;
     }
@@ -827,14 +870,28 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     const input = document.getElementById("barrier");
     if (!input || input.dataset.kidgxSyncBound === "1") return;
     input.dataset.kidgxSyncBound = "1";
-    const sync = async () => {
-      state.kidgxBarrier = currentBarrier();
+    const sync = async (opts) => {
+      const nextBarrier = currentBarrier();
+      const changed = Number(nextBarrier) !== Number(state.kidgxBarrier);
+      state.kidgxBarrier = nextBarrier;
       updateButtons();
+      if (!changed && !(opts && opts.force)) return;
       try { await postJSON("/set_kidgx_barrier", { barrier: state.kidgxBarrier }); } catch (e) {}
     };
-    input.addEventListener("change", sync);
-    input.addEventListener("blur", sync);
-    setTimeout(sync, 150);
+    input.addEventListener("input", () => { sync(); });
+    input.addEventListener("change", () => { sync(); });
+    input.addEventListener("blur", () => { sync(); });
+    input.addEventListener("keyup", () => { sync(); });
+
+    const digitGrid = document.getElementById("digitGrid");
+    if (digitGrid && digitGrid.dataset.kidgxBarrierSyncBound !== "1") {
+      digitGrid.dataset.kidgxBarrierSyncBound = "1";
+      digitGrid.addEventListener("click", () => {
+        setTimeout(() => { sync(); }, 0);
+      });
+    }
+
+    setTimeout(() => { sync({ force: true }); }, 150);
   }
 
   function patchKidgambleConfirm() {

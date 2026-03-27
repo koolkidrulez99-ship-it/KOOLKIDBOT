@@ -48,6 +48,22 @@ from strategies.jokerjoe import (
     _seqvix_jokerjoe_watch_label,
 )
 from strategies.human import HumanStrategy
+from strategies.auto_session import (
+    AUTO_SESSION_HISTORY_COUNT,
+    AUTO_SESSION_MARKETS,
+    clear_auto_session_dashboard,
+    ensure_auto_session_state,
+    feed_auto_session_history,
+    get_auto_session_catalog,
+    get_auto_session_dashboard_payload,
+    get_auto_session_status,
+    handle_auto_session_buy_confirmed,
+    handle_auto_session_buy_failed,
+    handle_auto_session_contract_settled,
+    process_auto_session_tick,
+    start_auto_session,
+    stop_auto_session,
+)
 try:
     import strategies.unchain as _unchain_module
     UnchainStrategy = _unchain_module.UnchainStrategy
@@ -1333,6 +1349,12 @@ def _serialize_profile_trade_history_entry(profile, entry, index):
         "symbol": symbol,
         "type": trade_type,
     }
+    try:
+        payout_value = float(raw.get("payout", raw.get("sell_price", 0)) or 0)
+    except Exception:
+        payout_value = 0.0
+    if payout_value:
+        snapshot["payout"] = round(payout_value, 2)
 
     if raw.get("barrier") not in (None, ""):
         snapshot["barrier"] = raw.get("barrier")
@@ -1366,6 +1388,10 @@ def _get_profile_trade_history_snapshot(state, profile=None):
                 items.append(serialized)
         snapshots[prof] = items
     return snapshots
+
+
+def _get_koolkid_auto_trade_dashboard_payload(state):
+    return get_auto_session_dashboard_payload(state, limit=40)
 
 
 
@@ -1674,7 +1700,8 @@ def handle_connect():
     socketio.emit("connection_status", {
         "connected": state["ws_connected"],
         "loginid": "UNKNOWN",
-        "balance": state["balance"]
+        "balance": state["balance"],
+        "session_start_balance": state.get("session_start_balance"),
     }, room=cid)
 
     emit_profile_snapshot(cid)
@@ -1726,6 +1753,110 @@ def index():
     if is_admin():
         return redirect(url_for("admin_panel"))
     return render_template("index.html", username=session.get("user"))
+
+
+@app.route("/koolkid-auto-trade")
+def koolkid_auto_trade():
+    if not login_required():
+        return redirect(url_for("login"))
+    if is_admin():
+        return redirect(url_for("admin_panel"))
+    cid, state = get_client_state()
+    return render_template(
+        "koolkid_auto_trade.html",
+        username=session.get("user"),
+        auto_session_catalog=get_auto_session_catalog(),
+        auto_session_status=get_auto_session_status(state),
+        auto_session_markets=AUTO_SESSION_MARKETS,
+        koolkid_dashboard=_get_koolkid_auto_trade_dashboard_payload(state),
+    )
+
+
+@app.route("/auto-session/status", methods=["GET"])
+def auto_session_status():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    _cid, state = get_client_state()
+    payload = get_auto_session_status(state)
+    payload["connected"] = bool(state.get("ws_connected"))
+    payload["balance"] = round(float(state.get("balance", 0.0) or 0.0), 2)
+    payload["koolkid_dashboard"] = _get_koolkid_auto_trade_dashboard_payload(state)
+    return jsonify(payload)
+
+
+@app.route("/auto-session/start", methods=["POST"])
+def auto_session_start():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    if not state.get("ws_connected") or not state.get("ws"):
+        return jsonify({"ok": False, "error": "Connect your API first before starting a session"}), 400
+
+    payload = request.get_json(silent=True) or {}
+    try:
+        requested_budget = float(payload.get("budget", 100) or 0.0)
+    except Exception:
+        requested_budget = 0.0
+    live_balance = round(float(state.get("balance", 0.0) or 0.0), 2)
+    if live_balance <= 0:
+        return jsonify({"ok": False, "error": "Your live balance is not ready yet"}), 400
+    if requested_budget > live_balance:
+        return jsonify({"ok": False, "error": "Session budget cannot be above your current balance"}), 400
+    try:
+        session_state = start_auto_session(
+            state,
+            payload.get("strategy_1"),
+            payload.get("strategy_2"),
+            budget=payload.get("budget", 100),
+            sl=payload.get("sl", 0),
+            tp=payload.get("tp", 0),
+        )
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+    for symbol in AUTO_SESSION_MARKETS:
+        try:
+            _ensure_tick_subscription(state, symbol)
+        except Exception:
+            pass
+        try:
+            req_id = _new_req_id()
+            state["req_meta"][req_id] = {
+                "kind": "auto_session_seed",
+                "symbol": symbol,
+                "time": now_time(),
+            }
+            state["ws"].send(json.dumps({
+                "ticks_history": symbol,
+                "style": "ticks",
+                "count": AUTO_SESSION_HISTORY_COUNT,
+                "end": "latest",
+                "adjust_start_time": 1,
+                "req_id": req_id,
+            }))
+        except Exception:
+            pass
+
+    return jsonify({"ok": True, "session": get_auto_session_status(state), "seed_markets": list(session_state.get("market_order", []))})
+
+
+@app.route("/auto-session/stop", methods=["POST"])
+def auto_session_stop():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    _cid, state = get_client_state()
+    stop_auto_session(state, "Stopped by user")
+    return jsonify({"ok": True, "session": get_auto_session_status(state)})
+
+
+@app.route("/auto-session/clear-history", methods=["POST"])
+def auto_session_clear_history():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    _cid, state = get_client_state()
+    clear_auto_session_dashboard(state)
+    return jsonify({"ok": True, "dashboard": _get_koolkid_auto_trade_dashboard_payload(state)})
 
 
 # ---------------- HEARTBEAT ROUTE ---------------- #
@@ -2028,7 +2159,7 @@ def place_risefall_order(client_id, signal):
         "stake": stake,
         "symbol": symbol_to_use,
         "time": now_time(),
-        "mode": "human_rf",
+        "mode": signal.get("mode") or "human_rf",
         "duration": duration,
     }
 
@@ -2056,6 +2187,54 @@ def place_risefall_order(client_id, signal):
         except Exception:
             pass
         return False, str(e)
+
+
+def _execute_auto_session_plan(client_id, state, plan):
+    if not isinstance(plan, dict):
+        return
+
+    for action in list(plan.get("actions") or []):
+        try:
+            kind = str(action.get("kind") or "").lower().strip()
+            if kind == "human_rf":
+                signal = {
+                    "direction": action.get("direction"),
+                    "stake": action.get("stake"),
+                    "duration": action.get("duration", 5),
+                    "duration_unit": action.get("duration_unit", "t"),
+                    "symbol": action.get("symbol"),
+                    "mode": action.get("mode"),
+                }
+                ok, msg = place_risefall_order(client_id, signal)
+            elif kind == "unchain_hl":
+                ok, msg = _send_unchain_hl_trade(
+                    client_id,
+                    side=action.get("side"),
+                    stake=action.get("stake"),
+                    symbol=action.get("symbol"),
+                    barrier=action.get("barrier"),
+                    duration=action.get("duration", 5),
+                    duration_unit=action.get("duration_unit", "t"),
+                    entry_source="AUTO_SESSION",
+                    auto_confidence=plan.get("confidence"),
+                    mode=action.get("mode"),
+                )
+            else:
+                ok, msg = send_buy_with_profile(
+                    client_id,
+                    action.get("profile"),
+                    action.get("contract_type"),
+                    action.get("stake"),
+                    action.get("symbol"),
+                    action.get("barrier"),
+                    duration=action.get("duration", 1),
+                    duration_unit=action.get("duration_unit", "t"),
+                    mode=action.get("mode"),
+                )
+            if not ok:
+                handle_auto_session_buy_failed(state, action, msg)
+        except Exception as exc:
+            handle_auto_session_buy_failed(state, action, str(exc))
 
 
 def _default_unchain_hl_state():
@@ -2541,6 +2720,8 @@ def _pull_contract_meta(state, contract_id):
 def _is_unchain_contract_known(state, contract_id, meta=None):
     try:
         if meta and str((meta.get("profile") or "")).upper() == "UNCHAIN":
+            if str((meta.get("mode") or "")).startswith("AUTO_SESSION|"):
+                return False
             return True
     except Exception:
         pass
@@ -6052,6 +6233,7 @@ def _send_unchain_hl_trade(
     auto_cycle_id=None,
     auto_confidence=None,
     respect_half_barrier_toggle=True,
+    mode=None,
 ):
     state = clients.get(client_id)
     if not state:
@@ -6107,6 +6289,7 @@ def _send_unchain_hl_trade(
         "entry_source": (str(entry_source).upper().strip() if entry_source else None),
         "auto_cycle_id": safe_cycle_id,
         "auto_confidence": safe_auto_confidence,
+        "mode": mode,
     }
     state.setdefault("req_meta", {})[req_id] = req_meta
     deriv_contract = {"HIGHER": "CALL", "LOWER": "PUT"}[side]
@@ -7485,15 +7668,20 @@ def handle_on_message(client_id, ws, message, expected_nonce):
         if "error" in data:
             if _resolve_proposal_waiter(state, req_id, proposal=None, error=(data.get("error") or {}).get("message", "Quote error")):
                 return
+            failed_buy_meta = None
             try:
                 _seqvix_jokerjoe_handle_buy_error(state, req_id)
             except Exception:
                 pass
             try:
-                _cleanup_failed_buy_request(state, req_id)
+                failed_buy_meta = _cleanup_failed_buy_request(state, req_id)
             except Exception:
                 pass
             msg = data["error"].get("message", "Unknown API Error")
+            try:
+                handle_auto_session_buy_failed(state, failed_buy_meta, msg)
+            except Exception:
+                pass
             sell_req_cid = None
             try:
                 sell_req_cid = (echo_req or {}).get("sell")
@@ -7554,10 +7742,14 @@ def handle_on_message(client_id, ws, message, expected_nonce):
             socketio.emit("connection_status", {
                 "connected": True,
                 "loginid": loginid,
-                "balance": balance
+                "balance": balance,
+                "session_start_balance": state.get("session_start_balance"),
             }, room=client_id)
 
-            socketio.emit("balance_update", {"balance": balance}, room=client_id)
+            socketio.emit("balance_update", {
+                "balance": balance,
+                "session_start_balance": state.get("session_start_balance"),
+            }, room=client_id)
             try:
                 _sync_unchain_market_default_barriers(state, force=True)
             except Exception:
@@ -7581,8 +7773,29 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 balance = float(data["balance"]["balance"])
                 state["balance"] = balance
                 state["balance_updated_at"] = time.time()
-                socketio.emit("balance_update", {"balance": balance}, room=client_id)
+                socketio.emit("balance_update", {
+                    "balance": balance,
+                    "session_start_balance": state.get("session_start_balance"),
+                }, room=client_id)
                 send_stats_update(client_id)
+            except Exception:
+                pass
+
+        if "history" in data:
+            try:
+                req_id = data.get("req_id")
+                meta = _pull_req_meta_by_req_id(state, req_id) if req_id not in (None, "") else None
+                if meta and meta.get("kind") == "auto_session_seed":
+                    history = data.get("history") or {}
+                    prices = list(history.get("prices") or [])
+                    symbol = str(meta.get("symbol") or echo_req.get("ticks_history") or "").upper().strip()
+                    if symbol and prices:
+                        feed_auto_session_history(
+                            state,
+                            symbol,
+                            prices,
+                            lambda price: extract_last_decimal_digit(price, 2),
+                        )
             except Exception:
                 pass
 
@@ -7626,6 +7839,15 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                     state["tick_subs"][sym] = sub_id
             except Exception:
                 pass
+            try:
+                quote = tick.get("quote")
+                pip_size = tick.get("pip_size", 2)
+                auto_digit = extract_last_decimal_digit(quote, pip_size)
+                auto_plan = process_auto_session_tick(state, tick, auto_digit)
+                if auto_plan:
+                    _execute_auto_session_plan(client_id, state, auto_plan)
+            except Exception:
+                pass
             # ==================== PATCH 1E: hook process_seqvix_tick ====================
             process_seqvix_tick(client_id, tick)
             _process_unchain_scanner_tick(client_id, tick)
@@ -7644,12 +7866,17 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 norm_contract_id = _normalize_contract_id(contract_id)
                 if norm_contract_id:
                     state["contract_meta"][norm_contract_id] = meta
+                is_auto_session_contract = str((meta or {}).get("mode") or "").startswith("AUTO_SESSION|")
                 try:
                     _seqvix_jokerjoe_on_buy_confirmed(state, contract_id, meta)
                 except Exception:
                     pass
                 try:
-                    if (meta.get("profile") or "").upper() == "UNCHAIN":
+                    handle_auto_session_buy_confirmed(state, contract_id, meta)
+                except Exception:
+                    pass
+                try:
+                    if (meta.get("profile") or "").upper() == "UNCHAIN" and not is_auto_session_contract:
                         _upsert_unchain_active_contract(state, contract_id, meta=meta, status="OPEN")
                         us = (state.get("strategies") or {}).get("UNCHAIN")
                         if us and hasattr(us, "on_contract_opened") and str(meta.get("type") or "").upper() == "ACCU":
@@ -7677,23 +7904,24 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                         countdown_seconds = int(duration_val) * 60
                     elif duration_unit_val == "h":
                         countdown_seconds = int(duration_val) * 3600
-                socketio.emit("trade_placed", {
-                    "profile": meta.get("profile"),
-                    "type": meta.get("type"),
-                    "barrier": meta.get("barrier"),
-                    "stake": meta.get("stake"),
-                    "symbol": meta.get("symbol"),
-                    "time": meta.get("time"),
-                    "contract_id": contract_id,
-                    "duration": duration_val,
-                    "duration_unit": duration_unit_val if duration_val is not None else None,
-                    "countdown_remaining": duration_val,
-                    "countdown_unit": duration_unit_val if duration_val is not None else None,
-                    "countdown_seconds": countdown_seconds,
-                    "status": "PENDING",
-                    "result": "PENDING",
-                    "pending": True,
-                }, room=client_id)
+                if not is_auto_session_contract:
+                    socketio.emit("trade_placed", {
+                        "profile": meta.get("profile"),
+                        "type": meta.get("type"),
+                        "barrier": meta.get("barrier"),
+                        "stake": meta.get("stake"),
+                        "symbol": meta.get("symbol"),
+                        "time": meta.get("time"),
+                        "contract_id": contract_id,
+                        "duration": duration_val,
+                        "duration_unit": duration_unit_val if duration_val is not None else None,
+                        "countdown_remaining": duration_val,
+                        "countdown_unit": duration_unit_val if duration_val is not None else None,
+                        "countdown_seconds": countdown_seconds,
+                        "status": "PENDING",
+                        "result": "PENDING",
+                        "pending": True,
+                    }, room=client_id)
             else:
                 socketio.emit("trade_placed", {
                     "profile": state.get("active_profile", "KOOLKID"),
@@ -7961,16 +8189,17 @@ def process_contract(client_id, contract):
         settled_balance = _resolve_post_contract_balance(state, profit)
 
         meta = _pull_contract_meta(state, contract_id) if contract_id is not None else None
+        is_auto_session_contract = str((meta or {}).get("mode") or "").startswith("AUTO_SESSION|")
         if _is_unchain_contract_known(state, contract_id, meta=meta):
             profile_for_contract = "UNCHAIN"
         else:
             profile_for_contract = (meta.get("profile") if meta else None) or state.get("active_profile", "KOOLKID")
         entry = {}
 
-        if profile_for_contract == "UNCHAIN":
+        if profile_for_contract == "UNCHAIN" and not is_auto_session_contract:
             entry = _finalize_unchain_contract(state, contract, meta=meta)
             _mark_unchain_contract_processed(state, contract_id)
-        else:
+        elif not is_auto_session_contract:
             strategies = state.get("strategies", {})
             strategy = strategies.get(profile_for_contract)
             if not strategy:
@@ -8017,11 +8246,17 @@ def process_contract(client_id, contract):
             if exit_digit is not None:
                 entry["exit_digit"] = exit_digit
 
-        socketio.emit("trade_result", entry, room=client_id)
-        if profile_for_contract != "UNCHAIN":
+        if not is_auto_session_contract:
+            socketio.emit("trade_result", entry, room=client_id)
+        if profile_for_contract != "UNCHAIN" or is_auto_session_contract:
             _mark_regular_contract_processed(state, contract_id)
+        if not is_auto_session_contract:
+            try:
+                _seqvix_jokerjoe_on_contract_settled(state, client_id, contract_id, meta)
+            except Exception:
+                pass
         try:
-            _seqvix_jokerjoe_on_contract_settled(state, client_id, contract_id, meta)
+            handle_auto_session_contract_settled(state, contract, meta)
         except Exception:
             pass
         if profile_for_contract == "UNCHAIN":
@@ -8212,6 +8447,7 @@ def api_connection_status():
         "connected": bool(state.get("ws_connected")),
         "loginid": state.get("loginid", "UNKNOWN"),
         "balance": float(state.get("balance", 0.0) or 0.0),
+        "session_start_balance": state.get("session_start_balance"),
         "has_token": bool(str(state.get("api_token", "") or "").strip()),
     })
 
@@ -9513,6 +9749,24 @@ def unchain_settings_route():
         socketio.emit("digit_analysis", payload, room=cid)
         send_stats_update(cid)
     return jsonify(payload)
+
+
+@app.route("/unchain_refresh_barriers", methods=["POST"])
+def unchain_refresh_barriers_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    cid, state = get_client_state()
+    symbol = str(state.get("current_symbol") or "R_25").upper()
+    ok, msg = _apply_unchain_market_default_barriers(state, symbol)
+    _check_unchain_hl_risk_block(state)
+    payload = _unchain_payload_response(state)
+    if state.get("active_profile") == "UNCHAIN":
+        socketio.emit("unchain_status", payload, room=cid)
+        socketio.emit("digit_analysis", payload, room=cid)
+        send_stats_update(cid)
+    if not ok:
+        return jsonify({"ok": False, "error": msg or "Could not refresh barrier", "payload": payload}), 400
+    return jsonify({"ok": True, "message": f"Barrier refreshed to {msg}", "payload": payload})
 
 
 @app.route("/unchain_trade", methods=["POST"])

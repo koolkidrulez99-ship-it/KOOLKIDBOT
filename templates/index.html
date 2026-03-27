@@ -635,6 +635,19 @@ body{
   text-decoration:none;
   margin:14px 0 8px;
 }
+.koolkid-auto-trade-launch{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:8px;
+  padding:10px 16px;
+  border-radius:999px;
+  background:rgba(56,189,248,0.16);
+  border:1px solid rgba(56,189,248,0.35);
+  color:#38bdf8;
+  font-weight:bold;
+  margin:0 0 8px;
+}
 .card{
   background:linear-gradient(180deg,var(--shell-card),var(--shell-card-2));
   border:1px solid var(--shell-line);
@@ -780,6 +793,7 @@ input:focus, select:focus{
 }
 @media (max-width: 520px){
   .container > a[href="/logout"]{width:100%;}
+  .koolkid-auto-trade-launch{width:100%;}
   .profile-btn{width:100%; min-width:0; margin:5px 0;}
   .howto-title{flex-direction:column; align-items:flex-start;}
   .howto-title button{width:100%;}
@@ -862,6 +876,9 @@ body.mobile-only-ui #profileContainer .unchain-history-grid{
 <div class="container">
     <h1>KOOLKID AI TRADING ENGINE</h1>
     <a href="/logout" style="color:#ef4444; font-weight:bold;">Logout</a>
+    <button id="koolkidAutoTradeLaunchBtn" class="koolkid-auto-trade-launch" type="button" onclick="openKoolkidAutoTradePlaceholder()">
+        KOOLKID AUTO TRADE
+    </button>
 
     <div class="card" style="text-align:center;">
         <h3>🎮 SELECT PROFILE</h3>
@@ -1047,6 +1064,12 @@ function initSocket(){
     // ==================== PATCH D: beforeunload with humanKeepAlive check ====================
     window.addEventListener("beforeunload", () => {
         if (humanKeepAlive) return;
+        try{
+            if(sessionStorage.getItem("skipDisconnectOnce") === "1"){
+                sessionStorage.removeItem("skipDisconnectOnce");
+                return;
+            }
+        }catch(_err){}
         fetch("/disconnect", { method: "POST", keepalive: true });
     });
     bindSocketHandlers();
@@ -1067,6 +1090,7 @@ function bindSocketHandlers(){
     socket.on("connection_status", (data)=>{
         const wasConnected = !!apiConnected;
         const connected = applyApiConnectionState(data || {});
+        applyKnownApiBalance(data || {}, true);
 
         if(connected && !wasConnected){
             showToast("✅ API AUTHORIZED", "success");
@@ -1102,7 +1126,9 @@ function bindSocketHandlers(){
     });
 
     socket.on("balance_update", (data)=>{
-        balanceDisplay.innerText = Number(data.balance).toFixed(2);
+        const balance = Number(data && data.balance);
+        applyKnownApiBalance(data || {}, false);
+        maybeShowBalanceMilestones(balance);
     });
 
     socket.on("tick", (data)=>{
@@ -1342,6 +1368,88 @@ let profileDrafts = {};
 let profileDraftSaveTimer = null;
 let apiConnectPollTimer = null;
 let apiConnectPendingUntil = 0;
+let sessionStartBalanceForMilestone = null;
+let lastKnownBalanceForMilestone = null;
+let shownBalanceMilestones = {};
+
+function resetBalanceMilestones(){
+    sessionStartBalanceForMilestone = null;
+    lastKnownBalanceForMilestone = null;
+    shownBalanceMilestones = {};
+}
+
+function setSessionStartBalanceForMilestones(startBalance){
+    const parsed = Number(startBalance);
+    if(!Number.isFinite(parsed) || parsed <= 0) return;
+    if(sessionStartBalanceForMilestone !== parsed){
+        shownBalanceMilestones = {};
+    }
+    sessionStartBalanceForMilestone = parsed;
+}
+
+function queueBalanceMilestoneToast(message, type, delayMs){
+    const waitMs = Number(delayMs) || 0;
+    if(waitMs <= 0){
+        showToast(message, type);
+        return;
+    }
+    setTimeout(() => {
+        showToast(message, type);
+    }, waitMs);
+}
+
+function maybeShowBalanceMilestones(balance){
+    const currentBalance = Number(balance);
+    const startBalance = Number(sessionStartBalanceForMilestone);
+    if(!Number.isFinite(currentBalance) || !Number.isFinite(startBalance) || startBalance <= 0){
+        if(Number.isFinite(currentBalance)){
+            lastKnownBalanceForMilestone = currentBalance;
+        }
+        return;
+    }
+
+    const previousBalance = Number.isFinite(lastKnownBalanceForMilestone) ? lastKnownBalanceForMilestone : currentBalance;
+    let toastDelay = 0;
+
+    if(currentBalance < 0.35 && previousBalance >= 0.35 && !shownBalanceMilestones.wiped){
+        shownBalanceMilestones.wiped = true;
+        shownBalanceMilestones.half = true;
+        queueBalanceMilestoneToast("Critical Alert: Account Wiped Out ❌ Rough hit, reset smart and come again.", "error", toastDelay);
+        toastDelay += 900;
+    } else {
+        const halfBalance = startBalance * 0.5;
+        if(previousBalance > halfBalance && currentBalance <= halfBalance && !shownBalanceMilestones.half){
+            shownBalanceMilestones.half = true;
+            queueBalanceMilestoneToast("Risk Milestone: Half Balance Remaining ⚠️ Steady now, you can still bring this back.", "warn", toastDelay);
+            toastDelay += 900;
+        }
+    }
+
+    const milestoneToasts = [
+        { key: "2x_congrats", threshold: 2, message: "🎉 Congrats! Your balance has doubled", type: "success" },
+        { key: "2x_double", threshold: 2, message: "🔥 Milestone unlocked: Double balance reached", type: "success" },
+        { key: "2x", threshold: 2, message: "Milestone Unlocked: 2X Balance ✅ Clean work, you're heating up.", type: "success" },
+        { key: "3x", threshold: 3, message: "Milestone Unlocked: 3X Balance 🚀 Nice run, you're locked in.", type: "success" },
+        { key: "4x", threshold: 4, message: "Milestone Unlocked: 4X Balance 🔥 Strong work, you're moving sharp.", type: "success" },
+        { key: "5x", threshold: 5, message: "Milestone Unlocked: 5X Balance 💎 Big plays, you're cooking now.", type: "success" },
+        { key: "6x", threshold: 6, message: "Milestone Unlocked: 6X Balance ⚡ Elite pace, you're trading with confidence.", type: "success" },
+        { key: "7x", threshold: 7, message: "Milestone Unlocked: 7X Balance 👑 Cold work, this run is serious.", type: "success" },
+        { key: "8x", threshold: 8, message: "Milestone Unlocked: 8X Balance 🌟 Monster session, you're dominating now.", type: "success" },
+        { key: "9x", threshold: 9, message: "Milestone Unlocked: 9X Balance 🧠 Unreal control, you're in a different class.", type: "success" },
+        { key: "10x", threshold: 10, message: "Milestone Unlocked: 10X Balance 🏆 Legendary work, you just crushed it.", type: "success" },
+    ];
+
+    milestoneToasts.forEach((item) => {
+        const targetBalance = startBalance * Number(item.threshold);
+        if(previousBalance < targetBalance && currentBalance >= targetBalance && !shownBalanceMilestones[item.key]){
+            shownBalanceMilestones[item.key] = true;
+            queueBalanceMilestoneToast(item.message, item.type, toastDelay);
+            toastDelay += 900;
+        }
+    });
+
+    lastKnownBalanceForMilestone = currentBalance;
+}
 
 function updateApiConnectionUi(mode, message){
     const stateMode = mode === true ? "connected" : (mode === false ? "disconnected" : String(mode || "disconnected"));
@@ -1383,6 +1491,20 @@ function isAuthApiErrorMessage(message){
     );
 }
 
+function applyKnownApiBalance(data, syncMilestoneAnchor){
+    const balance = Number(data && data.balance);
+    const startBalance = Number(data && data.session_start_balance);
+    if(Number.isFinite(balance) && balanceDisplay){
+        balanceDisplay.innerText = balance.toFixed(2);
+    }
+    if(Number.isFinite(startBalance) && startBalance > 0){
+        setSessionStartBalanceForMilestones(startBalance);
+    }
+    if(syncMilestoneAnchor && Number.isFinite(balance)){
+        lastKnownBalanceForMilestone = balance;
+    }
+}
+
 function stopApiConnectPolling(){
     if(apiConnectPollTimer){
         clearInterval(apiConnectPollTimer);
@@ -1401,6 +1523,7 @@ function applyApiConnectionState(data){
         apiStatus.className = "green";
         updateApiConnectionUi("connected", "API CONNECTED SUCCESSFULLY");
         accountDashboard.style.display = "block";
+        applyKnownApiBalance(data || {}, true);
         return true;
     }
 
@@ -1418,6 +1541,7 @@ function applyApiConnectionState(data){
     apiStatus.className = "red";
     updateApiConnectionUi("disconnected");
     accountDashboard.style.display = "none";
+    resetBalanceMilestones();
     return false;
 }
 
@@ -3555,6 +3679,20 @@ function applyLiveTickVisibility(){
     live.style.display = (activeProfile === "HUMAN" || activeProfile === "UNCHAIN") ? "none" : "block";
 }
 
+function syncKoolkidAutoTradeLaunchVisibility(){
+    const btn = document.getElementById("koolkidAutoTradeLaunchBtn");
+    if(!btn) return;
+    btn.style.display = "inline-flex";
+}
+
+function openKoolkidAutoTradePlaceholder(){
+    try{
+        sessionStorage.setItem("skipDisconnectOnce", "1");
+    }catch(_err){}
+    window.location.href = "/koolkid-auto-trade";
+    return false;
+}
+
 async function setProfile(profile){
     const previousProfile = activeProfile;
     captureProfileDraft(previousProfile);
@@ -3604,6 +3742,7 @@ async function setProfile(profile){
     }
 
     applyLiveTickVisibility();
+    syncKoolkidAutoTradeLaunchVisibility();
 
     await loadProfileUI(profile);
     try{ await runProfileModuleHook(profile, "onActivate", { profile }); }catch(e){}
