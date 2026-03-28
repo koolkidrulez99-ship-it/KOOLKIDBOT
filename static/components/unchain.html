@@ -1631,6 +1631,7 @@
       <button id="unchainKoolkidBtn" data-action="unchain-koolkid-panel" style="background:#2563eb;">KOOLKID</button>
       <button id="unchainAutoBothBtn" data-action="unchain-toggle-auto-both" style="background:#0284c7;">🤖 AUTO BOTH: OFF</button>
       <button id="unchainAiAutoTradeBtn" data-action="unchain-toggle-ai-auto-trade" style="background:#0ea5e9;">🤖 AI AUTO TRADE: OFF</button>
+      <button id="unchainDirectionalAutoBtn" data-action="unchain-toggle-directional-auto" style="background:#2563eb;">⚡ AUTO TRADE · 📈 HIGHER / 📉 LOWER: OFF</button>
       <button data-action="unchain-trade-higher" style="background:#22c55e;">
         <span style="display:block;font-weight:900;">📈 HIGHER</span>
         <span id="unchainHigherExpectedProfit" style="display:block;font-size:11px;font-weight:700;opacity:.92;margin-top:4px;">Expected profit —</span>
@@ -1645,6 +1646,34 @@
       </button>
       <button data-action="unchain-close-all" style="background:#7c3aed;">💸 CLOSE UNCHAIN TRADES</button>
     </div>
+    <details class="unchain-collapse">
+      <summary>
+        <span>⚡ Higher / Lower Auto Setup</span>
+        <span id="unchainDirectionalAutoSummary" style="font-size:12px;font-weight:800;color:#38bdf8;">HIGHER</span>
+      </summary>
+      <div class="unchain-collapse-body">
+        <div class="unchain-field-grid-2" style="margin-top:2px;">
+          <div class="unchain-field">
+            <label class="unchain-label" for="unchainDirectionalAutoSide">Trade Side</label>
+            <select id="unchainDirectionalAutoSide" style="min-height:50px;">
+              <option value="HIGHER" selected>Higher</option>
+              <option value="LOWER">Lower</option>
+            </select>
+          </div>
+          <div class="unchain-field">
+            <label class="unchain-label" for="unchainDirectionalAutoBarrier">Auto Barrier</label>
+            <div class="unchain-barrier-inline">
+              <button class="unchain-barrier-stepper" data-action="unchain-barrier-step" data-target="unchainDirectionalAutoBarrier" data-delta="-0.01" style="background:#1e3a8a;color:#dbeafe;">-</button>
+              <input class="unchain-barrier-input" id="unchainDirectionalAutoBarrier" type="text" value="+0.12">
+              <button class="unchain-barrier-stepper" data-action="unchain-barrier-step" data-target="unchainDirectionalAutoBarrier" data-delta="0.01" style="background:#1d4ed8;color:#dbeafe;">+</button>
+            </div>
+          </div>
+        </div>
+        <div style="margin-top:8px;color:#94a3b8;font-size:12px;">
+          Uses the shared UNCHAIN duration above. When this auto mode is ON, the live graph mirrors this barrier on both guide lines for analysis only and does not overwrite your saved Higher / Lower setup.
+        </div>
+      </div>
+    </details>
     <details class="unchain-collapse">
       <summary>
         <span>AI Auto Trade Settings</span>
@@ -1670,6 +1699,7 @@
       </div>
     </details>
     <div id="unchainAutoBothMeta" style="margin-top:10px;color:#94a3b8;font-size:12px;">AI Auto Trade now uses a looser 60-tick force/escape analysis and triggers as soon as confidence is met and a breakout happens.</div>
+    <div id="unchainDirectionalAutoMeta" style="margin-top:10px;color:#94a3b8;font-size:12px;">Directional auto is OFF.</div>
     <div id="unchainRiskBlock" style="display:none;margin-top:10px;padding:10px;border-radius:12px;background:#7f1d1d;color:#fecaca;border:1px solid #ef4444;"></div>
     <div style="margin-top:10px;color:#94a3b8;font-size:12px;">Both sends one Higher contract and one Lower contract using the current saved values.</div>
   </div>
@@ -1760,6 +1790,14 @@
                 <option value="60">60%</option>
                 <option value="65">65%</option>
                 <option value="70">70%</option>
+              </select>
+            </div>
+            <div class="unchain-field">
+              <label class="unchain-label" for="unchainKoolkidHlSimSide">HL Sim Side</label>
+              <select id="unchainKoolkidHlSimSide" style="width:100%;min-height:44px;padding:10px 12px;font-size:14px;">
+                <option value="AUTO" selected>Auto</option>
+                <option value="HIGHER">Higher</option>
+                <option value="LOWER">Lower</option>
               </select>
             </div>
           </div>

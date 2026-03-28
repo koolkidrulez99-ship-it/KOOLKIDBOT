@@ -159,6 +159,98 @@ def test_koolkid_hl_starts_simulation_on_weaker_side(monkeypatch):
     assert sim["live_barrier"] == "-0.06"
 
 
+def test_koolkid_hl_can_force_higher_side_simulation(monkeypatch):
+    state = {
+        "ws_connected": True,
+        "ws": object(),
+        "current_symbol": "R_25",
+        "strategies": {"UNCHAIN": SimpleNamespace(last_price=100.0)},
+        "unchain_hl": {
+            "koolkid_hl_enabled": True,
+            "koolkid_hl_sim_side": "HIGHER",
+            "higher_stake": 10.0,
+            "lower_stake": 10.0,
+            "higher_barrier": "+0.12",
+            "lower_barrier": "-0.12",
+            "koolkid_higher_barrier": "+0.09",
+            "koolkid_lower_barrier": "-0.22",
+            "koolkid_hl_loss_trigger_pct": 50,
+        },
+    }
+    monkeypatch.setattr(server, "_check_unchain_hl_risk_block", lambda state: None)
+    monkeypatch.setattr(server, "_get_open_unchain_active_entries", lambda state: [])
+    monkeypatch.setattr(
+        server,
+        "_get_unchain_bias_payload",
+        lambda state, u=None: {"higher_pct": 65.0, "lower_pct": 35.0},
+    )
+    monkeypatch.setattr(
+        server,
+        "_compute_unchain_auto_metrics",
+        lambda state, u=None: {
+            "ready": True,
+            "avg_abs_tick_movement": 0.02,
+            "current_20_range": 0.18,
+            "compression_score": 35.0,
+        },
+    )
+
+    assert server._run_unchain_koolkid_hl("cid", state) is False
+    sim = state["unchain_hl"]["koolkid_hl_simulation"]
+
+    assert sim is not None
+    assert sim["side"] == "HIGHER"
+    assert sim["opposite_side"] == "LOWER"
+    assert sim["sim_barrier"] == "+0.12"
+    assert sim["live_barrier"] == "-0.22"
+
+
+def test_koolkid_hl_can_force_lower_side_simulation(monkeypatch):
+    state = {
+        "ws_connected": True,
+        "ws": object(),
+        "current_symbol": "R_25",
+        "strategies": {"UNCHAIN": SimpleNamespace(last_price=100.0)},
+        "unchain_hl": {
+            "koolkid_hl_enabled": True,
+            "koolkid_hl_sim_side": "LOWER",
+            "higher_stake": 10.0,
+            "lower_stake": 10.0,
+            "higher_barrier": "+0.12",
+            "lower_barrier": "-0.12",
+            "koolkid_higher_barrier": "+0.09",
+            "koolkid_lower_barrier": "-0.22",
+            "koolkid_hl_loss_trigger_pct": 50,
+        },
+    }
+    monkeypatch.setattr(server, "_check_unchain_hl_risk_block", lambda state: None)
+    monkeypatch.setattr(server, "_get_open_unchain_active_entries", lambda state: [])
+    monkeypatch.setattr(
+        server,
+        "_get_unchain_bias_payload",
+        lambda state, u=None: {"higher_pct": 35.0, "lower_pct": 65.0},
+    )
+    monkeypatch.setattr(
+        server,
+        "_compute_unchain_auto_metrics",
+        lambda state, u=None: {
+            "ready": True,
+            "avg_abs_tick_movement": 0.02,
+            "current_20_range": 0.18,
+            "compression_score": 35.0,
+        },
+    )
+
+    assert server._run_unchain_koolkid_hl("cid", state) is False
+    sim = state["unchain_hl"]["koolkid_hl_simulation"]
+
+    assert sim is not None
+    assert sim["side"] == "LOWER"
+    assert sim["opposite_side"] == "HIGHER"
+    assert sim["sim_barrier"] == "-0.12"
+    assert sim["live_barrier"] == "+0.09"
+
+
 def test_koolkid_hl_uses_saved_real_side_barrier(monkeypatch):
     state = {
         "ws_connected": True,
@@ -1003,3 +1095,104 @@ def test_koolkid_both_keeps_user_stakes_on_directional_flow(monkeypatch):
     assert placed[0]["stake"] == 10.0
     assert placed[1]["stake"] == 10.0
     assert state["unchain_hl"]["koolkid_both_simulation"] is None
+
+
+def test_directional_auto_trades_only_selected_higher_side_with_shared_duration(monkeypatch):
+    state = {
+        "ws_connected": True,
+        "ws": object(),
+        "current_symbol": "R_25",
+        "strategies": {
+            "UNCHAIN": SimpleNamespace(
+                price_history=[100.00, 100.02, 100.05, 100.08, 100.12, 100.16, 100.20, 100.24, 100.28, 100.33, 100.38, 100.44],
+                tick_time_history=list(range(12)),
+            ),
+        },
+        "unchain_hl": {
+            "directional_auto_enabled": True,
+            "directional_auto_side": "HIGHER",
+            "directional_auto_barrier": "-0.12",
+            "higher_stake": 12.0,
+            "lower_stake": 7.0,
+            "duration": 5,
+            "duration_unit": "t",
+        },
+    }
+    placed = []
+
+    monkeypatch.setattr(server, "_check_unchain_hl_risk_block", lambda state: None)
+    monkeypatch.setattr(server, "_get_open_unchain_active_entries", lambda state: [])
+
+    def fake_send(client_id, **kwargs):
+        placed.append(kwargs)
+        return True, "ok"
+
+    monkeypatch.setattr(server, "_send_unchain_hl_trade", fake_send)
+
+    assert server._run_unchain_directional_auto_trade("cid", state) is True
+    assert len(placed) == 1
+    assert placed[0]["side"] == "HIGHER"
+    assert placed[0]["barrier"] == "-0.12"
+    assert placed[0]["duration"] == 5
+    assert placed[0]["duration_unit"] == "t"
+    assert placed[0]["stake"] == 12.0
+    assert placed[0]["entry_source"] == "DIRECTIONAL_AUTO"
+    assert placed[0]["respect_half_barrier_toggle"] is False
+
+
+def test_directional_auto_waits_when_selected_lower_side_is_not_favored(monkeypatch):
+    state = {
+        "ws_connected": True,
+        "ws": object(),
+        "current_symbol": "R_25",
+        "strategies": {
+            "UNCHAIN": SimpleNamespace(
+                price_history=[100.00, 100.03, 100.06, 100.10, 100.14, 100.18, 100.23, 100.28, 100.34, 100.40],
+                tick_time_history=list(range(10)),
+            ),
+        },
+        "unchain_hl": {
+            "directional_auto_enabled": True,
+            "directional_auto_side": "LOWER",
+            "directional_auto_barrier": "-0.12",
+            "higher_stake": 10.0,
+            "lower_stake": 10.0,
+            "duration": 5,
+            "duration_unit": "t",
+        },
+    }
+
+    monkeypatch.setattr(server, "_check_unchain_hl_risk_block", lambda state: None)
+    monkeypatch.setattr(server, "_get_open_unchain_active_entries", lambda state: [])
+
+    assert server._run_unchain_directional_auto_trade("cid", state) is False
+    assert "lower" in str(state["unchain_hl"]["directional_auto_last_reason"]).lower()
+
+
+def test_toggle_directional_auto_disables_other_unchain_auto_modes(monkeypatch):
+    state = {
+        "unchain_hl": {
+            "auto_both_enabled": True,
+            "ai_auto_trade_enabled": True,
+            "koolkid_hl_enabled": True,
+            "koolkid_both_enabled": True,
+            "directional_auto_side": "HIGHER",
+            "directional_auto_barrier": "+0.12",
+        }
+    }
+
+    monkeypatch.setattr(server, "_get_open_unchain_active_entries", lambda state: [])
+    monkeypatch.setattr(server, "_run_unchain_directional_auto_trade", lambda cid, state: False)
+
+    with server.app.app_context():
+        response = server._toggle_unchain_directional_auto("cid", state, {"enabled": True})
+        data = response.get_json()
+
+    u = state["unchain_hl"]
+    assert data["status"] == "success"
+    assert u["directional_auto_enabled"] is True
+    assert u["auto_both_enabled"] is False
+    assert u["ai_auto_trade_enabled"] is False
+    assert u["koolkid_hl_enabled"] is False
+    assert u["koolkid_both_enabled"] is False
+    assert data["payload"]["unchain"]["directional_auto"]["enabled"] is True

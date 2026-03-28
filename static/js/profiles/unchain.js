@@ -41,6 +41,8 @@
     "unchainLowerStake",
     "unchainHigherBarrier",
     "unchainLowerBarrier",
+    "unchainDirectionalAutoSide",
+    "unchainDirectionalAutoBarrier",
     "unchainKoolkidHigherBarrier",
     "unchainKoolkidLowerBarrier",
     "unchainKoolkidSimDuration",
@@ -48,6 +50,7 @@
     "unchainKoolkidLiveDuration",
     "unchainKoolkidLiveDurationUnit",
     "unchainKoolkidHlLossPct",
+    "unchainKoolkidHlSimSide",
     "unchainDuration",
     "unchainDurationUnit",
     "unchainTp",
@@ -404,15 +407,24 @@
     const koolkidReversalEnabled = koolkidReversalToggle ? !!koolkidReversalToggle.checked : !!state.koolkid_reversal_enabled;
     const koolkidHalfBarrierToggle = el("unchainKoolkidHalfBarrierToggle");
     const koolkidHalfBarrierEnabled = koolkidHalfBarrierToggle ? !!koolkidHalfBarrierToggle.checked : !!state.koolkid_half_barrier_enabled;
+    const directionalAutoSideRaw = readText("unchainDirectionalAutoSide", "HIGHER").toUpperCase();
+    const directionalAutoSide = directionalAutoSideRaw === "LOWER" ? "LOWER" : "HIGHER";
+    const directionalAutoBarrierRaw = readText("unchainDirectionalAutoBarrier", directionalAutoSide === "LOWER" ? "-0.12" : "+0.12");
     const higherBarrierRaw = readText("unchainHigherBarrier", "+0.12");
     const lowerBarrierRaw = readText("unchainLowerBarrier", "-0.12");
     const koolkidHigherBarrierRaw = readText("unchainKoolkidHigherBarrier", "+0.06");
     const koolkidLowerBarrierRaw = readText("unchainKoolkidLowerBarrier", "-0.06");
+    const koolkidHlSimSideRaw = readText("unchainKoolkidHlSimSide", "AUTO").toUpperCase();
+    const koolkidHlSimSide = koolkidHlSimSideRaw === "HIGHER" || koolkidHlSimSideRaw === "LOWER"
+      ? koolkidHlSimSideRaw
+      : "AUTO";
     return {
       higher_stake: readNumber("unchainHigherStake", 1),
       lower_stake: readNumber("unchainLowerStake", 1),
       higher_barrier: halfBarrierEnabled ? scaleBarrierText(higherBarrierRaw, 2, 0.12) : higherBarrierRaw,
       lower_barrier: halfBarrierEnabled ? scaleBarrierText(lowerBarrierRaw, 2, -0.12) : lowerBarrierRaw,
+      directional_auto_side: directionalAutoSide,
+      directional_auto_barrier: directionalAutoBarrierRaw,
       koolkid_higher_barrier: koolkidHalfBarrierEnabled ? scaleBarrierText(koolkidHigherBarrierRaw, 2, 0.06) : koolkidHigherBarrierRaw,
       koolkid_lower_barrier: koolkidHalfBarrierEnabled ? scaleBarrierText(koolkidLowerBarrierRaw, 2, -0.06) : koolkidLowerBarrierRaw,
       koolkid_sim_duration: Math.max(1, Math.min(59, readInteger("unchainKoolkidSimDuration", 15))),
@@ -420,6 +432,7 @@
       koolkid_live_duration: Math.max(1, Math.min(59, readInteger("unchainKoolkidLiveDuration", 5))),
       koolkid_live_duration_unit: readText("unchainKoolkidLiveDurationUnit", "t").toLowerCase(),
       koolkid_hl_loss_trigger_pct: Math.max(50, Math.min(70, readInteger("unchainKoolkidHlLossPct", 50))),
+      koolkid_hl_sim_side: koolkidHlSimSide,
       koolkid_reversal_enabled: koolkidReversalEnabled,
       koolkid_half_barrier_enabled: koolkidHalfBarrierEnabled,
       duration: readInteger("unchainDuration", 5),
@@ -482,6 +495,23 @@
   }
 
   function getBarrierInputs(un) {
+    const directionalAuto = (un && un.directional_auto) || {};
+    if (directionalAuto && directionalAuto.enabled) {
+      const directionalField = el("unchainDirectionalAutoBarrier");
+      const fieldRaw = directionalField ? String(directionalField.value || "").trim() : "";
+      const sharedBarrier = num(
+        fieldRaw !== "" ? fieldRaw : (directionalAuto.graph_barrier != null ? directionalAuto.graph_barrier : directionalAuto.barrier),
+        null,
+      );
+      if (Number.isFinite(sharedBarrier)) {
+        return {
+          higher: sharedBarrier,
+          lower: sharedBarrier,
+          top: sharedBarrier,
+          bottom: sharedBarrier,
+        };
+      }
+    }
     const higherField = el("unchainHigherBarrier");
     const lowerField = el("unchainLowerBarrier");
     const higherRaw = higherField ? String(higherField.value || "").trim() : "";
@@ -825,6 +855,8 @@
     setFieldValue("unchainLowerStake", formatInputNumber(un.lower_stake, 1), force);
     setFieldValue("unchainHigherBarrier", getDisplayedBarrierText(un.higher_barrier || "+0.12", 0.12, halfEnabled), barrierForce);
     setFieldValue("unchainLowerBarrier", getDisplayedBarrierText(un.lower_barrier || "-0.12", -0.12, halfEnabled), barrierForce);
+    setFieldValue("unchainDirectionalAutoSide", String(un.directional_auto_side || ((un.directional_auto && un.directional_auto.side) || "HIGHER")).toUpperCase(), force);
+    setFieldValue("unchainDirectionalAutoBarrier", String(un.directional_auto_barrier || ((un.directional_auto && un.directional_auto.barrier) || "+0.12")), force);
     setFieldValue("unchainKoolkidHigherBarrier", getDisplayedBarrierText(String(un.koolkid_higher_barrier || "+0.06"), 0.06, !!state.koolkid_half_barrier_enabled), barrierForce);
     setFieldValue("unchainKoolkidLowerBarrier", getDisplayedBarrierText(String(un.koolkid_lower_barrier || "-0.06"), -0.06, !!state.koolkid_half_barrier_enabled), barrierForce);
     setFieldValue("unchainKoolkidSimDuration", String(un.koolkid_sim_duration || 15), force);
@@ -832,6 +864,7 @@
     setFieldValue("unchainKoolkidLiveDuration", String(un.koolkid_live_duration || 5), force);
     setFieldValue("unchainKoolkidLiveDurationUnit", String(un.koolkid_live_duration_unit || "t"), force);
     setFieldValue("unchainKoolkidHlLossPct", String(un.koolkid_hl_loss_trigger_pct || 50), force);
+    setFieldValue("unchainKoolkidHlSimSide", String(un.koolkid_hl_sim_side || ((un.koolkid_hl && un.koolkid_hl.sim_side) || "AUTO")).toUpperCase(), force);
     setFieldValue("unchainDurationUnit", (un.duration_unit || "t").toLowerCase(), force);
     setFieldValue("unchainDuration", String(un.duration || 5), force);
     applyDurationPresets(!!force);
@@ -1135,6 +1168,41 @@
         }
       }
       meta.innerText = `${bothText} ${aiText}`;
+    }
+  }
+
+  function renderDirectionalAuto(un) {
+    const btn = el("unchainDirectionalAutoBtn");
+    const meta = el("unchainDirectionalAutoMeta");
+    const summary = el("unchainDirectionalAutoSummary");
+    const data = (un && un.directional_auto) || {};
+    const enabled = !!(un && un.directional_auto_enabled);
+    const side = String((data && data.side) || (un && un.directional_auto_side) || "HIGHER").toUpperCase();
+    const barrier = String((data && data.barrier) || (un && un.directional_auto_barrier) || (side === "LOWER" ? "-0.12" : "+0.12"));
+    const status = String((data && data.label) || (enabled ? "ARMED" : "OFF")).toUpperCase();
+    const finalConfidence = Number((data && data.final_confidence) || 0);
+    const movementPct = Number((data && data.movement_pct) || 0);
+    const simulationWinRate = Number((data && data.simulation_win_rate) || 0);
+    const threshold = Number((data && data.threshold) || 60);
+    const cooldown = Math.max(0, Number((data && data.cooldown_remaining) || 0));
+    const reason = String((data && data.last_reason) || "Directional auto is OFF.");
+
+    if (btn) {
+      btn.innerText = enabled
+        ? `⚡ AUTO TRADE · 📈 HIGHER / 📉 LOWER: ON • ${side} • ${status}`
+        : "⚡ AUTO TRADE · 📈 HIGHER / 📉 LOWER: OFF";
+      btn.style.background = enabled ? "#1d4ed8" : "#2563eb";
+      btn.style.color = "#fff";
+    }
+    if (summary) summary.innerText = `${side} • ${barrier}`;
+    if (meta) {
+      if (!enabled) {
+        meta.innerText = "Directional auto is OFF.";
+      } else if (status === "COOLDOWN") {
+        meta.innerText = `Directional auto cooldown ${cooldown.toFixed(1)}s • ${side} • barrier ${barrier} • ${reason}`;
+      } else {
+        meta.innerText = `Directional auto ${side} • barrier ${barrier} • move ${movementPct.toFixed(0)}% • sim ${simulationWinRate.toFixed(0)}% • confidence ${finalConfidence.toFixed(0)}% / ${threshold.toFixed(0)}% • ${reason}`;
+      }
     }
   }
 
@@ -1449,6 +1517,7 @@
     const bothData = (un && un.koolkid_both) || {};
     const sim = data && typeof data.simulation === "object" ? data.simulation : null;
     const bothSim = bothData && typeof bothData.simulation === "object" ? bothData.simulation : null;
+    const simSide = String(data.sim_side || un.koolkid_hl_sim_side || "AUTO").toUpperCase();
     const isEnabled = !!data.enabled;
     const isBothEnabled = !!bothData.enabled;
     const anyEnabled = isEnabled || isBothEnabled;
@@ -1527,7 +1596,12 @@
       status.style.color = "#fcd34d";
       return;
     }
-    status.innerText = String(data.last_reason || "KOOLKID Higher/Lower is waiting for a weak-side paper trade setup.");
+    const defaultHlReason = simSide === "HIGHER"
+      ? "KOOLKID Higher/Lower is waiting for a Higher-side paper trade setup."
+      : simSide === "LOWER"
+        ? "KOOLKID Higher/Lower is waiting for a Lower-side paper trade setup."
+        : "KOOLKID Higher/Lower is waiting for a weak-side paper trade setup.";
+    status.innerText = String(data.last_reason || defaultHlReason);
     status.style.color = isEnabled ? "#93c5fd" : "#cbd5e1";
   }
 
@@ -1985,6 +2059,7 @@
     renderStatusChip(un, payload);
     renderRiskBlock(un);
     renderAutoBoth(un);
+    renderDirectionalAuto(un);
     const stats = (un && un.stats) || {};
     const net = Number(stats.net_pnl || 0);
     setText("unchainNetPnl", `${net >= 0 ? "+" : "-"}$${Math.abs(net).toFixed(2)}`);
@@ -2143,6 +2218,19 @@
     }
   }
 
+  async function toggleDirectionalAuto() {
+    await saveSettings(false);
+    const current = !!(state.lastPayload && state.lastPayload.unchain && state.lastPayload.unchain.directional_auto_enabled);
+    const r = await postJSON("/toggle_unchain_directional_auto", { enabled: !current });
+    if (r.ok && r.data) {
+      if (r.data.payload) renderPayload(r.data.payload, { forceForm: true });
+      toast(r.data.message || (!current ? "Directional auto ON" : "Directional auto OFF"), !current ? "success" : "warn");
+    } else {
+      toast((r.data && (r.data.message || r.data.error)) || "Failed to toggle directional auto", "error");
+      if (r.data && r.data.payload) renderPayload(r.data.payload);
+    }
+  }
+
   async function handleAction(action, btn) {
     switch (action) {
       case "unchain-toggle-autosl":
@@ -2189,6 +2277,9 @@
         break;
       case "unchain-toggle-ai-auto-trade":
         await toggleAiAutoTrade();
+        break;
+      case "unchain-toggle-directional-auto":
+        await toggleDirectionalAuto();
         break;
       case "unchain-close-all":
         await closeAll();
@@ -2277,16 +2368,32 @@
       node.addEventListener("input", () => {
         markDirty(id);
         if (id === "unchainHigherStake") mirrorHigherStakeToLower();
-        if (id === "unchainHigherBarrier" || id === "unchainLowerBarrier") renderBarrierMarketChart(state.lastPayload && (state.lastPayload.unchain || state.lastPayload) || {}, state.lastPayload || {});
+        if (id === "unchainHigherBarrier" || id === "unchainLowerBarrier" || id === "unchainDirectionalAutoBarrier" || id === "unchainDirectionalAutoSide") {
+          renderBarrierMarketChart(state.lastPayload && (state.lastPayload.unchain || state.lastPayload) || {}, state.lastPayload || {});
+        }
         if (id === "unchainAutoConfidence") applyAutoConfidenceLabel();
+        if (id === "unchainDirectionalAutoSide" || id === "unchainDirectionalAutoBarrier") {
+          const summary = el("unchainDirectionalAutoSummary");
+          if (summary) {
+            summary.innerText = `${String(readText("unchainDirectionalAutoSide", "HIGHER")).toUpperCase()} • ${String(readText("unchainDirectionalAutoBarrier", "+0.12") || "").trim() || "—"}`;
+          }
+        }
         scheduleExpectedProfitPreview(180);
       });
       node.addEventListener("change", () => {
         markDirty(id);
         if (id === "unchainHigherStake") mirrorHigherStakeToLower();
-        if (id === "unchainHigherBarrier" || id === "unchainLowerBarrier") renderBarrierMarketChart(state.lastPayload && (state.lastPayload.unchain || state.lastPayload) || {}, state.lastPayload || {});
+        if (id === "unchainHigherBarrier" || id === "unchainLowerBarrier" || id === "unchainDirectionalAutoBarrier" || id === "unchainDirectionalAutoSide") {
+          renderBarrierMarketChart(state.lastPayload && (state.lastPayload.unchain || state.lastPayload) || {}, state.lastPayload || {});
+        }
         if (id === "unchainDurationUnit") applyDurationPresets();
         if (id === "unchainAutoConfidence") applyAutoConfidenceLabel();
+        if (id === "unchainDirectionalAutoSide" || id === "unchainDirectionalAutoBarrier") {
+          const summary = el("unchainDirectionalAutoSummary");
+          if (summary) {
+            summary.innerText = `${String(readText("unchainDirectionalAutoSide", "HIGHER")).toUpperCase()} • ${String(readText("unchainDirectionalAutoBarrier", "+0.12") || "").trim() || "—"}`;
+          }
+        }
         if (BARRIER_FIELD_IDS.has(id)) {
           persistCurrentMarketBarrierSettings(null, { custom: true });
           scheduleCurrentMarketBarrierSync(null, { custom: true });

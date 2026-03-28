@@ -128,7 +128,7 @@ socketio = SocketIO(
     async_mode="threading",
     manage_session=False,
     ping_interval=25,
-    ping_timeout=60,
+    ping_timeout=3600,
 )
 
 DERIV_WS = "wss://ws.derivws.com/websockets/v3?app_id=1089"
@@ -2244,6 +2244,11 @@ def _default_unchain_hl_state():
         "lower_stake": 1.0,
         "higher_barrier": "+0.12",
         "lower_barrier": "-0.12",
+        "directional_auto_enabled": False,
+        "directional_auto_side": "HIGHER",
+        "directional_auto_barrier": "+0.12",
+        "directional_auto_next_fire_at": 0.0,
+        "directional_auto_last_reason": "⚡ AUTO TRADE · 📈 HIGHER / 📉 LOWER is OFF.",
         "duration": 5,
         "duration_unit": "t",
         "tp": 0.0,
@@ -2286,6 +2291,7 @@ def _default_unchain_hl_state():
         "koolkid_live_duration": 5,
         "koolkid_live_duration_unit": "t",
         "koolkid_hl_loss_trigger_pct": 50,
+        "koolkid_hl_sim_side": "AUTO",
         "koolkid_reversal_enabled": False,
         "koolkid_half_barrier_enabled": False,
         "koolkid_higher_barrier": "",
@@ -2305,6 +2311,31 @@ def _default_unchain_hl_state():
             "recommended": None,
         },
     }
+
+
+def _clean_koolkid_hl_sim_side(value):
+    side = str(value or "AUTO").strip().upper()
+    if side in ("HIGHER", "LOWER"):
+        return side
+    return "AUTO"
+
+
+def _clean_unchain_directional_auto_side(value):
+    side = str(value or "HIGHER").strip().upper()
+    if side == "LOWER":
+        return "LOWER"
+    return "HIGHER"
+
+
+def _format_unchain_directional_auto_barrier(raw_value, side, duration_unit, fallback=None):
+    side_name = _clean_unchain_directional_auto_side(side)
+    default_fallback = fallback or ("+0.12" if side_name == "HIGHER" else "-0.12")
+    raw = str(raw_value if raw_value is not None else "").strip()
+    if not raw:
+        raw = str(default_fallback)
+    if raw and not raw.startswith(("+", "-")):
+        raw = ("+" if side_name == "HIGHER" else "-") + raw
+    return _format_unchain_barrier(raw, side_name, duration_unit)
 
 
 def _ensure_unchain_hl_state(state):
@@ -2341,6 +2372,11 @@ def _ensure_unchain_hl_state(state):
     cur["half_barrier_enabled"] = bool(cur.get("half_barrier_enabled", False))
     cur["auto_both_enabled"] = bool(cur.get("auto_both_enabled", False))
     cur["ai_auto_trade_enabled"] = bool(cur.get("ai_auto_trade_enabled", False))
+    cur["directional_auto_enabled"] = bool(cur.get("directional_auto_enabled", False))
+    cur["directional_auto_side"] = _clean_unchain_directional_auto_side(cur.get("directional_auto_side", "HIGHER"))
+    cur["directional_auto_last_reason"] = str(
+        cur.get("directional_auto_last_reason") or "⚡ AUTO TRADE · 📈 HIGHER / 📉 LOWER is OFF."
+    )
     cur["koolkid_hl_enabled"] = bool(cur.get("koolkid_hl_enabled", False))
     cur["koolkid_hl_last_reason"] = str(cur.get("koolkid_hl_last_reason") or "KOOLKID Higher/Lower is OFF.")
     cur["koolkid_both_enabled"] = bool(cur.get("koolkid_both_enabled", False))
@@ -2365,6 +2401,7 @@ def _ensure_unchain_hl_state(state):
         cur["koolkid_hl_loss_trigger_pct"] = max(50, min(70, int(float(cur.get("koolkid_hl_loss_trigger_pct", 50) or 50))))
     except Exception:
         cur["koolkid_hl_loss_trigger_pct"] = 50
+    cur["koolkid_hl_sim_side"] = _clean_koolkid_hl_sim_side(cur.get("koolkid_hl_sim_side", "AUTO"))
     cur["koolkid_reversal_enabled"] = bool(cur.get("koolkid_reversal_enabled", False))
     cur["koolkid_half_barrier_enabled"] = bool(cur.get("koolkid_half_barrier_enabled", False))
     cur["market_default_symbol"] = str(cur.get("market_default_symbol") or "").upper()
@@ -2524,6 +2561,23 @@ def _ensure_unchain_hl_state(state):
     cur["auto_last_cycle_had_loss"] = bool(cur.get("auto_last_cycle_had_loss", False))
     cur["duration_unit"] = _clean_unchain_duration_unit(cur.get("duration_unit", "t"))
     cur["duration"] = _sanitize_unchain_duration(cur.get("duration", 5), cur["duration_unit"])
+    try:
+        fallback_directional_barrier = _get_unchain_visible_barrier(cur, cur["directional_auto_side"], cur["duration_unit"])
+    except Exception:
+        fallback_directional_barrier = "+0.12" if cur["directional_auto_side"] == "HIGHER" else "-0.12"
+    try:
+        cur["directional_auto_barrier"] = _format_unchain_directional_auto_barrier(
+            cur.get("directional_auto_barrier", fallback_directional_barrier),
+            cur.get("directional_auto_side", "HIGHER"),
+            cur["duration_unit"],
+            fallback=fallback_directional_barrier,
+        )
+    except Exception:
+        cur["directional_auto_barrier"] = fallback_directional_barrier
+    try:
+        cur["directional_auto_next_fire_at"] = max(0.0, float(cur.get("directional_auto_next_fire_at", 0.0) or 0.0))
+    except Exception:
+        cur["directional_auto_next_fire_at"] = 0.0
     try:
         cur["auto_start_threshold"] = max(45.0, min(80.0, float(cur.get("auto_start_threshold", 48.0) or 48.0)))
     except Exception:
@@ -3280,6 +3334,11 @@ def _finalize_unchain_contract(state, contract, meta=None):
                 if profit <= 0:
                     u["auto_cycle_losses"] = int(u.get("auto_cycle_losses", 0) or 0) + 1
                     u["auto_last_cycle_had_loss"] = True
+        if source == "DIRECTIONAL_AUTO":
+            u["directional_auto_next_fire_at"] = time.time() + 3.0
+            u["directional_auto_last_reason"] = (
+                f"Directional auto {entry['type']} {result} ({profit:+.2f}) • rescanning after cooldown"
+            )
     except Exception:
         pass
 
@@ -3317,6 +3376,269 @@ def _clear_unchain_koolkid_both_simulation(u, *, reason=None, cooldown_sec=0.0):
         u["koolkid_both_cooldown_until"] = 0.0
     if reason is not None:
         u["koolkid_both_last_reason"] = str(reason)
+
+
+def _disable_unchain_directional_auto(u, *, reason=None):
+    if not isinstance(u, dict):
+        return
+    u["directional_auto_enabled"] = False
+    u["directional_auto_next_fire_at"] = 0.0
+    if reason is not None:
+        u["directional_auto_last_reason"] = str(reason)
+
+
+def _get_unchain_directional_auto_barrier(u, duration_unit=None):
+    unit = _clean_unchain_duration_unit(duration_unit or (u or {}).get("duration_unit", "t"))
+    side = _clean_unchain_directional_auto_side((u or {}).get("directional_auto_side", "HIGHER"))
+    fallback = None
+    try:
+        fallback = _get_unchain_visible_barrier(u or {}, side, unit)
+    except Exception:
+        fallback = "+0.12" if side == "HIGHER" else "-0.12"
+    raw = (u or {}).get("directional_auto_barrier", fallback)
+    try:
+        return _format_unchain_directional_auto_barrier(raw, side, unit, fallback=fallback)
+    except Exception:
+        return fallback
+
+
+def _duration_to_target_seconds(duration, duration_unit):
+    unit = _clean_unchain_duration_unit(duration_unit)
+    try:
+        value = int(float(duration or 0))
+    except Exception:
+        value = 0
+    if unit == "t":
+        return None
+    if unit == "s":
+        return float(value)
+    if unit == "m":
+        return float(value) * 60.0
+    return float(value) * 3600.0
+
+
+def _compute_unchain_directional_auto_analysis(state, u=None):
+    u = u or _ensure_unchain_hl_state(state)
+    side = _clean_unchain_directional_auto_side(u.get("directional_auto_side", "HIGHER"))
+    duration_unit = _clean_unchain_duration_unit(u.get("duration_unit", "t"))
+    duration = _sanitize_unchain_duration(u.get("duration", 5), duration_unit)
+    barrier_text = _get_unchain_directional_auto_barrier(u, duration_unit)
+    try:
+        barrier_value = float(barrier_text)
+    except Exception:
+        barrier_value = 0.12 if side == "HIGHER" else -0.12
+
+    analysis = {
+        "ready": False,
+        "side": side,
+        "barrier": barrier_text,
+        "barrier_value": float(barrier_value),
+        "duration": int(duration),
+        "duration_unit": duration_unit,
+        "movement_pct": 0.0,
+        "market_confidence": 0.0,
+        "simulation_win_rate": 0.0,
+        "simulation_confidence": 0.0,
+        "final_confidence": 0.0,
+        "sample_count": 0,
+        "threshold": 60.0,
+        "recent_move": 0.0,
+        "net_move": 0.0,
+        "range_width": 0.0,
+        "reasons": ["Waiting for more market data"],
+        "graph_barrier": barrier_text,
+        "graph_barrier_value": float(barrier_value),
+    }
+
+    strat = (state.get("strategies") or {}).get("UNCHAIN")
+    if not strat:
+        analysis["reasons"] = ["UNCHAIN strategy is not available"]
+        return analysis
+
+    try:
+        prices = [float(v) for v in list(getattr(strat, "price_history", []) or []) if v is not None]
+    except Exception:
+        prices = []
+    try:
+        tick_times = [float(v) for v in list(getattr(strat, "tick_time_history", []) or []) if v is not None]
+    except Exception:
+        tick_times = []
+
+    if not prices or len(prices) < 8:
+        analysis["reasons"] = [f"Need more ticks ({len(prices)}/8)"]
+        return analysis
+
+    if tick_times and len(tick_times) != len(prices):
+        usable = min(len(tick_times), len(prices))
+        prices = prices[-usable:]
+        tick_times = tick_times[-usable:]
+
+    if duration_unit == "t":
+        recent_span = max(3, min(len(prices) - 1, int(duration)))
+        sim_sample_count = len(prices) - recent_span
+        end_deltas = [prices[idx + recent_span] - prices[idx] for idx in range(sim_sample_count)] if sim_sample_count > 0 else []
+    else:
+        target_seconds = _duration_to_target_seconds(duration, duration_unit)
+        end_deltas = []
+        recent_span = None
+        if tick_times and target_seconds and target_seconds > 0:
+            for start_idx in range(len(prices) - 1):
+                start_ts = tick_times[start_idx]
+                found_idx = None
+                for end_idx in range(start_idx + 1, len(prices)):
+                    if (tick_times[end_idx] - start_ts) >= target_seconds:
+                        found_idx = end_idx
+                        break
+                if found_idx is not None:
+                    end_deltas.append(prices[found_idx] - prices[start_idx])
+            last_start_idx = None
+            for idx in range(len(prices) - 2, -1, -1):
+                if (tick_times[-1] - tick_times[idx]) >= target_seconds:
+                    last_start_idx = idx
+                    break
+            if last_start_idx is not None:
+                recent_span = len(prices) - 1 - last_start_idx
+        if recent_span is None:
+            recent_span = max(4, min(len(prices) - 1, 6))
+
+    if recent_span <= 0 or len(prices) <= recent_span:
+        analysis["reasons"] = ["Waiting for enough duration history"]
+        return analysis
+
+    window_lookback = max(recent_span + 2, min(len(prices), max(10, recent_span * 3)))
+    window = prices[-window_lookback:]
+    deltas = [window[idx] - window[idx - 1] for idx in range(1, len(window))]
+    if not deltas:
+        analysis["reasons"] = ["Waiting for directional movement"]
+        return analysis
+
+    favorable_steps = sum(1 for delta in deltas if (delta > 0 if side == "HIGHER" else delta < 0))
+    directional_steps = max(1, sum(1 for delta in deltas if delta != 0))
+    flow_pct = (favorable_steps / directional_steps) * 100.0
+    recent_move = prices[-1] - prices[-1 - recent_span]
+    net_move = window[-1] - window[0]
+    chosen_recent_move = recent_move if side == "HIGHER" else -recent_move
+    chosen_net_move = net_move if side == "HIGHER" else -net_move
+    range_width = max(window) - min(window)
+    avg_abs_delta = (sum(abs(delta) for delta in deltas) / len(deltas)) if deltas else 0.0
+    move_scale = max(abs(barrier_value) * 1.5, range_width * 0.35, avg_abs_delta * 4.0, 0.0000001)
+    momentum_pct = max(0.0, min(100.0, (chosen_recent_move / move_scale) * 100.0))
+    trend_pct = max(0.0, min(100.0, (chosen_net_move / max(abs(barrier_value) * 2.0, range_width, 0.0000001)) * 100.0))
+    market_confidence = round((flow_pct * 0.50) + (momentum_pct * 0.30) + (trend_pct * 0.20), 1)
+
+    sample_count = len(end_deltas)
+    wins = 0
+    for delta in end_deltas:
+        if side == "HIGHER":
+            if delta >= barrier_value:
+                wins += 1
+        else:
+            if delta <= barrier_value:
+                wins += 1
+    simulation_win_rate = round((wins / sample_count) * 100.0, 1) if sample_count else 0.0
+    sample_weight = min(1.0, sample_count / 8.0) if sample_count else 0.0
+    simulation_confidence = round(50.0 + ((simulation_win_rate - 50.0) * sample_weight), 1) if sample_count else 0.0
+    final_confidence = round((market_confidence * 0.50) + (simulation_confidence * 0.50), 1)
+
+    reasons = []
+    if flow_pct < 50.0:
+        reasons.append(f"{side} flow only {flow_pct:.0f}%")
+    if chosen_recent_move <= 0:
+        reasons.append(f"recent move not favoring {side.lower()}")
+    if chosen_net_move <= 0:
+        reasons.append("broader move still mixed")
+    if sample_count < 4:
+        reasons.append(f"need more sim samples ({sample_count}/4)")
+    if final_confidence < analysis["threshold"]:
+        reasons.append(f"confidence {final_confidence:.0f}%/{analysis['threshold']:.0f}%")
+    if not reasons:
+        reasons.append(f"{side} market + sim agreement ready")
+
+    analysis.update({
+        "ready": bool(flow_pct >= 50.0 and chosen_recent_move > 0 and chosen_net_move > 0 and sample_count >= 4 and final_confidence >= analysis["threshold"]),
+        "movement_pct": round(flow_pct, 1),
+        "market_confidence": float(market_confidence),
+        "simulation_win_rate": float(simulation_win_rate),
+        "simulation_confidence": float(simulation_confidence),
+        "final_confidence": float(final_confidence),
+        "sample_count": int(sample_count),
+        "recent_move": round(float(recent_move), 6),
+        "net_move": round(float(net_move), 6),
+        "range_width": round(float(range_width), 6),
+        "reasons": reasons[:4],
+    })
+    return analysis
+
+
+def _get_unchain_directional_auto_status(state, u=None, active_count=None, analysis=None):
+    u = u or _ensure_unchain_hl_state(state)
+    if active_count is None:
+        active_count = len([v for v in (u.get("active_contracts") or {}).values() if _entry_is_open_for_ui(v)])
+    enabled = bool(u.get("directional_auto_enabled"))
+    side = _clean_unchain_directional_auto_side(u.get("directional_auto_side", "HIGHER"))
+    barrier_text = _get_unchain_directional_auto_barrier(u)
+    try:
+        graph_barrier_value = float(barrier_text)
+    except Exception:
+        graph_barrier_value = 0.0
+    payload = {
+        "enabled": enabled,
+        "label": "OFF",
+        "status": "OFF",
+        "side": side,
+        "barrier": barrier_text,
+        "graph_barrier": barrier_text,
+        "graph_barrier_value": float(graph_barrier_value),
+        "cooldown_remaining": 0.0,
+        "last_reason": str(u.get("directional_auto_last_reason") or "⚡ AUTO TRADE · 📈 HIGHER / 📉 LOWER is OFF."),
+        "market_confidence": 0.0,
+        "movement_pct": 0.0,
+        "simulation_win_rate": 0.0,
+        "simulation_confidence": 0.0,
+        "final_confidence": 0.0,
+        "sample_count": 0,
+        "threshold": 60.0,
+        "ready": False,
+    }
+    if not enabled:
+        return payload
+
+    if active_count > 0:
+        payload["label"] = "RUNNING"
+        payload["status"] = "RUNNING"
+        return payload
+
+    now_ts = time.time()
+    next_fire_at = float(u.get("directional_auto_next_fire_at", 0.0) or 0.0)
+    cooldown_remaining = max(0.0, next_fire_at - now_ts)
+    if cooldown_remaining > 0:
+        payload["label"] = "COOLDOWN"
+        payload["status"] = "COOLDOWN"
+        payload["cooldown_remaining"] = float(cooldown_remaining)
+    analysis = analysis or _compute_unchain_directional_auto_analysis(state, u)
+    payload.update({
+        "side": analysis.get("side", side),
+        "barrier": analysis.get("barrier", barrier_text),
+        "graph_barrier": analysis.get("graph_barrier", barrier_text),
+        "graph_barrier_value": float(analysis.get("graph_barrier_value", payload["graph_barrier_value"]) or 0.0),
+        "market_confidence": float(analysis.get("market_confidence", 0.0) or 0.0),
+        "movement_pct": float(analysis.get("movement_pct", 0.0) or 0.0),
+        "simulation_win_rate": float(analysis.get("simulation_win_rate", 0.0) or 0.0),
+        "simulation_confidence": float(analysis.get("simulation_confidence", 0.0) or 0.0),
+        "final_confidence": float(analysis.get("final_confidence", 0.0) or 0.0),
+        "sample_count": int(analysis.get("sample_count", 0) or 0),
+        "threshold": float(analysis.get("threshold", 60.0) or 60.0),
+        "ready": bool(analysis.get("ready")),
+        "last_reason": str((analysis.get("reasons") or [payload["last_reason"]])[0]),
+    })
+    if cooldown_remaining <= 0:
+        if payload["ready"]:
+            payload["label"] = "ARMED"
+            payload["status"] = "ARMED"
+        else:
+            payload["label"] = f"WAITING {int(payload['threshold'])}%"
+            payload["status"] = "WAITING"
+    return payload
 
 
 def _estimate_unchain_koolkid_hl_value(sim, current_price, metrics, *, max_balance_ratio=1.35):
@@ -3698,6 +4020,7 @@ def _serialize_unchain_koolkid_hl(state, u=None, active_count=None):
         "live_duration": int(u.get("koolkid_live_duration", 5) or 5),
         "live_duration_unit": _clean_koolkid_duration_unit(u.get("koolkid_live_duration_unit", "t")),
         "loss_trigger_pct": int(u.get("koolkid_hl_loss_trigger_pct", 50) or 50),
+        "sim_side": _clean_koolkid_hl_sim_side(u.get("koolkid_hl_sim_side", "AUTO")),
         "reversal_enabled": bool(u.get("koolkid_reversal_enabled", False)),
         "half_barrier_enabled": bool(u.get("koolkid_half_barrier_enabled", False)),
         "simulation": None,
@@ -3770,7 +4093,13 @@ def _serialize_unchain_koolkid_hl(state, u=None, active_count=None):
     payload["status"] = "ARMED"
     payload["label"] = "ARMED"
     if not payload["last_reason"]:
-        payload["last_reason"] = "KOOLKID Higher/Lower is armed and waiting for a weak-side simulation."
+        sim_side = payload.get("sim_side", "AUTO")
+        if sim_side == "HIGHER":
+            payload["last_reason"] = "KOOLKID Higher/Lower is armed and waiting for a Higher-side simulation."
+        elif sim_side == "LOWER":
+            payload["last_reason"] = "KOOLKID Higher/Lower is armed and waiting for a Lower-side simulation."
+        else:
+            payload["last_reason"] = "KOOLKID Higher/Lower is armed and waiting for a weak-side simulation."
     return payload
 
 
@@ -4020,7 +4349,7 @@ def _run_unchain_koolkid_hl(client_id, state):
         if str(sim.get("side") or "").upper() not in ("HIGHER", "LOWER") or str(sim.get("opposite_side") or "").upper() not in ("HIGHER", "LOWER"):
             _clear_unchain_koolkid_hl_simulation(
                 u,
-                reason="KOOLKID simulation restarted to restore weaker-side logic.",
+                reason="KOOLKID simulation restarted to restore Higher/Lower settings.",
                 cooldown_sec=0.0,
             )
             sim = None
@@ -4134,11 +4463,14 @@ def _run_unchain_koolkid_hl(client_id, state):
     live_duration = _sanitize_koolkid_duration(u.get("koolkid_live_duration", 5), live_duration_unit, kind="live")
     loss_trigger_pct = _get_unchain_koolkid_hl_loss_trigger_pct(u)
     decision_after = _get_unchain_koolkid_hl_check_after(sim_duration, loss_trigger_pct, sim_duration_unit)
-    weaker_side = "HIGHER" if higher_pct < lower_pct else "LOWER"
-    opposite_side = "LOWER" if weaker_side == "HIGHER" else "HIGHER"
-    stake_key = "higher_stake" if weaker_side == "HIGHER" else "lower_stake"
+    configured_side = _clean_koolkid_hl_sim_side(u.get("koolkid_hl_sim_side", "AUTO"))
+    sim_side = "HIGHER" if higher_pct < lower_pct else "LOWER"
+    if configured_side in ("HIGHER", "LOWER"):
+        sim_side = configured_side
+    opposite_side = "LOWER" if sim_side == "HIGHER" else "HIGHER"
+    stake_key = "higher_stake" if sim_side == "HIGHER" else "lower_stake"
     sim_stake = float(u.get(stake_key, 1.0) or 1.0)
-    sim_barrier = _get_unchain_visible_barrier(u, weaker_side, "t")
+    sim_barrier = _get_unchain_visible_barrier(u, sim_side, "t")
     try:
         sim_barrier_mag = abs(float(sim_barrier))
     except Exception:
@@ -4151,7 +4483,7 @@ def _run_unchain_koolkid_hl(client_id, state):
 
     u["koolkid_hl_simulation"] = {
         "active": True,
-        "side": weaker_side,
+        "side": sim_side,
         "opposite_side": opposite_side,
         "symbol": state.get("current_symbol"),
         "stake": float(sim_stake),
@@ -4168,11 +4500,11 @@ def _run_unchain_koolkid_hl(client_id, state):
         "loss_trigger_pct": int(loss_trigger_pct),
         "time": now_time(),
         "virtual_contract_id": "UNCHAIN-KOOLKID-HL-SIM",
-        "message": f"{_format_koolkid_duration_text(sim_duration, sim_duration_unit)} paper {weaker_side} sim started • trigger {loss_trigger_pct}% loss • opposite {opposite_side} live will use {live_barrier} for {_format_koolkid_duration_text(live_duration, live_duration_unit)} if conditions pass.",
+        "message": f"{_format_koolkid_duration_text(sim_duration, sim_duration_unit)} paper {sim_side} sim started • trigger {loss_trigger_pct}% loss • opposite {opposite_side} live will use {live_barrier} for {_format_koolkid_duration_text(live_duration, live_duration_unit)} if conditions pass.",
     }
     _start_unchain_koolkid_simulation_clock(state, u["koolkid_hl_simulation"], sim_duration, sim_duration_unit, decision_after)
     u["koolkid_hl_last_reason"] = (
-        f"KOOLKID sim {weaker_side} started • check at {_format_koolkid_duration_text(decision_after, sim_duration_unit)} • trigger {loss_trigger_pct}% loss • live {opposite_side} would use {live_barrier} for {_format_koolkid_duration_text(live_duration, live_duration_unit)}."
+        f"KOOLKID sim {sim_side} started • check at {_format_koolkid_duration_text(decision_after, sim_duration_unit)} • trigger {loss_trigger_pct}% loss • live {opposite_side} would use {live_barrier} for {_format_koolkid_duration_text(live_duration, live_duration_unit)}."
     )
     u["last_action"] = u["koolkid_hl_last_reason"]
     return False
@@ -5925,6 +6257,74 @@ def _get_unchain_ai_auto_status(state, u=None, active_count=None, gate=None):
     return {"label": "ARMED", "cooldown_remaining": 0.0}
 
 
+def _run_unchain_directional_auto_trade(client_id, state):
+    u = _ensure_unchain_hl_state(state)
+    if not bool(u.get("directional_auto_enabled")):
+        return False
+    if not state.get("ws_connected") or not state.get("ws"):
+        u["directional_auto_last_reason"] = "Connect API first for ⚡ AUTO TRADE · 📈 HIGHER / 📉 LOWER."
+        return False
+    if bool(u.get("ai_auto_trade_enabled")) or bool(u.get("auto_both_enabled")) or bool(u.get("koolkid_hl_enabled")) or bool(u.get("koolkid_both_enabled")):
+        u["directional_auto_last_reason"] = "Turn off the other UNCHAIN auto modes before using this side-only auto trade."
+        return False
+
+    risk_block = _check_unchain_hl_risk_block(state)
+    if risk_block:
+        u["directional_auto_last_reason"] = str(risk_block)
+        return False
+
+    open_entries = _get_open_unchain_active_entries(state)
+    if open_entries:
+        u["directional_auto_last_reason"] = "Directional auto is waiting for the current UNCHAIN trade to finish."
+        return False
+
+    now_ts = time.time()
+    next_fire_at = float(u.get("directional_auto_next_fire_at", 0.0) or 0.0)
+    if next_fire_at and now_ts < next_fire_at:
+        return False
+
+    analysis = _compute_unchain_directional_auto_analysis(state, u)
+    if not bool(analysis.get("ready")):
+        reasons = list(analysis.get("reasons") or [])
+        u["directional_auto_last_reason"] = reasons[0] if reasons else "Directional auto is waiting for a cleaner setup."
+        return False
+
+    side = _clean_unchain_directional_auto_side(analysis.get("side", u.get("directional_auto_side", "HIGHER")))
+    duration = _sanitize_unchain_duration(analysis.get("duration", u.get("duration", 5)), analysis.get("duration_unit", u.get("duration_unit", "t")))
+    duration_unit = _clean_unchain_duration_unit(analysis.get("duration_unit", u.get("duration_unit", "t")))
+    barrier_text = str(analysis.get("barrier") or _get_unchain_directional_auto_barrier(u, duration_unit))
+    stake_key = "higher_stake" if side == "HIGHER" else "lower_stake"
+    try:
+        stake = float(u.get(stake_key, 1.0) or 1.0)
+    except Exception:
+        stake = 1.0
+
+    ok, msg = _send_unchain_hl_trade(
+        client_id,
+        side=side,
+        stake=stake,
+        symbol=state.get("current_symbol", "R_25"),
+        barrier=barrier_text,
+        duration=duration,
+        duration_unit=duration_unit,
+        entry_source="DIRECTIONAL_AUTO",
+        auto_confidence=analysis.get("final_confidence"),
+        respect_half_barrier_toggle=False,
+    )
+    if not ok:
+        u["directional_auto_next_fire_at"] = now_ts + 4.0
+        u["directional_auto_last_reason"] = f"Directional auto {side} failed: {msg}"
+        return False
+
+    u["directional_auto_last_reason"] = (
+        f"Directional auto sent {side} • barrier {barrier_text} • "
+        f"confidence {float(analysis.get('final_confidence', 0.0) or 0.0):.0f}% • "
+        f"sim {float(analysis.get('simulation_win_rate', 0.0) or 0.0):.0f}%"
+    )
+    u["last_action"] = u["directional_auto_last_reason"]
+    return True
+
+
 def _run_unchain_ai_auto_trade(client_id, state):
     u = _ensure_unchain_hl_state(state)
     if not bool(u.get("ai_auto_trade_enabled")):
@@ -6216,6 +6616,7 @@ def _unchain_payload_response(state):
     auto_gate = _get_unchain_auto_gate(state, u)
     ai_auto_meta = _get_unchain_ai_auto_status(state, u, active_count=len(active_contracts), gate=auto_gate)
     auto_both_meta = _get_unchain_auto_both_status(state, u, active_count=len(active_contracts))
+    directional_auto_meta = _get_unchain_directional_auto_status(state, u, active_count=len(active_contracts))
     koolkid_hl_meta = _serialize_unchain_koolkid_hl(state, u, active_count=len(active_contracts))
     koolkid_both_meta = _serialize_unchain_koolkid_both(state, u, active_count=len(active_contracts))
 
@@ -6235,11 +6636,15 @@ def _unchain_payload_response(state):
             "half_barrier_enabled": bool(u.get("half_barrier_enabled", False)),
             "auto_both_enabled": bool(u.get("auto_both_enabled", False)),
             "ai_auto_trade_enabled": bool(u.get("ai_auto_trade_enabled", False)),
+            "directional_auto_enabled": bool(u.get("directional_auto_enabled", False)),
+            "directional_auto_side": _clean_unchain_directional_auto_side(u.get("directional_auto_side", "HIGHER")),
+            "directional_auto_barrier": _get_unchain_directional_auto_barrier(u),
             "koolkid_sim_duration": int(u.get("koolkid_sim_duration", 15) or 15),
             "koolkid_sim_duration_unit": _clean_koolkid_duration_unit(u.get("koolkid_sim_duration_unit", "s")),
             "koolkid_live_duration": int(u.get("koolkid_live_duration", 5) or 5),
             "koolkid_live_duration_unit": _clean_koolkid_duration_unit(u.get("koolkid_live_duration_unit", "t")),
             "koolkid_hl_loss_trigger_pct": int(u.get("koolkid_hl_loss_trigger_pct", 50) or 50),
+            "koolkid_hl_sim_side": _clean_koolkid_hl_sim_side(u.get("koolkid_hl_sim_side", "AUTO")),
             "koolkid_reversal_enabled": bool(u.get("koolkid_reversal_enabled", False)),
             "koolkid_half_barrier_enabled": bool(u.get("koolkid_half_barrier_enabled", False)),
             "koolkid_higher_barrier": str(u.get("koolkid_higher_barrier") or _get_unchain_koolkid_live_barrier(u, "HIGHER", u.get("koolkid_live_duration_unit", "t"))),
@@ -6249,6 +6654,9 @@ def _unchain_payload_response(state):
             "auto_cooldown_remaining": float(auto_both_meta.get("cooldown_remaining", 0.0) or 0.0),
             "ai_auto_status": ai_auto_meta.get("label", "OFF"),
             "ai_auto_cooldown_remaining": float(ai_auto_meta.get("cooldown_remaining", 0.0) or 0.0),
+            "directional_auto_status": directional_auto_meta.get("label", "OFF"),
+            "directional_auto_cooldown_remaining": float(directional_auto_meta.get("cooldown_remaining", 0.0) or 0.0),
+            "directional_auto": directional_auto_meta,
             "auto_start_threshold": float(u.get("auto_start_threshold", 48.0) or 48.0),
             "auto_min_movement": float(u.get("auto_min_movement", 0.06) or 0.06),
             "auto_min_tick_speed": float(u.get("auto_min_tick_speed", 2.4) or 2.4),
@@ -8189,6 +8597,7 @@ def process_tick(client_id, tick):
         if is_main:
             _run_unchain_ai_auto_trade(client_id, state)
             _run_unchain_auto_both(client_id, state)
+            _run_unchain_directional_auto_trade(client_id, state)
             _run_unchain_koolkid_hl(client_id, state)
             _run_unchain_koolkid_both(client_id, state)
 
@@ -8323,6 +8732,7 @@ def process_contract(client_id, contract):
         if profile_for_contract == "UNCHAIN":
             _run_unchain_ai_auto_trade(client_id, state)
             _run_unchain_auto_both(client_id, state)
+            _run_unchain_directional_auto_trade(client_id, state)
         if state.get("active_profile") == "UNCHAIN":
             socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
         send_stats_update(client_id)
@@ -8350,7 +8760,11 @@ def send_stats_update(client_id):
             "losses": losses,
             "winrate": winrate,
             "net_pnl": float(stats.get("net_pnl", 0.0) or 0.0),
-            "auto_trade": bool(u.get("auto_both_enabled", False) or u.get("ai_auto_trade_enabled", False)),
+            "auto_trade": bool(
+                u.get("auto_both_enabled", False)
+                or u.get("ai_auto_trade_enabled", False)
+                or u.get("directional_auto_enabled", False)
+            ),
         }
         socketio.emit("stats_update", payload, room=client_id)
         return
@@ -9770,6 +10184,8 @@ def unchain_settings_route():
             )
         if "koolkid_hl_loss_trigger_pct" in data:
             u["koolkid_hl_loss_trigger_pct"] = max(50, min(70, int(float(data.get("koolkid_hl_loss_trigger_pct") or 50))))
+        if "koolkid_hl_sim_side" in data:
+            u["koolkid_hl_sim_side"] = _clean_koolkid_hl_sim_side(data.get("koolkid_hl_sim_side"))
         if "koolkid_reversal_enabled" in data:
             u["koolkid_reversal_enabled"] = bool(data.get("koolkid_reversal_enabled"))
         if "koolkid_half_barrier_enabled" in data:
@@ -9780,6 +10196,18 @@ def unchain_settings_route():
             active_unit = _clean_unchain_duration_unit(u.get("duration_unit", "t"))
             raw_duration = data.get("duration", u.get("duration", 5))
             u["duration"] = _sanitize_unchain_duration(raw_duration, active_unit)
+        if "directional_auto_side" in data:
+            u["directional_auto_side"] = _clean_unchain_directional_auto_side(data.get("directional_auto_side"))
+        if "directional_auto_barrier" in data or "directional_auto_side" in data or "duration_unit" in data:
+            active_unit = _clean_unchain_duration_unit(u.get("duration_unit", "t"))
+            fallback_directional_barrier = _get_unchain_visible_barrier(u, u.get("directional_auto_side", "HIGHER"), active_unit)
+            raw_directional_barrier = data.get("directional_auto_barrier", u.get("directional_auto_barrier", fallback_directional_barrier))
+            u["directional_auto_barrier"] = _format_unchain_directional_auto_barrier(
+                raw_directional_barrier,
+                u.get("directional_auto_side", "HIGHER"),
+                active_unit,
+                fallback=fallback_directional_barrier,
+            )
         if "tp" in data:
             u["tp"] = max(0.0, float(data.get("tp") or 0))
         if "sl" in data:
@@ -9924,6 +10352,7 @@ def _toggle_unchain_auto(cid, state, data):
     u["auto_both_cooldown"] = 3
     active_count = len(_get_open_unchain_active_entries(state))
     if u["auto_both_enabled"]:
+        _disable_unchain_directional_auto(u, reason="⚡ AUTO TRADE · 📈 HIGHER / 📉 LOWER is OFF.")
         if active_count > 0:
             u["auto_both_pair_active"] = True
             u["auto_both_next_fire_at"] = 0.0
@@ -9962,6 +10391,7 @@ def _toggle_unchain_ai_auto_trade(cid, state, data):
     u["auto_both_cooldown"] = 3
     active_count = len(_get_open_unchain_active_entries(state))
     if u["ai_auto_trade_enabled"]:
+        _disable_unchain_directional_auto(u, reason="⚡ AUTO TRADE · 📈 HIGHER / 📉 LOWER is OFF.")
         u["auto_wait_for_reset"] = False
         u["auto_reset_drop_seen"] = False
         if active_count > 0:
@@ -10003,6 +10433,55 @@ def _toggle_unchain_ai_auto_trade(cid, state, data):
     })
 
 
+def _toggle_unchain_directional_auto(cid, state, data):
+    u = _ensure_unchain_hl_state(state)
+    requested = data.get("enabled")
+    if requested is None:
+        u["directional_auto_enabled"] = not bool(u.get("directional_auto_enabled"))
+    else:
+        u["directional_auto_enabled"] = bool(requested)
+
+    active_count = len(_get_open_unchain_active_entries(state))
+    if u["directional_auto_enabled"]:
+        u["auto_both_enabled"] = False
+        u["auto_both_pair_active"] = False
+        u["auto_both_next_fire_at"] = 0.0
+        u["ai_auto_trade_enabled"] = False
+        u["auto_pair_active"] = False
+        u["auto_wait_for_reset"] = False
+        u["auto_reset_drop_seen"] = False
+        u["auto_next_fire_at"] = 0.0
+        u["koolkid_hl_enabled"] = False
+        _clear_unchain_koolkid_hl_simulation(u, reason="KOOLKID Higher/Lower is OFF.", cooldown_sec=0.0)
+        u["koolkid_hl_last_reason"] = "KOOLKID Higher/Lower is OFF."
+        u["koolkid_both_enabled"] = False
+        _clear_unchain_koolkid_both_simulation(u, reason="KOOLKID Both is OFF.", cooldown_sec=0.0)
+        u["koolkid_both_last_reason"] = "KOOLKID Both is OFF."
+        if active_count > 0:
+            u["directional_auto_last_reason"] = "Directional auto armed • waiting for current UNCHAIN trade to settle."
+        else:
+            u["directional_auto_next_fire_at"] = time.time()
+            side = _clean_unchain_directional_auto_side(u.get("directional_auto_side", "HIGHER"))
+            barrier_text = _get_unchain_directional_auto_barrier(u)
+            u["directional_auto_last_reason"] = f"Directional auto armed • {side} • barrier {barrier_text}"
+        _run_unchain_directional_auto_trade(cid, state)
+        message = "⚡ AUTO TRADE · 📈 HIGHER / 📉 LOWER ON"
+    else:
+        u["directional_auto_next_fire_at"] = 0.0
+        u["directional_auto_last_reason"] = "⚡ AUTO TRADE · 📈 HIGHER / 📉 LOWER is OFF."
+        message = "⚡ AUTO TRADE · 📈 HIGHER / 📉 LOWER OFF"
+
+    payload = _unchain_payload_response(state)
+    if state.get("active_profile") == "UNCHAIN":
+        socketio.emit("unchain_status", payload, room=cid)
+    return jsonify({
+        "status": "success",
+        "message": message,
+        "auto_enabled": bool(u.get("directional_auto_enabled")),
+        "payload": payload,
+    })
+
+
 def _toggle_unchain_koolkid_hl(cid, state, data):
     u = _ensure_unchain_hl_state(state)
     requested = data.get("enabled")
@@ -10012,6 +10491,7 @@ def _toggle_unchain_koolkid_hl(cid, state, data):
         u["koolkid_hl_enabled"] = bool(requested)
 
     if u["koolkid_hl_enabled"]:
+        _disable_unchain_directional_auto(u, reason="⚡ AUTO TRADE · 📈 HIGHER / 📉 LOWER is OFF.")
         u["koolkid_both_enabled"] = False
         _clear_unchain_koolkid_both_simulation(
             u,
@@ -10019,9 +10499,19 @@ def _toggle_unchain_koolkid_hl(cid, state, data):
             cooldown_sec=0.0,
         )
         u["koolkid_hl_cooldown_until"] = 0.0
-        u["koolkid_hl_last_reason"] = (
-            "KOOLKID Higher/Lower armed. It will paper-trade the weaker side and check halfway through the sim."
-        )
+        sim_side = _clean_koolkid_hl_sim_side(u.get("koolkid_hl_sim_side", "AUTO"))
+        if sim_side == "HIGHER":
+            u["koolkid_hl_last_reason"] = (
+                "KOOLKID Higher/Lower armed. It will paper-trade the Higher side and check halfway through the sim."
+            )
+        elif sim_side == "LOWER":
+            u["koolkid_hl_last_reason"] = (
+                "KOOLKID Higher/Lower armed. It will paper-trade the Lower side and check halfway through the sim."
+            )
+        else:
+            u["koolkid_hl_last_reason"] = (
+                "KOOLKID Higher/Lower armed. It will paper-trade the weaker side and check halfway through the sim."
+            )
         u["last_action"] = "KOOLKID Higher/Lower armed"
         _run_unchain_koolkid_hl(cid, state)
         message = "KOOLKID HIGHER/LOWER ON"
@@ -10054,6 +10544,7 @@ def _toggle_unchain_koolkid_both(cid, state, data):
         u["koolkid_both_enabled"] = bool(requested)
 
     if u["koolkid_both_enabled"]:
+        _disable_unchain_directional_auto(u, reason="⚡ AUTO TRADE · 📈 HIGHER / 📉 LOWER is OFF.")
         u["koolkid_hl_enabled"] = False
         _clear_unchain_koolkid_hl_simulation(
             u,
@@ -10105,6 +10596,15 @@ def toggle_unchain_ai_auto_trade_route():
     return _toggle_unchain_ai_auto_trade(cid, state, data)
 
 
+@app.route("/toggle_unchain_directional_auto", methods=["POST"])
+def toggle_unchain_directional_auto_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    cid, state = get_client_state()
+    data = request.json or {}
+    return _toggle_unchain_directional_auto(cid, state, data)
+
+
 @app.route("/toggle_unchain_koolkid_hl", methods=["POST"])
 def toggle_unchain_koolkid_hl_route():
     if not login_required():
@@ -10137,6 +10637,9 @@ def unchain_stop_route():
     u["auto_wait_for_reset"] = False
     u["auto_reset_drop_seen"] = False
     u["auto_next_fire_at"] = 0.0
+    u["directional_auto_enabled"] = False
+    u["directional_auto_next_fire_at"] = 0.0
+    u["directional_auto_last_reason"] = "⚡ AUTO TRADE · 📈 HIGHER / 📉 LOWER is OFF."
     active_ids = list((u.get("active_contracts") or {}).keys())
     closed = []
     failed = []
