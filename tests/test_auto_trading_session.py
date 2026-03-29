@@ -60,6 +60,7 @@ def test_start_auto_session_can_build_unchain_profile_pool():
     assert session["selected_strategy_ids"] == ["UNCHAIN"]
     assert "UNCHAIN_HIGHER" in session["allowed_strategy_ids"]
     assert "UNCHAIN_LOWER" in session["allowed_strategy_ids"]
+    assert "UNCHAIN_DIRECTIONAL_AUTO" in session["allowed_strategy_ids"]
 
 
 def test_compute_session_stake_uses_ramp_and_confidence_sizing():
@@ -592,6 +593,30 @@ def test_unchain_profile_candidate_accepts_text_barrier_and_builds_plan(monkeypa
     assert plan is not None
     assert plan["actions"][0]["profile"] == "UNCHAIN"
     assert plan["actions"][0]["barrier"] == "+0.17"
+
+
+def test_unchain_directional_auto_candidate_uses_saved_side_and_barrier():
+    state = {
+        "unchain_hl": {
+            "directional_auto_side": "HIGHER",
+            "directional_auto_barrier": "-0.12",
+            "duration": 4,
+            "duration_unit": "t",
+        }
+    }
+    market = {
+        "prices": [100.00, 100.02, 100.05, 100.09, 100.14, 100.20, 100.27, 100.35, 100.44, 100.54],
+        "epochs": list(range(10)),
+    }
+
+    signal = auto_session._build_unchain_directional_signal(state, market)
+
+    assert signal is not None
+    assert signal["type"] == "HIGHER"
+    assert signal["barrier"] == "+0.12"
+    assert signal["duration"] == 4
+    assert signal["duration_unit"] == "t"
+    assert signal["confidence"] >= 60.0
 
 
 def test_auto_session_clear_history_route_only_clears_session_dashboard(monkeypatch):

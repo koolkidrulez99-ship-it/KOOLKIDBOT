@@ -5,6 +5,7 @@
     lastSocket: null,
     auto_sl: true,
     half_barrier_enabled: false,
+    directional_auto_stable_profits: false,
     koolkid_reversal_enabled: false,
     koolkid_half_barrier_enabled: false,
     pollTimer: null,
@@ -310,18 +311,23 @@
     return persistMarketBarrierSettings(sym, readCurrentMarketBarrierSettings(), opts);
   }
 
-  function seedMarketBarrierSettingsFromPayload(symbol, un) {
+  function seedMarketBarrierSettingsFromPayload(symbol, un, opts) {
     const sym = normalizeMarketSymbol(symbol);
     if (!sym || !un) return null;
+    const options = opts || {};
     const existing = getSavedMarketBarrierSettings(sym);
     const payloadSettings = getPayloadMarketBarrierSettings(un);
-    if (existing && existing.is_custom) {
-      if (payloadSettings && areBarrierSettingsEqual(existing, payloadSettings)) {
-        return persistMarketBarrierSettings(sym, payloadSettings, { custom: false });
-      }
+    if (!payloadSettings) return existing;
+    if (!existing) {
+      return persistMarketBarrierSettings(sym, payloadSettings, { custom: false });
+    }
+    if (options.preferPayload) {
+      return persistMarketBarrierSettings(sym, payloadSettings, { custom: false });
+    }
+    if (existing.is_custom) {
       return existing;
     }
-    return persistMarketBarrierSettings(sym, payloadSettings, { custom: false });
+    return existing;
   }
 
   function applySavedMarketBarrierSettingsToForm(settings, force) {
@@ -407,6 +413,10 @@
     const koolkidReversalEnabled = koolkidReversalToggle ? !!koolkidReversalToggle.checked : !!state.koolkid_reversal_enabled;
     const koolkidHalfBarrierToggle = el("unchainKoolkidHalfBarrierToggle");
     const koolkidHalfBarrierEnabled = koolkidHalfBarrierToggle ? !!koolkidHalfBarrierToggle.checked : !!state.koolkid_half_barrier_enabled;
+    const directionalStableProfitsToggle = el("unchainDirectionalStableProfitsToggle");
+    const directionalAutoStableProfits = directionalStableProfitsToggle
+      ? !!directionalStableProfitsToggle.checked
+      : !!state.directional_auto_stable_profits;
     const directionalAutoSideRaw = readText("unchainDirectionalAutoSide", "HIGHER").toUpperCase();
     const directionalAutoSide = directionalAutoSideRaw === "LOWER" ? "LOWER" : "HIGHER";
     const directionalAutoBarrierRaw = readText("unchainDirectionalAutoBarrier", directionalAutoSide === "LOWER" ? "-0.12" : "+0.12");
@@ -425,6 +435,7 @@
       lower_barrier: halfBarrierEnabled ? scaleBarrierText(lowerBarrierRaw, 2, -0.12) : lowerBarrierRaw,
       directional_auto_side: directionalAutoSide,
       directional_auto_barrier: directionalAutoBarrierRaw,
+      directional_auto_stable_profits: directionalAutoStableProfits,
       koolkid_higher_barrier: koolkidHalfBarrierEnabled ? scaleBarrierText(koolkidHigherBarrierRaw, 2, 0.06) : koolkidHigherBarrierRaw,
       koolkid_lower_barrier: koolkidHalfBarrierEnabled ? scaleBarrierText(koolkidLowerBarrierRaw, 2, -0.06) : koolkidLowerBarrierRaw,
       koolkid_sim_duration: Math.max(1, Math.min(59, readInteger("unchainKoolkidSimDuration", 15))),
@@ -813,6 +824,15 @@
     if (label) label.innerText = state.koolkid_half_barrier_enabled ? "ON" : "OFF";
   }
 
+  function applyDirectionalStableProfitsToggle() {
+    const wrap = el("unchainDirectionalStableProfitsWrap");
+    const input = el("unchainDirectionalStableProfitsToggle");
+    const label = el("unchainDirectionalStableProfitsState");
+    if (input) input.checked = !!state.directional_auto_stable_profits;
+    if (wrap) wrap.classList.toggle("is-on", !!state.directional_auto_stable_profits);
+    if (label) label.innerText = state.directional_auto_stable_profits ? "ON" : "OFF";
+  }
+
   function applyAutoConfidenceLabel() {
     const slider = el("unchainAutoConfidence");
     const label = el("unchainAutoConfidenceValue");
@@ -846,11 +866,28 @@
     if (!un) return;
     const options = opts || {};
     const barrierForce = !!force || !!options.forceBarriers;
+    const barrierOnly = !!options.barrierOnly;
     const halfEnabled = !!un.half_barrier_enabled;
     state.auto_sl = !!un.auto_sl;
     state.half_barrier_enabled = halfEnabled;
     state.koolkid_reversal_enabled = !!un.koolkid_reversal_enabled;
     state.koolkid_half_barrier_enabled = !!un.koolkid_half_barrier_enabled;
+    state.directional_auto_stable_profits = !!un.directional_auto_stable_profits;
+    if (barrierOnly) {
+      setFieldValue("unchainHigherBarrier", getDisplayedBarrierText(un.higher_barrier || "+0.12", 0.12, halfEnabled), true);
+      setFieldValue("unchainLowerBarrier", getDisplayedBarrierText(un.lower_barrier || "-0.12", -0.12, halfEnabled), true);
+      setFieldValue(
+        "unchainKoolkidHigherBarrier",
+        getDisplayedBarrierText(String(un.koolkid_higher_barrier || "+0.06"), 0.06, !!state.koolkid_half_barrier_enabled),
+        true,
+      );
+      setFieldValue(
+        "unchainKoolkidLowerBarrier",
+        getDisplayedBarrierText(String(un.koolkid_lower_barrier || "-0.06"), -0.06, !!state.koolkid_half_barrier_enabled),
+        true,
+      );
+      return;
+    }
     setFieldValue("unchainHigherStake", formatInputNumber(un.higher_stake, 1), force);
     setFieldValue("unchainLowerStake", formatInputNumber(un.lower_stake, 1), force);
     setFieldValue("unchainHigherBarrier", getDisplayedBarrierText(un.higher_barrier || "+0.12", 0.12, halfEnabled), barrierForce);
@@ -878,6 +915,7 @@
     applyHalfBarrierToggle();
     applyKoolkidReversalToggle();
     applyKoolkidHalfBarrierToggle();
+    applyDirectionalStableProfitsToggle();
     applyAutoConfidenceLabel();
   }
 
@@ -981,6 +1019,7 @@
       transformHalfBarrierFieldValues(nextEnabled);
       applyHalfBarrierToggle();
       syncHalfBarrierPreview();
+      scheduleExpectedProfitPreview(25);
       const r = await saveSettings(false);
       if (!(r && r.ok)) {
         const fallbackPayload = state.lastPayload && (state.lastPayload.unchain || state.lastPayload);
@@ -991,6 +1030,7 @@
           : previous;
         applyHalfBarrierToggle();
         syncHalfBarrierPreview();
+        scheduleExpectedProfitPreview(25);
       }
     });
   }
@@ -1045,6 +1085,25 @@
           ? !!fallbackPayload.koolkid_half_barrier_enabled
           : previous;
         applyKoolkidHalfBarrierToggle();
+      }
+    });
+  }
+
+  function bindDirectionalStableProfitsToggle() {
+    const input = el("unchainDirectionalStableProfitsToggle");
+    if (!input || input.dataset.unchainBound === "1") return;
+    input.dataset.unchainBound = "1";
+    input.addEventListener("change", async () => {
+      const previous = !!state.directional_auto_stable_profits;
+      state.directional_auto_stable_profits = !!input.checked;
+      applyDirectionalStableProfitsToggle();
+      const r = await saveSettings(false);
+      if (!(r && r.ok)) {
+        const fallbackPayload = state.lastPayload && (state.lastPayload.unchain || state.lastPayload);
+        state.directional_auto_stable_profits = fallbackPayload && typeof fallbackPayload.directional_auto_stable_profits !== "undefined"
+          ? !!fallbackPayload.directional_auto_stable_profits
+          : previous;
+        applyDirectionalStableProfitsToggle();
       }
     });
   }
@@ -1185,6 +1244,8 @@
     const simulationWinRate = Number((data && data.simulation_win_rate) || 0);
     const threshold = Number((data && data.threshold) || 60);
     const cooldown = Math.max(0, Number((data && data.cooldown_remaining) || 0));
+    const stableEnabled = !!((data && data.stable_profits_enabled) || (un && un.directional_auto_stable_profits));
+    const reducedNextTrade = !!((data && data.reduced_next_trade) || (un && un.directional_auto_reduce_next_stake));
     const reason = String((data && data.last_reason) || "Directional auto is OFF.");
 
     if (btn) {
@@ -1199,9 +1260,9 @@
       if (!enabled) {
         meta.innerText = "Directional auto is OFF.";
       } else if (status === "COOLDOWN") {
-        meta.innerText = `Directional auto cooldown ${cooldown.toFixed(1)}s • ${side} • barrier ${barrier} • ${reason}`;
+        meta.innerText = `Directional auto cooldown ${cooldown.toFixed(1)}s • ${side} • barrier ${barrier}${stableEnabled ? " • stable profits ON" : ""} • ${reason}`;
       } else {
-        meta.innerText = `Directional auto ${side} • barrier ${barrier} • move ${movementPct.toFixed(0)}% • sim ${simulationWinRate.toFixed(0)}% • confidence ${finalConfidence.toFixed(0)}% / ${threshold.toFixed(0)}% • ${reason}`;
+        meta.innerText = `Directional auto ${side} • barrier ${barrier} • move ${movementPct.toFixed(0)}% • sim ${simulationWinRate.toFixed(0)}% • confidence ${finalConfidence.toFixed(0)}% / ${threshold.toFixed(0)}%${stableEnabled ? " • stable profits ON" : ""}${reducedNextTrade ? " • next trade 10% stake" : ""} • ${reason}`;
       }
     }
   }
@@ -2041,13 +2102,19 @@
     ).toUpperCase();
     const nextBarrierKey = String(un.market_default_key || payload.market_default_key || "").toUpperCase();
     const symbolChanged = !!nextSymbol && nextSymbol !== String(state.lastMainSymbol || "").toUpperCase();
-    const barrierKeyChanged = !!nextBarrierKey && nextBarrierKey !== String(state.lastBarrierKey || "").toUpperCase();
+    const forceMarketDefaults = !!(opts && opts.forceMarketDefaults);
+    const shouldUseFreshMarketDefaults = !!nextSymbol && (symbolChanged || forceMarketDefaults);
     state.lastPayload = payload;
     state.scanner = payload.scanner || state.scanner;
-    fillForm(un, !!(opts && opts.forceForm), { forceBarriers: symbolChanged || barrierKeyChanged });
-    let savedMarketBarriers = seedMarketBarrierSettingsFromPayload(nextSymbol, un);
+    fillForm(un, !!(opts && opts.forceForm), {
+      forceBarriers: shouldUseFreshMarketDefaults || !!(opts && opts.forceForm),
+      barrierOnly: !!(opts && opts.barrierOnly),
+    });
+    let savedMarketBarriers = seedMarketBarrierSettingsFromPayload(nextSymbol, un, {
+      preferPayload: shouldUseFreshMarketDefaults || !!(opts && opts.forceForm),
+    });
     if (savedMarketBarriers && savedMarketBarriers.is_custom) {
-      applySavedMarketBarrierSettingsToForm(savedMarketBarriers, symbolChanged || barrierKeyChanged || !!(opts && opts.forceForm));
+      applySavedMarketBarrierSettingsToForm(savedMarketBarriers, !!(opts && opts.forceForm));
       const payloadSignature = buildMarketBarrierSignature(nextSymbol, getPayloadMarketBarrierSettings(un));
       const savedSignature = buildMarketBarrierSignature(nextSymbol, savedMarketBarriers);
       if (savedSignature && savedSignature !== payloadSignature) {
@@ -2160,7 +2227,7 @@
         koolkid_lower_barrier: un.koolkid_lower_barrier,
       }, { custom: false });
       BARRIER_FIELD_IDS.forEach((id) => state.dirtyFields.delete(id));
-      renderPayload(payload, { forceForm: true });
+      renderPayload(payload, { forceForm: false, forceMarketDefaults: true, barrierOnly: true });
       toast(r.data.message || "Barrier refreshed", "success");
     } else {
       toast((r.data && (r.data.message || r.data.error)) || "Failed to refresh barrier", "error");
@@ -2440,10 +2507,12 @@
     applyHalfBarrierToggle();
     applyKoolkidReversalToggle();
     applyKoolkidHalfBarrierToggle();
+    applyDirectionalStableProfitsToggle();
     applyAutoConfidenceLabel();
     bindHalfBarrierToggle();
     bindKoolkidReversalToggle();
     bindKoolkidHalfBarrierToggle();
+    bindDirectionalStableProfitsToggle();
     bindKoolkidModal();
     bindMarketBarrierPersistence();
   }

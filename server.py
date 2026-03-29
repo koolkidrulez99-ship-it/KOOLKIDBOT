@@ -65,6 +65,7 @@ from strategies.auto_session import (
     start_auto_session,
     stop_auto_session,
 )
+from strategies.market_moment import infer_simulation_winner, score_market_moment
 try:
     import strategies.unchain as _unchain_module
     UnchainStrategy = _unchain_module.UnchainStrategy
@@ -2247,6 +2248,13 @@ def _default_unchain_hl_state():
         "directional_auto_enabled": False,
         "directional_auto_side": "HIGHER",
         "directional_auto_barrier": "+0.12",
+        "directional_auto_stable_profits": False,
+        "directional_auto_win_streak": 0,
+        "directional_auto_reduce_next_stake": False,
+        "directional_auto_pending": False,
+        "directional_auto_pending_at": 0.0,
+        "directional_auto_simulation": None,
+        "directional_auto_moment_snapshot": None,
         "directional_auto_next_fire_at": 0.0,
         "directional_auto_last_reason": "⚡ AUTO TRADE · 📈 HIGHER / 📉 LOWER is OFF.",
         "duration": 5,
@@ -2374,6 +2382,42 @@ def _ensure_unchain_hl_state(state):
     cur["ai_auto_trade_enabled"] = bool(cur.get("ai_auto_trade_enabled", False))
     cur["directional_auto_enabled"] = bool(cur.get("directional_auto_enabled", False))
     cur["directional_auto_side"] = _clean_unchain_directional_auto_side(cur.get("directional_auto_side", "HIGHER"))
+    cur["directional_auto_stable_profits"] = bool(cur.get("directional_auto_stable_profits", False))
+    try:
+        cur["directional_auto_win_streak"] = max(0, int(cur.get("directional_auto_win_streak", 0) or 0))
+    except Exception:
+        cur["directional_auto_win_streak"] = 0
+    cur["directional_auto_reduce_next_stake"] = bool(cur.get("directional_auto_reduce_next_stake", False))
+    cur["directional_auto_pending"] = bool(cur.get("directional_auto_pending", False))
+    try:
+        cur["directional_auto_pending_at"] = max(0.0, float(cur.get("directional_auto_pending_at", 0.0) or 0.0))
+    except Exception:
+        cur["directional_auto_pending_at"] = 0.0
+    if not isinstance(cur.get("directional_auto_simulation"), dict):
+        cur["directional_auto_simulation"] = None
+    else:
+        sim = cur["directional_auto_simulation"]
+        sim["active"] = bool(sim.get("active", False))
+        sim["side"] = _clean_unchain_directional_auto_side(sim.get("side", cur.get("directional_auto_side", "HIGHER")))
+        try:
+            sim["started_at"] = max(0.0, float(sim.get("started_at", 0.0) or 0.0))
+        except Exception:
+            sim["started_at"] = 0.0
+        try:
+            sim["started_tick"] = max(0, int(sim.get("started_tick", 0) or 0))
+        except Exception:
+            sim["started_tick"] = 0
+        try:
+            sim["current_tick_count"] = max(sim["started_tick"], int(sim.get("current_tick_count", sim["started_tick"]) or sim["started_tick"]))
+        except Exception:
+            sim["current_tick_count"] = sim["started_tick"]
+        try:
+            sim["simulation_ticks"] = max(1, int(sim.get("simulation_ticks", 5) or 5))
+        except Exception:
+            sim["simulation_ticks"] = 5
+        sim["duration_unit"] = "t"
+    if not isinstance(cur.get("directional_auto_moment_snapshot"), dict):
+        cur["directional_auto_moment_snapshot"] = None
     cur["directional_auto_last_reason"] = str(
         cur.get("directional_auto_last_reason") or "⚡ AUTO TRADE · 📈 HIGHER / 📉 LOWER is OFF."
     )
@@ -3335,10 +3379,25 @@ def _finalize_unchain_contract(state, contract, meta=None):
                     u["auto_cycle_losses"] = int(u.get("auto_cycle_losses", 0) or 0) + 1
                     u["auto_last_cycle_had_loss"] = True
         if source == "DIRECTIONAL_AUTO":
+            _clear_unchain_directional_auto_pending(u)
             u["directional_auto_next_fire_at"] = time.time() + 3.0
-            u["directional_auto_last_reason"] = (
-                f"Directional auto {entry['type']} {result} ({profit:+.2f}) • rescanning after cooldown"
-            )
+            if profit > 0:
+                u["directional_auto_win_streak"] = int(u.get("directional_auto_win_streak", 0) or 0) + 1
+                if bool(u.get("directional_auto_stable_profits")) and int(u.get("directional_auto_win_streak", 0) or 0) >= 2:
+                    u["directional_auto_reduce_next_stake"] = True
+                    u["directional_auto_last_reason"] = (
+                        f"Directional auto {entry['type']} {result} ({profit:+.2f}) • stable profits armed • next trade uses 10% stake"
+                    )
+                else:
+                    u["directional_auto_last_reason"] = (
+                        f"Directional auto {entry['type']} {result} ({profit:+.2f}) • rescanning after cooldown"
+                    )
+            else:
+                u["directional_auto_win_streak"] = 0
+                u["directional_auto_reduce_next_stake"] = False
+                u["directional_auto_last_reason"] = (
+                    f"Directional auto {entry['type']} {result} ({profit:+.2f}) • rescanning after cooldown"
+                )
     except Exception:
         pass
 
@@ -3383,9 +3442,51 @@ def _disable_unchain_directional_auto(u, *, reason=None):
         return
     u["directional_auto_enabled"] = False
     u["directional_auto_next_fire_at"] = 0.0
+    u["directional_auto_pending"] = False
+    u["directional_auto_pending_at"] = 0.0
+    u["directional_auto_simulation"] = None
+    u["directional_auto_moment_snapshot"] = None
+    u["directional_auto_win_streak"] = 0
+    u["directional_auto_reduce_next_stake"] = False
     if reason is not None:
         u["directional_auto_last_reason"] = str(reason)
 
+
+
+def _clear_unchain_directional_auto_pending(u):
+    if not isinstance(u, dict):
+        return
+    u["directional_auto_pending"] = False
+    u["directional_auto_pending_at"] = 0.0
+
+
+def _set_unchain_directional_auto_pending(u):
+    if not isinstance(u, dict):
+        return
+    u["directional_auto_pending"] = True
+    try:
+        u["directional_auto_pending_at"] = float(time.time())
+    except Exception:
+        u["directional_auto_pending_at"] = 0.0
+
+
+def _clear_unchain_directional_auto_simulation(u, *, reason=None):
+    if not isinstance(u, dict):
+        return
+    u["directional_auto_simulation"] = None
+    if reason is not None:
+        u["directional_auto_last_reason"] = str(reason)
+
+
+def _directional_auto_effective_stake(u, side):
+    stake_key = "higher_stake" if str(side or "").upper().strip() == "HIGHER" else "lower_stake"
+    try:
+        base_stake = float((u or {}).get(stake_key, 1.0) or 1.0)
+    except Exception:
+        base_stake = 1.0
+    if bool((u or {}).get("directional_auto_stable_profits")) and bool((u or {}).get("directional_auto_reduce_next_stake")):
+        return max(0.35, round(base_stake * 0.10, 2))
+    return base_stake
 
 def _get_unchain_directional_auto_barrier(u, duration_unit=None):
     unit = _clean_unchain_duration_unit(duration_unit or (u or {}).get("duration_unit", "t"))
@@ -3400,6 +3501,251 @@ def _get_unchain_directional_auto_barrier(u, duration_unit=None):
         return _format_unchain_directional_auto_barrier(raw, side, unit, fallback=fallback)
     except Exception:
         return fallback
+
+
+def _get_unchain_directional_auto_price(state):
+    strat = ((state or {}).get("strategies") or {}).get("UNCHAIN")
+    try:
+        last_price = float(getattr(strat, "last_price", None))
+        if math.isfinite(last_price):
+            return last_price
+    except Exception:
+        pass
+    try:
+        prices = [float(v) for v in list(getattr(strat, "price_history", []) or []) if v is not None]
+        if prices:
+            last_price = float(prices[-1])
+            if math.isfinite(last_price):
+                return last_price
+    except Exception:
+        pass
+    return None
+
+
+def _get_unchain_directional_auto_tick_progress(state):
+    tick_count = _get_unchain_tick_counter(state)
+    if tick_count > 0:
+        return tick_count
+    strat = ((state or {}).get("strategies") or {}).get("UNCHAIN")
+    try:
+        prices = list(getattr(strat, "price_history", []) or [])
+        return max(0, len(prices))
+    except Exception:
+        return 0
+
+
+def _append_profile_history_entry(state, profile, entry, *, limit=200):
+    strategies = (state or {}).get("strategies") or {}
+    key = str(profile or "").upper().strip()
+    strat = strategies.get(key)
+    if not strat:
+        return
+    try:
+        history = getattr(strat, "trade_history", None)
+    except Exception:
+        history = None
+    if not isinstance(history, list):
+        history = list(history or [])
+        try:
+            setattr(strat, "trade_history", history)
+        except Exception:
+            return
+    history.append(dict(entry or {}))
+    if len(history) > int(limit):
+        del history[:-int(limit)]
+
+
+def _start_unchain_directional_auto_simulation(state, u, analysis, side, barrier_text, stake):
+    current_price = _get_unchain_directional_auto_price(state)
+    if current_price is None:
+        u["directional_auto_last_reason"] = "Directional auto is waiting for live price before starting the 5-tick sim."
+        return False
+    sim_ticks = 5
+    started_tick = _get_unchain_directional_auto_tick_progress(state)
+    started_at = time.time()
+    contract_id = f"UNCHAIN-DIRECTIONAL-SIM-{int(started_at * 1000)}"
+    u["directional_auto_simulation"] = {
+        "active": True,
+        "contract_id": contract_id,
+        "side": side,
+        "barrier": str(barrier_text),
+        "barrier_value": float(analysis.get("barrier_value", 0.0) or 0.0),
+        "stake": float(stake),
+        "symbol": state.get("current_symbol", "R_25"),
+        "time": now_time(),
+        "started_at": float(started_at),
+        "started_tick": int(started_tick),
+        "current_tick_count": int(started_tick),
+        "start_price": float(current_price),
+        "current_price": float(current_price),
+        "simulation_ticks": int(sim_ticks),
+        "duration": int(sim_ticks),
+        "duration_unit": "t",
+        "live_duration": int(analysis.get("duration", u.get("duration", 5)) or u.get("duration", 5) or 5),
+        "live_duration_unit": _clean_unchain_duration_unit(analysis.get("duration_unit", u.get("duration_unit", "t"))),
+        "market_confidence": float(analysis.get("market_confidence", 0.0) or 0.0),
+        "simulation_win_rate": float(analysis.get("simulation_win_rate", 0.0) or 0.0),
+        "simulation_confidence": float(analysis.get("simulation_confidence", 0.0) or 0.0),
+        "final_confidence": float(analysis.get("final_confidence", 0.0) or 0.0),
+        "sample_count": int(analysis.get("sample_count", 0) or 0),
+    }
+    u["directional_auto_last_reason"] = (
+        f"Directional auto {side} sim started • 5 ticks • live trade only fires if the sim wins."
+    )
+    u["last_action"] = u["directional_auto_last_reason"]
+    return True
+
+
+def _estimate_unchain_directional_auto_sim_pnl(sim, current_price):
+    if not isinstance(sim, dict):
+        return 0.0
+    try:
+        stake = max(0.0, float(sim.get("stake", 0.0) or 0.0))
+    except Exception:
+        stake = 0.0
+    try:
+        start_price = float(sim.get("start_price", current_price) or current_price)
+    except Exception:
+        start_price = float(current_price if current_price is not None else 0.0)
+    try:
+        live_price = float(current_price if current_price is not None else sim.get("current_price", start_price))
+    except Exception:
+        live_price = start_price
+    side = _clean_unchain_directional_auto_side(sim.get("side", "HIGHER"))
+    try:
+        barrier_value = abs(float(sim.get("barrier_value", 0.0) or 0.0))
+    except Exception:
+        barrier_value = 0.0
+    signed_move = (live_price - start_price) if side == "HIGHER" else (start_price - live_price)
+    denom = max(barrier_value, abs(start_price) * 0.00001, 0.0000001)
+    balance_ratio = max(-1.35, min(1.35, signed_move / denom))
+    return round(stake * balance_ratio, 2)
+
+
+def _process_unchain_directional_auto_simulation(client_id, state, u):
+    sim = u.get("directional_auto_simulation") if isinstance(u.get("directional_auto_simulation"), dict) else None
+    if not sim or not bool(sim.get("active")):
+        return False
+
+    sim_symbol = str(sim.get("symbol") or "").upper().strip()
+    current_symbol = str(state.get("current_symbol") or "").upper().strip()
+    if sim_symbol and current_symbol and sim_symbol != current_symbol:
+        _clear_unchain_directional_auto_simulation(
+            u,
+            reason="Directional auto sim reset because the market changed.",
+        )
+        return False
+
+    current_price = _get_unchain_directional_auto_price(state)
+    if current_price is None:
+        u["directional_auto_last_reason"] = "Directional auto sim is waiting for the next live tick."
+        return False
+
+    current_tick = _get_unchain_directional_auto_tick_progress(state)
+    sim["current_price"] = float(current_price)
+    sim["current_tick_count"] = int(current_tick)
+    sim["estimated_pnl"] = float(_estimate_unchain_directional_auto_sim_pnl(sim, current_price))
+    sim_ticks = max(1, int(sim.get("simulation_ticks", 5) or 5))
+    try:
+        started_tick = int(sim.get("started_tick", current_tick) or current_tick)
+    except Exception:
+        started_tick = int(current_tick)
+    elapsed_ticks = max(0, int(current_tick) - int(started_tick))
+    if elapsed_ticks < sim_ticks:
+        u["directional_auto_last_reason"] = (
+            f"Directional auto {sim.get('side', 'HIGHER')} sim running • {elapsed_ticks}/{sim_ticks} ticks • "
+            f"live trade only if sim wins."
+        )
+        return False
+
+    side = _clean_unchain_directional_auto_side(sim.get("side", u.get("directional_auto_side", "HIGHER")))
+    try:
+        barrier_value = float(sim.get("barrier_value", 0.0) or 0.0)
+    except Exception:
+        barrier_value = 0.0
+    try:
+        start_price = float(sim.get("start_price", current_price) or current_price)
+    except Exception:
+        start_price = float(current_price)
+    signed_move = float(current_price - start_price)
+    won = signed_move >= barrier_value if side == "HIGHER" else signed_move <= barrier_value
+    result = "WIN" if won else "LOSS"
+    sim_entry = {
+        "profile": "UNCHAIN",
+        "type": f"DIRECTIONAL SIM {side}",
+        "barrier": sim.get("barrier"),
+        "stake": float(sim.get("stake", 0.0) or 0.0),
+        "symbol": sim.get("symbol") or state.get("current_symbol", "R_25"),
+        "time": sim.get("time") or now_time(),
+        "profit": 0.0,
+        "profit_value": 0.0,
+        "result": result,
+        "status": result,
+        "contract_id": sim.get("contract_id"),
+        "duration": int(sim_ticks),
+        "duration_unit": "t",
+        "is_simulation": True,
+        "result_source": "DIRECTIONAL_AUTO_SIM",
+    }
+    _append_profile_history_entry(state, "UNCHAIN", sim_entry)
+    try:
+        socketio.emit("trade_result", sim_entry, room=client_id)
+    except Exception:
+        pass
+    u["last_result"] = sim_entry
+    u["last_action"] = f"{sim_entry['type']} {result} on {sim_entry['symbol']}"
+    u["directional_auto_simulation"] = None
+
+    if not won:
+        u["directional_auto_next_fire_at"] = time.time() + 3.0
+        u["directional_auto_last_reason"] = (
+            f"Directional auto 5-tick sim lost for {side} • skipped the live trade."
+        )
+        return False
+
+    risk_block = _check_unchain_hl_risk_block(state)
+    if risk_block:
+        u["directional_auto_last_reason"] = (
+            f"Directional auto sim won for {side}, but live trade is blocked: {risk_block}"
+        )
+        return False
+
+    open_entries = _get_open_unchain_active_entries(state)
+    if open_entries:
+        u["directional_auto_last_reason"] = (
+            f"Directional auto sim won for {side}, but another UNCHAIN trade is already active."
+        )
+        return False
+
+    stake = _directional_auto_effective_stake(u, side)
+    ok, msg = _send_unchain_hl_trade(
+        client_id,
+        side=side,
+        stake=stake,
+        symbol=sim.get("symbol") or state.get("current_symbol", "R_25"),
+        barrier=sim.get("barrier") or _get_unchain_directional_auto_barrier(u),
+        duration=sim.get("live_duration", u.get("duration", 5)),
+        duration_unit=sim.get("live_duration_unit", u.get("duration_unit", "t")),
+        entry_source="DIRECTIONAL_AUTO",
+        auto_confidence=sim.get("final_confidence"),
+        respect_half_barrier_toggle=False,
+    )
+    if not ok:
+        _clear_unchain_directional_auto_pending(u)
+        u["directional_auto_next_fire_at"] = time.time() + 4.0
+        u["directional_auto_last_reason"] = f"Directional auto sim won, but live {side} failed: {msg}"
+        return False
+
+    _set_unchain_directional_auto_pending(u)
+    if bool(u.get("directional_auto_stable_profits")) and bool(u.get("directional_auto_reduce_next_stake")):
+        u["directional_auto_reduce_next_stake"] = False
+        u["directional_auto_win_streak"] = 0
+    u["directional_auto_last_reason"] = (
+        f"Directional auto sim won • sent {side} • barrier {sim.get('barrier')} • "
+        f"confidence {float(sim.get('final_confidence', 0.0) or 0.0):.0f}%"
+    )
+    u["last_action"] = u["directional_auto_last_reason"]
+    return True
 
 
 def _duration_to_target_seconds(duration, duration_unit):
@@ -3430,6 +3776,9 @@ def _compute_unchain_directional_auto_analysis(state, u=None):
 
     analysis = {
         "ready": False,
+        "stable_profits_enabled": bool(u.get("directional_auto_stable_profits", False)),
+        "win_streak": int(u.get("directional_auto_win_streak", 0) or 0),
+        "reduced_next_trade": bool(u.get("directional_auto_reduce_next_stake", False)),
         "side": side,
         "barrier": barrier_text,
         "barrier_value": float(barrier_value),
@@ -3441,13 +3790,18 @@ def _compute_unchain_directional_auto_analysis(state, u=None):
         "simulation_confidence": 0.0,
         "final_confidence": 0.0,
         "sample_count": 0,
-        "threshold": 60.0,
+        "threshold": 75.0,
         "recent_move": 0.0,
         "net_move": 0.0,
         "range_width": 0.0,
         "reasons": ["Waiting for more market data"],
         "graph_barrier": barrier_text,
         "graph_barrier_value": float(barrier_value),
+        "moment_label": "SKIP",
+        "moment_score": 0.0,
+        "moment_checks": {},
+        "moment_passed_checks": 0,
+        "simulation_winner": "NONE",
     }
 
     strat = (state.get("strategies") or {}).get("UNCHAIN")
@@ -3538,24 +3892,38 @@ def _compute_unchain_directional_auto_analysis(state, u=None):
     simulation_win_rate = round((wins / sample_count) * 100.0, 1) if sample_count else 0.0
     sample_weight = min(1.0, sample_count / 8.0) if sample_count else 0.0
     simulation_confidence = round(50.0 + ((simulation_win_rate - 50.0) * sample_weight), 1) if sample_count else 0.0
-    final_confidence = round((market_confidence * 0.50) + (simulation_confidence * 0.50), 1)
-
+    movement_threshold = max(abs(barrier_value), avg_abs_delta * 2.0, range_width * 0.25, 0.0000001)
+    simulation_winner = infer_simulation_winner(end_deltas, movement_threshold=movement_threshold)
+    moment = score_market_moment(
+        direction=side,
+        prices=window,
+        simulation_winner=simulation_winner,
+        previous_snapshot=u.get("directional_auto_moment_snapshot"),
+        barrier_value=barrier_value,
+        current_marker=_get_unchain_directional_auto_tick_progress(state),
+        tick_window=5,
+    )
+    u["directional_auto_moment_snapshot"] = moment.get("snapshot")
+    final_confidence = float(moment.get("score", 0.0) or 0.0)
     reasons = []
-    if flow_pct < 50.0:
-        reasons.append(f"{side} flow only {flow_pct:.0f}%")
-    if chosen_recent_move <= 0:
-        reasons.append(f"recent move not favoring {side.lower()}")
-    if chosen_net_move <= 0:
-        reasons.append("broader move still mixed")
+    for key in ("simulation_direction", "tick_direction", "movement_strength", "signal_persistence"):
+        item = (moment.get("checks") or {}).get(key) or {}
+        if not bool(item.get("passed")):
+            reasons.append(str(item.get("detail") or key.replace("_", " ")))
     if sample_count < 4:
         reasons.append(f"need more sim samples ({sample_count}/4)")
-    if final_confidence < analysis["threshold"]:
-        reasons.append(f"confidence {final_confidence:.0f}%/{analysis['threshold']:.0f}%")
+    if not reasons and str(moment.get("label") or "").upper() != "GOOD":
+        reasons.append(f"market moment {str(moment.get('label') or 'SKIP').upper()}")
     if not reasons:
-        reasons.append(f"{side} market + sim agreement ready")
+        reasons.append(f"{side} market moment GOOD • sim and direction pressure agree")
 
     analysis.update({
-        "ready": bool(flow_pct >= 50.0 and chosen_recent_move > 0 and chosen_net_move > 0 and sample_count >= 4 and final_confidence >= analysis["threshold"]),
+        "ready": bool(
+            sample_count >= 4
+            and int(moment.get("passed_checks", 0) or 0) >= 3
+            and str(moment.get("label") or "").upper() == "GOOD"
+            and final_confidence >= analysis["threshold"]
+        ),
         "movement_pct": round(flow_pct, 1),
         "market_confidence": float(market_confidence),
         "simulation_win_rate": float(simulation_win_rate),
@@ -3566,6 +3934,11 @@ def _compute_unchain_directional_auto_analysis(state, u=None):
         "net_move": round(float(net_move), 6),
         "range_width": round(float(range_width), 6),
         "reasons": reasons[:4],
+        "moment_label": str(moment.get("label") or "SKIP").upper(),
+        "moment_score": float(moment.get("score", 0.0) or 0.0),
+        "moment_checks": dict(moment.get("checks") or {}),
+        "moment_passed_checks": int(moment.get("passed_checks", 0) or 0),
+        "simulation_winner": str(moment.get("simulation_winner") or simulation_winner or "NONE").upper(),
     })
     return analysis
 
@@ -3599,9 +3972,69 @@ def _get_unchain_directional_auto_status(state, u=None, active_count=None, analy
         "sample_count": 0,
         "threshold": 60.0,
         "ready": False,
+        "stable_profits_enabled": bool(u.get("directional_auto_stable_profits", False)),
+        "win_streak": int(u.get("directional_auto_win_streak", 0) or 0),
+        "reduced_next_trade": bool(u.get("directional_auto_reduce_next_stake", False)),
+        "simulation": None,
     }
     if not enabled:
         return payload
+
+    sim = u.get("directional_auto_simulation") if isinstance(u.get("directional_auto_simulation"), dict) else None
+    if sim and bool(sim.get("active")):
+        current_tick = _get_unchain_directional_auto_tick_progress(state)
+        try:
+            started_tick = int(sim.get("started_tick", current_tick) or current_tick)
+        except Exception:
+            started_tick = int(current_tick)
+        sim_ticks = max(1, int(sim.get("simulation_ticks", 5) or 5))
+        elapsed_ticks = max(0, int(current_tick) - int(started_tick))
+        remaining_ticks = max(0, sim_ticks - elapsed_ticks)
+        current_price = _get_unchain_directional_auto_price(state)
+        estimated_pnl = _estimate_unchain_directional_auto_sim_pnl(sim, current_price)
+        payload.update({
+            "label": "SIMULATING",
+            "status": "SIMULATING",
+            "side": _clean_unchain_directional_auto_side(sim.get("side", side)),
+            "barrier": str(sim.get("barrier") or barrier_text),
+            "market_confidence": float(sim.get("market_confidence", 0.0) or 0.0),
+            "simulation_win_rate": float(sim.get("simulation_win_rate", 0.0) or 0.0),
+            "simulation_confidence": float(sim.get("simulation_confidence", 0.0) or 0.0),
+            "final_confidence": float(sim.get("final_confidence", 0.0) or 0.0),
+            "sample_count": int(sim.get("sample_count", 0) or 0),
+            "ready": False,
+            "last_reason": (
+                f"Directional auto {_clean_unchain_directional_auto_side(sim.get('side', side))} sim running • "
+                f"{elapsed_ticks}/{sim_ticks} ticks • live trade only if sim wins."
+            ),
+            "simulation": {
+                "active": True,
+                "contract_id": sim.get("contract_id"),
+                "side": _clean_unchain_directional_auto_side(sim.get("side", side)),
+                "sim_barrier": str(sim.get("barrier") or barrier_text),
+                "stake": float(sim.get("stake", 0.0) or 0.0),
+                "symbol": sim.get("symbol") or state.get("current_symbol"),
+                "time": sim.get("time") or now_time(),
+                "duration": int(sim_ticks),
+                "duration_unit": "t",
+                "countdown_remaining": int(remaining_ticks),
+                "countdown_unit": "t",
+                "countdown_seconds": int(remaining_ticks),
+                "estimated_pnl": float(estimated_pnl),
+                "phase": "SIMULATING",
+            },
+        })
+        return payload
+
+    pending = bool(u.get("directional_auto_pending"))
+    pending_at = float(u.get("directional_auto_pending_at", 0.0) or 0.0)
+    if pending:
+        if pending_at > 0.0 and (time.time() - pending_at) > 20.0:
+            _clear_unchain_directional_auto_pending(u)
+        else:
+            payload["label"] = "ARMING"
+            payload["status"] = "ARMING"
+            return payload
 
     if active_count > 0:
         payload["label"] = "RUNNING"
@@ -3638,6 +4071,8 @@ def _get_unchain_directional_auto_status(state, u=None, active_count=None, analy
         else:
             payload["label"] = f"WAITING {int(payload['threshold'])}%"
             payload["status"] = "WAITING"
+    if payload["stable_profits_enabled"] and payload["reduced_next_trade"]:
+        payload["last_reason"] = f"{payload['last_reason']} • Stable profits next trade at 10% stake"
     return payload
 
 
@@ -5255,6 +5690,8 @@ def _cleanup_failed_buy_request(state, req_id):
         and str(meta.get("type") or "").upper() == "ACCU"
     ):
         _clear_unchain_pending_request_state(state)
+    if str(meta.get("entry_source") or "").upper().strip() == "DIRECTIONAL_AUTO":
+        _clear_unchain_directional_auto_pending(_ensure_unchain_hl_state(state))
     return meta
 
 
@@ -5559,6 +5996,7 @@ def _run_unchain_both_analyzer(state):
         "both_min_win_profit": 0.0,
         "payout_difference": 0.0,
         "recommended_duration": None,
+        "updated_epoch": time.time(),
         "best_higher_setup": None,
         "best_lower_setup": None,
         "best_both_setup": None,
@@ -6268,17 +6706,28 @@ def _run_unchain_directional_auto_trade(client_id, state):
         u["directional_auto_last_reason"] = "Turn off the other UNCHAIN auto modes before using this side-only auto trade."
         return False
 
+    sim = u.get("directional_auto_simulation") if isinstance(u.get("directional_auto_simulation"), dict) else None
+    open_entries = _get_open_unchain_active_entries(state)
+    if sim and bool(sim.get("active")):
+        return _process_unchain_directional_auto_simulation(client_id, state, u)
+
+    if open_entries:
+        u["directional_auto_last_reason"] = "Directional auto is waiting for the current UNCHAIN trade to finish."
+        return False
+
     risk_block = _check_unchain_hl_risk_block(state)
     if risk_block:
         u["directional_auto_last_reason"] = str(risk_block)
         return False
 
-    open_entries = _get_open_unchain_active_entries(state)
-    if open_entries:
-        u["directional_auto_last_reason"] = "Directional auto is waiting for the current UNCHAIN trade to finish."
-        return False
-
     now_ts = time.time()
+    if bool(u.get("directional_auto_pending")):
+        pending_at = float(u.get("directional_auto_pending_at", 0.0) or 0.0)
+        if pending_at > 0.0 and (now_ts - pending_at) > 20.0:
+            _clear_unchain_directional_auto_pending(u)
+        else:
+            u["directional_auto_last_reason"] = "Directional auto is waiting for the current request to settle."
+            return False
     next_fire_at = float(u.get("directional_auto_next_fire_at", 0.0) or 0.0)
     if next_fire_at and now_ts < next_fire_at:
         return False
@@ -6293,36 +6742,8 @@ def _run_unchain_directional_auto_trade(client_id, state):
     duration = _sanitize_unchain_duration(analysis.get("duration", u.get("duration", 5)), analysis.get("duration_unit", u.get("duration_unit", "t")))
     duration_unit = _clean_unchain_duration_unit(analysis.get("duration_unit", u.get("duration_unit", "t")))
     barrier_text = str(analysis.get("barrier") or _get_unchain_directional_auto_barrier(u, duration_unit))
-    stake_key = "higher_stake" if side == "HIGHER" else "lower_stake"
-    try:
-        stake = float(u.get(stake_key, 1.0) or 1.0)
-    except Exception:
-        stake = 1.0
-
-    ok, msg = _send_unchain_hl_trade(
-        client_id,
-        side=side,
-        stake=stake,
-        symbol=state.get("current_symbol", "R_25"),
-        barrier=barrier_text,
-        duration=duration,
-        duration_unit=duration_unit,
-        entry_source="DIRECTIONAL_AUTO",
-        auto_confidence=analysis.get("final_confidence"),
-        respect_half_barrier_toggle=False,
-    )
-    if not ok:
-        u["directional_auto_next_fire_at"] = now_ts + 4.0
-        u["directional_auto_last_reason"] = f"Directional auto {side} failed: {msg}"
-        return False
-
-    u["directional_auto_last_reason"] = (
-        f"Directional auto sent {side} • barrier {barrier_text} • "
-        f"confidence {float(analysis.get('final_confidence', 0.0) or 0.0):.0f}% • "
-        f"sim {float(analysis.get('simulation_win_rate', 0.0) or 0.0):.0f}%"
-    )
-    u["last_action"] = u["directional_auto_last_reason"]
-    return True
+    stake = _directional_auto_effective_stake(u, side)
+    return _start_unchain_directional_auto_simulation(state, u, analysis, side, barrier_text, stake)
 
 
 def _run_unchain_ai_auto_trade(client_id, state):
@@ -6492,6 +6913,18 @@ def _get_unchain_auto_both_status(state, u=None, active_count=None):
     cooldown_remaining = max(0.0, next_fire_at - now_ts)
     if cooldown_remaining > 0:
         return {"label": "COOLDOWN", "cooldown_remaining": cooldown_remaining}
+    analysis = u.get("both_analyzer") if isinstance(u.get("both_analyzer"), dict) else {}
+    analysis_status = str(analysis.get("status") or "").upper()
+    recommended = analysis.get("recommended") if isinstance(analysis.get("recommended"), dict) else {}
+    recommended_side = str(
+        recommended.get("recommended_side")
+        or analysis.get("recommended_side")
+        or ""
+    ).upper()
+    if analysis_status and analysis_status != "READY":
+        return {"label": "WAITING", "cooldown_remaining": 0.0}
+    if analysis_status == "READY" and recommended_side and recommended_side != "BOTH":
+        return {"label": "WAITING BOTH", "cooldown_remaining": 0.0}
     return {"label": "ARMED", "cooldown_remaining": 0.0}
 
 
@@ -6503,6 +6936,11 @@ def _run_unchain_auto_both(client_id, state):
     if bool(u.get("ai_auto_trade_enabled")):
         return False
     if not state.get("ws_connected") or not state.get("ws"):
+        return False
+    risk_block = _check_unchain_hl_risk_block(state)
+    if risk_block:
+        u["auto_both_pair_active"] = False
+        u["last_action"] = f"AUTO BOTH blocked • {risk_block}"
         return False
 
     cooldown = max(0, int(u.get("auto_both_cooldown", 3) or 3))
@@ -6525,11 +6963,51 @@ def _run_unchain_auto_both(client_id, state):
     if next_fire_at and now_ts < next_fire_at:
         return False
 
+    precheck_plan = [
+        ("HIGHER", u.get("higher_stake", 1.0), u.get("higher_barrier", "+0.12")),
+        ("LOWER", u.get("lower_stake", 1.0), u.get("lower_barrier", "-0.12")),
+    ]
+    balance_ok, balance_msg, _normalized_plan, _total_stake, _balance = _check_unchain_pair_balance(
+        state,
+        precheck_plan,
+        failure_prefix="Trade failed",
+    )
+    if not balance_ok:
+        u["auto_both_pair_active"] = False
+        u["auto_both_next_fire_at"] = now_ts + cooldown
+        u["last_action"] = f"AUTO BOTH skipped • {balance_msg}"
+        _maybe_emit_unchain_pair_failure_toast(client_id, state, balance_msg)
+        if state.get("active_profile") == "UNCHAIN":
+            socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
+        return False
+
+    analysis = u.get("both_analyzer") if isinstance(u.get("both_analyzer"), dict) else None
+    next_analysis_at = float(u.get("auto_both_analysis_next_at") or 0.0)
+    if analysis is None or now_ts >= next_analysis_at:
+        analysis = _run_unchain_both_analyzer(state)
+        u["auto_both_analysis_next_at"] = now_ts + 1.25
+
+    recommended = analysis.get("recommended") if isinstance(analysis, dict) and isinstance(analysis.get("recommended"), dict) else {}
+    recommended_side = str(
+        recommended.get("recommended_side")
+        or (analysis.get("recommended_side") if isinstance(analysis, dict) else "")
+        or ""
+    ).upper()
+    if (
+        str((analysis or {}).get("status") or "").upper() != "READY"
+        or recommended_side != "BOTH"
+        or not bool(recommended.get("is_trade_ready"))
+    ):
+        wait_reason = str((analysis or {}).get("reason") or "waiting for a valid BOTH setup")
+        u["auto_both_pair_active"] = False
+        u["last_action"] = f"AUTO BOTH waiting • {wait_reason}"
+        return False
+
     symbol = state.get("current_symbol", "R_25")
-    duration_unit = _clean_unchain_duration_unit(u.get("duration_unit", "t"))
-    duration = _sanitize_unchain_duration(u.get("duration", 5), duration_unit)
-    higher_barrier = u.get("higher_barrier", "+0.12")
-    lower_barrier = u.get("lower_barrier", "-0.12")
+    duration_unit = _clean_unchain_duration_unit(recommended.get("duration_unit") or u.get("duration_unit", "t"))
+    duration = _sanitize_unchain_duration(recommended.get("duration", u.get("duration", 5)), duration_unit)
+    higher_barrier = recommended.get("higher_barrier") or u.get("higher_barrier", "+0.12")
+    lower_barrier = recommended.get("lower_barrier") or u.get("lower_barrier", "-0.12")
     plan = [
         ("HIGHER", u.get("higher_stake", 1.0), higher_barrier),
         ("LOWER", u.get("lower_stake", 1.0), lower_barrier),
@@ -6639,6 +7117,9 @@ def _unchain_payload_response(state):
             "directional_auto_enabled": bool(u.get("directional_auto_enabled", False)),
             "directional_auto_side": _clean_unchain_directional_auto_side(u.get("directional_auto_side", "HIGHER")),
             "directional_auto_barrier": _get_unchain_directional_auto_barrier(u),
+            "directional_auto_stable_profits": bool(u.get("directional_auto_stable_profits", False)),
+            "directional_auto_win_streak": int(u.get("directional_auto_win_streak", 0) or 0),
+            "directional_auto_reduce_next_stake": bool(u.get("directional_auto_reduce_next_stake", False)),
             "koolkid_sim_duration": int(u.get("koolkid_sim_duration", 15) or 15),
             "koolkid_sim_duration_unit": _clean_koolkid_duration_unit(u.get("koolkid_sim_duration_unit", "s")),
             "koolkid_live_duration": int(u.get("koolkid_live_duration", 5) or 5),
@@ -8346,6 +8827,8 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                     pass
                 try:
                     if (meta.get("profile") or "").upper() == "UNCHAIN" and not is_auto_session_contract:
+                        if str(meta.get("entry_source") or "").upper().strip() == "DIRECTIONAL_AUTO":
+                            _clear_unchain_directional_auto_pending(_ensure_unchain_hl_state(state))
                         _upsert_unchain_active_contract(state, contract_id, meta=meta, status="OPEN")
                         us = (state.get("strategies") or {}).get("UNCHAIN")
                         if us and hasattr(us, "on_contract_opened") and str(meta.get("type") or "").upper() == "ACCU":
@@ -10198,6 +10681,12 @@ def unchain_settings_route():
             u["duration"] = _sanitize_unchain_duration(raw_duration, active_unit)
         if "directional_auto_side" in data:
             u["directional_auto_side"] = _clean_unchain_directional_auto_side(data.get("directional_auto_side"))
+        if "directional_auto_stable_profits" in data:
+            enabled = bool(data.get("directional_auto_stable_profits"))
+            u["directional_auto_stable_profits"] = enabled
+            if not enabled:
+                u["directional_auto_win_streak"] = 0
+                u["directional_auto_reduce_next_stake"] = False
         if "directional_auto_barrier" in data or "directional_auto_side" in data or "duration_unit" in data:
             active_unit = _clean_unchain_duration_unit(u.get("duration_unit", "t"))
             fallback_directional_barrier = _get_unchain_visible_barrier(u, u.get("directional_auto_side", "HIGHER"), active_unit)
@@ -10227,10 +10716,6 @@ def unchain_settings_route():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 400
     u["last_action"] = "UNCHAIN settings saved"
-    try:
-        _sync_unchain_market_default_barriers(state, force=False)
-    except Exception:
-        pass
     _check_unchain_hl_risk_block(state)
     payload = _unchain_payload_response(state)
     if state.get("active_profile") == "UNCHAIN":
@@ -10468,6 +10953,11 @@ def _toggle_unchain_directional_auto(cid, state, data):
         message = "⚡ AUTO TRADE · 📈 HIGHER / 📉 LOWER ON"
     else:
         u["directional_auto_next_fire_at"] = 0.0
+        u["directional_auto_pending"] = False
+        u["directional_auto_pending_at"] = 0.0
+        u["directional_auto_simulation"] = None
+        u["directional_auto_win_streak"] = 0
+        u["directional_auto_reduce_next_stake"] = False
         u["directional_auto_last_reason"] = "⚡ AUTO TRADE · 📈 HIGHER / 📉 LOWER is OFF."
         message = "⚡ AUTO TRADE · 📈 HIGHER / 📉 LOWER OFF"
 

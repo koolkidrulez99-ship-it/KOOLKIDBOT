@@ -1,6 +1,7 @@
 from collections import deque, Counter
 from datetime import datetime
 import time
+from strategies.digit_stats import calculate_cold_4_score
 
 SEQVIX_JOKERJOE_MARKETS = [
     "R_10", "R_25", "R_50", "R_75", "R_100",
@@ -963,6 +964,7 @@ class JokerJoeStrategy:
                     green_digits.append(d)
 
         golden_digits = sorted(list(self.golden_ttl.keys()))
+        cold4 = calculate_cold_4_score(list(self.tick_digits))
 
         # MultiG countdown payload
         multig_payload = {"active": False}
@@ -997,6 +999,8 @@ class JokerJoeStrategy:
                 "green_digits": green_digits,
                 "golden_digits": golden_digits
             },
+
+            "cold4_score": cold4,
 
             "multig_pending": multig_payload
         }

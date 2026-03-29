@@ -1808,6 +1808,19 @@ function removeTradeFromStoreByContractId(profile, contractId){
     return true;
 }
 
+function removePendingDirectionalSimulationTrades(){
+    const profile = "UNCHAIN";
+    const arr = Array.isArray(tradeStore[profile]) ? tradeStore[profile] : [];
+    const originalLength = arr.length;
+    tradeStore[profile] = arr.filter((item)=>{
+        const type = String(item && item.type || "").toUpperCase();
+        const pending = !!(item && item.pending);
+        const isSimulation = !!(item && item.is_simulation);
+        return !(pending && isSimulation && type.startsWith("DIRECTIONAL SIM "));
+    });
+    return tradeStore[profile].length !== originalLength;
+}
+
 function buildPendingTradeFromPlacement(data){
     const profile = resolveTradeProfile(data, activeProfile);
     const symbolNode = document.getElementById("symbol");
@@ -1920,6 +1933,36 @@ function buildPendingTradeFromUnchainKoolkidSimulation(sim, payload){
     }).filter(Boolean);
 }
 
+function buildPendingTradeFromUnchainDirectionalSimulation(sim, payload){
+    if(!sim || typeof sim !== "object" || !sim.active) return null;
+    const root = payload || {};
+    const un = (root && root.unchain) || {};
+    const cid = normalizeContractId(sim.contract_id || "UNCHAIN-DIRECTIONAL-SIM");
+    if(!cid) return null;
+    const durationUnit = String((sim.duration_unit || "t")).toLowerCase();
+    const countdownUnit = String((sim.countdown_unit || "t")).toLowerCase();
+    return {
+        profile: "UNCHAIN",
+        type: `DIRECTIONAL SIM ${String(sim.side || "TRADE").toUpperCase()}`,
+        barrier: sim.sim_barrier,
+        stake: sim.stake,
+        symbol: sim.symbol || root.symbol || un.symbol,
+        time: sim.time || new Date().toLocaleTimeString(),
+        contract_id: cid,
+        duration: sim.duration || 5,
+        duration_unit: durationUnit,
+        countdown_remaining: sim.countdown_remaining,
+        countdown_unit: countdownUnit,
+        countdown_seconds: sim.countdown_seconds,
+        open_profit: Number.isFinite(Number(sim.estimated_pnl)) ? Number(sim.estimated_pnl) : null,
+        status: sim.phase || "SIMULATING",
+        result: "PENDING",
+        pending: true,
+        is_virtual_queue: true,
+        is_simulation: true,
+    };
+}
+
 function syncJokerjoeMultiGPendingTrade(payload){
     const profile = "JOKERJOE";
     const queueId = "JOKERJOE-MULTIG-PENDING";
@@ -2005,6 +2048,16 @@ function syncUnchainPendingTradesFromStatus(payload){
         changed = removeTradeFromStoreByContractId("UNCHAIN", "UNCHAIN-KOOLKID-BOTH-SIM-LOWER") || changed;
         changed = removeTradeFromStoreByContractId("UNCHAIN", "UNCHAIN-KOOLKID-BOTH-SIM") || changed;
     }
+    const directionalSim = un && un.directional_auto && un.directional_auto.simulation;
+    if(directionalSim && directionalSim.active){
+        const pendingDirectionalSim = buildPendingTradeFromUnchainDirectionalSimulation(directionalSim, root);
+        if(pendingDirectionalSim){
+            upsertTradeInStore(pendingDirectionalSim);
+            changed = true;
+        }
+    }else{
+        changed = removePendingDirectionalSimulationTrades() || changed;
+    }
     return changed;
 }
 window.syncUnchainPendingTradesFromStatus = syncUnchainPendingTradesFromStatus;
@@ -2016,10 +2069,15 @@ function applyTradeHistorySnapshotProfiles(profiles){
         const profile = normalizeProfileName(profileKey);
         const snapshotItems = Array.isArray(source[profileKey]) ? source[profileKey] : [];
         const existing = Array.isArray(tradeStore[profile]) ? tradeStore[profile] : [];
+        const existingSettled = existing.filter((trade)=>{
+            return !isTradeResultPending(normalizeTradeResultLabel(trade && trade.result, trade && trade.status));
+        });
         const pendingOnly = existing.filter((trade)=>{
             return isTradeResultPending(normalizeTradeResultLabel(trade && trade.result, trade && trade.status));
         });
-        tradeStore[profile] = pendingOnly.slice();
+        tradeStore[profile] = (snapshotItems.length === 0 && existingSettled.length > 0)
+            ? existing.slice()
+            : pendingOnly.slice();
         snapshotItems.forEach((trade)=>{
             upsertTradeInStore(Object.assign({}, trade, { profile }));
         });
@@ -2425,8 +2483,9 @@ function renderTradeList(profile){
     const list = getProfileScopedElement("profileTradeList");
     if(!list) return;
 
-    const arr = tradeStore[profile] || [];
-    const filter = getTradeHistoryFilter(profile);
+    const key = normalizeProfileName(profile || activeProfile);
+    const arr = tradeStore[key] || [];
+    const filter = getTradeHistoryFilter(key);
     const filtered = arr.filter((trade)=>{
         if(filter === "WIN") return normalizeTradeResultLabel(trade && trade.result, trade && trade.status) === "WIN";
         if(filter === "LOSS") return normalizeTradeResultLabel(trade && trade.result, trade && trade.status) === "LOSS";
@@ -2434,7 +2493,7 @@ function renderTradeList(profile){
     });
     const emptyLabel = filter === "WIN" ? "No wins yet" : (filter === "LOSS" ? "No losses yet" : "No trades yet");
 
-    renderTradeHistoryFilterState(profile);
+    renderTradeHistoryFilterState(key);
 
     if(filtered.length === 0){
         list.innerHTML = `<div style="text-align:center; color:#64748b; padding:20px;">${emptyLabel}</div>`;
@@ -3731,7 +3790,7 @@ async function setProfile(profile){
 
     // ==================== PATCH 2D: refresh SeqVIX status ====================
     await refreshSeqVixStatus();
-    await syncTradeHistorySnapshot();
+    await syncTradeHistorySnapshot(profile);
 
     refreshHowTo();
     showToast("🎮 Profile Changed: " + profile, "info");

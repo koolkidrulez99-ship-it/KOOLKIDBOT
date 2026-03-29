@@ -49,7 +49,7 @@ _PROFILE_DEFS = {
     "KOOLKID": {"id": "KOOLKID", "label": "KOOLKID Profile", "copy": "Scan all KOOLKID buttons"},
     "JOKERJOE": {"id": "JOKERJOE", "label": "JOKERJOE Profile", "copy": "Scan all JOKERJOE buttons"},
     "HUMAN": {"id": "HUMAN", "label": "HUMAN Profile", "copy": "Scan HUMAN Smart Assist"},
-    "UNCHAIN": {"id": "UNCHAIN", "label": "UNCHAIN Profile", "copy": "Scan UNCHAIN Higher / Lower"},
+    "UNCHAIN": {"id": "UNCHAIN", "label": "UNCHAIN Profile", "copy": "Scan UNCHAIN Higher / Lower / Both / Auto"},
 }
 
 _PROFILE_ALLOWED_MARKETS = {
@@ -92,6 +92,7 @@ _CANDIDATE_DEFS = {
     "UNCHAIN_HIGHER": {"profile": "UNCHAIN", "label": "UNCHAIN - Higher", "kind": "unchain_hl", "dual_ok": True, "multi_leg": False},
     "UNCHAIN_LOWER": {"profile": "UNCHAIN", "label": "UNCHAIN - Lower", "kind": "unchain_hl", "dual_ok": True, "multi_leg": False},
     "UNCHAIN_BOTH": {"profile": "UNCHAIN", "label": "UNCHAIN - Both", "kind": "unchain_both", "dual_ok": False, "multi_leg": True},
+    "UNCHAIN_DIRECTIONAL_AUTO": {"profile": "UNCHAIN", "label": "UNCHAIN - Auto Trade Higher / Lower", "kind": "unchain_hl", "dual_ok": True, "multi_leg": False},
 }
 
 
@@ -1515,6 +1516,139 @@ def _get_unchain_session_config(state):
     }
 
 
+def _normalize_unchain_directional_side(value):
+    side = str(value or "HIGHER").upper().strip()
+    return "LOWER" if side == "LOWER" else "HIGHER"
+
+
+def _normalize_unchain_directional_barrier(raw_value, side):
+    side_name = _normalize_unchain_directional_side(side)
+    fallback = "+0.12" if side_name == "HIGHER" else "-0.12"
+    try:
+        numeric = abs(float(raw_value))
+    except Exception:
+        try:
+            numeric = abs(float(fallback))
+        except Exception:
+            numeric = 0.12
+    if numeric <= 0:
+        numeric = 0.12
+    return f"+{numeric:.2f}" if side_name == "HIGHER" else f"-{numeric:.2f}"
+
+
+def _get_unchain_directional_auto_config(state):
+    root = state or {}
+    config = dict((root.get("unchain_hl") or {}))
+    side = _normalize_unchain_directional_side(config.get("directional_auto_side", "HIGHER"))
+    duration = int(config.get("duration", 5) or 5)
+    duration_unit = str(config.get("duration_unit", "t") or "t")
+    barrier = _normalize_unchain_directional_barrier(config.get("directional_auto_barrier"), side)
+    return {
+        "side": side,
+        "duration": duration,
+        "duration_unit": duration_unit,
+        "barrier": barrier,
+    }
+
+
+def _build_unchain_directional_signal(state, market):
+    config = _get_unchain_directional_auto_config(state)
+    prices = [float(value) for value in list((market or {}).get("prices") or []) if value is not None]
+    epochs = [float(value) for value in list((market or {}).get("epochs") or []) if value is not None]
+    if len(prices) < 8:
+        return None
+    if epochs and len(epochs) != len(prices):
+        usable = min(len(prices), len(epochs))
+        prices = prices[-usable:]
+        epochs = epochs[-usable:]
+
+    side = config["side"]
+    barrier_text = str(config["barrier"])
+    try:
+        barrier_value = float(barrier_text)
+    except Exception:
+        barrier_value = 0.12 if side == "HIGHER" else -0.12
+    duration = int(config["duration"])
+    duration_unit = str(config["duration_unit"])
+
+    if duration_unit == "t":
+        recent_span = max(3, min(len(prices) - 1, duration))
+        sample_count = len(prices) - recent_span
+        end_deltas = [prices[idx + recent_span] - prices[idx] for idx in range(sample_count)] if sample_count > 0 else []
+    else:
+        target_seconds = max(1, duration)
+        end_deltas = []
+        recent_span = None
+        if epochs:
+            for start_idx in range(len(prices) - 1):
+                start_ts = epochs[start_idx]
+                found_idx = None
+                for end_idx in range(start_idx + 1, len(prices)):
+                    if (epochs[end_idx] - start_ts) >= target_seconds:
+                        found_idx = end_idx
+                        break
+                if found_idx is not None:
+                    end_deltas.append(prices[found_idx] - prices[start_idx])
+            last_start_idx = None
+            for idx in range(len(prices) - 2, -1, -1):
+                if (epochs[-1] - epochs[idx]) >= target_seconds:
+                    last_start_idx = idx
+                    break
+            if last_start_idx is not None:
+                recent_span = len(prices) - 1 - last_start_idx
+        if recent_span is None:
+            recent_span = max(4, min(len(prices) - 1, 6))
+
+    if recent_span <= 0 or len(prices) <= recent_span:
+        return None
+
+    window_lookback = max(recent_span + 2, min(len(prices), max(10, recent_span * 3)))
+    window = prices[-window_lookback:]
+    deltas = [window[idx] - window[idx - 1] for idx in range(1, len(window))]
+    if not deltas:
+        return None
+
+    favorable_steps = sum(1 for delta in deltas if (delta > 0 if side == "HIGHER" else delta < 0))
+    directional_steps = max(1, sum(1 for delta in deltas if delta != 0))
+    flow_pct = (favorable_steps / directional_steps) * 100.0
+    recent_move = prices[-1] - prices[-1 - recent_span]
+    net_move = window[-1] - window[0]
+    chosen_recent_move = recent_move if side == "HIGHER" else -recent_move
+    chosen_net_move = net_move if side == "HIGHER" else -net_move
+    range_width = max(window) - min(window)
+    avg_abs_delta = (sum(abs(delta) for delta in deltas) / len(deltas)) if deltas else 0.0
+    move_scale = max(abs(barrier_value) * 1.5, range_width * 0.35, avg_abs_delta * 4.0, 0.0000001)
+    momentum_pct = max(0.0, min(100.0, (chosen_recent_move / move_scale) * 100.0))
+    trend_pct = max(0.0, min(100.0, (chosen_net_move / max(abs(barrier_value) * 2.0, range_width, 0.0000001)) * 100.0))
+    market_confidence = round((flow_pct * 0.50) + (momentum_pct * 0.30) + (trend_pct * 0.20), 1)
+
+    sample_count = len(end_deltas)
+    wins = 0
+    for delta in end_deltas:
+        if side == "HIGHER":
+            if delta >= barrier_value:
+                wins += 1
+        else:
+            if delta <= barrier_value:
+                wins += 1
+    simulation_win_rate = round((wins / sample_count) * 100.0, 1) if sample_count else 0.0
+    sample_weight = min(1.0, sample_count / 8.0) if sample_count else 0.0
+    simulation_confidence = round(50.0 + ((simulation_win_rate - 50.0) * sample_weight), 1) if sample_count else 0.0
+    final_confidence = round((market_confidence * 0.50) + (simulation_confidence * 0.50), 1)
+
+    if flow_pct < 50.0 or chosen_recent_move <= 0 or chosen_net_move <= 0 or sample_count < 4 or final_confidence < 60.0:
+        return None
+    return {
+        "type": side,
+        "barrier": barrier_text,
+        "duration": duration,
+        "duration_unit": duration_unit,
+        "confidence": float(final_confidence),
+        "market_confidence": float(market_confidence),
+        "simulation_win_rate": float(simulation_win_rate),
+    }
+
+
 def _simulate_unchain_market_config(strat, runtime, state, market):
     base = _get_unchain_session_config(state)
     runtime_state = runtime.setdefault("runtime_state", {})
@@ -1630,7 +1764,7 @@ def _configure_candidate(strategy_id, strat, market, per_trade_stake):
                 strat.set_kidgx_barrier(_suggest_koolkid_barrier(snapshot))
             except Exception:
                 strat.kidgx_barrier = _suggest_koolkid_barrier(snapshot)
-    elif strategy_id in ("UNCHAIN_HIGHER", "UNCHAIN_LOWER"):
+    elif strategy_id in ("UNCHAIN_HIGHER", "UNCHAIN_LOWER", "UNCHAIN_DIRECTIONAL_AUTO"):
         try:
             strat.set_settings(
                 mode="MANUAL",
@@ -1699,6 +1833,11 @@ def _evaluate_candidate(strategy_id, runtime, market, state, per_trade_stake, pr
 
 
 def _candidate_signal(strategy_id, strat, state, runtime=None, preview_only=False, market=None):
+    if strategy_id == "UNCHAIN_DIRECTIONAL_AUTO":
+        return _build_unchain_directional_signal(
+            getattr(strat, "_auto_session_state", None),
+            market or {},
+        )
     if strategy_id in ("UNCHAIN_HIGHER", "UNCHAIN_LOWER", "UNCHAIN_BOTH"):
         config = _simulate_unchain_market_config(
             strat,

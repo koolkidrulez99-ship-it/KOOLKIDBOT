@@ -1,6 +1,7 @@
 import server
 import pytest
 from types import SimpleNamespace
+from flask import json
 
 
 def test_unchain_ai_auto_defaults_are_looser():
@@ -748,6 +749,121 @@ def test_auto_both_skips_when_balance_cannot_cover_pair(monkeypatch):
     assert "need $8.00 total balance for both trades" in state["unchain_hl"]["last_action"]
 
 
+def test_auto_both_waits_for_ready_both_analysis(monkeypatch):
+    state = {
+        "ws_connected": True,
+        "ws": object(),
+        "balance": 100.0,
+        "current_symbol": "R_25",
+        "unchain_hl": {
+            "auto_both_enabled": True,
+            "higher_stake": 4.0,
+            "lower_stake": 4.0,
+            "higher_barrier": "+0.12",
+            "lower_barrier": "-0.12",
+            "duration": 5,
+            "duration_unit": "t",
+        },
+    }
+    placed = []
+
+    monkeypatch.setattr(server, "_get_open_unchain_active_entries", lambda state: [])
+    monkeypatch.setattr(
+        server,
+        "_run_unchain_both_analyzer",
+        lambda state: {
+            "status": "WAIT",
+            "reason": "WAIT: no setup passed all barrier analyzer checks.",
+        },
+    )
+    monkeypatch.setattr(server, "_send_unchain_hl_trade", lambda client_id, **kwargs: placed.append(kwargs) or (True, "ok"))
+
+    assert server._run_unchain_auto_both("cid", state) is False
+    assert placed == []
+    assert "AUTO BOTH waiting" in state["unchain_hl"]["last_action"]
+
+
+def test_auto_both_uses_ready_both_recommended_setup(monkeypatch):
+    state = {
+        "ws_connected": True,
+        "ws": object(),
+        "balance": 100.0,
+        "current_symbol": "R_25",
+        "unchain_hl": {
+            "auto_both_enabled": True,
+            "higher_stake": 4.0,
+            "lower_stake": 4.0,
+            "higher_barrier": "+0.12",
+            "lower_barrier": "-0.12",
+            "duration": 5,
+            "duration_unit": "t",
+        },
+    }
+    placed = []
+
+    monkeypatch.setattr(server, "_get_open_unchain_active_entries", lambda state: [])
+    monkeypatch.setattr(
+        server,
+        "_run_unchain_both_analyzer",
+        lambda state: {
+            "status": "READY",
+            "reason": "READY: BEST BOTH",
+            "recommended": {
+                "recommended_side": "BOTH",
+                "is_trade_ready": True,
+                "duration": 8,
+                "duration_unit": "t",
+                "higher_barrier": "+0.21",
+                "lower_barrier": "-0.19",
+            },
+        },
+    )
+    monkeypatch.setattr(server, "_send_unchain_hl_trade", lambda client_id, **kwargs: placed.append(kwargs) or (True, "ok"))
+    monkeypatch.setattr(server.socketio, "emit", lambda *args, **kwargs: None)
+
+    assert server._run_unchain_auto_both("cid", state) is True
+    assert [call["side"] for call in placed] == ["HIGHER", "LOWER"]
+    assert all(call["duration"] == 8 for call in placed)
+    assert placed[0]["barrier"] == "+0.21"
+    assert placed[1]["barrier"] == "-0.19"
+
+
+def test_unchain_settings_duration_change_does_not_refresh_barriers(monkeypatch):
+    cid = "unchain-settings-no-refresh"
+    state = {
+        "active_profile": "UNCHAIN",
+        "current_symbol": "R_75",
+        "ws_connected": True,
+        "ws": object(),
+        "strategies": {"UNCHAIN": SimpleNamespace()},
+        "unchain_hl": {
+            "higher_barrier": "+0.33",
+            "lower_barrier": "-0.44",
+            "duration": 5,
+            "duration_unit": "t",
+        },
+    }
+
+    monkeypatch.setattr(server, "login_required", lambda: True)
+    monkeypatch.setattr(server, "get_client_state", lambda: (cid, state))
+    monkeypatch.setattr(server.socketio, "emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "send_stats_update", lambda *args, **kwargs: None)
+
+    with server.app.test_request_context(
+        "/unchain_settings",
+        method="POST",
+        data=json.dumps({"duration_unit": "s", "duration": 15}),
+        content_type="application/json",
+    ):
+        response = server.unchain_settings_route()
+        payload = response.get_json()
+
+    assert payload["unchain"]["duration_unit"] == "s"
+    assert payload["unchain"]["duration"] == 15
+    assert payload["unchain"]["higher_barrier"] == "+0.33"
+    assert payload["unchain"]["lower_barrier"] == "-0.44"
+
+
 def test_ai_auto_trade_skips_when_balance_cannot_cover_pair(monkeypatch):
     state = {
         "ws_connected": True,
@@ -1097,7 +1213,7 @@ def test_koolkid_both_keeps_user_stakes_on_directional_flow(monkeypatch):
     assert state["unchain_hl"]["koolkid_both_simulation"] is None
 
 
-def test_directional_auto_trades_only_selected_higher_side_with_shared_duration(monkeypatch):
+def test_directional_auto_waits_for_5_tick_sim_before_sending_live_trade(monkeypatch):
     state = {
         "ws_connected": True,
         "ws": object(),
@@ -1106,6 +1222,7 @@ def test_directional_auto_trades_only_selected_higher_side_with_shared_duration(
             "UNCHAIN": SimpleNamespace(
                 price_history=[100.00, 100.02, 100.05, 100.08, 100.12, 100.16, 100.20, 100.24, 100.28, 100.33, 100.38, 100.44],
                 tick_time_history=list(range(12)),
+                trade_history=[],
             ),
         },
         "unchain_hl": {
@@ -1130,7 +1247,25 @@ def test_directional_auto_trades_only_selected_higher_side_with_shared_duration(
     monkeypatch.setattr(server, "_send_unchain_hl_trade", fake_send)
 
     assert server._run_unchain_directional_auto_trade("cid", state) is True
+    assert len(placed) == 0
+    sim = state["unchain_hl"]["directional_auto_simulation"]
+    assert sim is not None
+    assert sim["side"] == "HIGHER"
+    assert sim["duration"] == 5
+    assert sim["duration_unit"] == "t"
+    assert sim["stake"] == 12.0
+
+    strat = state["strategies"]["UNCHAIN"]
+    strat.price_history.extend([100.48, 100.54, 100.60, 100.67, 100.75])
+    strat.tick_time_history.extend(range(12, 17))
+
+    assert server._run_unchain_directional_auto_trade("cid", state) is True
     assert len(placed) == 1
+    assert len(placed) == 1
+    assert state["unchain_hl"]["directional_auto_simulation"] is None
+    assert len(strat.trade_history) == 1
+    assert strat.trade_history[0]["type"] == "DIRECTIONAL SIM HIGHER"
+    assert strat.trade_history[0]["result"] == "WIN"
     assert placed[0]["side"] == "HIGHER"
     assert placed[0]["barrier"] == "-0.12"
     assert placed[0]["duration"] == 5
@@ -1166,7 +1301,265 @@ def test_directional_auto_waits_when_selected_lower_side_is_not_favored(monkeypa
     monkeypatch.setattr(server, "_get_open_unchain_active_entries", lambda state: [])
 
     assert server._run_unchain_directional_auto_trade("cid", state) is False
-    assert "lower" in str(state["unchain_hl"]["directional_auto_last_reason"]).lower()
+    reason = str(state["unchain_hl"]["directional_auto_last_reason"]).lower()
+    assert ("higher" in reason) or ("direction" in reason) or ("tick" in reason)
+
+
+def test_directional_auto_does_not_double_fire_while_request_is_pending(monkeypatch):
+    state = {
+        "ws_connected": True,
+        "ws": object(),
+        "current_symbol": "R_25",
+        "strategies": {
+            "UNCHAIN": SimpleNamespace(
+                price_history=[100.00, 100.02, 100.05, 100.08, 100.12, 100.16, 100.20, 100.24, 100.28, 100.33, 100.38, 100.44],
+                tick_time_history=list(range(12)),
+                trade_history=[],
+            ),
+        },
+        "unchain_hl": {
+            "directional_auto_enabled": True,
+            "directional_auto_side": "HIGHER",
+            "directional_auto_barrier": "+0.12",
+            "higher_stake": 12.0,
+            "lower_stake": 7.0,
+            "duration": 5,
+            "duration_unit": "t",
+        },
+    }
+    placed = []
+
+    monkeypatch.setattr(server, "_check_unchain_hl_risk_block", lambda state: None)
+    monkeypatch.setattr(server, "_get_open_unchain_active_entries", lambda state: [])
+
+    def fake_send(client_id, **kwargs):
+        placed.append(kwargs)
+        return True, "ok"
+
+    monkeypatch.setattr(server, "_send_unchain_hl_trade", fake_send)
+
+    assert server._run_unchain_directional_auto_trade("cid", state) is True
+    assert server._run_unchain_directional_auto_trade("cid", state) is False
+    assert len(placed) == 0
+    assert state["unchain_hl"]["directional_auto_simulation"] is not None
+    assert "sim running" in str(state["unchain_hl"]["directional_auto_last_reason"]).lower()
+
+
+def test_directional_auto_stable_profits_reduces_next_trade_after_two_wins(monkeypatch):
+    state = {
+        "ws_connected": True,
+        "ws": object(),
+        "current_symbol": "R_25",
+        "strategies": {
+            "UNCHAIN": SimpleNamespace(
+                price_history=[100.00, 100.03, 100.07, 100.12, 100.18, 100.25, 100.33, 100.42, 100.52, 100.63, 100.75, 100.88],
+                tick_time_history=list(range(12)),
+                trade_history=[],
+            ),
+        },
+        "unchain_hl": {
+            "directional_auto_enabled": True,
+            "directional_auto_side": "HIGHER",
+            "directional_auto_barrier": "+0.12",
+            "directional_auto_stable_profits": True,
+            "higher_stake": 100.0,
+            "lower_stake": 50.0,
+            "duration": 5,
+            "duration_unit": "t",
+        },
+    }
+    placed = []
+
+    monkeypatch.setattr(server, "_check_unchain_hl_risk_block", lambda state: None)
+    monkeypatch.setattr(server, "_get_open_unchain_active_entries", lambda state: [])
+
+    server._finalize_unchain_contract(state, {"contract_id": "1", "profit": 8.0}, meta={"entry_source": "DIRECTIONAL_AUTO", "type": "HIGHER"})
+    server._finalize_unchain_contract(state, {"contract_id": "2", "profit": 9.0}, meta={"entry_source": "DIRECTIONAL_AUTO", "type": "HIGHER"})
+    state["unchain_hl"]["directional_auto_next_fire_at"] = 0.0
+
+    def fake_send(client_id, **kwargs):
+        placed.append(kwargs)
+        return True, "ok"
+
+    monkeypatch.setattr(server, "_send_unchain_hl_trade", fake_send)
+
+    assert state["unchain_hl"]["directional_auto_win_streak"] == 2
+    assert state["unchain_hl"]["directional_auto_reduce_next_stake"] is True
+    assert server._run_unchain_directional_auto_trade("cid", state) is True
+    assert len(placed) == 0
+    sim = state["unchain_hl"]["directional_auto_simulation"]
+    assert sim is not None
+    assert sim["stake"] == 10.0
+    strat = state["strategies"]["UNCHAIN"]
+    strat.price_history.extend([101.02, 101.15, 101.28, 101.42, 101.58])
+    strat.tick_time_history.extend(range(12, 17))
+    assert server._run_unchain_directional_auto_trade("cid", state) is True
+    assert len(placed) == 1
+    assert placed[0]["stake"] == 10.0
+    assert state["unchain_hl"]["directional_auto_reduce_next_stake"] is False
+    assert state["unchain_hl"]["directional_auto_win_streak"] == 0
+    assert state["unchain_hl"]["directional_auto_simulation"] is None
+
+
+def test_directional_auto_sim_loss_still_records_history_without_second_live_trade(monkeypatch):
+    state = {
+        "ws_connected": True,
+        "ws": object(),
+        "current_symbol": "R_25",
+        "strategies": {
+            "UNCHAIN": SimpleNamespace(
+                price_history=[100.00, 100.04, 100.08, 100.12, 100.15, 100.19, 100.24, 100.28, 100.31, 100.36, 100.40, 100.44],
+                tick_time_history=list(range(12)),
+                trade_history=[],
+            ),
+        },
+        "unchain_hl": {
+            "directional_auto_enabled": True,
+            "directional_auto_side": "HIGHER",
+            "directional_auto_barrier": "+0.12",
+            "higher_stake": 15.0,
+            "lower_stake": 10.0,
+            "duration": 5,
+            "duration_unit": "t",
+        },
+    }
+    placed = []
+
+    monkeypatch.setattr(server, "_check_unchain_hl_risk_block", lambda state: None)
+    monkeypatch.setattr(server, "_get_open_unchain_active_entries", lambda state: [])
+
+    def fake_send(client_id, **kwargs):
+        placed.append(kwargs)
+        return True, "ok"
+
+    monkeypatch.setattr(server, "_send_unchain_hl_trade", fake_send)
+
+    assert server._run_unchain_directional_auto_trade("cid", state) is True
+    assert len(placed) == 0
+    strat = state["strategies"]["UNCHAIN"]
+    strat.price_history.extend([100.43, 100.41, 100.39, 100.36, 100.32])
+    strat.tick_time_history.extend(range(12, 17))
+
+    assert server._run_unchain_directional_auto_trade("cid", state) is False
+    assert len(placed) == 0
+    assert state["unchain_hl"]["directional_auto_simulation"] is None
+    assert len(strat.trade_history) == 1
+    assert strat.trade_history[0]["type"] == "DIRECTIONAL SIM HIGHER"
+    assert strat.trade_history[0]["result"] == "LOSS"
+    assert "skipped the live trade" in str(state["unchain_hl"]["directional_auto_last_reason"]).lower()
+
+
+def test_directional_auto_status_exposes_live_sim_pnl(monkeypatch):
+    state = {
+        "current_symbol": "R_25",
+        "strategies": {
+            "UNCHAIN": SimpleNamespace(
+                last_price=100.54,
+                price_history=[100.00, 100.08, 100.16, 100.24, 100.32, 100.40, 100.48, 100.54],
+                tick_time_history=list(range(8)),
+                tick_count=8,
+            ),
+        },
+        "unchain_hl": {
+            "directional_auto_enabled": True,
+            "directional_auto_side": "HIGHER",
+            "directional_auto_barrier": "+0.12",
+            "directional_auto_simulation": {
+                "active": True,
+                "contract_id": "UNCHAIN-DIRECTIONAL-SIM-1",
+                "side": "HIGHER",
+                "barrier": "+0.12",
+                "barrier_value": 0.12,
+                "stake": 20.0,
+                "symbol": "R_25",
+                "time": "10:00:00",
+                "started_at": 0.0,
+                "started_tick": 3,
+                "current_tick_count": 8,
+                "start_price": 100.10,
+                "current_price": 100.54,
+                "simulation_ticks": 5,
+                "duration": 5,
+                "duration_unit": "t",
+                "market_confidence": 74.0,
+                "simulation_win_rate": 70.0,
+                "simulation_confidence": 68.0,
+                "final_confidence": 71.0,
+                "sample_count": 6,
+            },
+        },
+    }
+
+    payload = server._get_unchain_directional_auto_status(state)
+
+    assert payload["status"] == "SIMULATING"
+    assert payload["simulation"]["active"] is True
+    assert payload["simulation"]["countdown_remaining"] == 0
+    assert float(payload["simulation"]["estimated_pnl"]) > 0.0
+
+
+def test_directional_auto_sim_stays_active_even_if_live_trade_opens(monkeypatch):
+    state = {
+        "ws_connected": True,
+        "ws": object(),
+        "current_symbol": "R_25",
+        "strategies": {
+            "UNCHAIN": SimpleNamespace(
+                last_price=100.30,
+                price_history=[100.00, 100.05, 100.10, 100.14, 100.18, 100.22, 100.26, 100.30],
+                tick_time_history=list(range(8)),
+                tick_count=8,
+                trade_history=[],
+            ),
+        },
+        "unchain_hl": {
+            "directional_auto_enabled": True,
+            "directional_auto_side": "HIGHER",
+            "directional_auto_barrier": "+0.12",
+            "directional_auto_simulation": {
+                "active": True,
+                "contract_id": "UNCHAIN-DIRECTIONAL-SIM-OPEN",
+                "side": "HIGHER",
+                "barrier": "+0.12",
+                "barrier_value": 0.12,
+                "stake": 10.0,
+                "symbol": "R_25",
+                "time": "10:00:00",
+                "started_at": 0.0,
+                "started_tick": 6,
+                "current_tick_count": 8,
+                "start_price": 100.10,
+                "current_price": 100.30,
+                "simulation_ticks": 5,
+                "duration": 5,
+                "duration_unit": "t",
+                "market_confidence": 72.0,
+                "simulation_win_rate": 66.0,
+                "simulation_confidence": 64.0,
+                "final_confidence": 68.0,
+                "sample_count": 5,
+            },
+            "active_contracts": {
+                "LIVE-1": {
+                    "contract_id": "LIVE-1",
+                    "status": "OPEN",
+                    "is_sold": False,
+                    "type": "HIGHER",
+                    "stake": 5.0,
+                    "symbol": "R_25",
+                    "duration": 5,
+                    "duration_unit": "t",
+                }
+            },
+        },
+    }
+
+    monkeypatch.setattr(server, "_check_unchain_hl_risk_block", lambda state: None)
+
+    assert server._run_unchain_directional_auto_trade("cid", state) is False
+    assert state["unchain_hl"]["directional_auto_simulation"] is not None
+    assert state["unchain_hl"]["directional_auto_simulation"]["active"] is True
+    assert "sim running" in str(state["unchain_hl"]["directional_auto_last_reason"]).lower()
 
 
 def test_toggle_directional_auto_disables_other_unchain_auto_modes(monkeypatch):

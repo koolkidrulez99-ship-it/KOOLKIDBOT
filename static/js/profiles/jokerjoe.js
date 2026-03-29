@@ -1,6 +1,6 @@
 (function () {
   const PROFILE = "JOKERJOE";
-  const state = { lastSocket: null, socketBound: false, autoModes: {}, kidgxBarrier: 5, matchesAnalysisOn: false, matchesLastKey: "", matchesObserverBound: false, matchSniperOn: false, matchSniperCooldownUntil: 0, matchSniperActiveDigit: null, matchSniperConsumed: false, matchSniperBusy: false, matchesSnapshot: null, matchesSorted: [], matchSniper5xOn: false, matchSniper5xCooldownUntil: 0, matchSniper5xBusy: false, matchSniper5xLastTopKey: "", matchSniper5xRotationSets: null, matchSniper5xRotationIndex: 0, matchSniper5xCurrentDigits: [], aiAutoModeChoice: "golden_digits", aiAutoLowestTradeCountChoice: 5, aiAutoLowestLocalOn: false, aiAutoModalOpen: false, aiLowestLastTickCount: 0, aiLowestTouches: {}, aiLowestArmed: null, aiLowestBatchActive: false, aiLowestBatchPending: 0, aiLowestBatchBarrier: null, aiLowestBatchProfit: 0, aiLowestCooldownUntil: 0, aiLowestSubmitting: false, aiLowestRecoveryDeficit: 0, aiLowestRecoveryOnly: false };
+  const state = { lastSocket: null, socketBound: false, autoModes: {}, kidgxBarrier: 5, matchesAnalysisOn: false, matchesLastKey: "", matchesObserverBound: false, matchSniperOn: false, matchSniperCooldownUntil: 0, matchSniperActiveDigit: null, matchSniperConsumed: false, matchSniperBusy: false, matchesSnapshot: null, matchesSorted: [], matchSniper5xOn: false, matchSniper5xCooldownUntil: 0, matchSniper5xBusy: false, matchSniper5xLastTopKey: "", matchSniper5xRotationSets: null, matchSniper5xRotationIndex: 0, matchSniper5xCurrentDigits: [], aiAutoModeChoice: "golden_digits", aiAutoLowestTradeCountChoice: 5, aiAutoLowestLocalOn: false, aiAutoModalOpen: false, aiLowestLastTickCount: 0, aiLowestTouches: {}, aiLowestArmed: null, aiLowestBatchActive: false, aiLowestBatchPending: 0, aiLowestBatchBarrier: null, aiLowestBatchProfit: 0, aiLowestCooldownUntil: 0, aiLowestSubmitting: false, aiLowestRecoveryDeficit: 0, aiLowestRecoveryOnly: false, randomMatchesDiffersOn: false, randomMatchesDiffersMode: "DIFFERS", randomMatchesDiffersModalOpen: false, randomMatchesDiffersBusy: false, randomMatchesDiffersCooldownUntil: 0, randomMatchesDiffersLastSignalKey: "", randomMatchesDiffersTickHistory: [], randomMatchesDiffersLastTickCount: 0, randomMatchesDiffersSnapshot: null };
 
   function App() { return window.BotApp || {}; }
   function isActive() { try { return typeof activeProfile !== "undefined" && activeProfile === PROFILE; } catch (e) { return false; } }
@@ -123,6 +123,257 @@
         status.innerText = "Golden Digits mode: existing backend AI AUTO logic";
       }
     }
+  }
+
+  function normalizeRandomMatchesDiffersModeJokerjoe(mode) {
+    return String(mode || "").toUpperCase() === "MATCHES" ? "MATCHES" : "DIFFERS";
+  }
+
+  function pushRandomMatchesDiffersTickJokerjoe(data) {
+    if (!data) return;
+    const tickCount = Number(data.tick_count);
+    const lastDigit = Number(data.last_digit);
+    if (!Number.isFinite(tickCount) || !Number.isInteger(lastDigit) || lastDigit < 0 || lastDigit > 9) return;
+    if (tickCount < Number(state.randomMatchesDiffersLastTickCount || 0)) {
+      state.randomMatchesDiffersTickHistory = [];
+      state.randomMatchesDiffersLastTickCount = 0;
+      state.randomMatchesDiffersLastSignalKey = "";
+    }
+    if (tickCount <= Number(state.randomMatchesDiffersLastTickCount || 0)) return;
+    state.randomMatchesDiffersLastTickCount = tickCount;
+    state.randomMatchesDiffersTickHistory.push({ tick: tickCount, digit: lastDigit });
+    if (state.randomMatchesDiffersTickHistory.length > 160) {
+      state.randomMatchesDiffersTickHistory = state.randomMatchesDiffersTickHistory.slice(-160);
+    }
+  }
+
+  function buildRandomMatchesDiffersSnapshotJokerjoe() {
+    const history = Array.isArray(state.randomMatchesDiffersTickHistory) ? state.randomMatchesDiffersTickHistory : [];
+    const recent100 = history.slice(-100);
+    if (recent100.length < 100) {
+      return {
+        ready: false,
+        warmupCount: recent100.length,
+        needed: Math.max(0, 100 - recent100.length),
+      };
+    }
+    const totalCounts = Array(10).fill(0);
+    recent100.forEach((entry) => {
+      const digit = Number(entry && entry.digit);
+      if (Number.isInteger(digit) && digit >= 0 && digit <= 9) totalCounts[digit] += 1;
+    });
+    const ranked = totalCounts.map((count, digit) => ({ digit, count })).sort((a, b) => a.count - b.count || a.digit - b.digit);
+    const leastDigits = ranked.slice(0, 4).map((row) => Number(row.digit));
+    const leastSet = new Set(leastDigits);
+    const otherDigits = ranked.slice(4).map((row) => Number(row.digit)).sort((a, b) => a - b);
+    const recent10 = recent100.slice(-10);
+    const recentCounts = {};
+    leastDigits.forEach((digit) => { recentCounts[digit] = 0; });
+    recent10.forEach((entry) => {
+      const digit = Number(entry && entry.digit);
+      if (leastSet.has(digit)) recentCounts[digit] = Number(recentCounts[digit] || 0) + 1;
+    });
+    const quietDigits = leastDigits.filter((digit) => Number(recentCounts[digit] || 0) <= 1);
+    const pass = quietDigits.length === leastDigits.length;
+    const countsSummary = leastDigits.map((digit) => `${digit}:${Number(recentCounts[digit] || 0)}`).join(" ");
+    const signalKey = `${leastDigits.join("")}|${leastDigits.map((digit) => Number(recentCounts[digit] || 0)).join("")}|${recent10.map((entry) => entry.digit).join("")}`;
+    return {
+      ready: true,
+      leastDigits,
+      otherDigits,
+      recentCounts,
+      countsSummary,
+      quietDigits,
+      pass,
+      signalKey,
+      tickCount: Number(recent100[recent100.length - 1].tick || 0),
+      recent10Digits: recent10.map((entry) => Number(entry.digit)),
+      rankedCounts: ranked,
+    };
+  }
+
+  function mergeRandomMatchesDiffersCold4PayloadJokerjoe(data, fallbackSnapshot) {
+    const cold4 = data && data.cold4_score;
+    const snap = fallbackSnapshot || buildRandomMatchesDiffersSnapshotJokerjoe();
+    if (!cold4 || !Array.isArray(cold4.coldest_4) || cold4.coldest_4.length !== 4) return snap;
+    const leastDigits = cold4.coldest_4.map((digit) => Number(digit)).filter((digit) => Number.isInteger(digit) && digit >= 0 && digit <= 9);
+    if (leastDigits.length !== 4) return snap;
+    const leastSet = new Set(leastDigits);
+    const otherDigits = [];
+    for (let d = 0; d <= 9; d++) {
+      if (!leastSet.has(d)) otherDigits.push(d);
+    }
+    const recent10 = (Array.isArray(state.randomMatchesDiffersTickHistory) ? state.randomMatchesDiffersTickHistory : []).slice(-10);
+    const recentCounts = {};
+    leastDigits.forEach((digit) => { recentCounts[digit] = 0; });
+    recent10.forEach((entry) => {
+      const digit = Number(entry && entry.digit);
+      if (leastSet.has(digit)) recentCounts[digit] = Number(recentCounts[digit] || 0) + 1;
+    });
+    const quietDigits = leastDigits.filter((digit) => Number(recentCounts[digit] || 0) <= 1);
+    const countsSummary = leastDigits.map((digit) => `${digit}:${Number(recentCounts[digit] || 0)}`).join(" ");
+    return {
+      ready: true,
+      leastDigits,
+      otherDigits,
+      recentCounts,
+      countsSummary,
+      quietDigits,
+      pass: quietDigits.length === leastDigits.length && !!cold4.signal_valid,
+      cold4Valid: !!cold4.signal_valid,
+      cold4Strength: String(cold4.signal_strength || "WEAK").toUpperCase(),
+      cold4Gap: Number(cold4.score_gap || 0),
+      cold4Scores: cold4.scores || {},
+      signalKey: `${leastDigits.join("")}|${leastDigits.map((digit) => Number(recentCounts[digit] || 0)).join("")}|${recent10.map((entry) => entry.digit).join("")}|${Number(cold4.score_gap || 0)}`,
+      tickCount: snap.tickCount,
+      recent10Digits: recent10.map((entry) => Number(entry.digit)),
+      rankedCounts: Array.isArray(cold4.sorted_digits) ? cold4.sorted_digits : snap.rankedCounts,
+      warmupCount: snap.warmupCount,
+      needed: snap.needed,
+    };
+  }
+
+  function updateRandomMatchesDiffersButtonJokerjoe() {
+    const btn = getEl("randomMatchesDiffersBtnJokerjoe");
+    if (!btn) return;
+    const mode = normalizeRandomMatchesDiffersModeJokerjoe(state.randomMatchesDiffersMode);
+    const on = !!state.randomMatchesDiffersOn;
+    btn.innerText = `🎲 Random Matches/Differs: ${on ? `${mode} ON` : "OFF"}`;
+    btn.style.background = on ? "#22c55e" : "#1e293b";
+  }
+
+  function updateRandomMatchesDiffersStatusJokerjoe(snapshot) {
+    const el = getEl("randomMatchesDiffersStatusJokerjoe");
+    if (!el) return;
+    const mode = normalizeRandomMatchesDiffersModeJokerjoe(state.randomMatchesDiffersMode);
+    const snap = snapshot || state.randomMatchesDiffersSnapshot || buildRandomMatchesDiffersSnapshotJokerjoe();
+    const now = Date.now();
+    const cdMs = Math.max(0, Number(state.randomMatchesDiffersCooldownUntil || 0) - now);
+    if (!state.randomMatchesDiffersOn) {
+      el.style.color = "#94a3b8";
+      el.innerText = "OFF • Collects the latest 100 ticks in the background • waits for the 4 least digits to stay quiet";
+      return;
+    }
+    if (!snap || !snap.ready) {
+      el.style.color = "#94a3b8";
+      el.innerText = `Warm-up • ${Number((snap && snap.warmupCount) || 0)}/100 ticks collected`;
+      return;
+    }
+    const leastText = (snap.leastDigits || []).join(", ");
+    if (snap.cold4Valid === false) {
+      el.style.color = "#fb7185";
+      el.innerText = `Cold 4 weak • least digits ${leastText} • gap ${Number(snap.cold4Gap || 0)} < 3`;
+      return;
+    }
+    if (state.randomMatchesDiffersBusy) {
+      const targetDigits = mode === "DIFFERS" ? (snap.leastDigits || []) : (snap.otherDigits || []);
+      el.style.color = "#38bdf8";
+      el.innerText = `Placing ${targetDigits.length} ${mode} trades • least digits ${leastText}`;
+      return;
+    }
+    if (cdMs > 0) {
+      el.style.color = "#facc15";
+      el.innerText = `Cooldown ${(cdMs / 1000).toFixed(1)}s • least digits ${leastText} • last 10 = ${snap.countsSummary}`;
+      return;
+    }
+    if (!snap.pass) {
+      el.style.color = "#fb7185";
+      el.innerText = `Watching ${leastText} • last 10 = ${snap.countsSummary} • need each at 0 or 1`;
+      return;
+    }
+    el.style.color = "#22c55e";
+    el.innerText = `ARMED • least digits ${leastText} stayed quiet in the last 10 ticks • mode ${mode}`;
+  }
+
+  function updateRandomMatchesDiffersModalUiJokerjoe(snapshot) {
+    const mode = normalizeRandomMatchesDiffersModeJokerjoe(state.randomMatchesDiffersMode);
+    const matchesBtn = getEl("randomMatchesOptionBtnJokerjoe");
+    const differsBtn = getEl("randomDiffersOptionBtnJokerjoe");
+    const offBtn = getEl("randomMatchesDiffersOffBtnJokerjoe");
+    const status = getEl("randomMatchesDiffersModalStatusJokerjoe");
+    const snap = snapshot || state.randomMatchesDiffersSnapshot || buildRandomMatchesDiffersSnapshotJokerjoe();
+    if (matchesBtn) matchesBtn.style.background = mode === "MATCHES" && state.randomMatchesDiffersOn ? "#22c55e" : "#1e293b";
+    if (differsBtn) differsBtn.style.background = mode === "DIFFERS" && state.randomMatchesDiffersOn ? "#22c55e" : "#1e293b";
+    if (offBtn) offBtn.style.background = state.randomMatchesDiffersOn ? "#ef4444" : "#334155";
+    if (!status) return;
+    if (!snap || !snap.ready) {
+      status.innerText = `Collecting background ticks • ${Number((snap && snap.warmupCount) || 0)}/100 ready`;
+      return;
+    }
+    const leastText = (snap.leastDigits || []).join(", ");
+    if (snap.cold4Valid === false) {
+      status.innerText = `Cold 4 weak • least digits ${leastText} • gap ${Number(snap.cold4Gap || 0)} < 3`;
+      return;
+    }
+    status.innerText = `Least digits: ${leastText} • last 10 = ${snap.countsSummary} • ${snap.pass ? "signal ready" : "waiting for quieter 10-tick block"}`;
+  }
+
+  async function tryRandomMatchesDiffersTradeJokerjoe(snapshot) {
+    const snap = snapshot || state.randomMatchesDiffersSnapshot || buildRandomMatchesDiffersSnapshotJokerjoe();
+    if (!state.randomMatchesDiffersOn || state.randomMatchesDiffersBusy || !snap || !snap.ready || !snap.pass) {
+      updateRandomMatchesDiffersStatusJokerjoe(snap);
+      return;
+    }
+    const now = Date.now();
+    if (Number(state.randomMatchesDiffersCooldownUntil || 0) > now) {
+      updateRandomMatchesDiffersStatusJokerjoe(snap);
+      return;
+    }
+    const mode = normalizeRandomMatchesDiffersModeJokerjoe(state.randomMatchesDiffersMode);
+    const targetDigits = mode === "DIFFERS" ? (snap.leastDigits || []).slice() : (snap.otherDigits || []).slice();
+    if (!targetDigits.length) {
+      updateRandomMatchesDiffersStatusJokerjoe(snap);
+      return;
+    }
+    const signalKey = `${mode}|${snap.signalKey}`;
+    if (state.randomMatchesDiffersLastSignalKey === signalKey) {
+      updateRandomMatchesDiffersStatusJokerjoe(snap);
+      return;
+    }
+
+    state.randomMatchesDiffersBusy = true;
+    updateRandomMatchesDiffersStatusJokerjoe(snap);
+    try {
+      const result = await placeBatchManualTradesJokerjoe(mode, targetDigits);
+      if (result.placed === targetDigits.length) {
+        state.randomMatchesDiffersLastSignalKey = signalKey;
+        state.randomMatchesDiffersCooldownUntil = Date.now() + 10000;
+        safeToast(`🎲 Random ${mode}: ${targetDigits.join(", ")} fired on the same tick`, "success");
+      } else {
+        safeToast(`🎲 Random ${mode}: partial batch (${result.placed}/${targetDigits.length})`, "error");
+      }
+    } catch (e) {
+      safeToast(`🎲 Random ${mode} failed`, "error");
+    } finally {
+      state.randomMatchesDiffersBusy = false;
+      updateRandomMatchesDiffersStatusJokerjoe(snap);
+    }
+  }
+
+  function processRandomMatchesDiffersTickJokerjoe(data) {
+    pushRandomMatchesDiffersTickJokerjoe(data);
+    const snapshot = mergeRandomMatchesDiffersCold4PayloadJokerjoe(data, buildRandomMatchesDiffersSnapshotJokerjoe());
+    state.randomMatchesDiffersSnapshot = snapshot;
+    updateRandomMatchesDiffersButtonJokerjoe();
+    updateRandomMatchesDiffersStatusJokerjoe(snapshot);
+    updateRandomMatchesDiffersModalUiJokerjoe(snapshot);
+    if (!state.randomMatchesDiffersOn) return;
+    tryRandomMatchesDiffersTradeJokerjoe(snapshot);
+  }
+
+  function openRandomMatchesDiffersModalJokerjoe() {
+    const modal = getEl("randomMatchesDiffersModalJokerjoe");
+    if (!modal) return;
+    state.randomMatchesDiffersModalOpen = true;
+    modal.style.display = "flex";
+    updateRandomMatchesDiffersModalUiJokerjoe();
+  }
+
+  function closeRandomMatchesDiffersModalJokerjoe() {
+    const modal = getEl("randomMatchesDiffersModalJokerjoe");
+    if (!modal) return;
+    state.randomMatchesDiffersModalOpen = false;
+    modal.style.display = "none";
   }
 
   function getEligibleLowPctDigitsJokerjoe(percentages) {
@@ -801,6 +1052,7 @@
       aiBtn.innerText = `🤖AI AUTO-TRADING: ${on ? "ON" : "OFF"}`;
       aiBtn.style.background = on ? "#22c55e" : "#1e293b";
     }
+    updateRandomMatchesDiffersButtonJokerjoe();
     updateAdvancedAIModeButtonsJokerjoe();
   }
 
@@ -846,6 +1098,7 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
         if (data.auto_modes) state.autoModes = Object.assign({}, state.autoModes, data.auto_modes);
         if (data.auto_settings && data.auto_settings.kidgx_barrier !== undefined) state.kidgxBarrier = Number(data.auto_settings.kidgx_barrier);
         if (data.meta_brain) state.metaBrain = data.meta_brain;
+        processRandomMatchesDiffersTickJokerjoe(data);
         updateButtons();
         updateAdvancedAIModeButtonsJokerjoe(data);
         processAIAutoLowestTickJokerjoe(data);
@@ -920,6 +1173,9 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     updateMatchSniper5xButtonJokerjoe();
     updateMatchSniper5xStatusJokerjoe();
     updateAIAutoModeModalUiJokerjoe();
+    updateRandomMatchesDiffersButtonJokerjoe();
+    updateRandomMatchesDiffersStatusJokerjoe();
+    updateRandomMatchesDiffersModalUiJokerjoe();
   }
 
   async function afterLoadProfileUI() {
@@ -935,6 +1191,9 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     updateMatchSniper5xButtonJokerjoe();
     updateMatchSniper5xStatusJokerjoe();
     updateAIAutoModeModalUiJokerjoe();
+    updateRandomMatchesDiffersButtonJokerjoe();
+    updateRandomMatchesDiffersStatusJokerjoe();
+    updateRandomMatchesDiffersModalUiJokerjoe();
   }
 
   async function onActivate() {
@@ -951,6 +1210,9 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     updateMatchSniper5xButtonJokerjoe();
     updateMatchSniper5xStatusJokerjoe();
     updateAIAutoModeModalUiJokerjoe();
+    updateRandomMatchesDiffersButtonJokerjoe();
+    updateRandomMatchesDiffersStatusJokerjoe();
+    updateRandomMatchesDiffersModalUiJokerjoe();
     refreshMatchesAnalysisJokerjoe();
   }
 
@@ -1048,9 +1310,39 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     closeAIAutoModeModalJokerjoe();
   };
 
+  window.openRandomMatchesDiffersModalJokerjoe = function () {
+    openRandomMatchesDiffersModalJokerjoe();
+  };
+
+  window.closeRandomMatchesDiffersModalJokerjoe = function () {
+    closeRandomMatchesDiffersModalJokerjoe();
+  };
+
+  window.disableRandomMatchesDiffersJokerjoe = function () {
+    state.randomMatchesDiffersOn = false;
+    state.randomMatchesDiffersBusy = false;
+    updateRandomMatchesDiffersButtonJokerjoe();
+    updateRandomMatchesDiffersStatusJokerjoe();
+    updateRandomMatchesDiffersModalUiJokerjoe();
+    closeRandomMatchesDiffersModalJokerjoe();
+    safeToast("🎲 Random Matches/Differs: OFF", "error");
+  };
+
+  window.selectRandomMatchesDiffersModeJokerjoe = function (mode) {
+    state.randomMatchesDiffersMode = normalizeRandomMatchesDiffersModeJokerjoe(mode);
+    state.randomMatchesDiffersOn = true;
+    updateRandomMatchesDiffersButtonJokerjoe();
+    updateRandomMatchesDiffersStatusJokerjoe();
+    updateRandomMatchesDiffersModalUiJokerjoe();
+    closeRandomMatchesDiffersModalJokerjoe();
+    safeToast(`🎲 Random Matches/Differs: ${state.randomMatchesDiffersMode} ON`, "success");
+    tryRandomMatchesDiffersTradeJokerjoe(state.randomMatchesDiffersSnapshot || buildRandomMatchesDiffersSnapshotJokerjoe());
+  };
+
   document.addEventListener("keydown", (evt) => {
-    if (evt.key !== "Escape" || !state.aiAutoModalOpen) return;
-    closeAIAutoModeModalJokerjoe();
+    if (evt.key !== "Escape") return;
+    if (state.aiAutoModalOpen) closeAIAutoModeModalJokerjoe();
+    if (state.randomMatchesDiffersModalOpen) closeRandomMatchesDiffersModalJokerjoe();
   });
 
 
@@ -1092,6 +1384,20 @@ window.toggleKidracksAIJokerjoe = function () { return toggleAdvancedModeJokerjo
   }
   setInterval(fallbackBootstrap, 900);
   setTimeout(fallbackBootstrap, 200);
-  setInterval(() => { try { if (isActive() && (state.matchesAnalysisOn || state.matchSniperOn || state.matchSniper5xOn)) { refreshMatchesAnalysisJokerjoe(); updateMatchSniperStatusJokerjoe(); updateMatchSniper5xStatusJokerjoe(); updateAIAutoModeModalUiJokerjoe(); } } catch (e) {} }, 1000);
+  setInterval(() => {
+    try {
+      if (!isActive()) return;
+      if (state.matchesAnalysisOn || state.matchSniperOn || state.matchSniper5xOn) {
+        refreshMatchesAnalysisJokerjoe();
+        updateMatchSniperStatusJokerjoe();
+        updateMatchSniper5xStatusJokerjoe();
+        updateAIAutoModeModalUiJokerjoe();
+      }
+      if (state.randomMatchesDiffersOn || state.randomMatchesDiffersModalOpen) {
+        updateRandomMatchesDiffersStatusJokerjoe();
+        updateRandomMatchesDiffersModalUiJokerjoe();
+      }
+    } catch (e) {}
+  }, 1000);
 
 })();
