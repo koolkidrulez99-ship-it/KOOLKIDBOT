@@ -5,6 +5,7 @@ python-socketio==5.16.1
 python-engineio==4.13.1
 simple-websocket==1.1.0
 websocket-client==1.9.0
+# Persistent auth storage on Render Postgres
 psycopg2-binary
 pytest==8.3.4
 

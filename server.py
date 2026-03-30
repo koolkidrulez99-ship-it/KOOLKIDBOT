@@ -20,6 +20,11 @@ from flask_socketio import SocketIO, join_room
 from datetime import datetime, timedelta
 import logging
 from werkzeug.security import generate_password_hash, check_password_hash
+from auth_storage import (
+    find_existing_sqlite_auth_db,
+    migrate_sqlite_auth_to_postgres,
+    normalize_database_url,
+)
 
 # STRATEGIES
 from strategies.koolkid import KoolKidStrategy
@@ -120,7 +125,7 @@ app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "koolkid-secret-key-2025
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "koolkidrulez")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "Koolkid@12345")
 
-MAX_USERS = int(os.environ.get("MAX_USERS", "150"))
+MAX_USERS = int(os.environ.get("MAX_USERS", "1500"))
 
 # NOTE: keep as you had it
 socketio = SocketIO(
@@ -135,12 +140,10 @@ socketio = SocketIO(
 DERIV_WS = "wss://ws.derivws.com/websockets/v3?app_id=1089"
 
 # DATABASE FILE (SQLite fallback for laptop/local testing)
-DB_FILE = "users.db"
+DB_FILE = (os.environ.get("SQLITE_DB_PATH") or "users.db").strip() or "users.db"
 
 # Render / production Postgres (persistent users across deploys/restarts)
-DATABASE_URL = (os.environ.get("DATABASE_URL") or "").strip()
-if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = "postgresql://" + DATABASE_URL[len("postgres://"):]
+DATABASE_URL = normalize_database_url(os.environ.get("DATABASE_URL"))
 
 try:
     import psycopg2
@@ -340,124 +343,23 @@ def init_db():
 
 
 def _maybe_migrate_sqlite_users_to_postgres():
-    # One-time migration for Render deployment: import local SQLite rows if present
+    # One-time migration for Render deployment/local cutover: if an older local
+    # SQLite auth DB exists (user.db or users.db), import it into Postgres
+    # without changing the live login/register UI behavior.
     if not _db_is_postgres():
         return
-    if not os.path.exists(DB_FILE):
+    sqlite_path = find_existing_sqlite_auth_db(default_name=DB_FILE)
+    if not sqlite_path:
         return
     try:
-        sconn = sqlite3.connect(DB_FILE)
-        sconn.row_factory = sqlite3.Row
-        scur = sconn.cursor()
-        scur.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        tables = {r["name"] for r in scur.fetchall()}
-    except Exception as e:
-        logger.warning(f"SQLite -> Postgres migration skipped (open/read error): {e}")
-        try:
-            sconn.close()
-        except Exception:
-            pass
-        return
-
-    pconn = None
-    try:
-        pconn = _db_connect()
-        pcur = pconn.cursor()
-        migrated_users = migrated_lic = migrated_resets = 0
-
-        if "users" in tables:
-            scur.execute("SELECT * FROM users")
-            for r in scur.fetchall():
-                rd = dict(r)
-                try:
-                    pcur.execute(
-                        """
-                        INSERT INTO users (username, password, email, role, grandfathered, license_key, license_exempt, created_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (username) DO NOTHING
-                        """,
-                        (
-                            rd.get("username"),
-                            rd.get("password"),
-                            rd.get("email"),
-                            rd.get("role") or "user",
-                            int(rd.get("grandfathered") if rd.get("grandfathered") is not None else 1),
-                            rd.get("license_key"),
-                            int(rd.get("license_exempt") if rd.get("license_exempt") is not None else 0),
-                            rd.get("created_at") or _utc_now_str(),
-                        ),
-                    )
-                    migrated_users += max(int(getattr(pcur, "rowcount", 0) or 0), 0)
-                except Exception as e_row:
-                    logger.warning(f"SQLite->PG user migrate skip {rd.get('username')!r}: {e_row}")
-
-        if "licenses" in tables:
-            scur.execute("SELECT * FROM licenses")
-            for r in scur.fetchall():
-                rd = dict(r)
-                key = normalize_license_key(rd.get("license_key"))
-                if not key:
-                    continue
-                try:
-                    pcur.execute(
-                        """
-                        INSERT INTO licenses (license_key, license_type, status, created_at, activated_at, expires_at, used_by)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (license_key) DO NOTHING
-                        """,
-                        (
-                            key,
-                            rd.get("license_type") or "monthly",
-                            rd.get("status") or "active",
-                            rd.get("created_at") or _utc_now_str(),
-                            rd.get("activated_at"),
-                            rd.get("expires_at"),
-                            rd.get("used_by"),
-                        ),
-                    )
-                    migrated_lic += max(int(getattr(pcur, "rowcount", 0) or 0), 0)
-                except Exception as e_row:
-                    logger.warning(f"SQLite->PG license migrate skip {key!r}: {e_row}")
-
-        if "password_resets" in tables:
-            scur.execute("SELECT * FROM password_resets")
-            for r in scur.fetchall():
-                rd = dict(r)
-                if not rd.get("token_hash"):
-                    continue
-                try:
-                    pcur.execute(
-                        """
-                        INSERT INTO password_resets (username, token_hash, created_at, expires_at, used_at)
-                        VALUES (%s, %s, %s, %s, %s)
-                        ON CONFLICT (token_hash) DO NOTHING
-                        """,
-                        (
-                            rd.get("username"),
-                            rd.get("token_hash"),
-                            rd.get("created_at") or _utc_now_str(),
-                            rd.get("expires_at") or _utc_now_str(),
-                            rd.get("used_at"),
-                        ),
-                    )
-                    migrated_resets += max(int(getattr(pcur, "rowcount", 0) or 0), 0)
-                except Exception as e_row:
-                    logger.warning(f"SQLite->PG reset migrate skip: {e_row}")
-
-        pconn.commit()
-        logger.info(f"SQLite -> Postgres migration checked (users={migrated_users}, licenses={migrated_lic}, resets={migrated_resets})")
+        counts = migrate_sqlite_auth_to_postgres(sqlite_path=sqlite_path, database_url=DATABASE_URL)
+        logger.info(
+            "SQLite -> Postgres migration checked "
+            f"(source={counts.get('sqlite_path')}, users={counts.get('users')}, "
+            f"licenses={counts.get('licenses')}, resets={counts.get('password_resets')})"
+        )
     except Exception as e:
         logger.error(f"SQLite -> Postgres migration failed: {e}")
-    finally:
-        try:
-            sconn.close()
-        except Exception:
-            pass
-        try:
-            if pconn:
-                pconn.close()
-        except Exception:
-            pass
 
 
 def ensure_admin_user():
