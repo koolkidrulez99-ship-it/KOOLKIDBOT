@@ -6,6 +6,7 @@
     auto_sl: true,
     half_barrier_enabled: false,
     directional_auto_stable_profits: false,
+    directional_auto_both_trades: false,
     koolkid_reversal_enabled: false,
     koolkid_half_barrier_enabled: false,
     pollTimer: null,
@@ -417,6 +418,10 @@
     const directionalAutoStableProfits = directionalStableProfitsToggle
       ? !!directionalStableProfitsToggle.checked
       : !!state.directional_auto_stable_profits;
+    const directionalBothTradesToggle = el("unchainDirectionalBothTradesToggle");
+    const directionalAutoBothTrades = directionalBothTradesToggle
+      ? !!directionalBothTradesToggle.checked
+      : !!state.directional_auto_both_trades;
     const directionalAutoSideRaw = readText("unchainDirectionalAutoSide", "HIGHER").toUpperCase();
     const directionalAutoSide = directionalAutoSideRaw === "LOWER" ? "LOWER" : "HIGHER";
     const directionalAutoBarrierRaw = readText("unchainDirectionalAutoBarrier", directionalAutoSide === "LOWER" ? "-0.12" : "+0.12");
@@ -436,6 +441,7 @@
       directional_auto_side: directionalAutoSide,
       directional_auto_barrier: directionalAutoBarrierRaw,
       directional_auto_stable_profits: directionalAutoStableProfits,
+      directional_auto_both_trades: directionalAutoBothTrades,
       koolkid_higher_barrier: koolkidHalfBarrierEnabled ? scaleBarrierText(koolkidHigherBarrierRaw, 2, 0.06) : koolkidHigherBarrierRaw,
       koolkid_lower_barrier: koolkidHalfBarrierEnabled ? scaleBarrierText(koolkidLowerBarrierRaw, 2, -0.06) : koolkidLowerBarrierRaw,
       koolkid_sim_duration: Math.max(1, Math.min(59, readInteger("unchainKoolkidSimDuration", 15))),
@@ -556,6 +562,31 @@
     state.marketChart.history = [{ price: p, offset: 0, t: Date.now() }];
   }
 
+  function getBarrierPreviewMotionStats(history) {
+    const points = Array.isArray(history) ? history : [];
+    const moves = [];
+    for (let i = 1; i < points.length; i += 1) {
+      const prev = num(points[i - 1] && points[i - 1].price, null);
+      const next = num(points[i] && points[i].price, null);
+      if (Number.isFinite(prev) && Number.isFinite(next)) moves.push(Math.abs(next - prev));
+    }
+    const recentMoves = moves.slice(-12);
+    const avgMove = recentMoves.length
+      ? recentMoves.reduce((sum, value) => sum + value, 0) / recentMoves.length
+      : 0;
+    const latestSpan = points.length
+      ? Math.max(...points.map((point) => num(point && point.price, 0))) - Math.min(...points.map((point) => num(point && point.price, 0)))
+      : 0;
+    return {
+      avgMove,
+      span: latestSpan,
+    };
+  }
+
+  function clampChartY(y, top, bottom) {
+    return Math.max(top + 2, Math.min(bottom - 2, y));
+  }
+
   function pushBarrierChartPrice(price, symbol) {
     const p = Number(price);
     if (!Number.isFinite(p)) return;
@@ -639,11 +670,17 @@
     const latestPrice = num(history[history.length - 1] && history[history.length - 1].price, null);
     const hasActiveEntrySpot = hasActiveContract && isReasonableBaseSpot(activeEntrySpot, latestPrice);
     const symbolNow = state.marketChart.lastSymbol || (payload && payload.symbol) || null;
+    const previewStats = getBarrierPreviewMotionStats(history);
     if (hasActiveContract) {
       state.marketChart.wasActiveTrade = true;
     } else {
       const previewSymbolChanged = symbolNow && state.marketChart.previewBaseSymbol && symbolNow !== state.marketChart.previewBaseSymbol;
-      const needsPreviewReset = !Number.isFinite(num(state.marketChart.previewBasePrice, null)) || previewSymbolChanged || state.marketChart.wasActiveTrade;
+      const previewBasePrice = num(state.marketChart.previewBasePrice, null);
+      const previewDrift = Number.isFinite(previewBasePrice) && Number.isFinite(latestPrice)
+        ? Math.abs(latestPrice - previewBasePrice)
+        : 0;
+      const previewDriftFloor = Math.max(0.12, previewStats.span * 2.25, previewStats.avgMove * 12);
+      const needsPreviewReset = !Number.isFinite(previewBasePrice) || previewSymbolChanged || state.marketChart.wasActiveTrade || previewDrift > previewDriftFloor;
       if (needsPreviewReset && Number.isFinite(latestPrice)) {
         state.marketChart.previewBasePrice = latestPrice;
         state.marketChart.previewBaseSymbol = symbolNow || state.marketChart.previewBaseSymbol || state.marketChart.lastSymbol || null;
@@ -660,7 +697,14 @@
     const rangeHigh = offsets.length ? Math.max(...offsets) : 0;
     const rangeLow = offsets.length ? Math.min(...offsets) : 0;
     const rangeWidth = rangeHigh - rangeLow;
-    const rangeMax = Math.max(0.18, ...offsets.map((v) => Math.abs(v)), Math.abs(higher), Math.abs(lower), Math.abs(topBarrier), Math.abs(bottomBarrier)) * 1.18;
+    const marketAbsMax = Math.max(0.18, ...offsets.map((v) => Math.abs(v)));
+    const barrierAbsMax = Math.max(Math.abs(higher), Math.abs(lower), Math.abs(topBarrier), Math.abs(bottomBarrier));
+    let effectiveBarrierAbs = barrierAbsMax;
+    if (!hasActiveContract) {
+      const previewBarrierCap = Math.max(0.28, marketAbsMax * 2.6, rangeWidth * 2.15, previewStats.avgMove * 18);
+      effectiveBarrierAbs = Math.min(barrierAbsMax, previewBarrierCap);
+    }
+    const rangeMax = Math.max(0.18, marketAbsMax, effectiveBarrierAbs) * 1.18;
     const toY = (value) => top + (rangeMax - value) / (rangeMax * 2) * chartH;
     const toX = (index) => left + (history.length <= 1 ? chartW : (index / (history.length - 1)) * chartW);
     const polyline = offsets.map((value, index) => `${toX(index).toFixed(1)},${toY(value).toFixed(1)}`).join(" ");
@@ -670,12 +714,12 @@
       return `<line x1="${left}" y1="${y.toFixed(1)}" x2="${right}" y2="${y.toFixed(1)}" stroke="rgba(148,163,184,${value === 0 ? 0.28 : 0.12})" stroke-width="${value === 0 ? 1.4 : 1}" stroke-dasharray="${value === 0 ? "0" : "5 6"}"></line><text x="${right - 4}" y="${(y - 6).toFixed(1)}" text-anchor="end" fill="#64748b" font-size="10">${formatBarrierNumber(value)}</text>`;
     }).join("");
 
-    const higherY = toY(higher);
-    const lowerY = toY(lower);
+    const higherY = clampChartY(toY(higher), top, bottom);
+    const lowerY = clampChartY(toY(lower), top, bottom);
     const zoneTopOffset = topBarrier;
     const zoneBottomOffset = bottomBarrier;
-    const zoneTopY = toY(zoneTopOffset);
-    const zoneBottomY = toY(zoneBottomOffset);
+    const zoneTopY = clampChartY(toY(zoneTopOffset), top, bottom);
+    const zoneBottomY = clampChartY(toY(zoneBottomOffset), top, bottom);
     const lineColor = currentOffset >= 0 ? "#38bdf8" : "#c084fc";
     const direction = offsets.length > 1 ? (offsets[offsets.length - 1] - offsets[Math.max(0, offsets.length - 2)]) : 0;
 
@@ -732,11 +776,11 @@
     }
 
     const latestX = toX(history.length - 1);
-    const latestY = toY(currentOffset);
+    const latestY = clampChartY(toY(currentOffset), top, bottom);
     const areaPath = `${left},${bottom} ${polyline} ${right},${bottom}`;
     const arrow = direction >= 0 ? "▲" : "▼";
-    const rangeHighY = toY(rangeHigh);
-    const rangeLowY = toY(rangeLow);
+    const rangeHighY = clampChartY(toY(rangeHigh), top, bottom);
+    const rangeLowY = clampChartY(toY(rangeLow), top, bottom);
     const middleLabelY = Math.max(top + 12, Math.min(bottom - 8, ((zoneTopY + zoneBottomY) / 2 + 4)));
 
     svg.innerHTML = `
@@ -833,6 +877,15 @@
     if (label) label.innerText = state.directional_auto_stable_profits ? "ON" : "OFF";
   }
 
+  function applyDirectionalBothTradesToggle() {
+    const wrap = el("unchainDirectionalBothTradesWrap");
+    const input = el("unchainDirectionalBothTradesToggle");
+    const label = el("unchainDirectionalBothTradesState");
+    if (input) input.checked = !!state.directional_auto_both_trades;
+    if (wrap) wrap.classList.toggle("is-on", !!state.directional_auto_both_trades);
+    if (label) label.innerText = state.directional_auto_both_trades ? "ON" : "OFF";
+  }
+
   function applyAutoConfidenceLabel() {
     const slider = el("unchainAutoConfidence");
     const label = el("unchainAutoConfidenceValue");
@@ -873,6 +926,7 @@
     state.koolkid_reversal_enabled = !!un.koolkid_reversal_enabled;
     state.koolkid_half_barrier_enabled = !!un.koolkid_half_barrier_enabled;
     state.directional_auto_stable_profits = !!un.directional_auto_stable_profits;
+    state.directional_auto_both_trades = !!un.directional_auto_both_trades;
     if (barrierOnly) {
       setFieldValue("unchainHigherBarrier", getDisplayedBarrierText(un.higher_barrier || "+0.12", 0.12, halfEnabled), true);
       setFieldValue("unchainLowerBarrier", getDisplayedBarrierText(un.lower_barrier || "-0.12", -0.12, halfEnabled), true);
@@ -916,6 +970,7 @@
     applyKoolkidReversalToggle();
     applyKoolkidHalfBarrierToggle();
     applyDirectionalStableProfitsToggle();
+    applyDirectionalBothTradesToggle();
     applyAutoConfidenceLabel();
   }
 
@@ -1108,6 +1163,25 @@
     });
   }
 
+  function bindDirectionalBothTradesToggle() {
+    const input = el("unchainDirectionalBothTradesToggle");
+    if (!input || input.dataset.unchainBound === "1") return;
+    input.dataset.unchainBound = "1";
+    input.addEventListener("change", async () => {
+      const previous = !!state.directional_auto_both_trades;
+      state.directional_auto_both_trades = !!input.checked;
+      applyDirectionalBothTradesToggle();
+      const r = await saveSettings(false);
+      if (!(r && r.ok)) {
+        const fallbackPayload = state.lastPayload && (state.lastPayload.unchain || state.lastPayload);
+        state.directional_auto_both_trades = fallbackPayload && typeof fallbackPayload.directional_auto_both_trades !== "undefined"
+          ? !!fallbackPayload.directional_auto_both_trades
+          : previous;
+        applyDirectionalBothTradesToggle();
+      }
+    });
+  }
+
   function renderStatusChip(un, payload) {
     const chip = el("unchainStatusChip");
     if (!chip) return;
@@ -1245,6 +1319,7 @@
     const threshold = Number((data && data.threshold) || 60);
     const cooldown = Math.max(0, Number((data && data.cooldown_remaining) || 0));
     const stableEnabled = !!((data && data.stable_profits_enabled) || (un && un.directional_auto_stable_profits));
+    const bothTradesEnabled = !!((data && data.both_trades_enabled) || (un && un.directional_auto_both_trades));
     const reducedNextTrade = !!((data && data.reduced_next_trade) || (un && un.directional_auto_reduce_next_stake));
     const reason = String((data && data.last_reason) || "Directional auto is OFF.");
 
@@ -1255,14 +1330,14 @@
       btn.style.background = enabled ? "#1d4ed8" : "#2563eb";
       btn.style.color = "#fff";
     }
-    if (summary) summary.innerText = `${side} • ${barrier}`;
+    if (summary) summary.innerText = `${side} • ${barrier}${bothTradesEnabled ? " • BOTH" : ""}`;
     if (meta) {
       if (!enabled) {
         meta.innerText = "Directional auto is OFF.";
       } else if (status === "COOLDOWN") {
-        meta.innerText = `Directional auto cooldown ${cooldown.toFixed(1)}s • ${side} • barrier ${barrier}${stableEnabled ? " • stable profits ON" : ""} • ${reason}`;
+        meta.innerText = `Directional auto cooldown ${cooldown.toFixed(1)}s • ${side} • barrier ${barrier}${bothTradesEnabled ? " • both trades ON" : ""}${stableEnabled ? " • stable profits ON" : ""} • ${reason}`;
       } else {
-        meta.innerText = `Directional auto ${side} • barrier ${barrier} • move ${movementPct.toFixed(0)}% • sim ${simulationWinRate.toFixed(0)}% • confidence ${finalConfidence.toFixed(0)}% / ${threshold.toFixed(0)}%${stableEnabled ? " • stable profits ON" : ""}${reducedNextTrade ? " • next trade 10% stake" : ""} • ${reason}`;
+        meta.innerText = `Directional auto ${side} • barrier ${barrier} • move ${movementPct.toFixed(0)}% • sim ${simulationWinRate.toFixed(0)}% • confidence ${finalConfidence.toFixed(0)}% / ${threshold.toFixed(0)}%${bothTradesEnabled ? " • both trades ON" : ""}${stableEnabled ? " • stable profits ON" : ""}${reducedNextTrade ? " • next trade 10% stake" : ""} • ${reason}`;
       }
     }
   }
@@ -2508,11 +2583,13 @@
     applyKoolkidReversalToggle();
     applyKoolkidHalfBarrierToggle();
     applyDirectionalStableProfitsToggle();
+    applyDirectionalBothTradesToggle();
     applyAutoConfidenceLabel();
     bindHalfBarrierToggle();
     bindKoolkidReversalToggle();
     bindKoolkidHalfBarrierToggle();
     bindDirectionalStableProfitsToggle();
+    bindDirectionalBothTradesToggle();
     bindKoolkidModal();
     bindMarketBarrierPersistence();
   }

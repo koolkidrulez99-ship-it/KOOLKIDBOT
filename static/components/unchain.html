@@ -1669,7 +1669,7 @@
             </div>
           </div>
         </div>
-        <div style="margin-top:10px;display:flex;justify-content:flex-start;">
+        <div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-start;">
           <label id="unchainDirectionalStableProfitsWrap" class="unchain-inline-toggle unchain-inline-toggle--compact" for="unchainDirectionalStableProfitsToggle">
             <span class="unchain-inline-toggle__text">STABLE PROFITS</span>
             <span class="unchain-inline-toggle__control">
@@ -1678,6 +1678,16 @@
                 <span class="unchain-inline-toggle__thumb"></span>
               </span>
               <span id="unchainDirectionalStableProfitsState" class="unchain-inline-toggle__state">OFF</span>
+            </span>
+          </label>
+          <label id="unchainDirectionalBothTradesWrap" class="unchain-inline-toggle unchain-inline-toggle--compact" for="unchainDirectionalBothTradesToggle">
+            <span class="unchain-inline-toggle__text">BOTH TRADES</span>
+            <span class="unchain-inline-toggle__control">
+              <input id="unchainDirectionalBothTradesToggle" class="unchain-inline-toggle__input" type="checkbox" role="switch" aria-label="Directional auto both trades toggle">
+              <span class="unchain-inline-toggle__track" aria-hidden="true">
+                <span class="unchain-inline-toggle__thumb"></span>
+              </span>
+              <span id="unchainDirectionalBothTradesState" class="unchain-inline-toggle__state">OFF</span>
             </span>
           </label>
         </div>
