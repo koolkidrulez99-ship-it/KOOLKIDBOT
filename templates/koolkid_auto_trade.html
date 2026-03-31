@@ -179,6 +179,13 @@
     .status-box .line-1{display:flex;align-items:center;gap:10px;font-size:16px;font-weight:800;margin-bottom:6px}
     .status-box .line-1::before{content:">";color:#6ed9ff;font-weight:900}
     .status-box .line-2{color:#cfe0fb;line-height:1.5;font-size:14px}
+    .prediction-panel .predict-grid,.prediction-panel .predict-breakdown{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+    .prediction-panel .predict-breakdown{grid-template-columns:repeat(5,minmax(0,1fr));margin-top:12px}
+    .prediction-box{border-radius:14px;padding:11px 12px;background:rgba(8,18,31,.9);border:1px solid rgba(99,126,171,.16)}
+    .prediction-box .label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+    .prediction-box .value{margin-top:6px;font-size:18px;font-weight:900;color:#f5fbff}
+    .prediction-summary{margin-top:12px;border-radius:14px;padding:12px 13px;background:rgba(8,18,31,.78);border:1px solid rgba(95,150,255,.10);color:#d8e6ff;line-height:1.5}
+    .prediction-meta{margin-top:8px;color:var(--muted);font-size:12px}
     .summary-grid{margin-top:14px;display:grid;grid-template-columns:1fr 1fr;gap:12px;position:relative;z-index:1}
     .summary-box{border-radius:16px;padding:14px;background:rgba(8,18,31,.88)}
     .summary-box .label{color:#c9dbf7;font-size:12px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px}
@@ -225,7 +232,7 @@
     .footer-ribbon .gold{color:#ffd17e}
     .hidden{display:none !important}
     @media (max-width: 1380px){.main-grid{grid-template-columns:320px 1fr 300px}.scanner-card-grid{grid-template-columns:repeat(3, minmax(0, 1fr))}.stake-grid{grid-template-columns:repeat(2, minmax(0, 1fr))}.best-grid{grid-template-columns:1fr}.confidence-orb{width:150px;height:150px}}
-    @media (max-width: 1120px){.topbar{grid-template-columns:1fr;justify-items:start}.hero{text-align:left}.status-stack{justify-content:flex-start;max-width:none}.main-grid{grid-template-columns:1fr}.scanner-card-grid{grid-template-columns:repeat(2, minmax(0, 1fr))}.history-stats{grid-template-columns:repeat(2, minmax(0, 1fr))}.confidence-orb-wrap{grid-template-columns:1fr}.stake-side-shell .stake-grid{grid-template-columns:repeat(2, minmax(0, 1fr))}}
+    @media (max-width: 1120px){.topbar{grid-template-columns:1fr;justify-items:start}.hero{text-align:left}.status-stack{justify-content:flex-start;max-width:none}.main-grid{grid-template-columns:1fr}.scanner-card-grid{grid-template-columns:repeat(2, minmax(0, 1fr))}.history-stats{grid-template-columns:repeat(2, minmax(0, 1fr))}.confidence-orb-wrap{grid-template-columns:1fr}.stake-side-shell .stake-grid{grid-template-columns:repeat(2, minmax(0, 1fr))}.prediction-panel .predict-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.prediction-panel .predict-breakdown{grid-template-columns:repeat(3,minmax(0,1fr))}}
     @media (max-width: 760px){
       body{height:auto;overflow:auto}
       .page{max-width:430px;min-height:100vh;height:auto;padding:18px 14px 28px}
@@ -302,6 +309,8 @@
       .session-card .label{font-size:10px}
       .session-card .value{font-size:17px;white-space:normal}
       .status-box,.live-panel .summary-grid{display:none}
+      .prediction-panel .predict-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+      .prediction-panel .predict-breakdown{grid-template-columns:repeat(2,minmax(0,1fr))}
       .mobile-live-history{display:block;margin-top:12px}
       .mobile-live-history .history-stats{grid-template-columns:repeat(4, minmax(0, 1fr));gap:8px;margin-bottom:10px}
       .mobile-live-history .mini-box{padding:10px 6px;border-radius:14px}
@@ -518,6 +527,24 @@
             <div class="summary-box"><div class="label">Active Button</div><div class="value" id="autoSessionStrategyValueMirror">-</div></div>
             <div class="summary-box"><div class="label">Wins</div><div class="value" id="autoSessionWinsValue">0</div></div>
             <div class="summary-box"><div class="label">Losses</div><div class="value" id="autoSessionLossesValue">0</div></div>
+          </div>
+        </div>
+        <div class="panel prediction-panel">
+          <div class="section-head"><div class="section-title">Higher / Lower Prediction</div><div class="session-live" id="autoSessionPredictionConfidence">Skip</div></div>
+          <div class="predict-grid">
+            <div class="prediction-box"><div class="label">Higher %</div><div class="value green" id="autoSessionPredictionHigher">50.0%</div></div>
+            <div class="prediction-box"><div class="label">Lower %</div><div class="value red" id="autoSessionPredictionLower">50.0%</div></div>
+            <div class="prediction-box"><div class="label">Action</div><div class="value" id="autoSessionPredictionAction">Skip</div></div>
+            <div class="prediction-box"><div class="label">Gap</div><div class="value" id="autoSessionPredictionGap">0.0%</div></div>
+          </div>
+          <div class="prediction-summary" id="autoSessionPredictionSummary">Waiting for enough market history to build the Higher / Lower prediction.</div>
+          <div class="prediction-meta" id="autoSessionPredictionMeta">Source: -- | Duration: -- | Horizon: --</div>
+          <div class="predict-breakdown">
+            <div class="prediction-box"><div class="label">Simulation</div><div class="value" id="autoSessionPredictionSimulation">H 50 / L 50</div></div>
+            <div class="prediction-box"><div class="label">Direction</div><div class="value" id="autoSessionPredictionDirection">H 50 / L 50</div></div>
+            <div class="prediction-box"><div class="label">Strength</div><div class="value" id="autoSessionPredictionStrength">H 50 / L 50</div></div>
+            <div class="prediction-box"><div class="label">Persistence</div><div class="value" id="autoSessionPredictionPersistence">H 50 / L 50</div></div>
+            <div class="prediction-box"><div class="label">Market Quality</div><div class="value" id="autoSessionPredictionQuality">H 50 / L 50</div></div>
           </div>
         </div>
         <div class="panel trade-history mobile-trade-history-panel">

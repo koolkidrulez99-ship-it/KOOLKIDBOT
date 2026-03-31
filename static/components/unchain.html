@@ -1128,6 +1128,286 @@
     .unchain-profile .unchain-scanner-footer-note strong{
       color:#fbbf24;
     }
+    .unchain-profile .unchain-analysis-panel{
+      position:relative;
+      overflow:hidden;
+      border-radius:17px;
+      padding:12px 14px 13px;
+      border:1px solid rgba(77,104,160,0.34);
+      background:
+        radial-gradient(75% 90% at 86% 62%, rgba(58,248,152,0.18), transparent 52%),
+        radial-gradient(48% 74% at 18% 18%, rgba(56,189,248,0.09), transparent 58%),
+        linear-gradient(180deg, rgba(11,18,32,0.98), rgba(5,10,22,0.96));
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,0.03),
+        inset 0 0 48px rgba(30,41,59,0.34),
+        0 0 0 1px rgba(13,18,33,0.82),
+        0 14px 40px rgba(2,6,23,0.38);
+      --analysis-accent:#56f17d;
+      --analysis-accent-soft:rgba(86,241,125,0.18);
+      --analysis-panel-border:rgba(92,234,135,0.32);
+      --analysis-primary-start:#30df68;
+      --analysis-primary-end:#1ca54a;
+      --analysis-primary-text:#d9ffe4;
+      --analysis-secondary-border:rgba(136,153,186,0.34);
+      --analysis-secondary-bg:linear-gradient(180deg, rgba(28,37,57,0.86), rgba(12,18,33,0.82));
+    }
+    .unchain-profile .unchain-analysis-panel::before{
+      content:"";
+      position:absolute;
+      left:14px;
+      right:14px;
+      top:8px;
+      height:1px;
+      background:linear-gradient(90deg, transparent 0%, rgba(84,255,176,0.56) 10%, rgba(113,179,255,0.16) 45%, rgba(84,255,176,0.56) 100%);
+      opacity:.78;
+    }
+    .unchain-profile .unchain-analysis-panel::after{
+      content:"";
+      position:absolute;
+      inset:0;
+      background:
+        radial-gradient(circle at 82% 64%, var(--analysis-accent-soft) 0%, transparent 30%),
+        radial-gradient(circle at 78% 70%, rgba(255,255,255,0.10) 0 1px, transparent 1px) 0 0 / 11px 11px;
+      opacity:.62;
+      pointer-events:none;
+    }
+    .unchain-profile .unchain-analysis-panel.is-lower{
+      --analysis-accent:#ff613c;
+      --analysis-accent-soft:rgba(255,97,60,0.18);
+      --analysis-panel-border:rgba(255,103,86,0.34);
+      --analysis-primary-start:#ff7048;
+      --analysis-primary-end:#cf3f24;
+      --analysis-primary-text:#fff0eb;
+      border-color:var(--analysis-panel-border);
+      background:
+        radial-gradient(75% 90% at 86% 62%, rgba(255,97,60,0.18), transparent 52%),
+        radial-gradient(48% 74% at 18% 18%, rgba(255,90,54,0.08), transparent 58%),
+        linear-gradient(180deg, rgba(11,18,32,0.98), rgba(7,10,22,0.97));
+    }
+    .unchain-profile .unchain-analysis-panel.is-skip{
+      --analysis-accent:#8aa0c5;
+      --analysis-accent-soft:rgba(138,160,197,0.12);
+      --analysis-panel-border:rgba(112,127,155,0.28);
+      --analysis-primary-start:#445064;
+      --analysis-primary-end:#2b3344;
+      --analysis-primary-text:#d3dced;
+      border-color:var(--analysis-panel-border);
+    }
+    .unchain-profile .unchain-analysis-panel.is-skip::after{
+      opacity:.42;
+    }
+    .unchain-profile .unchain-analysis-shell{
+      position:relative;
+      z-index:1;
+      display:grid;
+      gap:8px;
+    }
+    .unchain-profile .unchain-analysis-header{
+      display:flex;
+      align-items:center;
+      gap:7px;
+      font-size:10px;
+      font-weight:900;
+      letter-spacing:.06em;
+      text-transform:uppercase;
+      color:var(--analysis-accent);
+      text-shadow:0 0 14px color-mix(in srgb, var(--analysis-accent) 60%, transparent);
+    }
+    .unchain-profile .unchain-analysis-header-icon{
+      font-size:15px;
+      line-height:1;
+      filter:drop-shadow(0 0 10px color-mix(in srgb, var(--analysis-accent) 60%, transparent));
+    }
+    .unchain-profile .unchain-analysis-divider{
+      height:1px;
+      background:linear-gradient(90deg, rgba(255,255,255,0.02), rgba(255,255,255,0.10), rgba(255,255,255,0.02));
+      opacity:.78;
+    }
+    .unchain-profile .unchain-analysis-hero{
+      display:grid;
+      grid-template-columns:minmax(0,1fr) auto;
+      gap:8px;
+      align-items:center;
+    }
+    .unchain-profile .unchain-analysis-direction{
+      display:flex;
+      align-items:center;
+      gap:8px;
+      min-width:0;
+    }
+    .unchain-profile .unchain-analysis-direction-icon{
+      font-size:30px;
+      font-weight:900;
+      color:var(--analysis-accent);
+      line-height:.82;
+      text-shadow:0 0 18px color-mix(in srgb, var(--analysis-accent) 78%, transparent);
+      flex:0 0 auto;
+    }
+    .unchain-profile .unchain-analysis-direction-label{
+      font-size:2.1rem;
+      line-height:.88;
+      font-weight:1000;
+      letter-spacing:.02em;
+      color:var(--analysis-accent);
+      text-shadow:
+        0 0 18px color-mix(in srgb, var(--analysis-accent) 55%, transparent),
+        0 0 28px color-mix(in srgb, var(--analysis-accent) 18%, transparent);
+    }
+    .unchain-profile .unchain-analysis-score{
+      display:grid;
+      justify-items:end;
+      align-items:center;
+      gap:1px;
+      min-width:106px;
+    }
+    .unchain-profile .unchain-analysis-score-main{
+      display:flex;
+      align-items:flex-end;
+      gap:6px;
+      line-height:.88;
+      color:var(--analysis-accent);
+    }
+    .unchain-profile .unchain-analysis-score-value{
+      font-size:2.25rem;
+      font-weight:1000;
+      text-shadow:0 0 18px color-mix(in srgb, var(--analysis-accent) 52%, transparent);
+    }
+    .unchain-profile .unchain-analysis-score-confidence{
+      font-size:.78rem;
+      font-weight:900;
+      letter-spacing:.04em;
+      text-transform:uppercase;
+      transform:translateY(-5px);
+      opacity:.96;
+    }
+    .unchain-profile .unchain-analysis-duration{
+      font-size:9px;
+      font-weight:800;
+      letter-spacing:.14em;
+      text-transform:uppercase;
+      color:rgba(217,226,241,0.66);
+    }
+    .unchain-profile .unchain-analysis-lead{
+      margin:0;
+      font-size:12px;
+      color:#d3dceb;
+      line-height:1.32;
+    }
+    .unchain-profile .unchain-analysis-reason{
+      margin:0;
+      font-size:11.5px;
+      color:var(--analysis-accent);
+      line-height:1.3;
+      text-shadow:0 0 14px color-mix(in srgb, var(--analysis-accent) 28%, transparent);
+    }
+    .unchain-profile .unchain-analysis-meter{
+      display:grid;
+      gap:4px;
+    }
+    .unchain-profile .unchain-analysis-meter-track{
+      position:relative;
+      height:9px;
+      border-radius:999px;
+      overflow:hidden;
+      border:1px solid rgba(255,255,255,0.09);
+      background:
+        linear-gradient(180deg, rgba(12,19,34,0.92), rgba(11,15,29,0.92)),
+        rgba(7,10,18,0.9);
+      box-shadow:
+        inset 0 0 0 1px rgba(255,255,255,0.02),
+        inset 0 2px 12px rgba(2,6,23,0.86);
+    }
+    .unchain-profile .unchain-analysis-meter-track::after{
+      content:"";
+      position:absolute;
+      right:8px;
+      top:50%;
+      width:6px;
+      height:6px;
+      border-radius:999px;
+      background:color-mix(in srgb, var(--analysis-accent) 66%, #fff 34%);
+      box-shadow:0 0 12px color-mix(in srgb, var(--analysis-accent) 74%, transparent);
+      transform:translateY(-50%);
+      opacity:.82;
+    }
+    .unchain-profile .unchain-analysis-meter-fill{
+      position:absolute;
+      inset:0 auto 0 0;
+      width:50%;
+      border-radius:inherit;
+      background:
+        linear-gradient(90deg,
+          color-mix(in srgb, var(--analysis-accent) 90%, #ffffff 10%) 0%,
+          color-mix(in srgb, var(--analysis-accent) 85%, #ccffdd 15%) 72%,
+          color-mix(in srgb, var(--analysis-accent) 75%, #08111f 25%) 100%);
+      box-shadow:
+        0 0 24px color-mix(in srgb, var(--analysis-accent) 52%, transparent),
+        inset 0 0 10px rgba(255,255,255,0.16);
+    }
+    .unchain-profile .unchain-analysis-meter-fill::after{
+      content:"";
+      position:absolute;
+      inset:0;
+      background:linear-gradient(180deg, rgba(255,255,255,0.28), rgba(255,255,255,0.02));
+      mix-blend-mode:screen;
+      opacity:.74;
+    }
+    .unchain-profile .unchain-analysis-meter-value{
+      justify-self:end;
+      font-size:.78rem;
+      line-height:1;
+      font-weight:1000;
+      color:var(--analysis-accent);
+      text-shadow:0 0 14px color-mix(in srgb, var(--analysis-accent) 48%, transparent);
+      margin-right:4px;
+    }
+    .unchain-profile .unchain-analysis-actions{
+      display:grid;
+      grid-template-columns:minmax(0,1fr);
+      gap:0;
+      align-items:stretch;
+      margin-top:0;
+    }
+    .unchain-profile .unchain-analysis-btn{
+      min-height:38px;
+      border-radius:4px;
+      border:1px solid rgba(255,255,255,0.18);
+      font-size:.82rem;
+      font-weight:1000;
+      letter-spacing:.02em;
+      text-transform:uppercase;
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,0.12),
+        0 0 0 1px rgba(4,8,18,0.42);
+      transition:transform .16s ease, box-shadow .16s ease, opacity .16s ease;
+    }
+    .unchain-profile .unchain-analysis-btn:hover:not(:disabled){
+      transform:translateY(-1px);
+    }
+    .unchain-profile .unchain-analysis-btn--primary{
+      background:linear-gradient(180deg, color-mix(in srgb, var(--analysis-primary-start) 96%, #fff 4%), var(--analysis-primary-end));
+      color:var(--analysis-primary-text);
+      border-color:color-mix(in srgb, var(--analysis-accent) 50%, rgba(255,255,255,0.24));
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,0.18),
+        0 0 20px color-mix(in srgb, var(--analysis-accent) 28%, transparent),
+        0 0 0 1px rgba(4,8,18,0.42);
+    }
+    .unchain-profile .unchain-analysis-btn--secondary{
+      background:var(--analysis-secondary-bg);
+      border-color:var(--analysis-secondary-border);
+      color:#aeb8cc;
+    }
+    .unchain-profile .unchain-analysis-btn:disabled{
+      cursor:not-allowed;
+      opacity:.62;
+      filter:saturate(.66);
+      transform:none;
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,0.08),
+        0 0 0 1px rgba(4,8,18,0.32);
+    }
 
     @media (max-width: 980px){
       .unchain-profile .unchain-grid{grid-template-columns:1fr 1fr;}
@@ -1141,6 +1421,12 @@
       .unchain-profile .unchain-market-chart-footer{align-items:flex-start;}
       .unchain-profile .unchain-scanner-stats{grid-template-columns:1fr 1fr;}
       .unchain-profile .unchain-koolkid-top-grid{grid-template-columns:repeat(3,minmax(0,1fr));}
+      .unchain-profile .unchain-analysis-direction-label{
+        font-size:1.95rem;
+      }
+      .unchain-profile .unchain-analysis-score-value{
+        font-size:2rem;
+      }
     }
 
     @media (max-width: 700px){
@@ -1378,6 +1664,52 @@
         display:grid;
         grid-template-columns:1fr;
         gap:8px;
+      }
+      .unchain-profile .unchain-analysis-panel{
+        padding:11px 12px 12px;
+        border-radius:15px;
+      }
+      .unchain-profile .unchain-analysis-panel::before{
+        left:12px;
+        right:12px;
+      }
+      .unchain-profile .unchain-analysis-hero{
+        grid-template-columns:1fr;
+        gap:8px;
+      }
+      .unchain-profile .unchain-analysis-score{
+        justify-items:start;
+        min-width:0;
+      }
+      .unchain-profile .unchain-analysis-score-main{
+        gap:6px;
+      }
+      .unchain-profile .unchain-analysis-direction{
+        gap:7px;
+      }
+      .unchain-profile .unchain-analysis-direction-icon{
+        font-size:24px;
+      }
+      .unchain-profile .unchain-analysis-direction-label{
+        font-size:1.55rem;
+      }
+      .unchain-profile .unchain-analysis-score-value{
+        font-size:1.75rem;
+      }
+      .unchain-profile .unchain-analysis-score-confidence{
+        font-size:.72rem;
+        transform:none;
+      }
+      .unchain-profile .unchain-analysis-lead,
+      .unchain-profile .unchain-analysis-reason{
+        font-size:11px;
+      }
+      .unchain-profile .unchain-analysis-actions{
+        grid-template-columns:1fr;
+        gap:0;
+      }
+      .unchain-profile .unchain-analysis-btn{
+        min-height:34px;
       }
     }
   </style>
@@ -1621,6 +1953,40 @@
         <div style="margin-top:12px;display:flex;justify-content:flex-start;">
           <button data-action="unchain-refresh-barriers" style="background:#0f766e;color:#ecfeff;min-width:170px;">Refresh Barrier</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card unchain-analysis-panel is-higher" id="unchainPredictionCard">
+    <div class="unchain-analysis-shell">
+      <div class="unchain-analysis-header">
+        <span id="unchainPredictionHeaderIcon" class="unchain-analysis-header-icon">⚡</span>
+        <span>AUTO ANALYSIS</span>
+      </div>
+      <div class="unchain-analysis-divider"></div>
+      <div class="unchain-analysis-hero">
+        <div class="unchain-analysis-direction">
+          <div id="unchainPredictionDirectionIcon" class="unchain-analysis-direction-icon">↑</div>
+          <div id="unchainPredictionDirection" class="unchain-analysis-direction-label">HIGHER</div>
+        </div>
+        <div class="unchain-analysis-score">
+          <div id="unchainPredictionDuration" class="unchain-analysis-duration">5T</div>
+          <div class="unchain-analysis-score-main">
+            <span id="unchainPredictionDominantPct" class="unchain-analysis-score-value">50%</span>
+            <span id="unchainPredictionConfidence" class="unchain-analysis-score-confidence">WEAK</span>
+          </div>
+        </div>
+      </div>
+      <p id="unchainPredictionLead" class="unchain-analysis-lead">Waiting for enough ticks to estimate the better Higher or Lower move for your selected duration.</p>
+      <p id="unchainPredictionSummary" class="unchain-analysis-reason">Trend building • Simulation warming up • Waiting for cleaner movement</p>
+      <div class="unchain-analysis-meter">
+        <div class="unchain-analysis-meter-track">
+          <div id="unchainPredictionBarFill" class="unchain-analysis-meter-fill" style="width:50%;"></div>
+        </div>
+        <div id="unchainPredictionBarValue" class="unchain-analysis-meter-value">50%</div>
+      </div>
+      <div class="unchain-analysis-actions">
+        <button id="unchainPredictionPrimaryAction" class="unchain-analysis-btn unchain-analysis-btn--primary" data-action="unchain-trade-higher">TAKE HIGHER</button>
       </div>
     </div>
   </div>

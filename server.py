@@ -70,6 +70,7 @@ from strategies.auto_session import (
     start_auto_session,
     stop_auto_session,
 )
+from strategies.higher_lower_predictor import predict_higher_lower_percentages
 from strategies.market_moment import infer_simulation_winner, score_market_moment
 try:
     import strategies.unchain as _unchain_module
@@ -1017,6 +1018,9 @@ def _build_default_client_state():
         "current_symbol": "R_10",
         "human_symbol": "R_10",
         "tick_subs": {},
+        # Track UNCHAIN open-contract subscription ids so we can forget them
+        # once a trade settles instead of letting old subscriptions pile up.
+        "open_contract_subs": {},
         # ==================== PATCH 1B: seqvix state ====================
         "seqvix": {
             "KOOLKID": {
@@ -2596,6 +2600,42 @@ def _normalize_contract_id(contract_id):
     return s
 
 
+def _get_open_contract_sub_map(state):
+    subs = state.setdefault("open_contract_subs", {})
+    if not isinstance(subs, dict):
+        subs = {}
+        state["open_contract_subs"] = subs
+    return subs
+
+
+def _remember_unchain_open_contract_subscription(state, contract_id, subscription_id):
+    norm = _normalize_contract_id(contract_id)
+    if not norm or subscription_id in (None, ""):
+        return None
+    subs = _get_open_contract_sub_map(state)
+    subs[norm] = str(subscription_id)
+    return subs[norm]
+
+
+def _forget_unchain_open_contract_subscription(state, contract_id, subscription_id=None):
+    subs = _get_open_contract_sub_map(state)
+    norm = _normalize_contract_id(contract_id)
+    sub_id = None
+    if norm:
+        sub_id = subs.pop(norm, None)
+    if sub_id is None and subscription_id not in (None, ""):
+        sub_id = str(subscription_id)
+    if not sub_id:
+        return False
+    ws = state.get("ws")
+    if state.get("ws_connected") and ws:
+        try:
+            ws.send(json.dumps({"forget": sub_id}))
+        except Exception:
+            pass
+    return True
+
+
 def _peek_contract_meta(state, contract_id):
     meta_map = state.get("contract_meta") or {}
     norm = _normalize_contract_id(contract_id)
@@ -3245,6 +3285,7 @@ def _finalize_unchain_contract(state, contract, meta=None):
     u = _ensure_unchain_hl_state(state)
     contract_id = contract.get("contract_id")
     active_entry = _remove_unchain_active_contract(state, contract_id) or {}
+    _forget_unchain_open_contract_subscription(state, contract_id)
     meta = meta or {}
     profit = float(contract.get("profit", 0) or 0)
     result = "WIN" if profit > 0 else "LOSS"
@@ -5214,6 +5255,53 @@ def _get_unchain_bias_payload(state, u=None):
     except Exception:
         pass
     return bias_payload
+
+
+def _get_higher_lower_prediction_series(state, market_symbol):
+    symbol = str(market_symbol or state.get("current_symbol") or "").upper().strip()
+    if not symbol:
+        return "", [], [], "unknown"
+
+    current_symbol = str(state.get("current_symbol") or "").upper().strip()
+    strat = ((state or {}).get("strategies") or {}).get("UNCHAIN")
+    if symbol == current_symbol and strat is not None:
+        prices = []
+        tick_times = []
+        try:
+            prices = list(getattr(strat, "price_history", []) or [])
+        except Exception:
+            prices = []
+        try:
+            tick_times = list(getattr(strat, "tick_time_history", []) or [])
+        except Exception:
+            tick_times = []
+        if prices:
+            return symbol, prices, tick_times, "live"
+
+    scan = _ensure_unchain_scanner(state)
+    buffer = (scan.get("buffers") or {}).get(symbol)
+    if isinstance(buffer, deque):
+        return symbol, list(buffer), [], "scanner"
+    if isinstance(buffer, list):
+        return symbol, list(buffer), [], "scanner"
+    return symbol, [], [], "unknown"
+
+
+def _build_higher_lower_prediction_payload(state, market_symbol, duration, duration_unit, barrier_value=None):
+    # Keep server.py thin: it only selects the best available market series and
+    # delegates all scoring math to the reusable predictor module.
+    symbol, prices, tick_times, source = _get_higher_lower_prediction_series(state, market_symbol)
+    payload = predict_higher_lower_percentages(
+        market_symbol=symbol,
+        duration=duration,
+        duration_unit=duration_unit,
+        prices=prices,
+        tick_times=tick_times,
+        barrier_value=barrier_value,
+    )
+    payload["source"] = source
+    payload["available_ticks"] = int(len(list(prices or [])))
+    return payload
 
 
 def _compute_unchain_auto_metrics(state, u=None):
@@ -7250,6 +7338,91 @@ def _send_unchain_hl_trade(
         return False, str(e)
 
 
+def _apply_unchain_settings_update(state, data):
+    u = _ensure_unchain_hl_state(state)
+    if "higher_stake" in data:
+        u["higher_stake"] = max(0.35, float(data.get("higher_stake") or 0.35))
+        if "lower_stake" not in data:
+            u["lower_stake"] = u["higher_stake"]
+    if "lower_stake" in data:
+        u["lower_stake"] = max(0.35, float(data.get("lower_stake") or 0.35))
+    if "higher_barrier" in data:
+        u["higher_barrier"] = str(data.get("higher_barrier") or "+0.12").strip()
+    if "lower_barrier" in data:
+        u["lower_barrier"] = str(data.get("lower_barrier") or "-0.12").strip()
+    if "koolkid_higher_barrier" in data:
+        u["koolkid_higher_barrier"] = str(data.get("koolkid_higher_barrier") or "").strip()
+    if "koolkid_lower_barrier" in data:
+        u["koolkid_lower_barrier"] = str(data.get("koolkid_lower_barrier") or "").strip()
+    if "koolkid_sim_duration_unit" in data:
+        u["koolkid_sim_duration_unit"] = _clean_koolkid_duration_unit(data.get("koolkid_sim_duration_unit"))
+    if "koolkid_sim_duration" in data:
+        u["koolkid_sim_duration"] = _sanitize_koolkid_duration(
+            data.get("koolkid_sim_duration") or 15,
+            u.get("koolkid_sim_duration_unit", "s"),
+            kind="sim",
+        )
+    if "koolkid_live_duration_unit" in data:
+        u["koolkid_live_duration_unit"] = _clean_koolkid_duration_unit(data.get("koolkid_live_duration_unit"))
+    if "koolkid_live_duration" in data:
+        u["koolkid_live_duration"] = _sanitize_koolkid_duration(
+            data.get("koolkid_live_duration") or 5,
+            u.get("koolkid_live_duration_unit", "t"),
+            kind="live",
+        )
+    if "koolkid_hl_loss_trigger_pct" in data:
+        u["koolkid_hl_loss_trigger_pct"] = max(50, min(70, int(float(data.get("koolkid_hl_loss_trigger_pct") or 50))))
+    if "koolkid_hl_sim_side" in data:
+        u["koolkid_hl_sim_side"] = _clean_koolkid_hl_sim_side(data.get("koolkid_hl_sim_side"))
+    if "koolkid_reversal_enabled" in data:
+        u["koolkid_reversal_enabled"] = bool(data.get("koolkid_reversal_enabled"))
+    if "koolkid_half_barrier_enabled" in data:
+        u["koolkid_half_barrier_enabled"] = bool(data.get("koolkid_half_barrier_enabled"))
+    if "duration_unit" in data:
+        u["duration_unit"] = _clean_unchain_duration_unit(data.get("duration_unit"))
+    if "duration" in data or "duration_unit" in data:
+        active_unit = _clean_unchain_duration_unit(u.get("duration_unit", "t"))
+        raw_duration = data.get("duration", u.get("duration", 5))
+        u["duration"] = _sanitize_unchain_duration(raw_duration, active_unit)
+    if "directional_auto_side" in data:
+        u["directional_auto_side"] = _clean_unchain_directional_auto_side(data.get("directional_auto_side"))
+    if "directional_auto_stable_profits" in data:
+        enabled = bool(data.get("directional_auto_stable_profits"))
+        u["directional_auto_stable_profits"] = enabled
+        if not enabled:
+            u["directional_auto_win_streak"] = 0
+            u["directional_auto_reduce_next_stake"] = False
+    if "directional_auto_both_trades" in data:
+        u["directional_auto_both_trades"] = bool(data.get("directional_auto_both_trades"))
+    if "directional_auto_barrier" in data or "directional_auto_side" in data or "duration_unit" in data:
+        active_unit = _clean_unchain_duration_unit(u.get("duration_unit", "t"))
+        fallback_directional_barrier = _get_unchain_visible_barrier(u, u.get("directional_auto_side", "HIGHER"), active_unit)
+        raw_directional_barrier = data.get("directional_auto_barrier", u.get("directional_auto_barrier", fallback_directional_barrier))
+        u["directional_auto_barrier"] = _format_unchain_directional_auto_barrier(
+            raw_directional_barrier,
+            u.get("directional_auto_side", "HIGHER"),
+            active_unit,
+            fallback=fallback_directional_barrier,
+        )
+    if "tp" in data:
+        u["tp"] = max(0.0, float(data.get("tp") or 0))
+    if "sl" in data:
+        u["sl"] = max(0.0, float(data.get("sl") or 0))
+    if "auto_sl" in data:
+        u["auto_sl"] = bool(data.get("auto_sl"))
+    if "half_barrier_enabled" in data:
+        u["half_barrier_enabled"] = bool(data.get("half_barrier_enabled"))
+    if "auto_start_threshold" in data:
+        u["auto_start_threshold"] = max(45.0, min(80.0, float(data.get("auto_start_threshold") or 48.0)))
+    if "auto_min_movement" in data:
+        u["auto_min_movement"] = max(0.00001, float(data.get("auto_min_movement") or 0.06))
+    if "auto_min_tick_speed" in data:
+        u["auto_min_tick_speed"] = max(0.05, min(10.0, float(data.get("auto_min_tick_speed") or 2.4)))
+    if "auto_min_range" in data:
+        u["auto_min_range"] = max(0.00001, float(data.get("auto_min_range") or 0.12))
+    return u
+
+
 def _send_unchain_buy(client_id, *, stake, symbol, growth_rate, mode="AUTO", exit_ticks=5):
     state = clients.get(client_id)
     if not state:
@@ -8934,14 +9107,21 @@ def handle_on_message(client_id, ws, message, expected_nonce):
             # UNCHAIN live open-contract updates
             try:
                 cid_val = contract.get("contract_id")
+                sub_info = data.get("subscription") or {}
+                sub_id = sub_info.get("id")
                 meta_for_contract = _peek_contract_meta(state, cid_val)
                 unchain_known = _is_unchain_contract_known(state, cid_val, meta=meta_for_contract)
                 is_processed = _is_unchain_contract_processed(state, cid_val)
                 is_settled_fast = _is_contract_settled_fast(contract)
+                if unchain_known and sub_id not in (None, ""):
+                    _remember_unchain_open_contract_subscription(state, cid_val, sub_id)
                 # If user manually cleared active trades, ignore non-settled stream updates
                 # so they do not pop back into the active list.
                 if unchain_known and (not is_processed) and (not is_settled_fast):
                     _upsert_unchain_active_contract(state, cid_val, meta=meta_for_contract, contract=contract, status="OPEN")
+                elif unchain_known and is_processed:
+                    _remove_unchain_active_contract(state, cid_val)
+                    _forget_unchain_open_contract_subscription(state, cid_val, subscription_id=sub_id)
                 un = (state.get("strategies") or {}).get("UNCHAIN")
                 if un and hasattr(un, "on_open_contract") and (not is_processed):
                     if ((meta_for_contract and (meta_for_contract.get("profile") or "").upper() == "UNCHAIN" and str(meta_for_contract.get("type") or "").upper() == "ACCU")
@@ -9110,6 +9290,7 @@ def process_contract(client_id, contract):
         if _is_unchain_contract_processed(state, contract_id):
             _remove_unchain_active_contract(state, contract_id)
             _pull_contract_meta(state, contract_id)
+            _forget_unchain_open_contract_subscription(state, contract_id)
             if state.get("active_profile") == "UNCHAIN":
                 socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
             return
@@ -10644,89 +10825,9 @@ def unchain_settings_route():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
     cid, state = get_client_state()
-    u = _ensure_unchain_hl_state(state)
     data = request.json or {}
     try:
-        if "higher_stake" in data:
-            u["higher_stake"] = max(0.35, float(data.get("higher_stake") or 0.35))
-            if "lower_stake" not in data:
-                u["lower_stake"] = u["higher_stake"]
-        if "lower_stake" in data:
-            u["lower_stake"] = max(0.35, float(data.get("lower_stake") or 0.35))
-        if "higher_barrier" in data:
-            u["higher_barrier"] = str(data.get("higher_barrier") or "+0.12").strip()
-        if "lower_barrier" in data:
-            u["lower_barrier"] = str(data.get("lower_barrier") or "-0.12").strip()
-        if "koolkid_higher_barrier" in data:
-            u["koolkid_higher_barrier"] = str(data.get("koolkid_higher_barrier") or "").strip()
-        if "koolkid_lower_barrier" in data:
-            u["koolkid_lower_barrier"] = str(data.get("koolkid_lower_barrier") or "").strip()
-        if "koolkid_sim_duration_unit" in data:
-            u["koolkid_sim_duration_unit"] = _clean_koolkid_duration_unit(data.get("koolkid_sim_duration_unit"))
-        if "koolkid_sim_duration" in data:
-            u["koolkid_sim_duration"] = _sanitize_koolkid_duration(
-                data.get("koolkid_sim_duration") or 15,
-                u.get("koolkid_sim_duration_unit", "s"),
-                kind="sim",
-            )
-        if "koolkid_live_duration_unit" in data:
-            u["koolkid_live_duration_unit"] = _clean_koolkid_duration_unit(data.get("koolkid_live_duration_unit"))
-        if "koolkid_live_duration" in data:
-            u["koolkid_live_duration"] = _sanitize_koolkid_duration(
-                data.get("koolkid_live_duration") or 5,
-                u.get("koolkid_live_duration_unit", "t"),
-                kind="live",
-            )
-        if "koolkid_hl_loss_trigger_pct" in data:
-            u["koolkid_hl_loss_trigger_pct"] = max(50, min(70, int(float(data.get("koolkid_hl_loss_trigger_pct") or 50))))
-        if "koolkid_hl_sim_side" in data:
-            u["koolkid_hl_sim_side"] = _clean_koolkid_hl_sim_side(data.get("koolkid_hl_sim_side"))
-        if "koolkid_reversal_enabled" in data:
-            u["koolkid_reversal_enabled"] = bool(data.get("koolkid_reversal_enabled"))
-        if "koolkid_half_barrier_enabled" in data:
-            u["koolkid_half_barrier_enabled"] = bool(data.get("koolkid_half_barrier_enabled"))
-        if "duration_unit" in data:
-            u["duration_unit"] = _clean_unchain_duration_unit(data.get("duration_unit"))
-        if "duration" in data or "duration_unit" in data:
-            active_unit = _clean_unchain_duration_unit(u.get("duration_unit", "t"))
-            raw_duration = data.get("duration", u.get("duration", 5))
-            u["duration"] = _sanitize_unchain_duration(raw_duration, active_unit)
-        if "directional_auto_side" in data:
-            u["directional_auto_side"] = _clean_unchain_directional_auto_side(data.get("directional_auto_side"))
-        if "directional_auto_stable_profits" in data:
-            enabled = bool(data.get("directional_auto_stable_profits"))
-            u["directional_auto_stable_profits"] = enabled
-            if not enabled:
-                u["directional_auto_win_streak"] = 0
-                u["directional_auto_reduce_next_stake"] = False
-        if "directional_auto_both_trades" in data:
-            u["directional_auto_both_trades"] = bool(data.get("directional_auto_both_trades"))
-        if "directional_auto_barrier" in data or "directional_auto_side" in data or "duration_unit" in data:
-            active_unit = _clean_unchain_duration_unit(u.get("duration_unit", "t"))
-            fallback_directional_barrier = _get_unchain_visible_barrier(u, u.get("directional_auto_side", "HIGHER"), active_unit)
-            raw_directional_barrier = data.get("directional_auto_barrier", u.get("directional_auto_barrier", fallback_directional_barrier))
-            u["directional_auto_barrier"] = _format_unchain_directional_auto_barrier(
-                raw_directional_barrier,
-                u.get("directional_auto_side", "HIGHER"),
-                active_unit,
-                fallback=fallback_directional_barrier,
-            )
-        if "tp" in data:
-            u["tp"] = max(0.0, float(data.get("tp") or 0))
-        if "sl" in data:
-            u["sl"] = max(0.0, float(data.get("sl") or 0))
-        if "auto_sl" in data:
-            u["auto_sl"] = bool(data.get("auto_sl"))
-        if "half_barrier_enabled" in data:
-            u["half_barrier_enabled"] = bool(data.get("half_barrier_enabled"))
-        if "auto_start_threshold" in data:
-            u["auto_start_threshold"] = max(45.0, min(80.0, float(data.get("auto_start_threshold") or 48.0)))
-        if "auto_min_movement" in data:
-            u["auto_min_movement"] = max(0.00001, float(data.get("auto_min_movement") or 0.06))
-        if "auto_min_tick_speed" in data:
-            u["auto_min_tick_speed"] = max(0.05, min(10.0, float(data.get("auto_min_tick_speed") or 2.4)))
-        if "auto_min_range" in data:
-            u["auto_min_range"] = max(0.00001, float(data.get("auto_min_range") or 0.12))
+        u = _apply_unchain_settings_update(state, data)
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 400
     u["last_action"] = "UNCHAIN settings saved"
@@ -10762,8 +10863,14 @@ def unchain_trade_route():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
     cid, state = get_client_state()
-    u = _ensure_unchain_hl_state(state)
     data = request.json or {}
+    try:
+        u = _apply_unchain_settings_update(state, data)
+    except Exception as e:
+        payload = _unchain_payload_response(state)
+        if state.get("active_profile") == "UNCHAIN":
+            socketio.emit("unchain_status", payload, room=cid)
+        return jsonify({"status": "error", "message": str(e), "payload": payload, "placed": []}), 400
     side = str(data.get("side") or "").upper()
     symbol = data.get("symbol") or state.get("current_symbol", "R_25")
     duration = data.get("duration", u.get("duration", 5))
@@ -10791,7 +10898,7 @@ def unchain_trade_route():
             return jsonify({"status": "error", "message": balance_msg, "payload": payload, "placed": []}), 400
         plan = normalized_plan
     placed = []
-    for trade_side, stake, barrier in plan:
+    for index, (trade_side, stake, barrier) in enumerate(plan):
         ok, msg = _send_unchain_hl_trade(
             cid,
             side=trade_side,
@@ -10807,6 +10914,8 @@ def unchain_trade_route():
                 socketio.emit("unchain_status", payload, room=cid)
             return jsonify({"status": "error", "message": msg, "payload": payload, "placed": placed}), 400
         placed.append(trade_side)
+        if side == "BOTH" and index < (len(plan) - 1):
+            time.sleep(0.12)
     u["last_action"] = f"Sent {' + '.join(placed)} on {symbol}"
     payload = _unchain_payload_response(state)
     if state.get("active_profile") == "UNCHAIN":
@@ -10838,6 +10947,35 @@ def unchain_expected_profit_route():
         duration_unit=duration_unit,
     )
     return jsonify({"status": "success", "preview": preview})
+
+
+@app.route("/higher_lower_prediction", methods=["POST"])
+def higher_lower_prediction_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    _cid, state = get_client_state()
+    data = request.json or {}
+    u = _ensure_unchain_hl_state(state)
+    symbol = data.get("symbol") or state.get("current_symbol", "R_25")
+    duration = data.get("duration", u.get("duration", 5))
+    duration_unit = _clean_unchain_duration_unit(data.get("duration_unit", u.get("duration_unit", "t")))
+    barrier_value = data.get("barrier")
+    requested_side = str(data.get("side") or "").upper().strip()
+    if barrier_value in (None, ""):
+        if requested_side == "HIGHER":
+            barrier_value = u.get("higher_barrier", "+0.12")
+        elif requested_side == "LOWER":
+            barrier_value = u.get("lower_barrier", "-0.12")
+
+    payload = _build_higher_lower_prediction_payload(
+        state,
+        market_symbol=symbol,
+        duration=duration,
+        duration_unit=duration_unit,
+        barrier_value=barrier_value,
+    )
+    return jsonify(payload), (200 if payload.get("status") == "success" else 400)
 
 
 def _toggle_unchain_auto(cid, state, data):
@@ -11251,6 +11389,10 @@ def unchain_clear_active_route():
                 pass
             try:
                 _pull_contract_meta(state, contract_id)
+            except Exception:
+                pass
+            try:
+                _forget_unchain_open_contract_subscription(state, contract_id)
             except Exception:
                 pass
         u["active_contracts"] = {}

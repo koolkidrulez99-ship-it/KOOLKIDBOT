@@ -1714,11 +1714,15 @@ function formatTradeDurationLabel(trade){
 function resolveMergedTradeResult(base, next, merged){
     const nextResult = String((next && next.result) || "").trim();
     const nextStatus = String((next && next.status) || "").trim();
+    const prior = normalizeTradeResultLabel(base && base.result, (base && base.status) || (merged && merged.status));
     if(nextResult){
-        return normalizeTradeResultLabel(nextResult, nextStatus);
+        const normalizedNext = normalizeTradeResultLabel(nextResult, nextStatus);
+        if(!isTradeResultPending(prior) && isTradeResultPending(normalizedNext)){
+            return prior;
+        }
+        return normalizedNext;
     }
 
-    const prior = normalizeTradeResultLabel(base && base.result, (base && base.status) || (merged && merged.status));
     if(nextStatus){
         const byStatus = normalizeTradeResultLabel(nextStatus, nextStatus);
         if(!isTradeResultPending(byStatus)) return byStatus;

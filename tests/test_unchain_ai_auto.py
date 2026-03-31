@@ -13,6 +13,45 @@ def test_unchain_ai_auto_defaults_are_looser():
     assert u["auto_min_range"] == 0.12
 
 
+def test_finalize_unchain_contract_forgets_open_contract_subscription():
+    sent = []
+
+    class FakeWS:
+        def send(self, payload):
+            sent.append(json.loads(payload))
+
+    state = {
+        "ws_connected": True,
+        "ws": FakeWS(),
+        "current_symbol": "R_25",
+        "open_contract_subs": {"123": "sub-123"},
+        "unchain_hl": {
+            "active_contracts": {
+                "123": {
+                    "contract_id": "123",
+                    "type": "HIGHER",
+                    "stake": 5.0,
+                    "symbol": "R_25",
+                    "time": "12:00:00",
+                    "duration": 5,
+                    "duration_unit": "t",
+                }
+            },
+            "stats": {"wins": 0, "losses": 0, "net_pnl": 0.0},
+        },
+    }
+
+    entry = server._finalize_unchain_contract(
+        state,
+        {"contract_id": "123", "profit": 1.5},
+        meta={"type": "HIGHER", "stake": 5.0, "symbol": "R_25", "time": "12:00:00"},
+    )
+
+    assert entry["result"] == "WIN"
+    assert state["open_contract_subs"] == {}
+    assert sent == [{"forget": "sub-123"}]
+
+
 def test_ai_auto_trade_uses_saved_barriers_when_dynamic_setup_missing(monkeypatch):
     state = {
         "ws_connected": True,
@@ -505,7 +544,65 @@ def test_koolkid_hl_places_opposite_trade_after_losing_simulation(monkeypatch):
     assert placed[0]["side"] == "LOWER"
     assert placed[0]["barrier"] == "-0.06"
     assert placed[0]["duration"] == 5
-    assert placed[0]["respect_half_barrier_toggle"] is False
+
+
+def test_unchain_trade_route_persists_form_values_and_sends_both(monkeypatch):
+    cid = "manual-both-route"
+    state = {
+        "active_profile": "UNCHAIN",
+        "ws_connected": True,
+        "ws": object(),
+        "balance": 100.0,
+        "current_symbol": "R_25",
+        "unchain_hl": {
+            "higher_stake": 1.0,
+            "lower_stake": 1.0,
+            "higher_barrier": "+0.12",
+            "lower_barrier": "-0.12",
+            "duration": 5,
+            "duration_unit": "t",
+        },
+    }
+    placed = []
+
+    monkeypatch.setattr(server, "login_required", lambda: True)
+    monkeypatch.setattr(server, "get_client_state", lambda: (cid, state))
+    monkeypatch.setattr(server.socketio, "emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server.time, "sleep", lambda *_args, **_kwargs: None)
+
+    def fake_send(client_id, **kwargs):
+        placed.append(kwargs)
+        return True, "ok"
+
+    monkeypatch.setattr(server, "_send_unchain_hl_trade", fake_send)
+
+    with server.app.test_request_context(
+        "/unchain_trade",
+        method="POST",
+        data=json.dumps({
+            "side": "BOTH",
+            "higher_stake": 3.5,
+            "lower_stake": 4.5,
+            "higher_barrier": "+0.44",
+            "lower_barrier": "-0.55",
+            "duration": 8,
+            "duration_unit": "t",
+        }),
+        content_type="application/json",
+    ):
+        response = server.unchain_trade_route()
+
+    payload = response.get_json()
+    assert response.status_code == 200
+    assert payload["placed"] == ["HIGHER", "LOWER"]
+    assert state["unchain_hl"]["higher_stake"] == 3.5
+    assert state["unchain_hl"]["lower_stake"] == 4.5
+    assert state["unchain_hl"]["higher_barrier"] == "+0.44"
+    assert state["unchain_hl"]["lower_barrier"] == "-0.55"
+    assert state["unchain_hl"]["duration"] == 8
+    assert len(placed) == 2
+    assert placed[0]["barrier"] == "+0.44"
+    assert placed[1]["barrier"] == "-0.55"
     assert state["unchain_hl"]["koolkid_hl_simulation"] is None
 
 

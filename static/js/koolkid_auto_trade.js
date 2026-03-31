@@ -78,13 +78,28 @@
     historyLossesMobile: document.getElementById('autoTradeHistoryLossesMobile'),
     historyWinRateMobile: document.getElementById('autoTradeHistoryWinRateMobile'),
     historyNetPnlMobile: document.getElementById('autoTradeHistoryNetPnlMobile'),
-    historyBodyMobile: document.getElementById('autoTradeHistoryBodyMobile')
+    historyBodyMobile: document.getElementById('autoTradeHistoryBodyMobile'),
+    predictionConfidence: document.getElementById('autoSessionPredictionConfidence'),
+    predictionHigher: document.getElementById('autoSessionPredictionHigher'),
+    predictionLower: document.getElementById('autoSessionPredictionLower'),
+    predictionAction: document.getElementById('autoSessionPredictionAction'),
+    predictionGap: document.getElementById('autoSessionPredictionGap'),
+    predictionSummary: document.getElementById('autoSessionPredictionSummary'),
+    predictionMeta: document.getElementById('autoSessionPredictionMeta'),
+    predictionSimulation: document.getElementById('autoSessionPredictionSimulation'),
+    predictionDirection: document.getElementById('autoSessionPredictionDirection'),
+    predictionStrength: document.getElementById('autoSessionPredictionStrength'),
+    predictionPersistence: document.getElementById('autoSessionPredictionPersistence'),
+    predictionQuality: document.getElementById('autoSessionPredictionQuality')
   };
 
   const runtime = {
     lastStatus: initialStatus || {},
     chartTick: 0,
-    mobileHistorySwipeOn: true
+    mobileHistorySwipeOn: true,
+    predictionTimer: null,
+    predictionSignature: '',
+    predictionLoading: false
   };
 
   const draftConfig = {
@@ -302,6 +317,131 @@
     if (refs.historyBodyMobile) refs.historyBodyMobile.innerHTML = historyMarkup;
   }
 
+  function predictionBreakdownText(section) {
+    const higher = Number(section && section.higher_score);
+    const lower = Number(section && section.lower_score);
+    const higherText = Number.isFinite(higher) ? higher.toFixed(0) : '?';
+    const lowerText = Number.isFinite(lower) ? lower.toFixed(0) : '?';
+    return 'H ' + higherText + ' / L ' + lowerText;
+  }
+
+  function inferPredictionDuration(status) {
+    const history = status && status.koolkid_dashboard && Array.isArray(status.koolkid_dashboard.history)
+      ? status.koolkid_dashboard.history
+      : [];
+    const latestTimedRow = history.find(function (row) {
+      return row && row.duration !== undefined && row.duration !== null && row.duration !== '';
+    });
+    if (latestTimedRow) {
+      return {
+        duration: Number(latestTimedRow.duration || 5) || 5,
+        duration_unit: String(latestTimedRow.duration_unit || 't').toLowerCase()
+      };
+    }
+    return { duration: 5, duration_unit: 't' };
+  }
+
+  function buildPredictionRequest(status) {
+    const durationInfo = inferPredictionDuration(status || {});
+    const activeMarket = String((status && status.active_market) || '');
+    const fallbackMarket = Array.isArray(status && status.scan_markets) && status.scan_markets.length
+      ? String(status.scan_markets[0] || '')
+      : (marketUniverse[0] || '');
+    return {
+      symbol: activeMarket || fallbackMarket,
+      duration: durationInfo.duration,
+      duration_unit: durationInfo.duration_unit
+    };
+  }
+
+  function renderPrediction(prediction) {
+    const data = prediction && typeof prediction === 'object' ? prediction : {};
+    const ok = String(data.status || '').toLowerCase() === 'success';
+    const higher = Number.isFinite(Number(data.higher_pct)) ? Number(data.higher_pct) : 50;
+    const lower = Number.isFinite(Number(data.lower_pct)) ? Number(data.lower_pct) : 50;
+    const confidence = String(data.confidence_label || 'Skip');
+    const action = String(data.suggested_action || 'Skip');
+    const gap = Number.isFinite(Number(data.gap)) ? Number(data.gap) : Math.abs(higher - lower);
+    const summary = String(data.reasoning_summary || data.message || 'Waiting for enough market history to build the Higher / Lower prediction.');
+    const source = String(data.source || '--').toUpperCase();
+    const durationText = data.duration != null ? String(data.duration) + String(data.duration_unit || '').toUpperCase() : '--';
+    const horizon = Number.isFinite(Number(data.horizon_ticks)) ? String(Number(data.horizon_ticks)) + ' ticks' : '--';
+    const breakdown = data && typeof data.score_breakdown === 'object' ? data.score_breakdown : {};
+
+    if (refs.predictionHigher) refs.predictionHigher.textContent = higher.toFixed(1) + '%';
+    if (refs.predictionLower) refs.predictionLower.textContent = lower.toFixed(1) + '%';
+    if (refs.predictionAction) refs.predictionAction.textContent = action;
+    if (refs.predictionGap) refs.predictionGap.textContent = gap.toFixed(1) + '%';
+    if (refs.predictionSummary) refs.predictionSummary.textContent = summary;
+    if (refs.predictionMeta) refs.predictionMeta.textContent = 'Source: ' + source + ' | Duration: ' + durationText + ' | Horizon: ' + horizon;
+    if (refs.predictionSimulation) refs.predictionSimulation.textContent = predictionBreakdownText(breakdown.simulation);
+    if (refs.predictionDirection) refs.predictionDirection.textContent = predictionBreakdownText(breakdown.direction);
+    if (refs.predictionStrength) refs.predictionStrength.textContent = predictionBreakdownText(breakdown.strength);
+    if (refs.predictionPersistence) refs.predictionPersistence.textContent = predictionBreakdownText(breakdown.persistence);
+    if (refs.predictionQuality) refs.predictionQuality.textContent = predictionBreakdownText(breakdown.market_quality);
+    if (refs.predictionConfidence) {
+      refs.predictionConfidence.textContent = confidence;
+      refs.predictionConfidence.classList.remove('connected', 'disconnected');
+      refs.predictionConfidence.style.background = confidence === 'Strong'
+        ? 'rgba(78, 221, 145, .18)'
+        : confidence === 'Good'
+        ? 'rgba(89, 193, 255, .18)'
+        : confidence === 'Weak'
+        ? 'rgba(245, 166, 35, .18)'
+        : 'rgba(127, 143, 175, .18)';
+      refs.predictionConfidence.style.color = confidence === 'Strong'
+        ? '#9bf6bc'
+        : confidence === 'Good'
+        ? '#9ad8ff'
+        : confidence === 'Weak'
+        ? '#ffd18a'
+        : '#dce9ff';
+    }
+    if (refs.predictionAction) {
+      refs.predictionAction.classList.remove('green', 'red');
+      if (action.indexOf('Higher') !== -1) refs.predictionAction.classList.add('green');
+      else if (action.indexOf('Lower') !== -1) refs.predictionAction.classList.add('red');
+    }
+    if (refs.predictionSummary) refs.predictionSummary.style.color = ok ? '#d8e6ff' : '#f5b4bb';
+  }
+
+  async function refreshPrediction(status) {
+    const payload = buildPredictionRequest(status || runtime.lastStatus || {});
+    if (!payload.symbol || runtime.predictionLoading) {
+      renderPrediction({ status: 'error', message: 'Waiting for a market to analyze.' });
+      return;
+    }
+    const signature = JSON.stringify(payload);
+    runtime.predictionSignature = signature;
+    runtime.predictionLoading = true;
+    try {
+      const response = await fetch('/higher_lower_prediction', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await response.json();
+      if (signature !== runtime.predictionSignature) return;
+      renderPrediction(data || null);
+    } catch (_err) {
+      renderPrediction({ status: 'error', message: 'Could not load Higher / Lower prediction right now.' });
+    } finally {
+      runtime.predictionLoading = false;
+    }
+  }
+
+  function schedulePrediction(status, delay) {
+    if (runtime.predictionTimer) {
+      window.clearTimeout(runtime.predictionTimer);
+      runtime.predictionTimer = null;
+    }
+    const snapshot = status || runtime.lastStatus || {};
+    runtime.predictionTimer = window.setTimeout(function () {
+      refreshPrediction(snapshot);
+    }, Math.max(100, Number(delay || 220)));
+  }
+
   function renderScanner(status) {
     if (!refs.scannerCards) return;
     const active = String(status.active_market || '');
@@ -469,6 +609,7 @@
     renderScanner(status || {});
     updateStakeGuide(status || {});
     if (status && status.koolkid_dashboard) renderHistory(status.koolkid_dashboard);
+    schedulePrediction(status || {}, 140);
   }
 
   function tickClock() {

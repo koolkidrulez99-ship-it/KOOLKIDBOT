@@ -16,6 +16,8 @@
     koolkidPanelOpen: false,
     dirtyFields: new Set(),
     isSaving: false,
+    tradeRequestInFlight: false,
+    tradeRequestSide: null,
     marketChart: {
       history: [],
       basePrice: null,
@@ -36,6 +38,9 @@
     expectedProfitTimer: null,
     expectedProfitSignature: "",
     expectedProfitLoading: false,
+    predictionTimer: null,
+    predictionSignature: "",
+    predictionLoading: false,
   };
 
   const FORM_FIELDS = [
@@ -1410,6 +1415,181 @@
     }, Math.max(60, Number(delay || 180)));
   }
 
+  function predictionBreakdownText(section) {
+    const higher = Number(section && section.higher_score);
+    const lower = Number(section && section.lower_score);
+    const higherText = Number.isFinite(higher) ? higher.toFixed(0) : "?";
+    const lowerText = Number.isFinite(lower) ? lower.toFixed(0) : "?";
+    return `H ${higherText} / L ${lowerText}`;
+  }
+
+  function formatPredictionDurationLabel(duration, unit) {
+    const raw = duration == null || duration === "" ? "--" : duration;
+    const normalizedUnit = String(unit || "t").toLowerCase();
+    const count = Number(raw);
+    const safeRaw = Number.isFinite(count) ? (Number.isInteger(count) ? String(count) : String(count)) : String(raw);
+    const singular = {
+      t: "tick",
+      s: "second",
+      m: "minute",
+      h: "hour",
+    };
+    const plural = {
+      t: "ticks",
+      s: "seconds",
+      m: "minutes",
+      h: "hours",
+    };
+    const short = {
+      t: "T",
+      s: "S",
+      m: "M",
+      h: "H",
+    };
+    const word = Number.isFinite(count) && Math.abs(count) === 1
+      ? (singular[normalizedUnit] || "tick")
+      : (plural[normalizedUnit] || "ticks");
+    return {
+      compact: `${safeRaw}${short[normalizedUnit] || "T"}`,
+      words: `${safeRaw} ${word}`,
+    };
+  }
+
+  function getPredictionDominantSide(higher, lower) {
+    return Number(higher) >= Number(lower) ? "HIGHER" : "LOWER";
+  }
+
+  function getPredictionReasons(data, dominantSide) {
+    const sideKey = dominantSide === "HIGHER" ? "higher_score" : "lower_score";
+    const otherKey = dominantSide === "HIGHER" ? "lower_score" : "higher_score";
+    const breakdown = data && typeof data.score_breakdown === "object" ? data.score_breakdown : {};
+    const direction = Number(breakdown.direction && breakdown.direction[sideKey]);
+    const strength = Number(breakdown.strength && breakdown.strength[sideKey]);
+    const simulation = Number(breakdown.simulation && breakdown.simulation[sideKey]);
+    const simulationOpposite = Number(breakdown.simulation && breakdown.simulation[otherKey]);
+    const quality = Number(breakdown.market_quality && breakdown.market_quality[sideKey]);
+
+    let trendText = "Trend mixed";
+    if (Number.isFinite(direction) && Number.isFinite(strength)) {
+      if (direction >= 72 || strength >= 72) {
+        trendText = dominantSide === "HIGHER" ? "Trend strong" : "Trend heavy";
+      } else if (direction >= 60 || strength >= 58) {
+        trendText = dominantSide === "HIGHER" ? "Trend leaning up" : "Trend leaning down";
+      } else if (direction >= 52) {
+        trendText = "Trend forming";
+      }
+    }
+
+    let simulationText = "Sim mixed";
+    if (Number.isFinite(simulation)) {
+      const simGap = simulation - (Number.isFinite(simulationOpposite) ? simulationOpposite : 50);
+      if (simulation >= 63 || simGap >= 10) {
+        simulationText = "Sim agrees";
+      } else if (simulation >= 56 || simGap >= 5) {
+        simulationText = "Sim leaning";
+      }
+    }
+
+    let qualityText = "Choppy movement";
+    if (Number.isFinite(quality) && Number.isFinite(strength)) {
+      if (quality >= 72) {
+        qualityText = dominantSide === "LOWER" && strength >= 64 ? "Sharp drop" : "Clean movement";
+      } else if (quality >= 58) {
+        qualityText = dominantSide === "LOWER" && strength >= 58 ? "Readable drop" : "Readable flow";
+      } else if (quality < 42) {
+        qualityText = "Messy tape";
+      }
+    }
+
+    return `${trendText} • ${simulationText} • ${qualityText}`;
+  }
+
+  function renderHigherLowerPrediction(prediction) {
+    const data = prediction && typeof prediction === "object" ? prediction : {};
+    const higher = Number.isFinite(Number(data.higher_pct)) ? Number(data.higher_pct) : 50;
+    const lower = Number.isFinite(Number(data.lower_pct)) ? Number(data.lower_pct) : 50;
+    const status = String(data.status || "");
+    const action = String(data.suggested_action || "Skip");
+    const confidence = String(data.confidence_label || "Skip").toUpperCase();
+    const durationMeta = formatPredictionDurationLabel(data.duration, data.duration_unit);
+    const dominantSide = getPredictionDominantSide(higher, lower);
+    const dominantPct = dominantSide === "HIGHER" ? higher : lower;
+    const card = el("unchainPredictionCard");
+    const primary = el("unchainPredictionPrimaryAction");
+    const summary = String(data.reasoning_summary || data.message || "Waiting for enough ticks to build the Higher / Lower prediction for your selected duration.");
+    const hasSuccess = status.toLowerCase() === "success";
+    const cardClass = hasSuccess ? (dominantSide === "HIGHER" ? "is-higher" : "is-lower") : "is-skip";
+    const lead = hasSuccess
+      ? `Next ${durationMeta.words} predicted to finish ${dominantSide === "HIGHER" ? "higher" : "lower"} than current.`
+      : "Waiting for enough ticks to estimate the better Higher or Lower move for your selected duration.";
+    const reasonLine = hasSuccess ? getPredictionReasons(data, dominantSide) : "Trend building • Simulation warming up • Waiting for cleaner movement";
+    const actionable = hasSuccess && ((dominantSide === "HIGHER" && action === "Take Higher") || (dominantSide === "LOWER" && action === "Take Lower"));
+
+    if (card) card.className = `card unchain-analysis-panel ${cardClass}`;
+    setText("unchainPredictionHeaderIcon", dominantSide === "LOWER" && hasSuccess ? "⚡" : "⚡");
+    setText("unchainPredictionDirectionIcon", hasSuccess ? (dominantSide === "HIGHER" ? "↑" : "↓") : "•");
+    setText("unchainPredictionDirection", hasSuccess ? dominantSide : "SCANNING");
+    setText("unchainPredictionDuration", durationMeta.compact);
+    setText("unchainPredictionDominantPct", `${dominantPct.toFixed(0)}%`);
+    setText("unchainPredictionConfidence", hasSuccess ? `〈${confidence}〉` : "〈WAIT〉");
+    setText("unchainPredictionLead", lead);
+    setText("unchainPredictionSummary", hasSuccess
+      ? (actionable ? reasonLine : `${reasonLine} • Edge still too close to trust`)
+      : summary);
+    setText("unchainPredictionBarValue", `${dominantPct.toFixed(0)}%`);
+
+    const bar = el("unchainPredictionBarFill");
+    if (bar) bar.style.width = `${Math.max(8, Math.min(100, dominantPct))}%`;
+
+    if (primary) {
+      primary.innerText = actionable
+        ? (dominantSide === "HIGHER" ? "TAKE HIGHER" : "TAKE LOWER")
+        : (dominantSide === "HIGHER" ? "WATCH HIGHER" : "WATCH LOWER");
+      primary.dataset.action = dominantSide === "HIGHER" ? "unchain-trade-higher" : "unchain-trade-lower";
+      primary.disabled = !actionable;
+    }
+  }
+
+  function buildHigherLowerPredictionRequest() {
+    const form = readForm();
+    return {
+      symbol: getCurrentMarketSymbol(),
+      duration: form.duration,
+      duration_unit: form.duration_unit,
+    };
+  }
+
+  async function refreshHigherLowerPrediction() {
+    if (!isActive() || state.predictionLoading) return;
+    const payload = buildHigherLowerPredictionRequest();
+    const signature = JSON.stringify(payload);
+    state.predictionSignature = signature;
+    state.predictionLoading = true;
+    try {
+      const r = await postJSON("/higher_lower_prediction", payload);
+      if (signature !== state.predictionSignature) return;
+      if (r.data) {
+        renderHigherLowerPrediction(r.data);
+      } else {
+        renderHigherLowerPrediction(null);
+      }
+    } catch (e) {
+      renderHigherLowerPrediction({ status: "error", message: "Could not load Higher / Lower prediction right now." });
+    } finally {
+      state.predictionLoading = false;
+    }
+  }
+
+  function scheduleHigherLowerPrediction(delay) {
+    if (state.predictionTimer) {
+      clearTimeout(state.predictionTimer);
+      state.predictionTimer = null;
+    }
+    state.predictionTimer = setTimeout(() => {
+      refreshHigherLowerPrediction().catch(() => {});
+    }, Math.max(80, Number(delay || 180)));
+  }
+
   function renderBothAnalyzer(un) {
     const data = (un && un.both_analyzer) || {};
     const rec = data && typeof data.recommended === "object" ? data.recommended : null;
@@ -1836,12 +2016,17 @@
     return "info";
   }
 
+  function hasActiveCountdown(item) {
+    const value = countdownSortValue(item);
+    return Number.isFinite(value) && value > 0;
+  }
+
   function syncTradeCountdownToast(items) {
     if (!isActive()) {
       removeTradeCountdownToast();
       return;
     }
-    const list = Array.isArray(items) ? items.filter(Boolean) : [];
+    const list = Array.isArray(items) ? items.filter((item) => item && hasActiveCountdown(item)) : [];
     if (!list.length) {
       removeTradeCountdownToast();
       return;
@@ -2225,6 +2410,7 @@
     renderBothAnalyzer(un);
     renderKoolkidHl(un);
     renderBias(un);
+    scheduleHigherLowerPrediction(100);
     renderBarrierMarketChart(un, payload);
     scheduleExpectedProfitPreview(80);
     try {
@@ -2274,16 +2460,26 @@
   }
 
   async function sendTrade(side) {
-    await saveSettings(false);
+    if (state.tradeRequestInFlight) {
+      toast(`${state.tradeRequestSide || "Trade"} request already sending`, "warn");
+      return;
+    }
     const form = readForm();
-    const r = await postJSON("/unchain_trade", Object.assign({ side }, form));
-    if (r.ok && r.data) {
-      clearDirtyFields();
-      if (r.data.payload) renderPayload(r.data.payload, { forceForm: true });
-      toast(r.data.message || `${side} sent`, "success");
-    } else {
-      toast((r.data && (r.data.message || r.data.error)) || `${side} failed`, "error");
-      if (r.data && r.data.payload) renderPayload(r.data.payload);
+    state.tradeRequestInFlight = true;
+    state.tradeRequestSide = side;
+    try {
+      const r = await postJSON("/unchain_trade", Object.assign({ side }, form));
+      if (r.ok && r.data) {
+        clearDirtyFields();
+        if (r.data.payload) renderPayload(r.data.payload, { forceForm: true });
+        toast(r.data.message || `${side} sent`, "success");
+      } else {
+        toast((r.data && (r.data.message || r.data.error)) || `${side} failed`, "error");
+        if (r.data && r.data.payload) renderPayload(r.data.payload);
+      }
+    } finally {
+      state.tradeRequestInFlight = false;
+      state.tradeRequestSide = null;
     }
   }
 
@@ -2520,6 +2716,9 @@
             summary.innerText = `${String(readText("unchainDirectionalAutoSide", "HIGHER")).toUpperCase()} • ${String(readText("unchainDirectionalAutoBarrier", "+0.12") || "").trim() || "—"}`;
           }
         }
+        if (id === "unchainDuration" || id === "unchainDurationUnit") {
+          scheduleHigherLowerPrediction(160);
+        }
         scheduleExpectedProfitPreview(180);
       });
       node.addEventListener("change", () => {
@@ -2539,6 +2738,9 @@
         if (BARRIER_FIELD_IDS.has(id)) {
           persistCurrentMarketBarrierSettings(null, { custom: true });
           scheduleCurrentMarketBarrierSync(null, { custom: true });
+        }
+        if (id === "unchainDuration" || id === "unchainDurationUnit") {
+          scheduleHigherLowerPrediction(100);
         }
         scheduleExpectedProfitPreview(100);
       });
@@ -2563,6 +2765,16 @@
         });
       }
     }, true);
+  }
+
+  function bindPredictionCardActions() {
+    const secondary = el("unchainPredictionSecondaryAction");
+    if (secondary && secondary.dataset.predictionBound !== "1") {
+      secondary.dataset.predictionBound = "1";
+      secondary.addEventListener("click", () => {
+        scheduleHigherLowerPrediction(60);
+      });
+    }
   }
 
   function bindUI(root) {
@@ -2592,6 +2804,7 @@
     bindDirectionalBothTradesToggle();
     bindKoolkidModal();
     bindMarketBarrierPersistence();
+    bindPredictionCardActions();
   }
 
   function startPolling() {
