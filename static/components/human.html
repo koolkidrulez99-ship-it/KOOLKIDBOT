@@ -290,6 +290,13 @@
             <input id="sl" type="number" value="0" step="0.1" style="width:100%;">
             <button onclick="manualSL()" style="background:#ef4444; width:100%; margin-top:8px;">🛑 SET SL</button>
         </div>
+        <div>
+            <div style="color:#94a3b8; font-size:13px; margin-left:6px;">Budget</div>
+            <div style="display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:center;">
+                <input id="humanBudget" data-draft-ignore="1" type="number" value="" min="0" step="0.01" placeholder="Budget cap" style="width:100%;">
+                <button type="button" onclick="saveProfileBudget('HUMAN')" style="background:#0ea5e9; width:auto; min-width:96px;">Set Budget</button>
+            </div>
+        </div>
     </div>
 
     <div class="human-exec-toggle-row" style="margin-top:10px; display:flex; gap:10px; flex-wrap:wrap;">
@@ -352,7 +359,7 @@
     </div>
     <div style="background:#0f172a; border:1px solid #334155; border-radius:12px; padding:12px; text-align:center;">
       <div style="color:#94a3b8; font-size:12px;">Net Profit / Loss</div>
-      <div id="profileNetProfitLoss" style="font-size:18px; font-weight:bold; color:#e2e8f0;">+$0.00</div>
+          <div id="profileNetProfitLoss" style="font-size:18px; font-weight:bold; color:#e2e8f0;">0.00</div>
     </div>
   </div>
 

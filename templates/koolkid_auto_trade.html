@@ -338,6 +338,7 @@
   </style>
 </head>
 <body>
+  {% set currency_label = '$' %}
   <div class="page">
     <div class="topbar">
       <a class="back-btn" href="/">&lt; Back to Bot</a>
@@ -352,7 +353,7 @@
           <div class="user-avatar" id="autoSessionUserInitials">{{ (username or 'K')[0:2]|upper }}</div>
           <div class="user-meta">
             <strong>{{ username or "Trader" }}</strong>
-            <span>Balance: <span id="autoSessionBalanceValue">$0.00</span></span>
+            <span>Balance: <span id="autoSessionBalanceValue">{{ currency_label }} 0.00</span></span>
           </div>
         </div>
       </div>
@@ -414,9 +415,9 @@
             <div class="field"><label for="autoSessionTp">Take Profit</label><input class="input" id="autoSessionTp" type="number" min="0" step="0.01" value="25"></div>
           </div>
           <div class="risk-grid">
-            <div class="risk-card budget"><div class="label">Session Budget</div><div class="value" id="autoSessionBudgetHero">$100.00</div><div class="sub">Hard cap</div></div>
-            <div class="risk-card sl"><div class="label">Stop Loss</div><div class="value" id="autoSessionSlHero">$15.00</div><div class="sub">Max risk</div></div>
-            <div class="risk-card tp"><div class="label">Take Profit</div><div class="value" id="autoSessionTpHero">$25.00</div><div class="sub">Target</div></div>
+            <div class="risk-card budget"><div class="label">Session Budget</div><div class="value" id="autoSessionBudgetHero">{{ currency_label }} 100.00</div><div class="sub">Hard cap</div></div>
+            <div class="risk-card sl"><div class="label">Stop Loss</div><div class="value" id="autoSessionSlHero">{{ currency_label }} 15.00</div><div class="sub">Max risk</div></div>
+            <div class="risk-card tp"><div class="label">Take Profit</div><div class="value" id="autoSessionTpHero">{{ currency_label }} 25.00</div><div class="sub">Target</div></div>
           </div>
           <button class="action-btn start" id="autoSessionStartBtn" type="button">Start Auto Session<span>AI will scan and wait for the strongest valid setup.</span></button>
         </div>
@@ -485,7 +486,7 @@
             <div class="mini-box"><div class="value green" id="autoTradeHistoryWins">{{ koolkid_dashboard.stats.wins or 0 }}</div><div class="label">Wins</div></div>
             <div class="mini-box"><div class="value red" id="autoTradeHistoryLosses">{{ koolkid_dashboard.stats.losses or 0 }}</div><div class="label">Losses</div></div>
             <div class="mini-box"><div class="value" id="autoTradeHistoryWinRate">{{ '%.1f'|format(koolkid_dashboard.stats.winrate or 0) }}%</div><div class="label">Win Rate</div></div>
-            <div class="mini-box"><div class="value {% if (koolkid_dashboard.stats.net_pnl or 0) >= 0 %}green{% else %}red{% endif %}" id="autoTradeHistoryNetPnl">${{ '%.2f'|format(koolkid_dashboard.stats.net_pnl or 0) }}</div><div class="label">Net P/L</div></div>
+            <div class="mini-box"><div class="value {% if (koolkid_dashboard.stats.net_pnl or 0) >= 0 %}green{% else %}red{% endif %}" id="autoTradeHistoryNetPnl">{% if (koolkid_dashboard.stats.net_pnl or 0) >= 0 %}+{% else %}-{% endif %}{{ currency_label }} {{ '%.2f'|format((koolkid_dashboard.stats.net_pnl or 0)|abs) }}</div><div class="label">Net P/L</div></div>
           </div>
           <div class="history-list" id="autoTradeHistoryBody">
             {% if koolkid_dashboard.history %}
@@ -494,9 +495,9 @@
                 <div class="history-result {% if row.pending %}pending{% elif row.result == 'WIN' %}won{% else %}lost{% endif %}">{{ 'PENDING' if row.pending else row.result }}</div>
                 <div class="history-details"><strong>{% if row.button_label %}{{ row.button_label }} &bull; {% endif %}{{ row.symbol or '-' }}{% if row.type %} - {{ row.type }}{% endif %}{% if row.barrier is defined %} {{ row.barrier }}{% endif %}</strong><span>{{ row.time }}{% if row.duration is defined %} &bull; {{ row.duration }}{{ row.duration_unit or '' }}{% endif %}</span></div>
                 <div class="history-money">
-                  <div class="history-metric"><span class="metric-label">Stake</span><span class="metric-value">{{ '$%.2f'|format(row.stake or 0) }}</span></div>
-                  <div class="history-metric"><span class="metric-label">Payout</span><span class="metric-value">{% if row.payout is defined %}{{ '$%.2f'|format(row.payout or 0) }}{% else %}--{% endif %}</span></div>
-                  <div class="history-metric"><span class="metric-label">Profit</span><span class="metric-value profit {% if (row.profit or 0) >= 0 %}profit-green{% else %}profit-red{% endif %}">{% if (row.profit or 0) >= 0 %}+{% endif %}${{ '%.2f'|format(row.profit or 0) }}</span></div>
+                  <div class="history-metric"><span class="metric-label">Stake</span><span class="metric-value">{{ currency_label }} {{ '%.2f'|format(row.stake or 0) }}</span></div>
+                  <div class="history-metric"><span class="metric-label">Payout</span><span class="metric-value">{% if row.payout is defined %}{{ currency_label }} {{ '%.2f'|format(row.payout or 0) }}{% else %}--{% endif %}</span></div>
+                  <div class="history-metric"><span class="metric-label">Profit</span><span class="metric-value profit {% if (row.profit or 0) >= 0 %}profit-green{% else %}profit-red{% endif %}">{% if (row.profit or 0) >= 0 %}+{% else %}-{% endif %}{{ currency_label }} {{ '%.2f'|format((row.profit or 0)|abs) }}</span></div>
                 </div>
               </div>
               {% endfor %}
@@ -513,12 +514,12 @@
           <div class="confidence-orb-wrap">
             <div class="confidence-orb" id="autoSessionConfidenceRing"><div class="inner"><div class="big" id="autoSessionConfidenceValueMirror">0%</div><div class="label">Confidence</div></div></div>
             <div class="session-card-grid">
-              <div class="session-card"><div class="label">Session Budget</div><div class="value" id="autoSessionBudgetValue">$0.00</div></div>
-              <div class="session-card"><div class="label">Remaining</div><div class="value green" id="autoSessionRemainingValue">$0.00</div></div>
-              <div class="session-card"><div class="label">Current Stake</div><div class="value blue" id="autoSessionStakeValue">$0.35</div></div>
-                <div class="session-card"><div class="label">Protected Profit</div><div class="value" id="autoSessionPnlValue">$0.00</div></div>
-              <div class="session-card"><div class="label">Take Profit</div><div class="value green" id="autoSessionTpValue">$0.00</div></div>
-              <div class="session-card"><div class="label">Stop Loss</div><div class="value red" id="autoSessionSlValue">$0.00</div></div>
+              <div class="session-card"><div class="label">Session Budget</div><div class="value" id="autoSessionBudgetValue">{{ currency_label }} 0.00</div></div>
+              <div class="session-card"><div class="label">Remaining</div><div class="value green" id="autoSessionRemainingValue">{{ currency_label }} 0.00</div></div>
+              <div class="session-card"><div class="label">Current Stake</div><div class="value blue" id="autoSessionStakeValue">{{ currency_label }} 0.35</div></div>
+                <div class="session-card"><div class="label">Protected Profit</div><div class="value" id="autoSessionPnlValue">{{ currency_label }} 0.00</div></div>
+              <div class="session-card"><div class="label">Take Profit</div><div class="value green" id="autoSessionTpValue">{{ currency_label }} 0.00</div></div>
+              <div class="session-card"><div class="label">Stop Loss</div><div class="value red" id="autoSessionSlValue">{{ currency_label }} 0.00</div></div>
             </div>
           </div>
           <div class="status-box"><div class="line-1"><span id="autoSessionStatusValue">IDLE</span></div><div class="line-2" id="autoSessionStatusDetailValue">Looking for a valid setup...</div></div>
@@ -557,7 +558,7 @@
               <div class="mini-box"><div class="value green" id="autoTradeHistoryWinsMobile">{{ koolkid_dashboard.stats.wins or 0 }}</div><div class="label">Wins</div></div>
               <div class="mini-box"><div class="value red" id="autoTradeHistoryLossesMobile">{{ koolkid_dashboard.stats.losses or 0 }}</div><div class="label">Losses</div></div>
               <div class="mini-box"><div class="value" id="autoTradeHistoryWinRateMobile">{{ '%.1f'|format(koolkid_dashboard.stats.winrate or 0) }}%</div><div class="label">Win Rate</div></div>
-              <div class="mini-box"><div class="value {% if (koolkid_dashboard.stats.net_pnl or 0) >= 0 %}green{% else %}red{% endif %}" id="autoTradeHistoryNetPnlMobile">${{ '%.2f'|format(koolkid_dashboard.stats.net_pnl or 0) }}</div><div class="label">Net P/L</div></div>
+              <div class="mini-box"><div class="value {% if (koolkid_dashboard.stats.net_pnl or 0) >= 0 %}green{% else %}red{% endif %}" id="autoTradeHistoryNetPnlMobile">{% if (koolkid_dashboard.stats.net_pnl or 0) >= 0 %}+{% else %}-{% endif %}{{ currency_label }} {{ '%.2f'|format((koolkid_dashboard.stats.net_pnl or 0)|abs) }}</div><div class="label">Net P/L</div></div>
             </div>
             <div class="history-list" id="autoTradeHistoryBodyMobile">
               {% if koolkid_dashboard.history %}
@@ -566,9 +567,9 @@
                   <div class="history-result {% if row.pending %}pending{% elif row.result == 'WIN' %}won{% else %}lost{% endif %}">{{ 'PENDING' if row.pending else row.result }}</div>
                   <div class="history-details"><strong>{% if row.button_label %}{{ row.button_label }} &bull; {% endif %}{{ row.symbol or '-' }}{% if row.type %} - {{ row.type }}{% endif %}{% if row.barrier is defined %} {{ row.barrier }}{% endif %}</strong><span>{{ row.time }}{% if row.duration is defined %} &bull; {{ row.duration }}{{ row.duration_unit or '' }}{% endif %}</span></div>
                   <div class="history-money">
-                    <div class="history-metric"><span class="metric-label">Stake</span><span class="metric-value">{{ '$%.2f'|format(row.stake or 0) }}</span></div>
-                    <div class="history-metric"><span class="metric-label">Payout</span><span class="metric-value">{% if row.payout is defined %}{{ '$%.2f'|format(row.payout or 0) }}{% else %}--{% endif %}</span></div>
-                    <div class="history-metric"><span class="metric-label">Profit</span><span class="metric-value profit {% if (row.profit or 0) >= 0 %}profit-green{% else %}profit-red{% endif %}">{% if (row.profit or 0) >= 0 %}+{% endif %}${{ '%.2f'|format(row.profit or 0) }}</span></div>
+                    <div class="history-metric"><span class="metric-label">Stake</span><span class="metric-value">{{ currency_label }} {{ '%.2f'|format(row.stake or 0) }}</span></div>
+                    <div class="history-metric"><span class="metric-label">Payout</span><span class="metric-value">{% if row.payout is defined %}{{ currency_label }} {{ '%.2f'|format(row.payout or 0) }}{% else %}--{% endif %}</span></div>
+                    <div class="history-metric"><span class="metric-label">Profit</span><span class="metric-value profit {% if (row.profit or 0) >= 0 %}profit-green{% else %}profit-red{% endif %}">{% if (row.profit or 0) >= 0 %}+{% else %}-{% endif %}{{ currency_label }} {{ '%.2f'|format((row.profit or 0)|abs) }}</span></div>
                   </div>
                 </div>
                 {% endfor %}
@@ -582,15 +583,15 @@
           <h2>Dynamic Stake By Confidence</h2>
           <div class="subtitle" id="autoSessionStakeGuideCopy">First trade always starts at $0.35, then sizing adapts to budget and risk room.</div>
           <div class="stake-grid">
-            <div class="stake-band"><div class="range">60-69%</div><div class="copy">Setup only if the edge stays clean.</div><div class="percent">10%</div><div class="amount" id="autoSessionStakeTierLow">$0.00</div></div>
-            <div class="stake-band"><div class="range">70-79%</div><div class="copy">Stronger setup with controlled sizing.</div><div class="percent">25%</div><div class="amount" id="autoSessionStakeTierMid">$0.00</div></div>
-            <div class="stake-band"><div class="range">80-89%</div><div class="copy">High-quality conditions with more conviction.</div><div class="percent">50%</div><div class="amount" id="autoSessionStakeTierHigh">$0.00</div></div>
-            <div class="stake-band gold"><div class="range">Max Stake</div><div class="copy">Reserved for the strongest valid setup only.</div><div class="percent">100%</div><div class="amount" id="autoSessionStakeTierMax">$0.00</div></div>
+            <div class="stake-band"><div class="range">60-69%</div><div class="copy">Setup only if the edge stays clean.</div><div class="percent">10%</div><div class="amount" id="autoSessionStakeTierLow">{{ currency_label }} 0.00</div></div>
+            <div class="stake-band"><div class="range">70-79%</div><div class="copy">Stronger setup with controlled sizing.</div><div class="percent">25%</div><div class="amount" id="autoSessionStakeTierMid">{{ currency_label }} 0.00</div></div>
+            <div class="stake-band"><div class="range">80-89%</div><div class="copy">High-quality conditions with more conviction.</div><div class="percent">50%</div><div class="amount" id="autoSessionStakeTierHigh">{{ currency_label }} 0.00</div></div>
+            <div class="stake-band gold"><div class="range">Max Stake</div><div class="copy">Reserved for the strongest valid setup only.</div><div class="percent">100%</div><div class="amount" id="autoSessionStakeTierMax">{{ currency_label }} 0.00</div></div>
           </div>
         </div>
       </div>
     </div>
-    <div class="footer-ribbon"><strong>FIRST TRADE ALWAYS $0.35</strong> &bull; After losses: <span class="gold">Recovery mode stays smaller</span> &bull; Profit <span class="green">never</span> gets forced into risk &bull; Only budget is at risk</div>
+    <div class="footer-ribbon"><strong>FIRST TRADE USES $0.35</strong> &bull; After losses: <span class="gold">Recovery mode stays smaller</span> &bull; Profit <span class="green">never</span> gets forced into risk &bull; Only budget is at risk</div>
   </div>
   <script>
     window.AUTO_SESSION_CATALOG = {{ auto_session_catalog|tojson }};

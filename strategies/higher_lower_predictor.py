@@ -344,6 +344,13 @@ def _suggest_action(higher_pct, lower_pct):
     return ("Take Higher" if float(higher_pct) > float(lower_pct) else "Take Lower"), gap
 
 
+def _model_confidence(best_percent, gap, winning_scores):
+    quality_mean = sum(float(v or 0.0) for v in winning_scores) / max(1, len(winning_scores))
+    gap_score = _clamp(float(gap or 0.0) * 5.0, 0.0, 100.0)
+    confidence = (float(best_percent or 0.0) * 0.70) + (quality_mean * 0.15) + (gap_score * 0.15)
+    return round(_clamp(confidence, 0.0, 100.0), 1)
+
+
 def _duration_output_value(duration):
     raw = str(duration or "").strip()
     if not raw:
@@ -409,9 +416,17 @@ def predict_higher_lower_percentages(
 
     higher_pct, lower_pct = _normalize_percentages(higher_raw, lower_raw)
     best_percent = max(higher_pct, lower_pct)
-    confidence = _confidence_label(best_percent)
     suggested_action, gap = _suggest_action(higher_pct, lower_pct)
     dominant_side = "Higher" if higher_pct >= lower_pct else "Lower"
+    dominant_key = "HIGHER" if dominant_side == "Higher" else "LOWER"
+    winning_scores = (
+        [simulation_high, direction_high, strength_high, persistence_high, quality_high]
+        if dominant_key == "HIGHER"
+        else [simulation_low, direction_low, strength_low, persistence_low, quality_low]
+    )
+    model_confidence = _model_confidence(best_percent, gap, winning_scores)
+    confidence = _confidence_label(model_confidence)
+    model_valid = bool(best_percent >= 60.0 and gap >= 10.0 and model_confidence >= 60.0)
 
     if suggested_action == "Skip":
         summary = (
@@ -433,9 +448,13 @@ def predict_higher_lower_percentages(
         "barrier": barrier_value,
         "higher_pct": float(higher_pct),
         "lower_pct": float(lower_pct),
+        "preferred_side": dominant_key,
+        "side_confidence": float(best_percent),
+        "model_confidence": float(model_confidence),
         "confidence_label": confidence,
         "suggested_action": suggested_action,
         "gap": float(round(gap, 1)),
+        "model_valid": model_valid,
         "reasoning_summary": summary,
         "simulation": {
             "higher_win_rate": float(round(simulation_high, 1)),

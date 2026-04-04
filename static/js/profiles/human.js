@@ -9,6 +9,14 @@
     return window.BotApp || {};
   }
 
+  function money(value, payload){
+    const num = Number(value || 0);
+    try{
+      if(typeof formatCurrencyAmount === "function") return formatCurrencyAmount(num, payload || {});
+    }catch(e){}
+    return Number.isFinite(num) ? `$${Math.abs(num).toFixed(2)}` : "—";
+  }
+
   function byId(id){ return document.getElementById(id); }
   function rootExists(){ return !!byId("humanRiseFallCard"); }
 
@@ -356,7 +364,7 @@
       });
       const ok = r && r.status === "success";
       if(typeof showToast === "function"){
-        showToast(`FormulaX sent RISE $${riseStake.toFixed(2)} + FALL $${fallStake.toFixed(2)} (${dir} favored)`, ok ? "success" : "warn");
+        showToast(`FormulaX sent RISE ${money(riseStake)} + FALL ${money(fallStake)} (${dir} favored)`, ok ? "success" : "warn");
       }
       fxState.active = false;
       await fetchHumanRFStatus();

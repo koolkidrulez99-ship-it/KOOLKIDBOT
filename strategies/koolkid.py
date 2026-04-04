@@ -96,6 +96,33 @@ class KoolKidStrategy(BaseStrategy):
         self.over3_wait_fresh_setup = False
         self.over3_ticks_by_symbol = {}
 
+        # Kid2vix auto: UNDER 2 + OVER 3 pair when digits 2/3 look cold
+        self.kid2vix_auto = False
+        self.kid2vix_last20_threshold = 4
+        self.kid2vix_last5_threshold = 1
+        self.kid2vix_repeat_pressure_threshold = 34.0
+        self.kid2vix_over3_ratio = 0.70
+        self.kid2vix_cooldown_after_loss = 5.0
+        self.kid2vix_cycle_active = False
+        self.kid2vix_open_contracts = 0
+        self.kid2vix_cycle_profit = 0.0
+        self.kid2vix_last_trade_time = 0.0
+        self.kid2vix_cooldown_until = 0.0
+        self.kid2vix_last_result = ""
+        self.kid2vix_analysis = {
+            "ready": False,
+            "label": "SKIP",
+            "reason_summary": "Waiting for live tick data...",
+            "last20_count": 0,
+            "last5_count": 0,
+            "repeat_pressure_score": 0.0,
+            "repeat_pressure_threshold": 34.0,
+            "trade_ready": False,
+            "cycle_active": False,
+            "cooldown_remaining": 0.0,
+            "ratio": {"over3": 0.70, "under2": 0.30},
+        }
+
         # 5 second delay between trades (your request)
         self.cooldown_seconds = 5.0
 
@@ -215,6 +242,32 @@ class KoolKidStrategy(BaseStrategy):
         self.over3_wait_fresh_setup = False
         self.over3_ticks_by_symbol = {}
 
+        self.kid2vix_auto = False
+        self.kid2vix_last20_threshold = 4
+        self.kid2vix_last5_threshold = 1
+        self.kid2vix_repeat_pressure_threshold = 34.0
+        self.kid2vix_over3_ratio = 0.70
+        self.kid2vix_cooldown_after_loss = 5.0
+        self.kid2vix_cycle_active = False
+        self.kid2vix_open_contracts = 0
+        self.kid2vix_cycle_profit = 0.0
+        self.kid2vix_last_trade_time = 0.0
+        self.kid2vix_cooldown_until = 0.0
+        self.kid2vix_last_result = ""
+        self.kid2vix_analysis = {
+            "ready": False,
+            "label": "SKIP",
+            "reason_summary": "Waiting for live tick data...",
+            "last20_count": 0,
+            "last5_count": 0,
+            "repeat_pressure_score": 0.0,
+            "repeat_pressure_threshold": 34.0,
+            "trade_ready": False,
+            "cycle_active": False,
+            "cooldown_remaining": 0.0,
+            "ratio": {"over3": 0.70, "under2": 0.30},
+        }
+
         self.koolluck_current_sequence = None
         self.koolluck_step_index = 0
         self.koolluck_background_analysis = {
@@ -310,6 +363,9 @@ class KoolKidStrategy(BaseStrategy):
         self.over3_analysis_auto = False
         self.over3_trade_active = False
         self.auto_dollar_auto = False
+        self.kid2vix_auto = False
+        self.kid2vix_cycle_active = False
+        self.kid2vix_open_contracts = 0
 
     # ==============================
     # NEW FEATURE TOGGLES / SETTINGS
@@ -349,6 +405,61 @@ class KoolKidStrategy(BaseStrategy):
         else:
             self.over3_trade_active = False
         return self.over3_analysis_auto
+
+    def toggle_kid2vix_auto(self):
+        self.kid2vix_auto = not self.kid2vix_auto
+        if self.kid2vix_auto:
+            self.kid2vix_cycle_active = False
+            self.kid2vix_open_contracts = 0
+            self.kid2vix_cycle_profit = 0.0
+            self.kid2vix_cooldown_until = 0.0
+            self.kid2vix_last_result = ""
+        return self.kid2vix_auto
+
+    def set_kid2vix_settings(
+        self,
+        *,
+        last20_threshold=None,
+        last5_threshold=None,
+        repeat_pressure_threshold=None,
+        over3_ratio=None,
+        cooldown_after_loss=None,
+    ):
+        if last20_threshold is not None:
+            try:
+                self.kid2vix_last20_threshold = max(0, min(20, int(last20_threshold)))
+            except Exception:
+                pass
+        if last5_threshold is not None:
+            try:
+                self.kid2vix_last5_threshold = max(0, min(5, int(last5_threshold)))
+            except Exception:
+                pass
+        if repeat_pressure_threshold is not None:
+            try:
+                self.kid2vix_repeat_pressure_threshold = max(0.0, min(100.0, float(repeat_pressure_threshold)))
+            except Exception:
+                pass
+        if over3_ratio is not None:
+            try:
+                ratio = float(over3_ratio)
+                if ratio > 1.0:
+                    ratio = ratio / 100.0
+                self.kid2vix_over3_ratio = max(0.05, min(0.95, ratio))
+            except Exception:
+                pass
+        if cooldown_after_loss is not None:
+            try:
+                self.kid2vix_cooldown_after_loss = max(0.0, min(120.0, float(cooldown_after_loss)))
+            except Exception:
+                pass
+        return {
+            "last20_threshold": int(self.kid2vix_last20_threshold),
+            "last5_threshold": int(self.kid2vix_last5_threshold),
+            "repeat_pressure_threshold": float(self.kid2vix_repeat_pressure_threshold),
+            "over3_ratio": float(self.kid2vix_over3_ratio),
+            "cooldown_after_loss": float(self.kid2vix_cooldown_after_loss),
+        }
 
     def _is_high_digit(self, digit):
         try:
@@ -624,19 +735,48 @@ class KoolKidStrategy(BaseStrategy):
         self._record_barrier_analysis_tick(digit)
         self._refresh_koolluck_background_analysis()
         self._refresh_auto_dollar_analysis()
+        self._refresh_kid2vix_analysis()
 
     def on_auto_trade_sent(self, signal):
         mode = str((signal or {}).get("mode") or "").upper().strip()
         if mode == "OVER3_ANALYSIS":
             self.over3_trade_active = True
+            return
+        if mode == "KID2VIX":
+            self.kid2vix_cycle_active = True
+            self.kid2vix_open_contracts = int(self.kid2vix_open_contracts or 0) + 1
+            self.kid2vix_last_trade_time = time.time()
 
     def on_auto_trade_failed(self, signal, _reason=None):
         mode = str((signal or {}).get("mode") or "").upper().strip()
         if mode == "OVER3_ANALYSIS":
             self.over3_trade_active = False
+            return
 
     def on_contract_settled(self, contract, meta=None):
         mode = str(((meta or {}).get("mode") or "").upper().strip())
+        if mode == "KID2VIX":
+            try:
+                profit = float((contract or {}).get("profit", 0) or 0)
+            except Exception:
+                profit = 0.0
+            self.kid2vix_cycle_profit = float(self.kid2vix_cycle_profit or 0.0) + profit
+            self.kid2vix_open_contracts = max(0, int(self.kid2vix_open_contracts or 0) - 1)
+            if self.kid2vix_open_contracts <= 0:
+                self.kid2vix_cycle_active = False
+                cycle_profit = float(self.kid2vix_cycle_profit or 0.0)
+                if cycle_profit > 0:
+                    self.kid2vix_last_result = "WIN"
+                    self.kid2vix_cooldown_until = 0.0
+                elif cycle_profit < 0:
+                    self.kid2vix_last_result = "LOSS"
+                    self.kid2vix_cooldown_until = time.time() + float(self.kid2vix_cooldown_after_loss or 0.0)
+                else:
+                    self.kid2vix_last_result = "FLAT"
+                    self.kid2vix_cooldown_until = 0.0
+                self.kid2vix_cycle_profit = 0.0
+            self._refresh_kid2vix_analysis()
+            return
         if mode != "OVER3_ANALYSIS":
             return
         try:
@@ -652,6 +792,196 @@ class KoolKidStrategy(BaseStrategy):
         self.over3_wait_fresh_setup = True
         if int(self.over3_consecutive_losses) >= 2 or int(self.over3_total_trades) >= 5:
             self.over3_session_stopped = True
+
+    def _kid2vix_stake_split(self, total_stake):
+        try:
+            total = float(total_stake or 0.0)
+        except Exception:
+            total = 0.0
+        total = max(0.0, total)
+        over_ratio = max(0.05, min(0.95, float(getattr(self, "kid2vix_over3_ratio", 0.70) or 0.70)))
+        over_stake = round(total * over_ratio, 2)
+        under_stake = round(max(0.0, total - over_stake), 2)
+        return {
+            "total": round(total, 2),
+            "over3_ratio": over_ratio,
+            "under2_ratio": round(max(0.0, 1.0 - over_ratio), 4),
+            "over3_stake": over_stake,
+            "under2_stake": under_stake,
+        }
+
+    def _kid2vix_max_cluster_len(self, digits):
+        best = 0
+        run = 0
+        for digit in digits or []:
+            if int(digit) in (2, 3):
+                run += 1
+                if run > best:
+                    best = run
+            else:
+                run = 0
+        return int(best)
+
+    def _refresh_kid2vix_analysis(self):
+        digits = [int(d) for d in list(getattr(self, "tick_digits", [])) if d is not None]
+        last20 = digits[-20:]
+        last5 = digits[-5:]
+        prev5 = digits[-10:-5]
+        count20 = sum(1 for d in last20 if d in (2, 3))
+        count5 = sum(1 for d in last5 if d in (2, 3))
+        prev5_count = sum(1 for d in prev5 if d in (2, 3))
+        last_hit = bool(digits and digits[-1] in (2, 3))
+        second_hit = bool(len(digits) >= 2 and digits[-2] in (2, 3))
+        back_to_back = bool(last_hit and second_hit)
+        repeated_same = bool(len(digits) >= 2 and digits[-1] == digits[-2] and digits[-1] in (2, 3))
+        cluster_len = self._kid2vix_max_cluster_len(last5)
+        unique_other_digits = len({d for d in last5 if d not in (2, 3)})
+        spread_support = unique_other_digits >= 3
+        heating_up = bool(
+            count5 > max(int(getattr(self, "kid2vix_last5_threshold", 1) or 1), prev5_count)
+            or (cluster_len >= 2 and count5 >= 2)
+        )
+
+        pressure = 0.0
+        if last_hit:
+            pressure += 16.0
+        if second_hit:
+            pressure += 6.0
+        if back_to_back:
+            pressure += 10.0
+        if repeated_same:
+            pressure += 8.0
+        pressure += float(count5 * 7.0)
+        pressure += float(max(0, count20 - int(getattr(self, "kid2vix_last20_threshold", 4) or 4)) * 6.0)
+        pressure += float(max(0, count5 - int(getattr(self, "kid2vix_last5_threshold", 1) or 1)) * 12.0)
+        if heating_up:
+            pressure += 8.0
+        if count5 == 0:
+            pressure -= 8.0
+        if count20 <= max(0, int(getattr(self, "kid2vix_last20_threshold", 4) or 4) - 2):
+            pressure -= 6.0
+        pressure -= min(10.0, float(unique_other_digits) * 2.0)
+        pressure = max(0.0, min(100.0, pressure))
+
+        ready = len(last20) >= 20 and len(last5) >= 5
+        threshold20 = int(getattr(self, "kid2vix_last20_threshold", 4) or 4)
+        threshold5 = int(getattr(self, "kid2vix_last5_threshold", 1) or 1)
+        pressure_threshold = float(getattr(self, "kid2vix_repeat_pressure_threshold", 34.0) or 34.0)
+        cooldown_remaining = max(0.0, float(getattr(self, "kid2vix_cooldown_until", 0.0) or 0.0) - time.time())
+
+        differ_support = bool(
+            spread_support
+            or count5 == 0
+            or (last_hit and count5 == 1 and prev5_count == 0 and not repeated_same)
+        )
+
+        if not ready:
+            label = "SKIP"
+            reason = "Waiting for a full 20-tick digit sample."
+        elif (
+            count20 <= threshold20
+            and count5 <= threshold5
+            and pressure <= pressure_threshold
+            and not heating_up
+            and differ_support
+        ):
+            label = "SAFE"
+            reason = "2/3 quiet • repeat pressure low • differ flow looks clean"
+        elif (
+            count20 > (threshold20 + 1)
+            or count5 > (threshold5 + 1)
+            or pressure > (pressure_threshold + 8.0)
+            or (heating_up and count5 >= 2)
+        ):
+            label = "SKIP"
+            reason = "2/3 too active or clustering is building."
+        else:
+            label = "RISKY"
+            reason = "Mixed 2/3 pressure. Wait for a cleaner differ setup."
+
+        split = self._kid2vix_stake_split(getattr(self, "current_auto_stake", 0.0))
+        trade_ready = bool(
+            ready
+            and label == "SAFE"
+            and not bool(getattr(self, "kid2vix_cycle_active", False))
+            and cooldown_remaining <= 0.0
+            and float(split["total"]) > 0.0
+        )
+        if bool(getattr(self, "kid2vix_cycle_active", False)):
+            reason = "Trade cycle active • waiting for UNDER 2 + OVER 3 to settle"
+        elif cooldown_remaining > 0.0:
+            reason = f"Loss cooldown active • {cooldown_remaining:.1f}s left"
+
+        self.kid2vix_analysis = {
+            "ready": bool(ready),
+            "label": str(label),
+            "reason_summary": str(reason),
+            "last20_count": int(count20),
+            "last5_count": int(count5),
+            "prev5_count": int(prev5_count),
+            "repeat_pressure_score": round(float(pressure), 1),
+            "repeat_pressure_threshold": round(float(pressure_threshold), 1),
+            "trade_ready": bool(trade_ready),
+            "cycle_active": bool(getattr(self, "kid2vix_cycle_active", False)),
+            "open_contracts": int(getattr(self, "kid2vix_open_contracts", 0) or 0),
+            "cooldown_remaining": round(float(cooldown_remaining), 1),
+            "ratio": {
+                "over3": round(float(split["over3_ratio"]), 4),
+                "under2": round(float(split["under2_ratio"]), 4),
+            },
+            "ratio_pct": {
+                "over3": round(float(split["over3_ratio"]) * 100.0, 1),
+                "under2": round(float(split["under2_ratio"]) * 100.0, 1),
+            },
+            "stake_preview": {
+                "total": round(float(split["total"]), 2),
+                "over3": round(float(split["over3_stake"]), 2),
+                "under2": round(float(split["under2_stake"]), 2),
+            },
+            "last_result": str(getattr(self, "kid2vix_last_result", "") or ""),
+            "heating_up": bool(heating_up),
+            "differ_support": bool(differ_support),
+            "cluster_len": int(cluster_len),
+            "last_hit_23": bool(last_hit),
+            "back_to_back_23": bool(back_to_back),
+            "repeated_same_digit": bool(repeated_same),
+            "unique_other_digits": int(unique_other_digits),
+            "settings": {
+                "last20_threshold": int(threshold20),
+                "last5_threshold": int(threshold5),
+                "repeat_pressure_threshold": round(float(pressure_threshold), 1),
+                "over3_ratio_pct": round(float(split["over3_ratio"]) * 100.0, 1),
+                "cooldown_after_loss": round(float(getattr(self, "kid2vix_cooldown_after_loss", 5.0) or 5.0), 1),
+            },
+        }
+        return self.kid2vix_analysis
+
+    def check_kid2vix_signal(self):
+        if not bool(getattr(self, "kid2vix_auto", False)):
+            return None
+        analysis = self._refresh_kid2vix_analysis()
+        if not analysis or not bool(analysis.get("trade_ready")):
+            return None
+        split = self._kid2vix_stake_split(getattr(self, "current_auto_stake", 0.0))
+        self.kid2vix_cycle_profit = 0.0
+        return [
+            {
+                "mode": "KID2VIX",
+                "type": "OVER",
+                "barrier": 3,
+                "stake": float(split["over3_stake"]),
+                "duration": 1,
+                "duration_unit": "t",
+            },
+            {
+                "mode": "KID2VIX",
+                "type": "UNDER",
+                "barrier": 2,
+                "stake": float(split["under2_stake"]),
+                "duration": 1,
+                "duration_unit": "t",
+            },
+        ]
 
     # ==============================
     # HELPERS
@@ -1373,6 +1703,10 @@ class KoolKidStrategy(BaseStrategy):
         if over3_sig:
             signals.append(over3_sig)
 
+        kid2vix_sig = self.check_kid2vix_signal()
+        if kid2vix_sig:
+            signals.extend(kid2vix_sig)
+
         # ------------------------------
         # NEW MODES (can run immediately)
         # ------------------------------
@@ -1504,6 +1838,7 @@ class KoolKidStrategy(BaseStrategy):
                 "ai_auto_trading": self.ai_auto_trading,
                 "mpull_all_digits": self.mpull_all_digits_auto,
                 "over3_analysis": self.over3_analysis_auto,
+                "kid2vix": self.kid2vix_auto,
             },
             "auto_settings": {
                 "kidracks_barrier": self.kidracks_barrier,
@@ -1512,8 +1847,14 @@ class KoolKidStrategy(BaseStrategy):
                 "kidpairs_trades_per_signal": self.kidpairs_trades_per_signal,
                 "barrier_analysis_selected": self.barrier_analysis_selected,
                 "mpull_all_digits_selected_digits": sorted(list(self.mpull_all_digits_selected_digits)),
+                "kid2vix_last20_threshold": int(self.kid2vix_last20_threshold),
+                "kid2vix_last5_threshold": int(self.kid2vix_last5_threshold),
+                "kid2vix_repeat_pressure_threshold": float(self.kid2vix_repeat_pressure_threshold),
+                "kid2vix_over3_ratio": float(self.kid2vix_over3_ratio),
+                "kid2vix_cooldown_after_loss": float(self.kid2vix_cooldown_after_loss),
             },
             "over3_analysis_data": self.get_over3_analysis_state(),
+            "kid2vix_data": dict(self.kid2vix_analysis or self._refresh_kid2vix_analysis() or {}),
             "auto_dollar_analysis": dict(self.auto_dollar_analysis or {}),
             "barrier_analysis": {
                 "running": bool(self.barrier_analysis_running),

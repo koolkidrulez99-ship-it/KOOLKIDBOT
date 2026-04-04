@@ -1,4 +1,5 @@
 from strategies.koolkid import KoolKidStrategy
+import time
 
 
 def _feed_digits(strategy, digits):
@@ -91,3 +92,53 @@ def test_auto_dollar_uses_even_split_on_tie():
         {"mode": "AUTO$", "type": "OVER", "barrier": 4, "stake": 0.5},
         {"mode": "AUTO$", "type": "UNDER", "barrier": 5, "stake": 0.5},
     ]
+
+
+def test_kid2vix_returns_70_30_pair_when_2_and_3_are_cold():
+    strat = KoolKidStrategy()
+    digits = ([0, 1, 4, 5, 6, 7, 8, 9] * 3) + [0, 1, 4, 5]
+
+    _feed_digits(strat, digits)
+    strat.kid2vix_auto = True
+    strat.current_auto_stake = 10.0
+
+    analysis = strat._refresh_kid2vix_analysis()
+    signals = strat.check_kid2vix_signal()
+
+    assert analysis["label"] == "SAFE"
+    assert analysis["trade_ready"] is True
+    assert signals == [
+        {"mode": "KID2VIX", "type": "OVER", "barrier": 3, "stake": 7.0, "duration": 1, "duration_unit": "t"},
+        {"mode": "KID2VIX", "type": "UNDER", "barrier": 2, "stake": 3.0, "duration": 1, "duration_unit": "t"},
+    ]
+
+
+def test_kid2vix_waits_for_current_pair_and_applies_loss_cooldown():
+    strat = KoolKidStrategy()
+    digits = ([0, 1, 4, 5, 6, 7, 8, 9] * 3) + [0, 1, 4, 5]
+
+    _feed_digits(strat, digits)
+    strat.kid2vix_auto = True
+    strat.current_auto_stake = 10.0
+    strat.kid2vix_cooldown_after_loss = 9.0
+
+    signals = strat.check_kid2vix_signal()
+    assert signals is not None
+
+    for sig in signals:
+        strat.on_auto_trade_sent(sig)
+
+    assert strat.kid2vix_cycle_active is True
+    assert strat.kid2vix_open_contracts == 2
+    assert strat.check_kid2vix_signal() is None
+
+    strat.on_contract_settled({"profit": -1.0}, meta={"mode": "KID2VIX"})
+    assert strat.kid2vix_cycle_active is True
+    assert strat.kid2vix_open_contracts == 1
+
+    strat.on_contract_settled({"profit": -1.0}, meta={"mode": "KID2VIX"})
+    assert strat.kid2vix_cycle_active is False
+    assert strat.kid2vix_open_contracts == 0
+    assert strat.kid2vix_last_result == "LOSS"
+    assert strat.kid2vix_cooldown_until > time.time()
+    assert strat.check_kid2vix_signal() is None

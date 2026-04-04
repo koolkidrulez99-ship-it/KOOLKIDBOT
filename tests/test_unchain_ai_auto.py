@@ -4,6 +4,35 @@ from types import SimpleNamespace
 from flask import json
 
 
+def _strong_up_series(start=1000.0, step=1.2, count=32):
+    return [round(start + (step * idx), 5) for idx in range(count)]
+
+
+def _strong_down_series(start=1000.0, step=1.2, count=32):
+    return [round(start - (step * idx), 5) for idx in range(count)]
+
+
+def _flat_series(start=1000.0, count=32):
+    values = []
+    for idx in range(count):
+        wobble = 0.01 if idx % 2 else -0.01
+        values.append(round(start + wobble, 5))
+    return values
+
+
+def _set_unchain_series(monkeypatch, prices):
+    monkeypatch.setattr(
+        server,
+        "_get_prediction_series_for_profile",
+        lambda state, market_symbol, profile_key: (
+            str(market_symbol or state.get("current_symbol") or "R_75"),
+            list(prices),
+            [],
+            "test",
+        ),
+    )
+
+
 def test_unchain_ai_auto_defaults_are_looser():
     u = server._ensure_unchain_hl_state({})
 
@@ -604,6 +633,138 @@ def test_unchain_trade_route_persists_form_values_and_sends_both(monkeypatch):
     assert placed[0]["barrier"] == "+0.44"
     assert placed[1]["barrier"] == "-0.55"
     assert state["unchain_hl"]["koolkid_hl_simulation"] is None
+
+
+def test_apply_unchain_settings_update_supports_side_specific_durations():
+    state = {"unchain_hl": {"duration": 5, "duration_unit": "t"}}
+
+    updated = server._apply_unchain_settings_update(
+        state,
+        {
+            "use_shared_duration": False,
+            "higher_duration": 6,
+            "higher_duration_unit": "t",
+            "lower_duration": 3,
+            "lower_duration_unit": "m",
+        },
+    )
+
+    assert updated["use_shared_duration"] is False
+    assert updated["higher_duration"] == 6
+    assert updated["higher_duration_unit"] == "t"
+    assert updated["lower_duration"] == 3
+    assert updated["lower_duration_unit"] == "m"
+
+
+def test_apply_unchain_market_default_barriers_uses_side_durations_when_shared_off(monkeypatch):
+    calls = []
+    state = {
+        "current_symbol": "R_25",
+        "unchain_hl": {
+            "use_shared_duration": False,
+            "higher_duration": 5,
+            "higher_duration_unit": "t",
+            "lower_duration": 7,
+            "lower_duration_unit": "t",
+        },
+    }
+
+    def fake_fetch(symbol, duration, duration_unit):
+        calls.append((symbol, duration, duration_unit))
+        return "0.17", None
+
+    monkeypatch.setattr(server, "_fetch_unchain_market_default_barrier", fake_fetch)
+
+    ok, _msg = server._apply_unchain_market_default_barriers(state, "R_25")
+
+    assert ok is True
+    assert calls == [("R_25", 5, "t"), ("R_25", 7, "t")]
+    assert state["unchain_hl"]["higher_barrier"] == "+0.17"
+    assert state["unchain_hl"]["lower_barrier"] == "-0.17"
+
+
+def test_build_unchain_expected_profit_preview_uses_side_specific_durations(monkeypatch):
+    calls = []
+
+    def fake_quote(state, *, side, stake, symbol, barrier, duration, duration_unit="t", timeout_sec=1.6):
+        calls.append((side, duration, duration_unit))
+        return {"ask_price": 10.0, "payout": 18.0, "barrier": barrier}, None
+
+    monkeypatch.setattr(server, "_request_unchain_proposal_quote", fake_quote)
+
+    preview = server._build_unchain_expected_profit_preview(
+        {},
+        symbol="R_25",
+        higher_stake=10.0,
+        lower_stake=10.0,
+        higher_barrier="+0.12",
+        lower_barrier="-0.12",
+        duration=5,
+        duration_unit="t",
+        higher_duration=5,
+        higher_duration_unit="t",
+        lower_duration=7,
+        lower_duration_unit="t",
+    )
+
+    assert preview["higher"]["profit"] == 8.0
+    assert preview["lower"]["profit"] == 8.0
+    assert calls == [("HIGHER", 5, "t"), ("LOWER", 7, "t")]
+
+
+def test_unchain_trade_route_both_uses_side_specific_durations_when_shared_off(monkeypatch):
+    cid = "manual-both-side-durations"
+    state = {
+        "active_profile": "UNCHAIN",
+        "ws_connected": True,
+        "ws": object(),
+        "balance": 100.0,
+        "current_symbol": "R_25",
+        "unchain_hl": {
+            "use_shared_duration": False,
+            "higher_stake": 3.5,
+            "lower_stake": 4.5,
+            "higher_barrier": "+0.44",
+            "lower_barrier": "-0.55",
+            "duration": 5,
+            "duration_unit": "t",
+            "higher_duration": 5,
+            "higher_duration_unit": "t",
+            "lower_duration": 7,
+            "lower_duration_unit": "t",
+        },
+    }
+    placed = []
+
+    monkeypatch.setattr(server, "login_required", lambda: True)
+    monkeypatch.setattr(server, "get_client_state", lambda: (cid, state))
+    monkeypatch.setattr(server.socketio, "emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server.time, "sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_send_unchain_hl_trade", lambda client_id, **kwargs: placed.append(kwargs) or (True, "ok"))
+
+    with server.app.test_request_context(
+        "/unchain_trade",
+        method="POST",
+        data=json.dumps({
+            "side": "BOTH",
+            "use_shared_duration": False,
+            "higher_duration": 5,
+            "higher_duration_unit": "t",
+            "lower_duration": 7,
+            "lower_duration_unit": "t",
+        }),
+        content_type="application/json",
+    ):
+        response = server.unchain_trade_route()
+
+    payload = response.get_json()
+    assert response.status_code == 200
+    assert payload["placed"] == ["HIGHER", "LOWER"]
+    assert len(placed) == 2
+    assert placed[0]["duration"] == 5
+    assert placed[0]["duration_unit"] == "t"
+    assert placed[1]["duration"] == 7
+    assert placed[1]["duration_unit"] == "t"
 
 
 def test_koolkid_hl_uses_selected_live_duration_unit_when_firing(monkeypatch):
@@ -1483,6 +1644,54 @@ def test_directional_auto_both_trades_sends_higher_and_lower_after_sim_win(monke
     assert all(call["mode"] == "DIRECTIONAL_AUTO_BOTH" for call in placed)
 
 
+def test_directional_auto_both_trades_use_side_specific_durations_when_shared_off(monkeypatch):
+    state = {
+        "ws_connected": True,
+        "ws": object(),
+        "balance": 100.0,
+        "current_symbol": "R_25",
+        "strategies": {
+            "UNCHAIN": SimpleNamespace(
+                price_history=[100.00, 100.02, 100.05, 100.08, 100.12, 100.16, 100.20, 100.24, 100.28, 100.33, 100.38, 100.44],
+                tick_time_history=list(range(12)),
+                trade_history=[],
+            ),
+        },
+        "unchain_hl": {
+            "directional_auto_enabled": True,
+            "directional_auto_side": "HIGHER",
+            "directional_auto_barrier": "+0.12",
+            "directional_auto_both_trades": True,
+            "use_shared_duration": False,
+            "higher_stake": 12.0,
+            "lower_stake": 7.0,
+            "duration": 5,
+            "duration_unit": "t",
+            "higher_duration": 5,
+            "higher_duration_unit": "t",
+            "lower_duration": 7,
+            "lower_duration_unit": "t",
+        },
+    }
+    placed = []
+
+    monkeypatch.setattr(server, "_check_unchain_hl_risk_block", lambda state: None)
+    monkeypatch.setattr(server, "_get_open_unchain_active_entries", lambda state: [])
+    monkeypatch.setattr(server, "_send_unchain_hl_trade", lambda client_id, **kwargs: placed.append(kwargs) or (True, "ok"))
+
+    assert server._run_unchain_directional_auto_trade("cid", state) is True
+
+    strat = state["strategies"]["UNCHAIN"]
+    strat.price_history.extend([100.48, 100.54, 100.60, 100.67, 100.75])
+    strat.tick_time_history.extend(range(12, 17))
+
+    assert server._run_unchain_directional_auto_trade("cid", state) is True
+    assert len(placed) == 2
+    durations = {call["side"]: (call["duration"], call["duration_unit"]) for call in placed}
+    assert durations["HIGHER"] == (5, "t")
+    assert durations["LOWER"] == (7, "t")
+
+
 def test_directional_auto_both_trades_reuses_exact_user_barrier_text(monkeypatch):
     state = {
         "ws_connected": True,
@@ -1862,3 +2071,516 @@ def test_toggle_directional_auto_disables_other_unchain_auto_modes(monkeypatch):
     assert u["koolkid_hl_enabled"] is False
     assert u["koolkid_both_enabled"] is False
     assert data["payload"]["unchain"]["directional_auto"]["enabled"] is True
+
+
+def test_primordial_blue_plan_for_v75_uses_two_leg_5_to_1_split():
+    plan = server.build_primordial_blue_trade_plan("R_75", 100)
+
+    assert plan["supported"] is True
+    assert plan["market_label"] == "V75"
+    assert plan["duration"] == 10
+    assert plan["duration_unit"] == "t"
+    assert [item["side"] for item in plan["plan"]] == ["HIGHER", "LOWER"]
+    assert [item["barrier"] for item in plan["plan"]] == ["-8.80", "-8.80"]
+    assert [item["stake"] for item in plan["plan"]] == [83.33, 16.67]
+
+
+def test_primordial_blue_supports_v25():
+    plan = server.build_primordial_blue_trade_plan("R_25", 100)
+
+    assert plan["supported"] is True
+
+
+def test_primordial_blue_plan_rejects_total_stake_when_split_leg_falls_below_minimum():
+    plan = server.build_primordial_blue_trade_plan("R_75", 1)
+
+    assert plan["supported"] is True
+    assert plan["plan"] == []
+    assert "too low" in plan["reason"].lower()
+    assert "$0.35" in plan["reason"]
+
+
+@pytest.mark.parametrize(
+    ("symbol", "market_label", "barrier"),
+    [
+        ("R_10", "V10", "-0.14"),
+        ("R_25", "V25", "-0.20"),
+        ("R_100", "V100", "-0.21"),
+        ("1HZ100V", "V100 1s", "-0.35"),
+    ],
+)
+def test_primordial_blue_two_leg_5_to_1_presets(symbol, market_label, barrier):
+    plan = server.build_primordial_blue_trade_plan(symbol, 100)
+
+    assert plan["supported"] is True
+    assert plan["market_label"] == market_label
+    assert plan["duration"] == 10
+    assert plan["duration_unit"] == "t"
+    assert [item["side"] for item in plan["plan"]] == ["HIGHER", "LOWER"]
+    assert [item["barrier"] for item in plan["plan"]] == [barrier, barrier]
+    assert [item["stake"] for item in plan["plan"]] == [83.33, 16.67]
+
+
+def test_primordial_blue_unsupported_reason_lists_supported_markets():
+    plan = server.build_primordial_blue_trade_plan("R_30", 100)
+
+    assert plan["supported"] is False
+    assert "V10" in plan["reason"]
+    assert "V100 1s" in plan["reason"]
+
+
+def test_primordial_blue_plan_for_v75_1s_uses_four_leg_split():
+    plan = server.build_primordial_blue_trade_plan("1HZ75V", 100)
+
+    assert plan["supported"] is True
+    assert plan["market_label"] == "V75 1s"
+    assert plan["duration"] == 15
+    assert plan["duration_unit"] == "s"
+    assert [item["side"] for item in plan["plan"]] == ["HIGHER", "HIGHER", "LOWER", "LOWER"]
+    assert [item["barrier"] for item in plan["plan"]] == ["+0.17", "-0.17", "-0.17", "+0.17"]
+    assert [item["stake"] for item in plan["plan"]] == [40.0, 10.0, 25.0, 25.0]
+
+
+def test_run_primordial_blue_sends_two_v75_trades(monkeypatch):
+    state = {
+        "ws_connected": True,
+        "ws": object(),
+        "balance": 250.0,
+        "current_symbol": "R_75",
+        "unchain_hl": {
+            "primordial_blue_enabled": True,
+            "higher_stake": 100.0,
+        },
+    }
+    placed = []
+
+    monkeypatch.setattr(server, "_check_unchain_hl_risk_block", lambda state: None)
+    monkeypatch.setattr(server, "_get_open_unchain_active_entries", lambda state: [])
+    _set_unchain_series(monkeypatch, _strong_up_series())
+    monkeypatch.setattr(server.socketio, "emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        server,
+        "_send_unchain_hl_trade",
+        lambda client_id, **kwargs: placed.append(kwargs) or (True, "ok"),
+    )
+
+    assert server._run_unchain_primordial_blue("cid", state) is True
+    assert len(placed) == 2
+    assert [item["side"] for item in placed] == ["HIGHER", "LOWER"]
+    assert [item["barrier"] for item in placed] == ["-8.80", "-8.80"]
+    assert [item["stake"] for item in placed] == [83.33, 16.67]
+    assert all(item["duration"] == 10 for item in placed)
+    assert all(item["duration_unit"] == "t" for item in placed)
+    assert all(item["entry_source"] == "PRIMORDIAL_BLUE" for item in placed)
+    assert all(item["mode"] == "PRIMORDIAL_BLUE" for item in placed)
+    assert state["unchain_hl"]["primordial_blue_cycle_active"] is True
+
+
+def test_run_primordial_blue_skips_when_balance_cannot_cover_full_cycle(monkeypatch):
+    state = {
+        "ws_connected": True,
+        "ws": object(),
+        "balance": 5.0,
+        "current_symbol": "R_75",
+        "unchain_hl": {
+            "primordial_blue_enabled": True,
+            "higher_stake": 100.0,
+        },
+    }
+    placed = []
+
+    monkeypatch.setattr(server, "_check_unchain_hl_risk_block", lambda state: None)
+    monkeypatch.setattr(server, "_get_open_unchain_active_entries", lambda state: [])
+    _set_unchain_series(monkeypatch, _strong_up_series())
+    monkeypatch.setattr(server.socketio, "emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        server,
+        "_send_unchain_hl_trade",
+        lambda client_id, **kwargs: placed.append(kwargs) or (True, "ok"),
+    )
+
+    assert server._run_unchain_primordial_blue("cid", state) is False
+    assert placed == []
+    assert "need" in state["unchain_hl"]["primordial_blue_last_reason"].lower()
+    assert "total balance" in state["unchain_hl"]["primordial_blue_last_reason"].lower()
+
+
+def test_run_primordial_blue_skips_when_total_stake_cannot_cover_minimum_leg_size(monkeypatch):
+    state = {
+        "ws_connected": True,
+        "ws": object(),
+        "balance": 50.0,
+        "current_symbol": "R_75",
+        "unchain_hl": {
+            "primordial_blue_enabled": True,
+            "higher_stake": 1.0,
+        },
+    }
+    placed = []
+    toasts = []
+
+    monkeypatch.setattr(server, "_check_unchain_hl_risk_block", lambda state: None)
+    monkeypatch.setattr(server, "_get_open_unchain_active_entries", lambda state: [])
+    monkeypatch.setattr(server, "_maybe_emit_unchain_pair_failure_toast", lambda cid, _state, msg, **kwargs: toasts.append(msg))
+    monkeypatch.setattr(
+        server,
+        "_send_unchain_hl_trade",
+        lambda client_id, **kwargs: placed.append(kwargs) or (True, "ok"),
+    )
+
+    assert server._run_unchain_primordial_blue("cid", state) is False
+    assert placed == []
+    assert toasts
+    assert "too low" in state["unchain_hl"]["primordial_blue_last_reason"].lower()
+    assert "$0.35" in state["unchain_hl"]["primordial_blue_last_reason"]
+
+
+def test_run_primordial_blue_sends_four_v75_1s_trades(monkeypatch):
+    state = {
+        "ws_connected": True,
+        "ws": object(),
+        "balance": 250.0,
+        "current_symbol": "1HZ75V",
+        "unchain_hl": {
+            "primordial_blue_enabled": True,
+            "higher_stake": 100.0,
+        },
+    }
+    placed = []
+
+    monkeypatch.setattr(server, "_check_unchain_hl_risk_block", lambda state: None)
+    monkeypatch.setattr(server, "_get_open_unchain_active_entries", lambda state: [])
+    _set_unchain_series(monkeypatch, _strong_up_series(step=0.08))
+    monkeypatch.setattr(server.socketio, "emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        server,
+        "_send_unchain_hl_trade",
+        lambda client_id, **kwargs: placed.append(kwargs) or (True, "ok"),
+    )
+
+    assert server._run_unchain_primordial_blue("cid", state) is True
+    assert len(placed) == 4
+    assert [item["side"] for item in placed] == ["HIGHER", "HIGHER", "LOWER", "LOWER"]
+    assert [item["barrier"] for item in placed] == ["+0.17", "-0.17", "-0.17", "+0.17"]
+    assert [item["stake"] for item in placed] == [40.0, 10.0, 25.0, 25.0]
+    assert all(item["duration"] == 15 for item in placed)
+    assert all(item["duration_unit"] == "s" for item in placed)
+
+
+def test_run_primordial_blue_skips_when_market_is_not_in_solid_uptrend(monkeypatch):
+    state = {
+        "ws_connected": True,
+        "ws": object(),
+        "balance": 250.0,
+        "current_symbol": "R_75",
+        "unchain_hl": {
+            "primordial_blue_enabled": True,
+            "higher_stake": 100.0,
+        },
+    }
+    placed = []
+
+    monkeypatch.setattr(server, "_check_unchain_hl_risk_block", lambda state: None)
+    monkeypatch.setattr(server, "_get_open_unchain_active_entries", lambda state: [])
+    _set_unchain_series(monkeypatch, _strong_down_series())
+    monkeypatch.setattr(server.socketio, "emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        server,
+        "_send_unchain_hl_trade",
+        lambda client_id, **kwargs: placed.append(kwargs) or (True, "ok"),
+    )
+
+    assert server._run_unchain_primordial_blue("cid", state) is False
+    assert placed == []
+    assert "drifting down" in state["unchain_hl"]["primordial_blue_last_reason"].lower()
+
+
+def test_primordial_blue_waits_for_cycle_to_settle_before_rearming(monkeypatch):
+    state = {
+        "ws_connected": True,
+        "ws": object(),
+        "balance": 250.0,
+        "current_symbol": "R_75",
+        "unchain_hl": {
+            "primordial_blue_enabled": True,
+            "primordial_blue_cycle_active": True,
+            "higher_stake": 100.0,
+        },
+    }
+
+    monkeypatch.setattr(server, "_check_unchain_hl_risk_block", lambda state: None)
+    monkeypatch.setattr(server, "_get_open_unchain_active_entries", lambda state: [])
+
+    assert server._run_unchain_primordial_blue("cid", state) is False
+    assert state["unchain_hl"]["primordial_blue_cycle_active"] is False
+    assert state["unchain_hl"]["primordial_blue_next_fire_at"] > 0.0
+
+
+def test_toggle_primordial_blue_disables_other_unchain_auto_modes(monkeypatch):
+    state = {
+        "current_symbol": "R_75",
+        "unchain_hl": {
+            "auto_both_enabled": True,
+            "ai_auto_trade_enabled": True,
+            "koolkid_hl_enabled": True,
+            "koolkid_both_enabled": True,
+            "directional_auto_enabled": True,
+            "directional_auto_side": "HIGHER",
+            "directional_auto_barrier": "+0.12",
+            "higher_stake": 100.0,
+        },
+    }
+
+    monkeypatch.setattr(server, "_get_open_unchain_active_entries", lambda state: [])
+    monkeypatch.setattr(server, "_run_unchain_primordial_blue", lambda cid, state: False)
+
+    with server.app.app_context():
+        response = server._toggle_unchain_primordial_blue("cid", state, {"enabled": True})
+        data = response.get_json()
+
+    u = state["unchain_hl"]
+    assert data["status"] == "success"
+    assert u["primordial_blue_enabled"] is True
+    assert u["auto_both_enabled"] is False
+    assert u["ai_auto_trade_enabled"] is False
+    assert u["directional_auto_enabled"] is False
+    assert u["koolkid_hl_enabled"] is False
+    assert u["koolkid_both_enabled"] is False
+    assert data["payload"]["unchain"]["primordial_blue"]["enabled"] is True
+
+
+def test_toggle_primordial_blue_returns_error_toast_when_full_cycle_cannot_be_funded(monkeypatch):
+    state = {
+        "current_symbol": "R_75",
+        "unchain_hl": {
+            "higher_stake": 100.0,
+        },
+    }
+
+    monkeypatch.setattr(server, "_get_open_unchain_active_entries", lambda state: [])
+    monkeypatch.setattr(
+        server,
+        "_run_unchain_primordial_blue",
+        lambda cid, state: state["unchain_hl"].update({"primordial_blue_last_reason": "Primordial Blue failed: need $100.00 total balance for the Primordial Blue cycle"}) or False,
+    )
+
+    with server.app.app_context():
+        response = server._toggle_unchain_primordial_blue("cid", state, {"enabled": True})
+        data = response.get_json()
+
+    assert data["status"] == "success"
+    assert data["toast_type"] == "error"
+    assert "need $100.00 total balance" in data["message"]
+
+
+def test_toggle_primordial_blue_returns_error_toast_when_total_stake_is_too_low_for_split(monkeypatch):
+    state = {
+        "current_symbol": "R_75",
+        "unchain_hl": {
+            "higher_stake": 1.0,
+        },
+    }
+
+    monkeypatch.setattr(server, "_get_open_unchain_active_entries", lambda state: [])
+    monkeypatch.setattr(
+        server,
+        "_run_unchain_primordial_blue",
+        lambda cid, state: state["unchain_hl"].update({"primordial_blue_last_reason": "Primordial Blue skipped: total stake $1.00 is too low for the V75 split. Every leg must stay at or above $0.35."}) or False,
+    )
+
+    with server.app.app_context():
+        response = server._toggle_unchain_primordial_blue("cid", state, {"enabled": True})
+        data = response.get_json()
+
+    assert data["status"] == "success"
+    assert data["toast_type"] == "error"
+    assert "too low" in data["message"].lower()
+
+
+def test_hybrid_plan_for_v75_uses_equal_two_leg_split():
+    plan = server.build_hybrid_trade_plan("R_75", 100)
+
+    assert plan["supported"] is True
+    assert plan["market_label"] == "V75"
+    assert plan["duration"] == 15
+    assert plan["duration_unit"] == "s"
+    assert [item["side"] for item in plan["plan"]] == ["HIGHER", "LOWER"]
+    assert [item["barrier"] for item in plan["plan"]] == ["+3.88", "-3.88"]
+    assert [item["stake"] for item in plan["plan"]] == [50.0, 50.0]
+
+
+@pytest.mark.parametrize(
+    ("symbol", "market_label", "higher_barrier", "lower_barrier"),
+    [
+        ("R_10", "V10", "+0.09", "-0.09"),
+        ("R_25", "V25", "+0.15", "-0.15"),
+        ("R_100", "V100", "+0.10", "-0.10"),
+        ("1HZ75V", "V75 1s", "+0.50", "-0.50"),
+        ("1HZ100V", "V100 1s", "+0.20", "-0.20"),
+        ("1HZ25V", "V25 1s", "+40.2", "-40.2"),
+    ],
+)
+def test_hybrid_plan_supports_requested_market_presets(symbol, market_label, higher_barrier, lower_barrier):
+    plan = server.build_hybrid_trade_plan(symbol, 100)
+
+    assert plan["supported"] is True
+    assert plan["market_label"] == market_label
+    assert plan["duration"] == 15
+    assert plan["duration_unit"] == "s"
+    assert [item["side"] for item in plan["plan"]] == ["HIGHER", "LOWER"]
+    assert [item["barrier"] for item in plan["plan"]] == [higher_barrier, lower_barrier]
+    assert [item["stake"] for item in plan["plan"]] == [50.0, 50.0]
+
+
+def test_hybrid_plan_rejects_total_stake_when_split_leg_falls_below_minimum():
+    plan = server.build_hybrid_trade_plan("R_75", 0.5)
+
+    assert plan["supported"] is True
+    assert plan["plan"] == []
+    assert "too low" in plan["reason"].lower()
+    assert "$0.35" in plan["reason"]
+
+
+def test_run_hybrid_sends_two_v75_trades(monkeypatch):
+    state = {
+        "ws_connected": True,
+        "ws": object(),
+        "balance": 250.0,
+        "current_symbol": "R_75",
+        "unchain_hl": {
+            "hybrid_enabled": True,
+            "higher_stake": 100.0,
+        },
+    }
+    placed = []
+
+    monkeypatch.setattr(server, "_check_unchain_hl_risk_block", lambda state: None)
+    monkeypatch.setattr(server, "_get_open_unchain_active_entries", lambda state: [])
+    _set_unchain_series(monkeypatch, _strong_up_series(step=0.6))
+    monkeypatch.setattr(server.socketio, "emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        server,
+        "_send_unchain_hl_trade",
+        lambda client_id, **kwargs: placed.append(kwargs) or (True, "ok"),
+    )
+
+    assert server._run_unchain_hybrid("cid", state) is True
+    assert len(placed) == 2
+    assert [item["side"] for item in placed] == ["HIGHER", "LOWER"]
+    assert [item["barrier"] for item in placed] == ["+3.88", "-3.88"]
+    assert [item["stake"] for item in placed] == [50.0, 50.0]
+    assert all(item["duration"] == 15 for item in placed)
+    assert all(item["duration_unit"] == "s" for item in placed)
+    assert all(item["entry_source"] == "HYBRID" for item in placed)
+    assert all(item["mode"] == "HYBRID" for item in placed)
+
+
+def test_run_hybrid_sends_two_v75_trades_on_clear_down_move(monkeypatch):
+    state = {
+        "ws_connected": True,
+        "ws": object(),
+        "balance": 250.0,
+        "current_symbol": "R_75",
+        "unchain_hl": {
+            "hybrid_enabled": True,
+            "higher_stake": 100.0,
+        },
+    }
+    placed = []
+
+    monkeypatch.setattr(server, "_check_unchain_hl_risk_block", lambda state: None)
+    monkeypatch.setattr(server, "_get_open_unchain_active_entries", lambda state: [])
+    _set_unchain_series(monkeypatch, _strong_down_series(step=0.6))
+    monkeypatch.setattr(server.socketio, "emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        server,
+        "_send_unchain_hl_trade",
+        lambda client_id, **kwargs: placed.append(kwargs) or (True, "ok"),
+    )
+
+    assert server._run_unchain_hybrid("cid", state) is True
+    assert len(placed) == 2
+    assert [item["side"] for item in placed] == ["HIGHER", "LOWER"]
+
+
+def test_run_hybrid_skips_when_balance_cannot_cover_full_cycle(monkeypatch):
+    state = {
+        "ws_connected": True,
+        "ws": object(),
+        "balance": 25.0,
+        "current_symbol": "R_75",
+        "unchain_hl": {
+            "hybrid_enabled": True,
+            "higher_stake": 100.0,
+        },
+    }
+    placed = []
+
+    monkeypatch.setattr(server, "_check_unchain_hl_risk_block", lambda state: None)
+    monkeypatch.setattr(server, "_get_open_unchain_active_entries", lambda state: [])
+    _set_unchain_series(monkeypatch, _strong_up_series(step=0.6))
+    monkeypatch.setattr(server.socketio, "emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        server,
+        "_send_unchain_hl_trade",
+        lambda client_id, **kwargs: placed.append(kwargs) or (True, "ok"),
+    )
+
+    assert server._run_unchain_hybrid("cid", state) is False
+    assert placed == []
+    assert "total balance" in state["unchain_hl"]["hybrid_last_reason"].lower()
+
+
+def test_run_hybrid_skips_when_market_is_stuck_in_middle_zone(monkeypatch):
+    state = {
+        "ws_connected": True,
+        "ws": object(),
+        "balance": 250.0,
+        "current_symbol": "R_75",
+        "unchain_hl": {
+            "hybrid_enabled": True,
+            "higher_stake": 100.0,
+        },
+    }
+    placed = []
+
+    monkeypatch.setattr(server, "_check_unchain_hl_risk_block", lambda state: None)
+    monkeypatch.setattr(server, "_get_open_unchain_active_entries", lambda state: [])
+    _set_unchain_series(monkeypatch, _flat_series())
+    monkeypatch.setattr(server.socketio, "emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        server,
+        "_send_unchain_hl_trade",
+        lambda client_id, **kwargs: placed.append(kwargs) or (True, "ok"),
+    )
+
+    assert server._run_unchain_hybrid("cid", state) is False
+    assert placed == []
+    assert (
+        "middle zone" in state["unchain_hl"]["hybrid_last_reason"].lower()
+        or "too flat" in state["unchain_hl"]["hybrid_last_reason"].lower()
+    )
+
+
+def test_toggle_hybrid_returns_error_toast_when_total_stake_is_too_low_for_split(monkeypatch):
+    state = {
+        "current_symbol": "R_75",
+        "unchain_hl": {
+            "higher_stake": 0.5,
+        },
+    }
+
+    monkeypatch.setattr(server, "_get_open_unchain_active_entries", lambda state: [])
+    monkeypatch.setattr(
+        server,
+        "_run_unchain_hybrid",
+        lambda cid, state: state["unchain_hl"].update({"hybrid_last_reason": "Hybrid skipped: total stake $0.50 is too low for the V75 split. Every leg must stay at or above $0.35."}) or False,
+    )
+
+    with server.app.app_context():
+        response = server._toggle_unchain_hybrid("cid", state, {"enabled": True})
+        data = response.get_json()
+
+    assert data["status"] == "success"
+    assert data["toast_type"] == "error"
+    assert "too low" in data["message"].lower()

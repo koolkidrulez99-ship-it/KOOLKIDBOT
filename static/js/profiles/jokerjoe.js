@@ -6,6 +6,23 @@
   function isActive() { try { return typeof activeProfile !== "undefined" && activeProfile === PROFILE; } catch (e) { return false; } }
   function safeToast(msg, type) { try { if (typeof showToast === "function") showToast(msg, type || "info"); } catch (e) {} }
 
+  function currencyPayload(payload) {
+    return payload || {};
+  }
+
+  function money(value, payload) {
+    const num = Number(value || 0);
+    try { if (typeof formatCurrencyAmount === "function") return formatCurrencyAmount(num, currencyPayload(payload)); } catch (e) {}
+    return Number.isFinite(num) ? `$${Math.abs(num).toFixed(2)}` : "—";
+  }
+
+  function signedMoney(value, payload) {
+    const num = Number(value || 0);
+    try { if (typeof formatSignedCurrencyAmount === "function") return formatSignedCurrencyAmount(num, currencyPayload(payload)); } catch (e) {}
+    if (!Number.isFinite(num)) return "—";
+    return `${num >= 0 ? "+" : "-"}$${Math.abs(num).toFixed(2)}`;
+  }
+
   function getEl(id) { return document.getElementById(id); }
 
   function setText(id, value) {
@@ -117,7 +134,7 @@
     if (lowest1Btn) lowest1Btn.style.background = mode === "lowest_pct" && lowestCount === 1 ? "#22c55e" : "#1e293b";
     if (status) {
       if (mode === "lowest_pct") {
-        const rec = state.aiLowestRecoveryOnly ? ` • Recovery ON ($${Number(state.aiLowestRecoveryDeficit || 0).toFixed(2)} left)` : "";
+        const rec = state.aiLowestRecoveryOnly ? ` • Recovery ON (${money(Number(state.aiLowestRecoveryDeficit || 0))} left)` : "";
         status.innerText = `Lowest % mode (DIFFERS): touch → move-away → next tick • ${lowestCount} trade${lowestCount === 1 ? "" : "s"} • 10s cooldown${rec}`;
       } else {
         status.innerText = "Golden Digits mode: existing backend AI AUTO logic";
@@ -609,7 +626,7 @@
         }
       }
 
-      safeToast(`🤖AI Lowest % batch done: ${batchProfit >= 0 ? "+" : ""}${batchProfit.toFixed(2)}${state.aiLowestRecoveryOnly ? ` • Recovery $${Number(state.aiLowestRecoveryDeficit || 0).toFixed(2)} left` : ""}`, batchProfit >= 0 ? "success" : "error");
+      safeToast(`🤖AI Lowest % batch done: ${signedMoney(batchProfit)}${state.aiLowestRecoveryOnly ? ` • Recovery ${money(Number(state.aiLowestRecoveryDeficit || 0))} left` : ""}`, batchProfit >= 0 ? "success" : "error");
       updateAIAutoModeModalUiJokerjoe();
     }
   }

@@ -269,6 +269,14 @@ def _push_event(session, text):
         session["events"] = session["events"][-16:]
 
 
+def _format_session_money(session, value, *, signed=False):
+    try:
+        amount = float(value)
+    except Exception:
+        return "—"
+    return f"{'+' if signed and amount > 0 else '-' if amount < 0 else ''}${abs(amount):.2f}"
+
+
 def _normalize_budget(value):
     try:
         amount = float(value)
@@ -816,13 +824,13 @@ def handle_auto_session_contract_settled(state, contract, meta):
         session["wins"] = int(session.get("wins", 0) or 0) + 1
         session["loss_streak"] = 0
         button_entry["wins"] = int(button_entry.get("wins", 0) or 0) + 1
-        _push_event(session, f"Win +${profit:.2f}")
+        _push_event(session, f"Win {_format_session_money(session, profit, signed=True)}")
     else:
         session["budget_used"] = round(float(session.get("budget_used", 0.0) or 0.0) + abs(profit), 2)
         session["losses"] = int(session.get("losses", 0) or 0) + 1
         session["loss_streak"] = int(session.get("loss_streak", 0) or 0) + 1
         button_entry["losses"] = int(button_entry.get("losses", 0) or 0) + 1
-        _push_event(session, f"Loss ${profit:.2f}")
+        _push_event(session, f"Loss {_format_session_money(session, profit, signed=True)}")
     total_button_trades = int(button_entry.get("wins", 0) or 0) + int(button_entry.get("losses", 0) or 0)
     button_entry["winrate"] = round((float(button_entry.get("wins", 0) or 0) / total_button_trades) * 100.0, 1) if total_button_trades else 0.0
     session["trade_index"] = int(session.get("trade_index", 0) or 0) + 1

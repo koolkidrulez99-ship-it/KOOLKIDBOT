@@ -14,6 +14,7 @@
     scanner: null,
     bothAnalyzerEnabled: false,
     koolkidPanelOpen: false,
+    directionalPanelOpen: false,
     dirtyFields: new Set(),
     isSaving: false,
     tradeRequestInFlight: false,
@@ -48,6 +49,11 @@
     "unchainLowerStake",
     "unchainHigherBarrier",
     "unchainLowerBarrier",
+    "unchainUseSharedDuration",
+    "unchainHigherDuration",
+    "unchainHigherDurationUnit",
+    "unchainLowerDuration",
+    "unchainLowerDurationUnit",
     "unchainDirectionalAutoSide",
     "unchainDirectionalAutoBarrier",
     "unchainKoolkidHigherBarrier",
@@ -94,6 +100,18 @@
   function el(id) { return document.getElementById(id); }
   function setText(id, v) { const n = el(id); if (n) n.innerText = v == null ? "—" : String(v); }
   function toast(msg, type) { try { if (typeof showToast === "function") showToast(msg, type || "info"); } catch (e) {} }
+  function currencyPayload(payload) { return payload || state.lastPayload || {}; }
+  function money(v, payload) {
+    try { if (typeof formatCurrencyAmount === "function") return formatCurrencyAmount(v, currencyPayload(payload)); } catch (e) {}
+    const n = Number(v);
+    return Number.isFinite(n) ? `$${Math.abs(n).toFixed(2)}` : "—";
+  }
+  function signedMoney(v, payload) {
+    try { if (typeof formatSignedCurrencyAmount === "function") return formatSignedCurrencyAmount(v, currencyPayload(payload)); } catch (e) {}
+    const n = Number(v);
+    if (!Number.isFinite(n)) return "—";
+    return `${n >= 0 ? "+" : "-"}$${Math.abs(n).toFixed(2)}`;
+  }
 
   function ensureTradeCountdownToast() {
     const container = document.getElementById("toastContainer");
@@ -423,6 +441,7 @@
     const directionalAutoStableProfits = directionalStableProfitsToggle
       ? !!directionalStableProfitsToggle.checked
       : !!state.directional_auto_stable_profits;
+    const useSharedDuration = !!(el("unchainUseSharedDuration") ? el("unchainUseSharedDuration").checked : true);
     const directionalBothTradesToggle = el("unchainDirectionalBothTradesToggle");
     const directionalAutoBothTrades = directionalBothTradesToggle
       ? !!directionalBothTradesToggle.checked
@@ -457,8 +476,14 @@
       koolkid_hl_sim_side: koolkidHlSimSide,
       koolkid_reversal_enabled: koolkidReversalEnabled,
       koolkid_half_barrier_enabled: koolkidHalfBarrierEnabled,
+      use_shared_duration: useSharedDuration,
       duration: readInteger("unchainDuration", 5),
       duration_unit: readText("unchainDurationUnit", "t").toLowerCase(),
+      higher_duration: readInteger("unchainHigherDuration", 5),
+      higher_duration_unit: readText("unchainHigherDurationUnit", "t").toLowerCase(),
+      lower_duration: readInteger("unchainLowerDuration", 5),
+      lower_duration_unit: readText("unchainLowerDurationUnit", "t").toLowerCase(),
+      contract_selector_mode: "AUTO_SELECT",
       tp: readNumber("unchainTp", 0),
       sl: readNumber("unchainSl", 0),
       auto_sl: !!state.auto_sl,
@@ -814,16 +839,22 @@
     `;
   }
 
-  function applyDurationPresets(forceSelect) {
-    const unit = (el("unchainDurationUnit") || {}).value || "t";
-    const select = el("unchainDuration");
+  function applyDurationPresets(targetOrForce, maybeUnitId, maybePreferredValue) {
+    const explicitTarget = typeof targetOrForce === "string";
+    const selectId = explicitTarget ? targetOrForce : "unchainDuration";
+    const unitId = explicitTarget ? (maybeUnitId || "unchainDurationUnit") : "unchainDurationUnit";
+    const forceSelect = explicitTarget ? false : !!targetOrForce;
+    const select = el(selectId);
     if (!select) return;
+    const unit = (el(unitId) || {}).value || "t";
     const presets = DURATION_PRESETS[unit] || [];
     if (!presets.length) return;
     const presetKey = `${unit}:${presets.join(",")}`;
     const previousPresetKey = String(select.dataset.presetKey || "");
     const shouldRebuild = !!forceSelect || previousPresetKey !== presetKey || select.options.length !== presets.length;
-    const current = select.value;
+    const current = explicitTarget
+      ? String(maybePreferredValue != null ? maybePreferredValue : (select.value || ""))
+      : select.value;
     if (shouldRebuild) {
       select.innerHTML = presets.map((v) => `<option value="${v}">${v}</option>`).join("");
       select.dataset.presetKey = presetKey;
@@ -835,6 +866,51 @@
     }
     if (shouldRebuild || forceSelect) {
       select.value = String(current);
+    }
+  }
+
+  function usesSharedDuration(un) {
+    if (un && typeof un.use_shared_duration !== "undefined") return !!un.use_shared_duration;
+    const node = el("unchainUseSharedDuration");
+    return node ? !!node.checked : true;
+  }
+
+  function updateDurationModeUI(force) {
+    const sharedEnabled = usesSharedDuration();
+    const higherWrap = el("unchainHigherDurationWrap");
+    const lowerWrap = el("unchainLowerDurationWrap");
+    const modeLabel = el("unchainDurationModeLabel");
+    const sharedDuration = el("unchainDuration");
+    const sharedUnit = el("unchainDurationUnit");
+    const higherDuration = el("unchainHigherDuration");
+    const higherUnit = el("unchainHigherDurationUnit");
+    const lowerDuration = el("unchainLowerDuration");
+    const lowerUnit = el("unchainLowerDurationUnit");
+    if (higherWrap) higherWrap.style.display = sharedEnabled ? "none" : "grid";
+    if (lowerWrap) lowerWrap.style.display = sharedEnabled ? "none" : "grid";
+    if (modeLabel) {
+      modeLabel.innerText = sharedEnabled
+        ? "Both trades use the shared duration."
+        : "Higher and Lower now keep their own saved durations.";
+      modeLabel.style.color = sharedEnabled ? "#94a3b8" : "#67e8f9";
+    }
+    [sharedDuration, sharedUnit].forEach((node) => {
+      if (!node) return;
+      node.disabled = !sharedEnabled;
+      node.style.opacity = sharedEnabled ? "1" : "0.55";
+    });
+    [higherDuration, higherUnit, lowerDuration, lowerUnit].forEach((node) => {
+      if (!node) return;
+      node.disabled = sharedEnabled;
+      node.style.opacity = sharedEnabled ? "0.65" : "1";
+    });
+    if (force) {
+      if (sharedEnabled) {
+        applyDurationPresets(true);
+      } else {
+        applyDurationPresets("unchainHigherDuration", "unchainHigherDurationUnit", readInteger("unchainHigherDuration", 5));
+        applyDurationPresets("unchainLowerDuration", "unchainLowerDurationUnit", readInteger("unchainLowerDuration", 5));
+      }
     }
   }
 
@@ -925,6 +1001,9 @@
     const options = opts || {};
     const barrierForce = !!force || !!options.forceBarriers;
     const barrierOnly = !!options.barrierOnly;
+    const protectSharedDurationFields = !force && (isFieldDirty("unchainDuration") || isFieldDirty("unchainDurationUnit"));
+    const protectHigherDurationFields = !force && (isFieldDirty("unchainHigherDuration") || isFieldDirty("unchainHigherDurationUnit"));
+    const protectLowerDurationFields = !force && (isFieldDirty("unchainLowerDuration") || isFieldDirty("unchainLowerDurationUnit"));
     const halfEnabled = !!un.half_barrier_enabled;
     state.auto_sl = !!un.auto_sl;
     state.half_barrier_enabled = halfEnabled;
@@ -961,9 +1040,31 @@
     setFieldValue("unchainKoolkidLiveDurationUnit", String(un.koolkid_live_duration_unit || "t"), force);
     setFieldValue("unchainKoolkidHlLossPct", String(un.koolkid_hl_loss_trigger_pct || 50), force);
     setFieldValue("unchainKoolkidHlSimSide", String(un.koolkid_hl_sim_side || ((un.koolkid_hl && un.koolkid_hl.sim_side) || "AUTO")).toUpperCase(), force);
-    setFieldValue("unchainDurationUnit", (un.duration_unit || "t").toLowerCase(), force);
-    setFieldValue("unchainDuration", String(un.duration || 5), force);
-    applyDurationPresets(!!force);
+    const sharedToggle = el("unchainUseSharedDuration");
+    if (sharedToggle && (force || !isFieldDirty("unchainUseSharedDuration"))) {
+      sharedToggle.checked = typeof un.use_shared_duration === "undefined" ? true : !!un.use_shared_duration;
+    }
+    if (!protectSharedDurationFields) {
+      setFieldValue("unchainDurationUnit", (un.duration_unit || "t").toLowerCase(), force);
+      applyDurationPresets(true);
+      setFieldValue("unchainDuration", String(un.duration || 5), force);
+    } else {
+      applyDurationPresets("unchainDuration", "unchainDurationUnit", readInteger("unchainDuration", un.duration || 5));
+    }
+    if (!protectHigherDurationFields) {
+      setFieldValue("unchainHigherDurationUnit", (un.higher_duration_unit || un.duration_unit || "t").toLowerCase(), force);
+      applyDurationPresets("unchainHigherDuration", "unchainHigherDurationUnit", un.higher_duration || un.duration || 5);
+      setFieldValue("unchainHigherDuration", String(un.higher_duration || un.duration || 5), force);
+    } else {
+      applyDurationPresets("unchainHigherDuration", "unchainHigherDurationUnit", readInteger("unchainHigherDuration", un.higher_duration || un.duration || 5));
+    }
+    if (!protectLowerDurationFields) {
+      setFieldValue("unchainLowerDurationUnit", (un.lower_duration_unit || un.duration_unit || "t").toLowerCase(), force);
+      applyDurationPresets("unchainLowerDuration", "unchainLowerDurationUnit", un.lower_duration || un.duration || 5);
+      setFieldValue("unchainLowerDuration", String(un.lower_duration || un.duration || 5), force);
+    } else {
+      applyDurationPresets("unchainLowerDuration", "unchainLowerDurationUnit", readInteger("unchainLowerDuration", un.lower_duration || un.duration || 5));
+    }
     setFieldValue("unchainTp", String(un.tp || 0), force);
     setFieldValue("unchainSl", String(un.sl || 0), force);
     setFieldValue("unchainAutoConfidence", String(Math.max(45, Math.min(80, Number(un.auto_start_threshold || 48)))), force);
@@ -977,6 +1078,7 @@
     applyDirectionalStableProfitsToggle();
     applyDirectionalBothTradesToggle();
     applyAutoConfidenceLabel();
+    updateDurationModeUI(true);
   }
 
   function syncHalfBarrierPreview() {
@@ -1312,7 +1414,10 @@
   function renderDirectionalAuto(un) {
     const btn = el("unchainDirectionalAutoBtn");
     const meta = el("unchainDirectionalAutoMeta");
+    const modal = el("unchainDirectionalAutoBody");
+    const modalMeta = el("unchainDirectionalAutoModalMeta");
     const summary = el("unchainDirectionalAutoSummary");
+    const toggleBtn = el("unchainDirectionalAutoToggleBtn");
     const data = (un && un.directional_auto) || {};
     const enabled = !!(un && un.directional_auto_enabled);
     const side = String((data && data.side) || (un && un.directional_auto_side) || "HIGHER").toUpperCase();
@@ -1335,27 +1440,103 @@
       btn.style.background = enabled ? "#1d4ed8" : "#2563eb";
       btn.style.color = "#fff";
     }
+    if (modal) modal.style.display = state.directionalPanelOpen ? "flex" : "none";
+    if (toggleBtn) {
+      toggleBtn.innerText = enabled
+        ? `⚡ DIRECTIONAL AUTO: ON • ${side} • ${status}`
+        : "⚡ DIRECTIONAL AUTO: OFF";
+      toggleBtn.style.background = enabled ? "#1d4ed8" : "#2563eb";
+      toggleBtn.style.color = "#fff";
+    }
     if (summary) summary.innerText = `${side} • ${barrier}${bothTradesEnabled ? " • BOTH" : ""}`;
+    let metaText = "Directional auto is OFF.";
     if (meta) {
       if (!enabled) {
-        meta.innerText = "Directional auto is OFF.";
+        metaText = "Directional auto is OFF.";
       } else if (status === "COOLDOWN") {
-        meta.innerText = `Directional auto cooldown ${cooldown.toFixed(1)}s • ${side} • barrier ${barrier}${bothTradesEnabled ? " • both trades ON" : ""}${stableEnabled ? " • stable profits ON" : ""} • ${reason}`;
+        metaText = `Directional auto cooldown ${cooldown.toFixed(1)}s • ${side} • barrier ${barrier}${bothTradesEnabled ? " • both trades ON" : ""}${stableEnabled ? " • stable profits ON" : ""} • ${reason}`;
       } else {
-        meta.innerText = `Directional auto ${side} • barrier ${barrier} • move ${movementPct.toFixed(0)}% • sim ${simulationWinRate.toFixed(0)}% • confidence ${finalConfidence.toFixed(0)}% / ${threshold.toFixed(0)}%${bothTradesEnabled ? " • both trades ON" : ""}${stableEnabled ? " • stable profits ON" : ""}${reducedNextTrade ? " • next trade 10% stake" : ""} • ${reason}`;
+        metaText = `Directional auto ${side} • barrier ${barrier} • move ${movementPct.toFixed(0)}% • sim ${simulationWinRate.toFixed(0)}% • confidence ${finalConfidence.toFixed(0)}% / ${threshold.toFixed(0)}%${bothTradesEnabled ? " • both trades ON" : ""}${stableEnabled ? " • stable profits ON" : ""}${reducedNextTrade ? " • next trade 10% stake" : ""} • ${reason}`;
+      }
+      meta.innerText = metaText;
+    }
+    if (modalMeta) modalMeta.innerText = metaText;
+  }
+
+  function renderPrimordialBlue(un) {
+    const btn = el("unchainPrimordialBlueBtn");
+    const meta = el("unchainPrimordialBlueMeta");
+    const data = (un && un.primordial_blue) || {};
+    const enabled = !!(un && un.primordial_blue_enabled);
+    const status = String((data && data.label) || (enabled ? "ARMED" : "OFF")).toUpperCase();
+    const reason = String((data && data.reason) || "Primordial Blue is OFF.");
+    const marketLabel = String((data && data.market_label) || "V75");
+    const splitText = String((data && data.split_text) || "HIGHER -8.80 5 parts • LOWER -8.80 1 part");
+    const duration = Number((data && data.duration) || 5);
+    const durationUnit = String((data && data.duration_unit) || "t").toUpperCase();
+    const currentSymbol = String((data && data.current_symbol) || "");
+    const supported = !!(data && data.supported);
+
+    if (btn) {
+      btn.innerText = enabled
+        ? `🔵 PRIMORDIAL BLUE: ON • ${status}`
+        : "🔵 PRIMORDIAL BLUE: OFF";
+      btn.style.background = enabled ? "#1e40af" : "#1d4ed8";
+      btn.style.color = "#eff6ff";
+    }
+    if (meta) {
+      if (!enabled) {
+        meta.innerText = "Primordial Blue is OFF.";
+      } else if (!supported) {
+        meta.innerText = `Primordial Blue is ON but waiting for ${marketLabel}. Current market: ${currentSymbol || "—"}.`;
+      } else if (status === "RUNNING") {
+        meta.innerText = `Primordial Blue is running its ${marketLabel} cycle • ${duration}${durationUnit} • ${splitText}.`;
+      } else {
+        meta.innerText = `${reason} ${marketLabel} preset • ${duration}${durationUnit} • ${splitText}.`;
+      }
+    }
+  }
+
+  function renderHybrid(un) {
+    const btn = el("unchainHybridBtn");
+    const meta = el("unchainHybridMeta");
+    const data = (un && un.hybrid) || {};
+    const enabled = !!(un && un.hybrid_enabled);
+    const status = String((data && data.label) || (enabled ? "ARMED" : "OFF")).toUpperCase();
+    const reason = String((data && data.reason) || "Hybrid is OFF.");
+    const marketLabel = String((data && data.market_label) || "V75");
+    const splitText = String((data && data.split_text) || "HIGHER +3.88 50% • LOWER -3.88 50%");
+    const duration = Number((data && data.duration) || 10);
+    const durationUnit = String((data && data.duration_unit) || "t").toUpperCase();
+    const currentSymbol = String((data && data.current_symbol) || "");
+    const supported = !!(data && data.supported);
+
+    if (btn) {
+      btn.innerText = enabled
+        ? `🟢 HYBRID: ON • ${status}`
+        : "🟢 HYBRID: OFF";
+      btn.style.background = enabled ? "#15803d" : "#16a34a";
+      btn.style.color = "#f0fdf4";
+    }
+    if (meta) {
+      if (!enabled) {
+        meta.innerText = "Hybrid is OFF.";
+      } else if (!supported) {
+        meta.innerText = `Hybrid is ON but waiting for ${marketLabel}. Current market: ${currentSymbol || "—"}.`;
+      } else if (status === "RUNNING") {
+        meta.innerText = `Hybrid is running its ${marketLabel} cycle • ${duration}${durationUnit} • ${splitText}.`;
+      } else {
+        meta.innerText = `${reason} ${marketLabel} preset • ${duration}${durationUnit} • ${splitText}.`;
       }
     }
   }
 
   function fmtUsd(v) {
-    const n = Number(v);
-    return Number.isFinite(n) ? `$${n.toFixed(2)}` : "—";
+    return money(v);
   }
 
   function fmtSignedUsd(v) {
-    const n = Number(v);
-    if (!Number.isFinite(n)) return "—";
-    return `${n >= 0 ? "+" : "-"}$${Math.abs(n).toFixed(2)}`;
+    return signedMoney(v);
   }
 
   function renderExpectedProfitPreview(preview) {
@@ -1381,12 +1562,17 @@
     const form = readForm();
     const signature = JSON.stringify([
       form.symbol,
+      form.use_shared_duration,
       form.higher_stake,
       form.lower_stake,
       form.higher_barrier,
       form.lower_barrier,
       form.duration,
       form.duration_unit,
+      form.higher_duration,
+      form.higher_duration_unit,
+      form.lower_duration,
+      form.lower_duration_unit,
     ]);
     state.expectedProfitSignature = signature;
     state.expectedProfitLoading = true;
@@ -1504,7 +1690,33 @@
     return `${trendText} • ${simulationText} • ${qualityText}`;
   }
 
-  function renderHigherLowerPrediction(prediction) {
+  function getSelectorReasonLine(data) {
+    const contractType = String(data && data.chosen_contract_type || "").toUpperCase();
+    if (contractType === "TOUCH / NO TOUCH") {
+      const model = data && data.touch_no_touch_model || {};
+      const preferred = String(model.preferred_side || "").toUpperCase();
+      const sim = model && model.simulation || {};
+      const barrierRatio = Number(data && data.market_context && data.market_context.barrier_distance_ratio);
+      let barrierText = "Barrier mixed";
+      if (Number.isFinite(barrierRatio)) {
+        barrierText = preferred === "TOUCH"
+          ? (barrierRatio <= 1 ? "Barrier close" : "Barrier reachable")
+          : (barrierRatio >= 1 ? "Barrier safer" : "Barrier still close");
+      }
+      const speedScore = Number(model && model.score_breakdown && model.score_breakdown.speed_push && (preferred === "TOUCH" ? model.score_breakdown.speed_push.touch_score : model.score_breakdown.speed_push.no_touch_score));
+      const flowText = preferred === "TOUCH"
+        ? ((Number.isFinite(speedScore) && speedScore >= 68) ? "Market fast" : "Push building")
+        : ((Number.isFinite(speedScore) && speedScore >= 62) ? "Market calm" : "Escape building");
+      const simScore = preferred === "TOUCH" ? Number(sim.touch_win_rate) : Number(sim.no_touch_win_rate);
+      const simText = Number.isFinite(simScore) && simScore >= 60 ? "Sim agrees" : "Sim mixed";
+      return `${barrierText} • ${flowText} • ${simText}`;
+    }
+    const model = data && data.higher_lower_model || {};
+    const side = String(model.preferred_side || "HIGHER").toUpperCase() === "LOWER" ? "LOWER" : "HIGHER";
+    return getPredictionReasons(model, side);
+  }
+
+  function renderUnchainAutoAnalysis(prediction) {
     const data = prediction && typeof prediction === "object" ? prediction : {};
     const higher = Number.isFinite(Number(data.higher_pct)) ? Number(data.higher_pct) : 50;
     const lower = Number.isFinite(Number(data.lower_pct)) ? Number(data.lower_pct) : 50;
@@ -1537,10 +1749,8 @@
       ? (actionable ? reasonLine : `${reasonLine} • Edge still too close to trust`)
       : summary);
     setText("unchainPredictionBarValue", `${dominantPct.toFixed(0)}%`);
-
-    const bar = el("unchainPredictionBarFill");
-    if (bar) bar.style.width = `${Math.max(8, Math.min(100, dominantPct))}%`;
-
+    const fill = el("unchainPredictionBarFill");
+    if (fill) fill.style.width = `${Math.max(8, Math.min(100, dominantPct))}%`;
     if (primary) {
       primary.innerText = actionable
         ? (dominantSide === "HIGHER" ? "TAKE HIGHER" : "TAKE LOWER")
@@ -1550,7 +1760,54 @@
     }
   }
 
-  function buildHigherLowerPredictionRequest() {
+  function renderHigherLowerPrediction(prediction) {
+    const data = prediction && typeof prediction === "object" ? prediction : {};
+    const ok = String(data.status || "").toLowerCase() === "success";
+    const card = el("unchainContractSelectorCard");
+    const primary = el("unchainSelectorPrimaryAction");
+    if (!card) return;
+    const hlModel = ok && data.higher_lower_model && typeof data.higher_lower_model === "object"
+      ? data.higher_lower_model
+      : {};
+    const higherPct = ok ? Number(hlModel.higher_pct != null ? hlModel.higher_pct : 50) : 0;
+    const lowerPct = ok ? Number(hlModel.lower_pct != null ? hlModel.lower_pct : 50) : 0;
+    const side = ok
+      ? String(hlModel.preferred_side || (higherPct >= lowerPct ? "HIGHER" : "LOWER")).toUpperCase()
+      : "SKIP";
+    const tradeConfidence = ok ? Number(data.hl_confidence || hlModel.model_confidence || 0) : 0;
+    const modeLabel = "HIGHER / LOWER";
+    const confidenceLabel = String(hlModel.confidence_label || data.confidence_label || "Skip").toUpperCase();
+    const tradeValid = ok && !!hlModel.model_valid;
+    const primaryLabel = ok
+      ? (side === "LOWER" ? (tradeValid ? "TAKE LOWER" : "WATCH LOWER") : (tradeValid ? "TAKE HIGHER" : "WATCH HIGHER"))
+      : "SCANNING";
+
+    card.className = `card contract-selector-panel ${ok ? "is-hl" : "is-skip"}`;
+    setText("unchainSelectorKicker", "SELECTED CONTRACT");
+    setText("unchainSelectorModePill", modeLabel);
+    setText("unchainSelectorHlConfidence", `HIGHER: ${Math.max(0, Math.min(100, higherPct)).toFixed(0)}%`);
+    setText("unchainSelectorTntConfidence", `LOWER: ${Math.max(0, Math.min(100, lowerPct)).toFixed(0)}%`);
+    setText("unchainSelectorContractType", "HIGHER / LOWER");
+    setText("unchainSelectorTradeConfidence", `${tradeConfidence.toFixed(0)}%`);
+    setText("unchainSelectorConfidenceLabel", `(${confidenceLabel})`);
+    setText(
+      "unchainSelectorReasoning",
+      ok
+        ? String(hlModel.reasoning_summary || hlModel.summary || getSelectorReasonLine(data) || "Waiting for cleaner Higher / Lower structure.")
+        : "Waiting for enough recent ticks to score Higher versus Lower."
+    );
+    const bar = el("unchainSelectorProgressFill");
+    if (bar) bar.style.width = `${Math.max(0, Math.min(100, tradeConfidence))}%`;
+    if (primary) {
+      primary.innerText = primaryLabel;
+      primary.dataset.selectorContractType = "HIGHER / LOWER";
+      primary.dataset.selectorSide = side;
+      primary.dataset.tradeValid = tradeValid ? "1" : "0";
+      primary.disabled = !tradeValid;
+    }
+  }
+
+  function buildUnchainAutoAnalysisRequest() {
     const form = readForm();
     return {
       symbol: getCurrentMarketSymbol(),
@@ -1559,21 +1816,37 @@
     };
   }
 
+  function buildHigherLowerPredictionRequest() {
+    const form = readForm();
+    return {
+      profile: PROFILE,
+      symbol: getCurrentMarketSymbol(),
+      duration: form.duration,
+      duration_unit: form.duration_unit,
+      contract_selector_mode: "AUTO_SELECT",
+      higher_barrier: form.higher_barrier,
+      lower_barrier: form.lower_barrier,
+      side: form.directional_auto_side,
+    };
+  }
+
   async function refreshHigherLowerPrediction() {
     if (!isActive() || state.predictionLoading) return;
-    const payload = buildHigherLowerPredictionRequest();
-    const signature = JSON.stringify(payload);
+    const autoPayload = buildUnchainAutoAnalysisRequest();
+    const selectorPayload = buildHigherLowerPredictionRequest();
+    const signature = JSON.stringify([autoPayload, selectorPayload]);
     state.predictionSignature = signature;
     state.predictionLoading = true;
     try {
-      const r = await postJSON("/higher_lower_prediction", payload);
+      const [autoRes, selectorRes] = await Promise.all([
+        postJSON("/higher_lower_prediction", autoPayload),
+        postJSON("/contract_selector_analysis", selectorPayload),
+      ]);
       if (signature !== state.predictionSignature) return;
-      if (r.data) {
-        renderHigherLowerPrediction(r.data);
-      } else {
-        renderHigherLowerPrediction(null);
-      }
+      renderUnchainAutoAnalysis(autoRes && autoRes.data ? autoRes.data : null);
+      renderHigherLowerPrediction(selectorRes && selectorRes.data ? selectorRes.data : null);
     } catch (e) {
+      renderUnchainAutoAnalysis({ status: "error", message: "Could not load Higher / Lower auto analysis right now." });
       renderHigherLowerPrediction({ status: "error", message: "Could not load Higher / Lower prediction right now." });
     } finally {
       state.predictionLoading = false;
@@ -1657,8 +1930,8 @@
       const net = Number(setup.net);
       const exp = Number(setup.expected_profit);
       const prob = Number(setup.probability);
-      const netText = Number.isFinite(net) ? `${net >= 0 ? "+" : "-"}$${Math.abs(net).toFixed(2)}` : "—";
-      const expText = Number.isFinite(exp) ? `${exp >= 0 ? "+" : "-"}$${Math.abs(exp).toFixed(2)}` : "—";
+    const netText = Number.isFinite(net) ? signedMoney(net, setup) : "—";
+    const expText = Number.isFinite(exp) ? signedMoney(exp, setup) : "—";
       const probText = Number.isFinite(prob) ? `${(prob * 100).toFixed(1)}%` : "—";
       return `${Number.isFinite(dur) ? `${dur}${unit}` : "—"} ${barrier} • Net ${netText} • E ${expText} • P ${probText}`;
     };
@@ -1895,8 +2168,8 @@
       const remaining = Number(sim.countdown_remaining || 0);
       const checkRemaining = Number(sim.check_remaining || 0);
       const lossTriggerPct = Number(sim.loss_trigger_pct || data.loss_trigger_pct || 50);
-      const valueText = Number.isFinite(estValue) ? `$${estValue.toFixed(2)}` : "—";
-      const pnlText = Number.isFinite(estPnl) ? `${estPnl >= 0 ? "+" : "-"}$${Math.abs(estPnl).toFixed(2)}` : "—";
+    const valueText = Number.isFinite(estValue) ? money(estValue, sim) : "—";
+    const pnlText = Number.isFinite(estPnl) ? signedMoney(estPnl, sim) : "—";
       const countdownUnit = String(sim.countdown_unit || "s").toLowerCase();
       const liveUnit = String(sim.live_duration_unit || data.live_duration_unit || "t").toLowerCase();
       status.innerText =
@@ -1927,6 +2200,14 @@
     renderKoolkidHl(un || {});
   }
 
+  function toggleDirectionalAutoPanel(forceOpen) {
+    state.directionalPanelOpen = typeof forceOpen === "boolean"
+      ? forceOpen
+      : !state.directionalPanelOpen;
+    const un = state.lastPayload && (state.lastPayload.unchain || state.lastPayload);
+    renderDirectionalAuto(un || {});
+  }
+
   function attachKoolkidModal(root) {
     return;
   }
@@ -1946,6 +2227,25 @@
     });
     document.addEventListener("keydown", (evt) => {
       if (evt.key !== "Escape" || !state.koolkidPanelOpen) return;
+      closePanel();
+    });
+  }
+
+  function bindDirectionalAutoModal() {
+    const modal = el("unchainDirectionalAutoBody");
+    if (!modal || modal.dataset.unchainModalBound === "1") return;
+    modal.dataset.unchainModalBound = "1";
+    const closePanel = () => {
+      state.directionalPanelOpen = false;
+      const un = state.lastPayload && (state.lastPayload.unchain || state.lastPayload);
+      renderDirectionalAuto(un || {});
+    };
+    modal.addEventListener("click", (evt) => {
+      if (evt.target !== modal) return;
+      closePanel();
+    });
+    document.addEventListener("keydown", (evt) => {
+      if (evt.key !== "Escape" || !state.directionalPanelOpen) return;
       closePanel();
     });
   }
@@ -2067,11 +2367,11 @@
     }
     wrap.innerHTML = items.map((item) => {
       const type = String(item.type || item.side || "TRADE").toUpperCase();
-      const profit = item.open_profit == null ? "—" : `$${Number(item.open_profit).toFixed(2)}`;
+    const profit = item.open_profit == null ? "—" : signedMoney(Number(item.open_profit), item);
       const profitColor = item.open_profit == null ? "#f8fafc" : (Number(item.open_profit) >= 0 ? "#22c55e" : "#ef4444");
       const durationLabel = `${item.duration || "—"}${String(item.duration_unit || "").toUpperCase()}`;
       const countdown = formatTradeCountdown(item);
-      return `<div class="unchain-active-item"><div class="top"><div style="font-weight:900;color:${type === "HIGHER" ? "#22c55e" : "#ef4444"};">${type}</div><div class="unchain-chip">#${item.contract_id || "—"}</div></div><div style="margin-top:8px;color:#cbd5e1;display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;"><div><span class="unchain-label">Stake</span><div>$${Number(item.stake || 0).toFixed(2)}</div></div><div><span class="unchain-label">Barrier</span><div>${item.barrier || "—"}</div></div><div><span class="unchain-label">Duration</span><div>${durationLabel}</div></div><div><span class="unchain-label">Countdown</span><div>${countdown}</div></div><div><span class="unchain-label">Symbol</span><div>${item.symbol || "—"}</div></div><div><span class="unchain-label">Open P/L</span><div style="color:${profitColor};font-weight:800;">${profit}</div></div></div></div>`;
+    return `<div class="unchain-active-item"><div class="top"><div style="font-weight:900;color:${type === "HIGHER" ? "#22c55e" : "#ef4444"};">${type}</div><div class="unchain-chip">#${item.contract_id || "—"}</div></div><div style="margin-top:8px;color:#cbd5e1;display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;"><div><span class="unchain-label">Stake</span><div>${money(Number(item.stake || 0), item)}</div></div><div><span class="unchain-label">Barrier</span><div>${item.barrier || "—"}</div></div><div><span class="unchain-label">Duration</span><div>${durationLabel}</div></div><div><span class="unchain-label">Countdown</span><div>${countdown}</div></div><div><span class="unchain-label">Symbol</span><div>${item.symbol || "—"}</div></div><div><span class="unchain-label">Open P/L</span><div style="color:${profitColor};font-weight:800;">${profit}</div></div></div></div>`;
     }).join("");
   }
 
@@ -2387,9 +2687,11 @@
     renderRiskBlock(un);
     renderAutoBoth(un);
     renderDirectionalAuto(un);
+    renderPrimordialBlue(un);
+    renderHybrid(un);
     const stats = (un && un.stats) || {};
     const net = Number(stats.net_pnl || 0);
-    setText("unchainNetPnl", `${net >= 0 ? "+" : "-"}$${Math.abs(net).toFixed(2)}`);
+    setText("unchainNetPnl", signedMoney(net, un));
     const pnlEl = el("unchainNetPnl");
     if (pnlEl) pnlEl.style.color = net >= 0 ? "#22c55e" : "#ef4444";
     setText("unchainWinLoss", `${Number(stats.wins || 0)} / ${Number(stats.losses || 0)}`);
@@ -2397,7 +2699,7 @@
     const lastResult = un.last_result;
     if (lastResult) {
       const p = Number(lastResult.profit || 0);
-      setText("unchainLastResult", `${String(lastResult.type || "TRADE").toUpperCase()} ${p >= 0 ? "+" : "-"}$${Math.abs(p).toFixed(2)}`);
+    setText("unchainLastResult", `${String(lastResult.type || "TRADE").toUpperCase()} ${signedMoney(p, lastResult)}`);
       const lr = el("unchainLastResult");
       if (lr) lr.style.color = p >= 0 ? "#22c55e" : "#ef4444";
     } else {
@@ -2556,7 +2858,7 @@
     }
   }
 
-  async function toggleDirectionalAuto() {
+  async function toggleDirectionalAutoEnabled() {
     await saveSettings(false);
     const current = !!(state.lastPayload && state.lastPayload.unchain && state.lastPayload.unchain.directional_auto_enabled);
     const r = await postJSON("/toggle_unchain_directional_auto", { enabled: !current });
@@ -2567,6 +2869,64 @@
       toast((r.data && (r.data.message || r.data.error)) || "Failed to toggle directional auto", "error");
       if (r.data && r.data.payload) renderPayload(r.data.payload);
     }
+  }
+
+  async function togglePrimordialBlue() {
+    await saveSettings(false);
+    const current = !!(state.lastPayload && state.lastPayload.unchain && state.lastPayload.unchain.primordial_blue_enabled);
+    const r = await postJSON("/toggle_unchain_primordial_blue", { enabled: !current });
+    if (r.ok && r.data) {
+      if (r.data.payload) renderPayload(r.data.payload, { forceForm: true });
+      toast(
+        r.data.message || (!current ? "Primordial Blue ON" : "Primordial Blue OFF"),
+        r.data.toast_type || (!current ? "success" : "warn")
+      );
+    } else {
+      toast((r.data && (r.data.message || r.data.error)) || "Failed to toggle Primordial Blue", "error");
+      if (r.data && r.data.payload) renderPayload(r.data.payload);
+    }
+  }
+
+  async function toggleHybrid() {
+    await saveSettings(false);
+    const current = !!(state.lastPayload && state.lastPayload.unchain && state.lastPayload.unchain.hybrid_enabled);
+    const r = await postJSON("/toggle_unchain_hybrid", { enabled: !current });
+    if (r.ok && r.data) {
+      if (r.data.payload) renderPayload(r.data.payload, { forceForm: true });
+      toast(
+        r.data.message || (!current ? "Hybrid ON" : "Hybrid OFF"),
+        r.data.toast_type || (!current ? "success" : "warn")
+      );
+    } else {
+      toast((r.data && (r.data.message || r.data.error)) || "Failed to toggle Hybrid", "error");
+      if (r.data && r.data.payload) renderPayload(r.data.payload);
+    }
+  }
+
+  async function handleAutoAnalysisPrimary() {
+    const btn = el("unchainAnalysisPrimaryAction");
+    if (!btn) return;
+    const side = String(btn.dataset.analysisSide || "HIGHER").toUpperCase();
+    const valid = btn.dataset.tradeValid === "1";
+    if (!valid) {
+      toast("Auto analysis says wait for a cleaner Higher / Lower setup.", "info");
+      return;
+    }
+    if (side === "LOWER") return sendTrade("LOWER");
+    return sendTrade("HIGHER");
+  }
+
+  async function handleSelectorPrimary() {
+    const btn = el("unchainSelectorPrimaryAction");
+    if (!btn) return;
+    const side = String(btn.dataset.selectorSide || "SKIP").toUpperCase();
+    const valid = btn.dataset.tradeValid === "1";
+    if (!valid) {
+      toast("Selector says skip this Higher / Lower setup for now.", "info");
+      return;
+    }
+    if (side === "LOWER") return sendTrade("LOWER");
+    return sendTrade("HIGHER");
   }
 
   async function handleAction(action, btn) {
@@ -2586,6 +2946,15 @@
         break;
       case "unchain-trade-both":
         await sendTrade("BOTH");
+        break;
+      case "unchain-analysis-primary":
+        await handleAutoAnalysisPrimary();
+        break;
+      case "unchain-selector-primary":
+        await handleSelectorPrimary();
+        break;
+      case "unchain-selector-skip":
+        scheduleHigherLowerPrediction(60);
         break;
       case "unchain-higher-preset":
         applyMainBarrierPreset("HIGHER", btn && btn.dataset ? btn.dataset.value : "+0.12");
@@ -2617,7 +2986,19 @@
         await toggleAiAutoTrade();
         break;
       case "unchain-toggle-directional-auto":
-        await toggleDirectionalAuto();
+        toggleDirectionalAutoPanel(true);
+        break;
+      case "unchain-directional-auto-toggle":
+        await toggleDirectionalAutoEnabled();
+        break;
+      case "unchain-directional-close":
+        toggleDirectionalAutoPanel(false);
+        break;
+      case "unchain-toggle-primordial-blue":
+        await togglePrimordialBlue();
+        break;
+      case "unchain-toggle-hybrid":
+        await toggleHybrid();
         break;
       case "unchain-close-all":
         await closeAll();
@@ -2710,6 +3091,10 @@
           renderBarrierMarketChart(state.lastPayload && (state.lastPayload.unchain || state.lastPayload) || {}, state.lastPayload || {});
         }
         if (id === "unchainAutoConfidence") applyAutoConfidenceLabel();
+        if (id === "unchainDurationUnit") applyDurationPresets();
+        if (id === "unchainHigherDurationUnit") applyDurationPresets("unchainHigherDuration", "unchainHigherDurationUnit");
+        if (id === "unchainLowerDurationUnit") applyDurationPresets("unchainLowerDuration", "unchainLowerDurationUnit");
+        if (id === "unchainUseSharedDuration") updateDurationModeUI(true);
         if (id === "unchainDirectionalAutoSide" || id === "unchainDirectionalAutoBarrier") {
           const summary = el("unchainDirectionalAutoSummary");
           if (summary) {
@@ -2718,6 +3103,13 @@
         }
         if (id === "unchainDuration" || id === "unchainDurationUnit") {
           scheduleHigherLowerPrediction(160);
+        }
+        if (
+          id === "unchainUseSharedDuration" ||
+          id === "unchainHigherDuration" || id === "unchainHigherDurationUnit" ||
+          id === "unchainLowerDuration" || id === "unchainLowerDurationUnit"
+        ) {
+          scheduleExpectedProfitPreview(140);
         }
         scheduleExpectedProfitPreview(180);
       });
@@ -2728,6 +3120,9 @@
           renderBarrierMarketChart(state.lastPayload && (state.lastPayload.unchain || state.lastPayload) || {}, state.lastPayload || {});
         }
         if (id === "unchainDurationUnit") applyDurationPresets();
+        if (id === "unchainHigherDurationUnit") applyDurationPresets("unchainHigherDuration", "unchainHigherDurationUnit");
+        if (id === "unchainLowerDurationUnit") applyDurationPresets("unchainLowerDuration", "unchainLowerDurationUnit");
+        if (id === "unchainUseSharedDuration") updateDurationModeUI(true);
         if (id === "unchainAutoConfidence") applyAutoConfidenceLabel();
         if (id === "unchainDirectionalAutoSide" || id === "unchainDirectionalAutoBarrier") {
           const summary = el("unchainDirectionalAutoSummary");
@@ -2741,6 +3136,13 @@
         }
         if (id === "unchainDuration" || id === "unchainDurationUnit") {
           scheduleHigherLowerPrediction(100);
+        }
+        if (
+          id === "unchainUseSharedDuration" ||
+          id === "unchainHigherDuration" || id === "unchainHigherDurationUnit" ||
+          id === "unchainLowerDuration" || id === "unchainLowerDurationUnit"
+        ) {
+          scheduleExpectedProfitPreview(80);
         }
         scheduleExpectedProfitPreview(100);
       });
@@ -2768,7 +3170,7 @@
   }
 
   function bindPredictionCardActions() {
-    const secondary = el("unchainPredictionSecondaryAction");
+    const secondary = el("unchainSelectorSecondaryAction");
     if (secondary && secondary.dataset.predictionBound !== "1") {
       secondary.dataset.predictionBound = "1";
       secondary.addEventListener("click", () => {
@@ -2789,6 +3191,9 @@
       }, "unchain_action_clicks_v2");
     }
     applyDurationPresets(true);
+    applyDurationPresets("unchainHigherDuration", "unchainHigherDurationUnit", readInteger("unchainHigherDuration", 5));
+    applyDurationPresets("unchainLowerDuration", "unchainLowerDurationUnit", readInteger("unchainLowerDuration", 5));
+    updateDurationModeUI(true);
     bindFormInputs();
     applyAutoSlBtn();
     applyHalfBarrierToggle();
@@ -2803,6 +3208,7 @@
     bindDirectionalStableProfitsToggle();
     bindDirectionalBothTradesToggle();
     bindKoolkidModal();
+    bindDirectionalAutoModal();
     bindMarketBarrierPersistence();
     bindPredictionCardActions();
   }

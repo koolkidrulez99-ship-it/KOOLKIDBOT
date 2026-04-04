@@ -12,6 +12,7 @@ import secrets
 import hashlib
 import math
 import statistics
+import ipaddress
 from decimal import Decimal, ROUND_DOWN
 from collections import deque
 
@@ -53,6 +54,12 @@ from strategies.jokerjoe import (
     _seqvix_jokerjoe_watch_label,
 )
 from strategies.human import HumanStrategy
+from strategies.mutant import (
+    NTTStrategy,
+    _clean_ntt_duration_unit,
+    _sanitize_ntt_duration,
+    _format_ntt_barrier,
+)
 from strategies.auto_session import (
     AUTO_SESSION_HISTORY_COUNT,
     AUTO_SESSION_MARKETS,
@@ -70,8 +77,20 @@ from strategies.auto_session import (
     start_auto_session,
     stop_auto_session,
 )
+from strategies.contract_selector import (
+    analyze_contract_selector,
+    contract_selector_mode_label,
+    normalize_contract_selector_mode,
+)
 from strategies.higher_lower_predictor import predict_higher_lower_percentages
+from strategies.hybrid import analyze_hybrid_market_state, build_hybrid_trade_plan, get_hybrid_market
 from strategies.market_moment import infer_simulation_winner, score_market_moment
+from strategies.primordial_blue import (
+    analyze_primordial_blue_market_state,
+    build_primordial_blue_trade_plan,
+    get_primordial_blue_market,
+)
+from strategies.touch_no_touch_predictor import predict_touch_no_touch_percentages
 try:
     import strategies.unchain as _unchain_module
     UnchainStrategy = _unchain_module.UnchainStrategy
@@ -162,6 +181,12 @@ clients = {}
 
 # heartbeat timeout (effectively disabled to avoid disconnects)
 HEARTBEAT_TIMEOUT_SEC = 10**12
+DERIV_WS_STALE_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_STALE_TIMEOUT_SEC", "18"))
+DERIV_WS_PING_INTERVAL_SEC = float(os.environ.get("DERIV_WS_PING_INTERVAL_SEC", "20"))
+DERIV_WS_PING_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_PING_TIMEOUT_SEC", "10"))
+MUTANT_DEPLOY_GATE_ENABLED = str(os.environ.get("MUTANT_DEPLOY_GATE_ENABLED", "1")).strip().lower() not in {"0", "false", "no", "off"}
+MUTANT_ALLOWED_EMAIL = str(os.environ.get("MUTANT_ALLOWED_EMAIL", "koolkidrulez99@gmail.com") or "").strip().lower()
+MUTANT_UNDER_CONSTRUCTION_MESSAGE = "Mutant is under construction on the deployed version."
 
 
 
@@ -412,6 +437,73 @@ def _get_user_row(username):
     out = _db_row_to_dict(c, row)
     conn.close()
     return out
+
+
+def _request_host_is_local():
+    host = str(getattr(request, "host", "") or "").split(":", 1)[0].strip().strip("[]").lower()
+    if not host:
+        return False
+    if host in {"localhost", "::1"}:
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+        return bool(ip.is_loopback or ip.is_private)
+    except ValueError:
+        return host.endswith(".local")
+
+
+def _current_user_email():
+    username = session.get("user")
+    if not username:
+        return ""
+    user_row = _get_user_row(username) or {}
+    return str(user_row.get("email") or "").strip().lower()
+
+
+def _mutant_access_state():
+    local_request = _request_host_is_local()
+    user_email = _current_user_email()
+    email_override = bool(MUTANT_ALLOWED_EMAIL and user_email and user_email == MUTANT_ALLOWED_EMAIL)
+    enabled = (not MUTANT_DEPLOY_GATE_ENABLED) or local_request or email_override
+    return {
+        "enabled": bool(enabled),
+        "under_construction": not bool(enabled),
+        "local": bool(local_request),
+        "email_override": bool(email_override),
+        "user_email": user_email,
+        "message": "" if enabled else MUTANT_UNDER_CONSTRUCTION_MESSAGE,
+    }
+
+
+def _mutant_under_construction_response(status_code=423):
+    access = _mutant_access_state()
+    return (
+        jsonify({
+            "status": "error",
+            "message": access.get("message") or MUTANT_UNDER_CONSTRUCTION_MESSAGE,
+            "mutant_access": access,
+        }),
+        status_code,
+    )
+
+
+def _mutant_under_construction_component_markup():
+    message = MUTANT_UNDER_CONSTRUCTION_MESSAGE
+    return f"""
+<div id=\"nttRoot\" class=\"card\" style=\"border:1px solid rgba(20,184,166,0.32);background:linear-gradient(180deg,rgba(15,23,42,0.98),rgba(8,47,73,0.96));box-shadow:0 18px 46px rgba(8,145,178,0.16);padding:22px;\">
+  <div style=\"display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;\">
+    <div>
+      <div style=\"font-size:12px;letter-spacing:0.16em;text-transform:uppercase;color:#5eead4;font-weight:800;\">Mutant</div>
+      <h3 style=\"margin:6px 0 0;font-size:28px;color:#f0fdfa;\">Under Construction</h3>
+    </div>
+    <div style=\"padding:8px 14px;border-radius:999px;border:1px solid rgba(45,212,191,0.3);background:rgba(20,184,166,0.14);color:#99f6e4;font-size:12px;font-weight:800;letter-spacing:0.12em;text-transform:uppercase;\">Deploy Preview</div>
+  </div>
+  <div style=\"margin-top:14px;padding:16px 18px;border-radius:18px;border:1px solid rgba(34,211,238,0.18);background:rgba(15,23,42,0.74);color:#cbd5e1;line-height:1.7;\">
+    <div style=\"font-size:15px;font-weight:700;color:#e6fffb;\">{message}</div>
+    <div style=\"margin-top:8px;font-size:13px;color:#94a3b8;\">The live Mutant profile is still available locally while we finish polishing the deployed version.</div>
+  </div>
+</div>
+""".strip()
 
 
 def _get_license_row(license_key):
@@ -1002,6 +1094,191 @@ def _hard_stop_all_strategies(state):
                     pass
 
 
+PROFILE_BUDGET_KEYS = ("KOOLKID", "JOKERJOE", "HUMAN", "UNCHAIN", "NTT")
+
+
+def _normalize_profile_budget_key(profile):
+    key = str(profile or "").upper().strip()
+    if key in PROFILE_BUDGET_KEYS:
+        return key
+    return "KOOLKID"
+
+
+def _new_profile_budget_entry():
+    return {
+        "amount": 0.0,
+        "realized_pnl": 0.0,
+        "reserved": 0.0,
+    }
+
+
+def _new_profile_budget_map():
+    return {key: _new_profile_budget_entry() for key in PROFILE_BUDGET_KEYS}
+
+
+def _safe_money(value, default=0.0):
+    try:
+        return float(value or 0.0)
+    except Exception:
+        return float(default or 0.0)
+
+
+def _ensure_profile_budgets(state):
+    budgets = state.get("profile_budgets")
+    if not isinstance(budgets, dict):
+        budgets = {}
+        state["profile_budgets"] = budgets
+    for key in PROFILE_BUDGET_KEYS:
+        entry = budgets.get(key)
+        if not isinstance(entry, dict):
+            budgets[key] = _new_profile_budget_entry()
+            continue
+        entry.setdefault("amount", 0.0)
+        entry.setdefault("realized_pnl", 0.0)
+        entry.setdefault("reserved", 0.0)
+    return budgets
+
+
+def _ensure_profile_budget(state, profile):
+    budgets = _ensure_profile_budgets(state)
+    key = _normalize_profile_budget_key(profile)
+    entry = budgets.get(key)
+    if not isinstance(entry, dict):
+        entry = _new_profile_budget_entry()
+        budgets[key] = entry
+    entry.setdefault("amount", 0.0)
+    entry.setdefault("realized_pnl", 0.0)
+    entry.setdefault("reserved", 0.0)
+    return entry
+
+
+def _profile_budget_snapshot(state, profile=None):
+    profile_key = _normalize_profile_budget_key(profile or state.get("active_profile"))
+    entry = _ensure_profile_budget(state, profile_key)
+    configured_budget = _effective_trade_balance(entry.get("amount", 0.0))
+    realized_pnl = round(_safe_money(entry.get("realized_pnl", 0.0)), 2)
+    reserved = _effective_trade_balance(entry.get("reserved", 0.0))
+    total_balance = _effective_trade_balance(state.get("balance", 0.0))
+    enabled = configured_budget > 0.0
+
+    if enabled:
+        gross_budget = max(0.0, round(configured_budget + realized_pnl, 2))
+        capped_budget = gross_budget if total_balance <= 0 else min(total_balance, gross_budget)
+        remaining_budget = max(0.0, round(capped_budget - reserved, 2))
+        display_balance = remaining_budget
+    else:
+        gross_budget = total_balance
+        remaining_budget = total_balance
+        display_balance = total_balance
+
+    return {
+        "profile": profile_key,
+        "enabled": enabled,
+        "configured_budget": configured_budget,
+        "realized_pnl": realized_pnl,
+        "reserved": reserved,
+        "gross_budget": round(gross_budget, 2),
+        "remaining_budget": round(remaining_budget, 2),
+        "display_balance": round(display_balance, 2),
+        "total_balance": round(total_balance, 2),
+    }
+
+
+def _serialize_profile_budgets(state):
+    payload = {}
+    for key in PROFILE_BUDGET_KEYS:
+        payload[key] = _profile_budget_snapshot(state, key)
+    return payload
+
+
+def _format_state_money(state, value, *, signed=False, trim_trailing=False, fallback="—"):
+    try:
+        amount = float(value)
+    except Exception:
+        return fallback
+    text = f"{abs(amount):.2f}"
+    if trim_trailing:
+        text = text.rstrip("0").rstrip(".")
+    if signed:
+        prefix = "+" if amount > 0 else "-" if amount < 0 else ""
+    else:
+        prefix = "-" if amount < 0 else ""
+    return f"{prefix}${text}"
+
+
+def _build_balance_payload(state, profile=None):
+    snapshot = _profile_budget_snapshot(state, profile)
+    return {
+        "balance": round(_safe_money(state.get("balance", 0.0)), 2),
+        "display_balance": snapshot.get("display_balance", 0.0),
+        "total_balance": snapshot.get("total_balance", 0.0),
+        "session_start_balance": state.get("session_start_balance"),
+        "active_profile": snapshot.get("profile"),
+        "active_profile_budget": snapshot,
+        "profile_budgets": _serialize_profile_budgets(state),
+    }
+
+
+def _emit_balance_payload(client_id, state):
+    socketio.emit("balance_update", _build_balance_payload(state), room=client_id)
+
+
+def _check_profile_budget_capacity(state, profile, amount):
+    amount_value = max(0.0, _safe_money(amount))
+    snapshot = _profile_budget_snapshot(state, profile)
+    if not snapshot.get("enabled"):
+        return True, None, snapshot
+    available = max(0.0, _safe_money(snapshot.get("remaining_budget")))
+    if amount_value <= (available + 1e-9):
+        return True, None, snapshot
+    profile_label = snapshot.get("profile") or _normalize_profile_budget_key(profile)
+    message = (
+        f"{profile_label} budget limit reached: need {_format_state_money(state, amount_value)}, "
+        f"but only {_format_state_money(state, available)} budget remains."
+    )
+    return False, message, snapshot
+
+
+def _reserve_profile_budget(state, profile, amount):
+    ok, message, snapshot = _check_profile_budget_capacity(state, profile, amount)
+    if not ok:
+        return False, message, None
+
+    amount_value = max(0.0, _safe_money(amount))
+    reservation = {
+        "profile": _normalize_profile_budget_key(profile),
+        "stake": round(amount_value, 2),
+        "enabled": bool(snapshot.get("enabled")),
+    }
+    if reservation["enabled"] and amount_value > 0:
+        entry = _ensure_profile_budget(state, reservation["profile"])
+        entry["reserved"] = round(max(0.0, _safe_money(entry.get("reserved")) + amount_value), 2)
+    return True, None, reservation
+
+
+def _release_profile_budget_reservation(state, reservation):
+    if not isinstance(reservation, dict):
+        return
+    if not reservation.get("enabled"):
+        return
+    profile_key = _normalize_profile_budget_key(reservation.get("profile"))
+    amount_value = max(0.0, _safe_money(reservation.get("stake")))
+    entry = _ensure_profile_budget(state, profile_key)
+    entry["reserved"] = round(max(0.0, _safe_money(entry.get("reserved")) - amount_value), 2)
+
+
+def _settle_profile_budget_reservation(state, reservation, profit):
+    if not isinstance(reservation, dict):
+        return
+    profile_key = _normalize_profile_budget_key(reservation.get("profile"))
+    was_enabled = bool(reservation.get("enabled"))
+    _release_profile_budget_reservation(state, reservation)
+    if not was_enabled:
+        return
+    entry = _ensure_profile_budget(state, profile_key)
+    entry["realized_pnl"] = round(_safe_money(entry.get("realized_pnl")) + _safe_money(profit), 2)
+
+
 def _build_default_client_state():
     return {
         "api_token": "",
@@ -1013,6 +1290,9 @@ def _build_default_client_state():
         "ws_reconnect_attempts": 0,
         "ws_connected": False,  # AUTHORIZED
         "ws_transport_connected": False,  # underlying transport open
+        "ws_last_message_at": 0.0,
+        "ws_last_authorized_at": 0.0,
+        "ws_stale_notified_at": 0.0,
         "active_profile": "KOOLKID",
         # Keep backend default market in sync with the frontend selector default.
         "current_symbol": "R_10",
@@ -1080,6 +1360,21 @@ def _build_default_client_state():
             "stats": {"wins": 0, "losses": 0, "net_pnl": 0.0},
             "risk_block_reason": None,
         },
+        "ntt": {
+            "touch_stake": 1.0,
+            "no_touch_stake": 1.0,
+            "touch_barrier": "+0.12",
+            "no_touch_barrier": "+0.12",
+            "duration": 5,
+            "duration_unit": "t",
+            "tp": 0.0,
+            "sl": 0.0,
+            "auto_sl": True,
+            "active_contracts": {},
+            "last_action": "Ready",
+            "last_result": None,
+            "risk_block_reason": None,
+        },
         "unchain_scanner": {
             "running": False,
             "symbols": [],
@@ -1095,8 +1390,11 @@ def _build_default_client_state():
             "total_ticks": 0,
         },
         "balance": 0.0,
+        "last_live_balance": 0.0,
         "balance_updated_at": 0.0,
         "session_start_balance": None,
+        "loginid": "UNKNOWN",
+        "profile_budgets": _new_profile_budget_map(),
         "auto_stake": 1.0,
         "req_meta": {},          # req_id -> meta
         "_proposal_waiters": {}, # req_id -> {"event","proposal","error"}
@@ -1106,7 +1404,8 @@ def _build_default_client_state():
             "KOOLKID": KoolKidStrategy(),
             "JOKERJOE": JokerJoeStrategy(),
             "HUMAN": HumanStrategy(),
-            "UNCHAIN": UnchainStrategy()
+            "UNCHAIN": UnchainStrategy(),
+            "NTT": NTTStrategy(),
         },
         # PATCH A: human_keep_alive flag
         "human_keep_alive": False,
@@ -1140,9 +1439,14 @@ def disconnect_client(client_id, reason="manual", emit=True):
     _hard_stop_all_strategies(state)
 
     clients[client_id] = _build_default_client_state()
+    reset_state = clients[client_id]
 
     if emit:
-        socketio.emit("connection_status", {"connected": False, "loginid": "UNKNOWN", "balance": 0.0}, room=client_id)
+        socketio.emit(
+            "connection_status",
+            {"connected": False, "loginid": "UNKNOWN", **_build_balance_payload(reset_state)},
+            room=client_id,
+        )
         socketio.emit("reset_ui", room=client_id)
         send_stats_update(client_id)
 
@@ -1599,18 +1903,20 @@ def admin_user_reassign_key():
 
 # ---------------- SOCKET.IO CONNECT ---------------- #
 @socketio.on("connect")
-def handle_connect():
+def handle_connect(auth=None):
     if not login_required():
         return False
 
     cid, state = get_client_state()
     join_room(cid)
+    connected = bool(state["ws_connected"]) and not _is_ws_stale(state)
+    if not connected and state.get("ws_connected"):
+        _mark_ws_unhealthy_and_reconnect(cid, state, "Deriv connection went stale. Reconnecting now...", emit_error=False)
 
     socketio.emit("connection_status", {
-        "connected": state["ws_connected"],
-        "loginid": "UNKNOWN",
-        "balance": state["balance"],
-        "session_start_balance": state.get("session_start_balance"),
+        "connected": connected,
+        "loginid": state.get("loginid", "UNKNOWN"),
+        **_build_balance_payload(state),
     }, room=cid)
 
     emit_profile_snapshot(cid)
@@ -1653,6 +1959,43 @@ def unchain_js_alias():
     return ("UNCHAIN profile JS not found", 404)
 
 
+@app.route("/static/components/mutant.html")
+@app.route("/static/components/ntt.html")
+def mutant_component_alias():
+    access = _mutant_access_state()
+    if not access.get("enabled"):
+        return app.response_class(_mutant_under_construction_component_markup(), mimetype="text/html")
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(base_dir, "static", "components", "mutant.html"),
+        os.path.join(base_dir, "static", "components", "ntt.html"),
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            return send_file(p)
+    return ("Mutant component not found", 404)
+
+
+@app.route("/static/js/profiles/mutant.js")
+@app.route("/static/js/profiles/ntt.js")
+def mutant_js_alias():
+    access = _mutant_access_state()
+    if not access.get("enabled"):
+        return app.response_class(
+            "(function(){ if(window.registerProfileModule){ window.registerProfileModule('NTT', {}); } })();",
+            mimetype="application/javascript",
+        )
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(base_dir, "static", "js", "profiles", "mutant.js"),
+        os.path.join(base_dir, "static", "js", "profiles", "ntt.js"),
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            return send_file(p)
+    return ("Mutant profile JS not found", 404)
+
+
 
 # ---------------- BOT ROUTE (PROTECTED) ---------------- #
 @app.route("/")
@@ -1661,7 +2004,11 @@ def index():
         return redirect(url_for("login"))
     if is_admin():
         return redirect(url_for("admin_panel"))
-    return render_template("index.html", username=session.get("user"))
+    return render_template(
+        "index.html",
+        username=session.get("user"),
+        mutant_access=_mutant_access_state(),
+    )
 
 
 @app.route("/koolkid-auto-trade")
@@ -1798,11 +2145,43 @@ def _effective_trade_balance(balance):
     return round(value + 1e-9, 2)
 
 
+def _estimate_profile_open_budget_exposure(state, profile):
+    profile_key = _normalize_profile_budget_key(profile)
+    total = 0.0
+
+    req_meta = state.get("req_meta") or {}
+    for meta in req_meta.values():
+        if not isinstance(meta, dict):
+            continue
+        if _normalize_profile_budget_key(meta.get("profile")) != profile_key:
+            continue
+        total += max(0.0, _safe_money(meta.get("stake")))
+
+    seen_meta = set()
+    contract_meta = state.get("contract_meta") or {}
+    for meta in contract_meta.values():
+        if not isinstance(meta, dict):
+            continue
+        marker = id(meta)
+        if marker in seen_meta:
+            continue
+        seen_meta.add(marker)
+        if _normalize_profile_budget_key(meta.get("profile")) != profile_key:
+            continue
+        total += max(0.0, _safe_money(meta.get("stake")))
+
+    return round(total + 1e-9, 2)
+
+
 def _resolve_post_contract_balance(state, profit):
     try:
         current_balance = float(state.get("balance", 0.0) or 0.0)
     except Exception:
         current_balance = 0.0
+    try:
+        last_live_balance = float(state.get("last_live_balance", 0.0) or 0.0)
+    except Exception:
+        last_live_balance = 0.0
     try:
         profit_value = float(profit or 0.0)
     except Exception:
@@ -1818,23 +2197,25 @@ def _resolve_post_contract_balance(state, profit):
     if last_balance_update_at and (now_ts - last_balance_update_at) <= 0.75:
         return current_balance
 
-    next_balance = current_balance + profit_value
+    base_balance = current_balance
+    if base_balance <= 0.0 and last_live_balance > 0.0:
+        base_balance = last_live_balance
+
+    next_balance = base_balance + profit_value
     state["balance"] = next_balance
     state["balance_updated_at"] = now_ts
+    if next_balance > 0.0:
+        state["last_live_balance"] = next_balance
     return next_balance
 
 
 # ---------------- DERIV BUY FUNCTION (PER CLIENT) ---------------- #
 def send_buy(client_id, contract_type, stake, symbol, barrier, duration=1, duration_unit="t", mode=None):
     state = clients.get(client_id)
-    if not state:
-        return False, "No client state"
-
+    ready, ready_msg = _ensure_trade_socket_ready(client_id, state)
+    if not ready:
+        return False, ready_msg
     ws = state.get("ws")
-    ws_connected = state.get("ws_connected", False)
-
-    if not ws_connected or not ws:
-        return False, "Not connected"
 
     try:
         stake_value = float(stake)
@@ -1880,6 +2261,14 @@ def send_buy(client_id, contract_type, stake, symbol, barrier, duration=1, durat
     if duration_unit not in ("t", "s", "m", "h"):
         duration_unit = "t"
 
+    budget_ok, budget_msg, budget_reservation = _reserve_profile_budget(state, profile, stake_value)
+    if not budget_ok:
+        try:
+            socketio.emit("api_error", {"message": budget_msg}, room=client_id)
+        except Exception:
+            pass
+        return False, budget_msg
+
     req_id = _new_req_id()
     state["req_meta"][req_id] = {
         "profile": profile,  # PATCH D: use the same profile variable
@@ -1891,6 +2280,7 @@ def send_buy(client_id, contract_type, stake, symbol, barrier, duration=1, durat
         "mode": mode,
         "duration": duration,
         "duration_unit": duration_unit,
+        "budget_reservation": budget_reservation,
     }
 
     payload = {
@@ -1913,6 +2303,7 @@ def send_buy(client_id, contract_type, stake, symbol, barrier, duration=1, durat
         ws.send(json.dumps(payload))
         return True, "Trade sent"
     except Exception as e:
+        _mark_ws_unhealthy_and_reconnect(client_id, state, "Deriv connection failed while sending a trade. Reconnecting now...")
         try:
             _pull_req_meta_by_req_id(state, req_id)
         except Exception:
@@ -1934,13 +2325,10 @@ def send_buy_with_profile(
     skip_local_balance_check=False,
 ):
     state = clients.get(client_id)
-    if not state:
-        return False, "No client state"
-
+    ready, ready_msg = _ensure_trade_socket_ready(client_id, state)
+    if not ready:
+        return False, ready_msg
     ws = state.get("ws")
-    ws_connected = state.get("ws_connected", False)
-    if not ws_connected or not ws:
-        return False, "Not connected"
 
     try:
         stake_value = float(stake)
@@ -1990,6 +2378,14 @@ def send_buy_with_profile(
     if duration_unit not in ("t", "s", "m", "h"):
         duration_unit = "t"
 
+    budget_ok, budget_msg, budget_reservation = _reserve_profile_budget(state, profile, stake_value)
+    if not budget_ok:
+        try:
+            socketio.emit("api_error", {"message": budget_msg}, room=client_id)
+        except Exception:
+            pass
+        return False, budget_msg
+
     req_id = _new_req_id()
     state["req_meta"][req_id] = {
         "profile": profile,
@@ -2001,6 +2397,7 @@ def send_buy_with_profile(
         "mode": mode,
         "duration": duration,
         "duration_unit": duration_unit,
+        "budget_reservation": budget_reservation,
     }
 
     payload = {
@@ -2021,10 +2418,17 @@ def send_buy_with_profile(
 
     try:
         ws.send(json.dumps(payload))
+        _emit_balance_payload(client_id, state)
         return True, "Trade sent"
     except Exception as e:
+        _mark_ws_unhealthy_and_reconnect(client_id, state, "Deriv connection failed while sending a trade. Reconnecting now...")
         try:
             _pull_req_meta_by_req_id(state, req_id)
+        except Exception:
+            pass
+        try:
+            _release_profile_budget_reservation(state, budget_reservation)
+            _emit_balance_payload(client_id, state)
         except Exception:
             pass
         return False, str(e)
@@ -2033,8 +2437,9 @@ def send_buy_with_profile(
 # ---------------- RISE/FALL ORDER (HUMAN Smart Assist) ---------------- #
 def place_risefall_order(client_id, signal):
     state = clients.get(client_id)
-    if not state or not state.get("ws_connected"):
-        return False, "Not connected"
+    ready, ready_msg = _ensure_trade_socket_ready(client_id, state)
+    if not ready:
+        return False, ready_msg
 
     strategy = state.get("strategies", {}).get("HUMAN")
     if strategy and hasattr(strategy, "enforce_tp_sl"):
@@ -2046,8 +2451,6 @@ def place_risefall_order(client_id, signal):
             pass
 
     ws = state.get("ws")
-    if not ws:
-        return False, "Not connected"
 
     direction = str(signal.get("direction") or "").upper()
     contract_map = {"RISE": "CALL", "FALL": "PUT"}
@@ -2061,6 +2464,14 @@ def place_risefall_order(client_id, signal):
     duration_unit = signal.get("duration_unit", "t") or "t"
     symbol_to_use = signal.get("symbol") or state.get("human_symbol") or state.get("current_symbol")
 
+    budget_ok, budget_msg, budget_reservation = _reserve_profile_budget(state, "HUMAN", stake)
+    if not budget_ok:
+        try:
+            socketio.emit("api_error", {"message": budget_msg}, room=client_id)
+        except Exception:
+            pass
+        return False, budget_msg
+
     req_id = _new_req_id()
     state["req_meta"][req_id] = {
         "profile": "HUMAN",
@@ -2071,6 +2482,7 @@ def place_risefall_order(client_id, signal):
         "time": now_time(),
         "mode": signal.get("mode") or "human_rf",
         "duration": duration,
+        "budget_reservation": budget_reservation,
     }
 
     payload = {
@@ -2090,10 +2502,17 @@ def place_risefall_order(client_id, signal):
 
     try:
         ws.send(json.dumps(payload))
+        _emit_balance_payload(client_id, state)
         return True, "Trade sent"
     except Exception as e:
+        _mark_ws_unhealthy_and_reconnect(client_id, state, "Deriv connection failed while sending a trade. Reconnecting now...")
         try:
             _pull_req_meta_by_req_id(state, req_id)
+        except Exception:
+            pass
+        try:
+            _release_profile_budget_reservation(state, budget_reservation)
+            _emit_balance_payload(client_id, state)
         except Exception:
             pass
         return False, str(e)
@@ -2153,6 +2572,7 @@ def _default_unchain_hl_state():
         "lower_stake": 1.0,
         "higher_barrier": "+0.12",
         "lower_barrier": "-0.12",
+        "use_shared_duration": True,
         "directional_auto_enabled": False,
         "directional_auto_side": "HIGHER",
         "directional_auto_barrier": "+0.12",
@@ -2166,8 +2586,21 @@ def _default_unchain_hl_state():
         "directional_auto_moment_snapshot": None,
         "directional_auto_next_fire_at": 0.0,
         "directional_auto_last_reason": "⚡ AUTO TRADE · 📈 HIGHER / 📉 LOWER is OFF.",
+        "primordial_blue_enabled": False,
+        "primordial_blue_cycle_active": False,
+        "primordial_blue_next_fire_at": 0.0,
+        "primordial_blue_last_reason": "🔵 Primordial Blue is OFF.",
+        "hybrid_enabled": False,
+        "hybrid_cycle_active": False,
+        "hybrid_next_fire_at": 0.0,
+        "hybrid_last_reason": "🟢 Hybrid is OFF.",
+        "contract_selector_mode": "AUTO_SELECT",
         "duration": 5,
         "duration_unit": "t",
+        "higher_duration": 5,
+        "higher_duration_unit": "t",
+        "lower_duration": 5,
+        "lower_duration_unit": "t",
         "tp": 0.0,
         "sl": 0.0,
         "auto_sl": True,
@@ -2286,6 +2719,7 @@ def _ensure_unchain_hl_state(state):
         cur["both_analyzer"].setdefault("tested_setups", 0)
         cur["both_analyzer"].setdefault("recommended", None)
     cur.setdefault("risk_block_reason", None)
+    cur["contract_selector_mode"] = normalize_contract_selector_mode(cur.get("contract_selector_mode", "AUTO_SELECT"))
     cur["half_barrier_enabled"] = bool(cur.get("half_barrier_enabled", False))
     cur["auto_both_enabled"] = bool(cur.get("auto_both_enabled", False))
     cur["ai_auto_trade_enabled"] = bool(cur.get("ai_auto_trade_enabled", False))
@@ -2331,6 +2765,20 @@ def _ensure_unchain_hl_state(state):
     cur["directional_auto_last_reason"] = str(
         cur.get("directional_auto_last_reason") or "⚡ AUTO TRADE · 📈 HIGHER / 📉 LOWER is OFF."
     )
+    cur["primordial_blue_enabled"] = bool(cur.get("primordial_blue_enabled", False))
+    cur["primordial_blue_cycle_active"] = bool(cur.get("primordial_blue_cycle_active", False))
+    try:
+        cur["primordial_blue_next_fire_at"] = max(0.0, float(cur.get("primordial_blue_next_fire_at", 0.0) or 0.0))
+    except Exception:
+        cur["primordial_blue_next_fire_at"] = 0.0
+    cur["primordial_blue_last_reason"] = str(cur.get("primordial_blue_last_reason") or "🔵 Primordial Blue is OFF.")
+    cur["hybrid_enabled"] = bool(cur.get("hybrid_enabled", False))
+    cur["hybrid_cycle_active"] = bool(cur.get("hybrid_cycle_active", False))
+    try:
+        cur["hybrid_next_fire_at"] = max(0.0, float(cur.get("hybrid_next_fire_at", 0.0) or 0.0))
+    except Exception:
+        cur["hybrid_next_fire_at"] = 0.0
+    cur["hybrid_last_reason"] = str(cur.get("hybrid_last_reason") or "🟢 Hybrid is OFF.")
     cur["koolkid_hl_enabled"] = bool(cur.get("koolkid_hl_enabled", False))
     cur["koolkid_hl_last_reason"] = str(cur.get("koolkid_hl_last_reason") or "KOOLKID Higher/Lower is OFF.")
     cur["koolkid_both_enabled"] = bool(cur.get("koolkid_both_enabled", False))
@@ -2513,8 +2961,13 @@ def _ensure_unchain_hl_state(state):
     except Exception:
         cur["auto_cycle_losses"] = 0
     cur["auto_last_cycle_had_loss"] = bool(cur.get("auto_last_cycle_had_loss", False))
+    cur["use_shared_duration"] = bool(cur.get("use_shared_duration", True))
     cur["duration_unit"] = _clean_unchain_duration_unit(cur.get("duration_unit", "t"))
     cur["duration"] = _sanitize_unchain_duration(cur.get("duration", 5), cur["duration_unit"])
+    cur["higher_duration_unit"] = _clean_unchain_duration_unit(cur.get("higher_duration_unit", cur["duration_unit"]))
+    cur["higher_duration"] = _sanitize_unchain_duration(cur.get("higher_duration", cur["duration"]), cur["higher_duration_unit"])
+    cur["lower_duration_unit"] = _clean_unchain_duration_unit(cur.get("lower_duration_unit", cur["duration_unit"]))
+    cur["lower_duration"] = _sanitize_unchain_duration(cur.get("lower_duration", cur["duration"]), cur["lower_duration_unit"])
     try:
         fallback_directional_barrier = _get_unchain_visible_barrier(cur, cur["directional_auto_side"], cur["duration_unit"])
     except Exception:
@@ -2572,6 +3025,2257 @@ def _ensure_unchain_hl_state(state):
             cur["koolkid_lower_barrier"] = "+0.06" if cur.get("koolkid_reversal_enabled") else "-0.06"
     state["unchain_hl"] = cur
     return cur
+
+
+def _default_ntt_state():
+    return {
+        "touch_stake": 1.0,
+        "no_touch_stake": 1.0,
+        "touch_barrier": "+0.12",
+        "no_touch_barrier": "+0.12",
+        "use_shared_duration": True,
+        "duration": 5,
+        "duration_unit": "t",
+        "touch_duration": 5,
+        "touch_duration_unit": "t",
+        "no_touch_duration": 5,
+        "no_touch_duration_unit": "t",
+        "tp": 0.0,
+        "sl": 0.0,
+        "auto_sl": True,
+        "contract_selector_mode": "AUTO_SELECT",
+        "active_contracts": {},
+        "last_action": "Ready",
+        "last_result": None,
+        "risk_block_reason": None,
+        "auto_both_enabled": False,
+        "auto_both_pair_active": False,
+        "pair_send_in_flight": False,
+        "auto_both_next_fire_at": 0.0,
+        "auto_both_last_reason": "AUTO BOTH is OFF.",
+        "market_default_symbol": None,
+        "market_default_key": None,
+        "koolkid_hl_enabled": False,
+        "koolkid_hl_cooldown_until": 0.0,
+        "koolkid_hl_last_reason": "KOOLKID Touch/No Touch is OFF.",
+        "koolkid_both_enabled": False,
+        "koolkid_both_cooldown_until": 0.0,
+        "koolkid_both_last_reason": "KOOLKID Both is OFF.",
+        "koolkid_sim_duration": 15,
+        "koolkid_sim_duration_unit": "s",
+        "koolkid_live_duration": 5,
+        "koolkid_live_duration_unit": "t",
+        "koolkid_hl_loss_trigger_pct": 50,
+        "koolkid_hl_sim_side": "AUTO",
+        "koolkid_reversal_enabled": False,
+        "koolkid_half_barrier_enabled": False,
+        "koolkid_touch_barrier": "",
+        "koolkid_no_touch_barrier": "",
+        "koolkid_hl_simulation": None,
+        "koolkid_both_simulation": None,
+    }
+
+
+def _is_ws_stale(state, now_ts=None):
+    if not state or not bool(state.get("ws_connected")):
+        return False
+    if now_ts is None:
+        now_ts = time.time()
+    try:
+        last_msg_at = float(state.get("ws_last_message_at", 0.0) or 0.0)
+    except Exception:
+        last_msg_at = 0.0
+    if last_msg_at <= 0.0:
+        return False
+    return (float(now_ts) - last_msg_at) > float(DERIV_WS_STALE_TIMEOUT_SEC)
+
+
+def _mark_ws_unhealthy_and_reconnect(client_id, state, message, *, emit_error=True):
+    if not state:
+        return
+    now_ts = time.time()
+    state["ws_connected"] = False
+    state["ws_transport_connected"] = False
+    state["loginid"] = "UNKNOWN"
+    socketio.emit(
+        "connection_status",
+        {"connected": False, "loginid": "UNKNOWN", **_build_balance_payload(state)},
+        room=client_id,
+    )
+    if emit_error:
+        try:
+            last_notice = float(state.get("ws_stale_notified_at", 0.0) or 0.0)
+        except Exception:
+            last_notice = 0.0
+        if (now_ts - last_notice) >= 4.0:
+            state["ws_stale_notified_at"] = now_ts
+            try:
+                socketio.emit("api_error", {"message": str(message)}, room=client_id)
+            except Exception:
+                pass
+    try:
+        ws = state.get("ws")
+        if ws:
+            ws.close()
+    except Exception:
+        pass
+    try:
+        _schedule_ws_reconnect(client_id, state.get("ws_nonce"), delay_sec=0.25)
+    except Exception:
+        pass
+
+
+def _ensure_trade_socket_ready(client_id, state, *, emit_error=True):
+    if not state:
+        return False, "No client state"
+    ws = state.get("ws")
+    if state.get("ws_connected") and ws and _is_ws_stale(state):
+        _mark_ws_unhealthy_and_reconnect(
+            client_id,
+            state,
+            "Deriv connection went stale. Reconnecting now...",
+            emit_error=emit_error,
+        )
+        return False, "Deriv connection went stale. Reconnecting now..."
+    if not state.get("ws_connected") or not ws:
+        if str(state.get("api_token", "") or "").strip():
+            try:
+                _schedule_ws_reconnect(client_id, state.get("ws_nonce"), delay_sec=0.25)
+            except Exception:
+                pass
+        return False, "Not connected"
+    return True, None
+
+
+def _ensure_ntt_state(state):
+    base = _default_ntt_state()
+    cur = state.setdefault("ntt", {}) or {}
+    for k, v in base.items():
+        if k not in cur:
+            cur[k] = v.copy() if isinstance(v, dict) else v
+    if not isinstance(cur.get("active_contracts"), dict):
+        cur["active_contracts"] = {}
+    cur["use_shared_duration"] = bool(cur.get("use_shared_duration", True))
+    cur["duration_unit"] = _clean_ntt_duration_unit(cur.get("duration_unit", "t"))
+    cur["duration"] = _sanitize_ntt_duration(cur.get("duration", 5), cur["duration_unit"])
+    cur["touch_duration_unit"] = _clean_ntt_duration_unit(cur.get("touch_duration_unit", cur.get("duration_unit", "t")))
+    cur["touch_duration"] = _sanitize_ntt_duration(cur.get("touch_duration", cur.get("duration", 5)), cur["touch_duration_unit"])
+    cur["no_touch_duration_unit"] = _clean_ntt_duration_unit(cur.get("no_touch_duration_unit", cur.get("duration_unit", "t")))
+    cur["no_touch_duration"] = _sanitize_ntt_duration(cur.get("no_touch_duration", cur.get("duration", 5)), cur["no_touch_duration_unit"])
+    try:
+        cur["touch_stake"] = max(0.35, float(cur.get("touch_stake", 1.0) or 1.0))
+    except Exception:
+        cur["touch_stake"] = 1.0
+    try:
+        cur["no_touch_stake"] = max(0.35, float(cur.get("no_touch_stake", cur.get("touch_stake", 1.0)) or cur.get("touch_stake", 1.0)))
+    except Exception:
+        cur["no_touch_stake"] = cur.get("touch_stake", 1.0)
+    try:
+        cur["touch_barrier"] = _format_ntt_barrier(cur.get("touch_barrier", "+0.12"), "TOUCH", cur["duration_unit"])
+    except Exception:
+        cur["touch_barrier"] = "+0.12"
+    try:
+        cur["no_touch_barrier"] = _format_ntt_barrier(cur.get("no_touch_barrier", "+0.12"), "NO_TOUCH", cur["duration_unit"])
+    except Exception:
+        cur["no_touch_barrier"] = "+0.12"
+    cur["auto_sl"] = bool(cur.get("auto_sl", True))
+    cur.setdefault("last_action", "Ready")
+    cur.setdefault("last_result", None)
+    cur.setdefault("risk_block_reason", None)
+    cur["auto_both_enabled"] = bool(cur.get("auto_both_enabled", False))
+    cur["auto_both_pair_active"] = bool(cur.get("auto_both_pair_active", False))
+    cur["pair_send_in_flight"] = bool(cur.get("pair_send_in_flight", False))
+    try:
+        cur["auto_both_next_fire_at"] = max(0.0, float(cur.get("auto_both_next_fire_at", 0.0) or 0.0))
+    except Exception:
+        cur["auto_both_next_fire_at"] = 0.0
+    cur["auto_both_last_reason"] = str(cur.get("auto_both_last_reason") or "AUTO BOTH is OFF.")
+    cur["contract_selector_mode"] = normalize_contract_selector_mode(cur.get("contract_selector_mode", "AUTO_SELECT"))
+    cur["koolkid_hl_enabled"] = bool(cur.get("koolkid_hl_enabled", False))
+    cur["koolkid_hl_last_reason"] = str(cur.get("koolkid_hl_last_reason") or "KOOLKID Touch/No Touch is OFF.")
+    cur["koolkid_both_enabled"] = bool(cur.get("koolkid_both_enabled", False))
+    cur["koolkid_both_last_reason"] = str(cur.get("koolkid_both_last_reason") or "KOOLKID Both is OFF.")
+    try:
+        cur["koolkid_sim_duration_unit"] = _clean_koolkid_duration_unit(cur.get("koolkid_sim_duration_unit", "s"))
+    except Exception:
+        cur["koolkid_sim_duration_unit"] = "s"
+    try:
+        cur["koolkid_sim_duration"] = _sanitize_koolkid_duration(
+            cur.get("koolkid_sim_duration", 15),
+            cur.get("koolkid_sim_duration_unit", "s"),
+            kind="sim",
+        )
+    except Exception:
+        cur["koolkid_sim_duration"] = 15
+    try:
+        cur["koolkid_live_duration_unit"] = _clean_koolkid_duration_unit(cur.get("koolkid_live_duration_unit", "t"))
+    except Exception:
+        cur["koolkid_live_duration_unit"] = "t"
+    try:
+        cur["koolkid_live_duration"] = _sanitize_koolkid_duration(
+            cur.get("koolkid_live_duration", 5),
+            cur.get("koolkid_live_duration_unit", "t"),
+            kind="live",
+        )
+    except Exception:
+        cur["koolkid_live_duration"] = 5
+    try:
+        cur["koolkid_hl_loss_trigger_pct"] = max(50, min(70, int(float(cur.get("koolkid_hl_loss_trigger_pct", 50) or 50))))
+    except Exception:
+        cur["koolkid_hl_loss_trigger_pct"] = 50
+    cur["koolkid_hl_sim_side"] = _clean_ntt_koolkid_sim_side(cur.get("koolkid_hl_sim_side", "AUTO"))
+    cur["koolkid_reversal_enabled"] = bool(cur.get("koolkid_reversal_enabled", False))
+    cur["koolkid_half_barrier_enabled"] = bool(cur.get("koolkid_half_barrier_enabled", False))
+    try:
+        cur["koolkid_hl_cooldown_until"] = max(0.0, float(cur.get("koolkid_hl_cooldown_until", 0.0) or 0.0))
+    except Exception:
+        cur["koolkid_hl_cooldown_until"] = 0.0
+    try:
+        cur["koolkid_both_cooldown_until"] = max(0.0, float(cur.get("koolkid_both_cooldown_until", 0.0) or 0.0))
+    except Exception:
+        cur["koolkid_both_cooldown_until"] = 0.0
+    cur["koolkid_touch_barrier"] = str(cur.get("koolkid_touch_barrier") or "").strip()
+    cur["koolkid_no_touch_barrier"] = str(cur.get("koolkid_no_touch_barrier") or "").strip()
+    if not cur["koolkid_touch_barrier"]:
+        cur["koolkid_touch_barrier"] = _half_ntt_koolkid_barrier(
+            cur.get("touch_barrier", "+0.12"),
+            side="TOUCH",
+            duration_unit="t",
+            reversal_enabled=bool(cur.get("koolkid_reversal_enabled")),
+            half_enabled=True,
+        )
+    else:
+        cur["koolkid_touch_barrier"] = _format_ntt_barrier(cur["koolkid_touch_barrier"], "TOUCH", "t")
+    if not cur["koolkid_no_touch_barrier"]:
+        cur["koolkid_no_touch_barrier"] = _half_ntt_koolkid_barrier(
+            cur.get("no_touch_barrier", "+0.12"),
+            side="NO_TOUCH",
+            duration_unit="t",
+            reversal_enabled=bool(cur.get("koolkid_reversal_enabled")),
+            half_enabled=True,
+        )
+    else:
+        cur["koolkid_no_touch_barrier"] = _format_ntt_barrier(cur["koolkid_no_touch_barrier"], "NO_TOUCH", "t")
+    if not isinstance(cur.get("koolkid_hl_simulation"), dict):
+        cur["koolkid_hl_simulation"] = None
+    if not isinstance(cur.get("koolkid_both_simulation"), dict):
+        cur["koolkid_both_simulation"] = None
+    state["ntt"] = cur
+    return cur
+
+
+def _clean_ntt_koolkid_sim_side(value):
+    side = str(value or "AUTO").strip().upper()
+    if side in ("TOUCH", "NO_TOUCH"):
+        return side
+    return "AUTO"
+
+
+def _ntt_side_to_shadow_side(side):
+    safe = str(side or "").strip().upper()
+    if safe == "NO_TOUCH":
+        return "LOWER"
+    return "HIGHER"
+
+
+def _shadow_side_to_ntt_side(side):
+    safe = str(side or "").strip().upper()
+    if safe == "LOWER":
+        return "NO_TOUCH"
+    return "TOUCH"
+
+
+def _flip_numeric_barrier_sign(raw, fallback):
+    try:
+        value = float(str(raw).strip())
+    except Exception:
+        try:
+            value = float(str(fallback).strip())
+        except Exception:
+            value = 0.0
+    return f"{-value:+.2f}"
+
+
+def _half_ntt_koolkid_barrier(raw, *, side, duration_unit="t", reversal_enabled=False, half_enabled=True):
+    try:
+        barrier_text = _format_ntt_barrier(raw, side, duration_unit)
+    except Exception:
+        barrier_text = _format_ntt_barrier("+0.12", side, duration_unit)
+    try:
+        numeric = float(str(barrier_text).strip())
+    except Exception:
+        numeric = 0.12
+    if half_enabled:
+        numeric = numeric / 2.0
+    out = f"{numeric:+.2f}"
+    if reversal_enabled:
+        out = _flip_numeric_barrier_sign(out, barrier_text)
+    return _format_ntt_barrier(out, side, "t")
+
+
+def _get_ntt_koolkid_live_barrier(ntt, side, duration_unit="t"):
+    safe_side = str(side or "").strip().upper()
+    key = "koolkid_touch_barrier" if safe_side == "TOUCH" else "koolkid_no_touch_barrier"
+    fallback_key = "touch_barrier" if safe_side == "TOUCH" else "no_touch_barrier"
+    base_value = (ntt or {}).get(key) or (ntt or {}).get(fallback_key) or "+0.06"
+    return _half_ntt_koolkid_barrier(
+        base_value,
+        side=safe_side if safe_side in ("TOUCH", "NO_TOUCH") else "TOUCH",
+        duration_unit=duration_unit,
+        reversal_enabled=bool((ntt or {}).get("koolkid_reversal_enabled")),
+        half_enabled=bool((ntt or {}).get("koolkid_half_barrier_enabled")),
+    )
+
+
+def _build_ntt_koolkid_shadow_u(ntt):
+    ntt = ntt or {}
+    return {
+        "higher_stake": float(ntt.get("touch_stake", 1.0) or 1.0),
+        "lower_stake": float(ntt.get("no_touch_stake", 1.0) or 1.0),
+        "higher_barrier": str(ntt.get("touch_barrier", "+0.12") or "+0.12"),
+        "lower_barrier": str(ntt.get("no_touch_barrier", "+0.12") or "+0.12"),
+        "duration": int(ntt.get("duration", 5) or 5),
+        "duration_unit": _clean_ntt_duration_unit(ntt.get("duration_unit", "t")),
+        "auto_min_movement": 0.06,
+        "auto_min_tick_speed": 2.4,
+        "auto_min_range": 0.12,
+        "koolkid_sim_duration": int(ntt.get("koolkid_sim_duration", 15) or 15),
+        "koolkid_sim_duration_unit": _clean_koolkid_duration_unit(ntt.get("koolkid_sim_duration_unit", "s")),
+        "koolkid_live_duration": int(ntt.get("koolkid_live_duration", 5) or 5),
+        "koolkid_live_duration_unit": _clean_koolkid_duration_unit(ntt.get("koolkid_live_duration_unit", "t")),
+        "koolkid_hl_loss_trigger_pct": int(ntt.get("koolkid_hl_loss_trigger_pct", 50) or 50),
+        "koolkid_reversal_enabled": bool(ntt.get("koolkid_reversal_enabled", False)),
+        "koolkid_half_barrier_enabled": bool(ntt.get("koolkid_half_barrier_enabled", False)),
+        "koolkid_higher_barrier": _get_ntt_koolkid_live_barrier(ntt, "TOUCH", "t"),
+        "koolkid_lower_barrier": _get_ntt_koolkid_live_barrier(ntt, "NO_TOUCH", "t"),
+        "koolkid_hl_enabled": bool(ntt.get("koolkid_hl_enabled", False)),
+        "koolkid_both_enabled": bool(ntt.get("koolkid_both_enabled", False)),
+        "koolkid_hl_last_reason": str(ntt.get("koolkid_hl_last_reason") or "KOOLKID Touch/No Touch is OFF."),
+        "koolkid_both_last_reason": str(ntt.get("koolkid_both_last_reason") or "KOOLKID Both is OFF."),
+        "koolkid_hl_cooldown_until": float(ntt.get("koolkid_hl_cooldown_until", 0.0) or 0.0),
+        "koolkid_both_cooldown_until": float(ntt.get("koolkid_both_cooldown_until", 0.0) or 0.0),
+        "koolkid_hl_sim_side": _ntt_side_to_shadow_side(_clean_ntt_koolkid_sim_side(ntt.get("koolkid_hl_sim_side", "AUTO"))) if _clean_ntt_koolkid_sim_side(ntt.get("koolkid_hl_sim_side", "AUTO")) != "AUTO" else "AUTO",
+        "koolkid_hl_simulation": ntt.get("koolkid_hl_simulation"),
+        "koolkid_both_simulation": ntt.get("koolkid_both_simulation"),
+    }
+
+
+def _run_with_ntt_shadow_unchain_strategy(state, fn):
+    strategies = state.setdefault("strategies", {})
+    original = strategies.get("UNCHAIN")
+    strategies["UNCHAIN"] = strategies.get("NTT")
+    try:
+        return fn()
+    finally:
+        if original is None:
+            strategies.pop("UNCHAIN", None)
+        else:
+            strategies["UNCHAIN"] = original
+
+
+def _normalize_ntt_trade_type(value=None, deriv_contract_type=None):
+    candidates = []
+    for candidate in (value, deriv_contract_type):
+        text = str(candidate or "").strip()
+        if text:
+            candidates.append(text.upper().replace("-", " ").replace("_", " ").strip())
+    for raw in candidates:
+        compact = raw.replace(" ", "")
+        if raw == "TOUCH" or compact == "ONETOUCH" or "ONE TOUCH" in raw:
+            return "TOUCH"
+        if raw == "NO TOUCH" or compact == "NOTOUCH" or "NO TOUCH" in raw:
+            return "NO TOUCH"
+    return "TOUCH"
+
+
+def _check_ntt_risk_block(state):
+    ntt = _ensure_ntt_state(state)
+    strat = (state.get("strategies") or {}).get("NTT")
+    if strat and hasattr(strat, "set_risk_controls"):
+        try:
+            strat.set_risk_controls(
+                tp=float(ntt.get("tp", 0.0) or 0.0),
+                sl=float(ntt.get("sl", 0.0) or 0.0),
+                auto_sl=bool(ntt.get("auto_sl", True)),
+            )
+        except Exception:
+            pass
+    if strat and hasattr(strat, "enforce_tp_sl"):
+        try:
+            strat.enforce_tp_sl()
+            reason = getattr(strat, "risk_block_reason", None)
+            ntt["risk_block_reason"] = reason
+            return reason
+        except Exception:
+            pass
+    return ntt.get("risk_block_reason")
+
+
+def _get_ntt_side_duration(ntt, side):
+    safe = str(side or "TOUCH").strip().upper()
+    ntt = ntt or {}
+    if bool(ntt.get("use_shared_duration", True)):
+        unit = _clean_ntt_duration_unit(ntt.get("duration_unit", "t"))
+        duration = _sanitize_ntt_duration(ntt.get("duration", 5), unit)
+        return duration, unit
+    prefix = "no_touch" if safe == "NO_TOUCH" else "touch"
+    unit = _clean_ntt_duration_unit(ntt.get(f"{prefix}_duration_unit", ntt.get("duration_unit", "t")))
+    duration = _sanitize_ntt_duration(ntt.get(f"{prefix}_duration", ntt.get("duration", 5)), unit)
+    return duration, unit
+
+
+def _build_ntt_market_default_key(state, symbol, ntt):
+    ntt = ntt or {}
+    safe_symbol = str(symbol or state.get("current_symbol") or "").upper()
+    if bool(ntt.get("use_shared_duration", True)):
+        return _build_unchain_market_default_key(
+            safe_symbol,
+            ntt.get("duration", 5),
+            ntt.get("duration_unit", "t"),
+        )
+    touch_duration, touch_unit = _get_ntt_side_duration(ntt, "TOUCH")
+    no_touch_duration, no_touch_unit = _get_ntt_side_duration(ntt, "NO_TOUCH")
+    return f"{safe_symbol}|TOUCH:{touch_duration}{touch_unit}|NO_TOUCH:{no_touch_duration}{no_touch_unit}"
+
+
+def _get_unchain_side_duration(u, side):
+    safe_side = _clean_unchain_directional_auto_side(side)
+    u = u or {}
+    if bool(u.get("use_shared_duration", True)):
+        unit = _clean_unchain_duration_unit(u.get("duration_unit", "t"))
+        duration = _sanitize_unchain_duration(u.get("duration", 5), unit)
+        return duration, unit
+    prefix = "lower" if safe_side == "LOWER" else "higher"
+    unit = _clean_unchain_duration_unit(u.get(f"{prefix}_duration_unit", u.get("duration_unit", "t")))
+    duration = _sanitize_unchain_duration(u.get(f"{prefix}_duration", u.get("duration", 5)), unit)
+    return duration, unit
+
+
+def _build_unchain_side_duration_key(state, symbol, u):
+    u = u or {}
+    safe_symbol = str(symbol or state.get("current_symbol") or "").upper()
+    if bool(u.get("use_shared_duration", True)):
+        return _build_unchain_market_default_key(
+            safe_symbol,
+            u.get("duration", 5),
+            u.get("duration_unit", "t"),
+        )
+    higher_duration, higher_unit = _get_unchain_side_duration(u, "HIGHER")
+    lower_duration, lower_unit = _get_unchain_side_duration(u, "LOWER")
+    return f"{safe_symbol}|HIGHER:{higher_duration}{higher_unit}|LOWER:{lower_duration}{lower_unit}"
+
+
+def _apply_ntt_settings_update(state, data):
+    ntt = _ensure_ntt_state(state)
+    data = data or {}
+    if "touch_stake" in data:
+        ntt["touch_stake"] = max(0.35, float(data.get("touch_stake") or 0.35))
+    if "no_touch_stake" in data:
+        ntt["no_touch_stake"] = max(0.35, float(data.get("no_touch_stake") or 0.35))
+    elif "touch_stake" in data and not ntt.get("no_touch_stake"):
+        ntt["no_touch_stake"] = ntt["touch_stake"]
+    if "use_shared_duration" in data:
+        ntt["use_shared_duration"] = bool(data.get("use_shared_duration"))
+    if "duration_unit" in data:
+        ntt["duration_unit"] = _clean_ntt_duration_unit(data.get("duration_unit"))
+    if "duration" in data or "duration_unit" in data:
+        ntt["duration"] = _sanitize_ntt_duration(data.get("duration", ntt.get("duration", 5)), ntt.get("duration_unit", "t"))
+    if "touch_duration_unit" in data:
+        ntt["touch_duration_unit"] = _clean_ntt_duration_unit(data.get("touch_duration_unit"))
+    if "touch_duration" in data or "touch_duration_unit" in data:
+        ntt["touch_duration"] = _sanitize_ntt_duration(
+            data.get("touch_duration", ntt.get("touch_duration", ntt.get("duration", 5))),
+            ntt.get("touch_duration_unit", "t"),
+        )
+    if "no_touch_duration_unit" in data:
+        ntt["no_touch_duration_unit"] = _clean_ntt_duration_unit(data.get("no_touch_duration_unit"))
+    if "no_touch_duration" in data or "no_touch_duration_unit" in data:
+        ntt["no_touch_duration"] = _sanitize_ntt_duration(
+            data.get("no_touch_duration", ntt.get("no_touch_duration", ntt.get("duration", 5))),
+            ntt.get("no_touch_duration_unit", "t"),
+        )
+    if "touch_barrier" in data:
+        ntt["touch_barrier"] = _format_ntt_barrier(data.get("touch_barrier"), "TOUCH", ntt.get("duration_unit", "t"))
+    if "no_touch_barrier" in data:
+        ntt["no_touch_barrier"] = _format_ntt_barrier(data.get("no_touch_barrier"), "NO_TOUCH", ntt.get("duration_unit", "t"))
+    if "koolkid_touch_barrier" in data:
+        ntt["koolkid_touch_barrier"] = _format_ntt_barrier(data.get("koolkid_touch_barrier"), "TOUCH", "t")
+    if "koolkid_no_touch_barrier" in data:
+        ntt["koolkid_no_touch_barrier"] = _format_ntt_barrier(data.get("koolkid_no_touch_barrier"), "NO_TOUCH", "t")
+    if "koolkid_sim_duration_unit" in data:
+        ntt["koolkid_sim_duration_unit"] = _clean_koolkid_duration_unit(data.get("koolkid_sim_duration_unit"))
+    if "koolkid_sim_duration" in data:
+        ntt["koolkid_sim_duration"] = _sanitize_koolkid_duration(
+            data.get("koolkid_sim_duration") or 15,
+            ntt.get("koolkid_sim_duration_unit", "s"),
+            kind="sim",
+        )
+    if "koolkid_live_duration_unit" in data:
+        ntt["koolkid_live_duration_unit"] = _clean_koolkid_duration_unit(data.get("koolkid_live_duration_unit"))
+    if "koolkid_live_duration" in data:
+        ntt["koolkid_live_duration"] = _sanitize_koolkid_duration(
+            data.get("koolkid_live_duration") or 5,
+            ntt.get("koolkid_live_duration_unit", "t"),
+            kind="live",
+        )
+    if "koolkid_hl_loss_trigger_pct" in data:
+        ntt["koolkid_hl_loss_trigger_pct"] = max(50, min(70, int(float(data.get("koolkid_hl_loss_trigger_pct") or 50))))
+    if "koolkid_hl_sim_side" in data:
+        ntt["koolkid_hl_sim_side"] = _clean_ntt_koolkid_sim_side(data.get("koolkid_hl_sim_side"))
+    if "koolkid_reversal_enabled" in data:
+        ntt["koolkid_reversal_enabled"] = bool(data.get("koolkid_reversal_enabled"))
+    if "koolkid_half_barrier_enabled" in data:
+        ntt["koolkid_half_barrier_enabled"] = bool(data.get("koolkid_half_barrier_enabled"))
+    if "contract_selector_mode" in data:
+        ntt["contract_selector_mode"] = normalize_contract_selector_mode(data.get("contract_selector_mode"))
+    if "tp" in data:
+        ntt["tp"] = max(0.0, float(data.get("tp") or 0.0))
+    if "sl" in data:
+        ntt["sl"] = max(0.0, float(data.get("sl") or 0.0))
+    if "auto_sl" in data:
+        ntt["auto_sl"] = bool(data.get("auto_sl"))
+    _check_ntt_risk_block(state)
+    return ntt
+
+
+def _fetch_ntt_market_default_barrier(symbol, duration, duration_unit):
+    return _fetch_unchain_market_default_barrier(symbol, duration, _clean_ntt_duration_unit(duration_unit))
+
+
+def _apply_ntt_market_default_barriers(state, symbol):
+    ntt = _ensure_ntt_state(state)
+    safe_symbol = str(symbol or state.get("current_symbol") or "R_25")
+    touch_duration, touch_unit = _get_ntt_side_duration(ntt, "TOUCH")
+    no_touch_duration, no_touch_unit = _get_ntt_side_duration(ntt, "NO_TOUCH")
+    touch_raw, touch_err = _fetch_ntt_market_default_barrier(
+        safe_symbol,
+        touch_duration,
+        touch_unit,
+    )
+    if touch_err:
+        return False, str(touch_err)
+    no_touch_raw, no_touch_err = _fetch_ntt_market_default_barrier(
+        safe_symbol,
+        no_touch_duration,
+        no_touch_unit,
+    )
+    if no_touch_err:
+        return False, str(no_touch_err)
+    touch_barrier = _format_ntt_barrier(touch_raw, "TOUCH", touch_unit)
+    no_touch_barrier = _format_ntt_barrier(no_touch_raw, "NO_TOUCH", no_touch_unit)
+    if not touch_barrier or not no_touch_barrier:
+        return False, "Could not resolve market default barrier"
+    ntt["touch_barrier"] = touch_barrier
+    ntt["no_touch_barrier"] = no_touch_barrier
+    ntt["market_default_symbol"] = str(symbol or state.get("current_symbol") or "").upper()
+    ntt["market_default_key"] = _build_ntt_market_default_key(state, safe_symbol, ntt)
+    return True, f"{touch_barrier} / {no_touch_barrier}"
+
+
+def _get_ntt_active_entry(state, contract_id):
+    ntt = _ensure_ntt_state(state)
+    active = ntt.get("active_contracts") or {}
+    norm = _normalize_contract_id(contract_id)
+    for key in (norm, str(contract_id) if contract_id is not None else None, contract_id):
+        if key is None:
+            continue
+        key = str(key)
+        if key in active:
+            return active.get(key)
+    return None
+
+
+def _remove_ntt_active_contract(state, contract_id):
+    ntt = _ensure_ntt_state(state)
+    active = ntt.setdefault("active_contracts", {})
+    removed = None
+    norm = _normalize_contract_id(contract_id)
+    for key in (norm, str(contract_id) if contract_id is not None else None, contract_id):
+        if key is None:
+            continue
+        key = str(key)
+        if key in active:
+            removed = active.pop(key, None) or removed
+    return removed
+
+
+def _get_processed_ntt_contracts(state):
+    seen = state.setdefault("_processed_ntt_contracts", set())
+    if not isinstance(seen, set):
+        try:
+            seen = set(seen)
+        except Exception:
+            seen = set()
+        state["_processed_ntt_contracts"] = seen
+    return seen
+
+
+def _mark_ntt_contract_processed(state, contract_id):
+    norm = _normalize_contract_id(contract_id)
+    if not norm:
+        return
+    _get_processed_ntt_contracts(state).add(norm)
+
+
+def _is_ntt_contract_processed(state, contract_id):
+    norm = _normalize_contract_id(contract_id)
+    return bool(norm and norm in _get_processed_ntt_contracts(state))
+
+
+def _is_ntt_contract_known(state, contract_id, meta=None):
+    meta = meta or _peek_contract_meta(state, contract_id) or {}
+    if str(meta.get("profile") or "").upper() == "NTT":
+        return True
+    norm = _normalize_contract_id(contract_id)
+    if norm and _is_ntt_contract_processed(state, norm):
+        return True
+    ntt = _ensure_ntt_state(state)
+    active = ntt.get("active_contracts") or {}
+    return (str(contract_id) in active or (norm in active if norm else False)) if contract_id is not None else False
+
+
+def _decorate_ntt_active_entry_countdown(entry, state, now_ts=None):
+    now_ts = float(now_ts if now_ts is not None else time.time())
+    out = dict(entry or {})
+    out["countdown_remaining"] = None
+    out["countdown_unit"] = None
+    out["countdown_seconds"] = None
+    try:
+        duration = int(float(out.get("duration", 0) or 0))
+    except Exception:
+        duration = 0
+    duration_unit = _clean_ntt_duration_unit(out.get("duration_unit", "t"))
+    if duration <= 0:
+        return out
+    if duration_unit == "t":
+        elapsed_ticks = None
+        try:
+            raw_tick_count = out.get("tick_count")
+            if raw_tick_count not in (None, ""):
+                tick_count = max(0, int(float(raw_tick_count)))
+                if tick_count < duration:
+                    elapsed_ticks = tick_count
+        except Exception:
+            elapsed_ticks = None
+        try:
+            open_tick_seq = out.get("open_tick_seq")
+            if open_tick_seq not in (None, ""):
+                open_tick_seq = int(float(open_tick_seq))
+                strat = (state.get("strategies") or {}).get("NTT")
+                now_tick_seq = int(getattr(strat, "tick_count", 0) or 0)
+                seq_elapsed = max(0, now_tick_seq - open_tick_seq)
+                elapsed_ticks = seq_elapsed if elapsed_ticks is None else min(max(elapsed_ticks, 0), seq_elapsed)
+        except Exception:
+            pass
+        if elapsed_ticks is None:
+            out["countdown_remaining"] = int(duration)
+        else:
+            out["countdown_remaining"] = int(max(0, duration - elapsed_ticks))
+        out["countdown_unit"] = "t"
+        return out
+
+    seconds_per_unit = 60 if duration_unit == "m" else 3600
+    total_seconds = max(60, duration * seconds_per_unit)
+    remaining_seconds = None
+    try:
+        expiry_ts = out.get("date_expiry")
+        if expiry_ts not in (None, ""):
+            remaining_seconds = max(0, int(math.ceil(float(expiry_ts) - now_ts)))
+    except Exception:
+        remaining_seconds = None
+    if remaining_seconds is None:
+        try:
+            start_ts = out.get("date_start")
+            if start_ts in (None, ""):
+                start_ts = out.get("open_epoch")
+            if start_ts not in (None, ""):
+                elapsed = max(0.0, now_ts - float(start_ts))
+                remaining_seconds = max(0, int(math.ceil(total_seconds - elapsed)))
+        except Exception:
+            remaining_seconds = None
+    if remaining_seconds is None:
+        return out
+    out["countdown_seconds"] = int(remaining_seconds)
+    out["countdown_unit"] = duration_unit
+    out["countdown_remaining"] = int(math.ceil(remaining_seconds / (60.0 if duration_unit == "m" else 3600.0)))
+    return out
+
+
+def _upsert_ntt_active_contract(state, contract_id, *, meta=None, contract=None, status="OPEN"):
+    if contract_id in (None, ""):
+        return None
+    ntt = _ensure_ntt_state(state)
+    active = ntt.setdefault("active_contracts", {})
+    norm = _normalize_contract_id(contract_id) or str(contract_id)
+    existing = active.get(norm) or {}
+    meta = meta or _peek_contract_meta(state, contract_id) or {}
+    contract = contract or {}
+    try:
+        buy_price = float(contract.get("buy_price")) if contract.get("buy_price") not in (None, "") else None
+    except Exception:
+        buy_price = None
+    entry = dict(existing)
+    normalized_type = _normalize_ntt_trade_type(
+        meta.get("type") or entry.get("type"),
+        meta.get("deriv_contract_type") or entry.get("deriv_contract_type") or contract.get("contract_type"),
+    )
+    entry.update({
+        "contract_id": norm,
+        "type": normalized_type,
+        "barrier": meta.get("barrier", entry.get("barrier")),
+        "stake": float(meta.get("stake", entry.get("stake", 0.0)) or 0.0),
+        "symbol": meta.get("symbol", entry.get("symbol", state.get("current_symbol"))),
+        "time": meta.get("time", entry.get("time", now_time())),
+        "duration": int(meta.get("duration", entry.get("duration", ntt.get("duration", 5))) or ntt.get("duration", 5)),
+        "duration_unit": str(meta.get("duration_unit", entry.get("duration_unit", ntt.get("duration_unit", "t")))).lower(),
+        "deriv_contract_type": meta.get("deriv_contract_type", entry.get("deriv_contract_type", contract.get("contract_type"))),
+        "status": contract.get("status") or status,
+        "contract_status": contract.get("status") or status,
+        "buy_price": buy_price if buy_price is not None else entry.get("buy_price"),
+        "open_profit": _safe_float(contract.get("profit"), entry.get("open_profit")),
+        "entry_spot": _safe_float(contract.get("entry_spot"), entry.get("entry_spot")),
+        "current_spot": _safe_float(contract.get("current_spot"), entry.get("current_spot")),
+        "date_start": contract.get("date_start", entry.get("date_start")),
+        "date_expiry": contract.get("date_expiry", entry.get("date_expiry")),
+        "is_sold": bool(contract.get("is_sold", False)),
+        "tick_count": contract.get("tick_count", entry.get("tick_count")),
+        "_elapsed_contract_ticks": contract.get("current_spot_time", entry.get("_elapsed_contract_ticks")),
+        "updated_at": now_time(),
+    })
+    strat = (state.get("strategies") or {}).get("NTT")
+    if strat is not None:
+        entry["open_tick_seq"] = entry.get("open_tick_seq") or int(getattr(strat, "tick_count", 0) or 0)
+    active[norm] = entry
+    return entry
+
+
+def _get_open_ntt_active_entries(state):
+    ntt = _ensure_ntt_state(state)
+    active = ntt.get("active_contracts") or {}
+    out = []
+    for entry in active.values():
+        if _entry_is_open_for_ui(entry):
+            out.append(entry)
+    return out
+
+
+def _get_ntt_bias_payload(state, ntt=None):
+    ntt = ntt or _ensure_ntt_state(state)
+    payload = {
+        "status": "LOADING ANALYZER…",
+        "touch_pct": 50.0,
+        "no_touch_pct": 50.0,
+        "strength": "Building",
+        "reasons": ["Waiting for data"],
+        "lookback": 0,
+        "summary": "Gathering enough recent ticks to score Touch vs No Touch.",
+    }
+    try:
+        strat = (state.get("strategies") or {}).get("NTT")
+        if strat and hasattr(strat, "get_bias_payload"):
+            payload = strat.get_bias_payload({
+                "touch_barrier": ntt.get("touch_barrier", "+0.12"),
+                "no_touch_barrier": ntt.get("no_touch_barrier", "+0.12"),
+                "duration": int(ntt.get("duration", 5) or 5),
+                "duration_unit": _clean_ntt_duration_unit(ntt.get("duration_unit", "t")),
+            }) or payload
+    except Exception:
+        pass
+    return payload
+
+
+def _build_touch_no_touch_prediction_payload(state, market_symbol, duration, duration_unit, barrier_value=None):
+    symbol = str(market_symbol or state.get("current_symbol") or "").upper().strip()
+    unit = _clean_ntt_duration_unit(duration_unit)
+    symbol, prices, tick_times, source = _get_prediction_series_for_profile(state, symbol, "NTT")
+    raw = predict_touch_no_touch_percentages(
+        market_symbol=symbol,
+        duration=duration,
+        duration_unit=unit,
+        prices=prices,
+        tick_times=tick_times,
+        barrier_value=barrier_value,
+    )
+    if not isinstance(raw, dict):
+        return {"status": "error", "message": "Prediction unavailable"}
+    return dict(raw, **{
+        "source": source,
+        "available_ticks": int(len(list(prices or []))),
+    })
+
+
+def _pick_closest_barrier_value(*barrier_values):
+    picked = None
+    picked_distance = None
+    for raw in barrier_values:
+        if raw in (None, ""):
+            continue
+        try:
+            numeric = float(str(raw).strip())
+        except Exception:
+            continue
+        distance = abs(numeric)
+        if picked is None or distance < picked_distance:
+            picked = raw
+            picked_distance = distance
+    return picked
+
+
+def _map_mutant_koolkid_text(text):
+    safe = str(text or "")
+    if not safe:
+        return safe
+    replacements = [
+        ("Higher/Lower", "Touch/No Touch"),
+        ("HIGHER/LOWER", "TOUCH/NO TOUCH"),
+        ("Higher + Lower", "Touch + No Touch"),
+        ("HIGHER + LOWER", "TOUCH + NO TOUCH"),
+        ("Higher", "Touch"),
+        ("HIGHER", "TOUCH"),
+        ("Lower", "No Touch"),
+        ("LOWER", "NO TOUCH"),
+        ("UNCHAIN", "Mutant"),
+    ]
+    for src, dst in replacements:
+        safe = safe.replace(src, dst)
+    return safe
+
+
+def _map_mutant_koolkid_side_value(value):
+    raw = str(value or "").strip().upper()
+    if raw == "HIGHER":
+        return "TOUCH"
+    if raw == "LOWER":
+        return "NO_TOUCH"
+    return value
+
+
+def _map_mutant_koolkid_sim_payload(payload):
+    if not isinstance(payload, dict):
+        return payload
+    out = dict(payload)
+    for key in ("side", "opposite_side", "leading_side"):
+        if key in out:
+            out[key] = _map_mutant_koolkid_side_value(out.get(key))
+    if "message" in out:
+        out["message"] = _map_mutant_koolkid_text(out.get("message"))
+    if "virtual_contract_id" in out:
+        out["virtual_contract_id"] = str(out.get("virtual_contract_id")).replace("UNCHAIN", "MUTANT")
+    sides = []
+    for item in list(out.get("sides") or []):
+        if not isinstance(item, dict):
+            continue
+        row = dict(item)
+        row["side"] = _map_mutant_koolkid_side_value(row.get("side"))
+        if "contract_id" in row:
+            row["contract_id"] = str(row.get("contract_id")).replace("UNCHAIN", "MUTANT")
+        sides.append(row)
+    if sides:
+        out["sides"] = sides
+    return out
+
+
+def _serialize_ntt_koolkid_hl(state, ntt=None, active_count=None):
+    ntt = ntt or _ensure_ntt_state(state)
+    if active_count is None:
+        active_count = len(_get_open_ntt_active_entries(state))
+    shadow_u = _build_ntt_koolkid_shadow_u(ntt)
+    payload = _run_with_ntt_shadow_unchain_strategy(
+        state,
+        lambda: _serialize_unchain_koolkid_hl(state, shadow_u, active_count=active_count),
+    ) or {}
+    payload = dict(payload)
+    payload["last_reason"] = _map_mutant_koolkid_text(payload.get("last_reason"))
+    payload["label"] = _map_mutant_koolkid_text(payload.get("label"))
+    payload["sim_side"] = _map_mutant_koolkid_side_value(payload.get("sim_side"))
+    payload["reversal_enabled"] = bool(ntt.get("koolkid_reversal_enabled", False))
+    payload["half_barrier_enabled"] = bool(ntt.get("koolkid_half_barrier_enabled", False))
+    payload["simulation"] = _map_mutant_koolkid_sim_payload(payload.get("simulation"))
+    return payload
+
+
+def _serialize_ntt_koolkid_both(state, ntt=None, active_count=None):
+    ntt = ntt or _ensure_ntt_state(state)
+    if active_count is None:
+        active_count = len(_get_open_ntt_active_entries(state))
+    shadow_u = _build_ntt_koolkid_shadow_u(ntt)
+    payload = _run_with_ntt_shadow_unchain_strategy(
+        state,
+        lambda: _serialize_unchain_koolkid_both(state, shadow_u, active_count=active_count),
+    ) or {}
+    payload = dict(payload)
+    payload["last_reason"] = _map_mutant_koolkid_text(payload.get("last_reason"))
+    payload["label"] = _map_mutant_koolkid_text(payload.get("label"))
+    payload["half_barrier_enabled"] = bool(ntt.get("koolkid_half_barrier_enabled", False))
+    payload["simulation"] = _map_mutant_koolkid_sim_payload(payload.get("simulation"))
+    return payload
+
+
+def _serialize_ntt_auto_both(state, ntt=None, active_count=None):
+    ntt = ntt or _ensure_ntt_state(state)
+    if active_count is None:
+        active_count = len(_get_open_ntt_active_entries(state))
+    enabled = bool(ntt.get("auto_both_enabled"))
+    next_fire_at = float(ntt.get("auto_both_next_fire_at", 0.0) or 0.0)
+    cooldown_remaining = max(0.0, next_fire_at - time.time())
+    if not enabled:
+        label = "OFF"
+    elif active_count > 0 or bool(ntt.get("auto_both_pair_active")):
+        label = "RUNNING"
+    elif cooldown_remaining > 0.0:
+        label = "COOLDOWN"
+    else:
+        label = "ARMED"
+    return {
+        "enabled": enabled,
+        "label": label,
+        "cooldown_remaining": round(cooldown_remaining, 2),
+        "last_reason": str(ntt.get("auto_both_last_reason") or "AUTO BOTH is OFF."),
+    }
+
+
+def _check_ntt_pair_balance(state, plan, *, failure_prefix="Trade failed"):
+    normalized = []
+    total_stake = 0.0
+    for item in list(plan or []):
+        if not isinstance(item, (list, tuple)) or len(item) < 3:
+            continue
+        side = str(item[0] or "").upper()
+        if side not in ("TOUCH", "NO_TOUCH"):
+            continue
+        try:
+            stake = max(0.0, float(item[1] or 0.0))
+        except Exception:
+            stake = 0.0
+        normalized.append((side, stake, item[2]))
+        total_stake += stake
+
+    try:
+        balance = max(0.0, float(state.get("balance", 0.0) or 0.0))
+    except Exception:
+        balance = 0.0
+
+    snapshot = _profile_budget_snapshot(state, "NTT")
+    budget_remaining = _safe_money(snapshot.get("remaining_budget"))
+    available_limit = balance
+    if snapshot.get("enabled"):
+        available_limit = min(balance, budget_remaining) if balance > 0 else budget_remaining
+    if total_stake > (available_limit + 1e-9):
+        message = (
+            f"{failure_prefix}: need {_format_state_money(state, total_stake)} but only {_format_state_money(state, available_limit)} is available "
+            f"for Mutant BOTH."
+        )
+        return False, message, normalized, total_stake, balance
+    return True, None, normalized, total_stake, balance
+
+
+def _ntt_payload_response(state):
+    ntt = _ensure_ntt_state(state)
+    _check_ntt_risk_block(state)
+    strat = (state.get("strategies") or {}).get("NTT")
+    stats_payload = {}
+    if strat and hasattr(strat, "get_stats_payload"):
+        try:
+            stats_payload = strat.get_stats_payload(state.get("balance", 0.0), state.get("session_start_balance")) or {}
+        except Exception:
+            stats_payload = {}
+    active_contracts = [
+        _decorate_ntt_active_entry_countdown(item, state, now_ts=time.time())
+        for item in (ntt.get("active_contracts") or {}).values()
+        if _entry_is_open_for_ui(item)
+    ]
+    active_contracts.sort(key=lambda x: str(x.get("contract_id") or ""))
+    live_price = None
+    try:
+        live_price = float(getattr(strat, "last_price", None))
+    except Exception:
+        live_price = None
+    return {
+        "profile": "NTT",
+        "ntt": {
+            "touch_stake": float(ntt.get("touch_stake", 1.0) or 1.0),
+            "no_touch_stake": float(ntt.get("no_touch_stake", 1.0) or 1.0),
+            "touch_barrier": ntt.get("touch_barrier", "+0.12"),
+            "no_touch_barrier": ntt.get("no_touch_barrier", "+0.12"),
+            "use_shared_duration": bool(ntt.get("use_shared_duration", True)),
+            "duration": int(ntt.get("duration", 5) or 5),
+            "duration_unit": _clean_ntt_duration_unit(ntt.get("duration_unit", "t")),
+            "touch_duration": int(ntt.get("touch_duration", ntt.get("duration", 5)) or ntt.get("duration", 5)),
+            "touch_duration_unit": _clean_ntt_duration_unit(ntt.get("touch_duration_unit", ntt.get("duration_unit", "t"))),
+            "no_touch_duration": int(ntt.get("no_touch_duration", ntt.get("duration", 5)) or ntt.get("duration", 5)),
+            "no_touch_duration_unit": _clean_ntt_duration_unit(ntt.get("no_touch_duration_unit", ntt.get("duration_unit", "t"))),
+            "contract_selector_mode": normalize_contract_selector_mode(ntt.get("contract_selector_mode", "AUTO_SELECT")),
+            "contract_selector_mode_label": contract_selector_mode_label(ntt.get("contract_selector_mode", "AUTO_SELECT")),
+            "tp": float(ntt.get("tp", 0.0) or 0.0),
+            "sl": float(ntt.get("sl", 0.0) or 0.0),
+            "auto_sl": bool(ntt.get("auto_sl", True)),
+            "risk_block_reason": ntt.get("risk_block_reason"),
+            "last_action": ntt.get("last_action") or "Ready",
+            "last_result": ntt.get("last_result"),
+            "active_contracts": active_contracts,
+            "active_count": len(active_contracts),
+            "auto_both": _serialize_ntt_auto_both(state, ntt, active_count=len(active_contracts)),
+            "market_default_key": ntt.get("market_default_key"),
+            "koolkid_touch_barrier": ntt.get("koolkid_touch_barrier") or _get_ntt_koolkid_live_barrier(ntt, "TOUCH", "t"),
+            "koolkid_no_touch_barrier": ntt.get("koolkid_no_touch_barrier") or _get_ntt_koolkid_live_barrier(ntt, "NO_TOUCH", "t"),
+            "koolkid_sim_duration": int(ntt.get("koolkid_sim_duration", 15) or 15),
+            "koolkid_sim_duration_unit": _clean_koolkid_duration_unit(ntt.get("koolkid_sim_duration_unit", "s")),
+            "koolkid_live_duration": int(ntt.get("koolkid_live_duration", 5) or 5),
+            "koolkid_live_duration_unit": _clean_koolkid_duration_unit(ntt.get("koolkid_live_duration_unit", "t")),
+            "koolkid_hl_loss_trigger_pct": int(ntt.get("koolkid_hl_loss_trigger_pct", 50) or 50),
+            "koolkid_hl_sim_side": _clean_ntt_koolkid_sim_side(ntt.get("koolkid_hl_sim_side", "AUTO")),
+            "koolkid_reversal_enabled": bool(ntt.get("koolkid_reversal_enabled", False)),
+            "koolkid_half_barrier_enabled": bool(ntt.get("koolkid_half_barrier_enabled", False)),
+            "koolkid_hl": _serialize_ntt_koolkid_hl(state, ntt, active_count=len(active_contracts)),
+            "koolkid_both": _serialize_ntt_koolkid_both(state, ntt, active_count=len(active_contracts)),
+            "bias": _get_ntt_bias_payload(state, ntt),
+            "stats": {
+                "wins": int(stats_payload.get("wins", 0) or 0),
+                "losses": int(stats_payload.get("losses", 0) or 0),
+                "net_pnl": float(stats_payload.get("net_pnl", 0.0) or 0.0),
+            },
+        },
+        "auto_stake": float(state.get("auto_stake", 1.0) or 1.0),
+        "symbol": state.get("current_symbol", "R_25"),
+        "main_symbol": state.get("current_symbol", "R_25"),
+        "human_symbol": state.get("human_symbol") or state.get("current_symbol", "R_25"),
+        "active_profile": state.get("active_profile", "KOOLKID"),
+        "ws_connected": bool(state.get("ws_connected")),
+        "price": live_price,
+    }
+
+
+def _maybe_force_ntt_close_on_countdown(client_id, state):
+    ntt = _ensure_ntt_state(state)
+    active_map = ntt.get("active_contracts") or {}
+    if not active_map:
+        return []
+
+    now_ts = time.time()
+    settled = []
+    refreshed = []
+    waiting = []
+    ws = state.get("ws")
+    ntt_strat = (state.get("strategies") or {}).get("NTT")
+    now_tick_seq = None
+    try:
+        now_tick_seq = int(getattr(ntt_strat, "tick_count", 0) or 0)
+    except Exception:
+        now_tick_seq = None
+
+    for cid_key, entry in list(active_map.items()):
+        if not isinstance(entry, dict):
+            continue
+        if not _entry_is_open_for_ui(entry):
+            continue
+
+        status_text = str(entry.get("status") or entry.get("contract_status") or "").strip().lower()
+        if status_text in ("sold", "won", "lost", "settled", "closed", "expired", "cancelled", "canceled"):
+            continue
+
+        decorated = _decorate_ntt_active_entry_countdown(entry, state, now_ts=now_ts)
+        if not _unchain_countdown_reached_limit(decorated):
+            entry.pop("_bot_settle_after_tick_seq", None)
+            entry.pop("_bot_settle_after_ts", None)
+            continue
+
+        contract_id = decorated.get("contract_id") or entry.get("contract_id") or cid_key
+        if contract_id in (None, ""):
+            continue
+
+        def _refresh_open_contract(min_gap_sec=2.0):
+            last_refresh = 0.0
+            try:
+                last_refresh = float(entry.get("_auto_refresh_requested_at", 0.0) or 0.0)
+            except Exception:
+                last_refresh = 0.0
+            if not ws:
+                return False
+            if last_refresh and (now_ts - last_refresh) < float(min_gap_sec):
+                return False
+            try:
+                ws.send(json.dumps({
+                    "proposal_open_contract": 1,
+                    "contract_id": int(float(contract_id)),
+                    "subscribe": 1,
+                }))
+            except Exception:
+                try:
+                    ws.send(json.dumps({
+                        "proposal_open_contract": 1,
+                        "contract_id": contract_id,
+                        "subscribe": 1,
+                    }))
+                except Exception:
+                    return False
+            entry["_auto_refresh_requested_at"] = now_ts
+            refreshed.append(str(contract_id))
+            return True
+
+        _refresh_open_contract(min_gap_sec=1.4)
+
+        unit = _clean_ntt_duration_unit(
+            decorated.get("countdown_unit")
+            or decorated.get("duration_unit")
+            or entry.get("duration_unit")
+            or "t"
+        )
+
+        ready_to_settle = False
+        if unit == "t":
+            if now_tick_seq is None:
+                waiting.append(str(contract_id))
+                continue
+            settle_after_tick = entry.get("_bot_settle_after_tick_seq")
+            try:
+                settle_after_tick = int(float(settle_after_tick))
+            except Exception:
+                settle_after_tick = None
+            if settle_after_tick is None:
+                entry["_bot_settle_after_tick_seq"] = int(now_tick_seq) + 3
+                entry["updated_at"] = now_time()
+                waiting.append(str(contract_id))
+                continue
+            if int(now_tick_seq) < int(settle_after_tick):
+                waiting.append(str(contract_id))
+                continue
+            ready_to_settle = True
+        else:
+            settle_after_ts = entry.get("_bot_settle_after_ts")
+            try:
+                settle_after_ts = float(settle_after_ts)
+            except Exception:
+                settle_after_ts = None
+            if settle_after_ts is None:
+                entry["_bot_settle_after_ts"] = now_ts + 5.0
+                entry["updated_at"] = now_time()
+                waiting.append(str(contract_id))
+                continue
+            if now_ts < settle_after_ts:
+                waiting.append(str(contract_id))
+                continue
+            ready_to_settle = True
+
+        if not ready_to_settle:
+            continue
+
+        local_profit = None
+        for key in ("open_profit", "profit", "profit_value"):
+            try:
+                raw_value = decorated.get(key, entry.get(key))
+                if raw_value in (None, ""):
+                    continue
+                value = float(raw_value)
+                if math.isfinite(value):
+                    local_profit = value
+                    break
+            except Exception:
+                continue
+        if local_profit is None:
+            local_profit = 0.0
+
+        try:
+            buy_price = float(entry.get("stake") or 0.0)
+        except Exception:
+            buy_price = 0.0
+        if not math.isfinite(buy_price):
+            buy_price = 0.0
+        sell_price = buy_price + float(local_profit)
+        settled_balance = _resolve_post_contract_balance(state, local_profit)
+        meta_for_contract = _peek_contract_meta(state, contract_id) or {}
+        try:
+            _settle_profile_budget_reservation(state, meta_for_contract.get("budget_reservation"), local_profit)
+        except Exception:
+            pass
+        synthetic_contract = {
+            "contract_id": contract_id,
+            "status": "BOT_SETTLED",
+            "is_sold": True,
+            "is_settled": True,
+            "profit": float(local_profit),
+            "buy_price": float(buy_price),
+            "sell_price": float(sell_price),
+        }
+        settled_entry = _finalize_ntt_contract(state, synthetic_contract, settled_balance, meta=meta_for_contract)
+        settled_entry["status"] = "BOT_SETTLED"
+        settled_entry["result_source"] = "BOT_LOCAL_COUNTDOWN"
+        _mark_ntt_contract_processed(state, contract_id)
+        _pull_contract_meta(state, contract_id)
+        socketio.emit("trade_result", settled_entry, room=client_id)
+        settled.append(str(contract_id))
+
+    if settled:
+        ntt["last_action"] = (
+            f"Countdown finished (+3 ticks / +5s buffer) • bot-settled {len(settled)} Mutant trade(s)"
+        )
+        if state.get("active_profile") == "NTT":
+            socketio.emit("ntt_status", _ntt_payload_response(state), room=client_id)
+        send_stats_update(client_id)
+        _emit_balance_payload(client_id, state)
+    elif waiting:
+        ntt["last_action"] = (
+            f"Countdown finished • waiting +3 ticks or +5s for {len(waiting)} Mutant trade(s)"
+        )
+    elif refreshed:
+        ntt["last_action"] = (
+            f"Countdown finished • refreshing live P/L for {len(refreshed)} Mutant trade(s)"
+        )
+
+    return settled
+
+
+def _request_ntt_proposal_quote(state, *, side, stake, symbol, barrier, duration, duration_unit="t", timeout_sec=1.6):
+    client_id = None
+    for _cid, _state in clients.items():
+        if _state is state:
+            client_id = _cid
+            break
+    if client_id is not None:
+        ready, ready_msg = _ensure_trade_socket_ready(client_id, state, emit_error=False)
+        if not ready:
+            return None, ready_msg
+    ws = state.get("ws")
+
+    side = str(side or "").upper().strip()
+    if side not in ("TOUCH", "NO_TOUCH"):
+        return None, "Invalid side"
+
+    try:
+        amount = float(stake)
+    except Exception:
+        return None, "Invalid stake"
+    if amount <= 0:
+        return None, "Stake must be greater than 0"
+
+    unit = _clean_ntt_duration_unit(duration_unit)
+    duration_val = _sanitize_ntt_duration(duration, unit)
+    try:
+        barrier_value = _format_ntt_barrier(barrier, side, unit)
+    except Exception as e:
+        return None, str(e)
+
+    contract_type = "ONETOUCH" if side == "TOUCH" else "NOTOUCH"
+    req_id = _new_req_id()
+    waiter = {"event": threading.Event(), "proposal": None, "error": None}
+    waiters = state.setdefault("_proposal_waiters", {})
+    waiters[req_id] = waiter
+    waiters[str(req_id)] = waiter
+    payload = {
+        "proposal": 1,
+        "amount": float(amount),
+        "basis": "stake",
+        "contract_type": contract_type,
+        "currency": "USD",
+        "duration": int(duration_val),
+        "duration_unit": unit,
+        "symbol": symbol,
+        "barrier": barrier_value,
+        "req_id": req_id,
+    }
+    try:
+        ws.send(json.dumps(payload))
+    except Exception as e:
+        if client_id is not None:
+            _mark_ws_unhealthy_and_reconnect(client_id, state, "Deriv connection failed while requesting a quote. Reconnecting now...", emit_error=False)
+        waiters.pop(req_id, None)
+        waiters.pop(str(req_id), None)
+        return None, str(e)
+
+    if not waiter["event"].wait(max(0.40, float(timeout_sec))):
+        waiters.pop(req_id, None)
+        waiters.pop(str(req_id), None)
+        return None, "Quote timeout"
+
+    waiters.pop(req_id, None)
+    waiters.pop(str(req_id), None)
+    if waiter.get("error"):
+        return None, str(waiter.get("error"))
+    proposal = waiter.get("proposal") or {}
+    ask_price = _safe_float(proposal.get("ask_price"), _safe_float(proposal.get("display_value"), None))
+    payout = _safe_float(proposal.get("payout"), None)
+    if ask_price is None:
+        ask_price = float(amount)
+    if payout is None:
+        profit = _safe_float(proposal.get("profit"), None)
+        payout = (ask_price + profit) if profit is not None else ask_price
+    return {
+        "ask_price": float(max(0.0, ask_price)),
+        "payout": float(max(0.0, payout or 0.0)),
+        "barrier": barrier_value,
+        "duration": int(duration_val),
+        "duration_unit": unit,
+        "contract_type": contract_type,
+        "symbol": symbol,
+    }, None
+
+
+def _build_ntt_expected_profit_preview(
+    state,
+    *,
+    symbol,
+    touch_stake,
+    no_touch_stake,
+    touch_barrier,
+    no_touch_barrier,
+    duration,
+    duration_unit,
+    touch_duration=None,
+    touch_duration_unit=None,
+    no_touch_duration=None,
+    no_touch_duration_unit=None,
+):
+    preview = {
+        "touch": {"stake": 0.0, "payout": None, "profit": None, "error": None},
+        "no_touch": {"stake": 0.0, "payout": None, "profit": None, "error": None},
+        "both": {"net_profit": None, "touch_profit": None, "no_touch_profit": None, "total_stake": 0.0, "error": None},
+    }
+
+    def normalize_quote(side, stake, barrier):
+        if str(side or "").upper() == "NO_TOUCH":
+            quote_duration = no_touch_duration if no_touch_duration is not None else duration
+            quote_duration_unit = no_touch_duration_unit if no_touch_duration_unit is not None else duration_unit
+        else:
+            quote_duration = touch_duration if touch_duration is not None else duration
+            quote_duration_unit = touch_duration_unit if touch_duration_unit is not None else duration_unit
+        quote, err = _request_ntt_proposal_quote(
+            state,
+            side=side,
+            stake=stake,
+            symbol=symbol,
+            barrier=barrier,
+            duration=quote_duration,
+            duration_unit=quote_duration_unit,
+        )
+        if err:
+            return None, str(err)
+        ask_price = _safe_float((quote or {}).get("ask_price"), _safe_float(stake, 0.0))
+        payout = _safe_float((quote or {}).get("payout"), ask_price)
+        profit = payout - ask_price if ask_price is not None and payout is not None else None
+        return {
+            "stake": round(float(max(0.0, ask_price or 0.0)), 2),
+            "payout": round(float(max(0.0, payout or 0.0)), 2) if payout is not None else None,
+            "profit": round(float(profit or 0.0), 2) if profit is not None else None,
+            "barrier": (quote or {}).get("barrier"),
+        }, None
+
+    touch_quote, touch_err = normalize_quote("TOUCH", touch_stake, touch_barrier)
+    no_touch_quote, no_touch_err = normalize_quote("NO_TOUCH", no_touch_stake, no_touch_barrier)
+
+    if touch_quote:
+        preview["touch"].update(touch_quote)
+    else:
+        preview["touch"]["stake"] = round(float(_safe_float(touch_stake, 0.0) or 0.0), 2)
+        preview["touch"]["error"] = touch_err
+
+    if no_touch_quote:
+        preview["no_touch"].update(no_touch_quote)
+    else:
+        preview["no_touch"]["stake"] = round(float(_safe_float(no_touch_stake, 0.0) or 0.0), 2)
+        preview["no_touch"]["error"] = no_touch_err
+
+    touch_profit = _safe_float((touch_quote or {}).get("profit"), None)
+    no_touch_profit = _safe_float((no_touch_quote or {}).get("profit"), None)
+    touch_payout = _safe_float((touch_quote or {}).get("payout"), None)
+    no_touch_payout = _safe_float((no_touch_quote or {}).get("payout"), None)
+    touch_cost = _safe_float((touch_quote or {}).get("stake"), _safe_float(touch_stake, 0.0))
+    no_touch_cost = _safe_float((no_touch_quote or {}).get("stake"), _safe_float(no_touch_stake, 0.0))
+    total_stake = max(0.0, float(touch_cost or 0.0)) + max(0.0, float(no_touch_cost or 0.0))
+    preview["both"]["total_stake"] = round(total_stake, 2)
+    preview["both"]["touch_profit"] = round(float(touch_profit), 2) if touch_profit is not None else None
+    preview["both"]["no_touch_profit"] = round(float(no_touch_profit), 2) if no_touch_profit is not None else None
+    if touch_payout is not None and no_touch_payout is not None:
+        net_profit = max(float(touch_payout), float(no_touch_payout)) - total_stake
+        preview["both"]["net_profit"] = round(float(net_profit), 2)
+    else:
+        preview["both"]["error"] = touch_err or no_touch_err or "Quote unavailable"
+
+    return preview
+
+
+def _send_ntt_trade(client_id, *, side, stake, symbol, barrier, duration, duration_unit):
+    state = clients.get(client_id)
+    ready, ready_msg = _ensure_trade_socket_ready(client_id, state)
+    if not ready:
+        return False, ready_msg
+    ws = state.get("ws")
+    risk_block = _check_ntt_risk_block(state)
+    if risk_block:
+        return False, risk_block
+    side = str(side or "").upper().strip()
+    if side not in ("TOUCH", "NO_TOUCH"):
+        return False, "Invalid Mutant side"
+    try:
+        stake = float(stake)
+    except Exception:
+        return False, "Invalid stake"
+    if stake <= 0:
+        return False, "Stake must be greater than 0"
+    try:
+        balance_value = float(state.get("balance", 0.0) or 0.0)
+    except Exception:
+        balance_value = 0.0
+    if stake > 0 and (_effective_trade_balance(balance_value) + 1e-9) < stake:
+        return False, "Insufficient funds"
+    unit = _clean_ntt_duration_unit(duration_unit)
+    duration = _sanitize_ntt_duration(duration, unit)
+    try:
+        barrier_value = _format_ntt_barrier(barrier, side, unit)
+    except Exception as e:
+        return False, str(e)
+    budget_ok, budget_msg, budget_reservation = _reserve_profile_budget(state, "NTT", stake)
+    if not budget_ok:
+        return False, budget_msg
+    req_id = _new_req_id()
+    contract_type = "ONETOUCH" if side == "TOUCH" else "NOTOUCH"
+    req_meta = {
+        "profile": "NTT",
+        "type": side,
+        "barrier": barrier_value,
+        "stake": float(stake),
+        "symbol": symbol,
+        "time": now_time(),
+        "duration": int(duration),
+        "duration_unit": unit,
+        "deriv_contract_type": contract_type,
+        "budget_reservation": budget_reservation,
+    }
+    state.setdefault("req_meta", {})[req_id] = req_meta
+    payload = {
+        "req_id": req_id,
+        "buy": 1,
+        "price": float(stake),
+        "parameters": {
+            "amount": float(stake),
+            "basis": "stake",
+            "contract_type": contract_type,
+            "currency": "USD",
+            "duration": int(duration),
+            "duration_unit": unit,
+            "symbol": symbol,
+            "barrier": barrier_value,
+        }
+    }
+    try:
+        ws.send(json.dumps(payload))
+        _emit_balance_payload(client_id, state)
+        return True, "Trade sent"
+    except Exception as e:
+        _mark_ws_unhealthy_and_reconnect(client_id, state, "Deriv connection failed while sending a trade. Reconnecting now...")
+        try:
+            _pull_req_meta_by_req_id(state, req_id)
+        except Exception:
+            pass
+        try:
+            _release_profile_budget_reservation(state, budget_reservation)
+            _emit_balance_payload(client_id, state)
+        except Exception:
+            pass
+        return False, str(e)
+
+
+def _send_ntt_both_pair(
+    client_id,
+    state,
+    *,
+    symbol,
+    duration,
+    duration_unit,
+    touch_stake,
+    no_touch_stake,
+    touch_barrier,
+    no_touch_barrier,
+    touch_duration=None,
+    touch_duration_unit=None,
+    no_touch_duration=None,
+    no_touch_duration_unit=None,
+    action_label="Sent",
+):
+    ntt = _ensure_ntt_state(state)
+    if bool(ntt.get("pair_send_in_flight")):
+        return False, "Mutant pair already sending. Waiting for the current pair request to finish.", []
+    plan = [
+        ("TOUCH", touch_stake, touch_barrier, touch_duration, touch_duration_unit),
+        ("NO_TOUCH", no_touch_stake, no_touch_barrier, no_touch_duration, no_touch_duration_unit),
+    ]
+    total_stake = 0.0
+    try:
+        total_stake = sum(max(0.0, float(stake or 0.0)) for _, stake, _, _, _ in plan)
+    except Exception:
+        total_stake = 0.0
+
+    budget_ok, budget_msg, _budget_snapshot = _check_profile_budget_capacity(state, "NTT", total_stake)
+    if not budget_ok:
+        return False, budget_msg, []
+
+    try:
+        balance_value = float(state.get("balance", 0.0) or 0.0)
+    except Exception:
+        balance_value = 0.0
+    if total_stake > 0 and (_effective_trade_balance(balance_value) + 1e-9) < total_stake:
+        return False, f"Trade failed: need {_format_state_money(state, total_stake)} total balance for both trades", []
+
+    placed = []
+    ntt["pair_send_in_flight"] = True
+    try:
+        for index, (trade_side, trade_stake, trade_barrier, trade_duration, trade_duration_unit) in enumerate(plan):
+            ok, msg = _send_ntt_trade(
+                client_id,
+                side=trade_side,
+                stake=trade_stake,
+                symbol=symbol,
+                barrier=trade_barrier,
+                duration=trade_duration if trade_duration is not None else duration,
+                duration_unit=trade_duration_unit if trade_duration_unit is not None else duration_unit,
+            )
+            if not ok:
+                return False, msg, placed
+            placed.append(trade_side)
+            if index < (len(plan) - 1):
+                time.sleep(0.04)
+    finally:
+        ntt["pair_send_in_flight"] = False
+
+    ntt["last_action"] = f"{action_label} {' + '.join(placed)} on {symbol}"
+    return True, f"Sent {' + '.join(placed)}", placed
+
+
+def _finalize_ntt_contract(state, contract, balance, meta=None):
+    contract_id = contract.get("contract_id")
+    _remove_ntt_active_contract(state, contract_id)
+    _forget_unchain_open_contract_subscription(state, contract_id)
+    ntt = _ensure_ntt_state(state)
+    strat = (state.get("strategies") or {}).get("NTT")
+    entry = {}
+    if strat:
+        prev_block = getattr(strat, "risk_block_reason", None)
+        strat.on_contract(contract, balance)
+        if hasattr(strat, "get_last_trade_entry"):
+            entry = strat.get_last_trade_entry() or {}
+        new_block = getattr(strat, "risk_block_reason", None)
+        if new_block and new_block != prev_block:
+            ntt["risk_block_reason"] = new_block
+    meta = meta or _peek_contract_meta(state, contract_id) or {}
+    normalized_type = _normalize_ntt_trade_type(meta.get("type"), meta.get("deriv_contract_type") or contract.get("contract_type"))
+    entry["profile"] = "NTT"
+    entry["type"] = normalized_type
+    entry.setdefault("barrier", meta.get("barrier"))
+    entry.setdefault("stake", meta.get("stake"))
+    entry.setdefault("symbol", meta.get("symbol"))
+    entry.setdefault("time", meta.get("time"))
+    entry.setdefault("duration", meta.get("duration"))
+    entry.setdefault("duration_unit", meta.get("duration_unit"))
+    if contract_id not in (None, ""):
+        entry["contract_id"] = contract_id
+    entry["status"] = contract.get("status") or entry.get("status")
+    raw_entry_result = str(entry.get("result") or "").upper().strip()
+    profit = float(contract.get("profit", 0) or 0)
+    if raw_entry_result in ("", "PENDING", "OPEN", "ACTIVE", "CLOSING") or "PENDING" in raw_entry_result:
+        entry["result"] = "WIN" if profit > 0 else "LOSS"
+    ntt["last_result"] = {
+        "type": normalized_type,
+        "profit": round(profit, 2),
+        "time": entry.get("time") or now_time(),
+    }
+    ntt["last_action"] = f"{normalized_type} settled {_format_state_money(state, profit, signed=True)}"
+    ntt["risk_block_reason"] = getattr(strat, "risk_block_reason", ntt.get("risk_block_reason"))
+    return entry
+
+
+def _clear_ntt_koolkid_hl_simulation(ntt, *, reason=None, cooldown_sec=0.0):
+    if not isinstance(ntt, dict):
+        return
+    ntt["koolkid_hl_simulation"] = None
+    try:
+        ntt["koolkid_hl_cooldown_until"] = max(0.0, time.time() + float(cooldown_sec or 0.0))
+    except Exception:
+        ntt["koolkid_hl_cooldown_until"] = 0.0
+    if reason is not None:
+        ntt["koolkid_hl_last_reason"] = str(reason)
+
+
+def _clear_ntt_koolkid_both_simulation(ntt, *, reason=None, cooldown_sec=0.0):
+    if not isinstance(ntt, dict):
+        return
+    ntt["koolkid_both_simulation"] = None
+    try:
+        ntt["koolkid_both_cooldown_until"] = max(0.0, time.time() + float(cooldown_sec or 0.0))
+    except Exception:
+        ntt["koolkid_both_cooldown_until"] = 0.0
+    if reason is not None:
+        ntt["koolkid_both_last_reason"] = str(reason)
+
+
+def _run_ntt_auto_both(client_id, state):
+    ntt = _ensure_ntt_state(state)
+    if not bool(ntt.get("auto_both_enabled")):
+        return False
+    if not state.get("ws_connected") or not state.get("ws"):
+        ntt["auto_both_last_reason"] = "Connect API first for Mutant AUTO BOTH."
+        return False
+    risk_block = _check_ntt_risk_block(state)
+    if risk_block:
+        ntt["auto_both_last_reason"] = str(risk_block)
+        return False
+
+    open_entries = _get_open_ntt_active_entries(state)
+    now_ts = time.time()
+    if open_entries:
+        ntt["auto_both_pair_active"] = True
+        count = len(open_entries)
+        ntt["auto_both_last_reason"] = f"AUTO BOTH waiting for {count} active Mutant trade{'s' if count != 1 else ''} to finish."
+        return False
+
+    if bool(ntt.get("auto_both_pair_active")):
+        ntt["auto_both_pair_active"] = False
+        ntt["auto_both_next_fire_at"] = now_ts
+        ntt["auto_both_last_reason"] = "AUTO BOTH re-armed after the last Mutant pair finished."
+
+    next_fire_at = float(ntt.get("auto_both_next_fire_at", 0.0) or 0.0)
+    if next_fire_at > now_ts:
+        return False
+
+    touch_duration, touch_duration_unit = _get_ntt_side_duration(ntt, "TOUCH")
+    no_touch_duration, no_touch_duration_unit = _get_ntt_side_duration(ntt, "NO_TOUCH")
+    ok, msg, placed = _send_ntt_both_pair(
+        client_id,
+        state,
+        symbol=state.get("current_symbol", "R_25"),
+        duration=ntt.get("duration", 5),
+        duration_unit=ntt.get("duration_unit", "t"),
+        touch_stake=ntt.get("touch_stake", 1.0),
+        no_touch_stake=ntt.get("no_touch_stake", 1.0),
+        touch_barrier=ntt.get("touch_barrier", "+0.12"),
+        no_touch_barrier=ntt.get("no_touch_barrier", "+0.12"),
+        touch_duration=touch_duration,
+        touch_duration_unit=touch_duration_unit,
+        no_touch_duration=no_touch_duration,
+        no_touch_duration_unit=no_touch_duration_unit,
+        action_label="AUTO sent",
+    )
+    if placed:
+        ntt["auto_both_pair_active"] = True
+        ntt["auto_both_next_fire_at"] = now_ts + 0.75
+    else:
+        ntt["auto_both_next_fire_at"] = now_ts + 1.5
+    if ok:
+        ntt["auto_both_last_reason"] = "AUTO BOTH fired TOUCH + NO TOUCH and is waiting for the pair to finish."
+        return True
+    ntt["auto_both_last_reason"] = str(msg or "AUTO BOTH could not send the pair.")
+    return False
+
+
+def _run_ntt_koolkid_hl(client_id, state):
+    ntt = _ensure_ntt_state(state)
+    if not bool(ntt.get("koolkid_hl_enabled")):
+        return False
+    if not state.get("ws_connected") or not state.get("ws"):
+        ntt["koolkid_hl_last_reason"] = "Connect API first for KOOLKID Touch/No Touch."
+        return False
+    risk_block = _check_ntt_risk_block(state)
+    if risk_block:
+        ntt["koolkid_hl_last_reason"] = str(risk_block)
+        return False
+
+    open_entries = _get_open_ntt_active_entries(state)
+    now_ts = time.time()
+    sim = ntt.get("koolkid_hl_simulation") if isinstance(ntt.get("koolkid_hl_simulation"), dict) else None
+    if open_entries:
+        if sim and sim.get("active"):
+            _clear_ntt_koolkid_hl_simulation(
+                ntt,
+                reason="KOOLKID Touch/No Touch paused because a Mutant trade is already active.",
+                cooldown_sec=4.0,
+            )
+        else:
+            ntt["koolkid_hl_last_reason"] = "KOOLKID Touch/No Touch waits until current Mutant trades finish."
+        return False
+
+    shadow_u = _build_ntt_koolkid_shadow_u(ntt)
+
+    def _load_shadow_inputs():
+        strat = (state.get("strategies") or {}).get("UNCHAIN")
+        try:
+            current_price = float(getattr(strat, "last_price", None))
+        except Exception:
+            current_price = None
+        metrics = _compute_unchain_auto_metrics(state, shadow_u)
+        bias = _get_unchain_bias_payload(state, shadow_u)
+        return strat, current_price, metrics, bias
+
+    strat, current_price, metrics, bias = _run_with_ntt_shadow_unchain_strategy(state, _load_shadow_inputs)
+    if not strat:
+        ntt["koolkid_hl_last_reason"] = "Mutant strategy is not available."
+        return False
+    if current_price is None:
+        ntt["koolkid_hl_last_reason"] = "Waiting for live price before starting KOOLKID simulation."
+        return False
+
+    if sim and sim.get("active"):
+        if str(sim.get("side") or "").upper() not in ("HIGHER", "LOWER") or str(sim.get("opposite_side") or "").upper() not in ("HIGHER", "LOWER"):
+            _clear_ntt_koolkid_hl_simulation(
+                ntt,
+                reason="KOOLKID simulation restarted to restore Touch/No Touch settings.",
+                cooldown_sec=0.0,
+            )
+            sim = None
+        else:
+            sim["current_price"] = float(current_price)
+            sim_duration_unit = _clean_koolkid_duration_unit(sim.get("simulation_duration_unit", ntt.get("koolkid_sim_duration_unit", "s")))
+            live_duration_unit = _clean_koolkid_duration_unit(sim.get("live_duration_unit", ntt.get("koolkid_live_duration_unit", "t")))
+            sim_duration = _sanitize_koolkid_duration(sim.get("simulation_duration", ntt.get("koolkid_sim_duration", 15)), sim_duration_unit, kind="sim")
+            live_duration = _sanitize_koolkid_duration(sim.get("live_duration", ntt.get("koolkid_live_duration", 5)), live_duration_unit, kind="live")
+            loss_trigger_pct = _get_unchain_koolkid_hl_loss_trigger_pct(shadow_u, sim)
+            sim["simulation_duration"] = sim_duration
+            sim["simulation_duration_unit"] = sim_duration_unit
+            sim["live_duration"] = live_duration
+            sim["live_duration_unit"] = live_duration_unit
+            sim["loss_trigger_pct"] = loss_trigger_pct
+
+            def _active_shadow_eval():
+                sim["current_tick_count"] = _get_unchain_tick_counter(state)
+                estimated_value, estimated_pnl, balance_ratio = _estimate_unchain_koolkid_hl_value(sim, current_price, metrics)
+                progress = _get_unchain_koolkid_sim_progress(sim, state)
+                return estimated_value, estimated_pnl, balance_ratio, progress
+
+            estimated_value, estimated_pnl, balance_ratio, progress = _run_with_ntt_shadow_unchain_strategy(state, _active_shadow_eval)
+            sim["estimated_value"] = float(estimated_value)
+            sim["estimated_pnl"] = float(estimated_pnl)
+            sim["balance_ratio"] = float(balance_ratio)
+            stake_value = float(sim.get("stake", 0.0) or 0.0)
+            loss_value_floor = max(0.0, stake_value * (1.0 - (float(loss_trigger_pct) / 100.0)))
+            sim_losing = estimated_value <= loss_value_floor
+
+            sim_side = _shadow_side_to_ntt_side(sim.get("side"))
+            live_side = _shadow_side_to_ntt_side(sim.get("opposite_side"))
+
+            if progress.get("before_check"):
+                remaining_to_check = int(progress.get("check_remaining", 0) or 0)
+                ntt["koolkid_hl_last_reason"] = (
+                    f"KOOLKID sim {sim_side.replace('_', ' ')} running • check in {remaining_to_check}{'t' if sim_duration_unit == 't' else 's'} • "
+                    f"est {_format_state_money(state, estimated_value)} ({_format_state_money(state, estimated_pnl, signed=True)}) • trigger {loss_trigger_pct}% loss"
+                )
+                return False
+
+            live_shadow_side = str(sim.get("opposite_side") or "").upper()
+            live_checks = _get_unchain_koolkid_live_checks(sim, metrics, strat, trade_side=live_shadow_side)
+            if sim_losing and live_checks.get("recent_direction_ok") and live_checks.get("market_not_flat") and live_checks.get("barrier_safe"):
+                symbol = sim.get("symbol") or state.get("current_symbol")
+                live_stake = float(ntt.get("touch_stake" if live_side == "TOUCH" else "no_touch_stake", 1.0) or 1.0)
+                ok, msg = _send_ntt_trade(
+                    client_id,
+                    side=live_side,
+                    stake=live_stake,
+                    symbol=symbol,
+                    barrier=sim.get("live_barrier"),
+                    duration=live_duration,
+                    duration_unit=live_duration_unit,
+                )
+                if ok:
+                    ntt["last_action"] = (
+                        f"KOOLKID live {live_side.replace('_', ' ')} sent after weak {sim_side.replace('_', ' ')} sim • "
+                        f"{sim.get('live_barrier')} • {_format_koolkid_duration_text(live_duration, live_duration_unit)}"
+                    )
+                    _clear_ntt_koolkid_hl_simulation(
+                        ntt,
+                        reason=(
+                            f"KOOLKID fired {live_side.replace('_', ' ')} after {sim_side.replace('_', ' ')} sim fell to "
+                            f"{_format_state_money(state, estimated_value)} ({_format_state_money(state, estimated_pnl, signed=True)}) at the {loss_trigger_pct}% loss trigger."
+                        ),
+                        cooldown_sec=5.0,
+                    )
+                    return True
+                _clear_ntt_koolkid_hl_simulation(
+                    ntt,
+                    reason=f"KOOLKID live {live_side.replace('_', ' ')} failed: {msg}",
+                    cooldown_sec=5.0,
+                )
+                return False
+
+            reasons = []
+            if not sim_losing:
+                reasons.append(f"sim held {_format_state_money(state, estimated_value)} above the {loss_trigger_pct}% loss trigger")
+            if not live_checks.get("recent_direction_ok"):
+                reasons.append("recent tick direction does not agree")
+            if not live_checks.get("market_not_flat"):
+                reasons.append("market is too flat")
+            if not live_checks.get("barrier_safe"):
+                reasons.append("barrier is not safe")
+            _clear_ntt_koolkid_hl_simulation(
+                ntt,
+                reason=f"KOOLKID skipped: {reasons[0] if reasons else 'conditions not met'}",
+                cooldown_sec=4.0,
+            )
+            ntt["last_action"] = ntt.get("koolkid_hl_last_reason") or "KOOLKID skipped"
+            return False
+
+    cooldown_until = float(ntt.get("koolkid_hl_cooldown_until", 0.0) or 0.0)
+    if cooldown_until and now_ts < cooldown_until:
+        return False
+
+    higher_pct = float(bias.get("higher_pct", 50.0) or 50.0)
+    lower_pct = float(bias.get("lower_pct", 50.0) or 50.0)
+    if abs(higher_pct - lower_pct) < 3.0:
+        ntt["koolkid_hl_last_reason"] = f"KOOLKID waiting: weaker side is not clear yet (T {higher_pct:.1f}% / NT {lower_pct:.1f}%)."
+        return False
+
+    sim_duration_unit = _clean_koolkid_duration_unit(ntt.get("koolkid_sim_duration_unit", "s"))
+    live_duration_unit = _clean_koolkid_duration_unit(ntt.get("koolkid_live_duration_unit", "t"))
+    sim_duration = _sanitize_koolkid_duration(ntt.get("koolkid_sim_duration", 15), sim_duration_unit, kind="sim")
+    live_duration = _sanitize_koolkid_duration(ntt.get("koolkid_live_duration", 5), live_duration_unit, kind="live")
+    loss_trigger_pct = _get_unchain_koolkid_hl_loss_trigger_pct(shadow_u)
+    decision_after = _get_unchain_koolkid_hl_check_after(sim_duration, loss_trigger_pct, sim_duration_unit)
+    configured_side = _clean_ntt_koolkid_sim_side(ntt.get("koolkid_hl_sim_side", "AUTO"))
+
+    sim_shadow_side = "HIGHER" if higher_pct < lower_pct else "LOWER"
+    if configured_side in ("TOUCH", "NO_TOUCH"):
+        sim_shadow_side = _ntt_side_to_shadow_side(configured_side)
+    live_shadow_side = "LOWER" if sim_shadow_side == "HIGHER" else "HIGHER"
+    sim_side = _shadow_side_to_ntt_side(sim_shadow_side)
+    live_side = _shadow_side_to_ntt_side(live_shadow_side)
+    sim_stake = float(ntt.get("touch_stake" if sim_side == "TOUCH" else "no_touch_stake", 1.0) or 1.0)
+    sim_barrier = _format_ntt_barrier(ntt.get("touch_barrier" if sim_side == "TOUCH" else "no_touch_barrier", "+0.12"), sim_side, "t")
+    try:
+        sim_barrier_mag = abs(float(sim_barrier))
+    except Exception:
+        sim_barrier_mag = 0.12
+    live_barrier = _get_ntt_koolkid_live_barrier(ntt, live_side, live_duration_unit)
+    try:
+        live_barrier_mag = abs(float(live_barrier))
+    except Exception:
+        live_barrier_mag = 0.06
+
+    sim_state = {
+        "active": True,
+        "side": sim_shadow_side,
+        "opposite_side": live_shadow_side,
+        "symbol": state.get("current_symbol"),
+        "stake": float(sim_stake),
+        "sim_barrier": sim_barrier,
+        "sim_barrier_mag": float(sim_barrier_mag),
+        "live_barrier": live_barrier,
+        "live_barrier_mag": float(live_barrier_mag),
+        "start_price": float(current_price),
+        "current_price": float(current_price),
+        "simulation_duration": int(sim_duration),
+        "simulation_duration_unit": sim_duration_unit,
+        "live_duration": int(live_duration),
+        "live_duration_unit": live_duration_unit,
+        "loss_trigger_pct": int(loss_trigger_pct),
+        "time": now_time(),
+        "virtual_contract_id": "MUTANT-KOOLKID-TNT-SIM",
+        "message": (
+            f"{_format_koolkid_duration_text(sim_duration, sim_duration_unit)} paper {sim_side.replace('_', ' ')} sim started • "
+            f"trigger {loss_trigger_pct}% loss • opposite {live_side.replace('_', ' ')} live will use {live_barrier} "
+            f"for {_format_koolkid_duration_text(live_duration, live_duration_unit)} if conditions pass."
+        ),
+    }
+    _run_with_ntt_shadow_unchain_strategy(
+        state,
+        lambda: _start_unchain_koolkid_simulation_clock(state, sim_state, sim_duration, sim_duration_unit, decision_after),
+    )
+    ntt["koolkid_hl_simulation"] = sim_state
+    ntt["koolkid_hl_last_reason"] = (
+        f"KOOLKID sim {sim_side.replace('_', ' ')} started • check at {_format_koolkid_duration_text(decision_after, sim_duration_unit)} • "
+        f"trigger {loss_trigger_pct}% loss • live {live_side.replace('_', ' ')} would use {live_barrier} "
+        f"for {_format_koolkid_duration_text(live_duration, live_duration_unit)}."
+    )
+    ntt["last_action"] = ntt["koolkid_hl_last_reason"]
+    return False
+
+
+def _run_ntt_koolkid_both(client_id, state):
+    ntt = _ensure_ntt_state(state)
+    if not bool(ntt.get("koolkid_both_enabled")):
+        return False
+    if not state.get("ws_connected") or not state.get("ws"):
+        ntt["koolkid_both_last_reason"] = "Connect API first for KOOLKID Both."
+        return False
+    risk_block = _check_ntt_risk_block(state)
+    if risk_block:
+        ntt["koolkid_both_last_reason"] = str(risk_block)
+        return False
+
+    open_entries = _get_open_ntt_active_entries(state)
+    now_ts = time.time()
+    sim = ntt.get("koolkid_both_simulation") if isinstance(ntt.get("koolkid_both_simulation"), dict) else None
+    if open_entries:
+        if sim and sim.get("active"):
+            _clear_ntt_koolkid_both_simulation(
+                ntt,
+                reason="KOOLKID Both paused because a Mutant trade is already active.",
+                cooldown_sec=4.0,
+            )
+        else:
+            ntt["koolkid_both_last_reason"] = "KOOLKID Both waits until current Mutant trades finish."
+        return False
+
+    shadow_u = _build_ntt_koolkid_shadow_u(ntt)
+
+    def _load_shadow_inputs():
+        strat = (state.get("strategies") or {}).get("UNCHAIN")
+        try:
+            current_price = float(getattr(strat, "last_price", None))
+        except Exception:
+            current_price = None
+        metrics = _compute_unchain_auto_metrics(state, shadow_u)
+        return strat, current_price, metrics
+
+    strat, current_price, metrics = _run_with_ntt_shadow_unchain_strategy(state, _load_shadow_inputs)
+    if not strat:
+        ntt["koolkid_both_last_reason"] = "Mutant strategy is not available."
+        return False
+    if current_price is None:
+        ntt["koolkid_both_last_reason"] = "Waiting for live price before starting KOOLKID Both simulation."
+        return False
+
+    if sim and sim.get("active"):
+        sim_duration_unit = _clean_koolkid_duration_unit(sim.get("simulation_duration_unit", ntt.get("koolkid_sim_duration_unit", "s")))
+        live_duration_unit = _clean_koolkid_duration_unit(sim.get("live_duration_unit", ntt.get("koolkid_live_duration_unit", "t")))
+        sim_duration = _sanitize_koolkid_duration(sim.get("simulation_duration", ntt.get("koolkid_sim_duration", 15)), sim_duration_unit, kind="sim")
+        live_duration = _sanitize_koolkid_duration(sim.get("live_duration", ntt.get("koolkid_live_duration", 5)), live_duration_unit, kind="live")
+        sim["current_price"] = float(current_price)
+        sim["simulation_duration"] = sim_duration
+        sim["simulation_duration_unit"] = sim_duration_unit
+        sim["live_duration"] = live_duration
+        sim["live_duration_unit"] = live_duration_unit
+
+        def _active_shadow_eval():
+            sim["current_tick_count"] = _get_unchain_tick_counter(state)
+            side_rows = []
+            leading_side = None
+            leading_profit_pct = -9999.0
+            for item in list(sim.get("sides") or []):
+                side_sim = dict(item or {})
+                side_sim["simulation_duration"] = sim_duration
+                side_sim["simulation_duration_unit"] = sim_duration_unit
+                side_sim["started_tick"] = sim.get("started_tick")
+                side_sim["current_tick_count"] = sim.get("current_tick_count")
+                estimated_value, estimated_pnl, balance_ratio, profit_pct = _estimate_unchain_koolkid_both_value(
+                    side_sim,
+                    current_price,
+                    metrics,
+                )
+                row = dict(item or {})
+                row["estimated_value"] = float(estimated_value)
+                row["estimated_pnl"] = float(estimated_pnl)
+                row["balance_ratio"] = float(balance_ratio)
+                row["profit_pct"] = float(round(profit_pct, 2))
+                side_rows.append(row)
+                if profit_pct > leading_profit_pct:
+                    leading_profit_pct = profit_pct
+                    leading_side = str(row.get("side") or "").upper()
+            progress = _get_unchain_koolkid_sim_progress(sim, state)
+            return side_rows, leading_side, leading_profit_pct, progress
+
+        side_rows, leading_side, leading_profit_pct, progress = _run_with_ntt_shadow_unchain_strategy(state, _active_shadow_eval)
+        sim["sides"] = side_rows
+        sim["leading_side"] = leading_side
+        sim["leading_profit_pct"] = float(round(leading_profit_pct if leading_profit_pct > -9999.0 else 0.0, 2))
+
+        if progress.get("before_check"):
+            check_left = int(progress.get("check_remaining", 0) or 0)
+            touch_row = next((row for row in side_rows if str(row.get("side") or "").upper() == "HIGHER"), None)
+            no_touch_row = next((row for row in side_rows if str(row.get("side") or "").upper() == "LOWER"), None)
+            touch_pct = float((touch_row or {}).get("profit_pct", 0.0) or 0.0)
+            no_touch_pct = float((no_touch_row or {}).get("profit_pct", 0.0) or 0.0)
+            ntt["koolkid_both_last_reason"] = (
+                f"KOOLKID BOTH sim running • TOUCH {touch_pct:+.0f}% • NO TOUCH {no_touch_pct:+.0f}% • "
+                f"decision in {check_left}{'t' if sim_duration_unit == 't' else 's'}"
+            )
+            return False
+
+        strong_shadow_side = str(leading_side or "").upper()
+        leading_profit_pct_value = float(sim.get("leading_profit_pct", 0.0) or 0.0)
+        required_profit_pct = float(_get_unchain_koolkid_hl_loss_trigger_pct(shadow_u))
+        if strong_shadow_side not in ("HIGHER", "LOWER") or leading_profit_pct_value < (required_profit_pct - 0.5):
+            _clear_ntt_koolkid_both_simulation(
+                ntt,
+                reason=(
+                    f"KOOLKID BOTH skipped: no side reached +{required_profit_pct:.0f}% profit by the 7s-left check "
+                    f"(best {leading_profit_pct_value:+.0f}%)."
+                ),
+                cooldown_sec=4.0,
+            )
+            ntt["last_action"] = ntt.get("koolkid_both_last_reason") or "KOOLKID BOTH skipped"
+            return False
+
+        signal = _run_with_ntt_shadow_unchain_strategy(
+            state,
+            lambda: _get_unchain_koolkid_both_market_signal(shadow_u, metrics, (state.get("strategies") or {}).get("UNCHAIN"), strong_shadow_side, live_duration_unit),
+        )
+        movement_class = str(signal.get("movement_class") or "WEAK").upper()
+        touch_stake = float(ntt.get("touch_stake", 1.0) or 1.0)
+        no_touch_stake = float(ntt.get("no_touch_stake", 1.0) or 1.0)
+        touch_barrier = _get_ntt_koolkid_live_barrier(ntt, "TOUCH", live_duration_unit)
+        no_touch_barrier = _get_ntt_koolkid_live_barrier(ntt, "NO_TOUCH", live_duration_unit)
+        if movement_class == "WEAK":
+            reasons = []
+            if not signal.get("speed_ok"):
+                reasons.append("tick speed is not strong enough")
+            if not signal.get("consistency_ok"):
+                reasons.append("recent ticks are not consistent enough")
+            reasons.append("movement is weak")
+            _clear_ntt_koolkid_both_simulation(
+                ntt,
+                reason=f"KOOLKID BOTH skipped: {reasons[0] if reasons else 'movement is weak'}",
+                cooldown_sec=4.0,
+            )
+            ntt["last_action"] = ntt.get("koolkid_both_last_reason") or "KOOLKID BOTH skipped"
+            return False
+
+        plan = [
+            ("TOUCH", touch_stake, touch_barrier),
+            ("NO_TOUCH", no_touch_stake, no_touch_barrier),
+        ]
+        balance_ok, balance_msg, normalized_plan, _total_stake, _balance = _check_ntt_pair_balance(
+            state,
+            plan,
+            failure_prefix="Trade failed",
+        )
+        if not balance_ok:
+            _clear_ntt_koolkid_both_simulation(ntt, reason=balance_msg, cooldown_sec=5.0)
+            ntt["last_action"] = balance_msg
+            return False
+
+        placed = []
+        errors = []
+        for side_name, side_stake, side_barrier in normalized_plan:
+            ok, msg = _send_ntt_trade(
+                client_id,
+                side=side_name,
+                stake=side_stake,
+                symbol=sim.get("symbol") or state.get("current_symbol"),
+                barrier=side_barrier,
+                duration=live_duration,
+                duration_unit=live_duration_unit,
+            )
+            if ok:
+                placed.append(side_name)
+            else:
+                errors.append(f"{side_name}: {msg}")
+                break
+
+        if len(placed) == 2:
+            ntt["last_action"] = (
+                f"KOOLKID BOTH sent on {sim.get('symbol') or state.get('current_symbol')} • "
+                f"{_format_koolkid_duration_text(live_duration, live_duration_unit)} • your saved Mutant stakes and KOOLKID barriers"
+            )
+            _clear_ntt_koolkid_both_simulation(
+                ntt,
+                reason=(
+                    f"KOOLKID BOTH fired with your saved Mutant stakes and KOOLKID barriers after "
+                    f"{_shadow_side_to_ntt_side(strong_shadow_side).replace('_', ' ')} led the paper sim by "
+                    f"{float(sim.get('leading_profit_pct', 0.0) or 0.0):+.0f}%."
+                ),
+                cooldown_sec=5.0,
+            )
+            return True
+
+        failure_message = errors[0] if errors else "live BOTH send failed"
+        _clear_ntt_koolkid_both_simulation(
+            ntt,
+            reason=f"KOOLKID BOTH failed: {failure_message}",
+            cooldown_sec=5.0,
+        )
+        ntt["last_action"] = ntt.get("koolkid_both_last_reason") or "KOOLKID BOTH failed"
+        return False
+
+    cooldown_until = float(ntt.get("koolkid_both_cooldown_until", 0.0) or 0.0)
+    if cooldown_until and now_ts < cooldown_until:
+        return False
+
+    sim_duration_unit = _clean_koolkid_duration_unit(ntt.get("koolkid_sim_duration_unit", "s"))
+    live_duration_unit = _clean_koolkid_duration_unit(ntt.get("koolkid_live_duration_unit", "t"))
+    sim_duration = _sanitize_koolkid_duration(ntt.get("koolkid_sim_duration", 15), sim_duration_unit, kind="sim")
+    live_duration = _sanitize_koolkid_duration(ntt.get("koolkid_live_duration", 5), live_duration_unit, kind="live")
+    decision_after = _get_unchain_koolkid_both_check_after(sim_duration, sim_duration_unit)
+    touch_stake = float(ntt.get("touch_stake", 1.0) or 1.0)
+    no_touch_stake = float(ntt.get("no_touch_stake", 1.0) or 1.0)
+    touch_sim_barrier = _format_ntt_barrier(ntt.get("touch_barrier", "+0.12"), "TOUCH", "t")
+    no_touch_sim_barrier = _format_ntt_barrier(ntt.get("no_touch_barrier", "+0.12"), "NO_TOUCH", "t")
+    try:
+        touch_sim_mag = abs(float(touch_sim_barrier))
+    except Exception:
+        touch_sim_mag = 0.12
+    try:
+        no_touch_sim_mag = abs(float(no_touch_sim_barrier))
+    except Exception:
+        no_touch_sim_mag = 0.12
+
+    sim_state = {
+        "active": True,
+        "symbol": state.get("current_symbol"),
+        "start_price": float(current_price),
+        "current_price": float(current_price),
+        "simulation_duration": int(sim_duration),
+        "simulation_duration_unit": sim_duration_unit,
+        "live_duration": int(live_duration),
+        "live_duration_unit": live_duration_unit,
+        "time": now_time(),
+        "virtual_contract_id": "MUTANT-KOOLKID-BOTH-SIM",
+        "message": (
+            f"{_format_koolkid_duration_text(sim_duration, sim_duration_unit)} paper BOTH sim started • "
+            f"decision at {_format_koolkid_duration_text(decision_after, sim_duration_unit)} • "
+            f"live BOTH would use {_format_koolkid_duration_text(live_duration, live_duration_unit)}."
+        ),
+        "sides": [
+            {
+                "side": "HIGHER",
+                "symbol": state.get("current_symbol"),
+                "stake": float(touch_stake),
+                "sim_barrier": touch_sim_barrier,
+                "sim_barrier_mag": float(touch_sim_mag),
+                "start_price": float(current_price),
+                "contract_id": "MUTANT-KOOLKID-BOTH-SIM-TOUCH",
+            },
+            {
+                "side": "LOWER",
+                "symbol": state.get("current_symbol"),
+                "stake": float(no_touch_stake),
+                "sim_barrier": no_touch_sim_barrier,
+                "sim_barrier_mag": float(no_touch_sim_mag),
+                "start_price": float(current_price),
+                "contract_id": "MUTANT-KOOLKID-BOTH-SIM-NO_TOUCH",
+            },
+        ],
+    }
+    _run_with_ntt_shadow_unchain_strategy(
+        state,
+        lambda: _start_unchain_koolkid_simulation_clock(state, sim_state, sim_duration, sim_duration_unit, decision_after),
+    )
+    ntt["koolkid_both_simulation"] = sim_state
+    ntt["koolkid_both_last_reason"] = (
+        f"KOOLKID BOTH sim started • decision at {_format_koolkid_duration_text(decision_after, sim_duration_unit)} • "
+        f"live BOTH would use {_format_koolkid_duration_text(live_duration, live_duration_unit)}."
+    )
+    ntt["last_action"] = ntt["koolkid_both_last_reason"]
+    return False
+
+
+def _toggle_ntt_koolkid_hl(cid, state, data):
+    ntt = _ensure_ntt_state(state)
+    requested = (data or {}).get("enabled")
+    ntt["koolkid_hl_enabled"] = (not bool(ntt.get("koolkid_hl_enabled"))) if requested is None else bool(requested)
+    if ntt["koolkid_hl_enabled"]:
+        ntt["koolkid_both_enabled"] = False
+        _clear_ntt_koolkid_both_simulation(
+            ntt,
+            reason="KOOLKID Both is OFF.",
+            cooldown_sec=0.0,
+        )
+        ntt["koolkid_hl_cooldown_until"] = 0.0
+        sim_side = _clean_ntt_koolkid_sim_side(ntt.get("koolkid_hl_sim_side", "AUTO"))
+        if sim_side == "TOUCH":
+            ntt["koolkid_hl_last_reason"] = "KOOLKID Touch/No Touch armed. It will paper-trade the Touch side and check halfway through the sim."
+        elif sim_side == "NO_TOUCH":
+            ntt["koolkid_hl_last_reason"] = "KOOLKID Touch/No Touch armed. It will paper-trade the No Touch side and check halfway through the sim."
+        else:
+            ntt["koolkid_hl_last_reason"] = "KOOLKID Touch/No Touch armed. It will paper-trade the weaker side and check halfway through the sim."
+        ntt["last_action"] = "KOOLKID Touch/No Touch armed"
+        _run_ntt_koolkid_hl(cid, state)
+        message = "KOOLKID TOUCH / NO TOUCH ON"
+    else:
+        _clear_ntt_koolkid_hl_simulation(
+            ntt,
+            reason="KOOLKID Touch/No Touch is OFF.",
+            cooldown_sec=0.0,
+        )
+        ntt["last_action"] = "KOOLKID Touch/No Touch OFF"
+        message = "KOOLKID TOUCH / NO TOUCH OFF"
+
+    payload = _ntt_payload_response(state)
+    if state.get("active_profile") == "NTT":
+        socketio.emit("ntt_status", payload, room=cid)
+    return jsonify({
+        "status": "success",
+        "message": message,
+        "enabled": bool(ntt.get("koolkid_hl_enabled")),
+        "payload": payload,
+    })
+
+
+def _toggle_ntt_auto_both(cid, state, data):
+    ntt = _ensure_ntt_state(state)
+    requested = (data or {}).get("enabled")
+    ntt["auto_both_enabled"] = (not bool(ntt.get("auto_both_enabled"))) if requested is None else bool(requested)
+
+    if ntt["auto_both_enabled"]:
+        ntt["koolkid_hl_enabled"] = False
+        _clear_ntt_koolkid_hl_simulation(
+            ntt,
+            reason="KOOLKID Touch/No Touch is OFF.",
+            cooldown_sec=0.0,
+        )
+        ntt["koolkid_both_enabled"] = False
+        _clear_ntt_koolkid_both_simulation(
+            ntt,
+            reason="KOOLKID Both is OFF.",
+            cooldown_sec=0.0,
+        )
+        active_count = len(_get_open_ntt_active_entries(state))
+        if active_count > 0:
+            ntt["auto_both_pair_active"] = True
+            ntt["auto_both_next_fire_at"] = 0.0
+            ntt["auto_both_last_reason"] = "AUTO BOTH armed and waiting for the current Mutant trade cycle to finish."
+        else:
+            ntt["auto_both_pair_active"] = False
+            ntt["auto_both_next_fire_at"] = time.time()
+            ntt["auto_both_last_reason"] = "AUTO BOTH armed and ready to send TOUCH + NO TOUCH."
+            _run_ntt_auto_both(cid, state)
+        ntt["last_action"] = "AUTO BOTH armed"
+        message = "MUTANT AUTO BOTH ON"
+    else:
+        ntt["auto_both_pair_active"] = False
+        ntt["auto_both_next_fire_at"] = 0.0
+        ntt["auto_both_last_reason"] = "AUTO BOTH is OFF."
+        ntt["last_action"] = "AUTO BOTH OFF"
+        message = "MUTANT AUTO BOTH OFF"
+
+    payload = _ntt_payload_response(state)
+    if state.get("active_profile") == "NTT":
+        socketio.emit("ntt_status", payload, room=cid)
+    return jsonify({
+        "status": "success",
+        "message": message,
+        "enabled": bool(ntt.get("auto_both_enabled")),
+        "payload": payload,
+    })
+
+
+def _toggle_ntt_koolkid_both(cid, state, data):
+    ntt = _ensure_ntt_state(state)
+    requested = (data or {}).get("enabled")
+    ntt["koolkid_both_enabled"] = (not bool(ntt.get("koolkid_both_enabled"))) if requested is None else bool(requested)
+    if ntt["koolkid_both_enabled"]:
+        ntt["koolkid_hl_enabled"] = False
+        _clear_ntt_koolkid_hl_simulation(
+            ntt,
+            reason="KOOLKID Touch/No Touch is OFF.",
+            cooldown_sec=0.0,
+        )
+        ntt["koolkid_both_cooldown_until"] = 0.0
+        ntt["koolkid_both_last_reason"] = "KOOLKID Both armed. It will paper-trade Touch + No Touch together and decide with 7s left."
+        ntt["last_action"] = "KOOLKID Both armed"
+        _run_ntt_koolkid_both(cid, state)
+        message = "KOOLKID BOTH ON"
+    else:
+        _clear_ntt_koolkid_both_simulation(
+            ntt,
+            reason="KOOLKID Both is OFF.",
+            cooldown_sec=0.0,
+        )
+        ntt["last_action"] = "KOOLKID Both OFF"
+        message = "KOOLKID BOTH OFF"
+
+    payload = _ntt_payload_response(state)
+    if state.get("active_profile") == "NTT":
+        socketio.emit("ntt_status", payload, room=cid)
+    return jsonify({
+        "status": "success",
+        "message": message,
+        "enabled": bool(ntt.get("koolkid_both_enabled")),
+        "payload": payload,
+    })
 
 
 def _get_unchain_tick_counter(state):
@@ -2633,6 +5337,49 @@ def _forget_unchain_open_contract_subscription(state, contract_id, subscription_
             ws.send(json.dumps({"forget": sub_id}))
         except Exception:
             pass
+    return True
+
+
+def _schedule_contract_open_refresh(client_id, expected_nonce, contract_id, delays=(0.35, 1.0)):
+    norm = _normalize_contract_id(contract_id)
+    if not norm:
+        return False
+
+    def _worker():
+        for raw_delay in tuple(delays or ()):
+            try:
+                time.sleep(max(0.0, float(raw_delay or 0.0)))
+            except Exception:
+                continue
+            state = clients.get(client_id)
+            if not state:
+                return
+            if state.get("ws_nonce") != expected_nonce:
+                return
+            ws = state.get("ws")
+            if not state.get("ws_connected") or not ws:
+                return
+            if _get_open_contract_sub_map(state).get(norm):
+                return
+            try:
+                ws.send(json.dumps({
+                    "proposal_open_contract": 1,
+                    "contract_id": int(norm),
+                }))
+            except Exception:
+                try:
+                    ws.send(json.dumps({
+                        "proposal_open_contract": 1,
+                        "contract_id": norm,
+                    }))
+                except Exception:
+                    return
+
+    threading.Thread(
+        target=_worker,
+        daemon=True,
+        name=f"contract_refresh_{client_id}_{norm}",
+    ).start()
     return True
 
 
@@ -2812,9 +5559,9 @@ def _check_unchain_hl_risk_block(state):
         sl = 0.0
     reason = None
     if tp > 0 and net_pnl >= tp:
-        reason = f"UNCHAIN TP reached (+${net_pnl:.2f})"
+        reason = f"UNCHAIN TP reached ({_format_state_money(state, net_pnl, signed=True)})"
     elif sl > 0 and net_pnl <= -abs(sl):
-        reason = f"UNCHAIN SL reached (${net_pnl:.2f})"
+        reason = f"UNCHAIN SL reached ({_format_state_money(state, net_pnl, signed=True)})"
     u["risk_block_reason"] = reason
     return reason
 
@@ -3243,6 +5990,10 @@ def _maybe_force_unchain_close_on_countdown(client_id, state):
         sell_price = buy_price + float(local_profit)
 
         meta_for_contract = _peek_contract_meta(state, contract_id) or {}
+        try:
+            _settle_profile_budget_reservation(state, meta_for_contract.get("budget_reservation"), local_profit)
+        except Exception:
+            pass
         synthetic_contract = {
             "contract_id": contract_id,
             "status": "BOT_SETTLED",
@@ -3264,11 +6015,14 @@ def _maybe_force_unchain_close_on_countdown(client_id, state):
         u["last_action"] = (
             f"Countdown finished (+3 ticks / +5s buffer) • bot-settled {len(settled)} UNCHAIN trade(s)"
         )
+        _run_unchain_hybrid(client_id, state)
+        _run_unchain_primordial_blue(client_id, state)
         _run_unchain_ai_auto_trade(client_id, state)
         _run_unchain_auto_both(client_id, state)
         if state.get("active_profile") == "UNCHAIN":
             socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
         send_stats_update(client_id)
+        _emit_balance_payload(client_id, state)
     elif waiting:
         u["last_action"] = (
             f"Countdown finished • waiting +3 ticks or +5s for {len(waiting)} UNCHAIN trade(s)"
@@ -3398,6 +6152,151 @@ def _disable_unchain_directional_auto(u, *, reason=None):
     if reason is not None:
         u["directional_auto_last_reason"] = str(reason)
 
+
+
+def _disable_unchain_primordial_blue(u, *, reason=None):
+    if not isinstance(u, dict):
+        return
+    u["primordial_blue_enabled"] = False
+    u["primordial_blue_cycle_active"] = False
+    u["primordial_blue_next_fire_at"] = 0.0
+    if reason is not None:
+        u["primordial_blue_last_reason"] = str(reason)
+
+
+def _get_unchain_primordial_blue_status(state, u=None, active_count=None):
+    u = u or _ensure_unchain_hl_state(state)
+    if active_count is None:
+        active_count = len(_get_open_unchain_active_entries(state))
+    enabled = bool(u.get("primordial_blue_enabled"))
+    reason = str(u.get("primordial_blue_last_reason") or "🔵 Primordial Blue is OFF.")
+    symbol = str(state.get("current_symbol") or "R_25").upper()
+    plan_info = build_primordial_blue_trade_plan(symbol, u.get("higher_stake", 0.0))
+    supported = bool(plan_info.get("supported"))
+    market_label = str(plan_info.get("market_label") or "V75")
+    total_stake = float(plan_info.get("total_stake") or 0.0)
+    split_text = "HIGHER -8.80 5 parts • LOWER -8.80 1 part"
+    plan = plan_info.get("plan") if isinstance(plan_info.get("plan"), list) else []
+    if plan:
+        split_text = " • ".join(
+            f"{str(item.get('label') or '').strip()} {_format_state_money(state, float(item.get('stake') or 0.0))}"
+            for item in plan
+        )
+    label = "OFF"
+    if enabled:
+        if not state.get("ws_connected") or not state.get("ws"):
+            label = "WAITING API"
+        elif not supported:
+            label = "WAITING V75"
+        elif active_count > 0 or bool(u.get("primordial_blue_cycle_active")):
+            label = "RUNNING"
+        else:
+            next_fire_at = float(u.get("primordial_blue_next_fire_at", 0.0) or 0.0)
+            label = "RE-ARM" if next_fire_at and time.time() < next_fire_at else "ARMED"
+    return {
+        "enabled": enabled,
+        "label": label,
+        "reason": reason,
+        "supported": supported,
+        "current_symbol": symbol,
+        "market_label": market_label,
+        "total_stake": total_stake,
+        "duration": int(plan_info.get("duration") or 5),
+        "duration_unit": str(plan_info.get("duration_unit") or "t"),
+        "split_text": split_text,
+    }
+
+
+def _disable_unchain_hybrid(u, *, reason=None):
+    if not isinstance(u, dict):
+        return
+    u["hybrid_enabled"] = False
+    u["hybrid_cycle_active"] = False
+    u["hybrid_next_fire_at"] = 0.0
+    if reason is not None:
+        u["hybrid_last_reason"] = str(reason)
+
+
+def _get_unchain_hybrid_status(state, u=None, active_count=None):
+    u = u or _ensure_unchain_hl_state(state)
+    if active_count is None:
+        active_count = len(_get_open_unchain_active_entries(state))
+    enabled = bool(u.get("hybrid_enabled"))
+    reason = str(u.get("hybrid_last_reason") or "🟢 Hybrid is OFF.")
+    symbol = str(state.get("current_symbol") or "R_25").upper()
+    plan_info = build_hybrid_trade_plan(symbol, u.get("higher_stake", 0.0))
+    supported = bool(plan_info.get("supported"))
+    market_label = str(plan_info.get("market_label") or "V75")
+    total_stake = float(plan_info.get("total_stake") or 0.0)
+    split_text = "HIGHER +3.88 50% • LOWER -3.88 50%"
+    plan = plan_info.get("plan") if isinstance(plan_info.get("plan"), list) else []
+    if plan:
+        split_text = " • ".join(
+            f"{str(item.get('label') or '').strip()} {_format_state_money(state, float(item.get('stake') or 0.0))}"
+            for item in plan
+        )
+    label = "OFF"
+    if enabled:
+        if not state.get("ws_connected") or not state.get("ws"):
+            label = "WAITING API"
+        elif not supported:
+            label = "WAITING V75"
+        elif active_count > 0 or bool(u.get("hybrid_cycle_active")):
+            label = "RUNNING"
+        else:
+            next_fire_at = float(u.get("hybrid_next_fire_at", 0.0) or 0.0)
+            label = "RE-ARM" if next_fire_at and time.time() < next_fire_at else "ARMED"
+    return {
+        "enabled": enabled,
+        "label": label,
+        "reason": reason,
+        "supported": supported,
+        "current_symbol": symbol,
+        "market_label": market_label,
+        "total_stake": total_stake,
+        "duration": int(plan_info.get("duration") or 10),
+        "duration_unit": str(plan_info.get("duration_unit") or "t"),
+        "split_text": split_text,
+    }
+
+
+def _check_unchain_multi_balance(state, plan, *, trade_label="trade set", failure_prefix="Trade failed"):
+    normalized = []
+    total_stake = 0.0
+    for item in list(plan or []):
+        if not isinstance(item, (list, tuple)) or len(item) < 3:
+            continue
+        side = str(item[0] or "").upper()
+        if side not in ("HIGHER", "LOWER"):
+            continue
+        try:
+            stake = float(item[1] or 0.0)
+        except Exception:
+            stake = 0.0
+        normalized.append((side, stake, item[2]))
+        total_stake += max(0.0, stake)
+    try:
+        balance = max(0.0, float(state.get("balance", 0.0) or 0.0))
+    except Exception:
+        balance = 0.0
+    available_limit = balance
+    snapshot = _profile_budget_snapshot(state, "UNCHAIN")
+    budget_remaining = _safe_money(snapshot.get("remaining_budget"))
+    if snapshot.get("enabled"):
+        available_limit = min(balance, budget_remaining) if balance > 0 else budget_remaining
+    if total_stake > (available_limit + 0.000001):
+        if snapshot.get("enabled") and budget_remaining <= (balance + 0.000001):
+            message = (
+                f"{failure_prefix}: need {_format_state_money(state, total_stake)} total budget for the {trade_label}, "
+                f"but only {_format_state_money(state, budget_remaining)} UNCHAIN budget remains."
+            )
+            return False, message, normalized, round(total_stake, 2), round(budget_remaining, 2)
+        message = (
+            f"{failure_prefix}: need {_format_state_money(state, total_stake)} total balance for the {trade_label}, "
+            f"but only {_format_state_money(state, balance)} is available."
+        )
+        return False, message, normalized, round(total_stake, 2), round(balance, 2)
+    return True, None, normalized, round(total_stake, 2), round(available_limit, 2)
 
 
 def _clear_unchain_directional_auto_pending(u):
@@ -3694,14 +6593,15 @@ def _process_unchain_directional_auto_simulation(client_id, state, u):
         placed = []
         errors = []
         for exec_side, exec_stake, exec_barrier in normalized_plan:
+            exec_duration, exec_duration_unit = _get_unchain_side_duration(u, exec_side)
             ok, msg = _send_unchain_hl_trade(
                 client_id,
                 side=exec_side,
                 stake=exec_stake,
                 symbol=symbol,
                 barrier=exec_barrier,
-                duration=live_duration,
-                duration_unit=live_duration_unit,
+                duration=exec_duration,
+                duration_unit=exec_duration_unit,
                 entry_source="DIRECTIONAL_AUTO",
                 auto_confidence=confidence,
                 respect_half_barrier_toggle=False,
@@ -3735,14 +6635,15 @@ def _process_unchain_directional_auto_simulation(client_id, state, u):
         return True
 
     stake = _directional_auto_effective_stake(u, side)
+    trade_duration, trade_duration_unit = _get_unchain_side_duration(u, side)
     ok, msg = _send_unchain_hl_trade(
         client_id,
         side=side,
         stake=stake,
         symbol=symbol,
         barrier=sim.get("barrier") or _get_unchain_directional_auto_barrier(u),
-        duration=live_duration,
-        duration_unit=live_duration_unit,
+        duration=trade_duration,
+        duration_unit=trade_duration_unit,
         entry_source="DIRECTIONAL_AUTO",
         auto_confidence=confidence,
         respect_half_barrier_toggle=False,
@@ -4246,13 +7147,24 @@ def _check_unchain_pair_balance(state, plan, *, failure_prefix="Trade failed"):
         balance = max(0.0, float(state.get("balance", 0.0) or 0.0))
     except Exception:
         balance = 0.0
-    if total_stake > (balance + 0.000001):
+    available_limit = balance
+    snapshot = _profile_budget_snapshot(state, "UNCHAIN")
+    budget_remaining = _safe_money(snapshot.get("remaining_budget"))
+    if snapshot.get("enabled"):
+        available_limit = min(balance, budget_remaining) if balance > 0 else budget_remaining
+    if total_stake > (available_limit + 0.000001):
+        if snapshot.get("enabled") and budget_remaining <= (balance + 0.000001):
+            message = (
+                f"{failure_prefix}: need {_format_state_money(state, total_stake)} total budget for both trades, "
+                f"but only {_format_state_money(state, budget_remaining)} UNCHAIN budget remains."
+            )
+            return False, message, normalized, round(total_stake, 2), round(budget_remaining, 2)
         message = (
-            f"{failure_prefix}: need ${total_stake:.2f} total balance for both trades, "
-            f"but only ${balance:.2f} is available."
+            f"{failure_prefix}: need {_format_state_money(state, total_stake)} total balance for both trades, "
+            f"but only {_format_state_money(state, balance)} is available."
         )
         return False, message, normalized, round(total_stake, 2), round(balance, 2)
-    return True, None, normalized, round(total_stake, 2), round(balance, 2)
+    return True, None, normalized, round(total_stake, 2), round(available_limit, 2)
 
 
 def _rebalance_unchain_pair_stakes(total_stake, strong_side, *, favored_ratio=0.60, min_side_stake=0.35):
@@ -4760,6 +7672,12 @@ def _run_unchain_koolkid_hl(client_id, state):
     u = _ensure_unchain_hl_state(state)
     if not bool(u.get("koolkid_hl_enabled")):
         return False
+    if bool(u.get("hybrid_enabled")):
+        u["koolkid_hl_last_reason"] = "Turn off Hybrid before using KOOLKID Higher/Lower."
+        return False
+    if bool(u.get("primordial_blue_enabled")):
+        u["koolkid_hl_last_reason"] = "Turn off Primordial Blue before using KOOLKID Higher/Lower."
+        return False
     if not state.get("ws_connected") or not state.get("ws"):
         u["koolkid_hl_last_reason"] = "Connect API first for KOOLKID Higher/Lower."
         return False
@@ -4843,7 +7761,7 @@ def _run_unchain_koolkid_hl(client_id, state):
                 unit_label = "ticks" if sim_duration_unit == "t" else "s"
                 u["koolkid_hl_last_reason"] = (
                     f"KOOLKID sim {sim.get('side')} running • check in {remaining_to_check}{'t' if sim_duration_unit == 't' else 's'} • "
-                    f"est ${estimated_value:.2f} ({estimated_pnl:+.2f}) • trigger {loss_trigger_pct}% loss"
+                    f"est {_format_state_money(state, estimated_value)} ({_format_state_money(state, estimated_pnl, signed=True)}) • trigger {loss_trigger_pct}% loss"
                 )
                 return False
 
@@ -4873,7 +7791,7 @@ def _run_unchain_koolkid_hl(client_id, state):
                         u,
                         reason=(
                             f"KOOLKID fired {live_side} after {sim.get('side')} sim fell to "
-                            f"${estimated_value:.2f} ({estimated_pnl:+.2f}) at the {loss_trigger_pct}% loss trigger."
+                            f"{_format_state_money(state, estimated_value)} ({_format_state_money(state, estimated_pnl, signed=True)}) at the {loss_trigger_pct}% loss trigger."
                         ),
                         cooldown_sec=5.0,
                     )
@@ -4887,7 +7805,7 @@ def _run_unchain_koolkid_hl(client_id, state):
 
             reasons = []
             if not sim_losing:
-                reasons.append(f"sim held ${estimated_value:.2f} above the {loss_trigger_pct}% loss trigger")
+                reasons.append(f"sim held {_format_state_money(state, estimated_value)} above the {loss_trigger_pct}% loss trigger")
             if not live_checks.get("recent_direction_ok"):
                 reasons.append("recent tick direction does not agree")
             if not live_checks.get("market_not_flat"):
@@ -4968,6 +7886,12 @@ def _run_unchain_koolkid_hl(client_id, state):
 def _run_unchain_koolkid_both(client_id, state):
     u = _ensure_unchain_hl_state(state)
     if not bool(u.get("koolkid_both_enabled")):
+        return False
+    if bool(u.get("hybrid_enabled")):
+        u["koolkid_both_last_reason"] = "Turn off Hybrid before using KOOLKID Both."
+        return False
+    if bool(u.get("primordial_blue_enabled")):
+        u["koolkid_both_last_reason"] = "Turn off Primordial Blue before using KOOLKID Both."
         return False
     if not state.get("ws_connected") or not state.get("ws"):
         u["koolkid_both_last_reason"] = "Connect API first for KOOLKID Both."
@@ -5257,13 +8181,14 @@ def _get_unchain_bias_payload(state, u=None):
     return bias_payload
 
 
-def _get_higher_lower_prediction_series(state, market_symbol):
+def _get_prediction_series_for_profile(state, market_symbol, profile_key):
     symbol = str(market_symbol or state.get("current_symbol") or "").upper().strip()
     if not symbol:
         return "", [], [], "unknown"
 
     current_symbol = str(state.get("current_symbol") or "").upper().strip()
-    strat = ((state or {}).get("strategies") or {}).get("UNCHAIN")
+    profile_name = str(profile_key or "UNCHAIN").upper().strip()
+    strat = ((state or {}).get("strategies") or {}).get(profile_name)
     if symbol == current_symbol and strat is not None:
         prices = []
         tick_times = []
@@ -5287,6 +8212,10 @@ def _get_higher_lower_prediction_series(state, market_symbol):
     return symbol, [], [], "unknown"
 
 
+def _get_higher_lower_prediction_series(state, market_symbol):
+    return _get_prediction_series_for_profile(state, market_symbol, "UNCHAIN")
+
+
 def _build_higher_lower_prediction_payload(state, market_symbol, duration, duration_unit, barrier_value=None):
     # Keep server.py thin: it only selects the best available market series and
     # delegates all scoring math to the reusable predictor module.
@@ -5301,6 +8230,26 @@ def _build_higher_lower_prediction_payload(state, market_symbol, duration, durat
     )
     payload["source"] = source
     payload["available_ticks"] = int(len(list(prices or [])))
+    return payload
+
+
+def _build_contract_selector_payload(state, *, profile_key, market_symbol, duration, duration_unit, mode="AUTO_SELECT", hl_barrier_value=None, tnt_barrier_value=None):
+    symbol = str(market_symbol or state.get("current_symbol") or "").upper().strip()
+    unit = _clean_ntt_duration_unit(duration_unit) if str(profile_key or "").upper().strip() == "NTT" else _clean_unchain_duration_unit(duration_unit)
+    symbol, prices, tick_times, source = _get_prediction_series_for_profile(state, symbol, profile_key)
+    payload = analyze_contract_selector(
+        market_symbol=symbol,
+        duration=duration,
+        duration_unit=unit,
+        prices=prices,
+        tick_times=tick_times,
+        hl_barrier_value=hl_barrier_value,
+        tnt_barrier_value=tnt_barrier_value,
+        mode=mode,
+    )
+    if isinstance(payload, dict):
+        payload["source"] = source
+        payload["available_ticks"] = int(len(list(prices or [])))
     return payload
 
 
@@ -5752,6 +8701,10 @@ def _cleanup_failed_buy_request(state, req_id):
     meta = _pull_req_meta_by_req_id(state, req_id)
     if not isinstance(meta, dict):
         return None
+    try:
+        _release_profile_budget_reservation(state, meta.get("budget_reservation"))
+    except Exception:
+        pass
     if (
         str(meta.get("profile") or "").upper() == "UNCHAIN"
         and str(meta.get("type") or "").upper() == "ACCU"
@@ -5763,9 +8716,16 @@ def _cleanup_failed_buy_request(state, req_id):
 
 
 def _request_unchain_proposal_quote(state, *, side, stake, symbol, barrier, duration, duration_unit="t", timeout_sec=1.6):
+    client_id = None
+    for _cid, _state in clients.items():
+        if _state is state:
+            client_id = _cid
+            break
+    if client_id is not None:
+        ready, ready_msg = _ensure_trade_socket_ready(client_id, state, emit_error=False)
+        if not ready:
+            return None, ready_msg
     ws = state.get("ws")
-    if not state.get("ws_connected") or not ws:
-        return None, "Not connected"
 
     side = str(side or "").upper().strip()
     if side not in ("HIGHER", "LOWER"):
@@ -5812,6 +8772,8 @@ def _request_unchain_proposal_quote(state, *, side, stake, symbol, barrier, dura
     try:
         ws.send(json.dumps(payload))
     except Exception as e:
+        if client_id is not None:
+            _mark_ws_unhealthy_and_reconnect(client_id, state, "Deriv connection failed while requesting a quote. Reconnecting now...", emit_error=False)
         waiters.pop(req_id, None)
         waiters.pop(str(req_id), None)
         return None, str(e)
@@ -5857,7 +8819,21 @@ def _request_unchain_proposal_quote(state, *, side, stake, symbol, barrier, dura
     return quote, None
 
 
-def _build_unchain_expected_profit_preview(state, *, symbol, higher_stake, lower_stake, higher_barrier, lower_barrier, duration, duration_unit):
+def _build_unchain_expected_profit_preview(
+    state,
+    *,
+    symbol,
+    higher_stake,
+    lower_stake,
+    higher_barrier,
+    lower_barrier,
+    duration,
+    duration_unit,
+    higher_duration=None,
+    higher_duration_unit=None,
+    lower_duration=None,
+    lower_duration_unit=None,
+):
     preview = {
         "higher": {"stake": 0.0, "payout": None, "profit": None, "error": None},
         "lower": {"stake": 0.0, "payout": None, "profit": None, "error": None},
@@ -5865,14 +8841,22 @@ def _build_unchain_expected_profit_preview(state, *, symbol, higher_stake, lower
     }
 
     def normalize_quote(side, stake, barrier):
+        quote_duration = duration
+        quote_duration_unit = duration_unit
+        if side == "HIGHER":
+            quote_duration = higher_duration if higher_duration is not None else duration
+            quote_duration_unit = higher_duration_unit if higher_duration_unit is not None else duration_unit
+        elif side == "LOWER":
+            quote_duration = lower_duration if lower_duration is not None else duration
+            quote_duration_unit = lower_duration_unit if lower_duration_unit is not None else duration_unit
         quote, err = _request_unchain_proposal_quote(
             state,
             side=side,
             stake=stake,
             symbol=symbol,
             barrier=barrier,
-            duration=duration,
-            duration_unit=duration_unit,
+            duration=quote_duration,
+            duration_unit=quote_duration_unit,
         )
         if err:
             return None, str(err)
@@ -5986,32 +8970,41 @@ def _fetch_unchain_market_default_barrier(symbol, duration, duration_unit):
 
 def _apply_unchain_market_default_barriers(state, symbol):
     u = _ensure_unchain_hl_state(state)
-    active_duration = u.get("duration", 5)
-    active_duration_unit = u.get("duration_unit", "t")
-    quote_barrier, err = _fetch_unchain_market_default_barrier(
-        str(symbol or state.get("current_symbol") or "R_25"),
-        active_duration,
-        active_duration_unit,
+    safe_symbol = str(symbol or state.get("current_symbol") or "R_25")
+    higher_duration, higher_duration_unit = _get_unchain_side_duration(u, "HIGHER")
+    lower_duration, lower_duration_unit = _get_unchain_side_duration(u, "LOWER")
+    higher_quote_barrier, higher_err = _fetch_unchain_market_default_barrier(
+        safe_symbol,
+        higher_duration,
+        higher_duration_unit,
     )
-    if err:
-        return False, str(err)
-    higher_default = _format_unchain_market_default_barrier(quote_barrier, "HIGHER")
-    lower_default = _format_unchain_market_default_barrier(quote_barrier, "LOWER")
+    if higher_err:
+        return False, str(higher_err)
+    lower_quote_barrier, lower_err = _fetch_unchain_market_default_barrier(
+        safe_symbol,
+        lower_duration,
+        lower_duration_unit,
+    )
+    if lower_err:
+        return False, str(lower_err)
+    higher_default = _format_unchain_market_default_barrier(higher_quote_barrier, "HIGHER")
+    lower_default = _format_unchain_market_default_barrier(lower_quote_barrier, "LOWER")
     if not higher_default or not lower_default:
         return False, "Could not resolve market default barrier"
     u["higher_barrier"] = higher_default
     u["lower_barrier"] = lower_default
+    koolkid_live_unit = _clean_koolkid_duration_unit(u.get("koolkid_live_duration_unit", "t"))
     if bool(u.get("koolkid_reversal_enabled")):
-        u["koolkid_higher_barrier"] = _flip_unchain_barrier_sign(higher_default, active_duration_unit, higher_default)
-        u["koolkid_lower_barrier"] = _flip_unchain_barrier_sign(lower_default, active_duration_unit, lower_default)
+        u["koolkid_higher_barrier"] = _flip_unchain_barrier_sign(higher_default, koolkid_live_unit, higher_default)
+        u["koolkid_lower_barrier"] = _flip_unchain_barrier_sign(lower_default, koolkid_live_unit, lower_default)
     else:
         u["koolkid_higher_barrier"] = higher_default
         u["koolkid_lower_barrier"] = lower_default
     u["market_default_symbol"] = str(symbol or state.get("current_symbol") or "").upper()
-    u["market_default_key"] = _build_unchain_market_default_key(
-        symbol or state.get("current_symbol"),
-        active_duration,
-        active_duration_unit,
+    u["market_default_key"] = _build_unchain_side_duration_key(
+        state,
+        safe_symbol,
+        u,
     )
     return True, f"{higher_default} / {lower_default}"
 
@@ -6019,11 +9012,7 @@ def _apply_unchain_market_default_barriers(state, symbol):
 def _sync_unchain_market_default_barriers(state, force=False):
     u = _ensure_unchain_hl_state(state)
     symbol = str(state.get("current_symbol") or "R_25").upper()
-    current_key = _build_unchain_market_default_key(
-        symbol,
-        u.get("duration", 5),
-        u.get("duration_unit", "t"),
-    )
+    current_key = _build_unchain_side_duration_key(state, symbol, u)
     saved_key = str(u.get("market_default_key") or "").upper()
     if not force and current_key and current_key == saved_key:
         return False, "Already synced"
@@ -6769,7 +9758,7 @@ def _run_unchain_directional_auto_trade(client_id, state):
     if not state.get("ws_connected") or not state.get("ws"):
         u["directional_auto_last_reason"] = "Connect API first for ⚡ AUTO TRADE · 📈 HIGHER / 📉 LOWER."
         return False
-    if bool(u.get("ai_auto_trade_enabled")) or bool(u.get("auto_both_enabled")) or bool(u.get("koolkid_hl_enabled")) or bool(u.get("koolkid_both_enabled")):
+    if bool(u.get("hybrid_enabled")) or bool(u.get("primordial_blue_enabled")) or bool(u.get("ai_auto_trade_enabled")) or bool(u.get("auto_both_enabled")) or bool(u.get("koolkid_hl_enabled")) or bool(u.get("koolkid_both_enabled")):
         u["directional_auto_last_reason"] = "Turn off the other UNCHAIN auto modes before using this side-only auto trade."
         return False
 
@@ -6813,9 +9802,268 @@ def _run_unchain_directional_auto_trade(client_id, state):
     return _start_unchain_directional_auto_simulation(state, u, analysis, side, barrier_text, stake)
 
 
+def _run_unchain_primordial_blue(client_id, state):
+    u = _ensure_unchain_hl_state(state)
+    if not bool(u.get("primordial_blue_enabled")):
+        return False
+    if not state.get("ws_connected") or not state.get("ws"):
+        u["primordial_blue_last_reason"] = "Connect API first for 🔵 Primordial Blue."
+        return False
+
+    symbol = str(state.get("current_symbol") or "R_25").upper()
+    plan_info = build_primordial_blue_trade_plan(symbol, u.get("higher_stake", 0.0))
+    if not bool(plan_info.get("supported")):
+        u["primordial_blue_last_reason"] = str(
+            plan_info.get("reason") or "Primordial Blue currently supports V10, V25, V75, V100, V75 1s, and V100 1s only."
+        )
+        return False
+
+    if (
+        bool(u.get("hybrid_enabled"))
+        or
+        bool(u.get("ai_auto_trade_enabled"))
+        or bool(u.get("auto_both_enabled"))
+        or bool(u.get("directional_auto_enabled"))
+        or bool(u.get("koolkid_hl_enabled"))
+        or bool(u.get("koolkid_both_enabled"))
+    ):
+        u["primordial_blue_last_reason"] = "Turn off the other UNCHAIN auto modes before using Primordial Blue."
+        return False
+
+    risk_block = _check_unchain_hl_risk_block(state)
+    if risk_block:
+        u["primordial_blue_last_reason"] = f"Primordial Blue blocked • {risk_block}"
+        return False
+
+    now_ts = time.time()
+    open_entries = _get_open_unchain_active_entries(state)
+    if open_entries:
+        u["primordial_blue_cycle_active"] = True
+        u["primordial_blue_last_reason"] = (
+            f"Primordial Blue is waiting for the current {plan_info.get('market_label') or 'V75'} cycle to finish."
+        )
+        return False
+
+    if bool(u.get("primordial_blue_cycle_active")):
+        u["primordial_blue_cycle_active"] = False
+        u["primordial_blue_next_fire_at"] = now_ts + 0.05
+        u["primordial_blue_last_reason"] = (
+            f"Primordial Blue {plan_info.get('market_label') or 'V75'} cycle settled • waiting for the next clean tick."
+        )
+        u["last_action"] = "Primordial Blue cycle settled"
+        return False
+
+    next_fire_at = float(u.get("primordial_blue_next_fire_at", 0.0) or 0.0)
+    if next_fire_at and now_ts < next_fire_at:
+        return False
+
+    plan = []
+    for item in list(plan_info.get("plan") or []):
+        plan.append((item.get("side"), item.get("stake"), item.get("barrier")))
+    if not plan:
+        u["primordial_blue_last_reason"] = str(plan_info.get("reason") or "Set the Higher stake first for Primordial Blue.")
+        if u["primordial_blue_last_reason"]:
+            _maybe_emit_unchain_pair_failure_toast(client_id, state, u["primordial_blue_last_reason"])
+        return False
+
+    _symbol, prices, _tick_times, _source = _get_prediction_series_for_profile(state, symbol, "UNCHAIN")
+    market_state = analyze_primordial_blue_market_state(prices, plan_info)
+    if not bool(market_state.get("ready")):
+        u["primordial_blue_last_reason"] = str(
+            market_state.get("reason") or "Primordial Blue waiting: market is not in a solid up move yet."
+        )
+        return False
+
+    balance_ok, balance_msg, normalized_plan, _total_stake, _available = _check_unchain_multi_balance(
+        state,
+        plan,
+        trade_label="Primordial Blue cycle",
+        failure_prefix="Primordial Blue failed",
+    )
+    if not balance_ok:
+        u["primordial_blue_cycle_active"] = False
+        u["primordial_blue_next_fire_at"] = now_ts + 0.5
+        u["primordial_blue_last_reason"] = balance_msg
+        u["last_action"] = f"Primordial Blue skipped • {balance_msg}"
+        _maybe_emit_unchain_pair_failure_toast(client_id, state, balance_msg)
+        if state.get("active_profile") == "UNCHAIN":
+            socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
+        return False
+
+    placed = []
+    errors = []
+    for side, stake, barrier in normalized_plan:
+        ok, msg = _send_unchain_hl_trade(
+            client_id,
+            side=side,
+            stake=stake,
+            symbol=symbol,
+            barrier=barrier,
+            duration=plan_info.get("duration", 5),
+            duration_unit=plan_info.get("duration_unit", "t"),
+            entry_source="PRIMORDIAL_BLUE",
+            mode="PRIMORDIAL_BLUE",
+        )
+        if ok:
+            placed.append(f"{side} {barrier}")
+        else:
+            errors.append(f"{side} {barrier}: {msg}")
+
+    if placed:
+        u["primordial_blue_cycle_active"] = True
+        u["primordial_blue_next_fire_at"] = 0.0
+        u["primordial_blue_last_reason"] = (
+            f"Primordial Blue sent {len(placed)} {plan_info.get('market_label') or 'V75'} trades • "
+            f"{int(plan_info.get('duration') or 5)}{str(plan_info.get('duration_unit') or 't').upper()} • "
+            f"{plan_info.get('market_label') or 'V75'} preset"
+        )
+        if len(placed) == len(normalized_plan):
+            u["last_action"] = "Primordial Blue cycle sent"
+        else:
+            u["last_action"] = f"Primordial Blue partial send ({' • '.join(placed)})"
+    else:
+        u["primordial_blue_cycle_active"] = False
+        u["primordial_blue_next_fire_at"] = now_ts + 0.5
+        if errors:
+            u["primordial_blue_last_reason"] = errors[0]
+            u["last_action"] = f"Primordial Blue retry queued • {errors[0]}"
+
+    if state.get("active_profile") == "UNCHAIN":
+        socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
+    return bool(placed)
+
+
+def _run_unchain_hybrid(client_id, state):
+    u = _ensure_unchain_hl_state(state)
+    if not bool(u.get("hybrid_enabled")):
+        return False
+    if not state.get("ws_connected") or not state.get("ws"):
+        u["hybrid_last_reason"] = "Connect API first for 🟢 Hybrid."
+        return False
+
+    symbol = str(state.get("current_symbol") or "R_25").upper()
+    plan_info = build_hybrid_trade_plan(symbol, u.get("higher_stake", 0.0))
+    if not bool(plan_info.get("supported")):
+        u["hybrid_last_reason"] = str(plan_info.get("reason") or "Hybrid currently supports V10, V25, V75, V100, V75 1s, V100 1s, and V25 1s only.")
+        return False
+
+    if (
+        bool(u.get("primordial_blue_enabled"))
+        or bool(u.get("ai_auto_trade_enabled"))
+        or bool(u.get("auto_both_enabled"))
+        or bool(u.get("directional_auto_enabled"))
+        or bool(u.get("koolkid_hl_enabled"))
+        or bool(u.get("koolkid_both_enabled"))
+    ):
+        u["hybrid_last_reason"] = "Turn off the other UNCHAIN auto modes before using Hybrid."
+        return False
+
+    risk_block = _check_unchain_hl_risk_block(state)
+    if risk_block:
+        u["hybrid_last_reason"] = f"Hybrid blocked • {risk_block}"
+        return False
+
+    now_ts = time.time()
+    open_entries = _get_open_unchain_active_entries(state)
+    if open_entries:
+        u["hybrid_cycle_active"] = True
+        u["hybrid_last_reason"] = f"Hybrid is waiting for the current {plan_info.get('market_label') or 'V75'} cycle to finish."
+        return False
+
+    if bool(u.get("hybrid_cycle_active")):
+        u["hybrid_cycle_active"] = False
+        u["hybrid_next_fire_at"] = now_ts + 0.05
+        u["hybrid_last_reason"] = f"Hybrid {plan_info.get('market_label') or 'V75'} cycle settled • waiting for the next clean tick."
+        u["last_action"] = "Hybrid cycle settled"
+        return False
+
+    next_fire_at = float(u.get("hybrid_next_fire_at", 0.0) or 0.0)
+    if next_fire_at and now_ts < next_fire_at:
+        return False
+
+    plan = []
+    for item in list(plan_info.get("plan") or []):
+        plan.append((item.get("side"), item.get("stake"), item.get("barrier")))
+    if not plan:
+        u["hybrid_last_reason"] = str(plan_info.get("reason") or "Set the Higher stake first for Hybrid.")
+        if u["hybrid_last_reason"]:
+            _maybe_emit_unchain_pair_failure_toast(client_id, state, u["hybrid_last_reason"])
+        return False
+
+    _symbol, prices, _tick_times, _source = _get_prediction_series_for_profile(state, symbol, "UNCHAIN")
+    market_state = analyze_hybrid_market_state(prices, plan_info)
+    if not bool(market_state.get("ready")):
+        u["hybrid_last_reason"] = str(
+            market_state.get("reason") or "Hybrid waiting: market is still in the middle zone."
+        )
+        return False
+
+    balance_ok, balance_msg, normalized_plan, _total_stake, _available = _check_unchain_multi_balance(
+        state,
+        plan,
+        trade_label="Hybrid cycle",
+        failure_prefix="Hybrid failed",
+    )
+    if not balance_ok:
+        u["hybrid_cycle_active"] = False
+        u["hybrid_next_fire_at"] = now_ts + 0.5
+        u["hybrid_last_reason"] = balance_msg
+        u["last_action"] = f"Hybrid skipped • {balance_msg}"
+        _maybe_emit_unchain_pair_failure_toast(client_id, state, balance_msg)
+        if state.get("active_profile") == "UNCHAIN":
+            socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
+        return False
+
+    placed = []
+    errors = []
+    for side, stake, barrier in normalized_plan:
+        ok, msg = _send_unchain_hl_trade(
+            client_id,
+            side=side,
+            stake=stake,
+            symbol=symbol,
+            barrier=barrier,
+            duration=plan_info.get("duration", 10),
+            duration_unit=plan_info.get("duration_unit", "t"),
+            entry_source="HYBRID",
+            mode="HYBRID",
+        )
+        if ok:
+            placed.append(f"{side} {barrier}")
+        else:
+            errors.append(f"{side} {barrier}: {msg}")
+
+    if placed:
+        u["hybrid_cycle_active"] = True
+        u["hybrid_next_fire_at"] = 0.0
+        u["hybrid_last_reason"] = (
+            f"Hybrid sent {len(placed)} {plan_info.get('market_label') or 'V75'} trades • "
+            f"{int(plan_info.get('duration') or 10)}{str(plan_info.get('duration_unit') or 't').upper()} • "
+            f"{plan_info.get('market_label') or 'V75'} preset"
+        )
+        if len(placed) == len(normalized_plan):
+            u["last_action"] = "Hybrid cycle sent"
+        else:
+            u["last_action"] = f"Hybrid partial send ({' • '.join(placed)})"
+    else:
+        u["hybrid_cycle_active"] = False
+        u["hybrid_next_fire_at"] = now_ts + 0.5
+        if errors:
+            u["hybrid_last_reason"] = errors[0]
+            u["last_action"] = f"Hybrid retry queued • {errors[0]}"
+
+    if state.get("active_profile") == "UNCHAIN":
+        socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
+    return bool(placed)
+
+
 def _run_unchain_ai_auto_trade(client_id, state):
     u = _ensure_unchain_hl_state(state)
     if not bool(u.get("ai_auto_trade_enabled")):
+        return False
+    if bool(u.get("hybrid_enabled")):
+        return False
+    if bool(u.get("primordial_blue_enabled")):
         return False
     if not state.get("ws_connected") or not state.get("ws"):
         return False
@@ -6999,6 +10247,10 @@ def _run_unchain_auto_both(client_id, state):
     u = _ensure_unchain_hl_state(state)
     if not bool(u.get("auto_both_enabled")):
         return False
+    if bool(u.get("hybrid_enabled")):
+        return False
+    if bool(u.get("primordial_blue_enabled")):
+        return False
     # Keep AI AUTO TRADE and AUTO BOTH as separate engines; AI has priority when enabled.
     if bool(u.get("ai_auto_trade_enabled")):
         return False
@@ -7162,6 +10414,8 @@ def _unchain_payload_response(state):
     ai_auto_meta = _get_unchain_ai_auto_status(state, u, active_count=len(active_contracts), gate=auto_gate)
     auto_both_meta = _get_unchain_auto_both_status(state, u, active_count=len(active_contracts))
     directional_auto_meta = _get_unchain_directional_auto_status(state, u, active_count=len(active_contracts))
+    primordial_blue_meta = _get_unchain_primordial_blue_status(state, u, active_count=len(active_contracts))
+    hybrid_meta = _get_unchain_hybrid_status(state, u, active_count=len(active_contracts))
     koolkid_hl_meta = _serialize_unchain_koolkid_hl(state, u, active_count=len(active_contracts))
     koolkid_both_meta = _serialize_unchain_koolkid_both(state, u, active_count=len(active_contracts))
 
@@ -7173,8 +10427,15 @@ def _unchain_payload_response(state):
             "higher_barrier": u.get("higher_barrier", "+0.12"),
             "lower_barrier": u.get("lower_barrier", "-0.12"),
             "market_default_key": u.get("market_default_key"),
+            "use_shared_duration": bool(u.get("use_shared_duration", True)),
             "duration": int(u.get("duration", 5) or 5),
             "duration_unit": _clean_unchain_duration_unit(u.get("duration_unit", "t")),
+            "higher_duration": int(u.get("higher_duration", u.get("duration", 5)) or u.get("duration", 5)),
+            "higher_duration_unit": _clean_unchain_duration_unit(u.get("higher_duration_unit", u.get("duration_unit", "t"))),
+            "lower_duration": int(u.get("lower_duration", u.get("duration", 5)) or u.get("duration", 5)),
+            "lower_duration_unit": _clean_unchain_duration_unit(u.get("lower_duration_unit", u.get("duration_unit", "t"))),
+            "contract_selector_mode": normalize_contract_selector_mode(u.get("contract_selector_mode", "AUTO_SELECT")),
+            "contract_selector_mode_label": contract_selector_mode_label(u.get("contract_selector_mode", "AUTO_SELECT")),
             "tp": float(u.get("tp", 0) or 0),
             "sl": float(u.get("sl", 0) or 0),
             "auto_sl": bool(u.get("auto_sl", True)),
@@ -7182,6 +10443,8 @@ def _unchain_payload_response(state):
             "auto_both_enabled": bool(u.get("auto_both_enabled", False)),
             "ai_auto_trade_enabled": bool(u.get("ai_auto_trade_enabled", False)),
             "directional_auto_enabled": bool(u.get("directional_auto_enabled", False)),
+            "primordial_blue_enabled": bool(u.get("primordial_blue_enabled", False)),
+            "hybrid_enabled": bool(u.get("hybrid_enabled", False)),
             "directional_auto_side": _clean_unchain_directional_auto_side(u.get("directional_auto_side", "HIGHER")),
             "directional_auto_barrier": _get_unchain_directional_auto_barrier(u),
             "directional_auto_stable_profits": bool(u.get("directional_auto_stable_profits", False)),
@@ -7206,6 +10469,8 @@ def _unchain_payload_response(state):
             "directional_auto_status": directional_auto_meta.get("label", "OFF"),
             "directional_auto_cooldown_remaining": float(directional_auto_meta.get("cooldown_remaining", 0.0) or 0.0),
             "directional_auto": directional_auto_meta,
+            "primordial_blue": primordial_blue_meta,
+            "hybrid": hybrid_meta,
             "auto_start_threshold": float(u.get("auto_start_threshold", 48.0) or 48.0),
             "auto_min_movement": float(u.get("auto_min_movement", 0.06) or 0.06),
             "auto_min_tick_speed": float(u.get("auto_min_tick_speed", 2.4) or 2.4),
@@ -7293,6 +10558,10 @@ def _send_unchain_hl_trade(
         except Exception:
             safe_auto_confidence = None
 
+    budget_ok, budget_msg, budget_reservation = _reserve_profile_budget(state, "UNCHAIN", stake)
+    if not budget_ok:
+        return False, budget_msg
+
     req_id = _new_req_id()
     req_meta = {
         "profile": "UNCHAIN",
@@ -7308,6 +10577,7 @@ def _send_unchain_hl_trade(
         "auto_cycle_id": safe_cycle_id,
         "auto_confidence": safe_auto_confidence,
         "mode": mode,
+        "budget_reservation": budget_reservation,
     }
     state.setdefault("req_meta", {})[req_id] = req_meta
     deriv_contract = {"HIGHER": "CALL", "LOWER": "PUT"}[side]
@@ -7329,10 +10599,16 @@ def _send_unchain_hl_trade(
     try:
         ws.send(json.dumps(payload))
         u["last_action"] = f"{side} request sent on {symbol}"
+        _emit_balance_payload(client_id, state)
         return True, f"{side} trade sent"
     except Exception as e:
         try:
             state.get("req_meta", {}).pop(req_id, None)
+        except Exception:
+            pass
+        try:
+            _release_profile_budget_reservation(state, budget_reservation)
+            _emit_balance_payload(client_id, state)
         except Exception:
             pass
         return False, str(e)
@@ -7378,12 +10654,28 @@ def _apply_unchain_settings_update(state, data):
         u["koolkid_reversal_enabled"] = bool(data.get("koolkid_reversal_enabled"))
     if "koolkid_half_barrier_enabled" in data:
         u["koolkid_half_barrier_enabled"] = bool(data.get("koolkid_half_barrier_enabled"))
+    if "use_shared_duration" in data:
+        u["use_shared_duration"] = bool(data.get("use_shared_duration"))
     if "duration_unit" in data:
         u["duration_unit"] = _clean_unchain_duration_unit(data.get("duration_unit"))
     if "duration" in data or "duration_unit" in data:
         active_unit = _clean_unchain_duration_unit(u.get("duration_unit", "t"))
         raw_duration = data.get("duration", u.get("duration", 5))
         u["duration"] = _sanitize_unchain_duration(raw_duration, active_unit)
+    if "higher_duration_unit" in data:
+        u["higher_duration_unit"] = _clean_unchain_duration_unit(data.get("higher_duration_unit"))
+    if "higher_duration" in data or "higher_duration_unit" in data:
+        u["higher_duration"] = _sanitize_unchain_duration(
+            data.get("higher_duration", u.get("higher_duration", u.get("duration", 5))),
+            u.get("higher_duration_unit", u.get("duration_unit", "t")),
+        )
+    if "lower_duration_unit" in data:
+        u["lower_duration_unit"] = _clean_unchain_duration_unit(data.get("lower_duration_unit"))
+    if "lower_duration" in data or "lower_duration_unit" in data:
+        u["lower_duration"] = _sanitize_unchain_duration(
+            data.get("lower_duration", u.get("lower_duration", u.get("duration", 5))),
+            u.get("lower_duration_unit", u.get("duration_unit", "t")),
+        )
     if "directional_auto_side" in data:
         u["directional_auto_side"] = _clean_unchain_directional_auto_side(data.get("directional_auto_side"))
     if "directional_auto_stable_profits" in data:
@@ -7392,6 +10684,8 @@ def _apply_unchain_settings_update(state, data):
         if not enabled:
             u["directional_auto_win_streak"] = 0
             u["directional_auto_reduce_next_stake"] = False
+    if "contract_selector_mode" in data:
+        u["contract_selector_mode"] = normalize_contract_selector_mode(data.get("contract_selector_mode"))
     if "directional_auto_both_trades" in data:
         u["directional_auto_both_trades"] = bool(data.get("directional_auto_both_trades"))
     if "directional_auto_barrier" in data or "directional_auto_side" in data or "duration_unit" in data:
@@ -8111,7 +11405,7 @@ def start_seqvix_jokerjoe(state, client_id, market_mode, trade_mode="1", scan_po
         if after_count <= before_count and new_subs <= 0:
             break
         if new_subs > 0:
-            time.sleep(0.08)
+            time.sleep(0.03)
     _seqvix_emit_progress(client_id, state, "JOKERJOE")
 
 def start_seqvix_koolkid(state, client_id, contract_type, barrier, trades_per_market=2):
@@ -8758,6 +12052,7 @@ def handle_on_message(client_id, ws, message, expected_nonce):
         return  # stale WS callback
 
     try:
+        state["ws_last_message_at"] = time.time()
         data = json.loads(message)
 
         echo_req = data.get("echo_req") or {}
@@ -8778,6 +12073,10 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 pass
             try:
                 failed_buy_meta = _cleanup_failed_buy_request(state, req_id)
+            except Exception:
+                pass
+            try:
+                _emit_balance_payload(client_id, state)
             except Exception:
                 pass
             msg = data["error"].get("message", "Unknown API Error")
@@ -8830,11 +12129,14 @@ def handle_on_message(client_id, ws, message, expected_nonce):
         if "authorize" in data:
             # AUTHORIZED
             state["ws_connected"] = True
+            state["ws_last_authorized_at"] = time.time()
             loginid = data["authorize"].get("loginid", "UNKNOWN")
             balance = float(data["authorize"].get("balance", 0))
 
             state["loginid"] = loginid
             state["balance"] = balance
+            if balance > 0.0:
+                state["last_live_balance"] = balance
             state["balance_updated_at"] = time.time()
 
             if state["session_start_balance"] is None:
@@ -8845,14 +12147,10 @@ def handle_on_message(client_id, ws, message, expected_nonce):
             socketio.emit("connection_status", {
                 "connected": True,
                 "loginid": loginid,
-                "balance": balance,
-                "session_start_balance": state.get("session_start_balance"),
+                **_build_balance_payload(state),
             }, room=client_id)
 
-            socketio.emit("balance_update", {
-                "balance": balance,
-                "session_start_balance": state.get("session_start_balance"),
-            }, room=client_id)
+            _emit_balance_payload(client_id, state)
             emit_profile_snapshot(client_id)
 
             ws.send(json.dumps({"ticks": state["current_symbol"], "subscribe": 1}))
@@ -8871,11 +12169,10 @@ def handle_on_message(client_id, ws, message, expected_nonce):
             try:
                 balance = float(data["balance"]["balance"])
                 state["balance"] = balance
+                if balance > 0.0:
+                    state["last_live_balance"] = balance
                 state["balance_updated_at"] = time.time()
-                socketio.emit("balance_update", {
-                    "balance": balance,
-                    "session_start_balance": state.get("session_start_balance"),
-                }, room=client_id)
+                _emit_balance_payload(client_id, state)
                 send_stats_update(client_id)
             except Exception:
                 pass
@@ -8989,6 +12286,8 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                                 symbol=meta.get("symbol") or state.get("current_symbol"),
                                 stake=meta.get("stake"),
                             )
+                    elif (meta.get("profile") or "").upper() == "NTT":
+                        _upsert_ntt_active_contract(state, contract_id, meta=meta, status="OPEN")
                 except Exception:
                     pass
                 duration_val = None
@@ -9040,6 +12339,12 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                     "contract_id": contract_id,
                     "subscribe": 1
                 }))
+                _schedule_contract_open_refresh(client_id, expected_nonce, contract_id, delays=(0.30, 0.95))
+            profile_name = str((meta or {}).get("profile") or "").upper()
+            if profile_name == "UNCHAIN" and state.get("active_profile") == "UNCHAIN":
+                socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
+            elif profile_name == "NTT" and state.get("active_profile") == "NTT":
+                socketio.emit("ntt_status", _ntt_payload_response(state), room=client_id)
 
         if "sell" in data:
             try:
@@ -9098,6 +12403,56 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                             pass
                     if state.get("active_profile") == "UNCHAIN":
                         socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
+                elif _is_ntt_contract_known(state, cid_val, meta=meta_for_contract):
+                    active_entry = _get_ntt_active_entry(state, cid_val) or {}
+                    sold_for_raw = sell_info.get("sold_for")
+                    if sold_for_raw in (None, ""):
+                        sold_for_raw = sell_info.get("sell_price")
+                    profit_raw = sell_info.get("profit")
+                    buy_price_raw = sell_info.get("buy_price")
+                    if buy_price_raw in (None, ""):
+                        buy_price_raw = active_entry.get("stake")
+
+                    if sold_for_raw not in (None, "") or profit_raw not in (None, ""):
+                        try:
+                            sold_for = float(sold_for_raw or 0)
+                        except Exception:
+                            sold_for = 0.0
+                        try:
+                            buy_price = float(buy_price_raw or 0)
+                        except Exception:
+                            buy_price = 0.0
+                        try:
+                            profit_value = float(profit_raw) if profit_raw not in (None, "") else (sold_for - buy_price)
+                        except Exception:
+                            profit_value = sold_for - buy_price
+                        synthetic_contract = {
+                            "contract_id": cid_val,
+                            "status": "sold",
+                            "is_sold": True,
+                            "sell_price": sold_for,
+                            "buy_price": buy_price,
+                            "profit": profit_value,
+                        }
+                        process_contract(client_id, synthetic_contract)
+                    else:
+                        _upsert_ntt_active_contract(
+                            state,
+                            cid_val,
+                            meta=meta_for_contract,
+                            contract={"contract_id": cid_val, "status": "CLOSE REQUESTED"},
+                            status="CLOSE REQUESTED",
+                        )
+                        try:
+                            ws.send(json.dumps({
+                                "proposal_open_contract": 1,
+                                "contract_id": int(float(cid_val)),
+                                "subscribe": 1,
+                            }))
+                        except Exception:
+                            pass
+                    if state.get("active_profile") == "NTT":
+                        socketio.emit("ntt_status", _ntt_payload_response(state), room=client_id)
             except Exception:
                 pass
 
@@ -9111,9 +12466,13 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 sub_id = sub_info.get("id")
                 meta_for_contract = _peek_contract_meta(state, cid_val)
                 unchain_known = _is_unchain_contract_known(state, cid_val, meta=meta_for_contract)
+                ntt_known = _is_ntt_contract_known(state, cid_val, meta=meta_for_contract)
                 is_processed = _is_unchain_contract_processed(state, cid_val)
+                is_ntt_processed = _is_ntt_contract_processed(state, cid_val)
                 is_settled_fast = _is_contract_settled_fast(contract)
                 if unchain_known and sub_id not in (None, ""):
+                    _remember_unchain_open_contract_subscription(state, cid_val, sub_id)
+                if ntt_known and sub_id not in (None, ""):
                     _remember_unchain_open_contract_subscription(state, cid_val, sub_id)
                 # If user manually cleared active trades, ignore non-settled stream updates
                 # so they do not pop back into the active list.
@@ -9122,6 +12481,11 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 elif unchain_known and is_processed:
                     _remove_unchain_active_contract(state, cid_val)
                     _forget_unchain_open_contract_subscription(state, cid_val, subscription_id=sub_id)
+                if ntt_known and (not is_ntt_processed) and (not is_settled_fast):
+                    _upsert_ntt_active_contract(state, cid_val, meta=meta_for_contract, contract=contract, status="OPEN")
+                elif ntt_known and is_ntt_processed:
+                    _remove_ntt_active_contract(state, cid_val)
+                    _forget_unchain_open_contract_subscription(state, cid_val, subscription_id=sub_id)
                 un = (state.get("strategies") or {}).get("UNCHAIN")
                 if un and hasattr(un, "on_open_contract") and (not is_processed):
                     if ((meta_for_contract and (meta_for_contract.get("profile") or "").upper() == "UNCHAIN" and str(meta_for_contract.get("type") or "").upper() == "ACCU")
@@ -9129,6 +12493,8 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                         un.on_open_contract(contract)
                 if state.get("active_profile") == "UNCHAIN":
                     socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
+                if state.get("active_profile") == "NTT":
+                    socketio.emit("ntt_status", _ntt_payload_response(state), room=client_id)
             except Exception:
                 pass
 
@@ -9211,6 +12577,7 @@ def process_tick(client_id, tick):
             # - refreshes Deriv contract status once countdown hits 0
             # - only sends sell when Deriv marks contract as sellable
             _maybe_force_unchain_close_on_countdown(client_id, state)
+            _maybe_force_ntt_close_on_countdown(client_id, state)
 
         # Active strategy for UI only
         active_profile = state.get("active_profile", "KOOLKID")
@@ -9234,14 +12601,22 @@ def process_tick(client_id, tick):
 
         run_auto_trade(client_id, state)
         if is_main:
+            _run_unchain_hybrid(client_id, state)
+            _run_unchain_primordial_blue(client_id, state)
             _run_unchain_ai_auto_trade(client_id, state)
             _run_unchain_auto_both(client_id, state)
             _run_unchain_directional_auto_trade(client_id, state)
             _run_unchain_koolkid_hl(client_id, state)
             _run_unchain_koolkid_both(client_id, state)
+            _run_ntt_auto_both(client_id, state)
+            _run_ntt_koolkid_hl(client_id, state)
+            _run_ntt_koolkid_both(client_id, state)
 
         if active_profile == "UNCHAIN":
             socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
+
+        if active_profile == "NTT":
+            socketio.emit("ntt_status", _ntt_payload_response(state), room=client_id)
 
         if active_profile == "JOKERJOE":
             jj = strategies.get("JOKERJOE")
@@ -9299,6 +12674,10 @@ def process_contract(client_id, contract):
         settled_balance = _resolve_post_contract_balance(state, profit)
 
         meta = _pull_contract_meta(state, contract_id) if contract_id is not None else None
+        try:
+            _settle_profile_budget_reservation(state, (meta or {}).get("budget_reservation"), profit)
+        except Exception:
+            pass
         is_auto_session_contract = str((meta or {}).get("mode") or "").startswith("AUTO_SESSION|")
         if _is_unchain_contract_known(state, contract_id, meta=meta):
             profile_for_contract = "UNCHAIN"
@@ -9309,6 +12688,9 @@ def process_contract(client_id, contract):
         if profile_for_contract == "UNCHAIN" and not is_auto_session_contract:
             entry = _finalize_unchain_contract(state, contract, meta=meta)
             _mark_unchain_contract_processed(state, contract_id)
+        elif profile_for_contract == "NTT" and not is_auto_session_contract:
+            entry = _finalize_ntt_contract(state, contract, settled_balance, meta=meta)
+            _mark_ntt_contract_processed(state, contract_id)
         elif not is_auto_session_contract:
             strategies = state.get("strategies", {})
             strategy = strategies.get(profile_for_contract)
@@ -9370,12 +12752,16 @@ def process_contract(client_id, contract):
         except Exception:
             pass
         if profile_for_contract == "UNCHAIN":
+            _run_unchain_primordial_blue(client_id, state)
             _run_unchain_ai_auto_trade(client_id, state)
             _run_unchain_auto_both(client_id, state)
             _run_unchain_directional_auto_trade(client_id, state)
         if state.get("active_profile") == "UNCHAIN":
             socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
+        if state.get("active_profile") == "NTT":
+            socketio.emit("ntt_status", _ntt_payload_response(state), room=client_id)
         send_stats_update(client_id)
+        _emit_balance_payload(client_id, state)
 
     except Exception as e:
         logger.error(f"[{client_id}] process_contract error: {e}")
@@ -9416,6 +12802,11 @@ def send_stats_update(client_id):
 
     payload = strategy.get_stats_payload(state.get("balance", 0.0), state.get("session_start_balance"))
     payload["profile"] = active_profile
+    wins = int(payload.get("wins", 0) or 0)
+    losses = int(payload.get("losses", 0) or 0)
+    total = wins + losses
+    payload["winrate"] = float(payload.get("winrate", round((wins / total) * 100, 1) if total else 0.0) or 0.0)
+    payload["auto_trade"] = bool(payload.get("auto_trade", False))
     socketio.emit("stats_update", payload, room=client_id)
 
 
@@ -9429,6 +12820,8 @@ def handle_on_open(client_id, ws, expected_nonce):
     logger.info(f"[{client_id}] 🔌 WebSocket transport connected")
     state["ws_transport_connected"] = True
     state["ws_connected"] = False  # IMPORTANT: not authorized yet
+    state["ws_last_message_at"] = 0.0
+    state["ws_last_authorized_at"] = 0.0
 
     api_token = state.get("api_token")
     if api_token:
@@ -9492,9 +12885,15 @@ def handle_on_close(client_id, ws, code, msg, expected_nonce):
 
     state["ws_connected"] = False
     state["ws_transport_connected"] = False
+    state["ws_last_message_at"] = 0.0
+    state["ws_last_authorized_at"] = 0.0
     state["loginid"] = "UNKNOWN"
     logger.warning(f"[{client_id}] 🔌 WebSocket Disconnected")
-    socketio.emit("connection_status", {"connected": False, "loginid": "UNKNOWN", "balance": state.get("balance", 0.0)}, room=client_id)
+    socketio.emit("connection_status", {
+        "connected": False,
+        "loginid": "UNKNOWN",
+        **_build_balance_payload(state),
+    }, room=client_id)
     if not state.get("ws_stop_event") or not state["ws_stop_event"].is_set():
         _schedule_ws_reconnect(client_id, expected_nonce, delay_sec=2.0)
 
@@ -9554,7 +12953,10 @@ def start_ws_for_client(client_id):
 
     # run until closed
     try:
-        ws_app.run_forever(ping_interval=0, ping_timeout=None)
+        ws_app.run_forever(
+            ping_interval=max(0.0, float(DERIV_WS_PING_INTERVAL_SEC)),
+            ping_timeout=max(1.0, float(DERIV_WS_PING_TIMEOUT_SEC)),
+        )
     except Exception:
         pass
 
@@ -9598,13 +13000,58 @@ def api_connection_status():
         return jsonify({"error": "Unauthorized"}), 403
 
     _cid, state = get_client_state()
+    connected = bool(state.get("ws_connected")) and not _is_ws_stale(state)
+    if not connected and state.get("ws_connected"):
+        _mark_ws_unhealthy_and_reconnect(_cid, state, "Deriv connection went stale. Reconnecting now...", emit_error=False)
     return jsonify({
-        "connected": bool(state.get("ws_connected")),
+        "connected": connected,
         "loginid": state.get("loginid", "UNKNOWN"),
-        "balance": float(state.get("balance", 0.0) or 0.0),
-        "session_start_balance": state.get("session_start_balance"),
         "has_token": bool(str(state.get("api_token", "") or "").strip()),
+        **_build_balance_payload(state),
     })
+
+
+@app.route("/profile_budget", methods=["POST"])
+def profile_budget_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    data = request.get_json(silent=True) or {}
+    profile = _normalize_profile_budget_key(data.get("profile") or state.get("active_profile"))
+    raw_budget = data.get("budget")
+    if isinstance(raw_budget, str):
+        raw_budget = raw_budget.strip()
+
+    if raw_budget in (None, ""):
+        budget_amount = 0.0
+    else:
+        try:
+            budget_amount = max(0.0, float(raw_budget))
+        except Exception:
+            return jsonify({"status": "error", "message": "Enter a valid budget amount"}), 400
+
+    entry = _ensure_profile_budget(state, profile)
+    if budget_amount <= 0:
+        entry["amount"] = 0.0
+        entry["realized_pnl"] = 0.0
+        entry["reserved"] = 0.0
+        message = f"{profile} budget cleared"
+    else:
+        entry["amount"] = round(budget_amount, 2)
+        entry["realized_pnl"] = 0.0
+        entry["reserved"] = _estimate_profile_open_budget_exposure(state, profile)
+    message = f"{profile} budget set to {_format_state_money(state, entry['amount'])}"
+
+    payload = {
+        "status": "success",
+        "message": message,
+        **_build_balance_payload(state, state.get("active_profile")),
+    }
+    if state.get("active_profile") == profile:
+        _emit_balance_payload(cid, state)
+        send_stats_update(cid)
+    return jsonify(payload)
 
 
 @app.route("/set_auto_stake", methods=["POST"])
@@ -9682,12 +13129,29 @@ def clear_profile_history():
         u["pair_failure_toast_at"] = 0.0
         u["pair_failure_toast_message"] = ""
 
+    if profile == "NTT":
+        ntt = _ensure_ntt_state(state)
+        ntt["last_result"] = None
+        ntt["last_action"] = "Ready"
+        ntt["risk_block_reason"] = None
+        ntt["active_contracts"] = {}
+        ntt["koolkid_hl_simulation"] = None
+        ntt["koolkid_both_simulation"] = None
+        state["_processed_ntt_contracts"] = set()
+
     if profile == state.get("active_profile"):
         send_stats_update(cid)
         if profile == "UNCHAIN":
             socketio.emit("unchain_status", _unchain_payload_response(state), room=cid)
+        if profile == "NTT":
+            socketio.emit("ntt_status", _ntt_payload_response(state), room=cid)
 
-    return jsonify({"status": "cleared", "profile": profile, "payload": (_unchain_payload_response(state) if profile == "UNCHAIN" else None)})
+    payload = None
+    if profile == "UNCHAIN":
+        payload = _unchain_payload_response(state)
+    elif profile == "NTT":
+        payload = _ntt_payload_response(state)
+    return jsonify({"status": "cleared", "profile": profile, "payload": payload})
 
 
 @app.route("/set_profile", methods=["POST"])
@@ -9697,6 +13161,7 @@ def set_profile():
 
     cid, state = get_client_state()
     profile = (request.json or {}).get("profile", "KOOLKID")
+    mutant_access = _mutant_access_state()
 
     if profile not in state["strategies"]:
         return jsonify({"error": "Invalid profile"}), 400
@@ -9711,7 +13176,15 @@ def set_profile():
         request_human_seed(cid)
     emit_profile_snapshot(cid)
 
-    return jsonify({"status": "success", "profile": profile, "main_symbol": state.get("current_symbol"), "human_symbol": state.get("human_symbol") or state.get("current_symbol"), "symbol": (state.get("human_symbol") if profile == "HUMAN" else state.get("current_symbol")),
+    return jsonify({
+        "status": "success",
+        "profile": profile,
+        "mutant_locked": bool(profile == "NTT" and not mutant_access.get("enabled")),
+        "mutant_access": mutant_access,
+        "main_symbol": state.get("current_symbol"),
+        "human_symbol": state.get("human_symbol") or state.get("current_symbol"),
+        "symbol": (state.get("human_symbol") if profile == "HUMAN" else state.get("current_symbol")),
+        **_build_balance_payload(state, profile),
     })
 
 
@@ -9760,6 +13233,7 @@ def change_market():
     human_symbol = state.get("human_symbol") or old_symbol
     state["current_symbol"] = symbol
     market_barrier_msg = None
+    ntt_barrier_msg = None
 
     try:
         applied, info = _apply_unchain_market_default_barriers(state, symbol)
@@ -9767,6 +13241,12 @@ def change_market():
             market_barrier_msg = f"UNCHAIN default barriers set to {info}"
     except Exception:
         market_barrier_msg = None
+    try:
+        applied_ntt, info_ntt = _apply_ntt_market_default_barriers(state, symbol)
+        if applied_ntt:
+            ntt_barrier_msg = f"Mutant default barriers set to {info_ntt}"
+    except Exception:
+        ntt_barrier_msg = None
 
     # ✅ reset analysis for MAIN profiles only (HUMAN is independent)
     for name, strat in state.get("strategies", {}).items():
@@ -9804,12 +13284,14 @@ def change_market():
     payload = _unchain_payload_response(state)
     if state.get("active_profile") == "UNCHAIN":
         socketio.emit("unchain_status", payload, room=cid)
+    if state.get("active_profile") == "NTT":
+        socketio.emit("ntt_status", _ntt_payload_response(state), room=cid)
     return jsonify({
         "status": "success",
         "symbol": state["current_symbol"],
         "main_symbol": state.get("current_symbol"),
         "human_symbol": state.get("human_symbol") or state.get("current_symbol"),
-        "message": market_barrier_msg or f"Market changed to {symbol}",
+        "message": market_barrier_msg or ntt_barrier_msg or f"Market changed to {symbol}",
         "payload": payload,
     })
 
@@ -10029,6 +13511,73 @@ def toggle_over3_analysis_koolkid_route():
         "over3_analysis": enabled,
         "auto_modes": payload.get("auto_modes", {}),
         "over3_analysis_data": payload.get("over3_analysis_data", {}),
+        "payload": payload,
+    })
+
+
+@app.route("/toggle_kid2vix_koolkid", methods=["POST"])
+def toggle_kid2vix_koolkid_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    strat = state["strategies"].get("KOOLKID")
+    if not strat or not hasattr(strat, "toggle_kid2vix_auto"):
+        return jsonify({"status": "error", "message": "KOOLKID strategy not available"}), 400
+
+    enabled = bool(strat.toggle_kid2vix_auto())
+    try:
+        payload = strat.get_ui_payload() or {}
+    except Exception:
+        payload = {}
+
+    try:
+        socketio.emit("auto_mode_update", (payload.get("auto_modes") or {}), room=cid)
+        socketio.emit("digit_analysis", payload, room=cid)
+    except Exception:
+        pass
+
+    return jsonify({
+        "status": "success",
+        "kid2vix_auto": enabled,
+        "auto_modes": payload.get("auto_modes", {}),
+        "kid2vix_data": payload.get("kid2vix_data", {}),
+        "payload": payload,
+    })
+
+
+@app.route("/set_kid2vix_settings_koolkid", methods=["POST"])
+def set_kid2vix_settings_koolkid_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    data = request.json or {}
+    strat = state["strategies"].get("KOOLKID")
+    if not strat or not hasattr(strat, "set_kid2vix_settings"):
+        return jsonify({"status": "error", "message": "KOOLKID strategy not available"}), 400
+
+    settings = strat.set_kid2vix_settings(
+        last20_threshold=data.get("last20_threshold"),
+        last5_threshold=data.get("last5_threshold"),
+        repeat_pressure_threshold=data.get("repeat_pressure_threshold"),
+        over3_ratio=data.get("over3_ratio"),
+        cooldown_after_loss=data.get("cooldown_after_loss"),
+    )
+    try:
+        payload = strat.get_ui_payload() or {}
+    except Exception:
+        payload = {}
+
+    try:
+        socketio.emit("digit_analysis", payload, room=cid)
+    except Exception:
+        pass
+
+    return jsonify({
+        "status": "success",
+        "settings": settings,
+        "kid2vix_data": payload.get("kid2vix_data", {}),
         "payload": payload,
     })
 
@@ -10356,7 +13905,7 @@ def kidgamblex_route():
         ok, _msg = send_buy(cid, "MATCHES", stake, symbol, int(d), duration=duration, duration_unit=duration_unit)
         if ok:
             placed += 1
-        time.sleep(0.12)
+        time.sleep(0.04)
 
     return jsonify({"status": "success", "digits": digits, "placed": placed})
 
@@ -10549,7 +14098,7 @@ def insta5_route():
         ok, _msg = send_buy(cid, contract_type, stake, symbol, barrier, duration=duration, duration_unit=duration_unit)
         if ok:
             placed += 1
-        time.sleep(0.06)
+        time.sleep(0.03)
 
     return jsonify({"status": "success", "placed": placed, "barrier": barrier})
 
@@ -10593,7 +14142,7 @@ def manual_3_trades():
         ok, _msg = send_buy(cid, contract_type, stake, symbol, barrier, duration=duration, duration_unit=duration_unit)
         if ok:
             placed += 1
-        time.sleep(0.15)
+        time.sleep(0.04)
 
     return jsonify({"status": "success", "placed": placed})
 
@@ -10618,7 +14167,7 @@ def burst_4():
         ok, _msg = send_buy(cid, contract_type, stake, symbol, barrier, duration=duration, duration_unit=duration_unit)
         if ok:
             placed += 1
-        time.sleep(0.10)
+        time.sleep(0.04)
 
     return jsonify({"status": "success", "placed": placed})
 
@@ -10676,6 +14225,13 @@ def koolkid_half_auto_route():
         balance_value = float(state.get("balance", 0.0) or 0.0)
     except Exception:
         balance_value = 0.0
+    budget_ok, budget_msg, _budget_snapshot = _check_profile_budget_capacity(state, "KOOLKID", total_stake)
+    if not budget_ok:
+        try:
+            socketio.emit("api_error", {"message": budget_msg}, room=cid)
+        except Exception:
+            pass
+        return jsonify({"status": "error", "message": budget_msg}), 400
     if (_effective_trade_balance(balance_value) + 1e-9) < total_stake:
         try:
             socketio.emit("api_error", {"message": "Insufficient funds to place trade"}, room=cid)
@@ -10875,14 +14431,40 @@ def unchain_trade_route():
     symbol = data.get("symbol") or state.get("current_symbol", "R_25")
     duration = data.get("duration", u.get("duration", 5))
     duration_unit = data.get("duration_unit", u.get("duration_unit", "t"))
+    higher_duration, higher_duration_unit = _get_unchain_side_duration(u, "HIGHER")
+    lower_duration, lower_duration_unit = _get_unchain_side_duration(u, "LOWER")
     plan = []
     if side == "HIGHER":
-        plan.append(("HIGHER", data.get("higher_stake", u.get("higher_stake", 1.0)), data.get("higher_barrier", u.get("higher_barrier", "+0.12"))))
+        plan.append((
+            "HIGHER",
+            data.get("higher_stake", u.get("higher_stake", 1.0)),
+            data.get("higher_barrier", u.get("higher_barrier", "+0.12")),
+            higher_duration,
+            higher_duration_unit,
+        ))
     elif side == "LOWER":
-        plan.append(("LOWER", data.get("lower_stake", u.get("lower_stake", 1.0)), data.get("lower_barrier", u.get("lower_barrier", "-0.12"))))
+        plan.append((
+            "LOWER",
+            data.get("lower_stake", u.get("lower_stake", 1.0)),
+            data.get("lower_barrier", u.get("lower_barrier", "-0.12")),
+            lower_duration,
+            lower_duration_unit,
+        ))
     elif side == "BOTH":
-        plan.append(("HIGHER", data.get("higher_stake", u.get("higher_stake", 1.0)), data.get("higher_barrier", u.get("higher_barrier", "+0.12"))))
-        plan.append(("LOWER", data.get("lower_stake", u.get("lower_stake", 1.0)), data.get("lower_barrier", u.get("lower_barrier", "-0.12"))))
+        plan.append((
+            "HIGHER",
+            data.get("higher_stake", u.get("higher_stake", 1.0)),
+            data.get("higher_barrier", u.get("higher_barrier", "+0.12")),
+            higher_duration,
+            higher_duration_unit,
+        ))
+        plan.append((
+            "LOWER",
+            data.get("lower_stake", u.get("lower_stake", 1.0)),
+            data.get("lower_barrier", u.get("lower_barrier", "-0.12")),
+            lower_duration,
+            lower_duration_unit,
+        ))
     else:
         return jsonify({"status": "error", "message": "Invalid side. Use HIGHER, LOWER, or BOTH.", "payload": _unchain_payload_response(state)}), 400
     if side == "BOTH":
@@ -10896,17 +14478,25 @@ def unchain_trade_route():
             if state.get("active_profile") == "UNCHAIN":
                 socketio.emit("unchain_status", payload, room=cid)
             return jsonify({"status": "error", "message": balance_msg, "payload": payload, "placed": []}), 400
-        plan = normalized_plan
+        plan = [
+            (
+                trade_side,
+                stake,
+                barrier,
+                *(_get_unchain_side_duration(u, trade_side)),
+            )
+            for trade_side, stake, barrier in normalized_plan
+        ]
     placed = []
-    for index, (trade_side, stake, barrier) in enumerate(plan):
+    for index, (trade_side, stake, barrier, trade_duration, trade_duration_unit) in enumerate(plan):
         ok, msg = _send_unchain_hl_trade(
             cid,
             side=trade_side,
             stake=stake,
             symbol=symbol,
             barrier=barrier,
-            duration=duration,
-            duration_unit=duration_unit,
+            duration=trade_duration,
+            duration_unit=trade_duration_unit,
         )
         if not ok:
             payload = _unchain_payload_response(state)
@@ -10915,7 +14505,7 @@ def unchain_trade_route():
             return jsonify({"status": "error", "message": msg, "payload": payload, "placed": placed}), 400
         placed.append(trade_side)
         if side == "BOTH" and index < (len(plan) - 1):
-            time.sleep(0.12)
+            time.sleep(0.04)
     u["last_action"] = f"Sent {' + '.join(placed)} on {symbol}"
     payload = _unchain_payload_response(state)
     if state.get("active_profile") == "UNCHAIN":
@@ -10936,6 +14526,17 @@ def unchain_expected_profit_route():
     symbol = data.get("symbol") or state.get("current_symbol", "R_25")
     duration = data.get("duration", u.get("duration", 5))
     duration_unit = data.get("duration_unit", u.get("duration_unit", "t"))
+    use_shared_duration = bool(data.get("use_shared_duration", u.get("use_shared_duration", True)))
+    if use_shared_duration:
+        higher_duration = duration
+        higher_duration_unit = duration_unit
+        lower_duration = duration
+        lower_duration_unit = duration_unit
+    else:
+        higher_duration = data.get("higher_duration", u.get("higher_duration", u.get("duration", 5)))
+        higher_duration_unit = data.get("higher_duration_unit", u.get("higher_duration_unit", u.get("duration_unit", "t")))
+        lower_duration = data.get("lower_duration", u.get("lower_duration", u.get("duration", 5)))
+        lower_duration_unit = data.get("lower_duration_unit", u.get("lower_duration_unit", u.get("duration_unit", "t")))
     preview = _build_unchain_expected_profit_preview(
         state,
         symbol=symbol,
@@ -10945,6 +14546,10 @@ def unchain_expected_profit_route():
         lower_barrier=data.get("lower_barrier", u.get("lower_barrier", "-0.12")),
         duration=duration,
         duration_unit=duration_unit,
+        higher_duration=higher_duration,
+        higher_duration_unit=higher_duration_unit,
+        lower_duration=lower_duration,
+        lower_duration_unit=lower_duration_unit,
     )
     return jsonify({"status": "success", "preview": preview})
 
@@ -10978,6 +14583,400 @@ def higher_lower_prediction_route():
     return jsonify(payload), (200 if payload.get("status") == "success" else 400)
 
 
+@app.route("/touch_no_touch_prediction", methods=["POST"])
+def touch_no_touch_prediction_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    _cid, state = get_client_state()
+    data = request.json or {}
+    ntt = _ensure_ntt_state(state)
+    symbol = data.get("symbol") or state.get("current_symbol", "R_25")
+    duration = data.get("duration", ntt.get("duration", 5))
+    duration_unit = _clean_ntt_duration_unit(data.get("duration_unit", ntt.get("duration_unit", "t")))
+    barrier_value = data.get("barrier")
+    requested_side = str(data.get("side") or "").upper().strip()
+    if barrier_value in (None, ""):
+        if requested_side == "TOUCH":
+            barrier_value = ntt.get("touch_barrier", "+0.12")
+        elif requested_side == "NO_TOUCH":
+            barrier_value = ntt.get("no_touch_barrier", "+0.12")
+        else:
+            barrier_value = _pick_closest_barrier_value(
+                data.get("touch_barrier"),
+                data.get("no_touch_barrier"),
+                ntt.get("touch_barrier", "+0.12"),
+                ntt.get("no_touch_barrier", "+0.12"),
+            )
+    payload = _build_touch_no_touch_prediction_payload(
+        state,
+        market_symbol=symbol,
+        duration=duration,
+        duration_unit=duration_unit,
+        barrier_value=barrier_value,
+    )
+    return jsonify(payload), (200 if payload.get("status") == "success" else 400)
+
+
+@app.route("/contract_selector_analysis", methods=["POST"])
+def contract_selector_analysis_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    _cid, state = get_client_state()
+    data = request.json or {}
+    profile = str(data.get("profile") or state.get("active_profile") or "UNCHAIN").upper().strip()
+    if profile not in ("UNCHAIN", "NTT"):
+        profile = "UNCHAIN"
+
+    symbol = data.get("symbol") or state.get("current_symbol", "R_25")
+    if profile == "NTT":
+        ntt = _ensure_ntt_state(state)
+        duration = data.get("duration", ntt.get("duration", 5))
+        duration_unit = _clean_ntt_duration_unit(data.get("duration_unit", ntt.get("duration_unit", "t")))
+        mode = normalize_contract_selector_mode(data.get("contract_selector_mode", ntt.get("contract_selector_mode", "AUTO_SELECT")))
+        touch_barrier = data.get("touch_barrier", ntt.get("touch_barrier", "+0.12"))
+        no_touch_barrier = data.get("no_touch_barrier", ntt.get("no_touch_barrier", touch_barrier))
+        tnt_barrier = data.get("barrier", _pick_closest_barrier_value(touch_barrier, no_touch_barrier))
+        hl_barrier = data.get("hl_barrier", tnt_barrier)
+    else:
+        u = _ensure_unchain_hl_state(state)
+        duration = data.get("duration", u.get("duration", 5))
+        duration_unit = _clean_unchain_duration_unit(data.get("duration_unit", u.get("duration_unit", "t")))
+        mode = normalize_contract_selector_mode(data.get("contract_selector_mode", u.get("contract_selector_mode", "AUTO_SELECT")))
+        higher_barrier = data.get("higher_barrier", u.get("higher_barrier", "+0.12"))
+        lower_barrier = data.get("lower_barrier", u.get("lower_barrier", "-0.12"))
+        hl_barrier = data.get("hl_barrier")
+        if hl_barrier in (None, ""):
+            requested_side = str(data.get("side") or "").upper().strip()
+            if requested_side == "LOWER":
+                hl_barrier = lower_barrier
+            elif requested_side == "HIGHER":
+                hl_barrier = higher_barrier
+            else:
+                hl_barrier = _pick_closest_barrier_value(higher_barrier, lower_barrier)
+        tnt_barrier = data.get("barrier", _pick_closest_barrier_value(higher_barrier, lower_barrier))
+
+    payload = _build_contract_selector_payload(
+        state,
+        profile_key=profile,
+        market_symbol=symbol,
+        duration=duration,
+        duration_unit=duration_unit,
+        mode=mode,
+        hl_barrier_value=hl_barrier,
+        tnt_barrier_value=tnt_barrier,
+    )
+    return jsonify(payload), (200 if payload.get("status") == "success" else 400)
+
+
+@app.route("/ntt_status", methods=["GET"])
+def ntt_status_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    if not _mutant_access_state().get("enabled"):
+        return _mutant_under_construction_response()
+    _cid, state = get_client_state()
+    current_symbol = str(state.get("current_symbol") or "R_25").upper()
+    ntt = _ensure_ntt_state(state)
+    current_default_symbol = str(ntt.get("market_default_symbol") or "").upper()
+    if current_symbol and current_symbol != current_default_symbol:
+        try:
+            _apply_ntt_market_default_barriers(state, current_symbol)
+        except Exception:
+            pass
+    _ensure_tick_subscription(state, state.get("current_symbol"))
+    return jsonify(_ntt_payload_response(state))
+
+
+@app.route("/toggle_ntt_auto_both", methods=["POST"])
+def toggle_ntt_auto_both_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    if not _mutant_access_state().get("enabled"):
+        return _mutant_under_construction_response()
+    cid, state = get_client_state()
+    data = request.json or {}
+    return _toggle_ntt_auto_both(cid, state, data)
+
+
+@app.route("/toggle_ntt_koolkid_hl", methods=["POST"])
+def toggle_ntt_koolkid_hl_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    if not _mutant_access_state().get("enabled"):
+        return _mutant_under_construction_response()
+    cid, state = get_client_state()
+    data = request.json or {}
+    return _toggle_ntt_koolkid_hl(cid, state, data)
+
+
+@app.route("/toggle_ntt_koolkid_both", methods=["POST"])
+def toggle_ntt_koolkid_both_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    if not _mutant_access_state().get("enabled"):
+        return _mutant_under_construction_response()
+    cid, state = get_client_state()
+    data = request.json or {}
+    return _toggle_ntt_koolkid_both(cid, state, data)
+
+
+@app.route("/ntt_settings", methods=["POST"])
+def ntt_settings_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    if not _mutant_access_state().get("enabled"):
+        return _mutant_under_construction_response()
+    cid, state = get_client_state()
+    data = request.json or {}
+    try:
+        _apply_ntt_settings_update(state, data)
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+    _ensure_ntt_state(state)["last_action"] = "Mutant settings saved"
+    payload = _ntt_payload_response(state)
+    if state.get("active_profile") == "NTT":
+        socketio.emit("ntt_status", payload, room=cid)
+        socketio.emit("digit_analysis", payload, room=cid)
+        send_stats_update(cid)
+    return jsonify(payload)
+
+
+@app.route("/ntt_refresh_barriers", methods=["POST"])
+def ntt_refresh_barriers_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    if not _mutant_access_state().get("enabled"):
+        return _mutant_under_construction_response()
+    cid, state = get_client_state()
+    symbol = str(state.get("current_symbol") or "R_25").upper()
+    ok, msg = _apply_ntt_market_default_barriers(state, symbol)
+    payload = _ntt_payload_response(state)
+    if state.get("active_profile") == "NTT":
+        socketio.emit("ntt_status", payload, room=cid)
+        socketio.emit("digit_analysis", payload, room=cid)
+        send_stats_update(cid)
+    if not ok:
+        return jsonify({"ok": False, "error": msg or "Could not refresh barrier", "payload": payload}), 400
+    return jsonify({"ok": True, "message": f"Barrier refreshed to {msg}", "payload": payload})
+
+
+@app.route("/ntt_trade", methods=["POST"])
+def ntt_trade_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    if not _mutant_access_state().get("enabled"):
+        return _mutant_under_construction_response()
+    cid, state = get_client_state()
+    data = request.json or {}
+    try:
+        ntt = _apply_ntt_settings_update(state, data)
+    except Exception as e:
+        payload = _ntt_payload_response(state)
+        if state.get("active_profile") == "NTT":
+            socketio.emit("ntt_status", payload, room=cid)
+        return jsonify({"status": "error", "message": str(e), "payload": payload, "placed": []}), 400
+    side = str(data.get("side") or "").upper().strip()
+    symbol = data.get("symbol") or state.get("current_symbol", "R_25")
+    shared_duration = data.get("duration", ntt.get("duration", 5))
+    shared_duration_unit = data.get("duration_unit", ntt.get("duration_unit", "t"))
+    touch_duration, touch_duration_unit = _get_ntt_side_duration(ntt, "TOUCH")
+    no_touch_duration, no_touch_duration_unit = _get_ntt_side_duration(ntt, "NO_TOUCH")
+    plan = []
+    if side == "TOUCH":
+        plan.append((
+            "TOUCH",
+            data.get("touch_stake", ntt.get("touch_stake", 1.0)),
+            data.get("touch_barrier", ntt.get("touch_barrier", "+0.12")),
+            touch_duration,
+            touch_duration_unit,
+        ))
+    elif side == "NO_TOUCH":
+        plan.append((
+            "NO_TOUCH",
+            data.get("no_touch_stake", ntt.get("no_touch_stake", 1.0)),
+            data.get("no_touch_barrier", ntt.get("no_touch_barrier", "+0.12")),
+            no_touch_duration,
+            no_touch_duration_unit,
+        ))
+    elif side == "BOTH":
+        touch_stake = data.get("touch_stake", ntt.get("touch_stake", 1.0))
+        no_touch_stake = data.get("no_touch_stake", ntt.get("no_touch_stake", 1.0))
+        touch_barrier = data.get("touch_barrier", ntt.get("touch_barrier", "+0.12"))
+        no_touch_barrier = data.get("no_touch_barrier", ntt.get("no_touch_barrier", "+0.12"))
+    else:
+        return jsonify({"status": "error", "message": "Invalid side. Use TOUCH, NO_TOUCH, or BOTH.", "payload": _ntt_payload_response(state)}), 400
+
+    if side == "BOTH":
+        ok, msg, placed = _send_ntt_both_pair(
+            cid,
+            state,
+            symbol=symbol,
+            duration=shared_duration,
+            duration_unit=shared_duration_unit,
+            touch_stake=touch_stake,
+            no_touch_stake=no_touch_stake,
+            touch_barrier=touch_barrier,
+            no_touch_barrier=no_touch_barrier,
+            touch_duration=touch_duration,
+            touch_duration_unit=touch_duration_unit,
+            no_touch_duration=no_touch_duration,
+            no_touch_duration_unit=no_touch_duration_unit,
+        )
+        payload = _ntt_payload_response(state)
+        if state.get("active_profile") == "NTT":
+            socketio.emit("ntt_status", payload, room=cid)
+        status_code = 200 if ok else 400
+        return jsonify({"status": "success" if ok else "error", "message": msg, "payload": payload, "placed": placed}), status_code
+
+    placed = []
+    for trade_side, trade_stake, trade_barrier, trade_duration, trade_duration_unit in plan:
+        ok, msg = _send_ntt_trade(
+            cid,
+            side=trade_side,
+            stake=trade_stake,
+            symbol=symbol,
+            barrier=trade_barrier,
+            duration=trade_duration,
+            duration_unit=trade_duration_unit,
+        )
+        if not ok:
+            payload = _ntt_payload_response(state)
+            if state.get("active_profile") == "NTT":
+                socketio.emit("ntt_status", payload, room=cid)
+            return jsonify({"status": "error", "message": msg, "payload": payload, "placed": placed}), 400
+        placed.append(trade_side)
+
+    _ensure_ntt_state(state)["last_action"] = f"Sent {' + '.join(placed)} on {symbol}"
+    payload = _ntt_payload_response(state)
+    if state.get("active_profile") == "NTT":
+        socketio.emit("ntt_status", payload, room=cid)
+    return jsonify({"status": "success", "message": f"Sent {' + '.join(placed)}", "payload": payload, "placed": placed})
+
+
+@app.route("/ntt_expected_profit", methods=["POST"])
+def ntt_expected_profit_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    if not _mutant_access_state().get("enabled"):
+        return _mutant_under_construction_response()
+    _cid, state = get_client_state()
+    if not state.get("ws_connected") or not state.get("ws"):
+        return jsonify({"status": "error", "message": "Connect your API first"}), 400
+
+    ntt = _ensure_ntt_state(state)
+    data = request.json or {}
+    symbol = data.get("symbol") or state.get("current_symbol", "R_25")
+    duration = data.get("duration", ntt.get("duration", 5))
+    duration_unit = data.get("duration_unit", ntt.get("duration_unit", "t"))
+    use_shared_duration = bool(data.get("use_shared_duration", ntt.get("use_shared_duration", True)))
+    if use_shared_duration:
+        touch_duration = duration
+        touch_duration_unit = duration_unit
+        no_touch_duration = duration
+        no_touch_duration_unit = duration_unit
+    else:
+        touch_duration = data.get("touch_duration", ntt.get("touch_duration", ntt.get("duration", 5)))
+        touch_duration_unit = data.get("touch_duration_unit", ntt.get("touch_duration_unit", ntt.get("duration_unit", "t")))
+        no_touch_duration = data.get("no_touch_duration", ntt.get("no_touch_duration", ntt.get("duration", 5)))
+        no_touch_duration_unit = data.get("no_touch_duration_unit", ntt.get("no_touch_duration_unit", ntt.get("duration_unit", "t")))
+    preview = _build_ntt_expected_profit_preview(
+        state,
+        symbol=symbol,
+        touch_stake=data.get("touch_stake", ntt.get("touch_stake", 1.0)),
+        no_touch_stake=data.get("no_touch_stake", ntt.get("no_touch_stake", 1.0)),
+        touch_barrier=data.get("touch_barrier", ntt.get("touch_barrier", "+0.12")),
+        no_touch_barrier=data.get("no_touch_barrier", ntt.get("no_touch_barrier", "+0.12")),
+        duration=duration,
+        duration_unit=duration_unit,
+        touch_duration=touch_duration,
+        touch_duration_unit=touch_duration_unit,
+        no_touch_duration=no_touch_duration,
+        no_touch_duration_unit=no_touch_duration_unit,
+    )
+    return jsonify({"status": "success", "preview": preview})
+
+
+@app.route("/ntt_close_now", methods=["POST"])
+def ntt_close_now_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    if not _mutant_access_state().get("enabled"):
+        return _mutant_under_construction_response()
+    cid, state = get_client_state()
+    ntt = _ensure_ntt_state(state)
+    active_ids = list((ntt.get("active_contracts") or {}).keys())
+    if not active_ids:
+        return jsonify({"status": "error", "message": "No active Mutant trade", "payload": _ntt_payload_response(state)}), 400
+    closed = []
+    failed = []
+    for contract_id in active_ids:
+        entry = _get_ntt_active_entry(state, contract_id)
+        if entry is not None:
+            entry["status"] = "CLOSE REQUESTED"
+            entry["updated_at"] = now_time()
+        ok, msg = _request_sell_contract(cid, contract_id)
+        if ok:
+            closed.append(str(contract_id))
+        else:
+            failed.append({"contract_id": str(contract_id), "error": msg})
+    if closed:
+        ntt["last_action"] = f"Sell requested for {len(closed)} Mutant trade(s)"
+    payload = _ntt_payload_response(state)
+    if state.get("active_profile") == "NTT":
+        socketio.emit("ntt_status", payload, room=cid)
+        socketio.emit("digit_analysis", payload, room=cid)
+    return jsonify({
+        "status": "success" if closed else "error",
+        "message": f"Sell request sent for {len(closed)} trade(s)" if closed else (failed[0]["error"] if failed else "No active Mutant trade"),
+        "closed": closed,
+        "failed": failed,
+        "payload": payload,
+    }), (200 if closed else 500)
+
+
+@app.route("/ntt_clear_active", methods=["POST"])
+def ntt_clear_active_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    if not _mutant_access_state().get("enabled"):
+        return _mutant_under_construction_response()
+    cid, state = get_client_state()
+    ntt = _ensure_ntt_state(state)
+    active_ids = list((ntt.get("active_contracts") or {}).keys())
+    cleared = []
+    if active_ids:
+        for contract_id in active_ids:
+            cleared.append(str(contract_id))
+            try:
+                _mark_ntt_contract_processed(state, contract_id)
+            except Exception:
+                pass
+            try:
+                _pull_contract_meta(state, contract_id)
+            except Exception:
+                pass
+            try:
+                _forget_unchain_open_contract_subscription(state, contract_id)
+            except Exception:
+                pass
+        ntt["active_contracts"] = {}
+        ntt["last_action"] = f"Manually cleared {len(cleared)} Mutant trade(s)"
+    else:
+        ntt["last_action"] = "No active Mutant trades to clear"
+    payload = _ntt_payload_response(state)
+    if state.get("active_profile") == "NTT":
+        socketio.emit("ntt_status", payload, room=cid)
+        socketio.emit("digit_analysis", payload, room=cid)
+    return jsonify({
+        "status": "success",
+        "message": ntt.get("last_action"),
+        "cleared": cleared,
+        "payload": payload,
+    })
+
+
 def _toggle_unchain_auto(cid, state, data):
     u = _ensure_unchain_hl_state(state)
     requested = data.get("enabled")
@@ -10989,6 +14988,8 @@ def _toggle_unchain_auto(cid, state, data):
     u["auto_both_cooldown"] = 3
     active_count = len(_get_open_unchain_active_entries(state))
     if u["auto_both_enabled"]:
+        _disable_unchain_hybrid(u, reason="🟢 Hybrid is OFF.")
+        _disable_unchain_primordial_blue(u, reason="🔵 Primordial Blue is OFF.")
         _disable_unchain_directional_auto(u, reason="⚡ AUTO TRADE · 📈 HIGHER / 📉 LOWER is OFF.")
         if active_count > 0:
             u["auto_both_pair_active"] = True
@@ -11028,6 +15029,8 @@ def _toggle_unchain_ai_auto_trade(cid, state, data):
     u["auto_both_cooldown"] = 3
     active_count = len(_get_open_unchain_active_entries(state))
     if u["ai_auto_trade_enabled"]:
+        _disable_unchain_hybrid(u, reason="🟢 Hybrid is OFF.")
+        _disable_unchain_primordial_blue(u, reason="🔵 Primordial Blue is OFF.")
         _disable_unchain_directional_auto(u, reason="⚡ AUTO TRADE · 📈 HIGHER / 📉 LOWER is OFF.")
         u["auto_wait_for_reset"] = False
         u["auto_reset_drop_seen"] = False
@@ -11080,6 +15083,8 @@ def _toggle_unchain_directional_auto(cid, state, data):
 
     active_count = len(_get_open_unchain_active_entries(state))
     if u["directional_auto_enabled"]:
+        _disable_unchain_hybrid(u, reason="🟢 Hybrid is OFF.")
+        _disable_unchain_primordial_blue(u, reason="🔵 Primordial Blue is OFF.")
         u["auto_both_enabled"] = False
         u["auto_both_pair_active"] = False
         u["auto_both_next_fire_at"] = 0.0
@@ -11126,6 +15131,169 @@ def _toggle_unchain_directional_auto(cid, state, data):
     })
 
 
+def _toggle_unchain_primordial_blue(cid, state, data):
+    u = _ensure_unchain_hl_state(state)
+    requested = data.get("enabled")
+    toast_level = "success"
+    if requested is None:
+        u["primordial_blue_enabled"] = not bool(u.get("primordial_blue_enabled"))
+    else:
+        u["primordial_blue_enabled"] = bool(requested)
+
+    active_count = len(_get_open_unchain_active_entries(state))
+    if u["primordial_blue_enabled"]:
+        _disable_unchain_hybrid(u, reason="🟢 Hybrid is OFF.")
+        u["auto_both_enabled"] = False
+        u["auto_both_pair_active"] = False
+        u["auto_both_next_fire_at"] = 0.0
+        u["ai_auto_trade_enabled"] = False
+        u["auto_pair_active"] = False
+        u["auto_wait_for_reset"] = False
+        u["auto_reset_drop_seen"] = False
+        u["auto_next_fire_at"] = 0.0
+        _disable_unchain_directional_auto(u, reason="⚡ AUTO TRADE · 📈 HIGHER / 📉 LOWER is OFF.")
+        u["koolkid_hl_enabled"] = False
+        _clear_unchain_koolkid_hl_simulation(
+            u,
+            reason="KOOLKID Higher/Lower is OFF.",
+            cooldown_sec=0.0,
+        )
+        u["koolkid_hl_last_reason"] = "KOOLKID Higher/Lower is OFF."
+        u["koolkid_both_enabled"] = False
+        _clear_unchain_koolkid_both_simulation(
+            u,
+            reason="KOOLKID Both is OFF.",
+            cooldown_sec=0.0,
+        )
+        u["koolkid_both_last_reason"] = "KOOLKID Both is OFF."
+        if active_count > 0:
+            u["primordial_blue_cycle_active"] = True
+            u["primordial_blue_next_fire_at"] = 0.0
+            u["primordial_blue_last_reason"] = "Primordial Blue armed • waiting for the current UNCHAIN trade to settle."
+            u["last_action"] = "Primordial Blue armed • waiting for current cycle"
+        else:
+            u["primordial_blue_cycle_active"] = False
+            u["primordial_blue_next_fire_at"] = time.time()
+            plan_info = build_primordial_blue_trade_plan(state.get("current_symbol"), u.get("higher_stake", 0.0))
+            if plan_info.get("supported"):
+                u["primordial_blue_last_reason"] = (
+                    f"Primordial Blue armed • {plan_info.get('market_label') or 'V75'} • "
+                    f"{int(plan_info.get('duration') or 5)}{str(plan_info.get('duration_unit') or 't').upper()} • "
+                    f"30/30/40 split"
+                )
+            else:
+                u["primordial_blue_last_reason"] = str(
+                    plan_info.get("reason") or "Primordial Blue currently supports V10, V25, V75, V100, V75 1s, and V100 1s only."
+                )
+            u["last_action"] = "Primordial Blue armed"
+        run_ok = _run_unchain_primordial_blue(cid, state)
+        if not run_ok:
+            reason_text = str(u.get("primordial_blue_last_reason") or "")
+            lowered_reason = reason_text.lower()
+            if (
+                "need " in lowered_reason
+                or "failed:" in lowered_reason
+                or "minimum" in lowered_reason
+                or "too low" in lowered_reason
+            ):
+                toast_level = "error"
+                message = reason_text
+            else:
+                message = "🔵 PRIMORDIAL BLUE ON"
+        else:
+            message = "🔵 PRIMORDIAL BLUE ON"
+    else:
+        _disable_unchain_primordial_blue(u, reason="🔵 Primordial Blue is OFF.")
+        u["last_action"] = "Primordial Blue OFF"
+        message = "🔵 PRIMORDIAL BLUE OFF"
+        toast_level = "warn"
+
+    payload = _unchain_payload_response(state)
+    if state.get("active_profile") == "UNCHAIN":
+        socketio.emit("unchain_status", payload, room=cid)
+    return jsonify({
+        "status": "success",
+        "message": message,
+        "toast_type": toast_level,
+        "auto_enabled": bool(u.get("primordial_blue_enabled")),
+        "payload": payload,
+    })
+
+
+def _toggle_unchain_hybrid(cid, state, data):
+    u = _ensure_unchain_hl_state(state)
+    requested = data.get("enabled")
+    toast_level = "success"
+    if requested is None:
+        u["hybrid_enabled"] = not bool(u.get("hybrid_enabled"))
+    else:
+        u["hybrid_enabled"] = bool(requested)
+
+    active_count = len(_get_open_unchain_active_entries(state))
+    if u["hybrid_enabled"]:
+        _disable_unchain_primordial_blue(u, reason="🔵 Primordial Blue is OFF.")
+        u["auto_both_enabled"] = False
+        u["auto_both_pair_active"] = False
+        u["auto_both_next_fire_at"] = 0.0
+        u["ai_auto_trade_enabled"] = False
+        u["auto_pair_active"] = False
+        u["auto_wait_for_reset"] = False
+        u["auto_reset_drop_seen"] = False
+        u["auto_next_fire_at"] = 0.0
+        _disable_unchain_directional_auto(u, reason="⚡ AUTO TRADE · 📈 HIGHER / 📉 LOWER is OFF.")
+        u["koolkid_hl_enabled"] = False
+        _clear_unchain_koolkid_hl_simulation(u, reason="KOOLKID Higher/Lower is OFF.", cooldown_sec=0.0)
+        u["koolkid_hl_last_reason"] = "KOOLKID Higher/Lower is OFF."
+        u["koolkid_both_enabled"] = False
+        _clear_unchain_koolkid_both_simulation(u, reason="KOOLKID Both is OFF.", cooldown_sec=0.0)
+        u["koolkid_both_last_reason"] = "KOOLKID Both is OFF."
+        if active_count > 0:
+            u["hybrid_cycle_active"] = True
+            u["hybrid_next_fire_at"] = 0.0
+            u["hybrid_last_reason"] = "Hybrid armed • waiting for the current UNCHAIN trade to settle."
+            u["last_action"] = "Hybrid armed • waiting for current cycle"
+        else:
+            u["hybrid_cycle_active"] = False
+            u["hybrid_next_fire_at"] = time.time()
+            plan_info = build_hybrid_trade_plan(state.get("current_symbol"), u.get("higher_stake", 0.0))
+            if plan_info.get("supported"):
+                u["hybrid_last_reason"] = (
+                    f"Hybrid armed • {plan_info.get('market_label') or 'V75'} • "
+                    f"{int(plan_info.get('duration') or 10)}{str(plan_info.get('duration_unit') or 't').upper()} • "
+                    f"50/50 split"
+                )
+            else:
+                u["hybrid_last_reason"] = str(plan_info.get("reason") or "Hybrid currently supports V10, V25, V75, V100, V75 1s, V100 1s, and V25 1s only.")
+            u["last_action"] = "Hybrid armed"
+        run_ok = _run_unchain_hybrid(cid, state)
+        if not run_ok:
+            reason_text = str(u.get("hybrid_last_reason") or "")
+            lowered_reason = reason_text.lower()
+            if "need " in lowered_reason or "failed:" in lowered_reason or "minimum" in lowered_reason or "too low" in lowered_reason:
+                toast_level = "error"
+                message = reason_text
+            else:
+                message = "🟢 HYBRID ON"
+        else:
+            message = "🟢 HYBRID ON"
+    else:
+        _disable_unchain_hybrid(u, reason="🟢 Hybrid is OFF.")
+        u["last_action"] = "Hybrid OFF"
+        message = "🟢 HYBRID OFF"
+        toast_level = "warn"
+
+    payload = _unchain_payload_response(state)
+    if state.get("active_profile") == "UNCHAIN":
+        socketio.emit("unchain_status", payload, room=cid)
+    return jsonify({
+        "status": "success",
+        "message": message,
+        "toast_type": toast_level,
+        "auto_enabled": bool(u.get("hybrid_enabled")),
+        "payload": payload,
+    })
+
+
 def _toggle_unchain_koolkid_hl(cid, state, data):
     u = _ensure_unchain_hl_state(state)
     requested = data.get("enabled")
@@ -11135,6 +15303,8 @@ def _toggle_unchain_koolkid_hl(cid, state, data):
         u["koolkid_hl_enabled"] = bool(requested)
 
     if u["koolkid_hl_enabled"]:
+        _disable_unchain_hybrid(u, reason="🟢 Hybrid is OFF.")
+        _disable_unchain_primordial_blue(u, reason="🔵 Primordial Blue is OFF.")
         _disable_unchain_directional_auto(u, reason="⚡ AUTO TRADE · 📈 HIGHER / 📉 LOWER is OFF.")
         u["koolkid_both_enabled"] = False
         _clear_unchain_koolkid_both_simulation(
@@ -11188,6 +15358,8 @@ def _toggle_unchain_koolkid_both(cid, state, data):
         u["koolkid_both_enabled"] = bool(requested)
 
     if u["koolkid_both_enabled"]:
+        _disable_unchain_hybrid(u, reason="🟢 Hybrid is OFF.")
+        _disable_unchain_primordial_blue(u, reason="🔵 Primordial Blue is OFF.")
         _disable_unchain_directional_auto(u, reason="⚡ AUTO TRADE · 📈 HIGHER / 📉 LOWER is OFF.")
         u["koolkid_hl_enabled"] = False
         _clear_unchain_koolkid_hl_simulation(
@@ -11247,6 +15419,24 @@ def toggle_unchain_directional_auto_route():
     cid, state = get_client_state()
     data = request.json or {}
     return _toggle_unchain_directional_auto(cid, state, data)
+
+
+@app.route("/toggle_unchain_primordial_blue", methods=["POST"])
+def toggle_unchain_primordial_blue_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    cid, state = get_client_state()
+    data = request.json or {}
+    return _toggle_unchain_primordial_blue(cid, state, data)
+
+
+@app.route("/toggle_unchain_hybrid", methods=["POST"])
+def toggle_unchain_hybrid_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    cid, state = get_client_state()
+    data = request.json or {}
+    return _toggle_unchain_hybrid(cid, state, data)
 
 
 @app.route("/toggle_unchain_koolkid_hl", methods=["POST"])
@@ -11323,14 +15513,15 @@ def unchain_manual_enter_route():
     u = _ensure_unchain_hl_state(state)
     if side not in ("HIGHER", "LOWER"):
         side = "HIGHER"
+    trade_duration, trade_duration_unit = _get_unchain_side_duration(u, side)
     ok, msg = _send_unchain_hl_trade(
         cid,
         side=side,
         stake=data.get("stake", u.get("higher_stake" if side == "HIGHER" else "lower_stake", 1.0)),
         symbol=state.get("current_symbol", "R_25"),
         barrier=data.get("barrier", u.get("higher_barrier" if side == "HIGHER" else "lower_barrier", "+0.12" if side == "HIGHER" else "-0.12")),
-        duration=data.get("duration", u.get("duration", 5)),
-        duration_unit=data.get("duration_unit", u.get("duration_unit", "t")),
+        duration=data.get("duration", trade_duration),
+        duration_unit=data.get("duration_unit", trade_duration_unit),
     )
     payload = _unchain_payload_response(state)
     if state.get("active_profile") == "UNCHAIN":

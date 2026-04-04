@@ -112,10 +112,25 @@
     dirty: false
   };
 
-  function money(value) {
+  function currencyPayload(payload) {
+    return payload || runtime.lastStatus || (initialDashboard && initialDashboard.stats) || {};
+  }
+
+  function syncCurrency(payload) {
+    return currencyPayload(payload);
+  }
+
+  function money(value, payload) {
     const num = Number(value || 0);
-    const sign = num < 0 ? '-' : '';
-    return sign + '$' + Math.abs(num).toFixed(2);
+    try { if (typeof formatCurrencyAmount === 'function') return formatCurrencyAmount(num, currencyPayload(payload)); } catch (_err) {}
+    return Number.isFinite(num) ? `$${Math.abs(num).toFixed(2)}` : '—';
+  }
+
+  function signedMoney(value, payload) {
+    const num = Number(value || 0);
+    try { if (typeof formatSignedCurrencyAmount === 'function') return formatSignedCurrencyAmount(num, currencyPayload(payload)); } catch (_err) {}
+    if (!Number.isFinite(num)) return '—';
+    return (num >= 0 ? '+' : '-') + '$' + Math.abs(num).toFixed(2);
   }
 
   function clamp(value, min, max) {
@@ -264,10 +279,11 @@
   function renderHistory(dashboard) {
     const stats = (dashboard && dashboard.stats) || {};
     const history = Array.isArray(dashboard && dashboard.history) ? dashboard.history : [];
+    syncCurrency(stats);
     const historyMarkup = history.length ? history.map(function (row) {
-      const payout = row && row.payout !== undefined && row.payout !== null ? money(row.payout) : 'Payout --';
+      const payout = row && row.payout !== undefined && row.payout !== null ? money(row.payout, row) : 'Payout --';
       const profitNum = Number((row && row.profit) || 0);
-      const profitText = (profitNum >= 0 ? '+' : '-') + '$' + Math.abs(profitNum).toFixed(2);
+      const profitText = signedMoney(profitNum, row);
       const profitClass = profitNum >= 0 ? 'profit-green' : 'profit-red';
       const resultText = row && row.pending ? 'PENDING' : String((row && row.result) || 'LOSS');
       return '' +
@@ -541,6 +557,7 @@
 
   function applyStatus(status) {
     runtime.lastStatus = status || {};
+    syncCurrency(status);
     const selected = Array.isArray(status.selected_strategies) ? status.selected_strategies : [];
     const confidence = clamp(status.confidence || 0, 0, 99);
     const activeMarket = status.active_market ? formatMarketLabel(status.active_market) : 'Scanning markets...';
@@ -553,7 +570,7 @@
       refs.connection.classList.toggle('connected', !!status.connected);
       refs.connection.classList.toggle('disconnected', !status.connected);
     }
-    if (refs.balance) refs.balance.textContent = money(status.balance || 0);
+    if (refs.balance) refs.balance.textContent = money(status.balance || 0, status);
     if (refs.status) refs.status.textContent = status.status || 'IDLE';
     if (refs.statusDetail) refs.statusDetail.textContent = detail;
     if (refs.liveFlag) refs.liveFlag.textContent = status.running ? 'Session Active' : 'Session Idle';
@@ -576,24 +593,24 @@
     if (refs.tag2) refs.tag2.textContent = confidence >= 80 ? 'High Confidence' : confidence >= 60 ? 'Qualified Setup' : 'Waiting Edge';
     if (refs.tag3) refs.tag3.textContent = (refs.mode && refs.mode.value === 'dual') ? 'Dual Profile' : 'Single Profile';
     if (refs.chartLeftCopy) refs.chartLeftCopy.textContent = 'Active button: ' + (status.active_strategy || 'Scanning profile buttons');
-    if (refs.chartRightCopy) refs.chartRightCopy.textContent = 'Remaining budget: ' + money(status.remaining_budget || 0) + ' • Protected profit: ' + money(status.profit_bank || 0);
+    if (refs.chartRightCopy) refs.chartRightCopy.textContent = 'Remaining budget: ' + money(status.remaining_budget || 0, status) + ' • Protected profit: ' + money(status.profit_bank || 0, status);
 
-    if (refs.budgetValue) refs.budgetValue.textContent = money(status.budget || 0);
-    if (refs.budgetHero) refs.budgetHero.textContent = money(status.budget || 0);
-    if (refs.remaining) refs.remaining.textContent = money(status.remaining_budget || 0);
-    if (refs.stake) refs.stake.textContent = money(status.current_stake || 0.35);
+    if (refs.budgetValue) refs.budgetValue.textContent = money(status.budget || 0, status);
+    if (refs.budgetHero) refs.budgetHero.textContent = money(status.budget || 0, status);
+    if (refs.remaining) refs.remaining.textContent = money(status.remaining_budget || 0, status);
+    if (refs.stake) refs.stake.textContent = money(status.current_stake || 0.35, status);
     if (refs.pnl) {
       const pnl = Number(status.profit_bank != null ? status.profit_bank : (status.profit_loss || 0));
-      refs.pnl.textContent = money(pnl);
+      refs.pnl.textContent = signedMoney(pnl, status);
       refs.pnl.classList.remove('green', 'red');
       refs.pnl.classList.add(pnl >= 0 ? 'green' : 'red');
     }
     if (refs.wins) refs.wins.textContent = String(status.wins || 0);
     if (refs.losses) refs.losses.textContent = String(status.losses || 0);
-    if (refs.tpValue) refs.tpValue.textContent = money(status.tp || 0);
-    if (refs.tpHero) refs.tpHero.textContent = money(status.tp || 0);
-    if (refs.slValue) refs.slValue.textContent = money(status.sl || 0);
-    if (refs.slHero) refs.slHero.textContent = money(status.sl || 0);
+    if (refs.tpValue) refs.tpValue.textContent = money(status.tp || 0, status);
+    if (refs.tpHero) refs.tpHero.textContent = money(status.tp || 0, status);
+    if (refs.slValue) refs.slValue.textContent = money(status.sl || 0, status);
+    if (refs.slHero) refs.slHero.textContent = money(status.sl || 0, status);
 
     syncActionButtons(status || {});
     setNotice(detail);

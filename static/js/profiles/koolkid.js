@@ -5,6 +5,7 @@
     socketBound: false,
     barrierAnalysis: null,
     over3Analysis: null,
+    kid2vix: null,
     autoModes: {},
     dual2xOpen: false,
     dual2xBusy: false,
@@ -29,6 +30,24 @@
     } catch (e) {}
   }
 
+  function currencyPayload(payload) {
+    return payload || {};
+  }
+
+  function money(value, payload) {
+    const num = Number(value || 0);
+    try { if (typeof formatCurrencyAmount === "function") return formatCurrencyAmount(num, currencyPayload(payload)); } catch (e) {}
+    return Number.isFinite(num) ? `$${Math.abs(num).toFixed(2)}` : "—";
+  }
+
+  function setInputValueIfIdle(id, value) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (document.activeElement === el) return;
+    const next = value === null || value === undefined ? "" : String(value);
+    if (el.value !== next) el.value = next;
+  }
+
   async function postJSON(url, body) {
     const res = await fetch(url, {
       method: "POST",
@@ -46,6 +65,82 @@
     let v = Number(el && el.value);
     if (!isFinite(v) || v <= 0) v = 1;
     return v;
+  }
+
+  function kid2vixColor(label) {
+    const key = String(label || "").toUpperCase();
+    if (key === "SAFE") return "#22c55e";
+    if (key === "RISKY") return "#f59e0b";
+    return "#ef4444";
+  }
+
+  function renderKid2vixKoolkid(data) {
+    if (data && typeof data === "object") state.kid2vix = data;
+    const d = state.kid2vix || {};
+    const btn = document.getElementById("kid2vixBtnKoolkid");
+    const info = document.getElementById("kid2vixInfoKoolkid");
+    const labelEl = document.getElementById("kid2vixLabelKoolkid");
+    const pressureEl = document.getElementById("kid2vixPressureKoolkid");
+    const count20El = document.getElementById("kid2vixCount20Koolkid");
+    const count5El = document.getElementById("kid2vixCount5Koolkid");
+    const readinessEl = document.getElementById("kid2vixReadinessKoolkid");
+    const splitEl = document.getElementById("kid2vixSplitKoolkid");
+    const enabled = !!(state.autoModes && state.autoModes.kid2vix);
+    const label = String(d.label || "SKIP").toUpperCase();
+    const labelColor = kid2vixColor(label);
+    const pressure = Number(d.repeat_pressure_score);
+    const pressureThreshold = Number(d.repeat_pressure_threshold);
+    const count20 = Number(d.last20_count);
+    const count5 = Number(d.last5_count);
+    const cooldown = Number(d.cooldown_remaining || 0);
+    const ready = !!d.trade_ready;
+    const ratioPct = d.ratio_pct || {};
+    const overPct = Number(ratioPct.over3);
+    const underPct = Number(ratioPct.under2);
+    const stake = getStakeValueKoolkid();
+    const overStake = Number((stake * ((isFinite(overPct) ? overPct : 70) / 100)).toFixed(2));
+    const underStake = Number((stake - overStake).toFixed(2));
+
+    if (btn) {
+      btn.innerText = enabled ? `Kid2vix: ON • ${label}` : "Kid2vix: OFF";
+      btn.style.background = enabled ? labelColor : "#1e293b";
+      btn.style.color = enabled ? "#04130b" : "#e2e8f0";
+    }
+    if (info) {
+      info.style.color = enabled ? "#cbd5e1" : "#94a3b8";
+      info.innerText = String(d.reason_summary || "Scanning 2/3 pressure for a safe UNDER 2 + OVER 3 entry...");
+    }
+    if (labelEl) {
+      labelEl.innerText = label;
+      labelEl.style.color = labelColor;
+    }
+    if (pressureEl) {
+      pressureEl.innerText = isFinite(pressure) && isFinite(pressureThreshold)
+        ? `${pressure.toFixed(1)} / ${pressureThreshold.toFixed(1)}`
+        : "-";
+      pressureEl.style.color = isFinite(pressure) && isFinite(pressureThreshold) && pressure <= pressureThreshold ? "#22c55e" : "#f59e0b";
+    }
+    if (count20El) {
+      count20El.innerText = isFinite(count20) ? `${count20}` : "-";
+      count20El.style.color = isFinite(count20) && count20 <= Number((d.settings || {}).last20_threshold || 0) ? "#22c55e" : "#f59e0b";
+    }
+    if (count5El) {
+      count5El.innerText = isFinite(count5) ? `${count5}` : "-";
+      count5El.style.color = isFinite(count5) && count5 <= Number((d.settings || {}).last5_threshold || 0) ? "#22c55e" : "#f59e0b";
+    }
+    if (readinessEl) {
+      if (!enabled) readinessEl.innerText = "Trade readiness: auto mode is OFF.";
+      else if (!d.ready) readinessEl.innerText = "Trade readiness: warming up the 20-tick and 5-tick windows.";
+      else if (d.cycle_active) readinessEl.innerText = `Trade readiness: waiting for current cycle (${Number(d.open_contracts || 0)} leg${Number(d.open_contracts || 0) === 1 ? "" : "s"}) to finish.`;
+      else if (cooldown > 0) readinessEl.innerText = `Trade readiness: cooldown after loss • ${cooldown.toFixed(1)}s left.`;
+      else readinessEl.innerText = `Trade readiness: ${ready ? "SAFE to send UNDER 2 + OVER 3" : "not ready yet"}.`;
+      readinessEl.style.color = ready ? "#22c55e" : "#cbd5e1";
+    }
+    if (splitEl) {
+      splitEl.innerText = `Split: OVER 3 ${isFinite(overPct) ? overPct.toFixed(1) : "70.0"}% (${money(overStake, d)}) • UNDER 2 ${isFinite(underPct) ? underPct.toFixed(1) : "30.0"}% (${money(underStake, d)})`;
+    }
+
+    const settings = d.settings || {};
   }
 
   function updateDual2xUIKoolkid() {
@@ -480,6 +575,8 @@ function updateAdvancedAIModeButtons(modes, payload) {
     else if (kidGxBtn) renderBarrierAnalysis(state.barrierAnalysis || { selected: "UNDER 9" });
     if (payload && payload.over3_analysis_data) renderOver3AnalysisKoolkid(payload.over3_analysis_data);
     else renderOver3AnalysisKoolkid();
+    if (payload && payload.kid2vix_data) renderKid2vixKoolkid(payload.kid2vix_data);
+    else renderKid2vixKoolkid();
     updateDual2xUIKoolkid();
     renderDual2xAnalysisKoolkid();
     updateAdvancedAIModeButtons(modes || {}, payload || null);
@@ -497,6 +594,7 @@ function updateAdvancedAIModeButtons(modes, payload) {
         renderDual2xAnalysisKoolkid(data || {});
         if (data && data.barrier_analysis) renderBarrierAnalysis(data.barrier_analysis);
         if (data && data.over3_analysis_data) renderOver3AnalysisKoolkid(data.over3_analysis_data);
+        if (data && data.kid2vix_data) renderKid2vixKoolkid(data.kid2vix_data);
         if (data && data.auto_modes) updateModeButtonsFromPayload(data.auto_modes, data);
       });
 
@@ -515,6 +613,13 @@ function updateAdvancedAIModeButtons(modes, payload) {
       syncSelectedDigitsToServer();
       try { App().applyDigitSelectionUI && App().applyDigitSelectionUI(); } catch (e) {}
     });
+
+    document.addEventListener("input", (event) => {
+      const target = event && event.target;
+      if (target && target.id === "stake") {
+        renderKid2vixKoolkid();
+      }
+    });
   }
 
   async function onMount() {
@@ -525,6 +630,7 @@ function updateAdvancedAIModeButtons(modes, payload) {
     updateDual2xUIKoolkid();
     renderDual2xAnalysisKoolkid();
     renderOver3AnalysisKoolkid();
+    renderKid2vixKoolkid();
     setTimeout(syncSelectedDigitsToServer, 200);
   }
 
@@ -534,6 +640,7 @@ function updateAdvancedAIModeButtons(modes, payload) {
     updateDual2xUIKoolkid();
     renderDual2xAnalysisKoolkid();
     renderOver3AnalysisKoolkid();
+    renderKid2vixKoolkid();
     setTimeout(syncSelectedDigitsToServer, 150);
   }
 
@@ -543,6 +650,7 @@ function updateAdvancedAIModeButtons(modes, payload) {
     updateDual2xUIKoolkid();
     renderDual2xAnalysisKoolkid();
     renderOver3AnalysisKoolkid();
+    renderKid2vixKoolkid();
   }
 
   window.toggleDual2xKoolkid = function () {
@@ -596,7 +704,7 @@ function updateAdvancedAIModeButtons(modes, payload) {
       const deadRisk = config.deadKey ? liveStats[config.deadKey] : null;
       const r = await placeDual2xLegsSameTickKoolkid(config.legs);
       if (r.placed === config.legs.length) {
-        const stakeMsg = r.stakes && r.stakes.length ? r.stakes.map((s) => `${s.label}: $${Number(s.stake).toFixed(2)}`).join(" / ") : "";
+        const stakeMsg = r.stakes && r.stakes.length ? r.stakes.map((s) => `${s.label}: ${money(Number(s.stake), s)}`).join(" / ") : "";
         safeToast(`DUAL 2x sent: ${config.label} • ${stakeMsg}${Number.isFinite(deadRisk) ? ` • dead risk ${deadRisk.toFixed(1)}%` : ""}`, "success");
       } else if (r.placed === 1) {
         safeToast(`DUAL 2x partial (1/2): ${config.label}`, "error");
@@ -617,7 +725,7 @@ function updateAdvancedAIModeButtons(modes, payload) {
     const overStake = Number((stake * 0.65).toFixed(2)); // Match requested split behavior (example: $10 -> $6.50).
     const underStake = Number((stake - overStake).toFixed(2));
     if (overStake < 0.35 || underStake < 0.35) {
-      safeToast("Stake too low for Under 3 split. Use at least $1.00.", "error");
+      safeToast(`Stake too low for Under 3 split. Use at least ${money(1)}.`, "error");
       return;
     }
 
@@ -629,9 +737,9 @@ function updateAdvancedAIModeButtons(modes, payload) {
         { type: "UNDER", barrier: 3, fixedStake: underStake, label: "UNDER 3" },
       ]);
       if (r.placed === 2) {
-        safeToast(`UNDER 3 sent • OVER 3 $${overStake.toFixed(2)} / UNDER 3 $${underStake.toFixed(2)} (same tick)`, "success");
+        safeToast(`UNDER 3 sent • OVER 3 ${money(overStake)} / UNDER 3 ${money(underStake)} (same tick)`, "success");
       } else if (r.placed === 1) {
-        safeToast(`UNDER 3 partial (1/2) • OVER 3 $${overStake.toFixed(2)} / UNDER 3 $${underStake.toFixed(2)}`, "error");
+        safeToast(`UNDER 3 partial (1/2) • OVER 3 ${money(overStake)} / UNDER 3 ${money(underStake)}`, "error");
       } else {
         safeToast("UNDER 3 failed", "error");
       }
@@ -708,6 +816,40 @@ function updateAdvancedAIModeButtons(modes, payload) {
       safeToast(`Over 3 Analysis: ${r.data.over3_analysis ? "ON" : "OFF"}`, r.data.over3_analysis ? "success" : "error");
     } else {
       safeToast((r.data && r.data.message) || "Over 3 Analysis failed", "error");
+    }
+  };
+
+  window.toggleKid2vixKoolkid = async function () {
+    const r = await postJSON("/toggle_kid2vix_koolkid", {});
+    if (r.data && r.data.status === "success") {
+      if (r.data.auto_modes) state.autoModes = Object.assign({}, state.autoModes || {}, r.data.auto_modes);
+      updateModeButtonsFromPayload(r.data.auto_modes || { kid2vix: !!r.data.kid2vix_auto }, r.data.payload || null);
+      if (r.data.kid2vix_data) renderKid2vixKoolkid(r.data.kid2vix_data);
+      safeToast(`Kid2vix: ${r.data.kid2vix_auto ? "ON" : "OFF"}`, r.data.kid2vix_auto ? "success" : "error");
+    } else {
+      safeToast((r.data && r.data.message) || "Kid2vix failed", "error");
+    }
+  };
+
+  window.saveKid2vixSettingsKoolkid = async function () {
+    const last20 = Number(document.getElementById("kid2vixLast20ThresholdKoolkid")?.value);
+    const last5 = Number(document.getElementById("kid2vixLast5ThresholdKoolkid")?.value);
+    const pressure = Number(document.getElementById("kid2vixPressureThresholdKoolkid")?.value);
+    const ratio = Number(document.getElementById("kid2vixOver3RatioKoolkid")?.value);
+    const cooldown = Number(document.getElementById("kid2vixCooldownKoolkid")?.value);
+    const r = await postJSON("/set_kid2vix_settings_koolkid", {
+      last20_threshold: last20,
+      last5_threshold: last5,
+      repeat_pressure_threshold: pressure,
+      over3_ratio: ratio,
+      cooldown_after_loss: cooldown,
+    });
+    if (r.data && r.data.status === "success") {
+      if (r.data.payload && r.data.payload.auto_modes) state.autoModes = Object.assign({}, state.autoModes || {}, r.data.payload.auto_modes);
+      if (r.data.kid2vix_data) renderKid2vixKoolkid(r.data.kid2vix_data);
+      safeToast("Kid2vix settings saved", "success");
+    } else {
+      safeToast((r.data && r.data.message) || "Kid2vix settings failed", "error");
     }
   };
 

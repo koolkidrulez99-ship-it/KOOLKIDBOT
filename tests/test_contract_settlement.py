@@ -797,6 +797,69 @@ def test_process_contract_does_not_double_apply_profit_after_fresh_balance_updat
     assert trade_events[-1]["profit"] == -5.0
 
 
+def test_process_contract_uses_last_live_balance_when_current_balance_is_stale_zero(monkeypatch):
+    emitted = []
+
+    class DummyStrategy:
+        def __init__(self):
+            self.last_trade_entry = {}
+
+        def on_contract(self, contract, balance):
+            self.last_trade_entry = {
+                "time": "10:00:00",
+                "result": "LOSS",
+                "profit": round(float(contract.get("profit", 0) or 0), 2),
+                "symbol": contract.get("underlying", ""),
+                "balance_seen": balance,
+            }
+
+        def get_last_trade_entry(self):
+            return self.last_trade_entry
+
+    state = {
+        "balance": 0.0,
+        "last_live_balance": 100.0,
+        "balance_updated_at": 0.0,
+        "active_profile": "JOKERJOE",
+        "strategies": {"JOKERJOE": DummyStrategy()},
+        "contract_meta": {
+            86420: {
+                "profile": "JOKERJOE",
+                "type": "DIFFERS",
+                "stake": 1.0,
+                "symbol": "R_10",
+                "time": "09:59:00",
+                "duration": 5,
+                "duration_unit": "t",
+            }
+        },
+    }
+
+    monkeypatch.setitem(server.clients, "test-stale-zero-balance", state)
+    monkeypatch.setattr(server.socketio, "emit", lambda event, payload, room=None: emitted.append((event, payload, room)))
+    monkeypatch.setattr(server, "send_stats_update", lambda client_id: None)
+
+    try:
+        process_contract(
+            "test-stale-zero-balance",
+            {
+                "contract_id": 86420,
+                "status": "sold",
+                "profit": -5.0,
+                "is_sold": True,
+                "underlying": "R_10",
+            },
+        )
+    finally:
+        server.clients.pop("test-stale-zero-balance", None)
+
+    assert state["balance"] == pytest.approx(95.0)
+    assert state["last_live_balance"] == pytest.approx(95.0)
+    trade_events = [payload for event, payload, _room in emitted if event == "trade_result"]
+    assert trade_events
+    assert trade_events[-1]["balance_seen"] == pytest.approx(95.0)
+
+
 def test_process_contract_ignores_duplicate_non_unchain_settlement(monkeypatch):
     emitted = []
 

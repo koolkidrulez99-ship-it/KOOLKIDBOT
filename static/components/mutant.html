@@ -1,0 +1,1334 @@
+<div id="nttRoot" class="ntt-profile">
+  <style>
+    .ntt-profile{
+      --bg-1:#0b1220;
+      --bg-2:#0f172a;
+      --bg-3:#111827;
+      --line:#1f2937;
+      --line-2:#334155;
+      --text:#f8fafc;
+      --muted:#94a3b8;
+      --cyan:#22d3ee;
+      --teal:#14b8a6;
+      --violet:#8b5cf6;
+      --amber:#f59e0b;
+      --red:#ef4444;
+      color:var(--text);
+    }
+    .ntt-profile *{ box-sizing:border-box; }
+    .ntt-profile .card{
+      width:100%;
+      overflow:hidden;
+    }
+    .ntt-profile .ntt-header{
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      gap:12px;
+      flex-wrap:wrap;
+    }
+    .ntt-profile .ntt-sub{
+      color:var(--muted);
+      font-size:13px;
+      margin-top:4px;
+    }
+    .ntt-profile .ntt-chip{
+      display:inline-flex;
+      align-items:center;
+      gap:6px;
+      padding:8px 12px;
+      border-radius:999px;
+      border:1px solid rgba(34,211,238,0.22);
+      background:rgba(8,47,73,0.42);
+      color:#cffafe;
+      font-size:12px;
+      font-weight:800;
+    }
+    .ntt-profile .ntt-grid{
+      display:grid;
+      grid-template-columns:repeat(3,minmax(0,1fr));
+      gap:12px;
+    }
+    .ntt-profile .ntt-analysis-duo{
+      display:grid;
+      grid-template-columns:minmax(0,1fr) minmax(280px,360px);
+      gap:12px;
+      align-items:start;
+    }
+    .ntt-profile .ntt-analysis-duo > .card{
+      margin:0;
+    }
+    .ntt-profile .ntt-controls-grid{
+      display:grid;
+      grid-template-columns:repeat(3,minmax(0,1fr));
+      gap:12px;
+      align-items:start;
+    }
+    .ntt-profile .ntt-kpi{
+      background:var(--bg-1);
+      border:1px solid var(--line);
+      border-radius:14px;
+      padding:12px;
+      min-width:0;
+    }
+    .ntt-profile .ntt-kpi .k{
+      font-size:11px;
+      color:var(--muted);
+      margin-bottom:6px;
+    }
+    .ntt-profile .ntt-kpi .v{
+      font-size:1.08rem;
+      font-weight:800;
+      line-height:1.2;
+      overflow-wrap:anywhere;
+    }
+    .ntt-profile .ntt-row{
+      display:flex;
+      flex-wrap:wrap;
+      gap:10px;
+      align-items:flex-end;
+    }
+    .ntt-profile .ntt-field{
+      display:grid;
+      gap:6px;
+      flex:1 1 140px;
+      min-width:0;
+    }
+    .ntt-profile .ntt-field.is-barrier{
+      flex:1 1 220px;
+      min-width:220px;
+    }
+    .ntt-profile .ntt-label{
+      font-size:12px;
+      color:var(--muted);
+      font-weight:700;
+    }
+    .ntt-profile input,
+    .ntt-profile select,
+    .ntt-profile button{
+      font:inherit;
+      border-radius:12px;
+      min-height:44px;
+    }
+    .ntt-profile input,
+    .ntt-profile select{
+      background:var(--bg-3);
+      border:1px solid var(--line-2);
+      color:#fff;
+      padding:10px 12px;
+      max-width:100%;
+    }
+    .ntt-profile button{
+      border:0;
+      color:#fff;
+      padding:10px 14px;
+      font-weight:800;
+      cursor:pointer;
+      max-width:100%;
+      white-space:normal;
+      word-break:break-word;
+      text-align:center;
+    }
+    .ntt-profile .ntt-side{
+      border:1px solid var(--line);
+      border-radius:16px;
+      padding:14px;
+      background:var(--bg-2);
+      min-width:0;
+    }
+    .ntt-profile .ntt-field-grid-2{
+      display:grid;
+      grid-template-columns:repeat(2,minmax(0,1fr));
+      gap:12px;
+      min-width:0;
+    }
+    .ntt-profile .ntt-side--duration{
+      background:linear-gradient(180deg, rgba(56,189,248,0.08), rgba(15,23,42,0.95));
+      border-color:rgba(56,189,248,0.28);
+    }
+    .ntt-profile .ntt-side--duration .ntt-field-grid-2{
+      margin-top:2px;
+      gap:10px;
+    }
+    .ntt-profile .ntt-side--duration .ntt-field{
+      min-width:0;
+    }
+    .ntt-profile .ntt-side--duration .ntt-field input,
+    .ntt-profile .ntt-side--duration .ntt-field select{
+      width:100%;
+      min-width:0;
+      max-width:100%;
+      min-height:50px;
+      border-color:rgba(56,189,248,0.22);
+      box-shadow:inset 0 1px 0 rgba(255,255,255,0.03);
+    }
+    .ntt-profile .ntt-side--duration .ntt-field input:focus,
+    .ntt-profile .ntt-side--duration .ntt-field select:focus{
+      outline:none;
+      border-color:rgba(56,189,248,0.7);
+      box-shadow:0 0 0 3px rgba(56,189,248,0.16);
+    }
+    .ntt-profile .ntt-barrier-inline{
+      display:flex;
+      align-items:center;
+      gap:6px;
+      min-width:0;
+    }
+    .ntt-profile .ntt-barrier-stepper{
+      flex:0 0 34px;
+      width:34px;
+      min-width:34px;
+      height:42px;
+      min-height:42px;
+      padding:0 6px;
+      font-size:15px;
+      line-height:1;
+    }
+    .ntt-profile .ntt-barrier-input{
+      flex:1 1 auto;
+      min-width:110px;
+      text-align:center;
+      font-variant-numeric:tabular-nums;
+    }
+    .ntt-profile .ntt-btn-row{
+      display:flex;
+      flex-wrap:wrap;
+      gap:8px;
+      align-items:stretch;
+    }
+    .ntt-profile .ntt-btn-row > button{
+      flex:1 1 170px;
+    }
+    .ntt-profile .ntt-inline-action-row{
+      display:grid;
+      grid-template-columns:minmax(0,1fr) auto;
+      gap:8px;
+      align-items:center;
+      min-width:0;
+    }
+    .ntt-profile .ntt-active-list{
+      display:grid;
+      gap:8px;
+    }
+    .ntt-profile .ntt-active-item{
+      background:var(--bg-1);
+      border:1px solid var(--line);
+      border-radius:14px;
+      padding:12px;
+      min-width:0;
+    }
+    .ntt-profile .ntt-empty{
+      color:var(--muted);
+      font-size:13px;
+      padding:12px;
+      border:1px dashed var(--line-2);
+      border-radius:14px;
+      background:var(--bg-1);
+      text-align:center;
+    }
+    .ntt-profile .ntt-bias-grid{
+      display:grid;
+      grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);
+      gap:12px;
+      align-items:stretch;
+    }
+    .ntt-profile .ntt-analysis-duo .ntt-bias-grid{
+      grid-template-columns:1fr;
+      gap:10px;
+    }
+    .ntt-profile .ntt-analysis-duo .ntt-bias-main{
+      padding:12px;
+    }
+    .ntt-profile .ntt-analysis-duo .ntt-bias-headline{
+      font-size:1rem;
+    }
+    .ntt-profile .ntt-analysis-duo .ntt-bias-sub{
+      font-size:12px;
+    }
+    .ntt-profile .ntt-analysis-duo .ntt-bias-stats{
+      grid-template-columns:repeat(3,minmax(0,1fr));
+    }
+    .ntt-profile .ntt-analysis-duo .contract-selector-panel{
+      width:100%;
+      max-width:360px;
+      justify-self:stretch;
+    }
+    .ntt-profile .ntt-bias-main{
+      border:1px solid rgba(34,211,238,0.24);
+      border-radius:16px;
+      padding:14px;
+      background:linear-gradient(180deg, rgba(34,211,238,0.10), rgba(15,23,42,0.96));
+    }
+    .ntt-profile .ntt-bias-headline{
+      font-size:1.05rem;
+      font-weight:900;
+      line-height:1.25;
+      margin-bottom:8px;
+    }
+    .ntt-profile .ntt-bias-sub{
+      color:var(--muted);
+      font-size:12px;
+      line-height:1.45;
+    }
+    .ntt-profile .ntt-bias-stats{
+      display:grid;
+      grid-template-columns:repeat(3,minmax(0,1fr));
+      gap:10px;
+      min-width:0;
+    }
+    .ntt-profile .ntt-bias-stat{
+      background:var(--bg-1);
+      border:1px solid var(--line);
+      border-radius:14px;
+      padding:12px;
+      min-width:0;
+    }
+    .ntt-profile .ntt-bias-stat .k{
+      color:var(--muted);
+      font-size:11px;
+      margin-bottom:6px;
+    }
+    .ntt-profile .ntt-bias-stat .v{
+      font-size:1rem;
+      font-weight:900;
+      line-height:1.2;
+    }
+    .ntt-profile .ntt-reasons{
+      display:flex;
+      flex-wrap:wrap;
+      gap:8px;
+      margin-top:12px;
+    }
+    .ntt-profile .ntt-reason-chip{
+      padding:7px 10px;
+      border-radius:999px;
+      background:rgba(15,23,42,0.75);
+      border:1px solid rgba(148,163,184,0.18);
+      color:#e2e8f0;
+      font-size:11px;
+      font-weight:800;
+    }
+    .ntt-profile .ntt-chart-shell{
+      border:1px solid rgba(139,92,246,0.18);
+      border-radius:18px;
+      padding:14px;
+      background:linear-gradient(180deg,rgba(15,23,42,0.96),rgba(2,6,23,0.98));
+    }
+    .ntt-profile .ntt-chart-meta{
+      font-size:12px;
+      color:var(--muted);
+      line-height:1.5;
+    }
+    .ntt-profile .ntt-zone-pill{
+      display:inline-flex;
+      align-items:center;
+      gap:8px;
+      padding:8px 12px;
+      border-radius:999px;
+      border:1px solid rgba(148,163,184,0.22);
+      background:rgba(15,23,42,0.82);
+      color:#e2e8f0;
+      font-size:12px;
+      font-weight:800;
+    }
+    .ntt-profile .ntt-zone-pill .dot{
+      width:8px;
+      height:8px;
+      border-radius:50%;
+      display:inline-block;
+    }
+    .ntt-profile .ntt-analysis-panel{
+      position:relative;
+      overflow:hidden;
+      border-radius:18px;
+      border:1px solid rgba(148,163,184,0.16);
+      background:
+        radial-gradient(circle at 88% 55%, rgba(34,211,238,0.18), transparent 22%),
+        linear-gradient(180deg, rgba(5,12,28,0.98), rgba(10,18,34,0.98));
+      box-shadow:0 16px 34px rgba(2,6,23,0.30);
+    }
+    .ntt-profile .ntt-analysis-panel.is-touch{
+      border-color:rgba(34,197,94,0.28);
+      box-shadow:0 0 0 1px rgba(34,197,94,0.08) inset, 0 20px 42px rgba(2,6,23,0.36), 0 0 32px rgba(34,197,94,0.12);
+    }
+    .ntt-profile .ntt-analysis-panel.is-no-touch{
+      border-color:rgba(239,68,68,0.26);
+      box-shadow:0 0 0 1px rgba(239,68,68,0.08) inset, 0 20px 42px rgba(2,6,23,0.36), 0 0 32px rgba(239,68,68,0.10);
+    }
+    .ntt-profile .ntt-analysis-shell{
+      position:relative;
+      padding:11px 12px 12px;
+      display:grid;
+      gap:8px;
+    }
+    .ntt-profile .ntt-analysis-shell::before{
+      content:"";
+      position:absolute;
+      left:18px;
+      right:18px;
+      top:0;
+      height:2px;
+      border-radius:999px;
+      background:linear-gradient(90deg, transparent, rgba(34,211,238,0.55), transparent);
+      opacity:.9;
+    }
+    .ntt-profile .ntt-analysis-header{
+      display:flex;
+      align-items:center;
+      gap:8px;
+      font-size:11px;
+      font-weight:900;
+      letter-spacing:.08em;
+      text-transform:uppercase;
+      color:#e2e8f0;
+    }
+    .ntt-profile .ntt-analysis-header-icon{
+      font-size:12px;
+      color:#38bdf8;
+      text-shadow:0 0 18px currentColor;
+    }
+    .ntt-profile .ntt-analysis-divider{
+      height:1px;
+      background:linear-gradient(90deg, rgba(148,163,184,0.22), rgba(148,163,184,0.08));
+    }
+    .ntt-profile .ntt-analysis-hero{
+      display:flex;
+      justify-content:space-between;
+      align-items:flex-start;
+      gap:12px;
+    }
+    .ntt-profile .ntt-analysis-direction{
+      display:flex;
+      align-items:center;
+      gap:8px;
+      min-width:0;
+    }
+    .ntt-profile .ntt-analysis-direction-icon{
+      font-size:1.4rem;
+      font-weight:900;
+      line-height:1;
+      color:#22c55e;
+      text-shadow:0 0 20px currentColor;
+    }
+    .ntt-profile .ntt-analysis-direction-label{
+      font-size:2rem;
+      font-weight:900;
+      line-height:1;
+      letter-spacing:.04em;
+      color:#22c55e;
+      text-shadow:0 0 24px currentColor;
+      text-transform:uppercase;
+    }
+    .ntt-profile .ntt-analysis-score{
+      text-align:right;
+      min-width:108px;
+    }
+    .ntt-profile .ntt-analysis-duration{
+      font-size:11px;
+      font-weight:800;
+      letter-spacing:.08em;
+      color:#94a3b8;
+      margin-bottom:2px;
+      text-transform:uppercase;
+    }
+    .ntt-profile .ntt-analysis-score-main{
+      display:flex;
+      justify-content:flex-end;
+      align-items:baseline;
+      gap:8px;
+      flex-wrap:wrap;
+    }
+    .ntt-profile .ntt-analysis-score-value{
+      font-size:2.7rem;
+      line-height:1;
+      font-weight:900;
+      color:#22c55e;
+      text-shadow:0 0 26px currentColor;
+    }
+    .ntt-profile .ntt-analysis-score-confidence{
+      font-size:.9rem;
+      font-weight:900;
+      letter-spacing:.03em;
+      color:#86efac;
+      text-transform:uppercase;
+    }
+    .ntt-profile .ntt-analysis-panel.is-no-touch .ntt-analysis-direction-icon,
+    .ntt-profile .ntt-analysis-panel.is-no-touch .ntt-analysis-direction-label,
+    .ntt-profile .ntt-analysis-panel.is-no-touch .ntt-analysis-score-value,
+    .ntt-profile .ntt-analysis-panel.is-no-touch .ntt-analysis-score-confidence{
+      color:#ef4444;
+    }
+    .ntt-profile .ntt-analysis-lead{
+      margin:0;
+      font-size:.95rem;
+      color:#cbd5e1;
+      line-height:1.45;
+    }
+    .ntt-profile .ntt-analysis-reason{
+      margin:0;
+      font-size:.92rem;
+      color:#4ade80;
+      line-height:1.4;
+    }
+    .ntt-profile .ntt-analysis-panel.is-no-touch .ntt-analysis-reason{
+      color:#f97316;
+    }
+    .ntt-profile .ntt-analysis-meter{
+      display:grid;
+      gap:4px;
+    }
+    .ntt-profile .ntt-analysis-meter-track{
+      position:relative;
+      height:12px;
+      border-radius:999px;
+      background:rgba(15,23,42,0.96);
+      border:1px solid rgba(148,163,184,0.14);
+      overflow:hidden;
+      box-shadow:inset 0 0 0 1px rgba(255,255,255,0.02);
+    }
+    .ntt-profile .ntt-analysis-meter-fill{
+      position:absolute;
+      inset:0 auto 0 0;
+      width:50%;
+      border-radius:999px;
+      background:linear-gradient(90deg,#86efac,#22c55e);
+      box-shadow:0 0 18px rgba(34,197,94,0.45);
+    }
+    .ntt-profile .ntt-analysis-panel.is-no-touch .ntt-analysis-meter-fill{
+      background:linear-gradient(90deg,#fdba74,#ef4444);
+      box-shadow:0 0 18px rgba(239,68,68,0.42);
+    }
+    .ntt-profile .ntt-analysis-meter-value{
+      justify-self:end;
+      font-size:.95rem;
+      font-weight:900;
+      color:#86efac;
+    }
+    .ntt-profile .ntt-analysis-panel.is-no-touch .ntt-analysis-meter-value{
+      color:#fca5a5;
+    }
+    .ntt-profile .ntt-analysis-actions{
+      display:flex;
+      justify-content:center;
+      margin-top:0;
+    }
+    .ntt-profile .ntt-analysis-btn{
+      min-width:220px;
+      min-height:42px;
+      padding:9px 14px;
+      border-radius:2px;
+      border:1px solid rgba(148,163,184,0.28);
+      background:linear-gradient(180deg, rgba(22,101,52,0.95), rgba(21,128,61,0.82));
+      color:#f0fdf4;
+      font-size:.92rem;
+      font-weight:900;
+      letter-spacing:.02em;
+      box-shadow:0 0 0 1px rgba(34,197,94,0.10) inset, 0 0 22px rgba(34,197,94,0.16);
+    }
+    .ntt-profile .ntt-analysis-panel.is-no-touch .ntt-analysis-btn{
+      background:linear-gradient(180deg, rgba(153,27,27,0.95), rgba(220,38,38,0.82));
+      color:#fff1f2;
+      box-shadow:0 0 0 1px rgba(239,68,68,0.10) inset, 0 0 22px rgba(239,68,68,0.15);
+    }
+    .ntt-profile .ntt-trade-list{
+      margin-top:14px;
+      display:grid;
+      gap:10px;
+      height:360px;
+      overflow-y:auto;
+      padding-right:6px;
+      scrollbar-width:thin;
+      scrollbar-color:#475569 transparent;
+    }
+    .ntt-profile .ntt-trade-list::-webkit-scrollbar{ width:8px; }
+    .ntt-profile .ntt-trade-list::-webkit-scrollbar-thumb{ background:#334155; border-radius:999px; }
+    .ntt-profile .ntt-history-grid{
+      display:grid;
+      grid-template-columns:repeat(5,minmax(0,1fr));
+      gap:10px;
+      margin-top:12px;
+    }
+    @media (max-width: 980px){
+      .ntt-profile .ntt-grid,
+      .ntt-profile .ntt-field-grid-2,
+      .ntt-profile .ntt-bias-grid,
+      .ntt-profile .ntt-analysis-duo,
+      .ntt-profile .ntt-controls-grid{
+        grid-template-columns:1fr;
+      }
+      .ntt-profile .ntt-history-grid{
+        grid-template-columns:repeat(2,minmax(0,1fr));
+      }
+      .ntt-profile .ntt-analysis-direction-label{
+        font-size:1.8rem;
+      }
+      .ntt-profile .ntt-analysis-score-value{
+        font-size:2.3rem;
+      }
+      .ntt-profile .ntt-analysis-duo .contract-selector-panel{max-width:none;}
+    }
+    @media (max-width: 640px){
+      .ntt-profile .ntt-analysis-shell{ padding:10px 11px 11px; }
+      .ntt-profile .ntt-analysis-hero{
+        gap:10px;
+      }
+      .ntt-profile .ntt-analysis-direction-icon{
+        font-size:1.25rem;
+      }
+      .ntt-profile .ntt-analysis-direction-label{
+        font-size:1.45rem;
+      }
+      .ntt-profile .ntt-analysis-score-value{
+        font-size:2rem;
+      }
+      .ntt-profile .ntt-analysis-score-confidence{
+        font-size:.95rem;
+      }
+      .ntt-profile .ntt-analysis-btn{
+        min-width:100%;
+      }
+    }
+    .ntt-profile .contract-selector-panel{
+      position:relative;
+      overflow:hidden;
+      width:min(100%, 390px);
+      border-radius:20px;
+      border:1px solid rgba(168,139,250,0.24);
+      background:
+        radial-gradient(circle at 50% -20%, rgba(157,173,255,0.10), transparent 42%),
+        radial-gradient(circle at 88% 78%, rgba(255,128,92,0.08), transparent 26%),
+        linear-gradient(180deg, rgba(17,20,30,0.98), rgba(8,10,17,0.99));
+      box-shadow:
+        0 0 0 1px rgba(255,255,255,0.02) inset,
+        0 10px 28px rgba(1,4,10,0.46),
+        0 0 18px rgba(112,84,207,0.12);
+    }
+    .ntt-profile .contract-selector-panel::before{
+      content:"";
+      position:absolute;
+      inset:7px;
+      border-radius:14px;
+      border:1px solid rgba(255,255,255,0.05);
+      pointer-events:none;
+    }
+    .ntt-profile .contract-selector-shell{
+      position:relative;
+      padding:12px 12px 11px;
+      display:flex;
+      flex-direction:column;
+      gap:8px;
+    }
+    .ntt-profile .contract-selector-header{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:8px;
+      color:#f8fbff;
+      font-weight:900;
+      letter-spacing:.05em;
+      text-transform:uppercase;
+      font-size:11px;
+    }
+    .ntt-profile .contract-selector-title{
+      display:flex;
+      align-items:center;
+      gap:8px;
+      min-width:0;
+    }
+    .ntt-profile .contract-selector-icon{
+      font-size:19px;
+      color:#96ff86;
+      filter:drop-shadow(0 0 9px rgba(150,255,134,0.44));
+      line-height:1;
+    }
+    .ntt-profile .contract-selector-mode-pill{
+      padding:4px 8px;
+      border-radius:999px;
+      border:1px solid rgba(145,163,193,0.28);
+      background:rgba(16,21,33,0.84);
+      color:#bfd1f7;
+      font-size:9px;
+      font-weight:800;
+      white-space:nowrap;
+      letter-spacing:.08em;
+    }
+    .ntt-profile .contract-selector-score-strip{
+      display:grid;
+      grid-template-columns:1fr auto 1fr;
+      align-items:center;
+      gap:8px;
+      min-height:32px;
+      padding:7px 10px;
+      border-radius:11px;
+      border:1px solid rgba(255,255,255,0.08);
+      background:linear-gradient(180deg, rgba(14,18,28,0.92), rgba(9,12,20,0.82));
+      box-shadow:inset 0 1px 0 rgba(255,255,255,0.03);
+    }
+    .ntt-profile .contract-selector-score{
+      font-size:11px;
+      font-weight:900;
+      text-align:center;
+      letter-spacing:.05em;
+      text-transform:uppercase;
+    }
+    .ntt-profile .contract-selector-score--hl{ color:#ff9b68; }
+    .ntt-profile .contract-selector-score--tnt{ color:#68ef92; }
+    .ntt-profile .contract-selector-divider{
+      width:1px;
+      height:16px;
+      background:linear-gradient(180deg, transparent, rgba(255,255,255,0.18), transparent);
+    }
+    .ntt-profile .contract-selector-kicker{
+      text-align:center;
+      color:#e5e7eb;
+      opacity:.86;
+      font-size:9px;
+      font-weight:800;
+      letter-spacing:.12em;
+      text-transform:uppercase;
+    }
+    .ntt-profile .contract-selector-contract{
+      text-align:center;
+      font-size:clamp(1.04rem, 2.8vw, 1.46rem);
+      line-height:1.05;
+      font-weight:900;
+      letter-spacing:.03em;
+      text-transform:uppercase;
+      background:linear-gradient(90deg, #ff7a7a 0%, #ffd35a 48%, #6df3a5 100%);
+      -webkit-background-clip:text;
+      background-clip:text;
+      color:transparent;
+      text-shadow:0 0 18px rgba(255,196,110,0.12);
+    }
+    .ntt-profile .contract-selector-panel.is-hl .contract-selector-contract{
+      background:linear-gradient(90deg, #7ed2ff 0%, #8cf1ff 42%, #7cf9a2 100%);
+      -webkit-background-clip:text;
+      background-clip:text;
+    }
+    .ntt-profile .contract-selector-confidence{
+      text-align:center;
+      color:#ffd35a;
+      font-size:12px;
+      font-weight:800;
+      letter-spacing:.02em;
+    }
+    .ntt-profile .contract-selector-reason{
+      text-align:center;
+      color:#c6cfdd;
+      font-size:10px;
+      line-height:1.4;
+      min-height:14px;
+    }
+    .ntt-profile .contract-selector-progress{
+      position:relative;
+      height:10px;
+      border-radius:999px;
+      overflow:hidden;
+      border:1px solid rgba(255,255,255,0.08);
+      background:
+        linear-gradient(90deg, rgba(255,60,60,0.12), rgba(255,196,61,0.12), rgba(86,241,125,0.12), rgba(88,202,255,0.12)),
+        rgba(12,15,22,0.95);
+      box-shadow:inset 0 0 0 1px rgba(255,255,255,0.03), inset 0 8px 18px rgba(0,0,0,0.4);
+    }
+    .ntt-profile .contract-selector-progress::before{
+      content:"";
+      position:absolute;
+      inset:0;
+      background:
+        repeating-linear-gradient(90deg, transparent 0 38px, rgba(255,255,255,0.16) 38px 39px);
+      opacity:.34;
+      pointer-events:none;
+    }
+    .ntt-profile .contract-selector-progress-fill{
+      position:relative;
+      z-index:1;
+      height:100%;
+      width:0%;
+      border-radius:999px;
+      background:linear-gradient(90deg, #ff2c2c 0%, #ff9737 20%, #ffd83d 42%, #80f26b 70%, #4dc6da 100%);
+      box-shadow:0 0 18px rgba(255,196,84,0.3);
+      transition:width .25s ease;
+    }
+    .ntt-profile .contract-selector-actions{
+      display:grid;
+      grid-template-columns:1fr;
+      gap:8px;
+    }
+    .ntt-profile .contract-selector-btn{
+      min-height:40px;
+      border-radius:12px;
+      border:1px solid rgba(255,118,88,0.42);
+      background:linear-gradient(180deg, rgba(31,16,20,0.94), rgba(17,11,15,0.98));
+      color:#ffb46c;
+      font-size:12px;
+      font-weight:900;
+      letter-spacing:.04em;
+      text-transform:uppercase;
+      box-shadow:
+        0 0 0 1px rgba(255,255,255,0.02) inset,
+        0 0 16px rgba(255,111,76,0.18);
+    }
+    .ntt-profile .contract-selector-btn--secondary{
+      color:#ff7167;
+      border-color:rgba(255,89,89,0.34);
+      background:linear-gradient(180deg, rgba(25,15,20,0.94), rgba(16,9,13,0.98));
+    }
+    .ntt-profile .contract-selector-btn:disabled{
+      opacity:.56;
+      cursor:not-allowed;
+      box-shadow:none;
+    }
+    .ntt-profile .ntt-koolkid-modal-backdrop{
+      display:none;
+      position:fixed;
+      inset:0;
+      z-index:75;
+      padding:18px;
+      background:rgba(2,6,23,0.76);
+      align-items:center;
+      justify-content:center;
+    }
+    .ntt-profile .ntt-koolkid-modal{
+      width:min(560px, 100%);
+      max-height:min(90vh, 720px);
+      overflow:auto;
+      border-radius:22px;
+      border:1px solid rgba(59,130,246,0.28);
+      background:linear-gradient(180deg, rgba(5,12,28,0.98), rgba(10,18,34,0.98));
+      box-shadow:0 18px 44px rgba(2,6,23,0.42);
+      padding:18px;
+    }
+    .ntt-profile .ntt-koolkid-header{
+      display:flex;
+      justify-content:space-between;
+      align-items:flex-start;
+      gap:12px;
+      margin-bottom:12px;
+    }
+    .ntt-profile .ntt-koolkid-title{
+      font-size:1.1rem;
+      font-weight:900;
+      color:#dbeafe;
+    }
+    .ntt-profile .ntt-koolkid-copy{
+      color:#94a3b8;
+      font-size:13px;
+      line-height:1.55;
+    }
+    .ntt-profile .ntt-koolkid-stack{
+      display:grid;
+      gap:12px;
+    }
+    .ntt-profile .ntt-koolkid-button-stack{
+      display:grid;
+      grid-template-columns:repeat(2,minmax(0,1fr));
+      gap:10px;
+    }
+    .ntt-profile .ntt-koolkid-button-stack button{
+      width:100%;
+    }
+    .ntt-profile .ntt-koolkid-section{
+      background:#0f172a;
+      border:1px solid #334155;
+      border-radius:16px;
+      padding:14px;
+    }
+    .ntt-profile .ntt-koolkid-toggle-row{
+      display:flex;
+      flex-wrap:wrap;
+      gap:10px;
+      align-items:center;
+      justify-content:space-between;
+      margin-bottom:8px;
+    }
+    .ntt-profile .ntt-koolkid-toggle-row label{
+      display:inline-flex;
+      align-items:center;
+      gap:8px;
+      color:#cbd5e1;
+      font-size:12px;
+      font-weight:800;
+    }
+    .ntt-profile .ntt-koolkid-toggle-row input[type="checkbox"]{
+      width:18px;
+      height:18px;
+      min-height:18px;
+      accent-color:#38bdf8;
+    }
+    .ntt-profile .ntt-koolkid-barrier-grid{
+      display:grid;
+      grid-template-columns:repeat(2,minmax(0,1fr));
+      gap:12px;
+    }
+    .ntt-profile .ntt-koolkid-barrier-inline{
+      display:flex;
+      align-items:center;
+      gap:6px;
+      min-width:0;
+    }
+    .ntt-profile .ntt-koolkid-barrier-stepper{
+      flex:0 0 34px;
+      width:34px;
+      min-width:34px;
+      min-height:42px;
+      padding:0 6px;
+      font-size:15px;
+      line-height:1;
+    }
+    .ntt-profile .ntt-koolkid-barrier-input{
+      flex:1 1 auto;
+      min-width:110px;
+      text-align:center;
+      font-variant-numeric:tabular-nums;
+    }
+    .ntt-profile .ntt-koolkid-note{
+      color:#93c5fd;
+      font-size:12px;
+      line-height:1.6;
+    }
+    @media (max-width: 900px){
+      .ntt-profile .ntt-koolkid-button-stack,
+      .ntt-profile .ntt-koolkid-barrier-grid{
+        grid-template-columns:1fr;
+      }
+    }
+    .ntt-profile .contract-selector-panel.is-skip .contract-selector-contract{
+      background:linear-gradient(90deg, #adb6c7 0%, #d8dee9 100%);
+      -webkit-background-clip:text;
+      background-clip:text;
+    }
+    @media (max-width: 640px){
+      .ntt-profile .contract-selector-panel{ width:100%; }
+      .ntt-profile .contract-selector-shell{ padding:11px 11px 10px; gap:7px; }
+      .ntt-profile .contract-selector-score-strip{ padding:7px 9px; gap:7px; }
+      .ntt-profile .contract-selector-contract{ font-size:clamp(0.98rem, 5.8vw, 1.28rem); }
+      .ntt-profile .contract-selector-confidence{ font-size:11px; }
+      .ntt-profile .contract-selector-btn{ min-height:38px; font-size:11px; }
+    }
+  </style>
+
+  <div class="card">
+    <div class="ntt-header">
+      <div>
+        <h3 style="margin:0;">🎯 Mutant</h3>
+        <div class="ntt-sub">Touch / No Touch manual profile with live barrier chart, bias read, and duration-based prediction.</div>
+      </div>
+      <div id="nttStatusChip" class="ntt-chip">WAITING FOR DATA</div>
+    </div>
+    <div class="ntt-grid" style="margin-top:14px;grid-template-columns:repeat(2,minmax(0,1fr));">
+      <div class="ntt-kpi">
+        <div class="k">Net P/L</div>
+          <div id="nttNetPnl" class="v">0.00</div>
+      </div>
+      <div class="ntt-kpi">
+        <div class="k">Wins / Losses</div>
+        <div id="nttWinLoss" class="v">0 / 0</div>
+      </div>
+    </div>
+    <div class="ntt-grid" style="margin-top:12px;grid-template-columns:repeat(2,minmax(0,1fr));">
+      <div class="ntt-kpi">
+        <div class="k">Last Result</div>
+        <div id="nttLastResult" class="v">—</div>
+      </div>
+      <div class="ntt-kpi">
+        <div class="k">Last Action</div>
+        <div id="nttLastAction" class="v" style="font-size:.88rem;line-height:1.24;">Ready</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="ntt-analysis-duo">
+    <div class="card ntt-bias-card">
+      <div class="ntt-header">
+        <div>
+          <h3 style="margin:0;">📡 Touch / No Touch Bias</h3>
+          <div class="ntt-sub">Same core reading logic for now, adapted to Touch / No Touch language so we can tune it later without changing the UI shell.</div>
+        </div>
+      </div>
+      <div class="ntt-bias-grid" style="margin-top:14px;">
+        <div class="ntt-bias-main">
+          <div id="nttBiasHeadline" class="ntt-bias-headline">LOADING ANALYZER…</div>
+          <div id="nttBiasSub" class="ntt-bias-sub">Gathering enough recent ticks to score Touch vs No Touch.</div>
+          <div id="nttBiasReasons" class="ntt-reasons"></div>
+        </div>
+        <div class="ntt-bias-stats">
+          <div class="ntt-bias-stat">
+            <div class="k">Touch</div>
+            <div id="nttTouchBiasPct" class="v" style="color:#22c55e;">50.0%</div>
+          </div>
+          <div class="ntt-bias-stat">
+            <div class="k">No Touch</div>
+            <div id="nttNoTouchBiasPct" class="v" style="color:#ef4444;">50.0%</div>
+          </div>
+          <div class="ntt-bias-stat">
+            <div class="k">Strength</div>
+            <div id="nttBiasStrength" class="v" style="color:#38bdf8;">Building</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card contract-selector-panel is-skip" id="nttContractSelectorCard">
+      <div class="contract-selector-shell">
+        <div class="contract-selector-header">
+          <div class="contract-selector-title">
+            <span class="contract-selector-icon">⚡</span>
+            <span>AI CONTRACT SELECTOR</span>
+          </div>
+          <span id="nttSelectorModePill" class="contract-selector-mode-pill">TOUCH / NO TOUCH</span>
+        </div>
+        <div class="contract-selector-score-strip">
+          <span id="nttSelectorHlConfidence" class="contract-selector-score contract-selector-score--hl">HL: 0%</span>
+          <span class="contract-selector-divider"></span>
+          <span id="nttSelectorTntConfidence" class="contract-selector-score contract-selector-score--tnt">TNT: 0%</span>
+        </div>
+        <div id="nttSelectorKicker" class="contract-selector-kicker">SELECTED CONTRACT</div>
+        <div id="nttSelectorContractType" class="contract-selector-contract">SCANNING</div>
+        <div class="contract-selector-confidence">
+          Confidence: <span id="nttSelectorTradeConfidence">0%</span>
+          <span id="nttSelectorConfidenceLabel">(SKIP)</span>
+        </div>
+        <div id="nttSelectorReasoning" class="contract-selector-reason">Waiting for enough recent ticks to compare Higher / Lower versus Touch / No Touch.</div>
+        <div class="contract-selector-progress">
+          <div id="nttSelectorProgressFill" class="contract-selector-progress-fill" style="width:0%;"></div>
+        </div>
+        <div class="contract-selector-actions">
+          <button id="nttSelectorPrimaryAction" class="contract-selector-btn" data-action="ntt-selector-primary">TAKE TOUCH</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="ntt-header">
+      <div>
+        <h3 style="margin:0;">📈 Touch / No Touch Live Map</h3>
+        <div class="ntt-sub">The graph uses your current Touch and No Touch barriers and shows where live price is sitting relative to them.</div>
+      </div>
+      <div id="nttBarrierZoneState" class="ntt-zone-pill"><span class="dot" style="background:#38bdf8;"></span><span>WAITING FOR LIVE PRICE</span></div>
+    </div>
+    <div class="ntt-chart-shell" style="margin-top:14px;">
+      <div id="nttPriceRangeLabel" class="ntt-chart-meta" style="margin-bottom:8px;">Price range: —</div>
+      <svg id="nttBarrierMarketChart" viewBox="0 0 760 260" style="width:100%;height:auto;display:block;border-radius:18px;"></svg>
+      <div id="nttBarrierChartStats" class="ntt-chart-meta" style="margin-top:10px;">Touch +0.12 • No Touch +0.12</div>
+      <div id="nttBarrierChartMeta" class="ntt-chart-meta" style="margin-top:8px;">Live market line will appear here and show whether Touch or No Touch is favored against your current barriers.</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="ntt-header">
+      <div>
+        <h3 style="margin:0;">⚙️ Mutant Controls</h3>
+        <div class="ntt-sub">Manual-only for now. Shared duration removes seconds because this profile uses ticks, minutes, or hours only.</div>
+      </div>
+    </div>
+
+    <div class="ntt-controls-grid" style="margin-top:14px;">
+      <div class="ntt-side">
+        <h4 style="margin:0 0 12px 0;color:#86efac;">🎯 Touch Setup</h4>
+        <div class="ntt-row">
+          <div class="ntt-field is-barrier">
+            <label class="ntt-label" for="nttTouchStake">Touch Stake</label>
+            <input id="nttTouchStake" type="number" min="0.35" step="0.01" value="1">
+          </div>
+        </div>
+        <div class="ntt-row" style="margin-top:10px;">
+          <div class="ntt-field is-barrier">
+            <label class="ntt-label" for="nttTouchBarrier">Touch Barrier</label>
+            <div class="ntt-barrier-inline">
+              <button class="ntt-barrier-stepper" data-action="ntt-barrier-step" data-target="nttTouchBarrier" data-delta="-0.01" style="background:#14532d;color:#dcfce7;">-</button>
+              <input id="nttTouchBarrier" class="ntt-barrier-input" type="text" value="+0.12">
+              <button class="ntt-barrier-stepper" data-action="ntt-barrier-step" data-target="nttTouchBarrier" data-delta="0.01" style="background:#166534;color:#dcfce7;">+</button>
+            </div>
+          </div>
+        </div>
+        <div id="nttTouchDurationWrap" class="ntt-field-grid-2" style="margin-top:10px;display:none;">
+          <div class="ntt-field">
+            <label class="ntt-label" for="nttTouchDuration">Touch Duration</label>
+            <select id="nttTouchDuration"></select>
+          </div>
+          <div class="ntt-field">
+            <label class="ntt-label" for="nttTouchDurationUnit">Unit</label>
+            <select id="nttTouchDurationUnit">
+              <option value="t" selected>Ticks</option>
+              <option value="m">Minutes</option>
+              <option value="h">Hours</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="ntt-side">
+        <h4 style="margin:0 0 12px 0;color:#fca5a5;">🛡️ No Touch Setup</h4>
+        <div class="ntt-row">
+          <div class="ntt-field is-barrier">
+            <label class="ntt-label" for="nttNoTouchStake">No Touch Stake</label>
+            <input id="nttNoTouchStake" type="number" min="0.35" step="0.01" value="1">
+          </div>
+        </div>
+        <div class="ntt-row" style="margin-top:10px;">
+          <div class="ntt-field is-barrier">
+            <label class="ntt-label" for="nttNoTouchBarrier">No Touch Barrier</label>
+            <div class="ntt-barrier-inline">
+              <button class="ntt-barrier-stepper" data-action="ntt-barrier-step" data-target="nttNoTouchBarrier" data-delta="-0.01" style="background:#7f1d1d;color:#fee2e2;">-</button>
+              <input id="nttNoTouchBarrier" class="ntt-barrier-input" type="text" value="+0.12">
+              <button class="ntt-barrier-stepper" data-action="ntt-barrier-step" data-target="nttNoTouchBarrier" data-delta="0.01" style="background:#991b1b;color:#fee2e2;">+</button>
+            </div>
+          </div>
+        </div>
+        <div id="nttNoTouchDurationWrap" class="ntt-field-grid-2" style="margin-top:10px;display:none;">
+          <div class="ntt-field">
+            <label class="ntt-label" for="nttNoTouchDuration">No Touch Duration</label>
+            <select id="nttNoTouchDuration"></select>
+          </div>
+          <div class="ntt-field">
+            <label class="ntt-label" for="nttNoTouchDurationUnit">Unit</label>
+            <select id="nttNoTouchDurationUnit">
+              <option value="t" selected>Ticks</option>
+              <option value="m">Minutes</option>
+              <option value="h">Hours</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="ntt-side ntt-side--duration">
+        <h4 style="margin:0 0 12px 0;color:#67e8f9;">🕒 Shared Duration & Risk</h4>
+        <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;padding:10px 12px;border-radius:14px;background:#0f172a;border:1px solid #1e293b;">
+          <label class="ntt-label" for="nttUseSharedDuration" style="display:inline-flex;align-items:center;gap:8px;margin:0;">
+            <input id="nttUseSharedDuration" type="checkbox" checked style="width:18px;height:18px;accent-color:#22d3ee;">
+            Use Shared Duration
+          </label>
+          <span id="nttDurationModeLabel" style="color:#94a3b8;font-size:12px;font-weight:700;">Both trades use the shared duration.</span>
+        </div>
+        <div class="ntt-field-grid-2" style="margin-top:2px;">
+          <div class="ntt-field">
+            <label class="ntt-label" for="nttDuration">Duration</label>
+            <select id="nttDuration"></select>
+          </div>
+          <div class="ntt-field">
+            <label class="ntt-label" for="nttDurationUnit">Unit</label>
+            <select id="nttDurationUnit">
+              <option value="t" selected>Ticks</option>
+              <option value="m">Minutes</option>
+              <option value="h">Hours</option>
+            </select>
+          </div>
+        </div>
+        <div class="ntt-field-grid-2">
+          <div class="ntt-field">
+            <label class="ntt-label" for="nttTp">TP</label>
+            <input id="nttTp" type="number" min="0" step="0.01" value="0">
+          </div>
+          <div class="ntt-field">
+            <label class="ntt-label" for="nttSl">SL</label>
+            <input id="nttSl" type="number" min="0" step="0.01" value="0">
+          </div>
+        </div>
+        <div class="ntt-field" style="margin-top:10px;">
+            <label class="ntt-label" for="nttBudget">Budget</label>
+            <div class="ntt-inline-action-row">
+              <input id="nttBudget" data-draft-ignore="1" type="number" min="0" step="0.01" value="" placeholder="Budget cap">
+              <button type="button" onclick="saveProfileBudget('NTT')" style="min-width:108px;background:#0ea5e9;color:#ecfeff;">Set Budget</button>
+            </div>
+        </div>
+        <div class="ntt-btn-row" style="margin-top:12px;">
+          <button data-action="ntt-refresh-barriers" style="background:#0f766e;color:#ecfeff;">REFRESH BARRIER</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card ntt-analysis-panel" id="nttAutoAnalysisCard">
+    <div class="ntt-analysis-shell">
+      <div class="ntt-analysis-header">
+        <span class="ntt-analysis-header-icon">⚡</span>
+        <span>AUTO ANALYSIS</span>
+      </div>
+      <div class="ntt-analysis-divider"></div>
+      <div class="ntt-analysis-hero">
+        <div class="ntt-analysis-direction">
+          <span id="nttAnalysisDirectionIcon" class="ntt-analysis-direction-icon">↑</span>
+          <div style="min-width:0;">
+            <div id="nttAnalysisDirection" class="ntt-analysis-direction-label">SCANNING</div>
+            <div id="nttAnalysisDuration" class="ntt-analysis-duration">NEXT -- TICKS</div>
+          </div>
+        </div>
+        <div class="ntt-analysis-score">
+          <div class="ntt-analysis-score-main">
+            <span id="nttAnalysisPct" class="ntt-analysis-score-value">0%</span>
+            <span id="nttAnalysisConfidence" class="ntt-analysis-score-confidence">SKIP</span>
+          </div>
+        </div>
+      </div>
+      <p id="nttAnalysisLead" class="ntt-analysis-lead">Waiting for enough recent ticks to score Touch versus No Touch.</p>
+      <p id="nttAnalysisReason" class="ntt-analysis-reason">Reading barrier distance, push, persistence, simulation, and market quality.</p>
+      <div class="ntt-analysis-meter">
+        <div class="ntt-analysis-meter-track">
+          <div id="nttAnalysisMeterFill" class="ntt-analysis-meter-fill" style="width:0%;"></div>
+        </div>
+        <div id="nttAnalysisMeterValue" class="ntt-analysis-meter-value">0%</div>
+      </div>
+      <div class="ntt-analysis-actions">
+        <button id="nttAnalysisPrimaryAction" class="ntt-analysis-btn" data-action="ntt-analysis-primary">SCANNING</button>
+      </div>
+    </div>
+  </div>
+
+<div class="card">
+    <h3 style="margin-top:0;">🚀 Execute</h3>
+    <div class="ntt-btn-row">
+      <button id="nttKoolkidBtn" data-action="ntt-koolkid-panel" style="background:#2563eb;">KOOLKID</button>
+      <button id="nttAutoBothBtn" data-action="ntt-auto-both" style="background:#155e75;color:#ecfeff;">
+        <span style="display:block;font-weight:900;">🤖 AUTO</span>
+        <span style="display:block;font-size:11px;font-weight:700;opacity:.92;margin-top:4px;">OFF</span>
+      </button>
+      <button data-action="ntt-trade-touch" style="background:#22c55e;">
+        <span style="display:block;font-weight:900;">🎯 TOUCH</span>
+        <span id="nttTouchExpectedProfit" style="display:block;font-size:11px;font-weight:700;opacity:.92;margin-top:4px;">Expected profit —</span>
+      </button>
+      <button data-action="ntt-trade-no-touch" style="background:#ef4444;">
+        <span style="display:block;font-weight:900;">🛡️ NO TOUCH</span>
+        <span id="nttNoTouchExpectedProfit" style="display:block;font-size:11px;font-weight:700;opacity:.92;margin-top:4px;">Expected profit —</span>
+      </button>
+      <button data-action="ntt-trade-both" style="background:#f59e0b;color:#111827;">
+        <span style="display:block;font-weight:900;">⚖️ BOTH</span>
+        <span id="nttBothExpectedProfit" style="display:block;font-size:11px;font-weight:700;opacity:.92;margin-top:4px;">Net expected —</span>
+      </button>
+      <button data-action="ntt-close-all" style="background:#7c3aed;">💸 CLOSE MUTANT TRADES</button>
+    </div>
+    <div id="nttRiskBlock" style="display:none;margin-top:10px;padding:10px;border-radius:12px;background:#7f1d1d;color:#fecaca;border:1px solid #ef4444;"></div>
+  </div>
+
+  <div id="nttKoolkidBody" class="ntt-koolkid-modal-backdrop">
+    <div class="ntt-koolkid-modal" role="dialog" aria-modal="true" aria-labelledby="nttKoolkidTitle">
+      <div class="ntt-koolkid-header">
+        <div>
+          <div id="nttKoolkidTitle" class="ntt-koolkid-title">KOOLKID</div>
+          <div class="ntt-koolkid-copy">Mutant KOOLKID mirrors the UNCHAIN KOOLKID flow, but it evaluates Touch / No Touch conditions instead of Higher / Lower ones.</div>
+        </div>
+        <button data-action="ntt-koolkid-close" style="min-width:38px;height:38px;background:#1e293b;">✕</button>
+      </div>
+      <div class="ntt-koolkid-stack">
+        <div class="ntt-koolkid-button-stack">
+          <button id="nttKoolkidTntBtn" data-action="ntt-koolkid-tnt" style="background:#1d4ed8;">🎯 TOUCH / NO TOUCH: OFF</button>
+          <button id="nttKoolkidBothBtn" data-action="ntt-koolkid-both" style="background:#475569;">⚖️ BOTH: OFF</button>
+        </div>
+        <div class="ntt-koolkid-section">
+          <div class="ntt-field-grid-2">
+            <div class="ntt-field">
+              <label class="ntt-label" for="nttKoolkidSimDuration">Simulation</label>
+              <input id="nttKoolkidSimDuration" type="number" min="1" max="59" step="1" value="15">
+            </div>
+            <div class="ntt-field">
+              <label class="ntt-label" for="nttKoolkidSimDurationUnit">Sim Unit</label>
+              <select id="nttKoolkidSimDurationUnit">
+                <option value="s" selected>Seconds</option>
+                <option value="t">Ticks</option>
+                <option value="m">Minutes</option>
+              </select>
+            </div>
+            <div class="ntt-field">
+              <label class="ntt-label" for="nttKoolkidLiveDuration">Live Duration</label>
+              <input id="nttKoolkidLiveDuration" type="number" min="1" max="59" step="1" value="5">
+            </div>
+            <div class="ntt-field">
+              <label class="ntt-label" for="nttKoolkidLiveDurationUnit">Live Unit</label>
+              <select id="nttKoolkidLiveDurationUnit">
+                <option value="t" selected>Ticks</option>
+                <option value="s">Seconds</option>
+                <option value="m">Minutes</option>
+              </select>
+            </div>
+            <div class="ntt-field">
+              <label class="ntt-label" for="nttKoolkidTntLossPct">TNT Trigger %</label>
+              <select id="nttKoolkidTntLossPct">
+                <option value="50" selected>50%</option>
+                <option value="55">55%</option>
+                <option value="60">60%</option>
+                <option value="65">65%</option>
+                <option value="70">70%</option>
+              </select>
+            </div>
+            <div class="ntt-field">
+              <label class="ntt-label" for="nttKoolkidTntSimSide">TNT Sim Side</label>
+              <select id="nttKoolkidTntSimSide">
+                <option value="AUTO" selected>Auto</option>
+                <option value="TOUCH">Touch</option>
+                <option value="NO_TOUCH">No Touch</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="ntt-koolkid-section">
+          <div class="ntt-koolkid-barrier-grid">
+            <div>
+              <div class="ntt-koolkid-toggle-row">
+                <label for="nttKoolkidReversalToggle"><input id="nttKoolkidReversalToggle" type="checkbox"> Reversal <span id="nttKoolkidReversalState">OFF</span></label>
+              </div>
+              <label class="ntt-label" for="nttKoolkidTouchBarrier">KOOLKID Touch Barrier</label>
+              <div class="ntt-koolkid-barrier-inline">
+                <button class="ntt-koolkid-barrier-stepper" data-action="ntt-koolkid-barrier-step" data-target="nttKoolkidTouchBarrier" data-delta="-0.01" style="background:#14532d;color:#dcfce7;">-</button>
+                <input class="ntt-koolkid-barrier-input" id="nttKoolkidTouchBarrier" type="text" value="+0.06">
+                <button class="ntt-koolkid-barrier-stepper" data-action="ntt-koolkid-barrier-step" data-target="nttKoolkidTouchBarrier" data-delta="0.01" style="background:#166534;color:#dcfce7;">+</button>
+              </div>
+            </div>
+            <div>
+              <div class="ntt-koolkid-toggle-row">
+                <label for="nttKoolkidHalfBarrierToggle"><input id="nttKoolkidHalfBarrierToggle" type="checkbox"> Half Barrier <span id="nttKoolkidHalfBarrierState">OFF</span></label>
+              </div>
+              <label class="ntt-label" for="nttKoolkidNoTouchBarrier">KOOLKID No Touch Barrier</label>
+              <div class="ntt-koolkid-barrier-inline">
+                <button class="ntt-koolkid-barrier-stepper" data-action="ntt-koolkid-barrier-step" data-target="nttKoolkidNoTouchBarrier" data-delta="-0.01" style="background:#7f1d1d;color:#fee2e2;">-</button>
+                <input class="ntt-koolkid-barrier-input" id="nttKoolkidNoTouchBarrier" type="text" value="+0.06">
+                <button class="ntt-koolkid-barrier-stepper" data-action="ntt-koolkid-barrier-step" data-target="nttKoolkidNoTouchBarrier" data-delta="0.01" style="background:#991b1b;color:#fee2e2;">+</button>
+              </div>
+            </div>
+          </div>
+          <div class="ntt-koolkid-note" style="margin-top:12px;">🎯 Touch / No Touch paper-trades the weaker side and uses your chosen 50-70% loss trigger. ⚖️ Both paper-trades TOUCH + NO TOUCH together, checks with time left, and when the setup passes it uses your saved Mutant stakes and KOOLKID barriers.</div>
+        </div>
+        <div class="ntt-koolkid-section">
+          <div style="font-weight:900;color:#67e8f9;margin-bottom:8px;">🧠 Status</div>
+          <div id="nttKoolkidStatus" class="ntt-koolkid-copy">KOOLKID status will show here.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="ntt-header">
+      <h3 style="margin:0;">📚 TRADE HISTORY</h3>
+      <button onclick="clearProfileHistory()" style="background:#fb7185;">Clear History</button>
+    </div>
+
+    <div class="ntt-history-grid">
+      <div class="ntt-kpi" data-history-filter-card="ALL" onclick="toggleTradeHistoryFilter('ALL')" role="button" tabindex="0" style="text-align:center;">
+        <div class="k">Total Trades</div>
+        <div id="profileTotalTrades" class="v">0</div>
+      </div>
+      <div class="ntt-kpi" data-history-filter-card="WIN" onclick="toggleTradeHistoryFilter('WIN')" role="button" tabindex="0" style="text-align:center;">
+        <div class="k">Wins</div>
+        <div id="profileWins" class="v" style="color:#22c55e;">0</div>
+      </div>
+      <div class="ntt-kpi" data-history-filter-card="LOSS" onclick="toggleTradeHistoryFilter('LOSS')" role="button" tabindex="0" style="text-align:center;">
+        <div class="k">Losses</div>
+        <div id="profileLosses" class="v" style="color:#ef4444;">0</div>
+      </div>
+      <div class="ntt-kpi" style="text-align:center;">
+        <div class="k">Win Rate</div>
+        <div class="v" style="font-size:1rem;color:#38bdf8;">
+          <span id="profileWinRate">0%</span>
+          <div style="font-size:12px;color:#94a3b8;margin-top:4px;">Loss Rate: <span id="profileLossRate">0%</span></div>
+        </div>
+      </div>
+      <div class="ntt-kpi" style="text-align:center;">
+        <div class="k">Net Profit / Loss</div>
+          <div id="profileNetProfitLoss" class="v" style="font-size:1rem;color:#e2e8f0;">0.00</div>
+      </div>
+    </div>
+
+    <div id="profileTradeList" class="ntt-trade-list">
+      <div class="ntt-empty">No trades yet</div>
+    </div>
+  </div>
+</div>

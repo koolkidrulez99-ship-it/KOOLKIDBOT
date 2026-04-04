@@ -93,6 +93,7 @@ input, select{
 .jokerjoe-btn{background:#a855f7; box-shadow:0 0 20px #a855f7;}
 .human-btn{background:#22c55e; box-shadow:0 0 20px #22c55e;}
 .unchain-btn{background:#f59e0b; box-shadow:0 0 20px #f59e0b; color:#111827;}
+.ntt-btn{background:#14b8a6; box-shadow:0 0 20px #14b8a6; color:#ecfeff;}
 .profile-btn.active{transform:scale(1.05); border:2px solid white;}
 .profile-btn:not(.active){opacity:0.7;}
 
@@ -886,6 +887,7 @@ body.mobile-only-ui #profileContainer .unchain-history-grid{
         <button id="jokerjoeBtn" class="profile-btn jokerjoe-btn" onclick="setProfile('JOKERJOE')">🃏 JOKERJOE</button>
         <button id="humanBtn" class="profile-btn human-btn" onclick="setProfile('HUMAN')">🧑 HUMAN</button>
         <button id="unchainBtn" class="profile-btn unchain-btn" onclick="setProfile('UNCHAIN')">⛓️ UNCHAIN</button>
+        <button id="nttBtn" class="profile-btn ntt-btn" onclick="setProfile('NTT')">🎯 Mutant</button>
 
         <h4 id="profileTitle" style="margin-top:10px; color:#38bdf8;">KOOLKID MODE: OVER & UNDER</h4>
     </div>
@@ -947,13 +949,14 @@ body.mobile-only-ui #profileContainer .unchain-history-grid{
             <div>
                 <div style="color:#94a3b8;">Balance</div>
                 <div style="font-size:2rem; font-weight:bold; color:#38bdf8;">
-                    $<span id="balance">0</span>
+                    <span id="balance">0.00</span>
                 </div>
+                <div id="totalBalanceLabel" style="display:none; margin-top:4px; color:#94a3b8; font-size:12px;"></div>
             </div>
 
             <div>
                 <div style="color:#94a3b8;">Net P&L</div>
-                <div id="netPnlBox" class="pnl-box">$0.00</div>
+                <div id="netPnlBox" class="pnl-box">0.00</div>
             </div>
         </div>
     </div>
@@ -1037,6 +1040,37 @@ body.mobile-only-ui #profileContainer .unchain-history-grid{
 </div>
 
 <script>
+window.MUTANT_ACCESS = {{ (mutant_access or {})|tojson }};
+
+function isMutantAvailable(){
+    return !!(window.MUTANT_ACCESS && window.MUTANT_ACCESS.enabled);
+}
+
+function getMutantConstructionMessage(){
+    return (window.MUTANT_ACCESS && window.MUTANT_ACCESS.message)
+        ? String(window.MUTANT_ACCESS.message)
+        : "Mutant is under construction on the deployed version.";
+}
+
+function buildMutantConstructionMarkup(){
+    const message = getMutantConstructionMessage();
+    return `
+        <div class="card" id="nttRoot" style="border:1px solid rgba(20,184,166,0.32);background:linear-gradient(180deg,rgba(15,23,42,0.98),rgba(8,47,73,0.96));box-shadow:0 18px 46px rgba(8,145,178,0.16);">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+                <div>
+                    <div style="font-size:12px;letter-spacing:0.16em;text-transform:uppercase;color:#5eead4;font-weight:800;">Mutant</div>
+                    <h3 style="margin:6px 0 0;font-size:28px;color:#f0fdfa;">Under Construction</h3>
+                </div>
+                <div style="padding:8px 14px;border-radius:999px;border:1px solid rgba(45,212,191,0.3);background:rgba(20,184,166,0.14);color:#99f6e4;font-size:12px;font-weight:800;letter-spacing:0.12em;text-transform:uppercase;">Deploy Preview</div>
+            </div>
+            <div style="margin-top:14px;padding:16px 18px;border-radius:18px;border:1px solid rgba(34,211,238,0.18);background:rgba(15,23,42,0.74);color:#cbd5e1;line-height:1.7;">
+                <div style="font-size:15px;font-weight:700;color:#e6fffb;">${message}</div>
+                <div style="margin-top:8px;font-size:13px;color:#94a3b8;">The live Mutant profile is still available locally while we finish polishing the deployed version.</div>
+            </div>
+        </div>
+    `;
+}
+
 /* ===================== SOCKET.IO (BULLETPROOF INIT) ===================== */
 let socket = null;
 
@@ -1119,6 +1153,10 @@ function bindSocketHandlers(){
         }
         if(/insufficient|not enough balance|not enough funds/i.test(message)){
             showToast("❌ Insufficient funds to place trade", "error");
+            return;
+        }
+        if(/budget limit/i.test(message)){
+            showToast(message, "error");
             return;
         }
         if(message){
@@ -1240,11 +1278,11 @@ function bindSocketHandlers(){
         const result = normalizeTradeResultLabel(settled.result, settled.status);
         const profit = typeof settled.profit === "number" ? settled.profit : (settled.profit_value || 0);
         if(result === "WIN"){
-            showToast(`🏆 WIN +$${Math.abs(profit).toFixed(2)}`, "success");
+            showToast(`🏆 WIN ${formatSignedCurrencyAmount(profit, settled)}`, "success");
         }else if(result === "LOSS"){
-            showToast(`❌ LOSS -$${Math.abs(profit).toFixed(2)}`, "error");
+            showToast(`❌ LOSS ${formatSignedCurrencyAmount(profit, settled)}`, "error");
         }else{
-            showToast(`📌 ${result} $${Math.abs(profit).toFixed(2)}`, "info");
+            showToast(`📌 ${result} ${formatCurrencyAmount(profit, settled)}`, "info");
         }
     });
 
@@ -1255,10 +1293,24 @@ function bindSocketHandlers(){
         }
     });
 
+    socket.on("ntt_status", (payload)=>{
+        const changed = syncNttPendingTradesFromStatus(payload || {});
+        if(changed && activeProfile === "NTT"){
+            renderTradeList("NTT");
+        }
+    });
+
     socket.on("stats_update", (data)=>{
         const pnl = data.net_pnl || 0;
         const statsProfile = normalizeProfileName((data && data.profile) || activeProfile);
-        netPnlBox.innerText = (pnl >= 0 ? "+$" : "-$") + Math.abs(pnl).toFixed(2);
+        const wins = Number((data && data.wins) || 0);
+        const losses = Number((data && data.losses) || 0);
+        const totalTrades = wins + losses;
+        const safeWinrate = Number.isFinite(Number(data && data.winrate))
+            ? Number(data.winrate)
+            : (totalTrades ? ((wins / totalTrades) * 100) : 0);
+        const safeLossrate = totalTrades ? (100 - safeWinrate) : 0;
+        netPnlBox.innerText = formatSignedCurrencyAmount(pnl, data || {});
         netPnlBox.style.color = pnl >= 0 ? "#22c55e" : "#ef4444";
 
         const btn = document.getElementById("autoBtn");
@@ -1279,17 +1331,17 @@ function bindSocketHandlers(){
         const lossRateEl = getProfileScopedElement("profileLossRate");
         const netProfitLossEl = getProfileScopedElement("profileNetProfitLoss");
         if (totalEl) {
-            totalEl.innerText = (data.wins + data.losses);
-            if (winsEl) winsEl.innerText = data.wins;
-            if (lossesEl) lossesEl.innerText = data.losses;
-            if (winRateEl) winRateEl.innerText = data.winrate + "%";
-            if (lossRateEl) lossRateEl.innerText = (100 - data.winrate).toFixed(1) + "%";
+            totalEl.innerText = totalTrades;
+            if (winsEl) winsEl.innerText = wins;
+            if (lossesEl) lossesEl.innerText = losses;
+            if (winRateEl) winRateEl.innerText = safeWinrate.toFixed(1) + "%";
+            if (lossRateEl) lossRateEl.innerText = safeLossrate.toFixed(1) + "%";
             if (netProfitLossEl) {
-                netProfitLossEl.innerText = (pnl >= 0 ? "+$" : "-$") + Math.abs(pnl).toFixed(2);
+                netProfitLossEl.innerText = formatSignedCurrencyAmount(pnl, data || {});
                 netProfitLossEl.style.color = pnl > 0 ? "#22c55e" : (pnl < 0 ? "#ef4444" : "#e2e8f0");
             }
         }
-        maybeSyncTradeHistoryFromStats(statsProfile, Number(data.wins || 0) + Number(data.losses || 0));
+        maybeSyncTradeHistoryFromStats(statsProfile, totalTrades);
     });
 
     // ==================== PATCH A: risk_block_update toast ====================
@@ -1345,6 +1397,7 @@ let humanKeepAlive = false;
 
 const apiStatus = document.getElementById("apiStatus");
 const balanceDisplay = document.getElementById("balance");
+const totalBalanceLabel = document.getElementById("totalBalanceLabel");
 const netPnlBox = document.getElementById("netPnlBox");
 
 const lastDigitBox = document.getElementById("lastDigitBox");
@@ -1362,7 +1415,8 @@ const apiConnectedIcon = document.getElementById("apiConnectedIcon");
 const apiConnectedText = document.getElementById("apiConnectedText");
 const apiStatusRow = document.getElementById("apiStatusRow");
 
-const tradeStore = { KOOLKID: [], JOKERJOE: [], HUMAN: [], UNCHAIN: [] };
+const tradeStore = { KOOLKID: [], JOKERJOE: [], HUMAN: [], UNCHAIN: [], NTT: [] };
+const profileBudgetState = {};
 const tradeHistoryFilterByProfile = {};
 const TRADE_TOAST_MULTI_JOIN_MS = 900;
 const TRADE_TOAST_BATCH_STALE_MS = 15 * 60 * 1000;
@@ -1530,12 +1584,165 @@ function isAuthApiErrorMessage(message){
     );
 }
 
-function applyKnownApiBalance(data, syncMilestoneAnchor){
-    const balance = Number(data && data.balance);
-    const startBalance = Number(data && data.session_start_balance);
-    if(Number.isFinite(balance) && balanceDisplay){
-        balanceDisplay.innerText = balance.toFixed(2);
+const PROFILE_BUDGET_INPUT_IDS = {
+    KOOLKID: "koolkidBudget",
+    JOKERJOE: "jokerjoeBudget",
+    HUMAN: "humanBudget",
+    UNCHAIN: "unchainBudget",
+    NTT: "nttBudget",
+};
+
+function normalizeProfileBudgetKey(profile){
+    const key = String(profile || "").toUpperCase().trim();
+    return PROFILE_BUDGET_INPUT_IDS[key] ? key : "KOOLKID";
+}
+
+function getCurrencyDisplayApi(){
+    return null;
+}
+
+function refreshCurrencyContext(payload){
+    return payload || {};
+}
+
+function clearCurrencyContext(){
+    return null;
+}
+
+function formatCurrencyAmount(value, payload){
+    const num = Number(value || 0);
+    return Number.isFinite(num) ? `$${Math.abs(num).toFixed(2)}` : "—";
+}
+
+function formatSignedCurrencyAmount(value, payload){
+    const num = Number(value || 0);
+    if (!Number.isFinite(num)) return "—";
+    return `${num >= 0 ? "+" : "-"}$${Math.abs(num).toFixed(2)}`;
+}
+
+function formatBalanceCurrencyAmount(value, payload){
+    const num = Number(value || 0);
+    return Number.isFinite(num) ? `$${Math.abs(num).toFixed(2)}` : "$0.00";
+}
+
+function formatBudgetBalanceValue(value, trimIntegers){
+    const num = Number(value);
+    if(!Number.isFinite(num)) return "0";
+    let text = num.toFixed(2);
+    if(trimIntegers){
+        text = text.replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
     }
+    return text;
+}
+
+function rememberProfileBudgetPayload(data){
+    if(!data || typeof data !== "object") return;
+    refreshCurrencyContext(data);
+    const incoming = data.profile_budgets;
+    if(incoming && typeof incoming === "object"){
+        Object.keys(incoming).forEach((key)=>{
+            profileBudgetState[normalizeProfileBudgetKey(key)] = incoming[key];
+        });
+    }
+    const activeBudget = data.active_profile_budget || data.profile_budget;
+    const budgetProfile = normalizeProfileBudgetKey((activeBudget && activeBudget.profile) || data.active_profile || activeProfile);
+    if(activeBudget && typeof activeBudget === "object"){
+        profileBudgetState[budgetProfile] = activeBudget;
+    }
+}
+
+function getActiveProfileBudgetSnapshot(data){
+    const fromPayload = data && data.active_profile_budget;
+    if(fromPayload && typeof fromPayload === "object"){
+        return fromPayload;
+    }
+    return profileBudgetState[normalizeProfileBudgetKey(activeProfile)] || null;
+}
+
+function hydrateProfileBudgetControl(profile){
+    const profileKey = normalizeProfileBudgetKey(profile || activeProfile);
+    const inputId = PROFILE_BUDGET_INPUT_IDS[profileKey];
+    if(!inputId) return;
+    const input = document.getElementById(inputId);
+    if(!input) return;
+    if(document.activeElement === input) return;
+    const snapshot = profileBudgetState[profileKey];
+    if(snapshot && snapshot.enabled){
+        input.value = formatBudgetBalanceValue(snapshot.configured_budget, true);
+    }else{
+        input.value = "";
+    }
+}
+
+async function saveProfileBudget(profileOverride){
+    const profile = normalizeProfileBudgetKey(profileOverride || activeProfile);
+    const inputId = PROFILE_BUDGET_INPUT_IDS[profile];
+    const input = document.getElementById(inputId);
+    if(!input) return null;
+    const raw = String(input.value ?? "").trim();
+    const payload = {
+        profile,
+        budget: raw === "" ? "" : raw,
+    };
+    try{
+        const res = await fetch("/profile_budget", {
+            method:"POST",
+            headers:{"Content-Type":"application/json"},
+            body:JSON.stringify(payload),
+        });
+        const data = await res.json().catch(()=>({}));
+        if(!res.ok || String(data.status || "").toLowerCase() !== "success"){
+            throw new Error(data.error || data.message || "Could not save budget");
+        }
+        rememberProfileBudgetPayload(data || {});
+        applyKnownApiBalance(data || {}, false);
+        hydrateProfileBudgetControl(profile);
+        const snapshot = data && (data.active_profile_budget || data.profile_budget);
+        if(snapshot && snapshot.enabled){
+            showToast(`Budget set for ${formatCurrencyAmount(snapshot.configured_budget, data || snapshot)}`, "success");
+        }else{
+            showToast((data && data.message) ? data.message : `${getProfileDisplayName(profile)} budget cleared`, "warn");
+        }
+        return data;
+    }catch(err){
+        showToast((err && err.message) ? err.message : "Could not save budget", "error");
+        hydrateProfileBudgetControl(profile);
+        return null;
+    }
+}
+window.saveProfileBudget = saveProfileBudget;
+
+function applyKnownApiBalance(data, syncMilestoneAnchor){
+    rememberProfileBudgetPayload(data || {});
+    const balance = Number(data && data.balance);
+    const displayBalanceRaw = Number(data && data.display_balance);
+    const startBalance = Number(data && data.session_start_balance);
+    const budgetSnapshot = getActiveProfileBudgetSnapshot(data || {});
+    const budgetEnabled = !!(budgetSnapshot && budgetSnapshot.enabled);
+    const totalBalance = Number(
+        budgetSnapshot && Number.isFinite(Number(budgetSnapshot.total_balance))
+            ? Number(budgetSnapshot.total_balance)
+            : (data && data.total_balance)
+    );
+    const shownBalance = Number.isFinite(displayBalanceRaw)
+        ? displayBalanceRaw
+        : (budgetSnapshot && Number.isFinite(Number(budgetSnapshot.display_balance))
+            ? Number(budgetSnapshot.display_balance)
+            : balance);
+
+    if(Number.isFinite(shownBalance) && balanceDisplay){
+        balanceDisplay.innerText = formatBalanceCurrencyAmount(shownBalance, data || budgetSnapshot);
+    }
+    if(totalBalanceLabel){
+        if(budgetEnabled && Number.isFinite(totalBalance)){
+            totalBalanceLabel.style.display = "block";
+            totalBalanceLabel.innerText = `Total Balance (${formatBalanceCurrencyAmount(totalBalance, data || budgetSnapshot)})`;
+        }else{
+            totalBalanceLabel.style.display = "none";
+            totalBalanceLabel.innerText = "";
+        }
+    }
+    hydrateProfileBudgetControl(activeProfile);
     if(Number.isFinite(startBalance) && startBalance > 0){
         setSessionStartBalanceForMilestones(startBalance);
     }
@@ -1579,6 +1786,7 @@ function applyApiConnectionState(data){
     apiStatus.innerText = "Not Connected";
     apiStatus.className = "red";
     updateApiConnectionUi("disconnected");
+    clearCurrencyContext();
     accountDashboard.style.display = "none";
     clearBotTransientState();
     resetBalanceMilestones();
@@ -1709,6 +1917,21 @@ function formatTradeDurationLabel(trade){
     if(unit === "m") return `${safe} ${safe === 1 ? "Minute" : "Minutes"}`;
     if(unit === "h") return `${safe} ${safe === 1 ? "Hour" : "Hours"}`;
     return `${safe} ${safe === 1 ? "Tick" : "Ticks"}`;
+}
+
+function formatTradeTypeLabelForProfile(profile, typeValue, contractTypeValue){
+    const tradeProfile = normalizeProfileName(profile);
+    if(tradeProfile === "NTT"){
+        const candidates = [typeValue, contractTypeValue];
+        for(const candidate of candidates){
+            const raw = String(candidate || "").toUpperCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+            if(!raw) continue;
+            const compact = raw.replace(/\s+/g, "");
+            if(raw === "TOUCH" || compact === "ONETOUCH" || raw.includes("ONE TOUCH")) return "Touch";
+            if(raw === "NO TOUCH" || compact === "NOTOUCH" || raw.includes("NO TOUCH")) return "No Touch";
+        }
+    }
+    return String(typeValue || contractTypeValue || "UNKNOWN");
 }
 
 function resolveMergedTradeResult(base, next, merged){
@@ -1876,6 +2099,34 @@ function buildPendingTradeFromUnchainActive(item, payload){
     };
 }
 
+function buildPendingTradeFromNttActive(item, payload){
+    if(!item || typeof item !== "object") return null;
+    const cid = normalizeContractId(item.contract_id);
+    if(!cid) return null;
+    const rawStatus = String(item.status || item.contract_status || "").toUpperCase().trim();
+    const result = (rawStatus.includes("CLOSE REQUESTED") || rawStatus === "CLOSING") ? "CLOSING" : "PENDING";
+    const root = payload || {};
+    const ntt = (root && root.ntt) || {};
+    return {
+        profile: "NTT",
+        type: item.type || item.side || "TRADE",
+        barrier: item.barrier,
+        stake: item.stake,
+        symbol: item.symbol || root.symbol || ntt.symbol,
+        time: item.time || new Date().toLocaleTimeString(),
+        contract_id: item.contract_id,
+        duration: item.duration,
+        duration_unit: item.duration_unit,
+        countdown_remaining: item.countdown_remaining,
+        countdown_unit: item.countdown_unit,
+        countdown_seconds: item.countdown_seconds,
+        open_profit: item.open_profit,
+        status: rawStatus || result,
+        result,
+        pending: true,
+    };
+}
+
 function buildPendingTradeFromUnchainKoolkidSimulation(sim, payload){
     if(!sim || typeof sim !== "object" || !sim.active) return [];
     const root = payload || {};
@@ -2016,7 +2267,7 @@ function syncUnchainPendingTradesFromStatus(payload){
         if(!item || typeof item !== "object") return;
         if(item.is_sold) return;
         const s = String(item.status || item.contract_status || "").toLowerCase();
-        if(["sold", "won", "lost", "settled", "closed", "expired", "cancelled", "canceled"].includes(s)) return;
+        if(["sold", "won", "lost", "settled", "closed", "expired", "cancelled", "canceled", "bot_settled"].includes(s)) return;
         const pending = buildPendingTradeFromUnchainActive(item, root);
         if(!pending) return;
         upsertTradeInStore(pending);
@@ -2065,6 +2316,25 @@ function syncUnchainPendingTradesFromStatus(payload){
     return changed;
 }
 window.syncUnchainPendingTradesFromStatus = syncUnchainPendingTradesFromStatus;
+
+function syncNttPendingTradesFromStatus(payload){
+    const root = payload || {};
+    const ntt = root.ntt || root;
+    const items = Array.isArray(ntt && ntt.active_contracts) ? ntt.active_contracts : [];
+    let changed = false;
+    items.forEach((item)=>{
+        if(!item || typeof item !== "object") return;
+        if(item.is_sold) return;
+        const s = String(item.status || item.contract_status || "").toLowerCase();
+        if(["sold", "won", "lost", "settled", "closed", "expired", "cancelled", "canceled"].includes(s)) return;
+        const pending = buildPendingTradeFromNttActive(item, root);
+        if(!pending) return;
+        upsertTradeInStore(pending);
+        changed = true;
+    });
+    return changed;
+}
+window.syncNttPendingTradesFromStatus = syncNttPendingTradesFromStatus;
 
 function applyTradeHistorySnapshotProfiles(profiles){
     const changedProfiles = new Set();
@@ -2370,12 +2640,12 @@ function onTradeResultForToast(data){
         if(batch.settled >= batch.count){
             const total = toProfitNumber(batch.totalProfit);
             if(total > 0){
-                showToast(`📦 Batch done: +$${total.toFixed(2)} total profit`, "success");
-            }else if(total < 0){
-                showToast(`📦 Batch done: -$${Math.abs(total).toFixed(2)} total loss`, "error");
-            }else{
-                showToast("📦 Batch done: $0.00 total", "info");
-            }
+            showToast(`📦 Batch done: ${formatSignedCurrencyAmount(total, {})} total profit`, "success");
+        }else if(total < 0){
+            showToast(`📦 Batch done: ${formatSignedCurrencyAmount(total, {})} total loss`, "error");
+        }else{
+            showToast(`📦 Batch done: ${formatCurrencyAmount(0, {})} total`, "info");
+        }
             removeTradeToastBatch(profileState, batch);
         }
         return true;
@@ -2569,6 +2839,7 @@ window.toggleTradeHistoryFilter = toggleTradeHistoryFilter;
 
 function buildTradeItem(trade){
     const tradeProfile = normalizeProfileName((trade && trade.profile) || activeProfile);
+    const moneyPayload = trade || {};
     const result = normalizeTradeResultLabel(trade.result, trade.status);
     const pending = isTradeResultPending(result);
     const resultClass = (result === "WIN")
@@ -2576,7 +2847,7 @@ function buildTradeItem(trade){
         : ((result === "LOSS") ? "loss" : (result === "CLOSING" ? "closing" : "pending"));
     const profit = typeof trade.profit === 'number' ? trade.profit : toProfitNumber(trade.profit_value);
     const openProfit = (trade.open_profit === undefined || trade.open_profit === null) ? null : Number(trade.open_profit);
-    const typeRaw = trade.type || trade.contract_type || "UNKNOWN";
+    const typeRaw = formatTradeTypeLabelForProfile(tradeProfile, trade.type, trade.contract_type);
     const barrier = (trade.barrier !== undefined && trade.barrier !== null) ? trade.barrier : "";
     const type = (barrier !== "" ? `${typeRaw} ${barrier}` : typeRaw);
     const stake = trade.stake || trade.buy_price || 0;
@@ -2596,10 +2867,10 @@ function buildTradeItem(trade){
     const item = document.createElement('div');
     item.className = `trade-item ${resultClass}`;
 
-    let profitDisplay = (result === 'WIN' ? '+' : '-') + '$' + Math.abs(profit).toFixed(2);
+    let profitDisplay = formatSignedCurrencyAmount(result === "WIN" ? Math.abs(profit) : -Math.abs(profit), moneyPayload);
     if(pending){
         if(Number.isFinite(openProfit)){
-            profitDisplay = `${openProfit >= 0 ? '+' : '-'}$${Math.abs(openProfit).toFixed(2)} ${trade.is_simulation ? '(simulation trade)' : '(live)'}`;
+            profitDisplay = `${formatSignedCurrencyAmount(openProfit, moneyPayload)} ${trade.is_simulation ? '(simulation trade)' : '(live)'}`;
         }else{
             profitDisplay = result === "CLOSING" ? "CLOSING" : "PENDING";
         }
@@ -2612,7 +2883,7 @@ function buildTradeItem(trade){
         </div>
         <div class="trade-row">
             <div class="trade-meta">
-                <span>Stake: $${Number(stake).toFixed(2)}</span>
+                <span>Stake: ${formatCurrencyAmount(Number(stake), moneyPayload)}</span>
                 <span>Market: ${market}</span>
                 <span>Duration: ${durationLabel}</span>
             </div>
@@ -2740,6 +3011,10 @@ async function ensureProfileModuleScript(profile){
         await loadScriptOncePhase2("/static/js/profiles/human.js");
     }else if(p === "UNCHAIN"){
         await loadScriptOncePhase2("/static/js/profiles/unchain.js");
+    }else if(p === "NTT"){
+        if(isMutantAvailable()){
+            await loadScriptOncePhase2("/static/js/profiles/mutant.js");
+        }
     }
     return true;
 }
@@ -2764,6 +3039,20 @@ async function loadProfileUI(profile){
     if(profile === "JOKERJOE") file = "jokerjoe.html";
     if(profile === "HUMAN") file = "human.html";
     if(profile === "UNCHAIN") file = "unchain.html";
+    if(profile === "NTT") file = "mutant.html";
+
+    if(profile === "NTT" && !isMutantAvailable()){
+        document.getElementById("profileContainer").innerHTML = buildMutantConstructionMarkup();
+        bindProfileDraftAutosave();
+        refreshDynamicElements();
+        initDigitGrid();
+        refreshHowTo();
+        updateInsta5Label();
+        syncAutoStake();
+        sendRiskControls();
+        renderTradeList(activeProfile);
+        return;
+    }
 
     const res = await fetch(`/static/components/${file}`);
     const html = await res.text();
@@ -2843,7 +3132,7 @@ function getSharedHowToSection(){
         title: "Shared Top Bar",
         note: "These are the main controls you use before opening any profile.",
         items: [
-            { label: "KOOLKID / JOKERJOE / HUMAN / UNCHAIN", desc: "Use these profile buttons to switch into the trading style you want." },
+            { label: "KOOLKID / JOKERJOE / HUMAN / UNCHAIN / Mutant", desc: "Use these profile buttons to switch into the trading style you want." },
             { label: "Connect", desc: "Connects your API so the bot can read the market and place trades." },
             { label: "Disconnect", desc: "Stops the live API connection." },
             { label: "Market", desc: "Changes the main market for the active profile." },
@@ -2852,8 +3141,69 @@ function getSharedHowToSection(){
     };
 }
 
+function getProfileDisplayName(profile){
+    const key = String(profile || "").toUpperCase();
+    if(key === "NTT") return "Mutant";
+    return key || "Profile";
+}
+
 function getHowToGuideData(profile){
     const p = String(profile || "KOOLKID").toUpperCase();
+    if(p === "NTT"){
+        if(!isMutantAvailable()){
+            return {
+                title: "Mutant Guide",
+                subtitle: "Under Construction",
+                lead: getMutantConstructionMessage(),
+                sections: [
+                    getSharedHowToSection(),
+                    {
+                        title: "Mutant Status",
+                        items: [
+                            { label: "Deploy Build", desc: "Mutant is intentionally blocked on the deployed version while we keep polishing it." },
+                            { label: "Local Build", desc: "The full Mutant profile is still available when you run the bot locally on your PC." },
+                        ],
+                    },
+                ],
+            };
+        }
+        return {
+            title: "Mutant Guide",
+            subtitle: "Manual Touch / No Touch trading with live bias, prediction, and barrier mapping.",
+            lead: "Welcome to the Mutant profile. Set your Touch and No Touch stakes, choose your barriers and shared duration, then use the manual execute buttons to send Touch or No Touch trades.",
+            sections: [
+                getSharedHowToSection(),
+                {
+                    title: "Main Cards",
+                    items: [
+                        { label: "Touch / No Touch Bias", desc: "Shows the current Touch versus No Touch read using the shared logic adapted to this profile." },
+                        { label: "AUTO ANALYSIS", desc: "Shows the stronger Touch or No Touch side for your selected duration." },
+                        { label: "Touch / No Touch Live Map", desc: "Uses your current barriers to show where live price is sitting relative to Touch and No Touch." },
+                    ],
+                },
+                {
+                    title: "Controls",
+                    items: [
+                        { label: "Touch Stake / No Touch Stake", desc: "Sets the manual stake for each side." },
+                        { label: "Touch Barrier / No Touch Barrier", desc: "Sets the barrier text used for Touch and No Touch trades on this profile." },
+                        { label: "Duration / Unit", desc: "Sets the shared Touch / No Touch duration. This profile uses ticks, minutes, or hours only." },
+                        { label: "TP / SL", desc: "Saves the profile take profit and stop loss targets." },
+                        { label: "REFRESH BARRIER", desc: "Refreshes the latest market default barriers for Touch and No Touch." },
+                    ],
+                },
+                {
+                    title: "Execute Buttons",
+                    items: [
+                        { label: "TOUCH", desc: "Places a manual Touch trade using the current Touch setup." },
+                        { label: "NO TOUCH", desc: "Places a manual No Touch trade using the current No Touch setup." },
+                        { label: "CLOSE MUTANT TRADES", desc: "Sends sell requests for all active Mutant trades." },
+                        { label: "Clear Active", desc: "Clears the active Mutant panel after trades settle or close." },
+                        { label: "Clear History", desc: "Clears Mutant trade history." },
+                    ],
+                },
+            ],
+        };
+    }
     if(p === "KOOLKID"){
         return {
             title: "KOOLKID Guide",
@@ -3142,11 +3492,12 @@ function closeHowToModal(){
 
 function refreshHowTo(){
     const guide = getHowToGuideData(activeProfile);
-    if(howtoBadge) howtoBadge.innerText = activeProfile;
+    const displayName = getProfileDisplayName(activeProfile);
+    if(howtoBadge) howtoBadge.innerText = displayName;
     if(howtoBody){
         howtoBody.innerHTML = `
             <div class="howto-inline-note">
-                <strong>${activeProfile}</strong> guide is now a popup. Tap <strong>SHOW</strong> to open the full button-by-button walkthrough.
+                <strong>${displayName}</strong> guide is now a popup. Tap <strong>SHOW</strong> to open the full button-by-button walkthrough.
             </div>
         `;
         howtoBody.style.display = "block";
@@ -3711,7 +4062,7 @@ document.getElementById("symbol").addEventListener("change", async function(){
 function applyLiveTickVisibility(){
     const live = document.getElementById("liveTickCard");
     if(!live) return;
-    live.style.display = (activeProfile === "HUMAN" || activeProfile === "UNCHAIN") ? "none" : "block";
+    live.style.display = (activeProfile === "HUMAN" || activeProfile === "UNCHAIN" || activeProfile === "NTT") ? "none" : "block";
 }
 
 function syncKoolkidAutoTradeLaunchVisibility(){
@@ -3747,12 +4098,15 @@ async function setProfile(profile){
         return;
     }
     activeProfile = profile;
+    rememberProfileBudgetPayload(profileData || {});
+    applyKnownApiBalance(profileData || {}, false);
     await ensureProfileModuleScript(profile);
 
     document.getElementById("koolkidBtn").classList.remove("active");
     document.getElementById("jokerjoeBtn").classList.remove("active");
     document.getElementById("humanBtn").classList.remove("active");
     const __unchainBtn = document.getElementById("unchainBtn"); if(__unchainBtn) __unchainBtn.classList.remove("active");
+    const __nttBtn = document.getElementById("nttBtn"); if(__nttBtn) __nttBtn.classList.remove("active");
 
     if(profile === "KOOLKID"){
         document.getElementById("koolkidBtn").classList.add("active");
@@ -3775,11 +4129,20 @@ async function setProfile(profile){
         profileTitle.innerText = "UNCHAIN MODE: HIGHER OR LOWER";
         profileTitle.style.color = "#f59e0b";
     }
+    if(profile === "NTT"){
+        const btn = document.getElementById("nttBtn");
+        if(btn) btn.classList.add("active");
+        profileTitle.innerText = (profileData.mutant_locked || !isMutantAvailable())
+            ? "MUTANT MODE: UNDER CONSTRUCTION"
+            : "MUTANT MODE: TOUCH / NO TOUCH";
+        profileTitle.style.color = "#14b8a6";
+    }
 
     applyLiveTickVisibility();
     syncKoolkidAutoTradeLaunchVisibility();
 
     await loadProfileUI(profile);
+    hydrateProfileBudgetControl(profile);
     try{ await runProfileModuleHook(profile, "onActivate", { profile }); }catch(e){}
     applyProfileDraft(profile);
     setConfirmedMarketSymbol(profileData.symbol || (profile === "HUMAN" ? profileData.human_symbol : profileData.main_symbol) || getConfirmedMarketSymbol());
@@ -3797,7 +4160,7 @@ async function setProfile(profile){
     await syncTradeHistorySnapshot(profile);
 
     refreshHowTo();
-    showToast("🎮 Profile Changed: " + profile, "info");
+    showToast("🎮 Profile Changed: " + getProfileDisplayName(profile), "info");
 }
 
 async function connect(){
@@ -3836,8 +4199,9 @@ async function disconnect(){
     updateApiConnectionUi("disconnected");
     accountDashboard.style.display = "none";
 
+    clearCurrencyContext();
     balanceDisplay.innerText = "0.00";
-    netPnlBox.innerText = "$0.00";
+    netPnlBox.innerText = "0.00";
     netPnlBox.style.color = "white";
 
     tickCountEl.innerText = "0";
@@ -3868,10 +4232,36 @@ async function disconnect(){
 async function clearProfileHistory(){
     if (!activeProfile) return;
 
-    await fetch("/clear_profile_history", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({profile: activeProfile})});
+    let payload = null;
+    try{
+        const res = await fetch("/clear_profile_history", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({profile: activeProfile})});
+        const data = await res.json().catch(()=>({}));
+        payload = data && data.payload ? data.payload : null;
+    }catch(_err){}
     tradeStore[activeProfile] = [];
+    const totalEl = getProfileScopedElement("profileTotalTrades");
+    const winsEl = getProfileScopedElement("profileWins");
+    const lossesEl = getProfileScopedElement("profileLosses");
+    const winRateEl = getProfileScopedElement("profileWinRate");
+    const lossRateEl = getProfileScopedElement("profileLossRate");
+    const netProfitLossEl = getProfileScopedElement("profileNetProfitLoss");
+    if (totalEl) totalEl.innerText = "0";
+    if (winsEl) winsEl.innerText = "0";
+    if (lossesEl) lossesEl.innerText = "0";
+    if (winRateEl) winRateEl.innerText = "0.0%";
+    if (lossRateEl) lossRateEl.innerText = "0.0%";
+    if (netProfitLossEl) {
+        netProfitLossEl.innerText = "0.00";
+        netProfitLossEl.style.color = "#e2e8f0";
+    }
+    if(activeProfile === "UNCHAIN" && payload){
+        syncUnchainPendingTradesFromStatus(payload);
+    }else if(activeProfile === "NTT" && payload){
+        syncNttPendingTradesFromStatus(payload);
+    }
+    delete tradeHistorySnapshotSyncAt[activeProfile];
     renderTradeList(activeProfile);
-    showToast(`🗑️ ${activeProfile} history cleared`, "warn");
+    showToast(`🗑️ ${getProfileDisplayName(activeProfile)} history cleared`, "warn");
 }
 
 async function toggleAuto(){
@@ -3938,8 +4328,8 @@ async function toggleAutoSL(){
     await sendRiskControls();
 }
 
-async function manualTP(){ await sendRiskControls(); showToast("🎯 TP Updated: $" + (tpInput ? tpInput.value : 0), "success"); }
-async function manualSL(){ await sendRiskControls(); showToast("🛑 SL Updated: $" + (slInput ? slInput.value : 0), "error"); }
+async function manualTP(){ await sendRiskControls(); showToast(`🎯 TP Updated: ${formatCurrencyAmount(tpInput ? tpInput.value : 0, {})}`, "success"); }
+async function manualSL(){ await sendRiskControls(); showToast(`🛑 SL Updated: ${formatCurrencyAmount(slInput ? slInput.value : 0, {})}`, "error"); }
 
 function updateAutoModeButtons(modes){
     const kidBtn = document.getElementById("kidracksBtn");

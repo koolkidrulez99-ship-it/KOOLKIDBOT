@@ -51,20 +51,29 @@
             <input id="barrier" type="number" min="0" max="9" step="1" value="5" style="width:100%;">
           </div>
         </div>
-        <div style="margin-top:10px;">
-          <div style="color:#94a3b8; font-size:12px;">Duration</div>
-          <select id="durationTicks" style="width:100%;">
-            <option value="1" selected>1 Tick</option>
-            <option value="2">2 Ticks</option>
-            <option value="3">3 Ticks</option>
-            <option value="4">4 Ticks</option>
-            <option value="5">5 Ticks</option>
-            <option value="6">6 Ticks</option>
-            <option value="7">7 Ticks</option>
-            <option value="8">8 Ticks</option>
-            <option value="9">9 Ticks</option>
-            <option value="10">10 Ticks</option>
-          </select>
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-top:10px; align-items:end;">
+          <div>
+            <div style="color:#94a3b8; font-size:12px;">Duration</div>
+            <select id="durationTicks" style="width:100%; min-height:40px; font-size:13px; padding:8px 10px;">
+              <option value="1" selected>1 Tick</option>
+              <option value="2">2 Ticks</option>
+              <option value="3">3 Ticks</option>
+              <option value="4">4 Ticks</option>
+              <option value="5">5 Ticks</option>
+              <option value="6">6 Ticks</option>
+              <option value="7">7 Ticks</option>
+              <option value="8">8 Ticks</option>
+              <option value="9">9 Ticks</option>
+              <option value="10">10 Ticks</option>
+            </select>
+          </div>
+          <div>
+            <div style="color:#94a3b8; font-size:12px;">Budget</div>
+            <div style="display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:center;">
+              <input id="jokerjoeBudget" data-draft-ignore="1" type="number" min="0" step="0.01" value="" placeholder="Budget cap" style="width:100%; min-height:40px; padding:8px 10px;">
+              <button type="button" onclick="saveProfileBudget('JOKERJOE')" style="min-width:78px; min-height:40px; padding:8px 10px; font-size:12px; background:#0ea5e9; border-radius:12px;">Set Budget</button>
+            </div>
+          </div>
         </div>
 
         <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-top:10px;">
@@ -300,7 +309,7 @@
     </div>
     <div style="background:#0f172a; border:1px solid #334155; border-radius:12px; padding:12px; text-align:center;">
       <div style="color:#94a3b8; font-size:12px;">Net Profit / Loss</div>
-      <div id="profileNetProfitLoss" style="font-size:18px; font-weight:bold; color:#e2e8f0;">+$0.00</div>
+          <div id="profileNetProfitLoss" style="font-size:18px; font-weight:bold; color:#e2e8f0;">0.00</div>
     </div>
   </div>
 
