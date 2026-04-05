@@ -74,6 +74,22 @@
     return "#ef4444";
   }
 
+  function normalizeOverAnalysisBarrier(value) {
+    const n = Number(value);
+    return [1, 2, 3].includes(n) ? n : 3;
+  }
+
+  function overAnalysisLabel(barrier) {
+    return `Over ${normalizeOverAnalysisBarrier(barrier)} Analysis`;
+  }
+
+  function syncOverAnalysisSelectKoolkid(barrier) {
+    const select = document.getElementById("overAnalysisBarrierSelectKoolkid");
+    if (!select) return;
+    const next = String(normalizeOverAnalysisBarrier(barrier));
+    if (select.value !== next) select.value = next;
+  }
+
   function renderKid2vixKoolkid(data) {
     if (data && typeof data === "object") state.kid2vix = data;
     const d = state.kid2vix || {};
@@ -471,10 +487,13 @@
     const info = document.getElementById("over3AnalysisInfoKoolkid");
     const btn = document.getElementById("over3AnalysisBtnKoolkid");
     const enabled = !!(state.autoModes && state.autoModes.over3_analysis);
+    const selectedBarrier = normalizeOverAnalysisBarrier(d.selected_barrier || 3);
+    const label = overAnalysisLabel(selectedBarrier);
     if (btn) {
-      btn.innerText = `Over 3 Analysis: ${enabled ? "ON" : "OFF"}`;
+      btn.innerText = `${label}: ${enabled ? "ON" : "OFF"}`;
       btn.style.background = enabled ? "#22c55e" : "#1e293b";
     }
+    syncOverAnalysisSelectKoolkid(selectedBarrier);
     if (!info) return;
 
     const symbol = String(d.symbol || "");
@@ -495,7 +514,7 @@
 
     if (!enabled) {
       info.style.color = "#94a3b8";
-      info.innerText = `Over 3 off • ${counts}`;
+      info.innerText = `${label} off • Over 3 analysis idle • ${counts}`;
       return;
     }
     if (!symbolOk) {
@@ -520,22 +539,21 @@
     }
     if (setupReady) {
       info.style.color = "#22c55e";
-      info.innerText = `Setup ready on ${marketLabel}: Over 3 entry armed • ${counts} • ${session}`;
+      info.innerText = `Setup ready on ${marketLabel}: ${label.replace(" Analysis", "")} entry armed • using Over 3 analysis • ${counts} • ${session}`;
       return;
     }
     info.style.color = "#94a3b8";
-    info.innerText = `Scanning ${marketLabel} ticks • ${counts} • ${session}`;
+    info.innerText = `Scanning ${marketLabel} ticks with Over 3 analysis • ${counts} • ${session}`;
   }
 
 
-function updateAdvancedAIModeButtons(modes, payload) {
+  function updateAdvancedAIModeButtons(modes, payload) {
   const map = [
     ["kidbrain", "kidbrainBtnKoolkid", "🤖 KIDBRAIN"],
     ["edge_brain", "edgeBrainBtnKoolkid", "🧠 EDGE BRAIN"],
     ["smart_flow", "smartFlowBtnKoolkid", "🎯 SMART FLOW"],
     ["meta_ai", "metaAiBtnKoolkid", "⚡ META AI"],
     ["kidracks_ai", "kidracksAiBtnKoolkid", "🤓 KIDRACKS AI"],
-    ["over3_analysis", "over3AnalysisBtnKoolkid", "Over 3 Analysis"],
   ];
   map.forEach(([key, id, label]) => {
     const btn = document.getElementById(id);
@@ -807,15 +825,28 @@ function updateAdvancedAIModeButtons(modes, payload) {
     }
   };
 
+  window.setOverAnalysisBarrierKoolkid = async function (barrier) {
+    const selected = normalizeOverAnalysisBarrier(barrier);
+    const r = await postJSON("/set_over_analysis_barrier_koolkid", { barrier: selected, enable: false });
+    if (r.data && r.data.status === "success") {
+      if (r.data.auto_modes) state.autoModes = Object.assign({}, state.autoModes || {}, r.data.auto_modes);
+      if (r.data.over3_analysis_data) renderOver3AnalysisKoolkid(r.data.over3_analysis_data);
+      updateModeButtonsFromPayload(r.data.auto_modes || { over3_analysis: !!r.data.over3_analysis }, r.data.payload || null);
+      safeToast(`${overAnalysisLabel(selected)} selected`, "success");
+    } else {
+      safeToast((r.data && r.data.message) || `${overAnalysisLabel(selected)} failed`, "error");
+    }
+  };
+
   window.toggleOver3AnalysisKoolkid = async function () {
     const r = await postJSON("/toggle_over3_analysis_koolkid", {});
     if (r.data && r.data.status === "success") {
       if (r.data.auto_modes) state.autoModes = Object.assign({}, state.autoModes || {}, r.data.auto_modes);
       updateModeButtonsFromPayload(r.data.auto_modes || { over3_analysis: !!r.data.over3_analysis }, r.data.payload || null);
       if (r.data.over3_analysis_data) renderOver3AnalysisKoolkid(r.data.over3_analysis_data);
-      safeToast(`Over 3 Analysis: ${r.data.over3_analysis ? "ON" : "OFF"}`, r.data.over3_analysis ? "success" : "error");
+      safeToast(`${overAnalysisLabel((r.data.over3_analysis_data || {}).selected_barrier || 3)}: ${r.data.over3_analysis ? "ON" : "OFF"}`, r.data.over3_analysis ? "success" : "error");
     } else {
-      safeToast((r.data && r.data.message) || "Over 3 Analysis failed", "error");
+      safeToast((r.data && r.data.message) || "Over Analysis failed", "error");
     }
   };
 

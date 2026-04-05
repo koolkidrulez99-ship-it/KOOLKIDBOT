@@ -88,6 +88,7 @@ class KoolKidStrategy(BaseStrategy):
 
         # Over 3 Analysis bot state
         self.over3_analysis_auto = False
+        self.over3_execution_barrier = 3
         self.over3_duration_ticks = 1
         self.over3_trade_active = False
         self.over3_consecutive_losses = 0
@@ -234,6 +235,7 @@ class KoolKidStrategy(BaseStrategy):
         self.last_symbol = None
 
         self.over3_analysis_auto = False
+        self.over3_execution_barrier = 3
         self.over3_duration_ticks = 1
         self.over3_trade_active = False
         self.over3_consecutive_losses = 0
@@ -398,6 +400,19 @@ class KoolKidStrategy(BaseStrategy):
         self.over3_session_stopped = False
         self.over3_wait_fresh_setup = False
 
+    def _normalize_over3_execution_barrier(self, barrier):
+        try:
+            value = int(barrier)
+        except Exception:
+            value = 3
+        if value not in (1, 2, 3):
+            value = 3
+        return value
+
+    def set_over3_analysis_barrier(self, barrier):
+        self.over3_execution_barrier = self._normalize_over3_execution_barrier(barrier)
+        return int(self.over3_execution_barrier)
+
     def toggle_over3_analysis_auto(self):
         self.over3_analysis_auto = not self.over3_analysis_auto
         if self.over3_analysis_auto:
@@ -511,6 +526,8 @@ class KoolKidStrategy(BaseStrategy):
         return {
             "symbol_ok": bool(symbol_ok),
             "symbol": symbol,
+            "analysis_barrier": 3,
+            "selected_barrier": int(self._normalize_over3_execution_barrier(getattr(self, "over3_execution_barrier", 3))),
             "duration_ticks": int(duration_ticks),
             "trade_active": bool(self.over3_trade_active),
             "consecutive_losses": int(self.over3_consecutive_losses),
@@ -551,7 +568,7 @@ class KoolKidStrategy(BaseStrategy):
         return {
             "mode": "OVER3_ANALYSIS",
             "type": "OVER",
-            "barrier": 3,
+            "barrier": int(self._normalize_over3_execution_barrier(getattr(self, "over3_execution_barrier", 3))),
             "duration": duration_ticks,
             "duration_unit": "t",
             "symbol": symbol,
@@ -1847,6 +1864,7 @@ class KoolKidStrategy(BaseStrategy):
                 "kidpairs_trades_per_signal": self.kidpairs_trades_per_signal,
                 "barrier_analysis_selected": self.barrier_analysis_selected,
                 "mpull_all_digits_selected_digits": sorted(list(self.mpull_all_digits_selected_digits)),
+                "over3_execution_barrier": int(self._normalize_over3_execution_barrier(getattr(self, "over3_execution_barrier", 3))),
                 "kid2vix_last20_threshold": int(self.kid2vix_last20_threshold),
                 "kid2vix_last5_threshold": int(self.kid2vix_last5_threshold),
                 "kid2vix_repeat_pressure_threshold": float(self.kid2vix_repeat_pressure_threshold),

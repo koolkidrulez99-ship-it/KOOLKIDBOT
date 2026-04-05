@@ -142,3 +142,27 @@ def test_kid2vix_waits_for_current_pair_and_applies_loss_cooldown():
     assert strat.kid2vix_last_result == "LOSS"
     assert strat.kid2vix_cooldown_until > time.time()
     assert strat.check_kid2vix_signal() is None
+
+
+def test_over_analysis_uses_over3_setup_but_places_selected_over_barrier():
+    strat = KoolKidStrategy()
+    digits = ([9] * 60) + ([0] * 30) + [9, 8, 7, 6, 5, 4, 3, 8, 7, 6]
+
+    _feed_digits(strat, digits)
+    strat.set_over3_analysis_barrier(1)
+    strat.over3_analysis_auto = True
+
+    state = strat.get_over3_analysis_state()
+    signal = strat.check_over3_analysis_signal()
+
+    assert state["entry_conditions_ready"] is True
+    assert state["selected_barrier"] == 1
+    assert state["analysis_barrier"] == 3
+    assert signal == {
+        "mode": "OVER3_ANALYSIS",
+        "type": "OVER",
+        "barrier": 1,
+        "duration": 2,
+        "duration_unit": "t",
+        "symbol": "R_10",
+    }

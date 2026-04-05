@@ -6288,16 +6288,25 @@ def _check_unchain_multi_balance(state, plan, *, trade_label="trade set", failur
     normalized = []
     total_stake = 0.0
     for item in list(plan or []):
-        if not isinstance(item, (list, tuple)) or len(item) < 3:
+        if isinstance(item, dict):
+            side = str(item.get("side") or "").upper()
+            try:
+                stake = float(item.get("stake") or 0.0)
+            except Exception:
+                stake = 0.0
+            barrier = item.get("barrier")
+        elif isinstance(item, (list, tuple)) and len(item) >= 3:
+            side = str(item[0] or "").upper()
+            try:
+                stake = float(item[1] or 0.0)
+            except Exception:
+                stake = 0.0
+            barrier = item[2]
+        else:
             continue
-        side = str(item[0] or "").upper()
         if side not in ("HIGHER", "LOWER"):
             continue
-        try:
-            stake = float(item[1] or 0.0)
-        except Exception:
-            stake = 0.0
-        normalized.append((side, stake, item[2]))
+        normalized.append((side, stake, barrier))
         total_stake += max(0.0, stake)
     balance = _get_effective_state_balance(state)
     available_limit = balance
@@ -13531,6 +13540,47 @@ def toggle_over3_analysis_koolkid_route():
     return jsonify({
         "status": "success",
         "over3_analysis": enabled,
+        "selected_barrier": int((payload.get("over3_analysis_data") or {}).get("selected_barrier") or 3),
+        "auto_modes": payload.get("auto_modes", {}),
+        "over3_analysis_data": payload.get("over3_analysis_data", {}),
+        "payload": payload,
+    })
+
+
+@app.route("/set_over_analysis_barrier_koolkid", methods=["POST"])
+def set_over_analysis_barrier_koolkid_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    strat = state["strategies"].get("KOOLKID")
+    if not strat or not hasattr(strat, "set_over3_analysis_barrier"):
+        return jsonify({"status": "error", "message": "KOOLKID strategy not available"}), 400
+
+    data = request.json or {}
+    selected = int(strat.set_over3_analysis_barrier(data.get("barrier", 3)))
+    enable_requested = bool(data.get("enable", False))
+    enabled = bool(getattr(strat, "over3_analysis_auto", False))
+    if enable_requested and not enabled and hasattr(strat, "toggle_over3_analysis_auto"):
+        enabled = bool(strat.toggle_over3_analysis_auto())
+
+    payload = {}
+    try:
+        payload = strat.get_ui_payload() or {}
+    except Exception:
+        payload = {}
+
+    try:
+        socketio.emit("auto_mode_update", (payload.get("auto_modes") or {}), room=cid)
+        socketio.emit("digit_analysis", payload, room=cid)
+    except Exception:
+        pass
+
+    return jsonify({
+        "status": "success",
+        "message": f"Over {selected} Analysis ready",
+        "selected_barrier": selected,
+        "over3_analysis": bool(enabled),
         "auto_modes": payload.get("auto_modes", {}),
         "over3_analysis_data": payload.get("over3_analysis_data", {}),
         "payload": payload,
@@ -15153,13 +15203,13 @@ def _toggle_unchain_directional_auto(cid, state, data):
 def _toggle_unchain_primordial_blue(cid, state, data):
     u = _ensure_unchain_hl_state(state)
     requested = data.get("enabled")
-    toast_level = "success"
     if requested is None:
         u["primordial_blue_enabled"] = not bool(u.get("primordial_blue_enabled"))
     else:
         u["primordial_blue_enabled"] = bool(requested)
 
     active_count = len(_get_open_unchain_active_entries(state))
+    plan_info = {}
     if u["primordial_blue_enabled"]:
         _disable_unchain_hybrid(u, reason="🟢 Hybrid is OFF.")
         u["auto_both_enabled"] = False
@@ -15205,22 +15255,23 @@ def _toggle_unchain_primordial_blue(cid, state, data):
                     plan_info.get("reason") or "Primordial Blue currently supports V10, V25, V75, V100, V75 1s, and V100 1s only."
                 )
             u["last_action"] = "Primordial Blue armed"
-        run_ok = _run_unchain_primordial_blue(cid, state)
-        if not run_ok:
-            reason_text = str(u.get("primordial_blue_last_reason") or "")
-            lowered_reason = reason_text.lower()
-            if (
-                "need " in lowered_reason
-                or "failed:" in lowered_reason
-                or "minimum" in lowered_reason
-                or "too low" in lowered_reason
-            ):
-                toast_level = "error"
+        message = "🔵 PRIMORDIAL BLUE ON"
+        toast_level = "success"
+        if active_count <= 0 and plan_info.get("supported"):
+            reason_text = str(plan_info.get("reason") or "")
+            if (not bool(plan_info.get("can_place", True)) or not list(plan_info.get("plan") or [])) and reason_text:
                 message = reason_text
+                toast_level = "error"
             else:
-                message = "🔵 PRIMORDIAL BLUE ON"
-        else:
-            message = "🔵 PRIMORDIAL BLUE ON"
+                balance_ok, balance_msg, _normalized, _total_stake, _available = _check_unchain_multi_balance(
+                    state,
+                    plan_info.get("plan") or [],
+                    trade_label="Primordial Blue cycle",
+                    failure_prefix="Primordial Blue failed",
+                )
+                if not balance_ok and balance_msg:
+                    message = balance_msg
+                    toast_level = "error"
     else:
         _disable_unchain_primordial_blue(u, reason="🔵 Primordial Blue is OFF.")
         u["last_action"] = "Primordial Blue OFF"
@@ -15242,13 +15293,13 @@ def _toggle_unchain_primordial_blue(cid, state, data):
 def _toggle_unchain_hybrid(cid, state, data):
     u = _ensure_unchain_hl_state(state)
     requested = data.get("enabled")
-    toast_level = "success"
     if requested is None:
         u["hybrid_enabled"] = not bool(u.get("hybrid_enabled"))
     else:
         u["hybrid_enabled"] = bool(requested)
 
     active_count = len(_get_open_unchain_active_entries(state))
+    plan_info = {}
     if u["hybrid_enabled"]:
         _disable_unchain_primordial_blue(u, reason="🔵 Primordial Blue is OFF.")
         u["auto_both_enabled"] = False
@@ -15284,17 +15335,23 @@ def _toggle_unchain_hybrid(cid, state, data):
             else:
                 u["hybrid_last_reason"] = str(plan_info.get("reason") or "Hybrid currently supports V10, V25, V75, V100, V75 1s, V100 1s, and V25 1s only.")
             u["last_action"] = "Hybrid armed"
-        run_ok = _run_unchain_hybrid(cid, state)
-        if not run_ok:
-            reason_text = str(u.get("hybrid_last_reason") or "")
-            lowered_reason = reason_text.lower()
-            if "need " in lowered_reason or "failed:" in lowered_reason or "minimum" in lowered_reason or "too low" in lowered_reason:
-                toast_level = "error"
+        message = "🟢 HYBRID ON"
+        toast_level = "success"
+        if active_count <= 0 and plan_info.get("supported"):
+            reason_text = str(plan_info.get("reason") or "")
+            if (not bool(plan_info.get("can_place", True)) or not list(plan_info.get("plan") or [])) and reason_text:
                 message = reason_text
+                toast_level = "error"
             else:
-                message = "🟢 HYBRID ON"
-        else:
-            message = "🟢 HYBRID ON"
+                balance_ok, balance_msg, _normalized, _total_stake, _available = _check_unchain_multi_balance(
+                    state,
+                    plan_info.get("plan") or [],
+                    trade_label="Hybrid cycle",
+                    failure_prefix="Hybrid failed",
+                )
+                if not balance_ok and balance_msg:
+                    message = balance_msg
+                    toast_level = "error"
     else:
         _disable_unchain_hybrid(u, reason="🟢 Hybrid is OFF.")
         u["last_action"] = "Hybrid OFF"
