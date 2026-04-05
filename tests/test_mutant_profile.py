@@ -576,6 +576,26 @@ def test_ntt_status_route_blocks_when_mutant_is_under_construction(monkeypatch):
     assert "under construction" in payload["message"].lower()
 
 
+def test_mutant_access_state_allows_configured_username_override(monkeypatch):
+    monkeypatch.setattr(server, "MUTANT_DEPLOY_GATE_ENABLED", True)
+    monkeypatch.setattr(server, "MUTANT_ALLOWED_ACCOUNT", "koolkidrulez99@gmail.com")
+    monkeypatch.setattr(server, "_request_host_is_local", lambda: False)
+    monkeypatch.setattr(
+        server,
+        "_get_user_row",
+        lambda username: {"username": username, "email": "someone@example.com"},
+    )
+
+    with server.app.test_request_context("/"):
+        server.session["user"] = "koolkidrulez99@gmail.com"
+        access = server._mutant_access_state()
+
+    assert access["enabled"] is True
+    assert access["username_override"] is True
+    assert access["email_override"] is False
+    assert access["under_construction"] is False
+
+
 def test_run_ntt_auto_both_waits_until_open_pair_finishes(monkeypatch):
     send_attempts = []
     monkeypatch.setattr(server, "_check_ntt_risk_block", lambda _state: None)

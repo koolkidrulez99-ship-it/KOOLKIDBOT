@@ -854,10 +854,48 @@ def test_process_contract_uses_last_live_balance_when_current_balance_is_stale_z
         server.clients.pop("test-stale-zero-balance", None)
 
     assert state["balance"] == pytest.approx(95.0)
-    assert state["last_live_balance"] == pytest.approx(95.0)
+    assert state["last_live_balance"] == pytest.approx(100.0)
+    assert state["local_balance_adjustment"] == pytest.approx(-5.0)
     trade_events = [payload for event, payload, _room in emitted if event == "trade_result"]
     assert trade_events
     assert trade_events[-1]["balance_seen"] == pytest.approx(95.0)
+
+
+def test_resolve_post_contract_balance_accumulates_multiple_fast_settlements():
+    state = {
+        "balance": 8000.0,
+        "last_live_balance": 8000.0,
+        "last_live_balance_updated_at": 0.0,
+        "local_balance_adjustment": 0.0,
+        "balance_updated_at": 0.0,
+    }
+
+    first = server._resolve_post_contract_balance(state, -700.0)
+    second = server._resolve_post_contract_balance(state, -300.0)
+    third = server._resolve_post_contract_balance(state, 150.0)
+
+    assert first == pytest.approx(7300.0)
+    assert second == pytest.approx(7000.0)
+    assert third == pytest.approx(7150.0)
+    assert state["balance"] == pytest.approx(7150.0)
+    assert state["last_live_balance"] == pytest.approx(8000.0)
+    assert state["local_balance_adjustment"] == pytest.approx(-850.0)
+
+
+def test_build_balance_payload_prefers_last_live_balance_plus_local_adjustment():
+    state = {
+        "active_profile": "UNCHAIN",
+        "balance": 6000.0,
+        "last_live_balance": 8000.0,
+        "local_balance_adjustment": 0.0,
+        "profile_budgets": server._new_profile_budget_map(),
+    }
+
+    payload = server._build_balance_payload(state, "UNCHAIN")
+
+    assert payload["balance"] == pytest.approx(8000.0)
+    assert payload["display_balance"] == pytest.approx(8000.0)
+    assert payload["total_balance"] == pytest.approx(8000.0)
 
 
 def test_process_contract_ignores_duplicate_non_unchain_settlement(monkeypatch):

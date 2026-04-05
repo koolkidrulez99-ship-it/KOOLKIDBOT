@@ -8,6 +8,10 @@
   #jokerjoeProfileUi .digit-cell{padding:8px !important;}
   #jokerjoeProfileUi .jokerjoe-btn-stack{gap:7px !important;}
   #jokerjoeProfileUi .jokerjoe-history-grid{grid-template-columns:repeat(2, minmax(0,1fr)) !important; gap:8px !important;}
+  #jokerjoeProfileUi .jokerjoe-budget-row{grid-template-columns:minmax(84px,0.78fr) minmax(0,1.22fr) !important;}
+  #jokerjoeProfileUi .jokerjoe-budget-row select{font-size:12px !important; padding:8px 6px !important;}
+  #jokerjoeProfileUi .jokerjoe-budget-input-row{grid-template-columns:minmax(0,1fr) auto !important; gap:6px !important;}
+  #jokerjoeProfileUi .jokerjoe-budget-input-row button{min-width:68px !important; padding:8px 8px !important; font-size:11px !important;}
 }
 
 .ui-group{background:#0f172a;border:1px solid #334155;border-radius:12px;overflow:hidden}
@@ -51,7 +55,7 @@
             <input id="barrier" type="number" min="0" max="9" step="1" value="5" style="width:100%;">
           </div>
         </div>
-        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-top:10px; align-items:end;">
+        <div class="jokerjoe-budget-row" style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-top:10px; align-items:end;">
           <div>
             <div style="color:#94a3b8; font-size:12px;">Duration</div>
             <select id="durationTicks" style="width:100%; min-height:40px; font-size:13px; padding:8px 10px;">
@@ -69,7 +73,7 @@
           </div>
           <div>
             <div style="color:#94a3b8; font-size:12px;">Budget</div>
-            <div style="display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:center;">
+            <div class="jokerjoe-budget-input-row" style="display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:center;">
               <input id="jokerjoeBudget" data-draft-ignore="1" type="number" min="0" step="0.01" value="" placeholder="Budget cap" style="width:100%; min-height:40px; padding:8px 10px;">
               <button type="button" onclick="saveProfileBudget('JOKERJOE')" style="min-width:78px; min-height:40px; padding:8px 10px; font-size:12px; background:#0ea5e9; border-radius:12px;">Set Budget</button>
             </div>

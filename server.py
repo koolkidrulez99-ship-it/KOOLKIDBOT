@@ -185,7 +185,13 @@ DERIV_WS_STALE_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_STALE_TIMEOUT_SEC", 
 DERIV_WS_PING_INTERVAL_SEC = float(os.environ.get("DERIV_WS_PING_INTERVAL_SEC", "20"))
 DERIV_WS_PING_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_PING_TIMEOUT_SEC", "10"))
 MUTANT_DEPLOY_GATE_ENABLED = str(os.environ.get("MUTANT_DEPLOY_GATE_ENABLED", "1")).strip().lower() not in {"0", "false", "no", "off"}
-MUTANT_ALLOWED_EMAIL = str(os.environ.get("MUTANT_ALLOWED_EMAIL", "koolkidrulez99@gmail.com") or "").strip().lower()
+MUTANT_ALLOWED_ACCOUNT = str(
+    os.environ.get(
+        "MUTANT_ALLOWED_ACCOUNT",
+        os.environ.get("MUTANT_ALLOWED_EMAIL", "koolkidrulez99@gmail.com"),
+    )
+    or ""
+).strip().lower()
 MUTANT_UNDER_CONSTRUCTION_MESSAGE = "Mutant is under construction on the deployed version."
 
 
@@ -452,25 +458,36 @@ def _request_host_is_local():
         return host.endswith(".local")
 
 
-def _current_user_email():
-    username = session.get("user")
+def _current_user_mutant_identity():
+    username = str(session.get("user") or "").strip().lower()
     if not username:
-        return ""
+        return {"username": "", "email": ""}
     user_row = _get_user_row(username) or {}
-    return str(user_row.get("email") or "").strip().lower()
+    return {
+        "username": username,
+        "email": str(user_row.get("email") or "").strip().lower(),
+    }
 
 
 def _mutant_access_state():
     local_request = _request_host_is_local()
-    user_email = _current_user_email()
-    email_override = bool(MUTANT_ALLOWED_EMAIL and user_email and user_email == MUTANT_ALLOWED_EMAIL)
-    enabled = (not MUTANT_DEPLOY_GATE_ENABLED) or local_request or email_override
+    identity = _current_user_mutant_identity()
+    allowed_account = MUTANT_ALLOWED_ACCOUNT
+    username_override = bool(
+        allowed_account and identity.get("username") and identity.get("username") == allowed_account
+    )
+    email_override = bool(
+        allowed_account and identity.get("email") and identity.get("email") == allowed_account
+    )
+    enabled = (not MUTANT_DEPLOY_GATE_ENABLED) or local_request or username_override or email_override
     return {
         "enabled": bool(enabled),
         "under_construction": not bool(enabled),
         "local": bool(local_request),
+        "username_override": bool(username_override),
         "email_override": bool(email_override),
-        "user_email": user_email,
+        "user_username": identity.get("username") or "",
+        "user_email": identity.get("email") or "",
         "message": "" if enabled else MUTANT_UNDER_CONSTRUCTION_MESSAGE,
     }
 
@@ -1158,7 +1175,7 @@ def _profile_budget_snapshot(state, profile=None):
     configured_budget = _effective_trade_balance(entry.get("amount", 0.0))
     realized_pnl = round(_safe_money(entry.get("realized_pnl", 0.0)), 2)
     reserved = _effective_trade_balance(entry.get("reserved", 0.0))
-    total_balance = _effective_trade_balance(state.get("balance", 0.0))
+    total_balance = _get_effective_state_balance(state)
     enabled = configured_budget > 0.0
 
     if enabled:
@@ -1209,7 +1226,7 @@ def _format_state_money(state, value, *, signed=False, trim_trailing=False, fall
 def _build_balance_payload(state, profile=None):
     snapshot = _profile_budget_snapshot(state, profile)
     return {
-        "balance": round(_safe_money(state.get("balance", 0.0)), 2),
+        "balance": _get_effective_state_balance(state),
         "display_balance": snapshot.get("display_balance", 0.0),
         "total_balance": snapshot.get("total_balance", 0.0),
         "session_start_balance": state.get("session_start_balance"),
@@ -1391,6 +1408,8 @@ def _build_default_client_state():
         },
         "balance": 0.0,
         "last_live_balance": 0.0,
+        "last_live_balance_updated_at": 0.0,
+        "local_balance_adjustment": 0.0,
         "balance_updated_at": 0.0,
         "session_start_balance": None,
         "loginid": "UNKNOWN",
@@ -2035,7 +2054,7 @@ def auto_session_status():
     _cid, state = get_client_state()
     payload = get_auto_session_status(state)
     payload["connected"] = bool(state.get("ws_connected"))
-    payload["balance"] = round(float(state.get("balance", 0.0) or 0.0), 2)
+    payload["balance"] = _get_effective_state_balance(state)
     payload["koolkid_dashboard"] = _get_koolkid_auto_trade_dashboard_payload(state)
     return jsonify(payload)
 
@@ -2054,7 +2073,7 @@ def auto_session_start():
         requested_budget = float(payload.get("budget", 100) or 0.0)
     except Exception:
         requested_budget = 0.0
-    live_balance = round(float(state.get("balance", 0.0) or 0.0), 2)
+    live_balance = _get_effective_state_balance(state)
     if live_balance <= 0:
         return jsonify({"ok": False, "error": "Your live balance is not ready yet"}), 400
     if requested_budget > live_balance:
@@ -2145,6 +2164,17 @@ def _effective_trade_balance(balance):
     return round(value + 1e-9, 2)
 
 
+def _get_effective_state_balance(state):
+    if not isinstance(state, dict):
+        return 0.0
+    current_balance = _safe_money(state.get("balance", 0.0))
+    last_live_balance = _safe_money(state.get("last_live_balance", 0.0))
+    local_adjustment = _safe_money(state.get("local_balance_adjustment", 0.0))
+    if last_live_balance > 0.0:
+        return _effective_trade_balance(last_live_balance + local_adjustment)
+    return _effective_trade_balance(current_balance)
+
+
 def _estimate_profile_open_budget_exposure(state, profile):
     profile_key = _normalize_profile_budget_key(profile)
     total = 0.0
@@ -2174,38 +2204,46 @@ def _estimate_profile_open_budget_exposure(state, profile):
 
 
 def _resolve_post_contract_balance(state, profit):
-    try:
-        current_balance = float(state.get("balance", 0.0) or 0.0)
-    except Exception:
-        current_balance = 0.0
-    try:
-        last_live_balance = float(state.get("last_live_balance", 0.0) or 0.0)
-    except Exception:
-        last_live_balance = 0.0
-    try:
-        profit_value = float(profit or 0.0)
-    except Exception:
-        profit_value = 0.0
-    try:
-        last_balance_update_at = float(state.get("balance_updated_at", 0.0) or 0.0)
-    except Exception:
-        last_balance_update_at = 0.0
+    current_balance = _get_effective_state_balance(state)
+    last_live_balance = _safe_money(state.get("last_live_balance", 0.0))
+    local_adjustment = _safe_money(state.get("local_balance_adjustment", 0.0))
+    profit_value = _safe_money(profit, 0.0)
+    last_live_balance_updated_at = _safe_money(state.get("last_live_balance_updated_at", 0.0))
+    last_balance_update_at = _safe_money(state.get("balance_updated_at", 0.0))
 
     now_ts = time.time()
-    # If the Deriv balance stream refreshed moments ago, trust that value and
-    # avoid subtracting or adding the same settled profit twice.
-    if last_balance_update_at and (now_ts - last_balance_update_at) <= 0.75:
+    # If a real Deriv balance update just arrived, trust that live number and
+    # do not immediately re-apply the same settled profit again.
+    if (
+        last_live_balance_updated_at
+        and (now_ts - last_live_balance_updated_at) <= 0.75
+        and abs(current_balance - _effective_trade_balance(last_live_balance)) <= 0.01
+    ):
+        state["balance"] = current_balance
+        state["balance_updated_at"] = now_ts
         return current_balance
 
-    base_balance = current_balance
-    if base_balance <= 0.0 and last_live_balance > 0.0:
-        base_balance = last_live_balance
+    if (
+        not last_live_balance_updated_at
+        and not local_adjustment
+        and last_balance_update_at
+        and (now_ts - last_balance_update_at) <= 0.75
+        and (last_live_balance <= 0.0 or abs(current_balance - _effective_trade_balance(last_live_balance)) <= 0.01)
+    ):
+        state["balance"] = current_balance
+        state["balance_updated_at"] = now_ts
+        return current_balance
 
-    next_balance = base_balance + profit_value
+    if last_live_balance > 0.0:
+        next_adjustment = round(local_adjustment + profit_value, 2)
+        next_balance = _effective_trade_balance(last_live_balance + next_adjustment)
+        state["local_balance_adjustment"] = next_adjustment
+    else:
+        next_balance = _effective_trade_balance(current_balance + profit_value)
+        state["local_balance_adjustment"] = 0.0
+
     state["balance"] = next_balance
     state["balance_updated_at"] = now_ts
-    if next_balance > 0.0:
-        state["last_live_balance"] = next_balance
     return next_balance
 
 
@@ -2221,10 +2259,7 @@ def send_buy(client_id, contract_type, stake, symbol, barrier, duration=1, durat
         stake_value = float(stake)
     except Exception:
         stake_value = 0.0
-    try:
-        balance_value = float(state.get("balance", 0.0) or 0.0)
-    except Exception:
-        balance_value = 0.0
+    balance_value = _get_effective_state_balance(state)
     if stake_value > 0 and (_effective_trade_balance(balance_value) + 1e-9) < stake_value:
         try:
             socketio.emit("api_error", {"message": "Insufficient funds to place trade"}, room=client_id)
@@ -2334,10 +2369,7 @@ def send_buy_with_profile(
         stake_value = float(stake)
     except Exception:
         stake_value = 0.0
-    try:
-        balance_value = float(state.get("balance", 0.0) or 0.0)
-    except Exception:
-        balance_value = 0.0
+    balance_value = _get_effective_state_balance(state)
     if (
         not bool(skip_local_balance_check)
         and stake_value > 0
@@ -3950,10 +3982,7 @@ def _check_ntt_pair_balance(state, plan, *, failure_prefix="Trade failed"):
         normalized.append((side, stake, item[2]))
         total_stake += stake
 
-    try:
-        balance = max(0.0, float(state.get("balance", 0.0) or 0.0))
-    except Exception:
-        balance = 0.0
+    balance = _get_effective_state_balance(state)
 
     snapshot = _profile_budget_snapshot(state, "NTT")
     budget_remaining = _safe_money(snapshot.get("remaining_budget"))
@@ -3974,9 +4003,10 @@ def _ntt_payload_response(state):
     _check_ntt_risk_block(state)
     strat = (state.get("strategies") or {}).get("NTT")
     stats_payload = {}
+    effective_balance = _get_effective_state_balance(state)
     if strat and hasattr(strat, "get_stats_payload"):
         try:
-            stats_payload = strat.get_stats_payload(state.get("balance", 0.0), state.get("session_start_balance")) or {}
+            stats_payload = strat.get_stats_payload(effective_balance, state.get("session_start_balance")) or {}
         except Exception:
             stats_payload = {}
     active_contracts = [
@@ -4410,10 +4440,7 @@ def _send_ntt_trade(client_id, *, side, stake, symbol, barrier, duration, durati
         return False, "Invalid stake"
     if stake <= 0:
         return False, "Stake must be greater than 0"
-    try:
-        balance_value = float(state.get("balance", 0.0) or 0.0)
-    except Exception:
-        balance_value = 0.0
+    balance_value = _get_effective_state_balance(state)
     if stake > 0 and (_effective_trade_balance(balance_value) + 1e-9) < stake:
         return False, "Insufficient funds"
     unit = _clean_ntt_duration_unit(duration_unit)
@@ -4507,10 +4534,7 @@ def _send_ntt_both_pair(
     if not budget_ok:
         return False, budget_msg, []
 
-    try:
-        balance_value = float(state.get("balance", 0.0) or 0.0)
-    except Exception:
-        balance_value = 0.0
+    balance_value = _get_effective_state_balance(state)
     if total_stake > 0 and (_effective_trade_balance(balance_value) + 1e-9) < total_stake:
         return False, f"Trade failed: need {_format_state_money(state, total_stake)} total balance for both trades", []
 
@@ -6275,10 +6299,7 @@ def _check_unchain_multi_balance(state, plan, *, trade_label="trade set", failur
             stake = 0.0
         normalized.append((side, stake, item[2]))
         total_stake += max(0.0, stake)
-    try:
-        balance = max(0.0, float(state.get("balance", 0.0) or 0.0))
-    except Exception:
-        balance = 0.0
+    balance = _get_effective_state_balance(state)
     available_limit = balance
     snapshot = _profile_budget_snapshot(state, "UNCHAIN")
     budget_remaining = _safe_money(snapshot.get("remaining_budget"))
@@ -7143,10 +7164,7 @@ def _check_unchain_pair_balance(state, plan, *, failure_prefix="Trade failed"):
             stake = 0.0
         normalized.append((side, stake, item[2]))
         total_stake += max(0.0, stake)
-    try:
-        balance = max(0.0, float(state.get("balance", 0.0) or 0.0))
-    except Exception:
-        balance = 0.0
+    balance = _get_effective_state_balance(state)
     available_limit = balance
     snapshot = _profile_budget_snapshot(state, "UNCHAIN")
     budget_remaining = _safe_money(snapshot.get("remaining_budget"))
@@ -12137,6 +12155,8 @@ def handle_on_message(client_id, ws, message, expected_nonce):
             state["balance"] = balance
             if balance > 0.0:
                 state["last_live_balance"] = balance
+                state["last_live_balance_updated_at"] = time.time()
+            state["local_balance_adjustment"] = 0.0
             state["balance_updated_at"] = time.time()
 
             if state["session_start_balance"] is None:
@@ -12171,6 +12191,8 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 state["balance"] = balance
                 if balance > 0.0:
                     state["last_live_balance"] = balance
+                    state["last_live_balance_updated_at"] = time.time()
+                state["local_balance_adjustment"] = 0.0
                 state["balance_updated_at"] = time.time()
                 _emit_balance_payload(client_id, state)
                 send_stats_update(client_id)
@@ -12800,7 +12822,7 @@ def send_stats_update(client_id):
     if not strategy or not hasattr(strategy, "get_stats_payload"):
         return
 
-    payload = strategy.get_stats_payload(state.get("balance", 0.0), state.get("session_start_balance"))
+    payload = strategy.get_stats_payload(_get_effective_state_balance(state), state.get("session_start_balance"))
     payload["profile"] = active_profile
     wins = int(payload.get("wins", 0) or 0)
     losses = int(payload.get("losses", 0) or 0)
@@ -14221,10 +14243,7 @@ def koolkid_half_auto_route():
     duration_unit = "t"
     total_stake = round(sum(float(v or 0.0) for v in (stakes or {}).values()), 2)
 
-    try:
-        balance_value = float(state.get("balance", 0.0) or 0.0)
-    except Exception:
-        balance_value = 0.0
+    balance_value = _get_effective_state_balance(state)
     budget_ok, budget_msg, _budget_snapshot = _check_profile_budget_capacity(state, "KOOLKID", total_stake)
     if not budget_ok:
         try:
