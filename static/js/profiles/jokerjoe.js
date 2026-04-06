@@ -1,6 +1,6 @@
 (function () {
   const PROFILE = "JOKERJOE";
-  const state = { lastSocket: null, socketBound: false, autoModes: {}, kidgxBarrier: 5, matchesAnalysisOn: false, matchesLastKey: "", matchesObserverBound: false, matchSniperOn: false, matchSniperCooldownUntil: 0, matchSniperActiveDigit: null, matchSniperConsumed: false, matchSniperBusy: false, matchesSnapshot: null, matchesSorted: [], matchSniper5xOn: false, matchSniper5xCooldownUntil: 0, matchSniper5xBusy: false, matchSniper5xLastTopKey: "", matchSniper5xRotationSets: null, matchSniper5xRotationIndex: 0, matchSniper5xCurrentDigits: [], aiAutoModeChoice: "golden_digits", aiAutoLowestTradeCountChoice: 5, aiAutoLowestLocalOn: false, aiAutoModalOpen: false, aiLowestLastTickCount: 0, aiLowestTouches: {}, aiLowestArmed: null, aiLowestBatchActive: false, aiLowestBatchPending: 0, aiLowestBatchBarrier: null, aiLowestBatchProfit: 0, aiLowestCooldownUntil: 0, aiLowestSubmitting: false, aiLowestRecoveryDeficit: 0, aiLowestRecoveryOnly: false, randomMatchesDiffersOn: false, randomMatchesDiffersMode: "DIFFERS", randomMatchesDiffersModalOpen: false, randomMatchesDiffersBusy: false, randomMatchesDiffersCooldownUntil: 0, randomMatchesDiffersLastSignalKey: "", randomMatchesDiffersTickHistory: [], randomMatchesDiffersLastTickCount: 0, randomMatchesDiffersSnapshot: null };
+  const state = { lastSocket: null, socketBound: false, autoModes: {}, kidgxBarrier: 5, matchesAnalysisOn: false, matchesLastKey: "", matchesObserverBound: false, matchSniperOn: false, matchSniperCooldownUntil: 0, matchSniperActiveDigit: null, matchSniperConsumed: false, matchSniperBusy: false, matchesSnapshot: null, matchesSorted: [], matchSniper5xOn: false, matchSniper5xCooldownUntil: 0, matchSniper5xBusy: false, matchSniper5xLastTopKey: "", matchSniper5xRotationSets: null, matchSniper5xRotationIndex: 0, matchSniper5xCurrentDigits: [], aiAutoModeChoice: "golden_digits", aiAutoLowestTradeCountChoice: 5, aiAutoLowestLocalOn: false, aiAutoModalOpen: false, aiLowestLastTickCount: 0, aiLowestTouches: {}, aiLowestArmed: null, aiLowestBatchActive: false, aiLowestBatchPending: 0, aiLowestBatchBarrier: null, aiLowestBatchProfit: 0, aiLowestCooldownUntil: 0, aiLowestSubmitting: false, aiLowestRecoveryDeficit: 0, aiLowestRecoveryOnly: false, randomMatchesDiffersOn: false, randomMatchesDiffersMode: "DIFFERS", randomMatchesDiffersModalOpen: false, randomMatchesDiffersBusy: false, randomMatchesDiffersCooldownUntil: 0, randomMatchesDiffersLastSignalKey: "", randomMatchesDiffersTickHistory: [], randomMatchesDiffersLastTickCount: 0, randomMatchesDiffersSnapshot: null, blackcard: { lastDigit: null, recentDigits: [], busy: false } };
 
   function App() { return window.BotApp || {}; }
   function isActive() { try { return typeof activeProfile !== "undefined" && activeProfile === PROFILE; } catch (e) { return false; } }
@@ -24,6 +24,75 @@
   }
 
   function getEl(id) { return document.getElementById(id); }
+
+  function getBlackcardPopupJokerjoe() { return getEl("blackcardPopupJokerjoe"); }
+
+  function getBlackcardDigitButtonsJokerjoe() {
+    return Array.from(document.querySelectorAll("[data-blackcard-digit-jokerjoe]"));
+  }
+
+  function positionBlackcardPopupJokerjoe() {
+    const popup = getBlackcardPopupJokerjoe();
+    if (!popup) return;
+    popup.style.visibility = "hidden";
+    popup.style.display = "block";
+    const width = Math.max(popup.offsetWidth || 340, 300);
+    const height = Math.max(popup.offsetHeight || 320, 280);
+    const left = Math.max(10, Math.round((window.innerWidth - width) / 2));
+    const top = Math.max(20, Math.round((window.innerHeight - height) / 2));
+    popup.style.left = `${left}px`;
+    popup.style.top = `${top}px`;
+    popup.style.visibility = "visible";
+  }
+
+  function renderBlackcardJokerjoe() {
+    const popup = getBlackcardPopupJokerjoe();
+    const liveDigitEl = getEl("blackcardLiveDigitJokerjoe");
+    const statusEl = getEl("blackcardStatusJokerjoe");
+    const recentEl = getEl("blackcardRecentDigitsJokerjoe");
+    const lastDigit = Number(state.blackcard.lastDigit);
+    const hasDigit = Number.isInteger(lastDigit) && lastDigit >= 0 && lastDigit <= 9;
+    const recentDigits = Array.isArray(state.blackcard.recentDigits) ? state.blackcard.recentDigits.slice(-12) : [];
+    const busy = !!state.blackcard.busy;
+
+    if (liveDigitEl) {
+      liveDigitEl.innerText = hasDigit ? String(lastDigit) : "-";
+      liveDigitEl.style.borderColor = hasDigit ? "#38bdf8" : "#334155";
+      liveDigitEl.style.boxShadow = hasDigit ? "0 0 0 1px rgba(56,189,248,0.35), 0 10px 24px rgba(15,23,42,0.45)" : "0 10px 24px rgba(15,23,42,0.45)";
+      liveDigitEl.style.color = hasDigit ? "#67e8f9" : "#f8fafc";
+    }
+    if (statusEl) {
+      if (busy) statusEl.innerText = "Sending DIFFERS trade...";
+      else if (hasDigit) statusEl.innerText = `Last digit ${lastDigit} just played. Tap any digit to send DIFFERS instantly.`;
+      else statusEl.innerText = "Waiting for market ticks...";
+      statusEl.style.color = busy ? "#38bdf8" : "#cbd5e1";
+    }
+    if (recentEl) {
+      recentEl.innerText = recentDigits.length ? `Recent digits: ${recentDigits.join(" ")}` : "Recent digits: warming up...";
+    }
+    getBlackcardDigitButtonsJokerjoe().forEach((btn) => {
+      const digit = Number(btn.getAttribute("data-blackcard-digit-jokerjoe"));
+      const isLast = hasDigit && digit === lastDigit;
+      btn.disabled = busy;
+      btn.style.cursor = busy ? "wait" : "pointer";
+      btn.style.opacity = busy ? "0.75" : "1";
+      btn.style.background = isLast ? "linear-gradient(135deg,#0f766e,#06b6d4)" : "#111827";
+      btn.style.borderColor = isLast ? "#67e8f9" : "#334155";
+      btn.style.boxShadow = isLast ? "0 0 0 1px rgba(103,232,249,0.4), 0 10px 18px rgba(6,182,212,0.18)" : "none";
+    });
+    if (popup && popup.style.display === "block") positionBlackcardPopupJokerjoe();
+  }
+
+  function trackBlackcardTickJokerjoe(data) {
+    const digit = Number((data && data.digit) ?? (data && data.last_digit));
+    if (!Number.isInteger(digit) || digit < 0 || digit > 9) return;
+    state.blackcard.lastDigit = digit;
+    const next = Array.isArray(state.blackcard.recentDigits) ? state.blackcard.recentDigits.slice() : [];
+    next.push(digit);
+    while (next.length > 12) next.shift();
+    state.blackcard.recentDigits = next;
+    renderBlackcardJokerjoe();
+  }
 
   function setText(id, value) {
     const el = getEl(id);
@@ -1133,6 +1202,11 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
         if (!isActive()) return;
         onJokerjoeTradeResultForLowestAI(entry || {});
       });
+
+      socket.on("tick", (data) => {
+        if (!isActive()) return;
+        trackBlackcardTickJokerjoe(data || {});
+      });
     } catch (e) {}
   }
 
@@ -1164,6 +1238,15 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     setTimeout(() => { sync({ force: true }); }, 150);
   }
 
+  function bindBlackcardWindowEventsJokerjoe() {
+    if (window.__blackcardJokerjoeBound) return;
+    window.__blackcardJokerjoeBound = true;
+    window.addEventListener("resize", () => {
+      const popup = getBlackcardPopupJokerjoe();
+      if (popup && popup.style.display === "block") positionBlackcardPopupJokerjoe();
+    });
+  }
+
   function patchKidgambleConfirm() {
     if (window.__kidgambleXConfirmPatched) return;
     if (typeof window.kidgambleX !== "function") return;
@@ -1182,6 +1265,7 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     patchKidgambleConfirm();
     bindSocketListeners();
     bindBarrierSync();
+    bindBlackcardWindowEventsJokerjoe();
     bindMatchesAnalysisObserverJokerjoe();
     updateButtons();
     updateMatchesAnalysisButtonJokerjoe();
@@ -1193,6 +1277,7 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     updateRandomMatchesDiffersButtonJokerjoe();
     updateRandomMatchesDiffersStatusJokerjoe();
     updateRandomMatchesDiffersModalUiJokerjoe();
+    renderBlackcardJokerjoe();
   }
 
   async function afterLoadProfileUI() {
@@ -1200,6 +1285,7 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     patchKidgambleConfirm();
     bindSocketListeners();
     bindBarrierSync();
+    bindBlackcardWindowEventsJokerjoe();
     bindMatchesAnalysisObserverJokerjoe();
     updateButtons();
     updateMatchesAnalysisButtonJokerjoe();
@@ -1211,6 +1297,7 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     updateRandomMatchesDiffersButtonJokerjoe();
     updateRandomMatchesDiffersStatusJokerjoe();
     updateRandomMatchesDiffersModalUiJokerjoe();
+    renderBlackcardJokerjoe();
   }
 
   async function onActivate() {
@@ -1218,6 +1305,7 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     patchKidgambleConfirm();
     bindSocketListeners();
     bindBarrierSync();
+    bindBlackcardWindowEventsJokerjoe();
     bindMatchesAnalysisObserverJokerjoe();
     state.kidgxBarrier = currentBarrier();
     updateButtons();
@@ -1230,6 +1318,7 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     updateRandomMatchesDiffersButtonJokerjoe();
     updateRandomMatchesDiffersStatusJokerjoe();
     updateRandomMatchesDiffersModalUiJokerjoe();
+    renderBlackcardJokerjoe();
     refreshMatchesAnalysisJokerjoe();
   }
 
@@ -1381,6 +1470,44 @@ window.toggleEdgeBrainJokerjoe = function () { return toggleAdvancedModeJokerjoe
 window.toggleSmartFlowJokerjoe = function () { return toggleAdvancedModeJokerjoe("smart_flow", "🎯 SMART FLOW"); };
 window.toggleMetaAIJokerjoe = function () { return toggleAdvancedModeJokerjoe("meta_ai", "⚡ META AI"); };
 window.toggleKidracksAIJokerjoe = function () { return toggleAdvancedModeJokerjoe("kidracks_ai", "🤓 KIDRACKS AI"); };
+
+window.showBlackcardPopupJokerjoe = function () {
+  const popup = getBlackcardPopupJokerjoe();
+  if (!popup) return;
+  renderBlackcardJokerjoe();
+  positionBlackcardPopupJokerjoe();
+};
+
+window.hideBlackcardPopupJokerjoe = function () {
+  const popup = getBlackcardPopupJokerjoe();
+  if (popup) popup.style.display = "none";
+};
+
+window.sendBlackcardDiffersJokerjoe = async function (digit) {
+  const selectedDigit = Number(digit);
+  if (!Number.isInteger(selectedDigit) || selectedDigit < 0 || selectedDigit > 9) {
+    safeToast("Pick a valid digit for DIFFERS.", "error");
+    return;
+  }
+  if (state.blackcard.busy) return;
+  if (typeof apiConnected !== "undefined" && !apiConnected) {
+    safeToast("Connect your API first.", "error");
+    return;
+  }
+
+  state.blackcard.busy = true;
+  renderBlackcardJokerjoe();
+  try {
+    const result = await placeOneDiffersTradeJokerjoe(selectedDigit);
+    if (result && result.exact) safeToast(`DIFFERS ${selectedDigit} sent instantly.`, "success");
+    else safeToast(`DIFFERS ${selectedDigit} failed`, "error");
+  } catch (e) {
+    safeToast(`DIFFERS ${selectedDigit} failed`, "error");
+  } finally {
+    state.blackcard.busy = false;
+    renderBlackcardJokerjoe();
+  }
+};
 
   if (typeof window.registerProfileModule === "function") {
     window.registerProfileModule(PROFILE, { onMount, afterLoadProfileUI, onActivate });

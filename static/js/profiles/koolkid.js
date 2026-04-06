@@ -620,6 +620,7 @@
         if (!isActive()) return;
         updateModeButtonsFromPayload(modes || {});
       });
+
     } catch (e) {}
   }
 
@@ -638,6 +639,7 @@
         renderKid2vixKoolkid();
       }
     });
+
   }
 
   async function onMount() {

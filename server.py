@@ -184,6 +184,8 @@ HEARTBEAT_TIMEOUT_SEC = 10**12
 DERIV_WS_STALE_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_STALE_TIMEOUT_SEC", "18"))
 DERIV_WS_PING_INTERVAL_SEC = float(os.environ.get("DERIV_WS_PING_INTERVAL_SEC", "20"))
 DERIV_WS_PING_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_PING_TIMEOUT_SEC", "10"))
+DERIV_WS_CONNECT_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_CONNECT_TIMEOUT_SEC", "12"))
+DERIV_WS_AUTHORIZE_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_AUTHORIZE_TIMEOUT_SEC", "8"))
 MUTANT_DEPLOY_GATE_ENABLED = str(os.environ.get("MUTANT_DEPLOY_GATE_ENABLED", "1")).strip().lower() not in {"0", "false", "no", "off"}
 MUTANT_ALLOWED_ACCOUNT = str(
     os.environ.get(
@@ -1309,6 +1311,8 @@ def _build_default_client_state():
         "ws_transport_connected": False,  # underlying transport open
         "ws_last_message_at": 0.0,
         "ws_last_authorized_at": 0.0,
+        "ws_connect_started_at": 0.0,
+        "ws_authorize_deadline_at": 0.0,
         "ws_stale_notified_at": 0.0,
         "active_profile": "KOOLKID",
         # Keep backend default market in sync with the frontend selector default.
@@ -2620,10 +2624,14 @@ def _default_unchain_hl_state():
         "directional_auto_last_reason": "⚡ AUTO TRADE · 📈 HIGHER / 📉 LOWER is OFF.",
         "primordial_blue_enabled": False,
         "primordial_blue_cycle_active": False,
+        "primordial_blue_launch_pending": False,
+        "primordial_blue_launch_pending_at": 0.0,
         "primordial_blue_next_fire_at": 0.0,
         "primordial_blue_last_reason": "🔵 Primordial Blue is OFF.",
         "hybrid_enabled": False,
         "hybrid_cycle_active": False,
+        "hybrid_launch_pending": False,
+        "hybrid_launch_pending_at": 0.0,
         "hybrid_next_fire_at": 0.0,
         "hybrid_last_reason": "🟢 Hybrid is OFF.",
         "contract_selector_mode": "AUTO_SELECT",
@@ -2799,6 +2807,11 @@ def _ensure_unchain_hl_state(state):
     )
     cur["primordial_blue_enabled"] = bool(cur.get("primordial_blue_enabled", False))
     cur["primordial_blue_cycle_active"] = bool(cur.get("primordial_blue_cycle_active", False))
+    cur["primordial_blue_launch_pending"] = bool(cur.get("primordial_blue_launch_pending", False))
+    try:
+        cur["primordial_blue_launch_pending_at"] = max(0.0, float(cur.get("primordial_blue_launch_pending_at", 0.0) or 0.0))
+    except Exception:
+        cur["primordial_blue_launch_pending_at"] = 0.0
     try:
         cur["primordial_blue_next_fire_at"] = max(0.0, float(cur.get("primordial_blue_next_fire_at", 0.0) or 0.0))
     except Exception:
@@ -2806,6 +2819,11 @@ def _ensure_unchain_hl_state(state):
     cur["primordial_blue_last_reason"] = str(cur.get("primordial_blue_last_reason") or "🔵 Primordial Blue is OFF.")
     cur["hybrid_enabled"] = bool(cur.get("hybrid_enabled", False))
     cur["hybrid_cycle_active"] = bool(cur.get("hybrid_cycle_active", False))
+    cur["hybrid_launch_pending"] = bool(cur.get("hybrid_launch_pending", False))
+    try:
+        cur["hybrid_launch_pending_at"] = max(0.0, float(cur.get("hybrid_launch_pending_at", 0.0) or 0.0))
+    except Exception:
+        cur["hybrid_launch_pending_at"] = 0.0
     try:
         cur["hybrid_next_fire_at"] = max(0.0, float(cur.get("hybrid_next_fire_at", 0.0) or 0.0))
     except Exception:
@@ -3128,6 +3146,8 @@ def _mark_ws_unhealthy_and_reconnect(client_id, state, message, *, emit_error=Tr
     now_ts = time.time()
     state["ws_connected"] = False
     state["ws_transport_connected"] = False
+    state["ws_connect_started_at"] = 0.0
+    state["ws_authorize_deadline_at"] = 0.0
     state["loginid"] = "UNKNOWN"
     socketio.emit(
         "connection_status",
@@ -3177,6 +3197,43 @@ def _ensure_trade_socket_ready(client_id, state, *, emit_error=True):
                 pass
         return False, "Not connected"
     return True, None
+
+
+def _check_ws_connect_timeout(client_id, state, now_ts=None):
+    if not isinstance(state, dict):
+        return False
+    if bool(state.get("ws_connected")):
+        return False
+    if not str(state.get("api_token", "") or "").strip():
+        return False
+    if now_ts is None:
+        now_ts = time.time()
+    try:
+        connect_started_at = float(state.get("ws_connect_started_at", 0.0) or 0.0)
+    except Exception:
+        connect_started_at = 0.0
+    try:
+        authorize_deadline_at = float(state.get("ws_authorize_deadline_at", 0.0) or 0.0)
+    except Exception:
+        authorize_deadline_at = 0.0
+    transport_connected = bool(state.get("ws_transport_connected"))
+    if transport_connected and authorize_deadline_at and now_ts >= authorize_deadline_at:
+        _mark_ws_unhealthy_and_reconnect(
+            client_id,
+            state,
+            "Deriv authorization timed out. Reconnecting now...",
+            emit_error=False,
+        )
+        return True
+    if (not transport_connected) and connect_started_at and (now_ts - connect_started_at) >= float(DERIV_WS_CONNECT_TIMEOUT_SEC):
+        _mark_ws_unhealthy_and_reconnect(
+            client_id,
+            state,
+            "Deriv connection timed out. Reconnecting now...",
+            emit_error=False,
+        )
+        return True
+    return False
 
 
 def _ensure_ntt_state(state):
@@ -6183,6 +6240,8 @@ def _disable_unchain_primordial_blue(u, *, reason=None):
         return
     u["primordial_blue_enabled"] = False
     u["primordial_blue_cycle_active"] = False
+    u["primordial_blue_launch_pending"] = False
+    u["primordial_blue_launch_pending_at"] = 0.0
     u["primordial_blue_next_fire_at"] = 0.0
     if reason is not None:
         u["primordial_blue_last_reason"] = str(reason)
@@ -6212,7 +6271,7 @@ def _get_unchain_primordial_blue_status(state, u=None, active_count=None):
             label = "WAITING API"
         elif not supported:
             label = "WAITING V75"
-        elif active_count > 0 or bool(u.get("primordial_blue_cycle_active")):
+        elif active_count > 0 or bool(u.get("primordial_blue_cycle_active")) or bool(u.get("primordial_blue_launch_pending")):
             label = "RUNNING"
         else:
             next_fire_at = float(u.get("primordial_blue_next_fire_at", 0.0) or 0.0)
@@ -6236,6 +6295,8 @@ def _disable_unchain_hybrid(u, *, reason=None):
         return
     u["hybrid_enabled"] = False
     u["hybrid_cycle_active"] = False
+    u["hybrid_launch_pending"] = False
+    u["hybrid_launch_pending_at"] = 0.0
     u["hybrid_next_fire_at"] = 0.0
     if reason is not None:
         u["hybrid_last_reason"] = str(reason)
@@ -6265,7 +6326,7 @@ def _get_unchain_hybrid_status(state, u=None, active_count=None):
             label = "WAITING API"
         elif not supported:
             label = "WAITING V75"
-        elif active_count > 0 or bool(u.get("hybrid_cycle_active")):
+        elif active_count > 0 or bool(u.get("hybrid_cycle_active")) or bool(u.get("hybrid_launch_pending")):
             label = "RUNNING"
         else:
             next_fire_at = float(u.get("hybrid_next_fire_at", 0.0) or 0.0)
@@ -9865,6 +9926,8 @@ def _run_unchain_primordial_blue(client_id, state):
     now_ts = time.time()
     open_entries = _get_open_unchain_active_entries(state)
     if open_entries:
+        u["primordial_blue_launch_pending"] = False
+        u["primordial_blue_launch_pending_at"] = 0.0
         u["primordial_blue_cycle_active"] = True
         u["primordial_blue_last_reason"] = (
             f"Primordial Blue is waiting for the current {plan_info.get('market_label') or 'V75'} cycle to finish."
@@ -9872,6 +9935,8 @@ def _run_unchain_primordial_blue(client_id, state):
         return False
 
     if bool(u.get("primordial_blue_cycle_active")):
+        u["primordial_blue_launch_pending"] = False
+        u["primordial_blue_launch_pending_at"] = 0.0
         u["primordial_blue_cycle_active"] = False
         u["primordial_blue_next_fire_at"] = now_ts + 0.05
         u["primordial_blue_last_reason"] = (
@@ -9879,6 +9944,17 @@ def _run_unchain_primordial_blue(client_id, state):
         )
         u["last_action"] = "Primordial Blue cycle settled"
         return False
+
+    launch_pending = bool(u.get("primordial_blue_launch_pending"))
+    launch_pending_at = float(u.get("primordial_blue_launch_pending_at", 0.0) or 0.0)
+    if launch_pending:
+        if launch_pending_at and (now_ts - launch_pending_at) <= 2.5:
+            u["primordial_blue_last_reason"] = (
+                f"Primordial Blue awaiting {plan_info.get('market_label') or 'V75'} contract confirmation."
+            )
+            return False
+        u["primordial_blue_launch_pending"] = False
+        u["primordial_blue_launch_pending_at"] = 0.0
 
     next_fire_at = float(u.get("primordial_blue_next_fire_at", 0.0) or 0.0)
     if next_fire_at and now_ts < next_fire_at:
@@ -9919,6 +9995,8 @@ def _run_unchain_primordial_blue(client_id, state):
 
     placed = []
     errors = []
+    u["primordial_blue_launch_pending"] = True
+    u["primordial_blue_launch_pending_at"] = now_ts
     for side, stake, barrier in normalized_plan:
         ok, msg = _send_unchain_hl_trade(
             client_id,
@@ -9949,6 +10027,8 @@ def _run_unchain_primordial_blue(client_id, state):
         else:
             u["last_action"] = f"Primordial Blue partial send ({' • '.join(placed)})"
     else:
+        u["primordial_blue_launch_pending"] = False
+        u["primordial_blue_launch_pending_at"] = 0.0
         u["primordial_blue_cycle_active"] = False
         u["primordial_blue_next_fire_at"] = now_ts + 0.5
         if errors:
@@ -9993,16 +10073,31 @@ def _run_unchain_hybrid(client_id, state):
     now_ts = time.time()
     open_entries = _get_open_unchain_active_entries(state)
     if open_entries:
+        u["hybrid_launch_pending"] = False
+        u["hybrid_launch_pending_at"] = 0.0
         u["hybrid_cycle_active"] = True
         u["hybrid_last_reason"] = f"Hybrid is waiting for the current {plan_info.get('market_label') or 'V75'} cycle to finish."
         return False
 
     if bool(u.get("hybrid_cycle_active")):
+        u["hybrid_launch_pending"] = False
+        u["hybrid_launch_pending_at"] = 0.0
         u["hybrid_cycle_active"] = False
         u["hybrid_next_fire_at"] = now_ts + 0.05
         u["hybrid_last_reason"] = f"Hybrid {plan_info.get('market_label') or 'V75'} cycle settled • waiting for the next clean tick."
         u["last_action"] = "Hybrid cycle settled"
         return False
+
+    launch_pending = bool(u.get("hybrid_launch_pending"))
+    launch_pending_at = float(u.get("hybrid_launch_pending_at", 0.0) or 0.0)
+    if launch_pending:
+        if launch_pending_at and (now_ts - launch_pending_at) <= 2.5:
+            u["hybrid_last_reason"] = (
+                f"Hybrid awaiting {plan_info.get('market_label') or 'V75'} contract confirmation."
+            )
+            return False
+        u["hybrid_launch_pending"] = False
+        u["hybrid_launch_pending_at"] = 0.0
 
     next_fire_at = float(u.get("hybrid_next_fire_at", 0.0) or 0.0)
     if next_fire_at and now_ts < next_fire_at:
@@ -10043,6 +10138,8 @@ def _run_unchain_hybrid(client_id, state):
 
     placed = []
     errors = []
+    u["hybrid_launch_pending"] = True
+    u["hybrid_launch_pending_at"] = now_ts
     for side, stake, barrier in normalized_plan:
         ok, msg = _send_unchain_hl_trade(
             client_id,
@@ -10073,6 +10170,8 @@ def _run_unchain_hybrid(client_id, state):
         else:
             u["last_action"] = f"Hybrid partial send ({' • '.join(placed)})"
     else:
+        u["hybrid_launch_pending"] = False
+        u["hybrid_launch_pending_at"] = 0.0
         u["hybrid_cycle_active"] = False
         u["hybrid_next_fire_at"] = now_ts + 0.5
         if errors:
@@ -12157,6 +12256,8 @@ def handle_on_message(client_id, ws, message, expected_nonce):
             # AUTHORIZED
             state["ws_connected"] = True
             state["ws_last_authorized_at"] = time.time()
+            state["ws_connect_started_at"] = 0.0
+            state["ws_authorize_deadline_at"] = 0.0
             loginid = data["authorize"].get("loginid", "UNKNOWN")
             balance = float(data["authorize"].get("balance", 0))
 
@@ -12851,8 +12952,9 @@ def handle_on_open(client_id, ws, expected_nonce):
     logger.info(f"[{client_id}] 🔌 WebSocket transport connected")
     state["ws_transport_connected"] = True
     state["ws_connected"] = False  # IMPORTANT: not authorized yet
-    state["ws_last_message_at"] = 0.0
+    state["ws_last_message_at"] = time.time()
     state["ws_last_authorized_at"] = 0.0
+    state["ws_authorize_deadline_at"] = time.time() + float(DERIV_WS_AUTHORIZE_TIMEOUT_SEC)
 
     api_token = state.get("api_token")
     if api_token:
@@ -12866,6 +12968,13 @@ def handle_on_error(client_id, ws, error, expected_nonce):
     if state.get("ws_nonce") != expected_nonce:
         return
     logger.error(f"[{client_id}] WebSocket Error: {error}")
+    state["ws_connected"] = False
+    state["ws_transport_connected"] = False
+    state["ws_authorize_deadline_at"] = 0.0
+    try:
+        ws.close()
+    except Exception:
+        pass
     socketio.emit("api_error", {"message": str(error)}, room=client_id)
 
 
@@ -12918,6 +13027,8 @@ def handle_on_close(client_id, ws, code, msg, expected_nonce):
     state["ws_transport_connected"] = False
     state["ws_last_message_at"] = 0.0
     state["ws_last_authorized_at"] = 0.0
+    state["ws_connect_started_at"] = 0.0
+    state["ws_authorize_deadline_at"] = 0.0
     state["loginid"] = "UNKNOWN"
     logger.warning(f"[{client_id}] 🔌 WebSocket Disconnected")
     socketio.emit("connection_status", {
@@ -12953,6 +13064,12 @@ def start_ws_for_client(client_id):
 
     # new stop event for this run
     state["ws_stop_event"] = threading.Event()
+    state["ws_connected"] = False
+    state["ws_transport_connected"] = False
+    state["ws_last_message_at"] = 0.0
+    state["ws_last_authorized_at"] = 0.0
+    state["ws_connect_started_at"] = time.time()
+    state["ws_authorize_deadline_at"] = 0.0
 
     def _on_message(ws, message, cid=client_id, nonce=expected_nonce):
         if state["ws_stop_event"].is_set():
@@ -13031,6 +13148,7 @@ def api_connection_status():
         return jsonify({"error": "Unauthorized"}), 403
 
     _cid, state = get_client_state()
+    _check_ws_connect_timeout(_cid, state)
     connected = bool(state.get("ws_connected")) and not _is_ws_stale(state)
     if not connected and state.get("ws_connected"):
         _mark_ws_unhealthy_and_reconnect(_cid, state, "Deriv connection went stale. Reconnecting now...", emit_error=False)

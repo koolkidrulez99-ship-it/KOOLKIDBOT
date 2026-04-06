@@ -128,3 +128,40 @@ def test_api_connection_status_reports_false_for_stale_socket(monkeypatch):
     assert state["ws_connected"] is False
     assert reconnects == [("cid-status", "nonce-2", 0.25)]
     assert any(event == "connection_status" and payload.get("connected") is False for event, payload, _room in emitted)
+
+
+def test_api_connection_status_reconnects_when_authorize_stays_pending_too_long(monkeypatch):
+    reconnects = []
+    emitted = []
+    ws = _DummyWs()
+    state = {
+        "ws_nonce": "nonce-auth",
+        "ws_connected": False,
+        "ws_transport_connected": True,
+        "ws_connect_started_at": time.time() - 10,
+        "ws_authorize_deadline_at": time.time() - 1,
+        "ws_last_message_at": time.time(),
+        "ws": ws,
+        "api_token": "token",
+        "ws_reconnect_pending": False,
+        "ws_stop_event": threading.Event(),
+        "balance": 55.0,
+        "profile_budgets": server._new_profile_budget_map(),
+        "active_profile": "KOOLKID",
+        "session_start_balance": None,
+        "loginid": "UNKNOWN",
+    }
+    monkeypatch.setattr(server, "login_required", lambda: True)
+    monkeypatch.setattr(server, "get_client_state", lambda: ("cid-auth", state))
+    monkeypatch.setattr(server.socketio, "emit", lambda event, payload=None, room=None: emitted.append((event, payload, room)))
+    monkeypatch.setattr(server, "_schedule_ws_reconnect", lambda cid, nonce, delay_sec=0.25: reconnects.append((cid, nonce, delay_sec)) or True)
+
+    with server.app.test_request_context("/api_connection_status"):
+        response = server.api_connection_status()
+
+    data = response.get_json()
+    assert data["connected"] is False
+    assert state["ws_transport_connected"] is False
+    assert ws.closed is True
+    assert reconnects == [("cid-auth", "nonce-auth", 0.25)]
+    assert any(event == "connection_status" and payload.get("connected") is False for event, payload, _room in emitted)

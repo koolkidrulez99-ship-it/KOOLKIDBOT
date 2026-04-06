@@ -3800,6 +3800,7 @@ function closeTransientUiOverlays(){
   try{ hideAutoBarrierPopup(); }catch(_err){}
   try{ hideSeqVixPopups(); }catch(_err){}
   try{ hideHalfAutoPopupKoolkid(); }catch(_err){}
+  try{ hideBlackcardPopupJokerjoe(); }catch(_err){}
   try{ closeHowToModal(); }catch(_err){}
 
   [
@@ -3808,6 +3809,7 @@ function closeTransientUiOverlays(){
     "seqVixJokerPopup",
     "seqVixKoolkidPopup",
     "halfAutoPopupKoolkid",
+    "blackcardPopupJokerjoe",
     "overAnalysisModalKoolkid",
   ].forEach((id)=>{
     const el = document.getElementById(id);

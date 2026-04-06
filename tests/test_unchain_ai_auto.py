@@ -2316,6 +2316,35 @@ def test_primordial_blue_waits_for_cycle_to_settle_before_rearming(monkeypatch):
     assert state["unchain_hl"]["primordial_blue_next_fire_at"] > 0.0
 
 
+def test_primordial_blue_launch_pending_blocks_duplicate_two_leg_send(monkeypatch):
+    state = {
+        "ws_connected": True,
+        "ws": object(),
+        "balance": 250.0,
+        "current_symbol": "R_75",
+        "unchain_hl": {
+            "primordial_blue_enabled": True,
+            "higher_stake": 100.0,
+        },
+    }
+    placed = []
+
+    monkeypatch.setattr(server, "_check_unchain_hl_risk_block", lambda state: None)
+    monkeypatch.setattr(server, "_get_open_unchain_active_entries", lambda state: [])
+    _set_unchain_series(monkeypatch, _strong_up_series())
+    monkeypatch.setattr(server.socketio, "emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        server,
+        "_send_unchain_hl_trade",
+        lambda client_id, **kwargs: placed.append(kwargs) or (True, "ok"),
+    )
+
+    assert server._run_unchain_primordial_blue("cid", state) is True
+    assert server._run_unchain_primordial_blue("cid", state) is False
+    assert len(placed) == 2
+    assert state["unchain_hl"]["primordial_blue_next_fire_at"] > 0.0
+
+
 def test_toggle_primordial_blue_disables_other_unchain_auto_modes(monkeypatch):
     state = {
         "current_symbol": "R_75",
@@ -2560,6 +2589,35 @@ def test_run_hybrid_skips_when_market_is_stuck_in_middle_zone(monkeypatch):
         "middle zone" in state["unchain_hl"]["hybrid_last_reason"].lower()
         or "too flat" in state["unchain_hl"]["hybrid_last_reason"].lower()
     )
+
+
+def test_hybrid_launch_pending_blocks_duplicate_two_leg_send(monkeypatch):
+    state = {
+        "ws_connected": True,
+        "ws": object(),
+        "balance": 250.0,
+        "current_symbol": "R_75",
+        "unchain_hl": {
+            "hybrid_enabled": True,
+            "higher_stake": 100.0,
+        },
+    }
+    placed = []
+
+    monkeypatch.setattr(server, "_check_unchain_hl_risk_block", lambda state: None)
+    monkeypatch.setattr(server, "_get_open_unchain_active_entries", lambda state: [])
+    _set_unchain_series(monkeypatch, _strong_up_series(step=0.6))
+    monkeypatch.setattr(server.socketio, "emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        server,
+        "_send_unchain_hl_trade",
+        lambda client_id, **kwargs: placed.append(kwargs) or (True, "ok"),
+    )
+
+    assert server._run_unchain_hybrid("cid", state) is True
+    assert server._run_unchain_hybrid("cid", state) is False
+    assert len(placed) == 2
+    assert state["unchain_hl"]["hybrid_next_fire_at"] > 0.0
 
 
 def test_toggle_hybrid_returns_error_toast_when_total_stake_is_too_low_for_split(monkeypatch):

@@ -411,12 +411,15 @@ class KoolKidStrategy(BaseStrategy):
 
     def set_over3_analysis_barrier(self, barrier):
         self.over3_execution_barrier = self._normalize_over3_execution_barrier(barrier)
+        if bool(getattr(self, "over3_analysis_auto", False)):
+            self.over3_wait_fresh_setup = True
         return int(self.over3_execution_barrier)
 
     def toggle_over3_analysis_auto(self):
         self.over3_analysis_auto = not self.over3_analysis_auto
         if self.over3_analysis_auto:
             self._reset_over3_analysis_session()
+            self.over3_wait_fresh_setup = True
         else:
             self.over3_trade_active = False
         return self.over3_analysis_auto
