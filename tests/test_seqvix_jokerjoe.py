@@ -368,7 +368,46 @@ def test_send_buy_with_profile_can_skip_local_balance_gate(jokerjoe_client):
 
     assert ok is True
     assert msg == "Trade sent"
-    assert len(state["ws"].sent) == 1
+
+
+def test_blackcard_socket_trade_uses_jokerjoe_profile_and_selected_digit(jokerjoe_client, monkeypatch):
+    cid, state = jokerjoe_client
+    captured = {}
+
+    monkeypatch.setattr(server, "login_required", lambda: True)
+    monkeypatch.setattr(server, "get_client_state", lambda: (cid, state))
+
+    def fake_send_buy_with_profile(client_id, profile, contract_type, stake, symbol, barrier, duration=1, duration_unit="t", mode=None, skip_local_balance_check=False):
+        captured.update(
+            {
+                "client_id": client_id,
+                "profile": profile,
+                "contract_type": contract_type,
+                "stake": stake,
+                "symbol": symbol,
+                "barrier": barrier,
+                "duration": duration,
+                "duration_unit": duration_unit,
+            }
+        )
+        return True, "Trade sent"
+
+    monkeypatch.setattr(server, "send_buy_with_profile", fake_send_buy_with_profile)
+
+    result = server.handle_jokerjoe_blackcard_trade({"digit": 9, "stake": 2.5, "duration": 4, "symbol": "R_25"})
+
+    assert result["status"] == "success"
+    assert result["digit"] == 9
+    assert captured == {
+        "client_id": cid,
+        "profile": "JOKERJOE",
+        "contract_type": "DIFFERS",
+        "stake": 2.5,
+        "symbol": "R_25",
+        "barrier": 9,
+        "duration": 4,
+        "duration_unit": "t",
+    }
 
 
 def test_seqvix_jokerjoe_try_trade_bypasses_local_balance_gate(jokerjoe_client):

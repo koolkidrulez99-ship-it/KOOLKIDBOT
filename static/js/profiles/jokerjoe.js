@@ -1,6 +1,6 @@
 (function () {
   const PROFILE = "JOKERJOE";
-  const state = { lastSocket: null, socketBound: false, autoModes: {}, kidgxBarrier: 5, matchesAnalysisOn: false, matchesLastKey: "", matchesObserverBound: false, matchSniperOn: false, matchSniperCooldownUntil: 0, matchSniperActiveDigit: null, matchSniperConsumed: false, matchSniperBusy: false, matchesSnapshot: null, matchesSorted: [], matchSniper5xOn: false, matchSniper5xCooldownUntil: 0, matchSniper5xBusy: false, matchSniper5xLastTopKey: "", matchSniper5xRotationSets: null, matchSniper5xRotationIndex: 0, matchSniper5xCurrentDigits: [], aiAutoModeChoice: "golden_digits", aiAutoLowestTradeCountChoice: 5, aiAutoLowestLocalOn: false, aiAutoModalOpen: false, aiLowestLastTickCount: 0, aiLowestTouches: {}, aiLowestArmed: null, aiLowestBatchActive: false, aiLowestBatchPending: 0, aiLowestBatchBarrier: null, aiLowestBatchProfit: 0, aiLowestCooldownUntil: 0, aiLowestSubmitting: false, aiLowestRecoveryDeficit: 0, aiLowestRecoveryOnly: false, randomMatchesDiffersOn: false, randomMatchesDiffersMode: "DIFFERS", randomMatchesDiffersModalOpen: false, randomMatchesDiffersBusy: false, randomMatchesDiffersCooldownUntil: 0, randomMatchesDiffersLastSignalKey: "", randomMatchesDiffersTickHistory: [], randomMatchesDiffersLastTickCount: 0, randomMatchesDiffersSnapshot: null, blackcard: { lastDigit: null, recentDigits: [], busy: false } };
+const state = { lastSocket: null, socketBound: false, autoModes: {}, kidgxBarrier: 5, matchesAnalysisOn: false, matchesLastKey: "", matchesObserverBound: false, matchSniperOn: false, matchSniperCooldownUntil: 0, matchSniperActiveDigit: null, matchSniperConsumed: false, matchSniperBusy: false, matchesSnapshot: null, matchesSorted: [], matchSniper5xOn: false, matchSniper5xCooldownUntil: 0, matchSniper5xBusy: false, matchSniper5xLastTopKey: "", matchSniper5xRotationSets: null, matchSniper5xRotationIndex: 0, matchSniper5xCurrentDigits: [], aiAutoModeChoice: "golden_digits", aiAutoLowestTradeCountChoice: 5, aiAutoLowestLocalOn: false, aiAutoModalOpen: false, aiLowestLastTickCount: 0, aiLowestTouches: {}, aiLowestArmed: null, aiLowestBatchActive: false, aiLowestBatchPending: 0, aiLowestBatchBarrier: null, aiLowestBatchProfit: 0, aiLowestCooldownUntil: 0, aiLowestSubmitting: false, aiLowestRecoveryDeficit: 0, aiLowestRecoveryOnly: false, randomMatchesDiffersOn: false, randomMatchesDiffersMode: "DIFFERS", randomMatchesDiffersModalOpen: false, randomMatchesDiffersBusy: false, randomMatchesDiffersCooldownUntil: 0, randomMatchesDiffersLastSignalKey: "", randomMatchesDiffersTickHistory: [], randomMatchesDiffersLastTickCount: 0, randomMatchesDiffersSnapshot: null, blackcard: { lastDigit: null, recentDigits: [], percentages: {}, busy: false } };
 
   function App() { return window.BotApp || {}; }
   function isActive() { try { return typeof activeProfile !== "undefined" && activeProfile === PROFILE; } catch (e) { return false; } }
@@ -27,9 +27,36 @@
 
   function getBlackcardPopupJokerjoe() { return getEl("blackcardPopupJokerjoe"); }
 
-  function getBlackcardDigitButtonsJokerjoe() {
-    return Array.from(document.querySelectorAll("[data-blackcard-digit-jokerjoe]"));
-  }
+function getBlackcardDigitButtonsJokerjoe() {
+  return Array.from(document.querySelectorAll("[data-blackcard-digit-jokerjoe]"));
+}
+
+function normalizeBlackcardPercentagesJokerjoe(raw) {
+  const out = {};
+  for (let i = 0; i <= 9; i++) out[i] = 0;
+  if (!raw || typeof raw !== "object") return out;
+  Object.keys(raw).forEach((key) => {
+    const digit = Number(key);
+    const pct = Number(raw[key]);
+    if (Number.isInteger(digit) && digit >= 0 && digit <= 9 && Number.isFinite(pct)) {
+      out[digit] = pct;
+    }
+  });
+  return out;
+}
+
+function buildBlackcardFallbackPercentagesJokerjoe() {
+  const history = Array.isArray(state.blackcard.recentDigits) ? state.blackcard.recentDigits.slice(-20) : [];
+  const out = {};
+  for (let i = 0; i <= 9; i++) out[i] = 0;
+  if (!history.length) return out;
+  history.forEach((digit) => {
+    const safeDigit = Number(digit);
+    if (Number.isInteger(safeDigit) && safeDigit >= 0 && safeDigit <= 9) out[safeDigit] += 1;
+  });
+  for (let i = 0; i <= 9; i++) out[i] = (out[i] / history.length) * 100;
+  return out;
+}
 
   function positionBlackcardPopupJokerjoe() {
     const popup = getBlackcardPopupJokerjoe();
@@ -53,6 +80,9 @@
     const lastDigit = Number(state.blackcard.lastDigit);
     const hasDigit = Number.isInteger(lastDigit) && lastDigit >= 0 && lastDigit <= 9;
     const recentDigits = Array.isArray(state.blackcard.recentDigits) ? state.blackcard.recentDigits.slice(-12) : [];
+    const percentages = Object.keys(state.blackcard.percentages || {}).length
+      ? state.blackcard.percentages
+      : buildBlackcardFallbackPercentagesJokerjoe();
     const busy = !!state.blackcard.busy;
 
     if (liveDigitEl) {
@@ -73,12 +103,16 @@
     getBlackcardDigitButtonsJokerjoe().forEach((btn) => {
       const digit = Number(btn.getAttribute("data-blackcard-digit-jokerjoe"));
       const isLast = hasDigit && digit === lastDigit;
+      const pct = Number((percentages || {})[digit]);
       btn.disabled = busy;
       btn.style.cursor = busy ? "wait" : "pointer";
       btn.style.opacity = busy ? "0.75" : "1";
+      btn.style.height = "60px";
+      btn.style.touchAction = "manipulation";
       btn.style.background = isLast ? "linear-gradient(135deg,#0f766e,#06b6d4)" : "#111827";
       btn.style.borderColor = isLast ? "#67e8f9" : "#334155";
       btn.style.boxShadow = isLast ? "0 0 0 1px rgba(103,232,249,0.4), 0 10px 18px rgba(6,182,212,0.18)" : "none";
+      btn.innerHTML = `<span style="display:block; font-size:18px; line-height:1; font-weight:800;">${digit}</span><span style="display:block; font-size:11px; line-height:1.2; margin-top:4px; color:${isLast ? "#e0fbff" : "#94a3b8"};">${Number.isFinite(pct) ? pct.toFixed(1) : "0.0"}%</span>`;
     });
     if (popup && popup.style.display === "block") positionBlackcardPopupJokerjoe();
   }
@@ -92,6 +126,27 @@
     while (next.length > 12) next.shift();
     state.blackcard.recentDigits = next;
     renderBlackcardJokerjoe();
+  }
+
+  function bindBlackcardDigitHandlersJokerjoe() {
+    getBlackcardDigitButtonsJokerjoe().forEach((btn) => {
+      if (btn.dataset.blackcardBound === "1") return;
+      btn.dataset.blackcardBound = "1";
+      btn.addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        const digit = Number(btn.getAttribute("data-blackcard-digit-jokerjoe"));
+        window.sendBlackcardDiffersJokerjoe(digit, event);
+      });
+      btn.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        const digit = Number(btn.getAttribute("data-blackcard-digit-jokerjoe"));
+        window.sendBlackcardDiffersJokerjoe(digit, event);
+      });
+      btn.addEventListener("click", (event) => {
+        event.preventDefault();
+      });
+    });
   }
 
   function setText(id, value) {
@@ -1184,6 +1239,7 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
         if (data.auto_modes) state.autoModes = Object.assign({}, state.autoModes, data.auto_modes);
         if (data.auto_settings && data.auto_settings.kidgx_barrier !== undefined) state.kidgxBarrier = Number(data.auto_settings.kidgx_barrier);
         if (data.meta_brain) state.metaBrain = data.meta_brain;
+        if (data.percentages) state.blackcard.percentages = normalizeBlackcardPercentagesJokerjoe(data.percentages);
         processRandomMatchesDiffersTickJokerjoe(data);
         updateButtons();
         updateAdvancedAIModeButtonsJokerjoe(data);
@@ -1241,6 +1297,7 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
   function bindBlackcardWindowEventsJokerjoe() {
     if (window.__blackcardJokerjoeBound) return;
     window.__blackcardJokerjoeBound = true;
+    bindBlackcardDigitHandlersJokerjoe();
     window.addEventListener("resize", () => {
       const popup = getBlackcardPopupJokerjoe();
       if (popup && popup.style.display === "block") positionBlackcardPopupJokerjoe();
@@ -1474,6 +1531,7 @@ window.toggleKidracksAIJokerjoe = function () { return toggleAdvancedModeJokerjo
 window.showBlackcardPopupJokerjoe = function () {
   const popup = getBlackcardPopupJokerjoe();
   if (!popup) return;
+  bindBlackcardDigitHandlersJokerjoe();
   renderBlackcardJokerjoe();
   positionBlackcardPopupJokerjoe();
 };
@@ -1483,7 +1541,8 @@ window.hideBlackcardPopupJokerjoe = function () {
   if (popup) popup.style.display = "none";
 };
 
-window.sendBlackcardDiffersJokerjoe = async function (digit) {
+window.sendBlackcardDiffersJokerjoe = async function (digit, event) {
+  if (event && typeof event.preventDefault === "function") event.preventDefault();
   const selectedDigit = Number(digit);
   if (!Number.isInteger(selectedDigit) || selectedDigit < 0 || selectedDigit > 9) {
     safeToast("Pick a valid digit for DIFFERS.", "error");
@@ -1498,9 +1557,38 @@ window.sendBlackcardDiffersJokerjoe = async function (digit) {
   state.blackcard.busy = true;
   renderBlackcardJokerjoe();
   try {
-    const result = await placeOneDiffersTradeJokerjoe(selectedDigit);
-    if (result && result.exact) safeToast(`DIFFERS ${selectedDigit} sent instantly.`, "success");
-    else safeToast(`DIFFERS ${selectedDigit} failed`, "error");
+    const symbol = (typeof window.getConfirmedMarketSymbol === "function")
+      ? window.getConfirmedMarketSymbol()
+      : ((document.getElementById("symbol") || {}).value || "R_25");
+    const stake = getManualStakeValueJokerjoe();
+    const duration = getDurationTicksJokerjoe();
+    const socketReady = typeof socket !== "undefined" && socket && socket.connected;
+
+    if (socketReady) {
+      const result = await new Promise((resolve) => {
+        let settled = false;
+        const finish = (payload) => {
+          if (settled) return;
+          settled = true;
+          resolve(payload || { status: "error", message: "Blackcard send failed" });
+        };
+        const timer = setTimeout(() => finish({ status: "error", message: "Blackcard send timed out" }), 2500);
+        socket.emit(
+          "jokerjoe_blackcard_trade",
+          { digit: selectedDigit, stake, duration, symbol },
+          (response) => {
+            clearTimeout(timer);
+            finish(response);
+          }
+        );
+      });
+      if (result && result.status === "success") safeToast(`DIFFERS ${selectedDigit} sent instantly.`, "success");
+      else safeToast((result && result.message) || `DIFFERS ${selectedDigit} failed`, "error");
+    } else {
+      const result = await placeOneDiffersTradeJokerjoe(selectedDigit);
+      if (result && result.exact) safeToast(`DIFFERS ${selectedDigit} sent instantly.`, "success");
+      else safeToast(`DIFFERS ${selectedDigit} failed`, "error");
+    }
   } catch (e) {
     safeToast(`DIFFERS ${selectedDigit} failed`, "error");
   } finally {

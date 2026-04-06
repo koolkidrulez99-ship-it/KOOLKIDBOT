@@ -438,9 +438,16 @@ def get_user_count():
 
 
 def _get_user_row(username):
+    identifier = (username or "").strip()
+    if not identifier:
+        return None
     conn = _db_connect(row_factory=not _db_is_postgres())
     c = conn.cursor()
-    _db_execute(c, "SELECT * FROM users WHERE username = ?", (username,))
+    _db_execute(
+        c,
+        "SELECT * FROM users WHERE lower(username)=lower(?) OR lower(COALESCE(email,''))=lower(?) LIMIT 1",
+        (identifier, identifier),
+    )
     row = _db_fetchone(c)
     out = _db_row_to_dict(c, row)
     conn.close()
@@ -1704,7 +1711,7 @@ def login():
                 return render_template("login.html", error=reason)
 
             role = str((user_row or {}).get("role") or "user").lower()
-            session["user"] = username
+            session["user"] = str((user_row or {}).get("username") or username)
             session["role"] = role
             session["client_id"] = str(uuid.uuid4())
             init_client(session["client_id"])
@@ -1952,6 +1959,48 @@ def client_heartbeat():
     cid, _state = get_client_state()
     # get_client_state already touches last_seen
     return
+
+
+@socketio.on("jokerjoe_blackcard_trade")
+def handle_jokerjoe_blackcard_trade(data=None):
+    if not login_required():
+        return {"status": "error", "message": "Unauthorized"}
+
+    cid, state = get_client_state()
+    payload = data or {}
+
+    try:
+        digit = int(payload.get("digit"))
+    except Exception:
+        return {"status": "error", "message": "Pick a valid digit for DIFFERS."}
+    if digit < 0 or digit > 9:
+        return {"status": "error", "message": "Pick a valid digit for DIFFERS."}
+
+    try:
+        stake = float(payload.get("stake", 1.0) or 1.0)
+    except Exception:
+        stake = 1.0
+    if not math.isfinite(stake) or stake <= 0:
+        stake = 1.0
+
+    duration = _sanitize_digit_trade_duration(payload.get("duration", 1))
+    symbol = str(payload.get("symbol") or state.get("current_symbol", "R_25") or "R_25").strip() or "R_25"
+
+    ok, message = send_buy_with_profile(
+        cid,
+        "JOKERJOE",
+        "DIFFERS",
+        stake,
+        symbol,
+        digit,
+        duration=duration,
+        duration_unit="t",
+    )
+    return {
+        "status": "success" if ok else "error",
+        "message": message,
+        "digit": digit,
+    }
 
 
 @app.route("/static/components/unchain.html")
