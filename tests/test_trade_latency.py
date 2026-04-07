@@ -166,3 +166,11 @@ def test_api_connection_status_reconnects_when_authorize_stays_pending_too_long(
     assert reconnects == [("cid-auth", "nonce-auth", 0.25)]
     assert any(event == "connection_status" and payload.get("connected") is False for event, payload, _room in emitted)
 
+
+def test_batch_trade_sleep_seconds_gives_turbo_a_much_faster_lane():
+    normal = server._batch_trade_sleep_seconds({}, 0.04)
+    turbo = server._batch_trade_sleep_seconds({"turbo": True}, 0.04)
+
+    assert normal >= 0.08
+    assert turbo == 0.002
+    assert turbo < normal

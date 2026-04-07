@@ -1417,6 +1417,11 @@ def _build_default_client_state():
             "minimum_history": 120,
             "total_ticks": 0,
         },
+        "koolkid_golden_card": {
+            "running": False,
+            "symbols": [],
+            "owned_syms": set(),
+        },
         "balance": 0.0,
         "last_live_balance": 0.0,
         "last_live_balance_updated_at": 0.0,
@@ -1592,6 +1597,22 @@ def _serialize_profile_trade_history_entry(profile, entry, index):
         "symbol": symbol,
         "type": trade_type,
     }
+    sort_ts = None
+    for candidate in (
+        raw.get("sell_time"),
+        raw.get("exit_tick_time"),
+        raw.get("date_expiry"),
+        raw.get("date_start"),
+        raw.get("purchase_time"),
+        raw.get("entry_tick_time"),
+    ):
+        normalized_ts = _normalize_tick_timestamp(candidate)
+        if normalized_ts is None:
+            continue
+        if sort_ts is None or normalized_ts > sort_ts:
+            sort_ts = normalized_ts
+    if sort_ts is not None:
+        snapshot["_sort_ts"] = float(sort_ts)
     try:
         payout_value = float(raw.get("payout", raw.get("sell_price", 0)) or 0)
     except Exception:
@@ -1959,6 +1980,73 @@ def client_heartbeat():
     cid, _state = get_client_state()
     # get_client_state already touches last_seen
     return
+
+
+def _is_turbo_requested(payload):
+    raw = None
+    if isinstance(payload, dict):
+        raw = payload.get("turbo")
+    if isinstance(raw, str):
+        return raw.strip().lower() in ("1", "true", "yes", "on")
+    return bool(raw)
+
+
+def _batch_trade_sleep_seconds(payload, normal_default=0.04):
+    if _is_turbo_requested(payload):
+        return 0.002
+    try:
+        return max(0.08, float(normal_default or 0.0))
+    except Exception:
+        return 0.08
+
+
+@socketio.on("fast_profile_trade")
+def handle_fast_profile_trade(data=None):
+    if not login_required():
+        return {"status": "error", "message": "Unauthorized"}
+
+    cid, state = get_client_state()
+    payload = data or {}
+    profile = str(payload.get("profile") or state.get("active_profile") or "").upper().strip()
+    if profile not in ("KOOLKID", "JOKERJOE"):
+        return {"status": "error", "message": "Invalid profile"}
+
+    contract_type = str(payload.get("type") or "").upper().strip()
+    try:
+        stake = float(payload.get("stake", 1.0) or 1.0)
+    except Exception:
+        stake = 1.0
+    if not math.isfinite(stake) or stake <= 0:
+        stake = 1.0
+
+    symbol = str(payload.get("symbol") or state.get("current_symbol", "R_25") or "R_25").strip() or "R_25"
+    try:
+        barrier = int(payload.get("barrier", 5))
+    except Exception:
+        barrier = 5
+    duration = _sanitize_digit_trade_duration(payload.get("duration", 1))
+    duration_unit = str(payload.get("duration_unit") or "t").strip().lower() or "t"
+    if duration_unit not in ("t", "s", "m", "h"):
+        duration_unit = "t"
+
+    ok, message = send_buy_with_profile(
+        cid,
+        profile,
+        contract_type,
+        stake,
+        symbol,
+        barrier,
+        duration=duration,
+        duration_unit=duration_unit,
+        emit_balance_after_send=False,
+    )
+    return {
+        "status": "success" if ok else "error",
+        "message": message,
+        "profile": profile,
+        "type": contract_type,
+        "barrier": barrier,
+    }
 
 
 @socketio.on("jokerjoe_blackcard_trade")
@@ -2411,6 +2499,7 @@ def send_buy_with_profile(
     duration_unit="t",
     mode=None,
     skip_local_balance_check=False,
+    emit_balance_after_send=True,
 ):
     state = clients.get(client_id)
     ready, ready_msg = _ensure_trade_socket_ready(client_id, state)
@@ -2503,7 +2592,8 @@ def send_buy_with_profile(
 
     try:
         ws.send(json.dumps(payload))
-        _emit_balance_payload(client_id, state)
+        if emit_balance_after_send:
+            _emit_balance_payload(client_id, state)
         return True, "Trade sent"
     except Exception as e:
         _mark_ws_unhealthy_and_reconnect(client_id, state, "Deriv connection failed while sending a trade. Reconnecting now...")
@@ -5470,7 +5560,7 @@ def _forget_unchain_open_contract_subscription(state, contract_id, subscription_
     return True
 
 
-def _schedule_contract_open_refresh(client_id, expected_nonce, contract_id, delays=(0.35, 1.0)):
+def _schedule_contract_open_refresh(client_id, expected_nonce, contract_id, delays=(0.20, 0.65, 1.8, 3.8)):
     norm = _normalize_contract_id(contract_id)
     if not norm:
         return False
@@ -12017,6 +12107,136 @@ def _ensure_tick_subscription(state, symbol):
         pass
 
 
+def _ensure_koolkid_golden_card_state(state):
+    scan = state.setdefault("koolkid_golden_card", {}) or {}
+    scan.setdefault("running", False)
+    scan.setdefault("symbols", [])
+    scan.setdefault("owned_syms", set())
+    state["koolkid_golden_card"] = scan
+    return scan
+
+
+def _emit_koolkid_golden_card(client_id, state):
+    strat = (state.get("strategies") or {}).get("KOOLKID")
+    if not strat or not hasattr(strat, "get_golden_card_state"):
+        return {}
+    payload = strat.get_golden_card_state() or {}
+    try:
+        socketio.emit("golden_card_update", payload, room=client_id)
+    except Exception:
+        pass
+    return payload
+
+
+def _cleanup_koolkid_golden_card_subscriptions(state, preserve_scan_state=False):
+    scan = _ensure_koolkid_golden_card_state(state)
+    ws = state.get("ws")
+    if not state.get("ws_connected") or not ws:
+        scan["owned_syms"] = set()
+        scan["running"] = False
+        return
+    tick_subs = state.setdefault("tick_subs", {})
+    main_symbol = state.get("current_symbol")
+    human_symbol = state.get("human_symbol") or main_symbol
+    for sym in list(scan.get("owned_syms") or set()):
+        if sym in (main_symbol, human_symbol):
+            continue
+        sub_id = tick_subs.get(sym)
+        if not sub_id:
+            continue
+        try:
+            ws.send(json.dumps({"forget": sub_id}))
+        except Exception:
+            pass
+        tick_subs.pop(sym, None)
+    scan["owned_syms"] = set()
+    scan["running"] = False
+
+
+def _start_koolkid_golden_card_scan(client_id, state):
+    strat = (state.get("strategies") or {}).get("KOOLKID")
+    if not strat or not hasattr(strat, "start_golden_card_scan"):
+        return False, "KOOLKID strategy not available", {}
+    ws = state.get("ws")
+    if not state.get("ws_connected") or not ws:
+        return False, "Connect the API before scanning markets.", {}
+
+    scan = _ensure_koolkid_golden_card_state(state)
+    _cleanup_koolkid_golden_card_subscriptions(state)
+    payload = strat.start_golden_card_scan() or {}
+    scan["running"] = True
+    scan["symbols"] = list(payload.get("symbols") or [])
+
+    tick_subs = state.setdefault("tick_subs", {})
+    main_symbol = state.get("current_symbol")
+    human_symbol = state.get("human_symbol") or main_symbol
+    for sym in list(scan.get("symbols") or []):
+        if sym in (main_symbol, human_symbol):
+            continue
+        if tick_subs.get(sym):
+            continue
+        try:
+            ws.send(json.dumps({"ticks": sym, "subscribe": 1}))
+            scan.setdefault("owned_syms", set()).add(sym)
+        except Exception:
+            pass
+
+    payload = _emit_koolkid_golden_card(client_id, state)
+    try:
+        if state.get("active_profile") == "KOOLKID":
+            socketio.emit("digit_analysis", strat.get_ui_payload(), room=client_id)
+    except Exception:
+        pass
+    return True, "Golden Card scan started.", payload
+
+
+def _stop_koolkid_golden_card_scan(client_id, state, status=None):
+    strat = (state.get("strategies") or {}).get("KOOLKID")
+    if strat and hasattr(strat, "stop_golden_card_scan"):
+        try:
+            strat.stop_golden_card_scan(status=status)
+        except Exception:
+            pass
+    _cleanup_koolkid_golden_card_subscriptions(state)
+    payload = _emit_koolkid_golden_card(client_id, state)
+    try:
+        if state.get("active_profile") == "KOOLKID" and strat:
+            socketio.emit("digit_analysis", strat.get_ui_payload(), room=client_id)
+    except Exception:
+        pass
+    return payload
+
+
+def _process_koolkid_golden_card_tick(client_id, tick):
+    state = clients.get(client_id)
+    if not state:
+        return
+    scan = _ensure_koolkid_golden_card_state(state)
+    if not scan.get("running"):
+        return
+    strat = (state.get("strategies") or {}).get("KOOLKID")
+    if not strat or not hasattr(strat, "record_golden_card_tick"):
+        return
+    sym = str(tick.get("symbol") or "").upper().strip()
+    if not sym or sym not in (scan.get("symbols") or []):
+        return
+    try:
+        digit = extract_last_decimal_digit(tick.get("quote"), tick.get("pip_size", 2))
+    except Exception:
+        return
+    payload = strat.record_golden_card_tick(sym, digit) or {}
+    try:
+        socketio.emit("golden_card_update", payload, room=client_id)
+    except Exception:
+        pass
+    if not payload.get("running"):
+        _cleanup_koolkid_golden_card_subscriptions(state, preserve_scan_state=True)
+        try:
+            socketio.emit("golden_card_update", payload, room=client_id)
+        except Exception:
+            pass
+
+
 def _start_unchain_scanner(client_id, state, symbols=None, window_ticks=None):
     scan = _ensure_unchain_scanner(state)
     ws = state.get("ws")
@@ -12428,6 +12648,7 @@ def handle_on_message(client_id, ws, message, expected_nonce):
             # ==================== PATCH 1E: hook process_seqvix_tick ====================
             process_seqvix_tick(client_id, tick)
             _process_unchain_scanner_tick(client_id, tick)
+            _process_koolkid_golden_card_tick(client_id, tick)
             process_tick(client_id, tick)
 
         if "buy" in data:
@@ -12520,7 +12741,7 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                     "contract_id": contract_id,
                     "subscribe": 1
                 }))
-                _schedule_contract_open_refresh(client_id, expected_nonce, contract_id, delays=(0.30, 0.95))
+            _schedule_contract_open_refresh(client_id, expected_nonce, contract_id, delays=(0.18, 0.55, 1.45, 3.2))
             profile_name = str((meta or {}).get("profile") or "").upper()
             if profile_name == "UNCHAIN" and state.get("active_profile") == "UNCHAIN":
                 socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
@@ -13754,6 +13975,28 @@ def set_over_analysis_barrier_koolkid_route():
     })
 
 
+@app.route("/start_golden_card_koolkid", methods=["POST"])
+def start_golden_card_koolkid_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    ok, message, payload = _start_koolkid_golden_card_scan(cid, state)
+    if not ok:
+        return jsonify({"status": "error", "message": message, "golden_card_data": payload}), 400
+    return jsonify({"status": "success", "message": message, "golden_card_data": payload})
+
+
+@app.route("/stop_golden_card_koolkid", methods=["POST"])
+def stop_golden_card_koolkid_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    payload = _stop_koolkid_golden_card_scan(cid, state, status="Golden Card scan paused.")
+    return jsonify({"status": "success", "golden_card_data": payload})
+
+
 @app.route("/toggle_kid2vix_koolkid", methods=["POST"])
 def toggle_kid2vix_koolkid_route():
     if not login_required():
@@ -14138,13 +14381,14 @@ def kidgamblex_route():
     digits = strat.get_top_digits(n=3)
     if not digits:
         return jsonify({"status": "error", "message": "Need 100 ticks before kidgambleX can select top digits."}), 400
+    sleep_seconds = _batch_trade_sleep_seconds(data, 0.04)
 
     placed = 0
     for d in digits:
         ok, _msg = send_buy(cid, "MATCHES", stake, symbol, int(d), duration=duration, duration_unit=duration_unit)
         if ok:
             placed += 1
-        time.sleep(0.04)
+        time.sleep(sleep_seconds)
 
     return jsonify({"status": "success", "digits": digits, "placed": placed})
 
@@ -14331,13 +14575,14 @@ def insta5_route():
     barrier = int(data.get("barrier", 5))
     duration = _sanitize_digit_trade_duration(data.get("duration", 1))
     duration_unit = "t"
+    sleep_seconds = _batch_trade_sleep_seconds(data, 0.03)
 
     placed = 0
     for _ in range(5):
         ok, _msg = send_buy(cid, contract_type, stake, symbol, barrier, duration=duration, duration_unit=duration_unit)
         if ok:
             placed += 1
-        time.sleep(0.03)
+        time.sleep(sleep_seconds)
 
     return jsonify({"status": "success", "placed": placed, "barrier": barrier})
 
@@ -14375,13 +14620,14 @@ def manual_3_trades():
     barrier = int(data.get("barrier", 5))
     duration = _sanitize_digit_trade_duration(data.get("duration", 1))
     duration_unit = "t"
+    sleep_seconds = _batch_trade_sleep_seconds(data, 0.04)
 
     placed = 0
     for _ in range(3):
         ok, _msg = send_buy(cid, contract_type, stake, symbol, barrier, duration=duration, duration_unit=duration_unit)
         if ok:
             placed += 1
-        time.sleep(0.04)
+        time.sleep(sleep_seconds)
 
     return jsonify({"status": "success", "placed": placed})
 
@@ -14400,13 +14646,14 @@ def burst_4():
     barrier = int(data.get("barrier", 5))
     duration = _sanitize_digit_trade_duration(data.get("duration", 1))
     duration_unit = "t"
+    sleep_seconds = _batch_trade_sleep_seconds(data, 0.04)
 
     placed = 0
     for _ in range(4):
         ok, _msg = send_buy(cid, contract_type, stake, symbol, barrier, duration=duration, duration_unit=duration_unit)
         if ok:
             placed += 1
-        time.sleep(0.04)
+        time.sleep(sleep_seconds)
 
     return jsonify({"status": "success", "placed": placed})
 

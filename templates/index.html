@@ -200,6 +200,28 @@ input, select{
     width:100%;
     margin:6px 0;
 }
+#digitPopup{
+    min-width:220px;
+    max-width:min(260px, calc(100vw - 18px));
+}
+@media (min-width:768px){
+    #digitPopup{
+        min-width:320px;
+        max-width:min(420px, calc(100vw - 40px));
+        padding:16px;
+        border-radius:16px;
+    }
+    #digitPopup h4{
+        font-size:18px;
+        margin-bottom:12px;
+    }
+    #digitPopup button{
+        height:54px;
+        font-size:16px;
+        border-radius:12px;
+        margin:8px 0;
+    }
+}
 
 /* =================== TOAST NOTIFICATIONS =================== */
 #toastContainer{
@@ -1197,6 +1219,8 @@ function bindSocketHandlers(){
         }
 
         const changedProfiles = decrementPendingTickCountdowns(data && data.symbol);
+        const turboResolvedProfiles = resolveTurboDigitTradesFromTick(data);
+        turboResolvedProfiles.forEach((profile)=> changedProfiles.add(profile));
         if(changedProfiles.has(normalizeProfileName(activeProfile))){
             renderTradeList(activeProfile);
         }
@@ -1217,15 +1241,32 @@ function bindSocketHandlers(){
         }
 
         if(data.confidence && activeProfile === "KOOLKID"){
-            if(confOver1) confOver1.style.width = data.confidence.over1 + "%";
-            if(confOver2) confOver2.style.width = data.confidence.over2 + "%";
-            if(confUnder8) confUnder8.style.width = data.confidence.under8 + "%";
-            if(confUnder9) confUnder9.style.width = data.confidence.under9 + "%";
-
-            if(confOver1Text) confOver1Text.innerText = data.confidence.over1;
-            if(confOver2Text) confOver2Text.innerText = data.confidence.over2;
-            if(confUnder8Text) confUnder8Text.innerText = data.confidence.under8;
-            if(confUnder9Text) confUnder9Text.innerText = data.confidence.under9;
+            const koolkidConfidenceEntries = [
+                ["over1", confOver1, confOver1Text],
+                ["over2", confOver2, confOver2Text],
+                ["under8", confUnder8, confUnder8Text],
+                ["under9", confUnder9, confUnder9Text],
+            ];
+            const koolkidConfidenceValues = koolkidConfidenceEntries.map(([key]) => Number(data.confidence[key] || 0));
+            const strongestConfidence = Math.max.apply(null, koolkidConfidenceValues);
+            koolkidConfidenceEntries.forEach(([key, bar, text]) => {
+                const value = Number(data.confidence[key] || 0);
+                if(bar) {
+                    bar.style.width = value + "%";
+                    bar.style.opacity = strongestConfidence > 0 && value >= strongestConfidence ? "1" : "0.72";
+                    bar.style.filter = strongestConfidence > 0 && value >= strongestConfidence
+                        ? "drop-shadow(0 0 10px rgba(250,204,21,0.35))"
+                        : "none";
+                    const confItem = bar.parentElement && bar.parentElement.parentElement;
+                    if(confItem){
+                        confItem.style.borderColor = strongestConfidence > 0 && value >= strongestConfidence ? "rgba(250,204,21,0.7)" : "#334155";
+                        confItem.style.boxShadow = strongestConfidence > 0 && value >= strongestConfidence
+                            ? "0 0 0 1px rgba(250,204,21,0.22), 0 8px 18px rgba(250,204,21,0.10)"
+                            : "none";
+                    }
+                }
+                if(text) text.innerText = value.toFixed(1);
+            });
         }
 
         if(activeProfile === "JOKERJOE"){
@@ -1256,6 +1297,7 @@ function bindSocketHandlers(){
         placed.profile = resolveTradeProfile(placed, activeProfile);
         onTradePlacedForToast(placed);
         upsertTradeInStore(buildPendingTradeFromPlacement(placed));
+        schedulePendingTradeRescue(placed.profile, placed.contract_id ?? placed.contractId, 1);
         if(normalizeProfileName(activeProfile) === placed.profile){
             renderTradeList(activeProfile);
         }
@@ -1264,9 +1306,19 @@ function bindSocketHandlers(){
     socket.on("trade_result", (data)=>{
         const settled = Object.assign({}, data || {});
         settled.profile = resolveTradeProfile(settled, activeProfile);
+        const settledProfile = normalizeProfileName(settled.profile);
+        if(settledProfile === "KOOLKID" || settledProfile === "JOKERJOE" || settledProfile === "UNCHAIN"){
+            const sortTs = resolveTradeSortTimestamp(settled, true);
+            if(Number.isFinite(Number(sortTs))) settled._sort_ts = Number(sortTs);
+        }
         settled.result = normalizeTradeResultLabel(settled.result, settled.status);
         settled.pending = isTradeResultPending(settled.result);
         upsertTradeInStore(settled);
+        if(settled.pending){
+            schedulePendingTradeRescue(settled.profile, settled.contract_id ?? settled.contractId, 1);
+        }else{
+            clearPendingTradeRescue(settled.profile, settled.contract_id ?? settled.contractId);
+        }
 
         if(normalizeProfileName(settled.profile) === normalizeProfileName(activeProfile)){
             renderTradeList(activeProfile);
@@ -1420,10 +1472,17 @@ const profileBudgetState = {};
 const tradeHistoryFilterByProfile = {};
 const TRADE_TOAST_MULTI_JOIN_MS = 900;
 const TRADE_TOAST_BATCH_STALE_MS = 15 * 60 * 1000;
+const FAST_INTERVAL_MS_NORMAL = 400; // 0.4s as requested
+const FAST_INTERVAL_MS_TURBO = 250;  // recommended faster in Turbo
+const FAST_MAX_BUY_QUEUE = 12;       // safety limit
 const tradeToastByProfile = {};
 const tradeHistorySnapshotSyncAt = {};
+const pendingTradeRescueTimers = {};
+let tradeStoreSequence = 0;
 const PROFILE_DRAFTS_STORAGE_KEY = "bot_profile_drafts_v1";
 const HALF_AUTO_STAKES_STORAGE_KEY_KOOLKID = "koolkid_half_auto_stakes_v1";
+const fastBuyQueueByProfile = {};
+const profileTurboState = {};
 let profileDrafts = {};
 let profileDraftSaveTimer = null;
 let apiConnectPollTimer = null;
@@ -1450,6 +1509,13 @@ function clearBotTransientState(){
     Object.keys(tradeHistorySnapshotSyncAt || {}).forEach((profile)=>{
         delete tradeHistorySnapshotSyncAt[profile];
     });
+    Object.keys(pendingTradeRescueTimers || {}).forEach((key)=>{
+        try{
+            clearTimeout(pendingTradeRescueTimers[key]);
+        }catch(e){}
+        delete pendingTradeRescueTimers[key];
+    });
+    tradeStoreSequence = 0;
     resetBalanceMilestones();
     try{
         window.dispatchEvent(new CustomEvent("bot-transient-reset"));
@@ -1868,6 +1934,31 @@ function toProfitNumber(v){
     return Number.isFinite(n) ? n : 0;
 }
 
+function resolveTradeSortTimestamp(data, fallbackNow){
+    const source = (data && typeof data === "object") ? data : {};
+    const candidates = [
+        source._sort_ts,
+        source.sell_time,
+        source.exit_tick_time,
+        source.date_expiry,
+        source.date_start,
+        source.purchase_time,
+        source.entry_tick_time,
+        source.epoch,
+        source.timestamp,
+    ];
+    for(const candidate of candidates){
+        const raw = Number(candidate);
+        if(!Number.isFinite(raw) || raw <= 0) continue;
+        const normalized = raw > 1e11 ? (raw / 1000) : raw;
+        if(Number.isFinite(normalized) && normalized > 0) return normalized;
+    }
+    if(fallbackNow){
+        return Date.now() / 1000;
+    }
+    return null;
+}
+
 function normalizeTradeResultLabel(result, status){
     const raw = String(result || status || "").toUpperCase().trim();
     if(!raw) return "LOSS";
@@ -1972,6 +2063,20 @@ function mergeTradeRecord(existing, incoming){
     if(base.symbol && (nextSymbol === undefined || nextSymbol === null || String(nextSymbol).trim() === "")){
         merged.symbol = base.symbol;
     }
+    if(Number.isFinite(Number(base._store_seq)) && !Number.isFinite(Number(next._store_seq))){
+        merged._store_seq = Number(base._store_seq);
+    }else if(Number.isFinite(Number(next._store_seq))){
+        merged._store_seq = Number(next._store_seq);
+    }
+    const baseSortTs = Number(base._sort_ts);
+    const nextSortTs = Number(next._sort_ts);
+    if(Number.isFinite(baseSortTs) && Number.isFinite(nextSortTs)){
+        merged._sort_ts = Math.max(baseSortTs, nextSortTs);
+    }else if(Number.isFinite(baseSortTs) && !Number.isFinite(nextSortTs)){
+        merged._sort_ts = baseSortTs;
+    }else if(Number.isFinite(nextSortTs)){
+        merged._sort_ts = nextSortTs;
+    }
     const normalized = resolveMergedTradeResult(base, next, merged);
     merged.result = normalized;
     merged.pending = isTradeResultPending(normalized);
@@ -2014,11 +2119,19 @@ function upsertTradeInStore(trade){
                 existingArr[existing.index],
                 Object.assign({}, incoming, { profile: existing.profile })
             );
+            if(!Number.isFinite(Number(existingArr[existing.index]._store_seq))){
+                tradeStoreSequence += 1;
+                existingArr[existing.index]._store_seq = tradeStoreSequence;
+            }
             return existingArr[existing.index];
         }
     }
 
     const arr = tradeStore[profile];
+    if(!Number.isFinite(Number(incoming._store_seq))){
+        tradeStoreSequence += 1;
+        incoming._store_seq = tradeStoreSequence;
+    }
     arr.push(incoming);
     if(arr.length > 250) arr.shift();
     return incoming;
@@ -2052,6 +2165,7 @@ function buildPendingTradeFromPlacement(data){
     const profile = resolveTradeProfile(data, activeProfile);
     const symbolNode = document.getElementById("symbol");
     const fallbackSymbol = symbolNode && symbolNode.value ? symbolNode.value : undefined;
+    const sortTs = resolveTradeSortTimestamp(data, true);
     return {
         profile,
         type: data && data.type,
@@ -2065,6 +2179,7 @@ function buildPendingTradeFromPlacement(data){
         countdown_remaining: data && data.countdown_remaining,
         countdown_unit: data && data.countdown_unit,
         countdown_seconds: data && data.countdown_seconds,
+        _sort_ts: sortTs,
         status: "PENDING",
         result: "PENDING",
         pending: true,
@@ -2407,6 +2522,60 @@ async function syncTradeHistorySnapshot(profile){
     }
 }
 
+function pendingTradeRescueKey(profile, contractId){
+    const key = normalizeFastBuyProfile(profile);
+    const cid = normalizeContractId(contractId);
+    if(!key || !cid) return null;
+    return `${key}:${cid}`;
+}
+
+function clearPendingTradeRescue(profile, contractId){
+    const cid = normalizeContractId(contractId);
+    if(!cid) return;
+    const explicitKey = pendingTradeRescueKey(profile, cid);
+    if(explicitKey && pendingTradeRescueTimers[explicitKey]){
+        try{ clearTimeout(pendingTradeRescueTimers[explicitKey]); }catch(e){}
+        delete pendingTradeRescueTimers[explicitKey];
+    }
+    Object.keys(pendingTradeRescueTimers || {}).forEach((key)=>{
+        if(!key.endsWith(`:${cid}`)) return;
+        try{ clearTimeout(pendingTradeRescueTimers[key]); }catch(e){}
+        delete pendingTradeRescueTimers[key];
+    });
+}
+
+function isTradeStillPendingInStore(profile, contractId){
+    const key = normalizeFastBuyProfile(profile);
+    const cid = normalizeContractId(contractId);
+    if(!key || !cid) return false;
+    const found = findStoredTradeLocationByContractId(cid);
+    if(!found || normalizeProfileName(found.profile) !== key) return false;
+    return isTradeResultPending(normalizeTradeResultLabel(found.record && found.record.result, found.record && found.record.status));
+}
+
+function schedulePendingTradeRescue(profile, contractId, attempt){
+    const key = normalizeFastBuyProfile(profile);
+    const cid = normalizeContractId(contractId);
+    const tryNumber = Math.max(1, Number(attempt) || 1);
+    if(!key || !cid) return;
+    clearPendingTradeRescue(key, cid);
+    const turboOn = isTurboEnabledForFastBuys(key);
+    const maxAttempts = turboOn ? 10 : 6;
+    if(tryNumber > maxAttempts) return;
+    const baseDelay = turboOn ? 180 : 700;
+    const stepDelay = turboOn ? 160 : 420;
+    const waitMs = baseDelay + ((tryNumber - 1) * stepDelay);
+    const timerKey = pendingTradeRescueKey(key, cid);
+    pendingTradeRescueTimers[timerKey] = setTimeout(async ()=>{
+        delete pendingTradeRescueTimers[timerKey];
+        if(!isTradeStillPendingInStore(key, cid)) return;
+        await syncTradeHistorySnapshot(key);
+        if(isTradeStillPendingInStore(key, cid)){
+            schedulePendingTradeRescue(key, cid, tryNumber + 1);
+        }
+    }, waitMs);
+}
+
 function decrementPendingTickCountdowns(symbol){
     const market = String(symbol || "").toUpperCase().trim();
     const changedProfiles = new Set();
@@ -2428,6 +2597,88 @@ function decrementPendingTickCountdowns(symbol){
             const nextRemaining = Math.max(0, Math.floor(remaining) - 1);
             if(nextRemaining === Math.floor(remaining)) return;
             trade.countdown_remaining = nextRemaining;
+            changedProfiles.add(profile);
+        });
+    });
+    return changedProfiles;
+}
+
+function isTurboDigitResolveProfile(profile){
+    const normalized = normalizeProfileName(profile);
+    if(normalized !== "KOOLKID" && normalized !== "JOKERJOE") return false;
+    try{
+        if(typeof getProfileTurboEnabled === "function"){
+            return !!getProfileTurboEnabled(normalized);
+        }
+    }catch(e){}
+    return false;
+}
+
+function normalizeTurboDigitTradeType(trade){
+    const raw = String((trade && (trade.contract_type || trade.type)) || "")
+        .toUpperCase()
+        .replace(/[_-]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    const compact = raw.replace(/\s+/g, "");
+    if(compact === "DIFFERS" || compact === "DIGITDIFF" || compact === "DIGITDIFFERS") return "DIFFERS";
+    if(compact === "MATCHES" || compact === "DIGITMATCH" || compact === "DIGITMATCHES") return "MATCHES";
+    if(compact === "OVER" || compact === "DIGITOVER") return "OVER";
+    if(compact === "UNDER" || compact === "DIGITUNDER") return "UNDER";
+    return null;
+}
+
+function evaluateTurboDigitTradeOutcome(trade, digit){
+    if(!Number.isInteger(digit) || digit < 0 || digit > 9) return null;
+    const tradeType = normalizeTurboDigitTradeType(trade);
+    const barrier = Number(trade && trade.barrier);
+    if(!tradeType || !Number.isFinite(barrier)) return null;
+    if(tradeType === "DIFFERS") return digit !== barrier ? "WIN" : "LOSS";
+    if(tradeType === "MATCHES") return digit === barrier ? "WIN" : "LOSS";
+    if(tradeType === "OVER") return digit > barrier ? "WIN" : "LOSS";
+    if(tradeType === "UNDER") return digit < barrier ? "WIN" : "LOSS";
+    return null;
+}
+
+function resolveTurboDigitTradesFromTick(data){
+    const digit = Number((data && data.digit) ?? (data && data.last_digit));
+    const market = String(data && data.symbol || "").toUpperCase().trim();
+    const changedProfiles = new Set();
+    if(!Number.isInteger(digit) || digit < 0 || digit > 9 || !market) return changedProfiles;
+
+    ["KOOLKID", "JOKERJOE"].forEach((profile)=>{
+        if(!isTurboDigitResolveProfile(profile)) return;
+        const arr = Array.isArray(tradeStore[profile]) ? tradeStore[profile] : [];
+        arr.forEach((trade)=>{
+            if(!trade || typeof trade !== "object") return;
+            if(!isTradeResultPending(normalizeTradeResultLabel(trade.result, trade.status))) return;
+            const tradeSymbol = String(trade.symbol || "").toUpperCase().trim();
+            if(tradeSymbol && tradeSymbol !== market) return;
+            const durationUnit = String((trade.duration_unit || trade.countdown_unit || "")).toLowerCase();
+            if(durationUnit !== "t") return;
+
+            const duration = Number(trade.duration);
+            const remaining = Number(trade.countdown_remaining);
+            const isFinalTick = (Number.isFinite(duration) && Math.floor(duration) <= 1)
+                || (Number.isFinite(remaining) && remaining <= 0);
+            if(!isFinalTick) return;
+
+            const outcome = evaluateTurboDigitTradeOutcome(trade, digit);
+            if(!outcome) return;
+
+            trade.result = outcome;
+            trade.status = outcome;
+            trade.pending = false;
+            trade.exitDigit = digit;
+            trade.exit_digit = digit;
+            trade.countdown_remaining = 0;
+            trade.countdown_seconds = 0;
+            trade.local_resolution_pending_confirmation = true;
+            trade.local_resolution_source = "turbo_tick";
+            const contractId = normalizeContractId(trade.contract_id ?? trade.contractId);
+            if(contractId){
+                clearPendingTradeRescue(profile, contractId);
+            }
             changedProfiles.add(profile);
         });
     });
@@ -2775,7 +3026,26 @@ function renderTradeList(profile){
     }
 
     list.innerHTML = "";
-    filtered.slice().reverse().forEach(t => list.appendChild(buildTradeItem(t)));
+    filtered
+        .slice()
+        .sort((a, b)=>{
+            const useSnapshotTs = key === "KOOLKID" || key === "JOKERJOE";
+            if(useSnapshotTs){
+                const tsA = Number((a && a._sort_ts) || 0);
+                const tsB = Number((b && b._sort_ts) || 0);
+                const hasTsA = Number.isFinite(tsA) && tsA > 0;
+                const hasTsB = Number.isFinite(tsB) && tsB > 0;
+                if(hasTsA && hasTsB && tsA !== tsB) return tsB - tsA;
+                if(hasTsA !== hasTsB) return hasTsB ? 1 : -1;
+            }
+            const seqA = Number((a && a._store_seq) || 0);
+            const seqB = Number((b && b._store_seq) || 0);
+            if(seqA !== seqB) return seqB - seqA;
+            const cidA = normalizeContractId(a && (a.contract_id ?? a.contractId)) || "";
+            const cidB = normalizeContractId(b && (b.contract_id ?? b.contractId)) || "";
+            return String(cidB).localeCompare(String(cidA));
+        })
+        .forEach(t => list.appendChild(buildTradeItem(t)));
 }
 
 function getTradeHistoryFilter(profile){
@@ -2846,6 +3116,10 @@ function buildTradeItem(trade){
         ? "win"
         : ((result === "LOSS") ? "loss" : (result === "CLOSING" ? "closing" : "pending"));
     const profit = typeof trade.profit === 'number' ? trade.profit : toProfitNumber(trade.profit_value);
+    const hasOfficialProfit = (
+        (trade.profit !== undefined && trade.profit !== null && Number.isFinite(Number(trade.profit)))
+        || (trade.profit_value !== undefined && trade.profit_value !== null && Number.isFinite(Number(trade.profit_value)))
+    );
     const openProfit = (trade.open_profit === undefined || trade.open_profit === null) ? null : Number(trade.open_profit);
     const typeRaw = formatTradeTypeLabelForProfile(tradeProfile, trade.type, trade.contract_type);
     const barrier = (trade.barrier !== undefined && trade.barrier !== null) ? trade.barrier : "";
@@ -2874,6 +3148,8 @@ function buildTradeItem(trade){
         }else{
             profitDisplay = result === "CLOSING" ? "CLOSING" : "PENDING";
         }
+    }else if(trade.local_resolution_pending_confirmation && !hasOfficialProfit){
+        profitDisplay = result;
     }
 
     item.innerHTML = `
@@ -3157,6 +3433,206 @@ function getProfileDisplayName(profile){
     if(key === "NTT") return "Mutant";
     return key || "Profile";
 }
+
+function normalizeFastBuyProfile(profile){
+    const key = normalizeProfileName(profile || activeProfile);
+    return (key === "KOOLKID" || key === "JOKERJOE") ? key : "";
+}
+
+function readStoredProfileTurbo(profile){
+    const key = normalizeFastBuyProfile(profile);
+    if(!key) return false;
+    try{
+        return localStorage.getItem(`profileTurbo:${key}`) === "1";
+    }catch(e){
+        return false;
+    }
+}
+
+function getProfileTurboEnabled(profile){
+    const key = normalizeFastBuyProfile(profile);
+    if(!key) return false;
+    if(!(key in profileTurboState)){
+        profileTurboState[key] = readStoredProfileTurbo(key);
+    }
+    return !!profileTurboState[key];
+}
+
+function setProfileTurboEnabled(profile, enabled){
+    const key = normalizeFastBuyProfile(profile);
+    if(!key) return false;
+    const next = !!enabled;
+    profileTurboState[key] = next;
+    try{
+        localStorage.setItem(`profileTurbo:${key}`, next ? "1" : "0");
+    }catch(e){}
+    try{
+        window.dispatchEvent(new CustomEvent("bot-profile-turbo-change", {
+            detail: { profile: key, enabled: next }
+        }));
+    }catch(e){}
+    return next;
+}
+
+function getFastBuyQueueState(profile){
+    const key = normalizeFastBuyProfile(profile);
+    if(!key) return null;
+    if(!fastBuyQueueByProfile[key]){
+        fastBuyQueueByProfile[key] = {
+            running: false,
+            lastRunAt: 0,
+            items: [],
+        };
+    }
+    return fastBuyQueueByProfile[key];
+}
+
+function isTurboEnabledForFastBuys(profile){
+    return getProfileTurboEnabled(profile);
+}
+
+function getFastBuyIntervalMs(profile){
+    return isTurboEnabledForFastBuys(profile) ? FAST_INTERVAL_MS_TURBO : FAST_INTERVAL_MS_NORMAL;
+}
+
+function delayFastBuyMs(ms){
+    const waitMs = Math.max(0, Number(ms) || 0);
+    if(waitMs <= 0) return Promise.resolve();
+    return new Promise((resolve)=> setTimeout(resolve, waitMs));
+}
+
+async function runFastBuyQueue(profile){
+    const queueState = getFastBuyQueueState(profile);
+    if(!queueState || queueState.running) return;
+    queueState.running = true;
+    try{
+        while((queueState.items || []).length){
+            const item = queueState.items.shift();
+            if(!item || typeof item.task !== "function") continue;
+            const intervalMs = getFastBuyIntervalMs(profile);
+            const elapsedMs = Date.now() - Number(queueState.lastRunAt || 0);
+            if(queueState.lastRunAt){
+                if(elapsedMs < intervalMs){
+                    await delayFastBuyMs(intervalMs - elapsedMs);
+                }
+            }else if(intervalMs > 0){
+                await delayFastBuyMs(intervalMs);
+            }
+            try{
+                const result = await item.task();
+                item.resolve(result);
+            }catch(err){
+                item.reject(err);
+            }finally{
+                queueState.lastRunAt = Date.now();
+            }
+        }
+    }finally{
+        queueState.running = false;
+    }
+}
+
+function enqueueFastBuyTask(profile, task){
+    const key = normalizeFastBuyProfile(profile);
+    const executeNow = ()=> Promise.resolve().then(()=> task());
+    if(!key || typeof task !== "function"){
+        return executeNow();
+    }
+    const queueState = getFastBuyQueueState(key);
+    const queuedCount = Number((queueState && queueState.items && queueState.items.length) || 0);
+    const inFlightCount = queueState && queueState.running ? 1 : 0;
+    if((queuedCount + inFlightCount) >= FAST_MAX_BUY_QUEUE){
+        return Promise.reject(new Error(`Fast buy queue is full (${FAST_MAX_BUY_QUEUE})`));
+    }
+    return new Promise((resolve, reject)=>{
+        queueState.items.push({ task, resolve, reject });
+        runFastBuyQueue(key);
+    });
+}
+
+function buildFastProfileTradePayload(profile, payload, options){
+    const key = normalizeFastBuyProfile(profile);
+    const requestPayload = Object.assign({}, payload || {});
+    if(key) requestPayload.profile = key;
+    const turboRequested = options && Object.prototype.hasOwnProperty.call(options, "turbo")
+        ? !!options.turbo
+        : isTurboEnabledForFastBuys(key || profile);
+    requestPayload.turbo = turboRequested;
+    return { key, requestPayload, turboRequested };
+}
+
+function sendFastProfileTradeOverSocket(profile, payload, options){
+    return new Promise((resolve)=>{
+        try{
+            if(typeof socket === "undefined" || !socket || !socket.connected){
+                resolve({ ok: false, data: { status: "error", message: "Socket not connected" } });
+                return;
+            }
+            const fireAndForget = !!(options && options.fireAndForget);
+            if(fireAndForget){
+                socket.emit("fast_profile_trade", payload);
+                resolve({ ok: true, data: { status: "success", message: "Trade sent" } });
+                return;
+            }
+            let settled = false;
+            const finish = (response)=>{
+                if(settled) return;
+                settled = true;
+                const data = response || { status: "error", message: "Fast trade send failed" };
+                resolve({ ok: !!(data && data.status === "success"), data });
+            };
+            const timer = setTimeout(()=>{
+                finish({ status: "error", message: "Fast trade send timed out" });
+            }, 2500);
+            socket.emit("fast_profile_trade", payload, (response)=>{
+                clearTimeout(timer);
+                finish(response);
+            });
+        }catch(e){
+            resolve({ ok: false, data: { status: "error", message: "Fast trade send failed" } });
+        }
+    });
+}
+
+async function sendFastProfileTradeNow(profile, payload, options){
+    const built = buildFastProfileTradePayload(profile, payload, options || {});
+    const useSocket = !!((options && options.useSocket) || built.turboRequested);
+    const socketReady = typeof socket !== "undefined" && socket && socket.connected;
+    if(useSocket && built.key && socketReady){
+        const fireAndForget = options && Object.prototype.hasOwnProperty.call(options, "fireAndForget")
+            ? !!options.fireAndForget
+            : !!built.turboRequested;
+        return sendFastProfileTradeOverSocket(built.key, built.requestPayload, { fireAndForget });
+    }
+    try{
+        const res = await fetch("/manual_trade", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(built.requestPayload),
+        });
+        let data = {};
+        try{ data = await res.json(); }catch(e){}
+        return { ok: !!(res.ok && data && data.status === "success"), data };
+    }catch(e){
+        return { ok: false, data: { status: "error", message: "Fast trade send failed" } };
+    }
+}
+
+function postFastProfileTrade(profile, payload, options){
+    const built = buildFastProfileTradePayload(profile, payload, options || {});
+    const task = ()=> sendFastProfileTradeNow(built.key || profile, built.requestPayload, Object.assign({}, options || {}, { turbo: built.turboRequested }));
+    if(options && options.queue === false){
+        return task();
+    }
+    return enqueueFastBuyTask(built.key || profile, task);
+}
+
+window.BotApp = window.BotApp || {};
+window.BotApp.enqueueFastBuyTask = enqueueFastBuyTask;
+window.BotApp.getFastBuyIntervalMs = getFastBuyIntervalMs;
+window.BotApp.sendFastProfileTrade = postFastProfileTrade;
+window.BotApp.getProfileTurboEnabled = getProfileTurboEnabled;
+window.BotApp.setProfileTurboEnabled = setProfileTurboEnabled;
 
 function getHowToGuideData(profile){
     const p = String(profile || "KOOLKID").toUpperCase();
@@ -4621,9 +5097,10 @@ async function insta5(){
     const symbol = document.getElementById("symbol").value;
     const barrier = parseInt(barrierInput.value || "5", 10);
     const duration = getManualDurationTicks();
+    const turbo = isTurboEnabledForFastBuys(activeProfile);
 
     try{
-        const res = await fetch("/insta5", {method:"POST",headers:{"Content-Type":"application/json"},body: JSON.stringify({ stake, symbol, barrier: isNaN(barrier) ? 5 : barrier, duration, duration_unit:"t" })});
+        const res = await fetch("/insta5", {method:"POST",headers:{"Content-Type":"application/json"},body: JSON.stringify({ stake, symbol, barrier: isNaN(barrier) ? 5 : barrier, duration, duration_unit:"t", turbo })});
         const data = await res.json();
         if(data.status === "success") showToast("⚡ INSTA 5 SENT", "warn");
         else showToast(data.message || "INSTA 5 failed", "error");
@@ -4638,9 +5115,10 @@ async function kidgambleX(){
     const stake = stakeInput.value;
     const symbol = document.getElementById("symbol").value;
     const duration = getManualDurationTicks();
+    const turbo = isTurboEnabledForFastBuys(activeProfile);
 
     try{
-        const res = await fetch("/kidgamblex", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ stake, symbol, duration, duration_unit:"t" })});
+        const res = await fetch("/kidgamblex", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ stake, symbol, duration, duration_unit:"t", turbo })});
         const data = await res.json();
         if(data.status === "success") showToast("🎲 kidgambleX sent", "warn");
         else showToast(data.message || "kidgambleX failed", "error");
@@ -4657,8 +5135,22 @@ async function trade(type, barrierOverride=null){
     const symbol = document.getElementById("symbol").value;
     const barrier = barrierOverride !== null ? barrierOverride : barrierInput.value;
     const duration = getManualDurationTicks();
+    const turbo = isTurboEnabledForFastBuys(activeProfile);
+    const payload = { type, stake, symbol, barrier, duration, duration_unit:"t", turbo };
 
-    await fetch("/manual_trade", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type, stake, symbol, barrier, duration, duration_unit:"t"})});
+    try{
+        if(normalizeFastBuyProfile(activeProfile)){
+            await postFastProfileTrade(activeProfile, payload, {
+                turbo,
+                queue: !turbo,
+                useSocket: turbo,
+            });
+        }else{
+            await fetch("/manual_trade", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+        }
+    }catch(e){
+        showToast((e && e.message) || "Fast trade queue is busy", "error");
+    }
 }
 
 async function take3(type){
@@ -4667,8 +5159,9 @@ async function take3(type){
     const symbol = document.getElementById("symbol").value;
     const barrier = barrierInput.value;
     const duration = getManualDurationTicks();
+    const turbo = isTurboEnabledForFastBuys(activeProfile);
 
-    await fetch("/manual_3_trades", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type, stake, symbol, barrier, duration, duration_unit:"t"})});
+    await fetch("/manual_3_trades", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type, stake, symbol, barrier, duration, duration_unit:"t", turbo})});
     showToast("🔥 TAKE 3 SENT (" + type + ")", "info");
 }
 
@@ -4678,8 +5171,9 @@ async function burst4(type){
     const symbol = document.getElementById("symbol").value;
     const barrier = barrierInput.value;
     const duration = getManualDurationTicks();
+    const turbo = isTurboEnabledForFastBuys(activeProfile);
 
-    await fetch("/burst_4", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type, stake, symbol, barrier, duration, duration_unit:"t"})});
+    await fetch("/burst_4", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type, stake, symbol, barrier, duration, duration_unit:"t", turbo})});
     showToast("⚡ BURST 4 SENT (" + type + ")", "warn");
 }
 
@@ -4702,6 +5196,7 @@ async function confirmHalfAutoKoolkid(){
         symbol: symbolNode ? symbolNode.value : "R_25",
         duration: getManualDurationTicks(),
         duration_unit: "t",
+        turbo: isTurboEnabledForFastBuys("KOOLKID"),
         fallback_stake: (stakeInput && stakeInput.value) || "1",
         under1_stake: stakeDraft.under1,
         over2_stake: stakeDraft.over2,

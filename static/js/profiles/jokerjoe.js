@@ -1,10 +1,105 @@
 (function () {
   const PROFILE = "JOKERJOE";
-const state = { lastSocket: null, socketBound: false, autoModes: {}, kidgxBarrier: 5, matchesAnalysisOn: false, matchesLastKey: "", matchesObserverBound: false, matchSniperOn: false, matchSniperCooldownUntil: 0, matchSniperActiveDigit: null, matchSniperConsumed: false, matchSniperBusy: false, matchesSnapshot: null, matchesSorted: [], matchSniper5xOn: false, matchSniper5xCooldownUntil: 0, matchSniper5xBusy: false, matchSniper5xLastTopKey: "", matchSniper5xRotationSets: null, matchSniper5xRotationIndex: 0, matchSniper5xCurrentDigits: [], aiAutoModeChoice: "golden_digits", aiAutoLowestTradeCountChoice: 5, aiAutoLowestLocalOn: false, aiAutoModalOpen: false, aiLowestLastTickCount: 0, aiLowestTouches: {}, aiLowestArmed: null, aiLowestBatchActive: false, aiLowestBatchPending: 0, aiLowestBatchBarrier: null, aiLowestBatchProfit: 0, aiLowestCooldownUntil: 0, aiLowestSubmitting: false, aiLowestRecoveryDeficit: 0, aiLowestRecoveryOnly: false, randomMatchesDiffersOn: false, randomMatchesDiffersMode: "DIFFERS", randomMatchesDiffersModalOpen: false, randomMatchesDiffersBusy: false, randomMatchesDiffersCooldownUntil: 0, randomMatchesDiffersLastSignalKey: "", randomMatchesDiffersTickHistory: [], randomMatchesDiffersLastTickCount: 0, randomMatchesDiffersSnapshot: null, blackcard: { lastDigit: null, recentDigits: [], percentages: {}, busy: false } };
+const FAST_INTERVAL_MS_NORMAL = 400; // 0.4s as requested
+const FAST_INTERVAL_MS_TURBO = 120;  // faster Turbo lane for JOKERJOE
+const FAST_MAX_BUY_QUEUE = 12;       // safety limit
+const state = { lastSocket: null, socketBound: false, autoModes: {}, turboMode: loadTurboModeJokerjoe(), kidgxBarrier: 5, matchesAnalysisOn: false, matchesLastKey: "", matchesObserverBound: false, matchSniperOn: false, matchSniperCooldownUntil: 0, matchSniperActiveDigit: null, matchSniperConsumed: false, matchSniperBusy: false, matchesSnapshot: null, matchesSorted: [], matchSniper5xOn: false, matchSniper5xCooldownUntil: 0, matchSniper5xBusy: false, matchSniper5xLastTopKey: "", matchSniper5xRotationSets: null, matchSniper5xRotationIndex: 0, matchSniper5xCurrentDigits: [], aiAutoModeChoice: "golden_digits", aiAutoLowestTradeCountChoice: 5, aiAutoLowestLocalOn: false, aiAutoModalOpen: false, aiLowestLastTickCount: 0, aiLowestTouches: {}, aiLowestArmed: null, aiLowestBatchActive: false, aiLowestBatchPending: 0, aiLowestBatchBarrier: null, aiLowestBatchProfit: 0, aiLowestCooldownUntil: 0, aiLowestSubmitting: false, aiLowestRecoveryDeficit: 0, aiLowestRecoveryOnly: false, randomMatchesDiffersOn: false, randomMatchesDiffersMode: "DIFFERS", randomMatchesDiffersModalOpen: false, randomMatchesDiffersBusy: false, randomMatchesDiffersCooldownUntil: 0, randomMatchesDiffersLastSignalKey: "", randomMatchesDiffersTickHistory: [], randomMatchesDiffersLastTickCount: 0, randomMatchesDiffersSnapshot: null, blackcard: { lastDigit: null, recentDigits: [], percentages: {}, busy: false }, insta2Busy: false };
+  const fastBuyQueueJokerjoe = { items: [], running: false, lastRunAt: 0 };
 
   function App() { return window.BotApp || {}; }
   function isActive() { try { return typeof activeProfile !== "undefined" && activeProfile === PROFILE; } catch (e) { return false; } }
   function safeToast(msg, type) { try { if (typeof showToast === "function") showToast(msg, type || "info"); } catch (e) {} }
+
+function getFastIntervalMsJokerjoe() {
+  return currentTurboModeJokerjoe() ? FAST_INTERVAL_MS_TURBO : FAST_INTERVAL_MS_NORMAL;
+}
+
+function delayFastBuyMsJokerjoe(ms) {
+  const waitMs = Math.max(0, Number(ms) || 0);
+  if (waitMs <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, waitMs));
+}
+
+async function runFastBuyQueueJokerjoe() {
+  if (fastBuyQueueJokerjoe.running) return;
+  fastBuyQueueJokerjoe.running = true;
+  try {
+    while ((fastBuyQueueJokerjoe.items || []).length) {
+      const item = fastBuyQueueJokerjoe.items.shift();
+      if (!item || typeof item.task !== "function") continue;
+      const intervalMs = getFastIntervalMsJokerjoe();
+      const elapsedMs = Date.now() - Number(fastBuyQueueJokerjoe.lastRunAt || 0);
+      if (fastBuyQueueJokerjoe.lastRunAt) {
+        if (elapsedMs < intervalMs) await delayFastBuyMsJokerjoe(intervalMs - elapsedMs);
+      }
+      try {
+        const result = await item.task();
+        item.resolve(result);
+      } catch (err) {
+        item.reject(err);
+      } finally {
+        fastBuyQueueJokerjoe.lastRunAt = Date.now();
+      }
+    }
+  } finally {
+    fastBuyQueueJokerjoe.running = false;
+  }
+}
+
+function enqueueFastBuyJokerjoe(task) {
+  if (typeof task !== "function") return Promise.resolve();
+  const queuedCount = Number((fastBuyQueueJokerjoe.items || []).length || 0);
+  const inFlightCount = fastBuyQueueJokerjoe.running ? 1 : 0;
+  if ((queuedCount + inFlightCount) >= FAST_MAX_BUY_QUEUE) {
+    return Promise.reject(new Error(`Fast buy queue is full (${FAST_MAX_BUY_QUEUE})`));
+  }
+  return new Promise((resolve, reject) => {
+    fastBuyQueueJokerjoe.items.push({ task, resolve, reject });
+    runFastBuyQueueJokerjoe();
+  });
+}
+
+function turboStorageKeyJokerjoe() {
+  return "profileTurbo:JOKERJOE";
+}
+
+function loadTurboModeJokerjoe() {
+  const app = App();
+  if (app && typeof app.getProfileTurboEnabled === "function") {
+    return !!app.getProfileTurboEnabled(PROFILE);
+  }
+  try {
+    return localStorage.getItem(turboStorageKeyJokerjoe()) === "1";
+  } catch (e) {
+    return false;
+  }
+}
+
+function persistTurboModeJokerjoe(enabled) {
+  const app = App();
+  if (app && typeof app.setProfileTurboEnabled === "function") {
+    app.setProfileTurboEnabled(PROFILE, !!enabled);
+    return;
+  }
+  try {
+    localStorage.setItem(turboStorageKeyJokerjoe(), enabled ? "1" : "0");
+  } catch (e) {}
+}
+
+function currentTurboModeJokerjoe() {
+  const enabled = !!loadTurboModeJokerjoe();
+  state.turboMode = enabled;
+  return enabled;
+}
+
+function renderTurboToggleJokerjoe() {
+  const btn = document.getElementById("turboToggleBtnJokerjoe");
+  if (!btn) return;
+  state.turboMode = currentTurboModeJokerjoe();
+  btn.classList.toggle("is-on", !!state.turboMode);
+  btn.setAttribute("aria-pressed", state.turboMode ? "true" : "false");
+  btn.setAttribute("aria-label", state.turboMode ? "Turbo on" : "Turbo off");
+}
 
   function currencyPayload(payload) {
     return payload || {};
@@ -545,12 +640,17 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     let stake = Number(stakeEl && stakeEl.value);
     if (!Number.isFinite(stake) || stake <= 0) stake = 1;
     const duration = getDurationTicksJokerjoe();
+    const turboOn = currentTurboModeJokerjoe();
 
     // Send stake with each manual trade so batch actions (MatchSniper 5x) respect the UI stake.
     // Include both `stake` and `amount` for compatibility with different backend parsers.
     const base = { type: contractType, stake, amount: stake, duration, duration_unit: "t" };
 
-    const jobs = (digits || []).map((d) => postJSON("/manual_trade", Object.assign({}, base, { barrier: Number(d) })));
+    const jobs = (digits || []).map((d) => sendFastManualTradeJokerjoe(Object.assign({}, base, { barrier: Number(d) }), {
+      turbo: turboOn,
+      queue: !turboOn,
+      useSocket: turboOn,
+    }));
     const results = await Promise.allSettled(jobs);
     let placed = 0;
     const failed = [];
@@ -572,10 +672,11 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
   async function placeExactFiveDiffersBatchJokerjoe(digit) {
     let totalPlaced = 0;
     let attempts = 0;
+    const turboOn = currentTurboModeJokerjoe();
     try {
       const stake = getManualStakeValueJokerjoe();
       const duration = getDurationTicksJokerjoe();
-      const r = await postJSON("/insta5", { barrier: Number(digit), stake, amount: stake, duration, duration_unit: "t" });
+      const r = await postJSON("/insta5", { barrier: Number(digit), stake, amount: stake, duration, duration_unit: "t", turbo: turboOn });
       totalPlaced = Math.max(0, Number(r && r.data && r.data.placed) || 0);
     } catch (e) {}
 
@@ -586,7 +687,11 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
       const duration = getDurationTicksJokerjoe();
       const jobs = [];
       for (let i = 0; i < missing; i++) {
-        jobs.push(postJSON("/manual_trade", { type: "DIFFERS", barrier: Number(digit), stake, amount: stake, duration, duration_unit: "t" }));
+        jobs.push(sendFastManualTradeJokerjoe({ type: "DIFFERS", barrier: Number(digit), stake, amount: stake, duration, duration_unit: "t" }, {
+          turbo: turboOn,
+          queue: !turboOn,
+          useSocket: turboOn,
+        }));
       }
       const rs = await Promise.allSettled(jobs);
       let add = 0;
@@ -594,16 +699,41 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
         if (x.status === "fulfilled" && x.value && x.value.data && x.value.data.status === "success") add += 1;
       });
       totalPlaced += add;
-      if (totalPlaced < 5) await new Promise((resolve) => setTimeout(resolve, 40));
+      if (totalPlaced < 5) await new Promise((resolve) => setTimeout(resolve, turboOn ? 8 : 40));
     }
     return { placed: totalPlaced, exact: totalPlaced === 5 };
   }
 
+  async function placeExactTwoDiffersBatchJokerjoe(digit) {
+    const turboOn = currentTurboModeJokerjoe();
+    const stake = getManualStakeValueJokerjoe();
+    const duration = getDurationTicksJokerjoe();
+    const payload = { type: "DIFFERS", barrier: Number(digit), stake, amount: stake, duration, duration_unit: "t" };
+    const jobs = [0, 1].map(() => sendFastManualTradeJokerjoe(payload, {
+      turbo: turboOn,
+      queue: false,
+      useSocket: true,
+    }));
+    const results = await Promise.allSettled(jobs);
+    let placed = 0;
+    results.forEach((r) => {
+      if (r.status === "fulfilled" && r.value && r.value.data && r.value.data.status === "success") placed += 1;
+    });
+    return { placed, exact: placed === 2 };
+  }
+
   async function placeOneDiffersTradeJokerjoe(digit) {
     try {
+      const turboOn = currentTurboModeJokerjoe();
       const stake = getManualStakeValueJokerjoe();
       const duration = getDurationTicksJokerjoe();
-      const r = await postJSON("/manual_trade", { type: "DIFFERS", barrier: Number(digit), stake, amount: stake, duration, duration_unit: "t" });
+      const payload = { type: "DIFFERS", barrier: Number(digit), stake, amount: stake, duration, duration_unit: "t" };
+      const task = () => sendFastManualTradeJokerjoe(payload, {
+        turbo: turboOn,
+        queue: false,
+        useSocket: turboOn,
+      });
+      const r = turboOn ? await task() : await enqueueFastBuyJokerjoe(task);
       const ok = !!(r && r.data && r.data.status === "success");
       return { placed: ok ? 1 : 0, exact: ok };
     } catch (e) {
@@ -1171,6 +1301,33 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     return { ok: res.ok, data };
   }
 
+  async function sendFastManualTradeJokerjoe(payload, options) {
+    const app = App();
+    const turbo = !!(options && Object.prototype.hasOwnProperty.call(options, "turbo")
+      ? options.turbo
+      : currentTurboModeJokerjoe());
+    const requestPayload = Object.assign({}, payload || {}, { turbo });
+    const shouldQueue = !!(options && options.queue);
+    const sendNow = () => {
+      if (app && typeof app.sendFastProfileTrade === "function") {
+        return app.sendFastProfileTrade(PROFILE, requestPayload, Object.assign({
+          turbo,
+          queue: false,
+          fireAndForget: turbo,
+        }, options || {}, {
+          turbo,
+          queue: false,
+          fireAndForget: turbo,
+        }));
+      }
+      return postJSON("/manual_trade", requestPayload);
+    };
+    if (shouldQueue) {
+      return enqueueFastBuyJokerjoe(sendNow);
+    }
+    return sendNow();
+  }
+
   function currentBarrier() {
     const el = document.getElementById("barrier");
     let b = parseInt((el && el.value) || "5", 10);
@@ -1183,6 +1340,7 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
   function updateButtons() {
     const kidGxBtn = document.getElementById("kidGxBtnJokerjoe");
     const aiBtn = document.getElementById("aiAutoTradingBtnJokerjoe");
+    const insta2Btn = document.getElementById("insta2BtnJokerjoe");
     if (kidGxBtn) {
       const on = !!state.autoModes.kidgx;
       kidGxBtn.innerText = on ? `⚡kidGx ${state.kidgxBarrier}: ON` : `⚡kidGx ${state.kidgxBarrier}`;
@@ -1192,6 +1350,13 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
       const on = isAIAutoOnJokerjoe();
       aiBtn.innerText = `🤖AI AUTO-TRADING: ${on ? "ON" : "OFF"}`;
       aiBtn.style.background = on ? "#22c55e" : "#1e293b";
+    }
+    if (insta2Btn) {
+      const barrier = currentBarrier();
+      insta2Btn.innerText = state.insta2Busy ? `INSTA 2 ON ${barrier} (RUNNING...)` : `INSTA 2 ON ${barrier}`;
+      insta2Btn.disabled = !!state.insta2Busy;
+      insta2Btn.style.opacity = state.insta2Busy ? "0.75" : "1";
+      insta2Btn.style.cursor = state.insta2Busy ? "wait" : "pointer";
     }
     updateRandomMatchesDiffersButtonJokerjoe();
     updateAdvancedAIModeButtonsJokerjoe();
@@ -1335,6 +1500,8 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     updateRandomMatchesDiffersStatusJokerjoe();
     updateRandomMatchesDiffersModalUiJokerjoe();
     renderBlackcardJokerjoe();
+    currentTurboModeJokerjoe();
+    renderTurboToggleJokerjoe();
   }
 
   async function afterLoadProfileUI() {
@@ -1355,6 +1522,8 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     updateRandomMatchesDiffersStatusJokerjoe();
     updateRandomMatchesDiffersModalUiJokerjoe();
     renderBlackcardJokerjoe();
+    currentTurboModeJokerjoe();
+    renderTurboToggleJokerjoe();
   }
 
   async function onActivate() {
@@ -1376,8 +1545,27 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     updateRandomMatchesDiffersStatusJokerjoe();
     updateRandomMatchesDiffersModalUiJokerjoe();
     renderBlackcardJokerjoe();
+    currentTurboModeJokerjoe();
+    renderTurboToggleJokerjoe();
     refreshMatchesAnalysisJokerjoe();
   }
+
+window.toggleTurboJokerjoe = function () {
+  const next = !currentTurboModeJokerjoe();
+  state.turboMode = next;
+  persistTurboModeJokerjoe(next);
+  renderTurboToggleJokerjoe();
+};
+
+if (!window.__jokerjoeTurboSyncBound) {
+  window.__jokerjoeTurboSyncBound = true;
+  window.addEventListener("bot-profile-turbo-change", (event) => {
+    const detail = (event && event.detail) || {};
+    if (String(detail.profile || "").toUpperCase() !== PROFILE) return;
+    state.turboMode = !!detail.enabled;
+    renderTurboToggleJokerjoe();
+  });
+}
 
   window.toggleKidGxJokerjoe = async function () {
     state.kidgxBarrier = currentBarrier();
@@ -1562,38 +1750,53 @@ window.sendBlackcardDiffersJokerjoe = async function (digit, event) {
       : ((document.getElementById("symbol") || {}).value || "R_25");
     const stake = getManualStakeValueJokerjoe();
     const duration = getDurationTicksJokerjoe();
-    const socketReady = typeof socket !== "undefined" && socket && socket.connected;
-
-    if (socketReady) {
-      const result = await new Promise((resolve) => {
-        let settled = false;
-        const finish = (payload) => {
-          if (settled) return;
-          settled = true;
-          resolve(payload || { status: "error", message: "Blackcard send failed" });
-        };
-        const timer = setTimeout(() => finish({ status: "error", message: "Blackcard send timed out" }), 2500);
-        socket.emit(
-          "jokerjoe_blackcard_trade",
-          { digit: selectedDigit, stake, duration, symbol },
-          (response) => {
-            clearTimeout(timer);
-            finish(response);
-          }
-        );
-      });
-      if (result && result.status === "success") safeToast(`DIFFERS ${selectedDigit} sent instantly.`, "success");
-      else safeToast((result && result.message) || `DIFFERS ${selectedDigit} failed`, "error");
-    } else {
-      const result = await placeOneDiffersTradeJokerjoe(selectedDigit);
-      if (result && result.exact) safeToast(`DIFFERS ${selectedDigit} sent instantly.`, "success");
-      else safeToast(`DIFFERS ${selectedDigit} failed`, "error");
-    }
+    const turboOn = currentTurboModeJokerjoe();
+    const task = () => sendFastManualTradeJokerjoe({
+      type: "DIFFERS",
+      barrier: Number(selectedDigit),
+      stake,
+      amount: stake,
+      duration,
+      duration_unit: "t",
+      symbol,
+    }, {
+      turbo: turboOn,
+      queue: false,
+      useSocket: turboOn,
+    });
+    const result = turboOn ? await task() : await enqueueFastBuyJokerjoe(task);
+    if (result && result.data && result.data.status === "success") safeToast(`DIFFERS ${selectedDigit} sent instantly.`, "success");
+    else safeToast((result && result.data && result.data.message) || `DIFFERS ${selectedDigit} failed`, "error");
   } catch (e) {
     safeToast(`DIFFERS ${selectedDigit} failed`, "error");
   } finally {
     state.blackcard.busy = false;
     renderBlackcardJokerjoe();
+  }
+};
+
+window.insta2Jokerjoe = async function () {
+  if (state.insta2Busy) return;
+  if (typeof apiConnected !== "undefined" && !apiConnected) {
+    safeToast("Connect your API first.", "error");
+    return;
+  }
+  const digit = currentBarrier();
+  state.insta2Busy = true;
+  updateButtons();
+  try {
+    const result = await placeExactTwoDiffersBatchJokerjoe(digit);
+    if (result && result.exact) {
+      safeToast(`INSTA 2: DIFFERS ${digit} x2 sent.`, "success");
+    } else {
+      const placed = Number(result && result.placed) || 0;
+      safeToast(`INSTA 2 placed ${placed}/2 trades on ${digit}.`, placed > 0 ? "warn" : "error");
+    }
+  } catch (e) {
+    safeToast(`INSTA 2 on ${digit} failed.`, "error");
+  } finally {
+    state.insta2Busy = false;
+    updateButtons();
   }
 };
 

@@ -1,16 +1,23 @@
 (function () {
   const PROFILE = "KOOLKID";
+  const FAST_INTERVAL_MS_NORMAL = 400; // 0.4s as requested
+  const FAST_INTERVAL_MS_TURBO = 120;  // faster Turbo lane for KOOLKID
+  const FAST_MAX_BUY_QUEUE = 12;       // safety limit
   const state = {
     lastSocket: null,
     socketBound: false,
     barrierAnalysis: null,
     over3Analysis: null,
+    goldenCard: null,
     kid2vix: null,
+    goldenCardTradeBusy: false,
     autoModes: {},
+    turboMode: loadTurboModeKoolkid(),
     dual2xOpen: false,
     dual2xBusy: false,
     dual2xAnalysis: { tickCount: 0, pctByDigit: null, ready: false },
   };
+  const fastBuyQueueKoolkid = { items: [], running: false, lastRunAt: 0 };
 
   function App() { return window.BotApp || {}; }
   function isActive() { try { return typeof activeProfile !== "undefined" && activeProfile === PROFILE; } catch (e) { return false; } }
@@ -28,6 +35,129 @@
     try {
       if (typeof showToast === "function") showToast(msg, type || "info");
     } catch (e) {}
+  }
+
+  function nextPaintFrame() {
+    return new Promise((resolve) => {
+      try {
+        requestAnimationFrame(() => resolve());
+      } catch (e) {
+        setTimeout(resolve, 0);
+      }
+    });
+  }
+
+  function showCenteredPopupKoolkid(id) {
+    const popup = document.getElementById(id);
+    if (!popup) return null;
+    popup.style.visibility = "hidden";
+    popup.style.display = "block";
+    popup.style.left = "50%";
+    popup.style.top = "50%";
+    popup.style.transform = "translate(-50%, -50%)";
+    popup.style.visibility = "visible";
+    return popup;
+  }
+
+  function hideCenteredPopupKoolkid(id) {
+    const popup = document.getElementById(id);
+    if (!popup) return;
+    popup.style.display = "none";
+    popup.style.visibility = "";
+    popup.style.left = "";
+    popup.style.top = "";
+    popup.style.transform = "";
+  }
+
+  function getFastIntervalMsKoolkid() {
+    return currentTurboModeKoolkid() ? FAST_INTERVAL_MS_TURBO : FAST_INTERVAL_MS_NORMAL;
+  }
+
+  function delayFastBuyMsKoolkid(ms) {
+    const waitMs = Math.max(0, Number(ms) || 0);
+    if (waitMs <= 0) return Promise.resolve();
+    return new Promise((resolve) => setTimeout(resolve, waitMs));
+  }
+
+  async function runFastBuyQueueKoolkid() {
+    if (fastBuyQueueKoolkid.running) return;
+    fastBuyQueueKoolkid.running = true;
+    try {
+      while ((fastBuyQueueKoolkid.items || []).length) {
+        const item = fastBuyQueueKoolkid.items.shift();
+        if (!item || typeof item.task !== "function") continue;
+        const intervalMs = getFastIntervalMsKoolkid();
+        const elapsedMs = Date.now() - Number(fastBuyQueueKoolkid.lastRunAt || 0);
+        if (fastBuyQueueKoolkid.lastRunAt) {
+          if (elapsedMs < intervalMs) await delayFastBuyMsKoolkid(intervalMs - elapsedMs);
+        }
+        try {
+          const result = await item.task();
+          item.resolve(result);
+        } catch (err) {
+          item.reject(err);
+        } finally {
+          fastBuyQueueKoolkid.lastRunAt = Date.now();
+        }
+      }
+    } finally {
+      fastBuyQueueKoolkid.running = false;
+    }
+  }
+
+  function enqueueFastBuyKoolkid(task) {
+    if (typeof task !== "function") return Promise.resolve();
+    const queuedCount = Number((fastBuyQueueKoolkid.items || []).length || 0);
+    const inFlightCount = fastBuyQueueKoolkid.running ? 1 : 0;
+    if ((queuedCount + inFlightCount) >= FAST_MAX_BUY_QUEUE) {
+      return Promise.reject(new Error(`Fast buy queue is full (${FAST_MAX_BUY_QUEUE})`));
+    }
+    return new Promise((resolve, reject) => {
+      fastBuyQueueKoolkid.items.push({ task, resolve, reject });
+      runFastBuyQueueKoolkid();
+    });
+  }
+
+  function turboStorageKeyKoolkid() {
+    return "profileTurbo:KOOLKID";
+  }
+
+  function loadTurboModeKoolkid() {
+    const app = App();
+    if (app && typeof app.getProfileTurboEnabled === "function") {
+      return !!app.getProfileTurboEnabled(PROFILE);
+    }
+    try {
+      return localStorage.getItem(turboStorageKeyKoolkid()) === "1";
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function persistTurboModeKoolkid(enabled) {
+    const app = App();
+    if (app && typeof app.setProfileTurboEnabled === "function") {
+      app.setProfileTurboEnabled(PROFILE, !!enabled);
+      return;
+    }
+    try {
+      localStorage.setItem(turboStorageKeyKoolkid(), enabled ? "1" : "0");
+    } catch (e) {}
+  }
+
+  function currentTurboModeKoolkid() {
+    const enabled = !!loadTurboModeKoolkid();
+    state.turboMode = enabled;
+    return enabled;
+  }
+
+  function renderTurboToggleKoolkid() {
+    const btn = document.getElementById("turboToggleBtnKoolkid");
+    if (!btn) return;
+    state.turboMode = currentTurboModeKoolkid();
+    btn.classList.toggle("is-on", !!state.turboMode);
+    btn.setAttribute("aria-pressed", state.turboMode ? "true" : "false");
+    btn.setAttribute("aria-label", state.turboMode ? "Turbo on" : "Turbo off");
   }
 
   function currencyPayload(payload) {
@@ -57,6 +187,34 @@
     let data = {};
     try { data = await res.json(); } catch (e) {}
     return { ok: res.ok, data };
+  }
+
+  async function sendFastManualTradeKoolkid(payload, options) {
+    const app = App();
+    const requestPayload = Object.assign({}, payload || {});
+    const turbo = !!(options && Object.prototype.hasOwnProperty.call(options, "turbo")
+      ? options.turbo
+      : currentTurboModeKoolkid());
+    requestPayload.turbo = turbo;
+    const shouldQueue = !!(options && options.queue);
+    const sendNow = () => {
+      if (app && typeof app.sendFastProfileTrade === "function") {
+        return app.sendFastProfileTrade(PROFILE, requestPayload, Object.assign({
+          turbo,
+          queue: false,
+          fireAndForget: turbo,
+        }, options || {}, {
+          turbo,
+          queue: false,
+          fireAndForget: turbo,
+        }));
+      }
+      return postJSON("/manual_trade", requestPayload);
+    };
+    if (shouldQueue) {
+      return enqueueFastBuyKoolkid(sendNow);
+    }
+    return sendNow();
   }
 
 
@@ -201,13 +359,18 @@
       return Object.assign({}, leg, { legStake });
     });
     const jobs = plannedLegs.map((leg) => {
+      const turboOn = currentTurboModeKoolkid();
       const payload = {
         stake: leg.legStake,
         amount: leg.legStake,
         type: String(leg.type || "OVER").toUpperCase(),
         barrier: Number(leg.barrier),
       };
-      return postJSON("/manual_trade", payload);
+      return sendFastManualTradeKoolkid(payload, {
+        turbo: turboOn,
+        queue: !turboOn,
+        useSocket: turboOn,
+      });
     });
     const rs = await Promise.allSettled(jobs);
     let placed = 0;
@@ -546,6 +709,78 @@
     info.innerText = `Scanning ${marketLabel} ticks with Over 3 analysis • ${counts} • ${session}`;
   }
 
+  function renderGoldenCardKoolkid(data) {
+    if (data && typeof data === "object") state.goldenCard = data;
+    const d = state.goldenCard || {};
+    const btn = document.getElementById("goldenCardBtnKoolkid");
+    const info = document.getElementById("goldenCardInfoKoolkid");
+    const statusEl = document.getElementById("goldenCardStatusKoolkid");
+    const progressEl = document.getElementById("goldenCardProgressKoolkid");
+    const resultsEl = document.getElementById("goldenCardResultsKoolkid");
+    const running = !!d.running;
+    const historyTarget = Number(d.history_target || 20) || 20;
+    const symbols = Array.isArray(d.symbols) ? d.symbols : [];
+    const warmed = Number(d.completed_markets || 0) || 0;
+    const statusText = String(d.status || "Golden Card is waiting to scan markets.");
+    const results = Array.isArray(d.results) ? d.results : [];
+
+    if (btn) {
+      btn.innerText = running ? "🂠 GOLDEN CARD • SCANNING" : "🂠 GOLDEN CARD";
+      btn.style.background = running
+        ? "linear-gradient(135deg,#f59e0b,#fde047)"
+        : "linear-gradient(135deg,#ca8a04,#facc15)";
+      btn.style.color = "#111827";
+    }
+    if (info) {
+      info.style.color = running ? "#facc15" : "#94a3b8";
+      info.innerText = statusText;
+    }
+    if (statusEl) statusEl.innerText = statusText;
+    if (progressEl) progressEl.innerText = `${warmed} / ${symbols.length || 10} warmed • rolling ${historyTarget} ticks`;
+    if (!resultsEl) return;
+    if (!results.length) {
+      resultsEl.innerHTML = `<div style="grid-column:1 / -1; text-align:center; color:#64748b; padding:20px;">${running ? "Scanning market ticks live..." : "Golden Card results will show here after the scan starts."}</div>`;
+      return;
+    }
+    resultsEl.innerHTML = results.map((row) => {
+      const tier = String(row.tier || "danger");
+      const marketLabel = String(row.market_label || row.symbol || "Market");
+      const confidence = Number(row.confidence_pct || 0);
+      const setupDigit = Number(row.setup_digit || 3);
+      const ticksReady = Number(row.ticks_ready || 0);
+      const canTrade = ticksReady >= historyTarget;
+      const readyText = row.entry_ready ? "READY" : (canTrade ? "LIVE" : `${ticksReady}/${historyTarget}`);
+      return `
+        <div class="golden-card-market ${tier}" data-golden-card-symbol="${String(row.symbol || "").replace(/"/g, "&quot;")}">
+          <div style="min-width:0;">
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+              <div style="font-size:17px; font-weight:800; color:#f8fafc; line-height:1.1;">${marketLabel}</div>
+              <div style="font-size:12px; color:#e2e8f0; font-weight:700; white-space:nowrap;">${confidence.toFixed(1)}%</div>
+            </div>
+            <div style="margin-top:6px; font-size:11px; color:${row.entry_ready ? "#86efac" : "#cbd5e1"}; font-weight:700; letter-spacing:.02em;">${readyText}</div>
+          </div>
+          <div class="golden-card-digit">${setupDigit}</div>
+        </div>
+      `;
+    }).join("");
+    Array.from(resultsEl.querySelectorAll("[data-golden-card-symbol]")).forEach((node) => {
+      const symbol = String(node.getAttribute("data-golden-card-symbol") || "").toUpperCase();
+      const row = results.find((item) => String(item.symbol || "").toUpperCase() === symbol);
+      const canTrade = !!row && Number(row.ticks_ready || 0) >= historyTarget;
+      if (canTrade) {
+        node.addEventListener("click", () => {
+          if (!symbol || !window.placeGoldenCardTradeKoolkid) return;
+          window.placeGoldenCardTradeKoolkid(symbol);
+        });
+        node.style.cursor = "pointer";
+        node.style.opacity = "1";
+      } else {
+        node.style.cursor = "wait";
+        node.style.opacity = "0.78";
+      }
+    });
+  }
+
 
   function updateAdvancedAIModeButtons(modes, payload) {
   const map = [
@@ -593,6 +828,8 @@
     else if (kidGxBtn) renderBarrierAnalysis(state.barrierAnalysis || { selected: "UNDER 9" });
     if (payload && payload.over3_analysis_data) renderOver3AnalysisKoolkid(payload.over3_analysis_data);
     else renderOver3AnalysisKoolkid();
+    if (payload && payload.golden_card_data) renderGoldenCardKoolkid(payload.golden_card_data);
+    else renderGoldenCardKoolkid();
     if (payload && payload.kid2vix_data) renderKid2vixKoolkid(payload.kid2vix_data);
     else renderKid2vixKoolkid();
     updateDual2xUIKoolkid();
@@ -612,8 +849,13 @@
         renderDual2xAnalysisKoolkid(data || {});
         if (data && data.barrier_analysis) renderBarrierAnalysis(data.barrier_analysis);
         if (data && data.over3_analysis_data) renderOver3AnalysisKoolkid(data.over3_analysis_data);
+        if (data && data.golden_card_data) renderGoldenCardKoolkid(data.golden_card_data);
         if (data && data.kid2vix_data) renderKid2vixKoolkid(data.kid2vix_data);
         if (data && data.auto_modes) updateModeButtonsFromPayload(data.auto_modes, data);
+      });
+
+      socket.on("golden_card_update", (data) => {
+        renderGoldenCardKoolkid(data || {});
       });
 
       socket.on("auto_mode_update", (modes) => {
@@ -650,7 +892,10 @@
     updateDual2xUIKoolkid();
     renderDual2xAnalysisKoolkid();
     renderOver3AnalysisKoolkid();
+    renderGoldenCardKoolkid();
     renderKid2vixKoolkid();
+    currentTurboModeKoolkid();
+    renderTurboToggleKoolkid();
     setTimeout(syncSelectedDigitsToServer, 200);
   }
 
@@ -660,7 +905,10 @@
     updateDual2xUIKoolkid();
     renderDual2xAnalysisKoolkid();
     renderOver3AnalysisKoolkid();
+    renderGoldenCardKoolkid();
     renderKid2vixKoolkid();
+    currentTurboModeKoolkid();
+    renderTurboToggleKoolkid();
     setTimeout(syncSelectedDigitsToServer, 150);
   }
 
@@ -670,7 +918,27 @@
     updateDual2xUIKoolkid();
     renderDual2xAnalysisKoolkid();
     renderOver3AnalysisKoolkid();
+    renderGoldenCardKoolkid();
     renderKid2vixKoolkid();
+    currentTurboModeKoolkid();
+    renderTurboToggleKoolkid();
+  }
+
+  window.toggleTurboKoolkid = function () {
+    const next = !currentTurboModeKoolkid();
+    state.turboMode = next;
+    persistTurboModeKoolkid(next);
+    renderTurboToggleKoolkid();
+  };
+
+  if (!window.__koolkidTurboSyncBound) {
+    window.__koolkidTurboSyncBound = true;
+    window.addEventListener("bot-profile-turbo-change", (event) => {
+      const detail = (event && event.detail) || {};
+      if (String(detail.profile || "").toUpperCase() !== PROFILE) return;
+      state.turboMode = !!detail.enabled;
+      renderTurboToggleKoolkid();
+    });
   }
 
   window.toggleDual2xKoolkid = function () {
@@ -768,6 +1036,88 @@
     } finally {
       state.dual2xBusy = false;
       updateDual2xUIKoolkid();
+    }
+  };
+
+  window.openGoldenCardPopupKoolkid = function () {
+    showCenteredPopupKoolkid("goldenCardPopupKoolkid");
+  };
+
+  window.hideGoldenCardPopupKoolkid = function () {
+    hideCenteredPopupKoolkid("goldenCardPopupKoolkid");
+  };
+
+  window.handleGoldenCardBtnKoolkid = async function () {
+    const current = state.goldenCard || {};
+    if (current.running) {
+      window.openGoldenCardPopupKoolkid();
+      return;
+    }
+    renderGoldenCardKoolkid(Object.assign({}, current, {
+      running: true,
+      completed: false,
+      status: "Starting live Golden Card scan across 10 markets...",
+    }));
+    window.openGoldenCardPopupKoolkid();
+    await nextPaintFrame();
+    const r = await postJSON("/start_golden_card_koolkid", {});
+    if (r.data && r.data.status === "success") {
+      if (r.data.golden_card_data) renderGoldenCardKoolkid(r.data.golden_card_data);
+      safeToast("Golden Card scan started", "success");
+    } else {
+      window.hideGoldenCardPopupKoolkid();
+      renderGoldenCardKoolkid(Object.assign({}, current, {
+        running: false,
+        completed: false,
+      }));
+      safeToast((r.data && r.data.message) || "Golden Card scan failed", "error");
+    }
+  };
+
+  window.turnOffGoldenCardKoolkid = async function () {
+    const current = state.goldenCard || {};
+    if (!current.running) {
+      safeToast("Golden Card is already off", "info");
+      return;
+    }
+    const r = await postJSON("/stop_golden_card_koolkid", {});
+    if (r.data && r.data.golden_card_data) renderGoldenCardKoolkid(r.data.golden_card_data);
+    window.hideGoldenCardPopupKoolkid();
+    safeToast("Golden Card turned off", "info");
+  };
+
+  window.placeGoldenCardTradeKoolkid = async function (symbol) {
+    if (state.goldenCardTradeBusy) return;
+    const market = String(symbol || "").toUpperCase().trim();
+    if (!market) {
+      safeToast("Golden Card market missing", "error");
+      return;
+    }
+    state.goldenCardTradeBusy = true;
+    try {
+      const stake = getStakeValueKoolkid();
+      const duration = Number(document.getElementById("durationTicks")?.value || 1) || 1;
+      const turboOn = currentTurboModeKoolkid();
+      const payload = {
+        stake,
+        amount: stake,
+        type: "OVER",
+        barrier: 1,
+        symbol: market,
+        duration,
+      };
+      const r = await sendFastManualTradeKoolkid(payload, {
+        turbo: turboOn,
+        queue: !turboOn,
+        useSocket: turboOn,
+      });
+      const ok = !!(r && r.data && r.data.status === "success");
+      if (ok) safeToast(`Golden Card sent OVER 1 on ${market}`, "success");
+      else safeToast((r && r.data && r.data.message) || `Golden Card trade failed on ${market}`, "error");
+    } catch (e) {
+      safeToast(`Golden Card trade failed on ${market}`, "error");
+    } finally {
+      state.goldenCardTradeBusy = false;
     }
   };
 

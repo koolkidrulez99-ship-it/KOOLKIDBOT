@@ -1,7 +1,22 @@
 from collections import deque, Counter
 from strategies.base import BaseStrategy
+from strategies.koolkid_confidence import compute_koolkid_confidence_bars
 import time
 import random
+
+GOLDEN_CARD_MARKETS = (
+    "R_10",
+    "R_25",
+    "R_50",
+    "R_75",
+    "R_100",
+    "1HZ10V",
+    "1HZ25V",
+    "1HZ50V",
+    "1HZ75V",
+    "1HZ100V",
+)
+GOLDEN_CARD_HISTORY_TARGET = 20
 
 
 class KoolKidStrategy(BaseStrategy):
@@ -13,8 +28,10 @@ class KoolKidStrategy(BaseStrategy):
         self.confidence_over2 = 0
         self.confidence_under8 = 0
         self.confidence_under9 = 0
+        self.confidence_details = {}
 
         self.pattern_buffer = deque(maxlen=6)
+        self.confidence_buffer = deque(maxlen=50)
 
         # AUTO MODES (INDEPENDENT)
         self.kidracks_auto = False
@@ -96,6 +113,7 @@ class KoolKidStrategy(BaseStrategy):
         self.over3_session_stopped = False
         self.over3_wait_fresh_setup = False
         self.over3_ticks_by_symbol = {}
+        self.golden_card = self._new_golden_card_state()
 
         # Kid2vix auto: UNDER 2 + OVER 3 pair when digits 2/3 look cold
         self.kid2vix_auto = False
@@ -192,8 +210,10 @@ class KoolKidStrategy(BaseStrategy):
         self.confidence_over2 = 0
         self.confidence_under8 = 0
         self.confidence_under9 = 0
+        self.confidence_details = {}
 
         self.pattern_buffer.clear()
+        self.confidence_buffer.clear()
 
         self.kidracks_auto = False
         self.koolkidspeed_auto = False
@@ -243,6 +263,7 @@ class KoolKidStrategy(BaseStrategy):
         self.over3_session_stopped = False
         self.over3_wait_fresh_setup = False
         self.over3_ticks_by_symbol = {}
+        self.golden_card = self._new_golden_card_state()
 
         self.kid2vix_auto = False
         self.kid2vix_last20_threshold = 4
@@ -489,12 +510,8 @@ class KoolKidStrategy(BaseStrategy):
         sym = str(symbol or "").upper().strip()
         return sym or ""
 
-    def _over3_counts(self, symbol=None):
-        sym = self._over3_symbol_key(symbol or getattr(self, "last_symbol", ""))
-        if sym:
-            ticks = list((self.over3_ticks_by_symbol or {}).get(sym) or [])
-        else:
-            ticks = list(self.tick_digits or [])
+    def _counts_from_ticks(self, ticks):
+        ticks = list(ticks or [])
         last100 = ticks[-100:]
         last10 = ticks[-10:]
         high100 = sum(1 for d in last100 if self._is_high_digit(d))
@@ -511,6 +528,250 @@ class KoolKidStrategy(BaseStrategy):
             "high_count_100": int(high100),
             "high_count_10": int(high10),
             "current_high_streak": int(streak),
+        }
+
+    def _over3_counts(self, symbol=None):
+        sym = self._over3_symbol_key(symbol or getattr(self, "last_symbol", ""))
+        if sym:
+            ticks = list((self.over3_ticks_by_symbol or {}).get(sym) or [])
+        else:
+            ticks = list(self.tick_digits or [])
+        return self._counts_from_ticks(ticks)
+
+    def _golden_card_counts_from_ticks(self, ticks, history_target=None):
+        target = int(history_target or GOLDEN_CARD_HISTORY_TARGET or 20)
+        target = max(10, min(50, target))
+        values = []
+        for tick in list(ticks or []):
+            try:
+                values.append(int(tick))
+            except Exception:
+                continue
+        last_window = values[-target:]
+        last10 = last_window[-10:]
+        high_window = sum(1 for d in last_window if d > 3)
+        high10 = sum(1 for d in last10 if d > 3)
+        streak = 0
+        for digit in reversed(last_window):
+            if digit > 3:
+                streak += 1
+            else:
+                break
+        return {
+            "sample_window": len(last_window),
+            "sample_short": len(last10),
+            "high_count_window": int(high_window),
+            "high_count_short": int(high10),
+            "current_high_streak": int(streak),
+        }
+
+    def _new_golden_card_state(self):
+        return {
+            "running": False,
+            "completed": False,
+            "symbols": list(GOLDEN_CARD_MARKETS),
+            "history_target": int(GOLDEN_CARD_HISTORY_TARGET),
+            "ticks_by_symbol": {},
+            "results": [],
+            "status": "Press GOLDEN CARD to start a live 20-tick scan for Over 1 using Over 3 analysis.",
+            "completed_markets": 0,
+            "last_update_at": 0.0,
+        }
+
+    def _golden_card_market_label(self, symbol):
+        sym = self._over3_symbol_key(symbol)
+        labels = {
+            "R_10": "V10",
+            "R_25": "V25",
+            "R_50": "V50",
+            "R_75": "V75",
+            "R_100": "V100",
+            "1HZ10V": "V10 1s",
+            "1HZ25V": "V25 1s",
+            "1HZ50V": "V50 1s",
+            "1HZ75V": "V75 1s",
+            "1HZ100V": "V100 1s",
+        }
+        return labels.get(sym, sym)
+
+    def _golden_card_confidence(self, counts):
+        sample_window = int(counts.get("sample_window", 0) or 0)
+        sample_short = int(counts.get("sample_short", 0) or 0)
+        high_window = int(counts.get("high_count_window", 0) or 0)
+        high10 = int(counts.get("high_count_short", 0) or 0)
+        streak = int(counts.get("current_high_streak", 0) or 0)
+        if sample_window <= 0:
+            return 0.0
+        window_ratio = min(1.0, max(0.0, high_window / float(max(1, sample_window))))
+        short_ratio = min(1.0, max(0.0, high10 / float(max(1, sample_short))))
+        sample_ratio = min(1.0, max(0.0, sample_window / float(max(1, GOLDEN_CARD_HISTORY_TARGET))))
+        streak_penalty = min(1.0, max(0.0, max(0, streak - 3) / 6.0))
+        confidence = ((window_ratio * 70.0) + (short_ratio * 30.0)) * sample_ratio
+        confidence -= streak_penalty * 12.0
+        return round(max(0.0, min(100.0, confidence)), 1)
+
+    def _golden_card_setup_digit(self, confidence_pct):
+        try:
+            confidence = float(confidence_pct)
+        except Exception:
+            confidence = 0.0
+        if confidence >= 90.0:
+            return 0
+        if confidence >= 80.0:
+            return 1
+        if confidence >= 60.0:
+            return 2
+        return 3
+
+    def _golden_card_tier(self, confidence_pct):
+        try:
+            confidence = float(confidence_pct)
+        except Exception:
+            confidence = 0.0
+        if confidence >= 90.0:
+            return "elite"
+        if confidence >= 80.0:
+            return "strong"
+        if confidence > 60.0:
+            return "building"
+        return "danger"
+
+    def _golden_card_entry_ready(self, counts):
+        sample_window = int(counts.get("sample_window", 0) or 0)
+        sample_short = int(counts.get("sample_short", 0) or 0)
+        high_window = int(counts.get("high_count_window", 0) or 0)
+        high_short = int(counts.get("high_count_short", 0) or 0)
+        return bool(
+            sample_window >= GOLDEN_CARD_HISTORY_TARGET
+            and sample_short >= min(10, sample_window)
+            and high_window >= 12
+            and high_short >= 6
+            and int(counts.get("current_high_streak", 0) or 0) < 6
+        )
+
+    def _rebuild_golden_card_results(self):
+        scan = self.golden_card or self._new_golden_card_state()
+        rows = []
+        history_target = int(scan.get("history_target", GOLDEN_CARD_HISTORY_TARGET) or GOLDEN_CARD_HISTORY_TARGET)
+        for sym in list(scan.get("symbols") or []):
+            ticks = list((scan.get("ticks_by_symbol") or {}).get(sym) or [])
+            counts = self._golden_card_counts_from_ticks(ticks, history_target=history_target)
+            confidence_pct = self._golden_card_confidence(counts)
+            rows.append({
+                "symbol": sym,
+                "market_label": self._golden_card_market_label(sym),
+                "ticks_ready": int(len(ticks)),
+                "history_target": history_target,
+                "confidence_pct": confidence_pct,
+                "setup_digit": int(self._golden_card_setup_digit(confidence_pct)),
+                "tier": self._golden_card_tier(confidence_pct),
+                "entry_ready": self._golden_card_entry_ready(counts),
+                **counts,
+            })
+        rows.sort(
+            key=lambda row: (
+                -float(row.get("confidence_pct", 0.0) or 0.0),
+                -int(row.get("high_count_window", 0) or 0),
+                -int(row.get("high_count_short", 0) or 0),
+                int(row.get("current_high_streak", 0) or 0),
+                str(row.get("symbol") or ""),
+            )
+        )
+        scan["results"] = rows[:10]
+        warmed_count = 0
+        for row in rows:
+            if int(row.get("ticks_ready", 0) or 0) >= history_target:
+                warmed_count += 1
+        scan["completed_markets"] = int(warmed_count)
+        if scan.get("running"):
+            scan["completed"] = False
+            scan["status"] = (
+                f"Live Golden Card scan running • {warmed_count}/{len(list(scan.get('symbols') or []))} markets warmed "
+                f"to {history_target} ticks • rankings keep updating while the scan stays on."
+            )
+        scan["last_update_at"] = time.time()
+        self.golden_card = scan
+        return scan["results"]
+
+    def start_golden_card_scan(self, symbols=None, history_target=None):
+        chosen_symbols = []
+        for sym in list(symbols or GOLDEN_CARD_MARKETS):
+            clean_sym = self._over3_symbol_key(sym)
+            if clean_sym and clean_sym not in chosen_symbols:
+                chosen_symbols.append(clean_sym)
+        if not chosen_symbols:
+            chosen_symbols = list(GOLDEN_CARD_MARKETS)
+        target = int(history_target or GOLDEN_CARD_HISTORY_TARGET or 20)
+        target = max(10, min(50, target))
+        chosen_symbols = chosen_symbols[:10]
+        self.golden_card = {
+            "running": True,
+            "completed": False,
+            "symbols": chosen_symbols,
+            "history_target": target,
+            "ticks_by_symbol": {sym: deque(maxlen=target) for sym in chosen_symbols},
+            "results": [],
+            "status": f"Starting live Golden Card scan across {len(chosen_symbols)} markets...",
+            "completed_markets": 0,
+            "last_update_at": time.time(),
+        }
+        self._rebuild_golden_card_results()
+        return self.get_golden_card_state()
+
+    def stop_golden_card_scan(self, status=None):
+        scan = self.golden_card or self._new_golden_card_state()
+        scan["running"] = False
+        scan["completed"] = False
+        if status:
+            scan["status"] = str(status)
+        self.golden_card = scan
+        return self.get_golden_card_state()
+
+    def record_golden_card_tick(self, symbol, digit):
+        scan = self.golden_card or self._new_golden_card_state()
+        if not bool(scan.get("running")):
+            return self.get_golden_card_state()
+        sym = self._over3_symbol_key(symbol)
+        if sym not in (scan.get("symbols") or []):
+            return self.get_golden_card_state()
+        try:
+            di = int(digit)
+        except Exception:
+            return self.get_golden_card_state()
+        ticks_by_symbol = scan.setdefault("ticks_by_symbol", {})
+        history_target = int(scan.get("history_target", GOLDEN_CARD_HISTORY_TARGET) or GOLDEN_CARD_HISTORY_TARGET)
+        buf = ticks_by_symbol.get(sym)
+        if not isinstance(buf, deque) or buf.maxlen != history_target:
+            buf = deque(list(buf or []), maxlen=history_target)
+            ticks_by_symbol[sym] = buf
+        buf.append(di)
+        self.golden_card = scan
+        self._rebuild_golden_card_results()
+        return self.get_golden_card_state()
+
+    def get_golden_card_state(self):
+        scan = self.golden_card or self._new_golden_card_state()
+        history_target = int(scan.get("history_target", GOLDEN_CARD_HISTORY_TARGET) or GOLDEN_CARD_HISTORY_TARGET)
+        progress = []
+        for sym in list(scan.get("symbols") or []):
+            ticks = list((scan.get("ticks_by_symbol") or {}).get(sym) or [])
+            progress.append({
+                "symbol": sym,
+                "market_label": self._golden_card_market_label(sym),
+                "ticks_ready": int(len(ticks)),
+                "history_target": history_target,
+            })
+        progress.sort(key=lambda row: (-int(row.get("ticks_ready", 0) or 0), str(row.get("symbol") or "")))
+        return {
+            "running": bool(scan.get("running")),
+            "completed": bool(scan.get("completed")),
+            "history_target": history_target,
+            "symbols": list(scan.get("symbols") or []),
+            "completed_markets": int(scan.get("completed_markets", 0) or 0),
+            "status": str(scan.get("status") or ""),
+            "last_update_at": float(scan.get("last_update_at", 0.0) or 0.0),
+            "results": list(scan.get("results") or []),
+            "progress": progress,
         }
 
     def get_over3_analysis_state(self):
@@ -704,34 +965,14 @@ class KoolKidStrategy(BaseStrategy):
     # CONFIDENCE BARS
     # ==============================
     def update_confidence_bars(self):
-        if len(self.pattern_buffer) < 3:
+        if len(self.confidence_buffer) < 5:
             return
-
-        last = list(self.pattern_buffer)
-
-        # OVER 1 confidence
-        if 0 in last[-4:] and 1 in last[-4:]:
-            self.confidence_over1 = min(100, self.confidence_over1 + 8)
-        else:
-            self.confidence_over1 = max(0, self.confidence_over1 - 2)
-
-        # OVER 2 confidence
-        if 2 in last[-4:]:
-            self.confidence_over2 = min(100, self.confidence_over2 + 6)
-        else:
-            self.confidence_over2 = max(0, self.confidence_over2 - 2)
-
-        # UNDER 9 confidence
-        if 9 in last[-3:]:
-            self.confidence_under9 = min(100, self.confidence_under9 + 10)
-        else:
-            self.confidence_under9 = max(0, self.confidence_under9 - 3)
-
-        # UNDER 8 confidence
-        if 9 in last[-4:] and 8 in last[-4:]:
-            self.confidence_under8 = min(100, self.confidence_under8 + 10)
-        else:
-            self.confidence_under8 = max(0, self.confidence_under8 - 3)
+        scores = compute_koolkid_confidence_bars(list(self.confidence_buffer))
+        self.confidence_details = scores
+        self.confidence_over1 = float((scores.get("over1") or {}).get("confidence_pct", 0.0) or 0.0)
+        self.confidence_over2 = float((scores.get("over2") or {}).get("confidence_pct", 0.0) or 0.0)
+        self.confidence_under8 = float((scores.get("under8") or {}).get("confidence_pct", 0.0) or 0.0)
+        self.confidence_under9 = float((scores.get("under9") or {}).get("confidence_pct", 0.0) or 0.0)
 
     def on_tick(self, tick, digit):
         super().on_tick(tick, digit)
@@ -751,6 +992,7 @@ class KoolKidStrategy(BaseStrategy):
             pass
 
         self.pattern_buffer.append(digit)
+        self.confidence_buffer.append(int(digit))
         self.update_confidence_bars()
         self._record_barrier_analysis_tick(digit)
         self._refresh_koolluck_background_analysis()
@@ -1875,6 +2117,7 @@ class KoolKidStrategy(BaseStrategy):
                 "kid2vix_cooldown_after_loss": float(self.kid2vix_cooldown_after_loss),
             },
             "over3_analysis_data": self.get_over3_analysis_state(),
+            "golden_card_data": self.get_golden_card_state(),
             "kid2vix_data": dict(self.kid2vix_analysis or self._refresh_kid2vix_analysis() or {}),
             "auto_dollar_analysis": dict(self.auto_dollar_analysis or {}),
             "barrier_analysis": {

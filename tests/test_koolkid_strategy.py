@@ -7,6 +7,11 @@ def _feed_digits(strategy, digits):
         strategy.on_tick({"symbol": "R_10", "epoch": idx, "quote": 100 + (digit / 100.0)}, int(digit))
 
 
+def _feed_golden_card_digits(strategy, symbol, digits):
+    for digit in digits:
+        strategy.record_golden_card_tick(symbol, int(digit))
+
+
 def test_koolluck_background_analysis_tracks_best_candidate_while_off():
     strat = KoolKidStrategy()
     digits = ([0] * 10) + ([1] * 11) + ([2] * 11) + ([3] * 12) + ([4] * 10) + ([5] * 11) + ([6] * 11) + ([7] * 10) + ([8] * 10) + ([9] * 4)
@@ -195,3 +200,58 @@ def test_over_analysis_toggle_waits_for_fresh_signal_before_firing():
         "duration_unit": "t",
         "symbol": "R_10",
     }
+
+
+def test_golden_card_scan_ranks_markets_and_assigns_confidence_digits():
+    strat = KoolKidStrategy()
+    strat.start_golden_card_scan(symbols=["R_75", "R_10", "R_25", "R_50"], history_target=20)
+
+    _feed_golden_card_digits(strat, "R_75", ([9] * 9) + [0] + ([9] * 9) + [0])
+    _feed_golden_card_digits(strat, "R_10", ([9] * 8) + ([0] * 2) + ([9] * 8) + ([0] * 2))
+    _feed_golden_card_digits(strat, "R_25", ([9] * 6) + ([0] * 4) + ([9] * 6) + ([0] * 4))
+    _feed_golden_card_digits(strat, "R_50", ([9] * 4) + ([0] * 6) + ([9] * 4) + ([0] * 6))
+
+    data = strat.get_golden_card_state()
+    results = data["results"]
+
+    assert data["running"] is True
+    assert data["completed_markets"] == 4
+    assert [row["symbol"] for row in results[:4]] == ["R_75", "R_10", "R_25", "R_50"]
+    assert [row["setup_digit"] for row in results[:4]] == [0, 1, 2, 3]
+    assert results[0]["market_label"] == "V75"
+    assert results[1]["market_label"] == "V10"
+    assert results[0]["confidence_pct"] >= 90.0
+    assert 80.0 <= results[1]["confidence_pct"] < 90.0
+    assert 60.0 <= results[2]["confidence_pct"] < 80.0
+    assert results[3]["confidence_pct"] < 60.0
+
+
+def test_golden_card_payload_is_exposed_in_ui_payload():
+    strat = KoolKidStrategy()
+    strat.start_golden_card_scan(symbols=["R_10"], history_target=20)
+    _feed_golden_card_digits(strat, "R_10", ([9] * 8) + ([0] * 2) + ([9] * 8) + ([0] * 2))
+
+    payload = strat.get_ui_payload()
+
+    assert "golden_card_data" in payload
+    assert payload["golden_card_data"]["results"][0]["symbol"] == "R_10"
+
+
+def test_golden_card_keeps_scanning_after_first_20_ticks_and_rolls_forward():
+    strat = KoolKidStrategy()
+    strat.start_golden_card_scan(symbols=["R_10"], history_target=20)
+
+    _feed_golden_card_digits(strat, "R_10", ([9] * 8) + ([0] * 2) + ([9] * 8) + ([0] * 2))
+    first = strat.get_golden_card_state()
+    first_confidence = first["results"][0]["confidence_pct"]
+
+    _feed_golden_card_digits(strat, "R_10", ([0] * 20))
+    second = strat.get_golden_card_state()
+    second_row = second["results"][0]
+
+    assert first["running"] is True
+    assert second["running"] is True
+    assert second["completed"] is False
+    assert second_row["ticks_ready"] == 20
+    assert second_row["confidence_pct"] < first_confidence
+    assert "live golden card scan running" in second["status"].lower()

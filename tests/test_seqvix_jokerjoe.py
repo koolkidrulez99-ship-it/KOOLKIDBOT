@@ -410,6 +410,60 @@ def test_blackcard_socket_trade_uses_jokerjoe_profile_and_selected_digit(jokerjo
     }
 
 
+def test_fast_profile_trade_uses_lean_turbo_send_path(jokerjoe_client, monkeypatch):
+    cid, state = jokerjoe_client
+    captured = {}
+
+    monkeypatch.setattr(server, "login_required", lambda: True)
+    monkeypatch.setattr(server, "get_client_state", lambda: (cid, state))
+
+    def fake_send_buy_with_profile(
+        client_id,
+        profile,
+        contract_type,
+        stake,
+        symbol,
+        barrier,
+        duration=1,
+        duration_unit="t",
+        mode=None,
+        skip_local_balance_check=False,
+        emit_balance_after_send=True,
+    ):
+        captured.update(
+            {
+                "client_id": client_id,
+                "profile": profile,
+                "contract_type": contract_type,
+                "stake": stake,
+                "symbol": symbol,
+                "barrier": barrier,
+                "duration": duration,
+                "duration_unit": duration_unit,
+                "emit_balance_after_send": emit_balance_after_send,
+            }
+        )
+        return True, "Trade sent"
+
+    monkeypatch.setattr(server, "send_buy_with_profile", fake_send_buy_with_profile)
+
+    result = server.handle_fast_profile_trade({
+        "profile": "JOKERJOE",
+        "type": "DIFFERS",
+        "stake": 1.25,
+        "barrier": 6,
+        "duration": 3,
+        "duration_unit": "t",
+        "symbol": "R_25",
+        "turbo": True,
+    })
+
+    assert result["status"] == "success"
+    assert captured["emit_balance_after_send"] is False
+    assert captured["profile"] == "JOKERJOE"
+    assert captured["contract_type"] == "DIFFERS"
+
+
 def test_seqvix_jokerjoe_try_trade_bypasses_local_balance_gate(jokerjoe_client):
     cid, state = jokerjoe_client
     state["balance"] = 0.25
