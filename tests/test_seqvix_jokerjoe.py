@@ -377,7 +377,19 @@ def test_blackcard_socket_trade_uses_jokerjoe_profile_and_selected_digit(jokerjo
     monkeypatch.setattr(server, "login_required", lambda: True)
     monkeypatch.setattr(server, "get_client_state", lambda: (cid, state))
 
-    def fake_send_buy_with_profile(client_id, profile, contract_type, stake, symbol, barrier, duration=1, duration_unit="t", mode=None, skip_local_balance_check=False):
+    def fake_send_buy_with_profile(
+        client_id,
+        profile,
+        contract_type,
+        stake,
+        symbol,
+        barrier,
+        duration=1,
+        duration_unit="t",
+        mode=None,
+        skip_local_balance_check=False,
+        emit_balance_after_send=True,
+    ):
         captured.update(
             {
                 "client_id": client_id,
@@ -388,6 +400,7 @@ def test_blackcard_socket_trade_uses_jokerjoe_profile_and_selected_digit(jokerjo
                 "barrier": barrier,
                 "duration": duration,
                 "duration_unit": duration_unit,
+                "emit_balance_after_send": emit_balance_after_send,
             }
         )
         return True, "Trade sent"
@@ -407,6 +420,7 @@ def test_blackcard_socket_trade_uses_jokerjoe_profile_and_selected_digit(jokerjo
         "barrier": 9,
         "duration": 4,
         "duration_unit": "t",
+        "emit_balance_after_send": False,
     }
 
 

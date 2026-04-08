@@ -51,12 +51,14 @@
     koolkid_reversal_enabled: false,
     koolkid_half_barrier_enabled: false,
     koolkidPanelOpen: false,
+    autoPanelOpen: false,
     dirtyFields: new Set(),
     lastBarrierKey: null,
     marketBarrierSyncInFlight: false,
     marketBarrierSyncSignature: "",
     marketBarrierSyncTimer: null,
     marketBarrierStore: {},
+    autoBothDraft: null,
     marketChart: {
       history: [],
       basePrice: null,
@@ -854,7 +856,123 @@
     `;
     btn.style.background = enabled ? "#0f766e" : "#155e75";
     btn.style.color = "#ecfeff";
-    btn.title = String(data.last_reason || "AUTO BOTH is OFF.");
+    btn.title = String(data.last_reason || "Mutant AUTO is OFF.");
+    renderAutoBothPanel(data);
+  }
+  function syncAutoBothPanelInputs(data, force) {
+    const safe = data || {};
+    const shouldForce = !!force;
+    const barrierNode = el("nttAutoBarrier");
+    const budgetNode = el("nttAutoBudget");
+    const martingaleNode = el("nttAutoMartingaleToggle");
+    const step50Node = el("nttAutoStep50Toggle");
+    if (barrierNode && (shouldForce || !state.autoPanelOpen)) {
+      barrierNode.value = formatBarrierInputValue(safe.barrier || "+0.12", 0.12);
+    }
+    if (budgetNode && (shouldForce || !state.autoPanelOpen)) {
+      budgetNode.value = formatStakeInputValue(num(safe.budget, 10), 10);
+    }
+    const touchOnlyBtn = el("nttAutoTouchOnlyBtn");
+    const noTouchOnlyBtn = el("nttAutoNoTouchOnlyBtn");
+    const draftSide = state.autoPanelOpen && !shouldForce && state.autoBothDraft && state.autoBothDraft.selected_side;
+    const selectedSide = String(draftSide || safe.selected_side || "TOUCH").toUpperCase();
+    if (touchOnlyBtn) touchOnlyBtn.dataset.selected = selectedSide === "TOUCH" ? "1" : "0";
+    if (noTouchOnlyBtn) noTouchOnlyBtn.dataset.selected = selectedSide === "NO_TOUCH" ? "1" : "0";
+    if (martingaleNode && (shouldForce || !state.autoPanelOpen)) {
+      martingaleNode.checked = !!safe.martingale_enabled;
+    }
+    if (step50Node && (shouldForce || !state.autoPanelOpen)) {
+      step50Node.checked = !!safe.step50_enabled;
+    }
+    applyAutoBothModeToggles();
+  }
+  function applyAutoBothModeToggles() {
+    const martingaleNode = el("nttAutoMartingaleToggle");
+    const step50Node = el("nttAutoStep50Toggle");
+    const martingaleEnabled = !!(martingaleNode && martingaleNode.checked);
+    const step50Enabled = !!(step50Node && step50Node.checked);
+    setText("nttAutoMartingaleState", martingaleEnabled ? "ON" : "OFF");
+    setText("nttAutoStep50State", step50Enabled ? "ON" : "OFF");
+  }
+  function renderAutoBothPanel(data) {
+    const safe = data || {};
+    syncAutoBothPanelInputs(safe, false);
+    const selectedSide = String(((state.autoBothDraft && state.autoBothDraft.selected_side) || safe.selected_side || "TOUCH")).toUpperCase();
+    const touchOnlyBtn = el("nttAutoTouchOnlyBtn");
+    const noTouchOnlyBtn = el("nttAutoNoTouchOnlyBtn");
+    if (touchOnlyBtn) {
+      const active = selectedSide === "TOUCH";
+      touchOnlyBtn.innerText = `TOUCH ONLY: ${active ? "ON" : "OFF"}`;
+      touchOnlyBtn.style.background = active ? "#22c55e" : "#166534";
+      touchOnlyBtn.style.color = active ? "#052e16" : "#ecfdf5";
+      touchOnlyBtn.style.boxShadow = active ? "0 0 0 2px rgba(134,239,172,0.45) inset" : "none";
+    }
+    if (noTouchOnlyBtn) {
+      const active = selectedSide === "NO_TOUCH";
+      noTouchOnlyBtn.innerText = `NO TOUCH ONLY: ${active ? "ON" : "OFF"}`;
+      noTouchOnlyBtn.style.background = active ? "#ef4444" : "#991b1b";
+      noTouchOnlyBtn.style.color = active ? "#fee2e2" : "#fef2f2";
+      noTouchOnlyBtn.style.boxShadow = active ? "0 0 0 2px rgba(252,165,165,0.45) inset" : "none";
+    }
+    setText("nttAutoSideValue", selectedSide === "NO_TOUCH" ? "NO TOUCH ONLY: ON" : "TOUCH ONLY: ON");
+    setText("nttAutoModeValue", safe.mode_label || "BASE");
+    setText("nttAutoStakeValue", money(num(safe.current_stake, 0), state.lastPayload || safe));
+    setText("nttAutoDecisionValue", String(safe.last_decision || safe.label || "OFF").replace(/_/g, " "));
+    setText("nttAutoReason", safe.last_reason || "Mutant AUTO is OFF.");
+    const startBtn = el("nttAutoStartBtn");
+    if (startBtn) {
+      startBtn.innerText = safe.enabled ? "UPDATE AUTO" : "START AUTO";
+      startBtn.style.background = safe.enabled ? "#0f766e" : "#0f766e";
+    }
+    const stopBtn = el("nttAutoStopBtn");
+    if (stopBtn) {
+      stopBtn.disabled = !safe.enabled;
+      stopBtn.style.opacity = safe.enabled ? "1" : ".6";
+      stopBtn.style.cursor = safe.enabled ? "pointer" : "not-allowed";
+    }
+    const decisionNode = el("nttAutoDecisionValue");
+    if (decisionNode) {
+      const decision = String(safe.last_decision || safe.label || "OFF").toUpperCase();
+      decisionNode.style.color = decision === "RUNNING" ? "#86efac" : (decision === "WAITING" ? "#fcd34d" : "#e2e8f0");
+    }
+  }
+  function setAutoBothPanelOpen(open, forceSync) {
+    state.autoPanelOpen = !!open;
+    const modal = el("nttAutoBody");
+    if (modal) modal.style.display = state.autoPanelOpen ? "flex" : "none";
+    if (state.autoPanelOpen) {
+      const ntt = state.lastPayload && (state.lastPayload.ntt || state.lastPayload);
+      state.autoBothDraft = Object.assign({}, ((ntt && ntt.auto_both) || {}));
+      syncAutoBothPanelInputs((ntt && ntt.auto_both) || {}, forceSync !== false);
+      renderAutoBothPanel((ntt && ntt.auto_both) || {});
+    } else {
+      state.autoBothDraft = null;
+    }
+  }
+  function readAutoBothForm() {
+    normalizeBarrierField("nttAutoBarrier");
+    const budgetNode = el("nttAutoBudget");
+    const budgetValue = Math.max(0.35, num(readText("nttAutoBudget", "10"), 10));
+    if (budgetNode) budgetNode.value = formatStakeInputValue(budgetValue, 10);
+    const selectedSide = (el("nttAutoNoTouchOnlyBtn") && el("nttAutoNoTouchOnlyBtn").dataset.selected === "1") ? "NO_TOUCH" : "TOUCH";
+    return {
+      barrier: readText("nttAutoBarrier", "+0.12"),
+      budget: Number(budgetValue.toFixed(2)),
+      selected_side: selectedSide,
+      martingale_enabled: !!(el("nttAutoMartingaleToggle") && el("nttAutoMartingaleToggle").checked),
+      step50_enabled: !!(el("nttAutoStep50Toggle") && el("nttAutoStep50Toggle").checked),
+    };
+  }
+  function setAutoBothSelectedSide(side) {
+    const chosen = String(side || "TOUCH").toUpperCase() === "NO_TOUCH" ? "NO_TOUCH" : "TOUCH";
+    const touchOnlyBtn = el("nttAutoTouchOnlyBtn");
+    const noTouchOnlyBtn = el("nttAutoNoTouchOnlyBtn");
+    if (touchOnlyBtn) touchOnlyBtn.dataset.selected = chosen === "TOUCH" ? "1" : "0";
+    if (noTouchOnlyBtn) noTouchOnlyBtn.dataset.selected = chosen === "NO_TOUCH" ? "1" : "0";
+    const ntt = state.lastPayload && (state.lastPayload.ntt || state.lastPayload);
+    state.autoBothDraft = Object.assign({}, state.autoBothDraft || (ntt && ntt.auto_both) || {}, { selected_side: chosen });
+    const auto = Object.assign({}, (ntt && ntt.auto_both) || {}, state.autoBothDraft);
+    renderAutoBothPanel(auto);
   }
   function resetChartBase(symbol, price) {
     const safeSymbol = normalizeMarketSymbol(symbol);
@@ -1266,17 +1384,54 @@
     return true;
   }
   async function toggleAutoBoth() {
+    setAutoBothPanelOpen(true, true);
+    return true;
+  }
+  function closeAutoBothPanel() {
+    setAutoBothPanelOpen(false, false);
+    return true;
+  }
+  async function startAutoBoth() {
+    const config = readAutoBothForm();
+    state.autoBothDraft = Object.assign({}, state.autoBothDraft || {}, config);
     const saved = await saveSettings(false);
     if (!saved) return false;
-    const ntt = state.lastPayload && (state.lastPayload.ntt || state.lastPayload);
-    const current = !!(ntt && ntt.auto_both && ntt.auto_both.enabled);
-    const { ok, data } = await postJSON("/toggle_ntt_auto_both", { enabled: !current });
+    const { ok, data } = await postJSON("/toggle_ntt_auto_both", {
+      enabled: true,
+      barrier: config.barrier,
+      budget: config.budget,
+      selected_side: config.selected_side,
+      martingale_enabled: config.martingale_enabled,
+      step50_enabled: config.step50_enabled,
+    });
     renderPayload((data && data.payload) || state.lastPayload || {}, { forceForm: true });
+    const ntt = ((data && data.payload) || state.lastPayload || {}).ntt || ((data && data.payload) || state.lastPayload || {});
+    if (ntt && ntt.auto_both) {
+      state.autoBothDraft = Object.assign({}, ntt.auto_both);
+      syncAutoBothPanelInputs(ntt.auto_both, true);
+    }
+    setAutoBothPanelOpen(true, false);
     if (!ok) {
-      toast((data && (data.message || data.error)) || "Could not toggle Mutant AUTO", "error");
+      toast((data && (data.message || data.error)) || "Could not start Mutant AUTO", "error");
       return false;
     }
-    toast((data && data.message) || (!current ? "MUTANT AUTO BOTH ON" : "MUTANT AUTO BOTH OFF"), !current ? "success" : "warn");
+    toast((data && data.message) || "MUTANT AUTO ON", "success");
+    return true;
+  }
+  async function stopAutoBoth() {
+    const { ok, data } = await postJSON("/toggle_ntt_auto_both", { enabled: false });
+    renderPayload((data && data.payload) || state.lastPayload || {}, { forceForm: true });
+    const ntt = ((data && data.payload) || state.lastPayload || {}).ntt || ((data && data.payload) || state.lastPayload || {});
+    if (ntt && ntt.auto_both) {
+      state.autoBothDraft = Object.assign({}, ntt.auto_both);
+      syncAutoBothPanelInputs(ntt.auto_both, true);
+    }
+    setAutoBothPanelOpen(true, false);
+    if (!ok) {
+      toast((data && (data.message || data.error)) || "Could not stop Mutant AUTO", "error");
+      return false;
+    }
+    toast((data && data.message) || "MUTANT AUTO OFF", "warn");
     return true;
   }
   async function toggleAutoSl() {
@@ -1384,6 +1539,11 @@
     if (key === "ntt-toggle-autosl") return toggleAutoSl();
     if (key === "ntt-save-settings") return saveSettings(true);
     if (key === "ntt-auto-both") return toggleAutoBoth();
+    if (key === "ntt-auto-close") return closeAutoBothPanel();
+    if (key === "ntt-auto-start") return startAutoBoth();
+    if (key === "ntt-auto-stop") return stopAutoBoth();
+    if (key === "ntt-auto-side-touch") return setAutoBothSelectedSide("TOUCH");
+    if (key === "ntt-auto-side-no-touch") return setAutoBothSelectedSide("NO_TOUCH");
     if (key === "ntt-trade-touch") return sendTrade("TOUCH");
     if (key === "ntt-trade-no-touch") return sendTrade("NO_TOUCH");
     if (key === "ntt-trade-both") return sendTrade("BOTH");
@@ -1682,8 +1842,38 @@
         if (evt.target === modal && state.koolkidPanelOpen) toggleKoolkidPanel();
       });
     }
+    const autoModal = el("nttAutoBody");
+    if (autoModal && autoModal.dataset.nttModalBound !== "1") {
+      autoModal.dataset.nttModalBound = "1";
+      autoModal.addEventListener("click", (evt) => {
+        if (evt.target === autoModal && state.autoPanelOpen) closeAutoBothPanel();
+      });
+    }
+    const martingaleToggle = el("nttAutoMartingaleToggle");
+    if (martingaleToggle && martingaleToggle.dataset.nttAutoBound !== "1") {
+      martingaleToggle.dataset.nttAutoBound = "1";
+      martingaleToggle.addEventListener("change", () => {
+        if (martingaleToggle.checked) {
+          const step50Node = el("nttAutoStep50Toggle");
+          if (step50Node) step50Node.checked = false;
+        }
+        applyAutoBothModeToggles();
+      });
+    }
+    const step50Toggle = el("nttAutoStep50Toggle");
+    if (step50Toggle && step50Toggle.dataset.nttAutoBound !== "1") {
+      step50Toggle.dataset.nttAutoBound = "1";
+      step50Toggle.addEventListener("change", () => {
+        if (step50Toggle.checked) {
+          const martingaleNode = el("nttAutoMartingaleToggle");
+          if (martingaleNode) martingaleNode.checked = false;
+        }
+        applyAutoBothModeToggles();
+      });
+    }
     applyKoolkidReversalToggle();
     applyKoolkidHalfBarrierToggle();
+    applyAutoBothModeToggles();
     bindFormInputs();
     bindSymbolPicker();
   }

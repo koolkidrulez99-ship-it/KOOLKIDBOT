@@ -9,6 +9,8 @@
     barrierAnalysis: null,
     over3Analysis: null,
     goldenCard: null,
+    goldenCardSettingsBusy: false,
+    testtrial: null,
     kid2vix: null,
     goldenCardTradeBusy: false,
     autoModes: {},
@@ -71,6 +73,31 @@
 
   function getFastIntervalMsKoolkid() {
     return currentTurboModeKoolkid() ? FAST_INTERVAL_MS_TURBO : FAST_INTERVAL_MS_NORMAL;
+  }
+
+  function normalizeGoldenCardFilterModeKoolkid(value) {
+    const raw = String(value || "BOTH").toUpperCase().replace(/\s+/g, "");
+    if (raw === "OVER1" || raw === "OVER_1") return "OVER1";
+    if (raw === "UNDER8" || raw === "UNDER_8") return "UNDER8";
+    return "BOTH";
+  }
+
+  function syncGoldenCardControlsKoolkid(data) {
+    const safe = data || state.goldenCard || {};
+    const modeNode = document.getElementById("goldenCardTradeModeKoolkid");
+    const jumpNode = document.getElementById("goldenCardAddJumpPairsKoolkid");
+    const filterMode = normalizeGoldenCardFilterModeKoolkid(safe.filter_mode || "BOTH");
+    if (modeNode) modeNode.value = filterMode;
+    if (jumpNode) jumpNode.checked = !!safe.add_jump_pairs;
+  }
+
+  function readGoldenCardOptionsKoolkid() {
+    const modeNode = document.getElementById("goldenCardTradeModeKoolkid");
+    const jumpNode = document.getElementById("goldenCardAddJumpPairsKoolkid");
+    return {
+      filter_mode: normalizeGoldenCardFilterModeKoolkid(modeNode ? modeNode.value : "BOTH"),
+      add_jump_pairs: !!(jumpNode && jumpNode.checked),
+    };
   }
 
   function delayFastBuyMsKoolkid(ms) {
@@ -241,6 +268,126 @@
     return `Over ${normalizeOverAnalysisBarrier(barrier)} Analysis`;
   }
 
+  function setSelectValueKoolkid(id, value) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const next = value === null || value === undefined ? "" : String(value);
+    if (el.value !== next) el.value = next;
+  }
+
+  function renderTesttrialKoolkid(data) {
+    if (data && typeof data === "object") state.testtrial = data;
+    const d = state.testtrial || {};
+    const btn = document.getElementById("testtrialBtnKoolkid");
+    const info = document.getElementById("testtrialInfoKoolkid");
+    const modeSelect = document.getElementById("testtrialStrategyModeKoolkid");
+    const stakeModeSelect = document.getElementById("testtrialStakeModeKoolkid");
+    const windowInput = document.getElementById("testtrialWindowTicksKoolkid");
+    const minTargetInput = document.getElementById("testtrialMinTargetKoolkid");
+    const maxStakeInput = document.getElementById("testtrialMaxTotalStakeKoolkid");
+    const filterBtn = document.getElementById("testtrialOverplayedBtnKoolkid");
+    const symbolEl = document.getElementById("testtrialCurrentSymbolKoolkid");
+    const streamEl = document.getElementById("testtrialDigitStreamKoolkid");
+    const lowEl = document.getElementById("testtrialLowEdgeCountKoolkid");
+    const highEl = document.getElementById("testtrialHighEdgeCountKoolkid");
+    const middleEl = document.getElementById("testtrialMiddleZoneCountKoolkid");
+    const recEl = document.getElementById("testtrialRecommendationKoolkid");
+    const reasonEl = document.getElementById("testtrialReasonKoolkid");
+    const payoutStatusEl = document.getElementById("testtrialPayoutStatusKoolkid");
+    const payoutReasonEl = document.getElementById("testtrialPayoutReasonKoolkid");
+    const cooldownStatusEl = document.getElementById("testtrialCooldownStatusKoolkid");
+    const cooldownDetailEl = document.getElementById("testtrialCooldownDetailKoolkid");
+    const confOver1El = document.getElementById("testtrialConfidenceOver1Koolkid");
+    const confUnder8El = document.getElementById("testtrialConfidenceUnder8Koolkid");
+    const confBothEl = document.getElementById("testtrialConfidenceBothKoolkid");
+
+    const enabled = !!d.enabled;
+    const strategyMode = String(d.strategy_mode || "AUTO_COMBINED");
+    const stakeMode = String(d.stake_mode || "FIXED");
+    const confidence = d.confidence || {};
+    const counts = d.counts || {};
+    const payout = d.payout_safety || {};
+    const cooldown = d.cooldown || {};
+    const overplayed = !!d.overplayed;
+    const overplayedLabel = Array.isArray(d.overplayed_digits) && d.overplayed_digits.length
+      ? ` (${d.overplayed_digits.join(", ")})`
+      : "";
+
+    if (btn) {
+      btn.innerText = `testtrial: ${enabled ? "ON" : "OFF"}`;
+      btn.style.background = enabled ? "#22c55e" : "#1e293b";
+      btn.style.color = enabled ? "#052e16" : "#e2e8f0";
+    }
+    if (info) {
+      info.innerText = enabled
+        ? `testtrial is live on ${String(d.current_symbol || "--")} • ${String(d.reason_text || "Scanning combined Over 1 / Under 8 logic...")}`
+        : "testtrial combines OVER 1, UNDER 8, and BOTH mode using KOOLKID tick pressure + payout safety.";
+      info.style.color = enabled ? "#cbd5e1" : "#94a3b8";
+    }
+
+    setSelectValueKoolkid("testtrialStrategyModeKoolkid", strategyMode);
+    setSelectValueKoolkid("testtrialStakeModeKoolkid", stakeMode);
+    setInputValueIfIdle("testtrialWindowTicksKoolkid", d.window_ticks || 20);
+    setInputValueIfIdle("testtrialMinTargetKoolkid", d.min_target || 0.15);
+    setInputValueIfIdle("testtrialMaxTotalStakeKoolkid", d.max_total_stake || 3.0);
+
+    if (filterBtn) {
+      const filterOn = !!d.overplayed_filter_enabled;
+      filterBtn.innerText = `Filter: ${filterOn ? "ON" : "OFF"}`;
+      filterBtn.style.background = filterOn ? "#22c55e" : "#1e293b";
+      filterBtn.style.color = filterOn ? "#052e16" : "#e2e8f0";
+    }
+    if (symbolEl) {
+      symbolEl.innerText = `Market: ${String(d.current_symbol || "--")}`;
+    }
+    if (streamEl) {
+      const digits = Array.isArray(d.last20_digits) ? d.last20_digits : [];
+      if (!digits.length) {
+        streamEl.innerHTML = `<div style="color:#64748b; font-size:12px;">Waiting for live digits...</div>`;
+      } else {
+        streamEl.innerHTML = digits.map((digit) => `<div class="testtrial-digit-chip">${digit}</div>`).join("");
+      }
+    }
+    if (lowEl) lowEl.innerText = `${Number(counts.low_edge || 0)}`;
+    if (highEl) highEl.innerText = `${Number(counts.high_edge || 0)}`;
+    if (middleEl) middleEl.innerText = `${Number(counts.middle_zone || 0)}`;
+    if (confOver1El) confOver1El.innerText = `${Number(confidence.over1 || 0)}%`;
+    if (confUnder8El) confUnder8El.innerText = `${Number(confidence.under8 || 0)}%`;
+    if (confBothEl) confBothEl.innerText = `${Number(confidence.both || 0)}%`;
+    if (recEl) {
+      recEl.innerText = String(d.recommended_action || "SKIP");
+      recEl.style.color = d.recommended_action === "BOTH"
+        ? "#facc15"
+        : (d.recommended_action === "SKIP" ? "#f87171" : "#22c55e");
+    }
+    if (reasonEl) {
+      const reasonPrefix = overplayed ? `Overplayed${overplayedLabel} • ` : "";
+      reasonEl.innerText = `${reasonPrefix}${String(d.reason_text || "Waiting for testtrial analysis...")}`;
+    }
+    if (payoutStatusEl) {
+      payoutStatusEl.innerText = String(payout.status || "WAIT");
+      payoutStatusEl.style.color = payout.ok ? "#22c55e" : "#f59e0b";
+    }
+    if (payoutReasonEl) {
+      const parts = [];
+      if (payout.reason) parts.push(String(payout.reason));
+      if (payout.net_low !== undefined && payout.net_low !== null) {
+        parts.push(`Low ${Number(payout.net_low).toFixed(2)} / High ${Number(payout.net_high || 0).toFixed(2)} / Mid ${Number(payout.net_mid || 0).toFixed(2)}`);
+      }
+      payoutReasonEl.innerText = parts.join(" • ") || "Waiting for live quotes...";
+    }
+    if (cooldownStatusEl) {
+      cooldownStatusEl.innerText = String(cooldown.status || "READY");
+      cooldownStatusEl.style.color = String(cooldown.status || "").toUpperCase().includes("READY") ? "#22c55e" : "#f59e0b";
+    }
+    if (cooldownDetailEl) {
+      const activeTrade = cooldown.active_trade || {};
+      cooldownDetailEl.innerText = activeTrade.symbol
+        ? `Active: ${String(activeTrade.action || "TRADE")} on ${String(activeTrade.symbol || "--")}`
+        : `Ticks remaining: ${Number(cooldown.ticks_remaining || 0)}`;
+    }
+  }
+
   function syncOverAnalysisSelectKoolkid(barrier) {
     const select = document.getElementById("overAnalysisBarrierSelectKoolkid");
     if (!select) return;
@@ -359,7 +506,6 @@
       return Object.assign({}, leg, { legStake });
     });
     const jobs = plannedLegs.map((leg) => {
-      const turboOn = currentTurboModeKoolkid();
       const payload = {
         stake: leg.legStake,
         amount: leg.legStake,
@@ -367,9 +513,10 @@
         barrier: Number(leg.barrier),
       };
       return sendFastManualTradeKoolkid(payload, {
-        turbo: turboOn,
-        queue: !turboOn,
-        useSocket: turboOn,
+        turbo: true,
+        queue: false,
+        useSocket: true,
+        fireAndForget: true,
       });
     });
     const rs = await Promise.allSettled(jobs);
@@ -671,6 +818,8 @@
     const stopped = !!d.session_stopped;
     const waitFresh = !!d.wait_fresh_setup;
     const setupReady = !!d.entry_conditions_ready;
+    const lossGuardBlocked = !!d.loss_guard_blocked;
+    const lossGuardReason = String(d.loss_guard_reason || "");
     const marketLabel = symbol || "selected market";
     const counts = `H100 ${high100}/58 • H10 ${high10}/6 • Streak ${streak}/<6`;
     const session = `Losses ${losses}/2 • Trades ${total}/5 • Duration ${duration}T`;
@@ -700,6 +849,11 @@
       info.innerText = `Waiting fresh setup reset • ${counts} • ${session}`;
       return;
     }
+    if (setupReady && lossGuardBlocked) {
+      info.style.color = "#ef4444";
+      info.innerText = `Trade skipped on ${marketLabel}: ${lossGuardReason} • ${counts} • ${session}`;
+      return;
+    }
     if (setupReady) {
       info.style.color = "#22c55e";
       info.innerText = `Setup ready on ${marketLabel}: ${label.replace(" Analysis", "")} entry armed • using Over 3 analysis • ${counts} • ${session}`;
@@ -720,9 +874,14 @@
     const running = !!d.running;
     const historyTarget = Number(d.history_target || 20) || 20;
     const symbols = Array.isArray(d.symbols) ? d.symbols : [];
+    const poolSize = Number(d.market_pool_size || symbols.length || 10) || (symbols.length || 10);
     const warmed = Number(d.completed_markets || 0) || 0;
     const statusText = String(d.status || "Golden Card is waiting to scan markets.");
     const results = Array.isArray(d.results) ? d.results : [];
+    const filterMode = normalizeGoldenCardFilterModeKoolkid(d.filter_mode || "BOTH");
+    const addJumpPairs = !!d.add_jump_pairs;
+
+    syncGoldenCardControlsKoolkid(d);
 
     if (btn) {
       btn.innerText = running ? "🂠 GOLDEN CARD • SCANNING" : "🂠 GOLDEN CARD";
@@ -736,10 +895,20 @@
       info.innerText = statusText;
     }
     if (statusEl) statusEl.innerText = statusText;
-    if (progressEl) progressEl.innerText = `${warmed} / ${symbols.length || 10} warmed • rolling ${historyTarget} ticks`;
+    if (progressEl) {
+      const modeText = filterMode === "OVER1" ? "OVER 1 only" : (filterMode === "UNDER8" ? "UNDER 8 only" : "Both");
+      progressEl.innerText = `${warmed} / ${symbols.length || 10} active warmed • pool ${poolSize} • ${modeText}${addJumpPairs ? " • Jump ON" : ""} • rolling ${historyTarget} ticks`;
+    }
     if (!resultsEl) return;
     if (!results.length) {
-      resultsEl.innerHTML = `<div style="grid-column:1 / -1; text-align:center; color:#64748b; padding:20px;">${running ? "Scanning market ticks live..." : "Golden Card results will show here after the scan starts."}</div>`;
+      const emptyText = running
+        ? "Scanning market ticks live..."
+        : (filterMode === "OVER1"
+          ? "Golden Card will show OVER 1 setups here after the scan starts."
+          : (filterMode === "UNDER8"
+            ? "Golden Card will show UNDER 8 setups here after the scan starts."
+            : "Golden Card results will show here after the scan starts."));
+      resultsEl.innerHTML = `<div style="grid-column:1 / -1; text-align:center; color:#64748b; padding:20px;">${emptyText}</div>`;
       return;
     }
     resultsEl.innerHTML = results.map((row) => {
@@ -748,8 +917,13 @@
       const confidence = Number(row.confidence_pct || 0);
       const setupDigit = Number(row.setup_digit || 3);
       const ticksReady = Number(row.ticks_ready || 0);
+      const blocked = !!row.loss_guard_blocked;
+      const tradeLabel = String(row.recommended_label || "OVER 1");
       const canTrade = ticksReady >= historyTarget;
-      const readyText = row.entry_ready ? "READY" : (canTrade ? "LIVE" : `${ticksReady}/${historyTarget}`);
+      const actionable = canTrade;
+      const readyText = blocked
+        ? `${tradeLabel} • SKIP • ${String(row.loss_guard_digits_label || "").trim()} HOT`
+        : (row.entry_ready ? `READY • ${tradeLabel}` : (canTrade ? `${tradeLabel} LIVE` : `${tradeLabel} • ${ticksReady}/${historyTarget}`));
       return `
         <div class="golden-card-market ${tier}" data-golden-card-symbol="${String(row.symbol || "").replace(/"/g, "&quot;")}">
           <div style="min-width:0;">
@@ -757,7 +931,7 @@
               <div style="font-size:17px; font-weight:800; color:#f8fafc; line-height:1.1;">${marketLabel}</div>
               <div style="font-size:12px; color:#e2e8f0; font-weight:700; white-space:nowrap;">${confidence.toFixed(1)}%</div>
             </div>
-            <div style="margin-top:6px; font-size:11px; color:${row.entry_ready ? "#86efac" : "#cbd5e1"}; font-weight:700; letter-spacing:.02em;">${readyText}</div>
+            <div style="margin-top:6px; font-size:11px; color:${blocked ? "#fca5a5" : (row.entry_ready ? "#86efac" : "#cbd5e1")}; font-weight:700; letter-spacing:.02em;">${readyText}</div>
           </div>
           <div class="golden-card-digit">${setupDigit}</div>
         </div>
@@ -1053,14 +1227,17 @@
       window.openGoldenCardPopupKoolkid();
       return;
     }
+    const options = readGoldenCardOptionsKoolkid();
     renderGoldenCardKoolkid(Object.assign({}, current, {
       running: true,
       completed: false,
       status: "Starting live Golden Card scan across 10 markets...",
+      filter_mode: options.filter_mode,
+      add_jump_pairs: options.add_jump_pairs,
     }));
     window.openGoldenCardPopupKoolkid();
     await nextPaintFrame();
-    const r = await postJSON("/start_golden_card_koolkid", {});
+    const r = await postJSON("/start_golden_card_koolkid", options);
     if (r.data && r.data.status === "success") {
       if (r.data.golden_card_data) renderGoldenCardKoolkid(r.data.golden_card_data);
       safeToast("Golden Card scan started", "success");
@@ -1086,6 +1263,25 @@
     safeToast("Golden Card turned off", "info");
   };
 
+  window.updateGoldenCardSettingsKoolkid = async function () {
+    const current = state.goldenCard || {};
+    const options = readGoldenCardOptionsKoolkid();
+    state.goldenCard = Object.assign({}, current, options);
+    renderGoldenCardKoolkid(state.goldenCard);
+    if (!current.running || state.goldenCardSettingsBusy) return;
+    state.goldenCardSettingsBusy = true;
+    try {
+      const r = await postJSON("/start_golden_card_koolkid", options);
+      if (r && r.data && r.data.status === "success" && r.data.golden_card_data) {
+        renderGoldenCardKoolkid(r.data.golden_card_data);
+      } else if (r && r.data && r.data.golden_card_data) {
+        renderGoldenCardKoolkid(r.data.golden_card_data);
+      }
+    } finally {
+      state.goldenCardSettingsBusy = false;
+    }
+  };
+
   window.placeGoldenCardTradeKoolkid = async function (symbol) {
     if (state.goldenCardTradeBusy) return;
     const market = String(symbol || "").toUpperCase().trim();
@@ -1093,26 +1289,37 @@
       safeToast("Golden Card market missing", "error");
       return;
     }
+    const current = state.goldenCard || {};
+    const row = Array.isArray(current.results)
+      ? current.results.find((item) => String(item.symbol || "").toUpperCase() === market)
+      : null;
+    if (row && row.loss_guard_blocked) {
+      safeToast(`Golden Card skipped on ${market}: ${row.loss_guard_reason || "losing digits are too hot"}`, "error");
+      return;
+    }
     state.goldenCardTradeBusy = true;
     try {
       const stake = getStakeValueKoolkid();
       const duration = Number(document.getElementById("durationTicks")?.value || 1) || 1;
-      const turboOn = currentTurboModeKoolkid();
+      const tradeType = String((row && row.recommended_type) || "OVER").toUpperCase();
+      const tradeBarrier = Number((row && row.recommended_barrier) || 1) || 1;
+      const tradeLabel = String((row && row.recommended_label) || `${tradeType} ${tradeBarrier}`);
       const payload = {
         stake,
         amount: stake,
-        type: "OVER",
-        barrier: 1,
+        type: tradeType,
+        barrier: tradeBarrier,
         symbol: market,
         duration,
       };
       const r = await sendFastManualTradeKoolkid(payload, {
-        turbo: turboOn,
-        queue: !turboOn,
-        useSocket: turboOn,
+        turbo: true,
+        queue: false,
+        useSocket: true,
+        fireAndForget: true,
       });
       const ok = !!(r && r.data && r.data.status === "success");
-      if (ok) safeToast(`Golden Card sent OVER 1 on ${market}`, "success");
+      if (ok) safeToast(`Golden Card sent ${tradeLabel} on ${market}`, "success");
       else safeToast((r && r.data && r.data.message) || `Golden Card trade failed on ${market}`, "error");
     } catch (e) {
       safeToast(`Golden Card trade failed on ${market}`, "error");

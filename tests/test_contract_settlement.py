@@ -882,6 +882,23 @@ def test_resolve_post_contract_balance_accumulates_multiple_fast_settlements():
     assert state["local_balance_adjustment"] == pytest.approx(-850.0)
 
 
+def test_resolve_post_contract_balance_uses_last_known_trade_balance_when_live_balance_is_missing():
+    state = {
+        "balance": 0.0,
+        "last_live_balance": 0.0,
+        "last_known_trade_balance": 8000.0,
+        "last_live_balance_updated_at": 0.0,
+        "local_balance_adjustment": 0.0,
+        "balance_updated_at": 0.0,
+    }
+
+    resolved = server._resolve_post_contract_balance(state, -300.0)
+
+    assert resolved == pytest.approx(7700.0)
+    assert state["balance"] == pytest.approx(7700.0)
+    assert state["last_known_trade_balance"] == pytest.approx(7700.0)
+
+
 def test_build_balance_payload_prefers_last_live_balance_plus_local_adjustment():
     state = {
         "active_profile": "UNCHAIN",
@@ -896,6 +913,64 @@ def test_build_balance_payload_prefers_last_live_balance_plus_local_adjustment()
     assert payload["balance"] == pytest.approx(8000.0)
     assert payload["display_balance"] == pytest.approx(8000.0)
     assert payload["total_balance"] == pytest.approx(8000.0)
+
+
+def test_get_effective_state_balance_prefers_fresher_current_balance_over_stale_lower_live():
+    state = {
+        "balance": 8000.0,
+        "last_live_balance": 6000.0,
+        "last_known_trade_balance": 6000.0,
+        "local_balance_adjustment": 0.0,
+    }
+
+    assert server._get_effective_state_balance(state) == pytest.approx(8000.0)
+
+
+def test_resolve_post_contract_balance_uses_fresher_current_balance_when_live_balance_is_stale_lower():
+    state = {
+        "balance": 8000.0,
+        "last_live_balance": 6000.0,
+        "last_known_trade_balance": 6000.0,
+        "last_live_balance_updated_at": 0.0,
+        "local_balance_adjustment": 0.0,
+        "balance_updated_at": 0.0,
+    }
+
+    resolved = server._resolve_post_contract_balance(state, -300.0)
+
+    assert resolved == pytest.approx(7700.0)
+    assert state["balance"] == pytest.approx(7700.0)
+    assert state["last_known_trade_balance"] == pytest.approx(7700.0)
+    assert state["local_balance_adjustment"] == pytest.approx(0.0)
+
+
+def test_send_buy_allows_trade_when_current_balance_is_higher_than_stale_live_balance():
+    class DummyWs:
+        def __init__(self):
+            self.sent = []
+
+        def send(self, payload):
+            self.sent.append(json.loads(payload))
+
+    cid = "test-send-buy-stale-live-lower"
+    server.clients.pop(cid, None)
+    server.init_client(cid)
+    state = server.clients[cid]
+    state["ws_connected"] = True
+    state["ws"] = DummyWs()
+    state["balance"] = 8000.0
+    state["last_live_balance"] = 6000.0
+    state["last_known_trade_balance"] = 6000.0
+    state["active_profile"] = "KOOLKID"
+
+    try:
+        ok, msg = server.send_buy(cid, "OVER", 7000.0, "R_10", 5)
+    finally:
+        server.clients.pop(cid, None)
+
+    assert ok is True
+    assert msg == "Trade sent"
+    assert len(state["ws"].sent) == 1
 
 
 def test_process_contract_ignores_duplicate_non_unchain_settlement(monkeypatch):

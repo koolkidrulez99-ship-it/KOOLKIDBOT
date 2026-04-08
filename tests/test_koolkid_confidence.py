@@ -1,4 +1,4 @@
-from strategies.koolkid_confidence import compute_koolkid_confidence_bars
+from strategies.koolkid_confidence import compute_koolkid_confidence_bars, assess_contract_loss_guard
 
 
 def test_over_confidence_stays_strong_when_win_zone_is_active_and_losing_digits_are_quiet():
@@ -30,3 +30,13 @@ def test_under9_confidence_drops_hard_when_digit_9_turns_hot():
 
     assert calm_scores["under9"]["confidence_pct"] > hot_scores["under9"]["confidence_pct"]
     assert hot_scores["under9"]["confidence_pct"] < 55.0
+
+
+def test_loss_guard_blocks_when_losing_digits_turn_hot():
+    ticks = ([9] * 45) + [5, 4, 3, 2, 0, 1, 0, 1, 9]
+
+    guard = assess_contract_loss_guard(ticks, "over1")
+
+    assert guard["blocked"] is True
+    assert guard["lose_hits_5"] >= 2
+    assert "0/1" in guard["reason"]

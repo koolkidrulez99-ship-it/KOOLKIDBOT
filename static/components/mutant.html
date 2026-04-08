@@ -1295,6 +1295,71 @@
     </div>
   </div>
 
+  <div id="nttAutoBody" class="ntt-koolkid-modal-backdrop">
+    <div class="ntt-koolkid-modal" role="dialog" aria-modal="true" aria-labelledby="nttAutoTitle">
+      <div class="ntt-koolkid-header">
+        <div>
+          <div id="nttAutoTitle" class="ntt-koolkid-title">Mutant AUTO</div>
+          <div class="ntt-koolkid-copy">Set the barrier, budget, and progression mode, then let Mutant fire trades back to back until the stop rules hit.</div>
+        </div>
+        <button data-action="ntt-auto-close" style="min-width:38px;height:38px;background:#1e293b;">✕</button>
+      </div>
+      <div class="ntt-koolkid-stack">
+        <div class="ntt-koolkid-section">
+          <div class="ntt-field-grid-2">
+            <div class="ntt-field">
+              <label class="ntt-label" for="nttAutoBarrier">AUTO Barrier</label>
+              <input id="nttAutoBarrier" type="text" value="+0.12">
+            </div>
+            <div class="ntt-field">
+              <label class="ntt-label" for="nttAutoBudget">AUTO Budget</label>
+              <input id="nttAutoBudget" type="number" min="0.35" step="0.01" value="10">
+            </div>
+          </div>
+          <div class="ntt-koolkid-button-stack" style="margin-top:12px;">
+            <button id="nttAutoTouchOnlyBtn" data-action="ntt-auto-side-touch" style="background:#166534;">TOUCH ONLY</button>
+            <button id="nttAutoNoTouchOnlyBtn" data-action="ntt-auto-side-no-touch" style="background:#991b1b;">NO TOUCH ONLY</button>
+          </div>
+        </div>
+        <div class="ntt-koolkid-section">
+          <div class="ntt-koolkid-toggle-row">
+            <label for="nttAutoMartingaleToggle"><input id="nttAutoMartingaleToggle" type="checkbox"> Martingale <span id="nttAutoMartingaleState">OFF</span></label>
+            <label for="nttAutoStep50Toggle"><input id="nttAutoStep50Toggle" type="checkbox"> 50 Cents Martingale <span id="nttAutoStep50State">OFF</span></label>
+          </div>
+          <div class="ntt-koolkid-note" style="margin-top:10px;">Base mode uses the full budget every trade until the first loss. Martingale and 50 Cents Martingale both start at $0.35, scale after losses, and stop after the first win.</div>
+        </div>
+        <div class="ntt-koolkid-section">
+          <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;">
+            <div style="background:#020617;border:1px solid #1e293b;border-radius:14px;padding:10px;">
+              <div style="font-size:11px;color:#94a3b8;">Trade Side</div>
+              <div id="nttAutoSideValue" style="font-weight:900;color:#ecfeff;margin-top:4px;">TOUCH ONLY</div>
+            </div>
+            <div style="background:#020617;border:1px solid #1e293b;border-radius:14px;padding:10px;">
+              <div style="font-size:11px;color:#94a3b8;">Mode</div>
+              <div id="nttAutoModeValue" style="font-weight:900;color:#ecfeff;margin-top:4px;">BASE</div>
+            </div>
+            <div style="background:#020617;border:1px solid #1e293b;border-radius:14px;padding:10px;">
+              <div style="font-size:11px;color:#94a3b8;">Current Stake</div>
+              <div id="nttAutoStakeValue" style="font-weight:900;color:#86efac;margin-top:4px;">$0.00</div>
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr;gap:10px;margin-top:10px;">
+            <div style="background:#020617;border:1px solid #1e293b;border-radius:14px;padding:10px;">
+              <div style="font-size:11px;color:#94a3b8;">Decision</div>
+              <div id="nttAutoDecisionValue" style="font-weight:900;color:#fcd34d;margin-top:4px;">OFF</div>
+            </div>
+          </div>
+          <div style="font-weight:900;color:#67e8f9;margin:12px 0 8px;">Status</div>
+          <div id="nttAutoReason" class="ntt-koolkid-copy">Mutant AUTO is OFF.</div>
+        </div>
+        <div class="ntt-koolkid-button-stack">
+          <button id="nttAutoStartBtn" data-action="ntt-auto-start" style="background:#0f766e;">START AUTO</button>
+          <button id="nttAutoStopBtn" data-action="ntt-auto-stop" style="background:#7f1d1d;">TURN OFF AUTO</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="card">
     <div class="ntt-header">
       <h3 style="margin:0;">📚 TRADE HISTORY</h3>

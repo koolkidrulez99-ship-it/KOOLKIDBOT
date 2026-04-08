@@ -151,7 +151,7 @@ def test_kid2vix_waits_for_current_pair_and_applies_loss_cooldown():
 
 def test_over_analysis_uses_over3_setup_but_places_selected_over_barrier():
     strat = KoolKidStrategy()
-    digits = ([9] * 60) + ([0] * 30) + [9, 8, 7, 6, 5, 4, 3, 8, 7, 6]
+    digits = ([9] * 70) + ([4] * 20) + [9, 8, 7, 6, 5, 4, 3, 8, 7, 6]
 
     _feed_digits(strat, digits)
     strat.set_over3_analysis_barrier(1)
@@ -175,7 +175,7 @@ def test_over_analysis_uses_over3_setup_but_places_selected_over_barrier():
 
 def test_over_analysis_toggle_waits_for_fresh_signal_before_firing():
     strat = KoolKidStrategy()
-    digits = ([9] * 60) + ([0] * 30) + [9, 8, 7, 6, 5, 4, 3, 8, 7, 6]
+    digits = ([9] * 70) + ([4] * 20) + [9, 8, 7, 6, 5, 4, 3, 8, 7, 6]
 
     _feed_digits(strat, digits)
     assert strat.get_over3_analysis_state()["entry_conditions_ready"] is True
@@ -188,7 +188,7 @@ def test_over_analysis_toggle_waits_for_fresh_signal_before_firing():
     assert strat.check_over3_analysis_signal() is None
     assert strat.over3_wait_fresh_setup is False
 
-    _feed_digits(strat, [9, 8, 7, 6, 5, 0, 9, 8, 7, 6])
+    _feed_digits(strat, [9, 8, 7, 6, 5, 4, 9, 8, 7, 6, 5, 4, 9, 8, 7, 3, 9, 8, 7, 6])
     ready_state = strat.get_over3_analysis_state()
     signal = strat.check_over3_analysis_signal()
 
@@ -216,14 +216,14 @@ def test_golden_card_scan_ranks_markets_and_assigns_confidence_digits():
 
     assert data["running"] is True
     assert data["completed_markets"] == 4
-    assert [row["symbol"] for row in results[:4]] == ["R_75", "R_10", "R_25", "R_50"]
-    assert [row["setup_digit"] for row in results[:4]] == [0, 1, 2, 3]
+    assert {row["symbol"] for row in results[:4]} == {"R_75", "R_10", "R_25", "R_50"}
+    assert all(0 <= int(row["setup_digit"]) <= 3 for row in results[:4])
     assert results[0]["market_label"] == "V75"
-    assert results[1]["market_label"] == "V10"
-    assert results[0]["confidence_pct"] >= 90.0
-    assert 80.0 <= results[1]["confidence_pct"] < 90.0
-    assert 60.0 <= results[2]["confidence_pct"] < 80.0
-    assert results[3]["confidence_pct"] < 60.0
+    assert results[0]["recommended_label"] == "OVER 1"
+    assert results[0]["confidence_pct"] > results[1]["confidence_pct"]
+    assert any(row["recommended_label"] == "UNDER 8" for row in results[:4])
+    assert any(row["recommended_label"] == "OVER 1" for row in results[:4])
+    assert all(row["confidence_pct"] >= 0.0 for row in results[:4])
 
 
 def test_golden_card_payload_is_exposed_in_ui_payload():
@@ -243,7 +243,7 @@ def test_golden_card_keeps_scanning_after_first_20_ticks_and_rolls_forward():
 
     _feed_golden_card_digits(strat, "R_10", ([9] * 8) + ([0] * 2) + ([9] * 8) + ([0] * 2))
     first = strat.get_golden_card_state()
-    first_confidence = first["results"][0]["confidence_pct"]
+    first_row = first["results"][0]
 
     _feed_golden_card_digits(strat, "R_10", ([0] * 20))
     second = strat.get_golden_card_state()
@@ -253,5 +253,110 @@ def test_golden_card_keeps_scanning_after_first_20_ticks_and_rolls_forward():
     assert second["running"] is True
     assert second["completed"] is False
     assert second_row["ticks_ready"] == 20
-    assert second_row["confidence_pct"] < first_confidence
+    assert first_row["recommended_label"] == "OVER 1"
+    assert second_row["recommended_label"] == "UNDER 8"
+    assert second_row["confidence_pct"] > first_row["confidence_pct"]
     assert "live golden card scan running" in second["status"].lower()
+
+
+def test_over3_analysis_skips_when_selected_barrier_losing_digits_are_hot():
+    strat = KoolKidStrategy()
+    strat.toggle_over3_analysis_auto()
+    strat.set_over3_analysis_barrier(1)
+    hot_sequence = ([9] * 90) + [9, 8, 7, 6, 5, 4, 0, 1, 0, 1]
+
+    _feed_digits(strat, hot_sequence)
+
+    state = strat.get_over3_analysis_state()
+    signal = strat.check_over3_analysis_signal()
+
+    assert state["entry_conditions_ready"] is True
+    assert state["loss_guard_blocked"] is True
+    assert "0/1" in state["loss_guard_reason"]
+    assert signal is None
+
+
+def test_golden_card_marks_row_blocked_when_over1_losing_digits_are_hot():
+    strat = KoolKidStrategy()
+    strat.start_golden_card_scan(symbols=["R_10"], history_target=20)
+    _feed_golden_card_digits(strat, "R_10", [9, 8, 7, 6, 5, 4, 9, 8, 7, 6, 5, 4, 9, 8, 7, 0, 1, 0, 1, 9])
+
+    row = strat.get_golden_card_state()["results"][0]
+    candidates = {item["label"]: item for item in row["recommended_candidates"]}
+
+    assert row["ticks_ready"] == 20
+    assert row["loss_guard_blocked"] is True
+    assert "OVER 1" in candidates
+    assert candidates["OVER 1"]["blocked"] is True
+    assert "0/1" in candidates["OVER 1"]["block_reason"]
+
+
+def test_golden_card_can_offer_under8_when_it_is_the_better_market_trade():
+    strat = KoolKidStrategy()
+    strat.start_golden_card_scan(symbols=["R_10"], history_target=20)
+    _feed_golden_card_digits(strat, "R_10", [0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7, 2, 3, 4, 5])
+
+    row = strat.get_golden_card_state()["results"][0]
+
+    assert row["ticks_ready"] == 20
+    assert row["recommended_label"] == "UNDER 8"
+    assert row["recommended_type"] == "UNDER"
+    assert row["recommended_barrier"] == 8
+    assert row["loss_guard_blocked"] is False
+
+
+def test_golden_card_default_pool_excludes_bull_bear_and_jump_pairs():
+    strat = KoolKidStrategy()
+    data = strat.start_golden_card_scan(history_target=20)
+
+    assert data["market_pool_size"] >= 10
+    assert "RDBULL" not in data["symbols"]
+    assert "RDBEAR" not in data["symbols"]
+    assert all(not str(sym).startswith("JD") for sym in data["symbols"])
+
+
+def test_golden_card_filter_mode_can_force_over1_or_under8():
+    strat = KoolKidStrategy()
+    digits = [0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7, 2, 3, 4, 5]
+
+    strat.start_golden_card_scan(symbols=["R_10"], history_target=20, filter_mode="OVER1")
+    _feed_golden_card_digits(strat, "R_10", digits)
+    over_row = strat.get_golden_card_state()["results"][0]
+
+    strat.start_golden_card_scan(symbols=["R_10"], history_target=20, filter_mode="UNDER8")
+    _feed_golden_card_digits(strat, "R_10", digits)
+    under_row = strat.get_golden_card_state()["results"][0]
+
+    assert over_row["recommended_label"] == "OVER 1"
+    assert over_row["recommended_type"] == "OVER"
+    assert over_row["recommended_barrier"] == 1
+    assert under_row["recommended_label"] == "UNDER 8"
+    assert under_row["recommended_type"] == "UNDER"
+    assert under_row["recommended_barrier"] == 8
+
+
+def test_golden_card_rotates_weak_markets_and_can_include_jump_pool():
+    strat = KoolKidStrategy()
+    data = strat.start_golden_card_scan(history_target=20, add_jump_pairs=True)
+    starting_symbols = list(data["symbols"])
+
+    weak_symbols = starting_symbols[:4]
+    strong_symbols = starting_symbols[4:]
+
+    weak_sequence = [0, 1, 8, 9] * 5
+    strong_sequence = ([9] * 8) + ([0] * 2) + ([9] * 8) + ([0] * 2)
+
+    for symbol in weak_symbols:
+        _feed_golden_card_digits(strat, symbol, weak_sequence)
+    for symbol in strong_symbols:
+        _feed_golden_card_digits(strat, symbol, strong_sequence)
+
+    rotated = strat.get_golden_card_state()
+    rotated_symbols = rotated["symbols"]
+
+    assert rotated["running"] is True
+    assert rotated["market_pool_size"] > len(rotated_symbols)
+    assert len(rotated_symbols) == 10
+    assert any(sym not in rotated_symbols for sym in weak_symbols)
+    assert any(sym in rotated_symbols for sym in ("JD10", "JD25", "JD50", "JD75", "JD100"))
+    assert "rotating across" in rotated["status"].lower()

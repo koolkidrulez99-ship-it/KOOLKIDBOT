@@ -1750,7 +1750,6 @@ window.sendBlackcardDiffersJokerjoe = async function (digit, event) {
       : ((document.getElementById("symbol") || {}).value || "R_25");
     const stake = getManualStakeValueJokerjoe();
     const duration = getDurationTicksJokerjoe();
-    const turboOn = currentTurboModeJokerjoe();
     const task = () => sendFastManualTradeJokerjoe({
       type: "DIFFERS",
       barrier: Number(selectedDigit),
@@ -1760,11 +1759,12 @@ window.sendBlackcardDiffersJokerjoe = async function (digit, event) {
       duration_unit: "t",
       symbol,
     }, {
-      turbo: turboOn,
+      turbo: true,
       queue: false,
-      useSocket: turboOn,
+      useSocket: true,
+      fireAndForget: true,
     });
-    const result = turboOn ? await task() : await enqueueFastBuyJokerjoe(task);
+    const result = await task();
     if (result && result.data && result.data.status === "success") safeToast(`DIFFERS ${selectedDigit} sent instantly.`, "success");
     else safeToast((result && result.data && result.data.message) || `DIFFERS ${selectedDigit} failed`, "error");
   } catch (e) {

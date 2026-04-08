@@ -30,6 +30,13 @@ KOOLKID_CONFIDENCE_CONTRACTS = {
         "recent_hot_threshold": 2,
         "window_hot_threshold": 4,
     },
+    "over3": {
+        "win_digits": {4, 5, 6, 7, 8, 9},
+        "lose_digits": {0, 1, 2, 3},
+        "hot_multiplier": 1.15,
+        "recent_hot_threshold": 2,
+        "window_hot_threshold": 5,
+    },
 }
 
 
@@ -161,4 +168,57 @@ def compute_koolkid_confidence_bars(ticks):
     return {
         key: compute_contract_confidence(ticks, key)
         for key in ("over2", "over1", "under9", "under8")
+    }
+
+
+def assess_contract_loss_guard(ticks, contract_key):
+    key = str(contract_key or "").lower().strip()
+    if key not in KOOLKID_CONFIDENCE_CONTRACTS:
+        return {
+            "blocked": False,
+            "reason": "",
+            "losing_digits": [],
+            "losing_digits_label": "",
+            "lose_hits_20": 0,
+            "lose_hits_5": 0,
+            "trailing_streak": 0,
+            "hot_penalty": 0.0,
+        }
+
+    config = KOOLKID_CONFIDENCE_CONTRACTS[key]
+    digits = _clean_digits(ticks)
+    lose_digits = set(config["lose_digits"])
+    last20 = _window(digits, 20)
+    last5 = _window(digits, 5)
+    lose_hits_20 = sum(1 for digit in last20 if digit in lose_digits)
+    lose_hits_5 = sum(1 for digit in last5 if digit in lose_digits)
+    trailing_streak = _trailing_streak(last5, lose_digits)
+    hot_penalty = _hot_digit_penalty(last20, last5, lose_digits, config)
+    recent_hot_threshold = int(config.get("recent_hot_threshold", 2) or 2)
+    window_hot_threshold = int(config.get("window_hot_threshold", 4) or 4)
+    digits_label = "/".join(str(digit) for digit in sorted(lose_digits))
+
+    blocked = bool(
+        (len(last5) >= 5 and lose_hits_5 >= recent_hot_threshold)
+        or trailing_streak >= 2
+        or lose_hits_20 >= window_hot_threshold
+        or hot_penalty >= 22.0
+    )
+
+    reason = ""
+    if blocked:
+        reason = (
+            f"losing digits {digits_label} are hot "
+            f"({lose_hits_5}/5 recent, {lose_hits_20}/20 window)"
+        )
+
+    return {
+        "blocked": blocked,
+        "reason": reason,
+        "losing_digits": sorted(lose_digits),
+        "losing_digits_label": digits_label,
+        "lose_hits_20": int(lose_hits_20),
+        "lose_hits_5": int(lose_hits_5),
+        "trailing_streak": int(trailing_streak),
+        "hot_penalty": round(float(hot_penalty), 1),
     }

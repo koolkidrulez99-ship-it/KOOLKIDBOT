@@ -29,17 +29,25 @@
 .turbo-toggle-knob{position:absolute;top:2px;left:2px;width:20px;height:20px;background:#fff;border-radius:999px;transition:transform .2s}
 .turbo-toggle-btn.is-on .turbo-toggle-knob{transform:translateX(24px)}
 .half-auto-popup-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-.golden-card-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
-.golden-card-market{border-radius:16px;padding:12px;border:1px solid rgba(148,163,184,0.18);display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;min-height:88px}
+.golden-card-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.golden-card-market{border-radius:14px;padding:10px;border:1px solid rgba(148,163,184,0.18);display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;min-height:74px}
 .golden-card-market.elite{background:linear-gradient(135deg,rgba(21,128,61,0.28),rgba(34,197,94,0.18));border-color:rgba(34,197,94,0.48)}
 .golden-card-market.strong{background:linear-gradient(135deg,rgba(5,150,105,0.24),rgba(45,212,191,0.16));border-color:rgba(45,212,191,0.42)}
 .golden-card-market.building{background:linear-gradient(135deg,rgba(120,53,15,0.26),rgba(245,158,11,0.14));border-color:rgba(245,158,11,0.42)}
 .golden-card-market.danger{background:linear-gradient(135deg,rgba(127,29,29,0.30),rgba(239,68,68,0.16));border-color:rgba(248,113,113,0.42)}
-.golden-card-digit{min-width:64px;height:64px;border-radius:18px;display:flex;align-items:center;justify-content:center;font-size:34px;font-weight:900;background:rgba(2,6,23,0.55);border:1px solid rgba(255,255,255,0.08);color:#f8fafc;box-shadow:0 12px 28px rgba(2,6,23,0.28)}
+.golden-card-digit{min-width:54px;height:54px;border-radius:16px;display:flex;align-items:center;justify-content:center;font-size:28px;font-weight:900;background:rgba(2,6,23,0.55);border:1px solid rgba(255,255,255,0.08);color:#f8fafc;box-shadow:0 12px 28px rgba(2,6,23,0.28)}
+.golden-card-controls{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;margin-bottom:8px;padding:10px;background:#0b1220;border:1px solid #334155;border-radius:14px;align-items:center}
+.golden-card-toggle-row{display:flex;align-items:center;justify-content:space-between;gap:10px;border:1px solid rgba(255,255,255,0.10);background:rgba(0,0,0,0.20);border-radius:14px;padding:10px 12px;color:rgba(255,255,255,0.78);font-size:12px;font-weight:700;white-space:nowrap}
+.golden-card-toggle-wrap{display:flex;align-items:center}
+.golden-card-toggle-input{position:absolute;opacity:0;pointer-events:none}
+.golden-card-toggle-btn{width:48px;min-width:48px;height:24px;border-radius:999px;position:relative;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.10);transition:background .2s,border-color .2s}
+.golden-card-toggle-knob{position:absolute;top:2px;left:2px;width:20px;height:20px;background:#fff;border-radius:999px;transition:transform .2s}
+.golden-card-toggle-input:checked + .golden-card-toggle-btn{background:rgba(250,204,21,0.72);border-color:rgba(250,204,21,0.68)}
+.golden-card-toggle-input:checked + .golden-card-toggle-btn .golden-card-toggle-knob{transform:translateX(24px)}
 @media (max-width: 900px){
   .ui-btn-grid-2,.ui-btn-grid-3{grid-template-columns:1fr}
   .half-auto-popup-grid{grid-template-columns:1fr}
-  .golden-card-grid{grid-template-columns:1fr}
+  .golden-card-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   #koolkidProfileUi .panelGrid{margin:0 auto}
   #koolkidProfileUi .koolkid-history-stats{grid-template-columns:repeat(2,minmax(0,1fr)) !important; gap:8px !important;}
   #koolkidProfileUi .koolkid-budget-row{grid-template-columns:minmax(84px,0.78fr) minmax(0,1.22fr) !important;}
@@ -64,6 +72,11 @@
   #goldenCardPopupKoolkid .golden-card-grid{
     grid-template-columns:1fr !important;
     gap:8px !important;
+  }
+  #goldenCardPopupKoolkid .golden-card-controls{
+    grid-template-columns:1fr !important;
+    gap:8px !important;
+    padding:10px !important;
   }
   #goldenCardPopupKoolkid .golden-card-market{
     min-height:78px;
@@ -410,7 +423,7 @@
   </div>
   <div id="metaBrainInfoKoolkid" style="margin-top:8px; font-size:12px; color:#94a3b8;">Meta: waiting for tick data...</div>
   <div id="over3AnalysisInfoKoolkid" style="margin-top:6px; font-size:12px; color:#94a3b8;">Over Analysis: waiting for market ticks...</div>
-  <div id="goldenCardInfoKoolkid" style="margin-top:6px; font-size:12px; color:#94a3b8;">Golden Card live-scans 10 markets on a rolling 20-tick window for Over 1 using Over 3 analysis.</div>
+  <div id="goldenCardInfoKoolkid" style="margin-top:6px; font-size:12px; color:#94a3b8;">Golden Card live-scans 10 markets on a rolling 20-tick window and can focus on OVER 1, UNDER 8, or both.</div>
 </div>
           </div>
         </details>
@@ -509,9 +522,28 @@
   <button onclick="hideHalfAutoPopupKoolkid()" style="background:#ef4444; width:100%; margin-top:6px;">CANCEL</button>
 </div>
 
-<div id="goldenCardPopupKoolkid" class="digit-popup" style="display:none; width:min(620px, calc(100vw - 28px)); min-width:min(460px, calc(100vw - 28px)); max-width:min(620px, calc(100vw - 28px)); padding:16px; border-radius:18px; z-index:10001;">
-  <h4 style="margin-bottom:6px;">🂠 GOLDEN CARD</h4>
-  <div id="goldenCardPopupStatusRowKoolkid" style="display:grid; grid-template-columns:1fr auto; align-items:center; gap:12px; margin-bottom:10px; padding:12px; background:#0b1220; border:1px solid #334155; border-radius:14px;">
+<div id="goldenCardPopupKoolkid" class="digit-popup" style="display:none; width:min(760px, calc(100vw - 28px)); min-width:min(620px, calc(100vw - 28px)); max-width:min(760px, calc(100vw - 28px)); padding:14px; border-radius:18px; z-index:10001;">
+  <h4 style="margin-bottom:4px;">🂠 GOLDEN CARD</h4>
+  <div class="golden-card-controls">
+    <div>
+      <label for="goldenCardTradeModeKoolkid" style="display:block; font-size:11px; color:#94a3b8; text-transform:uppercase; letter-spacing:.04em; margin-bottom:4px;">Show Setups</label>
+      <select id="goldenCardTradeModeKoolkid" onchange="updateGoldenCardSettingsKoolkid()" style="min-height:38px; width:100%;">
+        <option value="BOTH">Both</option>
+        <option value="OVER1">Over 1</option>
+        <option value="UNDER8">Under 8</option>
+      </select>
+    </div>
+    <label class="golden-card-toggle-row" for="goldenCardAddJumpPairsKoolkid">
+      <span>Add Jump Pairs</span>
+      <span class="golden-card-toggle-wrap">
+        <input id="goldenCardAddJumpPairsKoolkid" class="golden-card-toggle-input" type="checkbox" onchange="updateGoldenCardSettingsKoolkid()">
+        <span class="golden-card-toggle-btn">
+          <span class="golden-card-toggle-knob"></span>
+        </span>
+      </span>
+    </label>
+  </div>
+  <div id="goldenCardPopupStatusRowKoolkid" style="display:grid; grid-template-columns:1fr auto; align-items:center; gap:12px; margin-bottom:8px; padding:10px 12px; background:#0b1220; border:1px solid #334155; border-radius:14px;">
     <div>
       <div style="font-size:11px; color:#94a3b8; text-transform:uppercase; letter-spacing:.04em;">Scan Status</div>
       <div id="goldenCardStatusKoolkid" style="font-size:13px; color:#e2e8f0; margin-top:4px;">Waiting to start Golden Card scan...</div>
@@ -521,7 +553,7 @@
   <div id="goldenCardResultsKoolkid" class="golden-card-grid">
     <div style="grid-column:1 / -1; text-align:center; color:#64748b; padding:20px;">Golden Card results will show here after the scan starts.</div>
   </div>
-  <div id="goldenCardActionsKoolkid" style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:12px;">
+  <div id="goldenCardActionsKoolkid" style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:10px;">
     <button onclick="hideGoldenCardPopupKoolkid()" style="background:#0ea5e9; width:100%;">CLOSE POPUP</button>
     <button onclick="turnOffGoldenCardKoolkid()" style="background:#ef4444; width:100%;">TURN OFF GOLDEN CARD</button>
   </div>

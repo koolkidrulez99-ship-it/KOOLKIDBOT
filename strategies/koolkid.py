@@ -1,10 +1,28 @@
 from collections import deque, Counter
 from strategies.base import BaseStrategy
-from strategies.koolkid_confidence import compute_koolkid_confidence_bars
+from strategies.koolkid_confidence import compute_koolkid_confidence_bars, assess_contract_loss_guard
+from strategies.koolkid_testtrial import (
+    apply_testtrial_settings,
+    build_signals_from_decision,
+    build_ui_payload as build_testtrial_ui_payload,
+    create_testtrial_state,
+    mark_trade_failed as mark_testtrial_trade_failed,
+    mark_trade_started as mark_testtrial_trade_started,
+    record_tick as record_testtrial_tick,
+    record_trade_settlement as record_testtrial_trade_settlement,
+    set_enabled as set_testtrial_enabled,
+    set_quote_snapshot as set_testtrial_quote_snapshot,
+    set_reconnecting as set_testtrial_reconnecting,
+    update_analysis_and_decision as update_testtrial_analysis_and_decision,
+)
+import logging
 import time
 import random
 
-GOLDEN_CARD_MARKETS = (
+
+logger = logging.getLogger(__name__)
+
+GOLDEN_CARD_BASE_MARKETS = (
     "R_10",
     "R_25",
     "R_50",
@@ -15,8 +33,21 @@ GOLDEN_CARD_MARKETS = (
     "1HZ50V",
     "1HZ75V",
     "1HZ100V",
+    "1HZ15V",
+    "1HZ30V",
+    "1HZ90V",
+)
+GOLDEN_CARD_JUMP_MARKETS = (
+    "JD10",
+    "JD25",
+    "JD50",
+    "JD75",
+    "JD100",
 )
 GOLDEN_CARD_HISTORY_TARGET = 20
+GOLDEN_CARD_ACTIVE_MARKETS = 10
+GOLDEN_CARD_ROTATE_BATCH = 4
+GOLDEN_CARD_ROTATION_TICKS = 4
 
 
 class KoolKidStrategy(BaseStrategy):
@@ -114,6 +145,7 @@ class KoolKidStrategy(BaseStrategy):
         self.over3_wait_fresh_setup = False
         self.over3_ticks_by_symbol = {}
         self.golden_card = self._new_golden_card_state()
+        self.testtrial = create_testtrial_state()
 
         # Kid2vix auto: UNDER 2 + OVER 3 pair when digits 2/3 look cold
         self.kid2vix_auto = False
@@ -264,6 +296,7 @@ class KoolKidStrategy(BaseStrategy):
         self.over3_wait_fresh_setup = False
         self.over3_ticks_by_symbol = {}
         self.golden_card = self._new_golden_card_state()
+        self.testtrial = create_testtrial_state()
 
         self.kid2vix_auto = False
         self.kid2vix_last20_threshold = 4
@@ -445,6 +478,60 @@ class KoolKidStrategy(BaseStrategy):
             self.over3_trade_active = False
         return self.over3_analysis_auto
 
+    def toggle_testtrial(self):
+        next_enabled = not bool((self.testtrial or {}).get("enabled"))
+        set_testtrial_enabled(self.testtrial, next_enabled)
+        if next_enabled:
+            self.testtrial["digits"] = deque(maxlen=50)
+            self.testtrial["active_trade"] = None
+            self.testtrial["active_trade_open_contracts"] = 0
+            self.testtrial["both_cycle_profit"] = 0.0
+            self.testtrial["decision_log"].clear()
+        update_testtrial_analysis_and_decision(self.testtrial)
+        return bool(self.testtrial.get("enabled"))
+
+    def set_testtrial_settings(
+        self,
+        *,
+        strategy_mode=None,
+        stake_mode=None,
+        window_ticks=None,
+        min_target=None,
+        max_total_stake=None,
+        overplayed_filter_enabled=None,
+    ):
+        apply_testtrial_settings(
+            self.testtrial,
+            strategy_mode=strategy_mode,
+            stake_mode=stake_mode,
+            window_ticks=window_ticks,
+            min_target=min_target,
+            max_total_stake=max_total_stake,
+            overplayed_filter_enabled=overplayed_filter_enabled,
+        )
+        update_testtrial_analysis_and_decision(self.testtrial)
+        return self.get_testtrial_state()
+
+    def set_testtrial_runtime(self, *, reconnecting=False, base_stake=None):
+        set_testtrial_reconnecting(self.testtrial, reconnecting)
+        if base_stake is not None:
+            try:
+                self.testtrial["base_stake"] = max(0.35, round(float(base_stake), 2))
+            except Exception:
+                pass
+        update_testtrial_analysis_and_decision(self.testtrial)
+
+    def set_testtrial_quotes(self, *, symbol=None, over1_quote=None, under8_quote=None, status=None):
+        set_testtrial_quote_snapshot(
+            self.testtrial,
+            symbol=symbol or getattr(self, "last_symbol", ""),
+            over1_quote=over1_quote,
+            under8_quote=under8_quote,
+            status=status,
+        )
+        update_testtrial_analysis_and_decision(self.testtrial)
+        return self.get_testtrial_state()
+
     def toggle_kid2vix_auto(self):
         self.kid2vix_auto = not self.kid2vix_auto
         if self.kid2vix_auto:
@@ -566,16 +653,23 @@ class KoolKidStrategy(BaseStrategy):
         }
 
     def _new_golden_card_state(self):
+        base_pool = list(GOLDEN_CARD_BASE_MARKETS)
         return {
             "running": False,
             "completed": False,
-            "symbols": list(GOLDEN_CARD_MARKETS),
+            "symbols": list(base_pool[:GOLDEN_CARD_ACTIVE_MARKETS]),
+            "market_pool": list(base_pool),
             "history_target": int(GOLDEN_CARD_HISTORY_TARGET),
             "ticks_by_symbol": {},
             "results": [],
-            "status": "Press GOLDEN CARD to start a live 20-tick scan for Over 1 using Over 3 analysis.",
+            "status": "Press GOLDEN CARD to start a live 20-tick scan for OVER 1 / UNDER 8 using Over 3 analysis.",
             "completed_markets": 0,
+            "rotation_cursor": int(min(GOLDEN_CARD_ACTIVE_MARKETS, len(base_pool))),
+            "rotation_count": 0,
+            "ticks_since_rotation": 0,
             "last_update_at": 0.0,
+            "filter_mode": "BOTH",
+            "add_jump_pairs": False,
         }
 
     def _golden_card_market_label(self, symbol):
@@ -587,12 +681,48 @@ class KoolKidStrategy(BaseStrategy):
             "R_75": "V75",
             "R_100": "V100",
             "1HZ10V": "V10 1s",
+            "1HZ15V": "V15 1s",
             "1HZ25V": "V25 1s",
+            "1HZ30V": "V30 1s",
             "1HZ50V": "V50 1s",
             "1HZ75V": "V75 1s",
+            "1HZ90V": "V90 1s",
             "1HZ100V": "V100 1s",
+            "JD10": "Jump 10",
+            "JD25": "Jump 25",
+            "JD50": "Jump 50",
+            "JD75": "Jump 75",
+            "JD100": "Jump 100",
         }
         return labels.get(sym, sym)
+
+    def _normalize_golden_card_filter_mode(self, value):
+        mode = str(value or "BOTH").strip().upper().replace(" ", "_")
+        if mode in ("OVER1", "OVER_1"):
+            return "OVER1"
+        if mode in ("UNDER8", "UNDER_8"):
+            return "UNDER8"
+        return "BOTH"
+
+    def _build_golden_card_market_pool(self, add_jump_pairs=False, symbols=None):
+        pool = []
+        raw_symbols = list(symbols or [])
+        if raw_symbols:
+            for sym in raw_symbols:
+                clean_sym = self._over3_symbol_key(sym)
+                if clean_sym and clean_sym not in pool:
+                    pool.append(clean_sym)
+            return pool or list(GOLDEN_CARD_BASE_MARKETS)
+        for sym in list(GOLDEN_CARD_BASE_MARKETS):
+            clean_sym = self._over3_symbol_key(sym)
+            if clean_sym and clean_sym not in pool:
+                pool.append(clean_sym)
+        if add_jump_pairs:
+            for sym in list(GOLDEN_CARD_JUMP_MARKETS):
+                clean_sym = self._over3_symbol_key(sym)
+                if clean_sym and clean_sym not in pool:
+                    pool.append(clean_sym)
+        return pool
 
     def _golden_card_confidence(self, counts):
         sample_window = int(counts.get("sample_window", 0) or 0)
@@ -636,6 +766,55 @@ class KoolKidStrategy(BaseStrategy):
             return "building"
         return "danger"
 
+    def _golden_card_pick_trade(self, ticks, filter_mode="BOTH"):
+        filter_mode = self._normalize_golden_card_filter_mode(filter_mode)
+        confidence_map = compute_koolkid_confidence_bars(ticks)
+        candidates = []
+        for key, trade_type, barrier, label in (
+            ("over1", "OVER", 1, "OVER 1"),
+            ("under8", "UNDER", 8, "UNDER 8"),
+        ):
+            confidence = float((confidence_map.get(key) or {}).get("confidence_pct", 0.0) or 0.0)
+            loss_guard = assess_contract_loss_guard(ticks, key)
+            candidates.append({
+                "key": key,
+                "type": trade_type,
+                "barrier": int(barrier),
+                "label": label,
+                "confidence_pct": confidence,
+                "blocked": bool(loss_guard.get("blocked")),
+                "block_reason": str(loss_guard.get("reason") or ""),
+                "block_digits_label": str(loss_guard.get("losing_digits_label") or ""),
+            })
+        allowed_keys = None
+        if filter_mode == "OVER1":
+            allowed_keys = {"over1"}
+        elif filter_mode == "UNDER8":
+            allowed_keys = {"under8"}
+        filtered_candidates = [row for row in candidates if not allowed_keys or row.get("key") in allowed_keys]
+        if not filtered_candidates:
+            filtered_candidates = list(candidates)
+        filtered_candidates.sort(
+            key=lambda row: (
+                0 if not row.get("blocked") else 1,
+                -float(row.get("confidence_pct", 0.0) or 0.0),
+                str(row.get("label") or ""),
+            )
+        )
+        chosen = dict(filtered_candidates[0]) if filtered_candidates else {
+            "key": "over1",
+            "type": "OVER",
+            "barrier": 1,
+            "label": "OVER 1",
+            "confidence_pct": 0.0,
+            "blocked": False,
+            "block_reason": "",
+            "block_digits_label": "",
+        }
+        chosen["candidates"] = candidates
+        chosen["filter_mode"] = filter_mode
+        return chosen
+
     def _golden_card_entry_ready(self, counts):
         sample_window = int(counts.get("sample_window", 0) or 0)
         sample_short = int(counts.get("sample_short", 0) or 0)
@@ -653,10 +832,14 @@ class KoolKidStrategy(BaseStrategy):
         scan = self.golden_card or self._new_golden_card_state()
         rows = []
         history_target = int(scan.get("history_target", GOLDEN_CARD_HISTORY_TARGET) or GOLDEN_CARD_HISTORY_TARGET)
+        filter_mode = self._normalize_golden_card_filter_mode(scan.get("filter_mode", "BOTH"))
         for sym in list(scan.get("symbols") or []):
             ticks = list((scan.get("ticks_by_symbol") or {}).get(sym) or [])
             counts = self._golden_card_counts_from_ticks(ticks, history_target=history_target)
-            confidence_pct = self._golden_card_confidence(counts)
+            chosen_trade = self._golden_card_pick_trade(ticks, filter_mode=filter_mode)
+            confidence_pct = float(chosen_trade.get("confidence_pct", 0.0) or 0.0)
+            warmed = int(len(ticks)) >= history_target
+            trade_ready = bool(warmed and confidence_pct >= 55.0 and not chosen_trade.get("blocked"))
             rows.append({
                 "symbol": sym,
                 "market_label": self._golden_card_market_label(sym),
@@ -665,7 +848,15 @@ class KoolKidStrategy(BaseStrategy):
                 "confidence_pct": confidence_pct,
                 "setup_digit": int(self._golden_card_setup_digit(confidence_pct)),
                 "tier": self._golden_card_tier(confidence_pct),
-                "entry_ready": self._golden_card_entry_ready(counts),
+                "entry_ready": trade_ready,
+                "recommended_key": str(chosen_trade.get("key") or "over1"),
+                "recommended_type": str(chosen_trade.get("type") or "OVER"),
+                "recommended_barrier": int(chosen_trade.get("barrier", 1) or 1),
+                "recommended_label": str(chosen_trade.get("label") or "OVER 1"),
+                "recommended_candidates": list(chosen_trade.get("candidates") or []),
+                "loss_guard_blocked": bool(chosen_trade.get("blocked")),
+                "loss_guard_reason": str(chosen_trade.get("block_reason") or ""),
+                "loss_guard_digits_label": str(chosen_trade.get("block_digits_label") or ""),
                 **counts,
             })
         rows.sort(
@@ -684,36 +875,139 @@ class KoolKidStrategy(BaseStrategy):
                 warmed_count += 1
         scan["completed_markets"] = int(warmed_count)
         if scan.get("running"):
+            pool_size = len(list(scan.get("market_pool") or [])) or len(list(scan.get("symbols") or []))
+            rotation_count = int(scan.get("rotation_count", 0) or 0)
             scan["completed"] = False
+            mode_text = {
+                "OVER1": "OVER 1 only",
+                "UNDER8": "UNDER 8 only",
+                "BOTH": "OVER 1 / UNDER 8",
+            }.get(filter_mode, "OVER 1 / UNDER 8")
             scan["status"] = (
-                f"Live Golden Card scan running • {warmed_count}/{len(list(scan.get('symbols') or []))} markets warmed "
-                f"to {history_target} ticks • rankings keep updating while the scan stays on."
+                f"Live Golden Card scan running • {warmed_count}/{len(list(scan.get('symbols') or []))} active markets warmed "
+                f"to {history_target} ticks • rotating across {pool_size} total markets with {mode_text}."
             )
+            if rotation_count > 0:
+                scan["status"] += f" • {rotation_count} rotation{'s' if rotation_count != 1 else ''} done."
         scan["last_update_at"] = time.time()
         self.golden_card = scan
         return scan["results"]
 
-    def start_golden_card_scan(self, symbols=None, history_target=None):
-        chosen_symbols = []
-        for sym in list(symbols or GOLDEN_CARD_MARKETS):
-            clean_sym = self._over3_symbol_key(sym)
-            if clean_sym and clean_sym not in chosen_symbols:
-                chosen_symbols.append(clean_sym)
-        if not chosen_symbols:
-            chosen_symbols = list(GOLDEN_CARD_MARKETS)
+    def _golden_card_rotation_candidates(self, rows, history_target, standby_count):
+        if standby_count <= 0:
+            return []
+        weak_rows = []
+        for row in list(rows or []):
+            ticks_ready = int(row.get("ticks_ready", 0) or 0)
+            confidence_pct = float(row.get("confidence_pct", 0.0) or 0.0)
+            blocked = bool(row.get("loss_guard_blocked"))
+            entry_ready = bool(row.get("entry_ready"))
+            if ticks_ready < history_target:
+                continue
+            if blocked or confidence_pct < 60.0 or not entry_ready:
+                weak_rows.append(row)
+        weak_rows.sort(
+            key=lambda row: (
+                0 if row.get("loss_guard_blocked") else 1,
+                float(row.get("confidence_pct", 0.0) or 0.0),
+                0 if not row.get("entry_ready") else 1,
+                -int(row.get("ticks_ready", 0) or 0),
+                str(row.get("symbol") or ""),
+            )
+        )
+        limit = min(int(GOLDEN_CARD_ROTATE_BATCH), int(standby_count), len(weak_rows))
+        return [str(row.get("symbol") or "").upper() for row in weak_rows[:limit] if str(row.get("symbol") or "").upper()]
+
+    def _next_golden_card_replacements(self, scan, exclude_symbols, count):
+        try:
+            desired_count = int(count or 0)
+        except Exception:
+            desired_count = 0
+        if desired_count <= 0:
+            return []
+        pool = [self._over3_symbol_key(sym) for sym in list(scan.get("market_pool") or GOLDEN_CARD_BASE_MARKETS)]
+        pool = [sym for sym in pool if sym]
+        if not pool:
+            return []
+        exclude = {self._over3_symbol_key(sym) for sym in list(exclude_symbols or []) if self._over3_symbol_key(sym)}
+        replacements = []
+        pool_len = len(pool)
+        cursor = int(scan.get("rotation_cursor", 0) or 0) % max(1, pool_len)
+        attempts = 0
+        max_attempts = pool_len * 2
+        while len(replacements) < desired_count and attempts < max_attempts:
+            sym = pool[cursor % pool_len]
+            cursor = (cursor + 1) % pool_len
+            attempts += 1
+            if sym in exclude or sym in replacements:
+                continue
+            replacements.append(sym)
+        scan["rotation_cursor"] = cursor
+        return replacements
+
+    def _rotate_golden_card_markets(self):
+        scan = self.golden_card or self._new_golden_card_state()
+        if not bool(scan.get("running")):
+            return False
+        pool = [self._over3_symbol_key(sym) for sym in list(scan.get("market_pool") or GOLDEN_CARD_BASE_MARKETS)]
+        pool = [sym for sym in pool if sym]
+        active_symbols = [self._over3_symbol_key(sym) for sym in list(scan.get("symbols") or [])]
+        active_symbols = [sym for sym in active_symbols if sym]
+        if len(pool) <= len(active_symbols):
+            return False
+        if int(scan.get("ticks_since_rotation", 0) or 0) < int(GOLDEN_CARD_ROTATION_TICKS):
+            return False
+        history_target = int(scan.get("history_target", GOLDEN_CARD_HISTORY_TARGET) or GOLDEN_CARD_HISTORY_TARGET)
+        warmed_count = int(scan.get("completed_markets", 0) or 0)
+        minimum_warmed = min(len(active_symbols), max(4, len(active_symbols) // 2 or 1))
+        if warmed_count < minimum_warmed:
+            return False
+        standby_count = max(0, len(pool) - len(active_symbols))
+        rotate_out = self._golden_card_rotation_candidates(scan.get("results") or [], history_target, standby_count)
+        if not rotate_out:
+            return False
+        replacements = self._next_golden_card_replacements(scan, active_symbols, len(rotate_out))
+        if not replacements:
+            return False
+        rotate_out_set = set(rotate_out)
+        new_symbols = [sym for sym in active_symbols if sym not in rotate_out_set]
+        for sym in replacements:
+            if sym not in new_symbols:
+                new_symbols.append(sym)
+        active_limit = min(int(GOLDEN_CARD_ACTIVE_MARKETS), len(pool))
+        new_symbols = new_symbols[:active_limit]
+        ticks_by_symbol = scan.setdefault("ticks_by_symbol", {})
+        for sym in replacements:
+            ticks_by_symbol[sym] = deque(maxlen=history_target)
+        scan["symbols"] = new_symbols
+        scan["ticks_since_rotation"] = 0
+        scan["rotation_count"] = int(scan.get("rotation_count", 0) or 0) + 1
+        self.golden_card = scan
+        return True
+
+    def start_golden_card_scan(self, symbols=None, history_target=None, filter_mode="BOTH", add_jump_pairs=False):
+        chosen_pool = self._build_golden_card_market_pool(add_jump_pairs=add_jump_pairs, symbols=symbols)
         target = int(history_target or GOLDEN_CARD_HISTORY_TARGET or 20)
         target = max(10, min(50, target))
-        chosen_symbols = chosen_symbols[:10]
+        active_limit = min(int(GOLDEN_CARD_ACTIVE_MARKETS), len(chosen_pool))
+        chosen_symbols = chosen_pool[:active_limit]
+        normalized_filter = self._normalize_golden_card_filter_mode(filter_mode)
         self.golden_card = {
             "running": True,
             "completed": False,
             "symbols": chosen_symbols,
+            "market_pool": list(chosen_pool),
             "history_target": target,
             "ticks_by_symbol": {sym: deque(maxlen=target) for sym in chosen_symbols},
             "results": [],
-            "status": f"Starting live Golden Card scan across {len(chosen_symbols)} markets...",
+            "status": f"Starting live Golden Card scan across {len(chosen_symbols)} active markets from a {len(chosen_pool)}-market pool...",
             "completed_markets": 0,
+            "rotation_cursor": int(active_limit % max(1, len(chosen_pool))),
+            "rotation_count": 0,
+            "ticks_since_rotation": 0,
             "last_update_at": time.time(),
+            "filter_mode": normalized_filter,
+            "add_jump_pairs": bool(add_jump_pairs),
         }
         self._rebuild_golden_card_results()
         return self.get_golden_card_state()
@@ -745,8 +1039,11 @@ class KoolKidStrategy(BaseStrategy):
             buf = deque(list(buf or []), maxlen=history_target)
             ticks_by_symbol[sym] = buf
         buf.append(di)
+        scan["ticks_since_rotation"] = int(scan.get("ticks_since_rotation", 0) or 0) + 1
         self.golden_card = scan
         self._rebuild_golden_card_results()
+        if self._rotate_golden_card_markets():
+            self._rebuild_golden_card_results()
         return self.get_golden_card_state()
 
     def get_golden_card_state(self):
@@ -767,16 +1064,44 @@ class KoolKidStrategy(BaseStrategy):
             "completed": bool(scan.get("completed")),
             "history_target": history_target,
             "symbols": list(scan.get("symbols") or []),
+            "market_pool_size": len(list(scan.get("market_pool") or [])),
+            "rotation_count": int(scan.get("rotation_count", 0) or 0),
             "completed_markets": int(scan.get("completed_markets", 0) or 0),
             "status": str(scan.get("status") or ""),
             "last_update_at": float(scan.get("last_update_at", 0.0) or 0.0),
+            "filter_mode": self._normalize_golden_card_filter_mode(scan.get("filter_mode", "BOTH")),
+            "add_jump_pairs": bool(scan.get("add_jump_pairs")),
             "results": list(scan.get("results") or []),
             "progress": progress,
         }
 
+    def get_testtrial_state(self):
+        update_testtrial_analysis_and_decision(self.testtrial)
+        return build_testtrial_ui_payload(self.testtrial)
+
+    def check_testtrial_signal(self):
+        if not bool((self.testtrial or {}).get("enabled")):
+            return None
+        update_testtrial_analysis_and_decision(self.testtrial)
+        payload = self.testtrial.get("analysis") or {}
+        decision = payload.get("decision") or {}
+        logger.info(
+            "[KOOLKID TESTTRIAL] %s :: %s",
+            str(decision.get("action") or "SKIP"),
+            str(decision.get("reason") or "No reason"),
+        )
+        return build_signals_from_decision(
+            self.testtrial,
+            base_stake=float(getattr(self, "current_auto_stake", 1.0) or 1.0),
+        )
+
     def get_over3_analysis_state(self):
         symbol = self._over3_symbol_key(getattr(self, "last_symbol", ""))
         counts = self._over3_counts(symbol=symbol)
+        selected_barrier = int(self._normalize_over3_execution_barrier(getattr(self, "over3_execution_barrier", 3)))
+        contract_key = f"over{selected_barrier}"
+        ticks = list((self.over3_ticks_by_symbol or {}).get(symbol) or [])
+        loss_guard = assess_contract_loss_guard(ticks, contract_key)
         entry_conditions = bool(
             counts["sample100"] >= 100
             and counts["sample10"] >= 10
@@ -791,7 +1116,7 @@ class KoolKidStrategy(BaseStrategy):
             "symbol_ok": bool(symbol_ok),
             "symbol": symbol,
             "analysis_barrier": 3,
-            "selected_barrier": int(self._normalize_over3_execution_barrier(getattr(self, "over3_execution_barrier", 3))),
+            "selected_barrier": selected_barrier,
             "duration_ticks": int(duration_ticks),
             "trade_active": bool(self.over3_trade_active),
             "consecutive_losses": int(self.over3_consecutive_losses),
@@ -799,6 +1124,12 @@ class KoolKidStrategy(BaseStrategy):
             "session_stopped": bool(self.over3_session_stopped),
             "wait_fresh_setup": bool(self.over3_wait_fresh_setup),
             "entry_conditions_ready": bool(entry_conditions),
+            "loss_guard_blocked": bool(loss_guard.get("blocked")),
+            "loss_guard_reason": str(loss_guard.get("reason") or ""),
+            "loss_guard_digits": list(loss_guard.get("losing_digits") or []),
+            "loss_guard_digits_label": str(loss_guard.get("losing_digits_label") or ""),
+            "loss_guard_recent_hits": int(loss_guard.get("lose_hits_5", 0) or 0),
+            "loss_guard_window_hits": int(loss_guard.get("lose_hits_20", 0) or 0),
             **counts,
         }
 
@@ -821,6 +1152,9 @@ class KoolKidStrategy(BaseStrategy):
             return None
 
         if not setup_ready:
+            return None
+
+        if bool(s.get("loss_guard_blocked")):
             return None
 
         duration_ticks = int(s.get("duration_ticks", 1) or 1)
@@ -981,6 +1315,10 @@ class KoolKidStrategy(BaseStrategy):
         except Exception:
             pass
         try:
+            record_testtrial_tick(self.testtrial, getattr(self, "last_symbol", ""), digit)
+        except Exception:
+            pass
+        try:
             symbol = self._over3_symbol_key(getattr(self, "last_symbol", ""))
             if symbol and digit is not None:
                 buf = self.over3_ticks_by_symbol.get(symbol)
@@ -998,9 +1336,34 @@ class KoolKidStrategy(BaseStrategy):
         self._refresh_koolluck_background_analysis()
         self._refresh_auto_dollar_analysis()
         self._refresh_kid2vix_analysis()
+        try:
+            update_testtrial_analysis_and_decision(self.testtrial)
+        except Exception:
+            pass
 
     def on_auto_trade_sent(self, signal):
         mode = str((signal or {}).get("mode") or "").upper().strip()
+        if mode.startswith("TESTTRIAL"):
+            try:
+                if mode == "TESTTRIAL_BOTH" and not self.testtrial.get("active_trade"):
+                    mark_testtrial_trade_started(self.testtrial, [
+                        {
+                            "symbol": (signal or {}).get("symbol"),
+                            "type": "OVER",
+                            "barrier": 1,
+                        },
+                        {
+                            "symbol": (signal or {}).get("symbol"),
+                            "type": "UNDER",
+                            "barrier": 8,
+                        },
+                    ])
+                elif mode != "TESTTRIAL_BOTH" and not self.testtrial.get("active_trade"):
+                    mark_testtrial_trade_started(self.testtrial, signal or {})
+                update_testtrial_analysis_and_decision(self.testtrial)
+            except Exception:
+                pass
+            return
         if mode == "OVER3_ANALYSIS":
             self.over3_trade_active = True
             return
@@ -1011,12 +1374,32 @@ class KoolKidStrategy(BaseStrategy):
 
     def on_auto_trade_failed(self, signal, _reason=None):
         mode = str((signal or {}).get("mode") or "").upper().strip()
+        if mode.startswith("TESTTRIAL"):
+            try:
+                mark_testtrial_trade_failed(self.testtrial)
+                update_testtrial_analysis_and_decision(self.testtrial)
+            except Exception:
+                pass
+            return
         if mode == "OVER3_ANALYSIS":
             self.over3_trade_active = False
             return
 
     def on_contract_settled(self, contract, meta=None):
         mode = str(((meta or {}).get("mode") or "").upper().strip())
+        if mode.startswith("TESTTRIAL"):
+            try:
+                record_testtrial_trade_settlement(
+                    self.testtrial,
+                    mode=mode,
+                    contract_type=(meta or {}).get("type"),
+                    barrier=(meta or {}).get("barrier"),
+                    profit=(contract or {}).get("profit", 0),
+                )
+                update_testtrial_analysis_and_decision(self.testtrial)
+            except Exception:
+                pass
+            return
         if mode == "KID2VIX":
             try:
                 profit = float((contract or {}).get("profit", 0) or 0)
@@ -1961,6 +2344,10 @@ class KoolKidStrategy(BaseStrategy):
 
         now = time.time()
 
+        testtrial_sig = self.check_testtrial_signal()
+        if testtrial_sig:
+            return testtrial_sig
+
         over3_sig = self.check_over3_analysis_signal()
         if over3_sig:
             signals.append(over3_sig)
@@ -2101,6 +2488,7 @@ class KoolKidStrategy(BaseStrategy):
                 "mpull_all_digits": self.mpull_all_digits_auto,
                 "over3_analysis": self.over3_analysis_auto,
                 "kid2vix": self.kid2vix_auto,
+                "testtrial": bool((self.testtrial or {}).get("enabled")),
             },
             "auto_settings": {
                 "kidracks_barrier": self.kidracks_barrier,
@@ -2115,9 +2503,16 @@ class KoolKidStrategy(BaseStrategy):
                 "kid2vix_repeat_pressure_threshold": float(self.kid2vix_repeat_pressure_threshold),
                 "kid2vix_over3_ratio": float(self.kid2vix_over3_ratio),
                 "kid2vix_cooldown_after_loss": float(self.kid2vix_cooldown_after_loss),
+                "testtrial_strategy_mode": str((self.testtrial or {}).get("strategy_mode", "AUTO_COMBINED")),
+                "testtrial_stake_mode": str((self.testtrial or {}).get("stake_mode", "FIXED")),
+                "testtrial_window_ticks": int((self.testtrial or {}).get("window_ticks", 20) or 20),
+                "testtrial_min_target": float((self.testtrial or {}).get("min_target", 0.15) or 0.15),
+                "testtrial_max_total_stake": float((self.testtrial or {}).get("max_total_stake", 3.0) or 3.0),
+                "testtrial_overplayed_filter_enabled": bool((self.testtrial or {}).get("overplayed_filter_enabled", True)),
             },
             "over3_analysis_data": self.get_over3_analysis_state(),
             "golden_card_data": self.get_golden_card_state(),
+            "testtrial_data": self.get_testtrial_state(),
             "kid2vix_data": dict(self.kid2vix_analysis or self._refresh_kid2vix_analysis() or {}),
             "auto_dollar_analysis": dict(self.auto_dollar_analysis or {}),
             "barrier_analysis": {

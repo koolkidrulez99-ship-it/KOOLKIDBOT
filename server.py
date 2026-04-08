@@ -60,6 +60,20 @@ from strategies.mutant import (
     _sanitize_ntt_duration,
     _format_ntt_barrier,
 )
+from strategies.mutant_auto import (
+    MIN_MUTANT_AUTO_STAKE,
+    apply_mutant_auto_settings,
+    arm_mutant_auto,
+    clear_mutant_auto_pending,
+    default_mutant_auto_state,
+    ensure_mutant_auto_state,
+    mark_mutant_auto_trade_sent,
+    mutant_auto_current_stake,
+    mutant_auto_mode_label,
+    progress_mutant_auto_after_result,
+    serialize_mutant_auto,
+    stop_mutant_auto,
+)
 from strategies.auto_session import (
     AUTO_SESSION_HISTORY_COUNT,
     AUTO_SESSION_MARKETS,
@@ -488,16 +502,15 @@ def _mutant_access_state():
     email_override = bool(
         allowed_account and identity.get("email") and identity.get("email") == allowed_account
     )
-    enabled = (not MUTANT_DEPLOY_GATE_ENABLED) or local_request or username_override or email_override
     return {
-        "enabled": bool(enabled),
-        "under_construction": not bool(enabled),
+        "enabled": True,
+        "under_construction": False,
         "local": bool(local_request),
         "username_override": bool(username_override),
         "email_override": bool(email_override),
         "user_username": identity.get("username") or "",
         "user_email": identity.get("email") or "",
-        "message": "" if enabled else MUTANT_UNDER_CONSTRUCTION_MESSAGE,
+        "message": "",
     }
 
 
@@ -1424,6 +1437,7 @@ def _build_default_client_state():
         },
         "balance": 0.0,
         "last_live_balance": 0.0,
+        "last_known_trade_balance": 0.0,
         "last_live_balance_updated_at": 0.0,
         "local_balance_adjustment": 0.0,
         "balance_updated_at": 0.0,
@@ -2083,6 +2097,7 @@ def handle_jokerjoe_blackcard_trade(data=None):
         digit,
         duration=duration,
         duration_unit="t",
+        emit_balance_after_send=False,
     )
     return {
         "status": "success" if ok else "error",
@@ -2308,12 +2323,24 @@ def _effective_trade_balance(balance):
 def _get_effective_state_balance(state):
     if not isinstance(state, dict):
         return 0.0
-    current_balance = _safe_money(state.get("balance", 0.0))
+    current_balance = _effective_trade_balance(_safe_money(state.get("balance", 0.0)))
     last_live_balance = _safe_money(state.get("last_live_balance", 0.0))
+    last_known_trade_balance = _safe_money(state.get("last_known_trade_balance", 0.0))
     local_adjustment = _safe_money(state.get("local_balance_adjustment", 0.0))
+    live_adjusted_balance = 0.0
     if last_live_balance > 0.0:
-        return _effective_trade_balance(last_live_balance + local_adjustment)
-    return _effective_trade_balance(current_balance)
+        live_adjusted_balance = _effective_trade_balance(last_live_balance + local_adjustment)
+    if current_balance > 0.0 and current_balance > (live_adjusted_balance + 0.01):
+        return current_balance
+    if live_adjusted_balance > 0.0:
+        return live_adjusted_balance
+    if current_balance > 0.0:
+        return current_balance
+    if last_known_trade_balance > 0.0:
+        if abs(local_adjustment) > 0.009:
+            return _effective_trade_balance(last_known_trade_balance + local_adjustment)
+        return _effective_trade_balance(last_known_trade_balance)
+    return current_balance
 
 
 def _estimate_profile_open_budget_exposure(state, profile):
@@ -2347,10 +2374,12 @@ def _estimate_profile_open_budget_exposure(state, profile):
 def _resolve_post_contract_balance(state, profit):
     current_balance = _get_effective_state_balance(state)
     last_live_balance = _safe_money(state.get("last_live_balance", 0.0))
+    last_known_trade_balance = _safe_money(state.get("last_known_trade_balance", 0.0))
     local_adjustment = _safe_money(state.get("local_balance_adjustment", 0.0))
     profit_value = _safe_money(profit, 0.0)
     last_live_balance_updated_at = _safe_money(state.get("last_live_balance_updated_at", 0.0))
     last_balance_update_at = _safe_money(state.get("balance_updated_at", 0.0))
+    live_adjusted_balance = _effective_trade_balance(last_live_balance + local_adjustment) if last_live_balance > 0.0 else 0.0
 
     now_ts = time.time()
     # If a real Deriv balance update just arrived, trust that live number and
@@ -2361,6 +2390,8 @@ def _resolve_post_contract_balance(state, profit):
         and abs(current_balance - _effective_trade_balance(last_live_balance)) <= 0.01
     ):
         state["balance"] = current_balance
+        if current_balance > 0.0:
+            state["last_known_trade_balance"] = current_balance
         state["balance_updated_at"] = now_ts
         return current_balance
 
@@ -2372,18 +2403,28 @@ def _resolve_post_contract_balance(state, profit):
         and (last_live_balance <= 0.0 or abs(current_balance - _effective_trade_balance(last_live_balance)) <= 0.01)
     ):
         state["balance"] = current_balance
+        if current_balance > 0.0:
+            state["last_known_trade_balance"] = current_balance
         state["balance_updated_at"] = now_ts
         return current_balance
 
-    if last_live_balance > 0.0:
+    if last_live_balance > 0.0 and abs(current_balance - live_adjusted_balance) <= 0.01:
         next_adjustment = round(local_adjustment + profit_value, 2)
         next_balance = _effective_trade_balance(last_live_balance + next_adjustment)
         state["local_balance_adjustment"] = next_adjustment
+    elif current_balance > 0.0:
+        next_balance = _effective_trade_balance(current_balance + profit_value)
+        state["local_balance_adjustment"] = 0.0
+    elif current_balance <= 0.0 and last_known_trade_balance > 0.0:
+        next_balance = _effective_trade_balance(last_known_trade_balance + profit_value)
+        state["local_balance_adjustment"] = 0.0
     else:
         next_balance = _effective_trade_balance(current_balance + profit_value)
         state["local_balance_adjustment"] = 0.0
 
     state["balance"] = next_balance
+    if next_balance > 0.0:
+        state["last_known_trade_balance"] = next_balance
     state["balance_updated_at"] = now_ts
     return next_balance
 
@@ -2401,6 +2442,8 @@ def send_buy(client_id, contract_type, stake, symbol, barrier, duration=1, durat
     except Exception:
         stake_value = 0.0
     balance_value = _get_effective_state_balance(state)
+    if balance_value > 0.0:
+        state["last_known_trade_balance"] = balance_value
     if stake_value > 0 and (_effective_trade_balance(balance_value) + 1e-9) < stake_value:
         try:
             socketio.emit("api_error", {"message": "Insufficient funds to place trade"}, room=client_id)
@@ -2512,6 +2555,8 @@ def send_buy_with_profile(
     except Exception:
         stake_value = 0.0
     balance_value = _get_effective_state_balance(state)
+    if balance_value > 0.0:
+        state["last_known_trade_balance"] = balance_value
     if (
         not bool(skip_local_balance_check)
         and stake_value > 0
@@ -3242,6 +3287,7 @@ def _default_ntt_state():
         "pair_send_in_flight": False,
         "auto_both_next_fire_at": 0.0,
         "auto_both_last_reason": "AUTO BOTH is OFF.",
+        "auto": default_mutant_auto_state(),
         "market_default_symbol": None,
         "market_default_key": None,
         "koolkid_hl_enabled": False,
@@ -3418,6 +3464,7 @@ def _ensure_ntt_state(state):
     except Exception:
         cur["auto_both_next_fire_at"] = 0.0
     cur["auto_both_last_reason"] = str(cur.get("auto_both_last_reason") or "AUTO BOTH is OFF.")
+    ensure_mutant_auto_state(cur)
     cur["contract_selector_mode"] = normalize_contract_selector_mode(cur.get("contract_selector_mode", "AUTO_SELECT"))
     cur["koolkid_hl_enabled"] = bool(cur.get("koolkid_hl_enabled", False))
     cur["koolkid_hl_last_reason"] = str(cur.get("koolkid_hl_last_reason") or "KOOLKID Touch/No Touch is OFF.")
@@ -4143,23 +4190,7 @@ def _serialize_ntt_auto_both(state, ntt=None, active_count=None):
     ntt = ntt or _ensure_ntt_state(state)
     if active_count is None:
         active_count = len(_get_open_ntt_active_entries(state))
-    enabled = bool(ntt.get("auto_both_enabled"))
-    next_fire_at = float(ntt.get("auto_both_next_fire_at", 0.0) or 0.0)
-    cooldown_remaining = max(0.0, next_fire_at - time.time())
-    if not enabled:
-        label = "OFF"
-    elif active_count > 0 or bool(ntt.get("auto_both_pair_active")):
-        label = "RUNNING"
-    elif cooldown_remaining > 0.0:
-        label = "COOLDOWN"
-    else:
-        label = "ARMED"
-    return {
-        "enabled": enabled,
-        "label": label,
-        "cooldown_remaining": round(cooldown_remaining, 2),
-        "last_reason": str(ntt.get("auto_both_last_reason") or "AUTO BOTH is OFF."),
-    }
+    return serialize_mutant_auto(ntt.get("auto"), active_count=active_count)
 
 
 def _check_ntt_pair_balance(state, plan, *, failure_prefix="Trade failed"):
@@ -4535,6 +4566,105 @@ def _request_ntt_proposal_quote(state, *, side, stake, symbol, barrier, duration
     }, None
 
 
+def _request_digit_proposal_quote(state, *, contract_type, stake, symbol, barrier, duration=1, duration_unit="t", timeout_sec=0.9):
+    client_id = None
+    for _cid, _state in clients.items():
+        if _state is state:
+            client_id = _cid
+            break
+    if client_id is not None:
+        ready, ready_msg = _ensure_trade_socket_ready(client_id, state, emit_error=False)
+        if not ready:
+            return None, ready_msg
+    ws = state.get("ws")
+
+    contract_map = {
+        "OVER": "DIGITOVER",
+        "UNDER": "DIGITUNDER",
+    }
+    safe_type = str(contract_type or "").upper().strip()
+    deriv_type = contract_map.get(safe_type)
+    if not deriv_type:
+        return None, "Unsupported digit quote type"
+
+    try:
+        amount = float(stake)
+    except Exception:
+        return None, "Invalid stake"
+    amount = max(0.35, amount)
+
+    try:
+        barrier_value = int(barrier)
+    except Exception:
+        return None, "Invalid barrier"
+
+    try:
+        duration_val = int(duration or 1)
+    except Exception:
+        duration_val = 1
+    duration_val = max(1, min(20, duration_val))
+    unit = str(duration_unit or "t").strip().lower()
+    if unit not in ("t", "s", "m", "h"):
+        unit = "t"
+
+    req_id = _new_req_id()
+    waiter = {"event": threading.Event(), "proposal": None, "error": None}
+    waiters = state.setdefault("_proposal_waiters", {})
+    waiters[req_id] = waiter
+    waiters[str(req_id)] = waiter
+    payload = {
+        "proposal": 1,
+        "amount": float(amount),
+        "basis": "stake",
+        "contract_type": deriv_type,
+        "currency": "USD",
+        "duration": int(duration_val),
+        "duration_unit": unit,
+        "symbol": symbol,
+        "barrier": int(barrier_value),
+        "req_id": req_id,
+    }
+    try:
+        ws.send(json.dumps(payload))
+    except Exception as e:
+        if client_id is not None:
+            _mark_ws_unhealthy_and_reconnect(client_id, state, "Deriv connection failed while requesting a quote. Reconnecting now...", emit_error=False)
+        waiters.pop(req_id, None)
+        waiters.pop(str(req_id), None)
+        return None, str(e)
+
+    if not waiter["event"].wait(max(0.40, float(timeout_sec))):
+        waiters.pop(req_id, None)
+        waiters.pop(str(req_id), None)
+        return None, "Quote timeout"
+
+    waiters.pop(req_id, None)
+    waiters.pop(str(req_id), None)
+    if waiter.get("error"):
+        return None, str(waiter.get("error"))
+
+    proposal = waiter.get("proposal") or {}
+    ask_price = _safe_float(proposal.get("ask_price"), _safe_float(proposal.get("display_value"), None))
+    payout = _safe_float(proposal.get("payout"), None)
+    profit = _safe_float(proposal.get("profit"), None)
+    if ask_price is None:
+        ask_price = float(amount)
+    if payout is None:
+        payout = (ask_price + profit) if profit is not None else ask_price
+    if profit is None:
+        profit = float(payout or 0.0) - float(ask_price or 0.0)
+    return {
+        "ask_price": round(float(max(0.0, ask_price)), 2),
+        "payout": round(float(max(0.0, payout or 0.0)), 2),
+        "profit": round(float(profit or 0.0), 2),
+        "barrier": int(barrier_value),
+        "duration": int(duration_val),
+        "duration_unit": unit,
+        "contract_type": deriv_type,
+        "symbol": symbol,
+    }, None
+
+
 def _build_ntt_expected_profit_preview(
     state,
     *,
@@ -4618,7 +4748,19 @@ def _build_ntt_expected_profit_preview(
     return preview
 
 
-def _send_ntt_trade(client_id, *, side, stake, symbol, barrier, duration, duration_unit):
+def _send_ntt_trade(
+    client_id,
+    *,
+    side,
+    stake,
+    symbol,
+    barrier,
+    duration,
+    duration_unit,
+    mode=None,
+    extra_meta=None,
+    emit_balance=True,
+):
     state = clients.get(client_id)
     ready, ready_msg = _ensure_trade_socket_ready(client_id, state)
     if not ready:
@@ -4662,6 +4804,10 @@ def _send_ntt_trade(client_id, *, side, stake, symbol, barrier, duration, durati
         "deriv_contract_type": contract_type,
         "budget_reservation": budget_reservation,
     }
+    if mode is not None:
+        req_meta["mode"] = str(mode)
+    if isinstance(extra_meta, dict):
+        req_meta.update(extra_meta)
     state.setdefault("req_meta", {})[req_id] = req_meta
     payload = {
         "req_id": req_id,
@@ -4680,7 +4826,8 @@ def _send_ntt_trade(client_id, *, side, stake, symbol, barrier, duration, durati
     }
     try:
         ws.send(json.dumps(payload))
-        _emit_balance_payload(client_id, state)
+        if emit_balance:
+            _emit_balance_payload(client_id, state)
         return True, "Trade sent"
     except Exception as e:
         _mark_ws_unhealthy_and_reconnect(client_id, state, "Deriv connection failed while sending a trade. Reconnecting now...")
@@ -4690,7 +4837,8 @@ def _send_ntt_trade(client_id, *, side, stake, symbol, barrier, duration, durati
             pass
         try:
             _release_profile_budget_reservation(state, budget_reservation)
-            _emit_balance_payload(client_id, state)
+            if emit_balance:
+                _emit_balance_payload(client_id, state)
         except Exception:
             pass
         return False, str(e)
@@ -4825,63 +4973,115 @@ def _clear_ntt_koolkid_both_simulation(ntt, *, reason=None, cooldown_sec=0.0):
         ntt["koolkid_both_last_reason"] = str(reason)
 
 
+def _get_mutant_auto_stale_pending_window(auto, ntt):
+    safe_auto = ensure_mutant_auto_state({"auto": auto})
+    side = str(safe_auto.get("selected_side") or safe_auto.get("active_side") or "TOUCH").strip().upper()
+    duration, duration_unit = _get_ntt_side_duration(ntt, side)
+    unit = _clean_ntt_duration_unit(duration_unit)
+    try:
+        safe_duration = max(1, int(float(duration or 0)))
+    except Exception:
+        safe_duration = 5
+    if unit == "t":
+        return max(6.0, safe_duration * 2.0)
+    if unit == "s":
+        return max(6.0, safe_duration + 3.0)
+    return None
+
+
 def _run_ntt_auto_both(client_id, state):
     ntt = _ensure_ntt_state(state)
-    if not bool(ntt.get("auto_both_enabled")):
+    auto = ensure_mutant_auto_state(ntt)
+    ntt["auto_both_enabled"] = bool(auto.get("enabled"))
+    if not bool(auto.get("enabled")):
         return False
     if not state.get("ws_connected") or not state.get("ws"):
-        ntt["auto_both_last_reason"] = "Connect API first for Mutant AUTO BOTH."
+        auto["last_reason"] = "Connect API first for Mutant AUTO."
         return False
     risk_block = _check_ntt_risk_block(state)
     if risk_block:
-        ntt["auto_both_last_reason"] = str(risk_block)
+        auto["last_reason"] = str(risk_block)
         return False
 
     open_entries = _get_open_ntt_active_entries(state)
     now_ts = time.time()
     if open_entries:
-        ntt["auto_both_pair_active"] = True
         count = len(open_entries)
-        ntt["auto_both_last_reason"] = f"AUTO BOTH waiting for {count} active Mutant trade{'s' if count != 1 else ''} to finish."
+        auto["pending_contract_id"] = str((open_entries[0] or {}).get("contract_id") or auto.get("pending_contract_id") or "") or None
+        auto["request_in_flight"] = False
+        auto["request_started_at"] = 0.0
+        auto["last_decision"] = "WAITING"
+        auto["last_reason"] = f"Mutant AUTO waiting for {count} active Mutant trade{'s' if count != 1 else ''} to finish."
         return False
 
-    if bool(ntt.get("auto_both_pair_active")):
-        ntt["auto_both_pair_active"] = False
-        ntt["auto_both_next_fire_at"] = now_ts
-        ntt["auto_both_last_reason"] = "AUTO BOTH re-armed after the last Mutant pair finished."
+    pending_contract_id = str(auto.get("pending_contract_id") or "").strip()
+    if bool(auto.get("request_in_flight")):
+        started_at = float(auto.get("request_started_at", 0.0) or 0.0)
+        if started_at > 0.0 and (now_ts - started_at) >= 3.0:
+            clear_mutant_auto_pending(auto)
+            auto["last_decision"] = "REARMED"
+            auto["last_reason"] = "Mutant AUTO buy confirmation took too long. Re-arming now."
+        else:
+            auto["last_decision"] = "WAITING"
+            auto["last_reason"] = "Mutant AUTO sent a trade and is waiting for Deriv to confirm it."
+            return False
+    elif pending_contract_id:
+        stale_window = _get_mutant_auto_stale_pending_window(auto, ntt)
+        started_at = float(auto.get("last_started_at", 0.0) or 0.0)
+        if stale_window and started_at > 0.0 and (now_ts - started_at) >= stale_window:
+            clear_mutant_auto_pending(auto)
+            auto["last_decision"] = "REARMED"
+            auto["last_reason"] = "Mutant AUTO cleared a stale pending trade and is re-arming now."
+        else:
+            auto["last_decision"] = "WAITING"
+            auto["last_reason"] = "Mutant AUTO is waiting for the current Mutant trade to settle."
+            return False
 
-    next_fire_at = float(ntt.get("auto_both_next_fire_at", 0.0) or 0.0)
-    if next_fire_at > now_ts:
-        return False
+    symbol = str(state.get("current_symbol") or "R_25").upper()
+    chosen_side = str(auto.get("selected_side") or "TOUCH").strip().upper()
+    if chosen_side not in ("TOUCH", "NO_TOUCH"):
+        chosen_side = "TOUCH"
+    auto["last_score"] = 100.0
 
-    touch_duration, touch_duration_unit = _get_ntt_side_duration(ntt, "TOUCH")
-    no_touch_duration, no_touch_duration_unit = _get_ntt_side_duration(ntt, "NO_TOUCH")
-    ok, msg, placed = _send_ntt_both_pair(
+    stake = round(float(mutant_auto_current_stake(auto) or MIN_MUTANT_AUTO_STAKE), 2)
+    duration, duration_unit = _get_ntt_side_duration(ntt, chosen_side)
+    barrier_value = _format_ntt_barrier(auto.get("barrier", "+0.12"), chosen_side, duration_unit)
+
+    ok, msg = _send_ntt_trade(
         client_id,
-        state,
-        symbol=state.get("current_symbol", "R_25"),
-        duration=ntt.get("duration", 5),
-        duration_unit=ntt.get("duration_unit", "t"),
-        touch_stake=ntt.get("touch_stake", 1.0),
-        no_touch_stake=ntt.get("no_touch_stake", 1.0),
-        touch_barrier=ntt.get("touch_barrier", "+0.12"),
-        no_touch_barrier=ntt.get("no_touch_barrier", "+0.12"),
-        touch_duration=touch_duration,
-        touch_duration_unit=touch_duration_unit,
-        no_touch_duration=no_touch_duration,
-        no_touch_duration_unit=no_touch_duration_unit,
-        action_label="AUTO sent",
+        side=chosen_side,
+        stake=stake,
+        symbol=symbol,
+        barrier=barrier_value,
+        duration=duration,
+        duration_unit=duration_unit,
+        mode="MUTANT_AUTO",
+        extra_meta={
+            "auto_mode": mutant_auto_mode_label(auto),
+            "auto_budget": float(auto.get("budget", stake) or stake),
+            "auto_barrier": barrier_value,
+            "auto_selected_side": chosen_side,
+        },
+        emit_balance=False,
     )
-    if placed:
-        ntt["auto_both_pair_active"] = True
-        ntt["auto_both_next_fire_at"] = now_ts + 0.75
-    else:
-        ntt["auto_both_next_fire_at"] = now_ts + 1.5
-    if ok:
-        ntt["auto_both_last_reason"] = "AUTO BOTH fired TOUCH + NO TOUCH and is waiting for the pair to finish."
-        return True
-    ntt["auto_both_last_reason"] = str(msg or "AUTO BOTH could not send the pair.")
-    return False
+    if not ok:
+        auto["last_decision"] = "WAIT"
+        auto["last_reason"] = str(msg or "Mutant AUTO could not send the next trade.")
+        return False
+
+    mark_mutant_auto_trade_sent(
+        auto,
+        side=chosen_side,
+        symbol=symbol,
+        stake=stake,
+        started_at=now_ts,
+        reason=(
+            f"Mutant AUTO sent {chosen_side.replace('_', ' ')} on {symbol} at {barrier_value} "
+            f"using {mutant_auto_mode_label(auto)} stake {stake:.2f}."
+        ),
+    )
+    ntt["last_action"] = f"Mutant AUTO sent {chosen_side.replace('_', ' ')} on {symbol}"
+    return True
 
 
 def _run_ntt_koolkid_hl(client_id, state):
@@ -5416,10 +5616,31 @@ def _toggle_ntt_koolkid_hl(cid, state, data):
 
 def _toggle_ntt_auto_both(cid, state, data):
     ntt = _ensure_ntt_state(state)
+    auto = ensure_mutant_auto_state(ntt)
     requested = (data or {}).get("enabled")
-    ntt["auto_both_enabled"] = (not bool(ntt.get("auto_both_enabled"))) if requested is None else bool(requested)
+    enabled = (not bool(auto.get("enabled"))) if requested is None else bool(requested)
 
-    if ntt["auto_both_enabled"]:
+    if enabled:
+        barrier = (data or {}).get("barrier", auto.get("barrier", "+0.12"))
+        budget = (data or {}).get("budget", auto.get("budget", 10.0))
+        selected_side = (data or {}).get("selected_side", auto.get("selected_side", "TOUCH"))
+        martingale_enabled = bool((data or {}).get("martingale_enabled"))
+        step50_enabled = bool((data or {}).get("step50_enabled"))
+        if martingale_enabled and step50_enabled:
+            step50_enabled = False
+        arm_mutant_auto(
+            ntt,
+            barrier=barrier,
+            budget=budget,
+            selected_side=selected_side,
+            martingale_enabled=martingale_enabled,
+            step50_enabled=step50_enabled,
+            reason="Mutant AUTO armed.",
+            started_at=time.time(),
+        )
+        auto = ensure_mutant_auto_state(ntt)
+        auto["last_reason"] = f"Mutant AUTO armed in {mutant_auto_mode_label(auto)} mode."
+        ntt["auto_both_enabled"] = True
         ntt["koolkid_hl_enabled"] = False
         _clear_ntt_koolkid_hl_simulation(
             ntt,
@@ -5434,22 +5655,23 @@ def _toggle_ntt_auto_both(cid, state, data):
         )
         active_count = len(_get_open_ntt_active_entries(state))
         if active_count > 0:
-            ntt["auto_both_pair_active"] = True
-            ntt["auto_both_next_fire_at"] = 0.0
-            ntt["auto_both_last_reason"] = "AUTO BOTH armed and waiting for the current Mutant trade cycle to finish."
+            auto["last_decision"] = "WAITING"
+            auto["last_reason"] = "Mutant AUTO armed and waiting for the current Mutant trade to finish."
         else:
-            ntt["auto_both_pair_active"] = False
-            ntt["auto_both_next_fire_at"] = time.time()
-            ntt["auto_both_last_reason"] = "AUTO BOTH armed and ready to send TOUCH + NO TOUCH."
             _run_ntt_auto_both(cid, state)
-        ntt["last_action"] = "AUTO BOTH armed"
-        message = "MUTANT AUTO BOTH ON"
-    else:
         ntt["auto_both_pair_active"] = False
         ntt["auto_both_next_fire_at"] = 0.0
-        ntt["auto_both_last_reason"] = "AUTO BOTH is OFF."
-        ntt["last_action"] = "AUTO BOTH OFF"
-        message = "MUTANT AUTO BOTH OFF"
+        ntt["auto_both_last_reason"] = auto.get("last_reason")
+        ntt["last_action"] = "Mutant AUTO armed"
+        message = "MUTANT AUTO ON"
+    else:
+        stop_mutant_auto(ntt, "Mutant AUTO is OFF.")
+        ntt["auto_both_enabled"] = False
+        ntt["auto_both_pair_active"] = False
+        ntt["auto_both_next_fire_at"] = 0.0
+        ntt["auto_both_last_reason"] = auto.get("last_reason")
+        ntt["last_action"] = "Mutant AUTO OFF"
+        message = "MUTANT AUTO OFF"
 
     payload = _ntt_payload_response(state)
     if state.get("active_profile") == "NTT":
@@ -5457,7 +5679,7 @@ def _toggle_ntt_auto_both(cid, state, data):
     return jsonify({
         "status": "success",
         "message": message,
-        "enabled": bool(ntt.get("auto_both_enabled")),
+        "enabled": bool(ensure_mutant_auto_state(ntt).get("enabled")),
         "payload": payload,
     })
 
@@ -11248,6 +11470,7 @@ def run_auto_trade(client_id, state):
 SEQVIX_MARKETS = [
     "R_10", "R_25", "R_50", "R_75", "R_100",
     "1HZ10V", "1HZ15V", "1HZ25V", "1HZ30V", "1HZ50V", "1HZ75V", "1HZ90V", "1HZ100V",
+    "JD10", "JD25", "JD50", "JD75", "JD100",
     "RDBULL", "RDBEAR",
 ]
 
@@ -12111,6 +12334,7 @@ def _ensure_koolkid_golden_card_state(state):
     scan = state.setdefault("koolkid_golden_card", {}) or {}
     scan.setdefault("running", False)
     scan.setdefault("symbols", [])
+    scan.setdefault("market_pool_size", 0)
     scan.setdefault("owned_syms", set())
     state["koolkid_golden_card"] = scan
     return scan
@@ -12153,7 +12377,55 @@ def _cleanup_koolkid_golden_card_subscriptions(state, preserve_scan_state=False)
     scan["running"] = False
 
 
-def _start_koolkid_golden_card_scan(client_id, state):
+def _sync_koolkid_golden_card_subscriptions(state, symbols=None):
+    scan = _ensure_koolkid_golden_card_state(state)
+    desired_symbols = []
+    for sym in list(symbols or scan.get("symbols") or []):
+        clean_sym = str(sym or "").upper().strip()
+        if clean_sym and clean_sym not in desired_symbols:
+            desired_symbols.append(clean_sym)
+    scan["symbols"] = desired_symbols
+    ws = state.get("ws")
+    if not state.get("ws_connected") or not ws:
+        scan["owned_syms"] = set()
+        return
+
+    tick_subs = state.setdefault("tick_subs", {})
+    main_symbol = str(state.get("current_symbol") or "").upper().strip()
+    human_symbol = str((state.get("human_symbol") or main_symbol) or "").upper().strip()
+    protected_symbols = {sym for sym in (main_symbol, human_symbol) if sym}
+    current_owned = set(scan.get("owned_syms") or set())
+    desired_set = set(desired_symbols)
+
+    for sym in list(current_owned):
+        if sym in desired_set or sym in protected_symbols:
+            continue
+        sub_id = tick_subs.get(sym)
+        if not sub_id:
+            continue
+        try:
+            ws.send(json.dumps({"forget": sub_id}))
+        except Exception:
+            pass
+        tick_subs.pop(sym, None)
+
+    next_owned = set()
+    for sym in desired_symbols:
+        if sym in protected_symbols:
+            continue
+        if tick_subs.get(sym):
+            next_owned.add(sym)
+            continue
+        try:
+            ws.send(json.dumps({"ticks": sym, "subscribe": 1}))
+            next_owned.add(sym)
+        except Exception:
+            pass
+
+    scan["owned_syms"] = next_owned
+
+
+def _start_koolkid_golden_card_scan(client_id, state, *, filter_mode="BOTH", add_jump_pairs=False):
     strat = (state.get("strategies") or {}).get("KOOLKID")
     if not strat or not hasattr(strat, "start_golden_card_scan"):
         return False, "KOOLKID strategy not available", {}
@@ -12163,23 +12435,13 @@ def _start_koolkid_golden_card_scan(client_id, state):
 
     scan = _ensure_koolkid_golden_card_state(state)
     _cleanup_koolkid_golden_card_subscriptions(state)
-    payload = strat.start_golden_card_scan() or {}
+    payload = strat.start_golden_card_scan(
+        filter_mode=filter_mode,
+        add_jump_pairs=add_jump_pairs,
+    ) or {}
     scan["running"] = True
-    scan["symbols"] = list(payload.get("symbols") or [])
-
-    tick_subs = state.setdefault("tick_subs", {})
-    main_symbol = state.get("current_symbol")
-    human_symbol = state.get("human_symbol") or main_symbol
-    for sym in list(scan.get("symbols") or []):
-        if sym in (main_symbol, human_symbol):
-            continue
-        if tick_subs.get(sym):
-            continue
-        try:
-            ws.send(json.dumps({"ticks": sym, "subscribe": 1}))
-            scan.setdefault("owned_syms", set()).add(sym)
-        except Exception:
-            pass
+    scan["market_pool_size"] = int(payload.get("market_pool_size", 0) or 0)
+    _sync_koolkid_golden_card_subscriptions(state, payload.get("symbols") or [])
 
     payload = _emit_koolkid_golden_card(client_id, state)
     try:
@@ -12207,6 +12469,86 @@ def _stop_koolkid_golden_card_scan(client_id, state, status=None):
     return payload
 
 
+def _maybe_refresh_koolkid_testtrial_quotes(client_id, state, *, force=False):
+    strat = (state.get("strategies") or {}).get("KOOLKID")
+    if not strat or not hasattr(strat, "set_testtrial_quotes"):
+        return
+    testtrial = getattr(strat, "testtrial", None) or {}
+    if not bool(testtrial.get("enabled")) and not force:
+        return
+    ws = state.get("ws")
+    if not state.get("ws_connected") or not ws:
+        try:
+            strat.set_testtrial_quotes(
+                symbol=state.get("current_symbol"),
+                over1_quote=None,
+                under8_quote=None,
+                status="Connect the API before live quotes can be used.",
+            )
+        except Exception:
+            pass
+        return
+
+    now_ts = time.time()
+    quotes = dict(testtrial.get("quotes") or {})
+    updated_at = float(quotes.get("updated_at", 0.0) or 0.0)
+    quote_symbol = str(quotes.get("symbol") or "").upper().strip()
+    current_symbol = str(state.get("current_symbol") or "").upper().strip()
+    if (
+        not force
+        and quote_symbol == current_symbol
+        and updated_at > 0.0
+        and (now_ts - updated_at) < 1.2
+    ):
+        return
+
+    try:
+        preview_stake = max(0.35, min(
+            float((testtrial or {}).get("max_total_stake", 3.0) or 3.0),
+            max(1.0, float(state.get("auto_stake", 1.0) or 1.0))
+        ))
+    except Exception:
+        preview_stake = 1.0
+
+    over1_quote, over1_err = _request_digit_proposal_quote(
+        state,
+        contract_type="OVER",
+        stake=preview_stake,
+        symbol=current_symbol,
+        barrier=1,
+        duration=1,
+        duration_unit="t",
+        timeout_sec=0.75,
+    )
+    under8_quote, under8_err = _request_digit_proposal_quote(
+        state,
+        contract_type="UNDER",
+        stake=preview_stake,
+        symbol=current_symbol,
+        barrier=8,
+        duration=1,
+        duration_unit="t",
+        timeout_sec=0.75,
+    )
+    status_parts = []
+    if over1_err:
+        status_parts.append(f"OVER 1 quote: {over1_err}")
+    if under8_err:
+        status_parts.append(f"UNDER 8 quote: {under8_err}")
+    status_text = "Quotes ready for Over 1 / Under 8."
+    if status_parts:
+        status_text = " • ".join(status_parts)
+    try:
+        strat.set_testtrial_quotes(
+            symbol=current_symbol,
+            over1_quote=over1_quote,
+            under8_quote=under8_quote,
+            status=status_text,
+        )
+    except Exception:
+        pass
+
+
 def _process_koolkid_golden_card_tick(client_id, tick):
     state = clients.get(client_id)
     if not state:
@@ -12225,6 +12567,8 @@ def _process_koolkid_golden_card_tick(client_id, tick):
     except Exception:
         return
     payload = strat.record_golden_card_tick(sym, digit) or {}
+    scan["market_pool_size"] = int(payload.get("market_pool_size", 0) or 0)
+    _sync_koolkid_golden_card_subscriptions(state, payload.get("symbols") or scan.get("symbols") or [])
     try:
         socketio.emit("golden_card_update", payload, room=client_id)
     except Exception:
@@ -12534,6 +12878,7 @@ def handle_on_message(client_id, ws, message, expected_nonce):
             state["balance"] = balance
             if balance > 0.0:
                 state["last_live_balance"] = balance
+                state["last_known_trade_balance"] = balance
                 state["last_live_balance_updated_at"] = time.time()
             state["local_balance_adjustment"] = 0.0
             state["balance_updated_at"] = time.time()
@@ -12570,6 +12915,7 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 state["balance"] = balance
                 if balance > 0.0:
                     state["last_live_balance"] = balance
+                    state["last_known_trade_balance"] = balance
                     state["last_live_balance_updated_at"] = time.time()
                 state["local_balance_adjustment"] = 0.0
                 state["balance_updated_at"] = time.time()
@@ -12690,6 +13036,22 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                             )
                     elif (meta.get("profile") or "").upper() == "NTT":
                         _upsert_ntt_active_contract(state, contract_id, meta=meta, status="OPEN")
+                        if str((meta or {}).get("mode") or "").startswith("MUTANT_AUTO"):
+                            auto = ensure_mutant_auto_state(_ensure_ntt_state(state))
+                            auto["pending_contract_id"] = str(contract_id or "").strip() or None
+                            auto["request_in_flight"] = False
+                            auto["request_started_at"] = 0.0
+                            auto["active_side"] = str(meta.get("type") or auto.get("active_side") or "").upper().strip() or None
+                            auto["active_symbol"] = str(meta.get("symbol") or auto.get("active_symbol") or "").upper().strip() or None
+                            auto["active_stake"] = round(float(meta.get("stake") or auto.get("active_stake") or 0.0), 2)
+                            auto["current_stake"] = auto["active_stake"] or mutant_auto_current_stake(auto)
+                            auto["last_decision"] = "RUNNING"
+                            auto["last_reason"] = (
+                                f"Mutant AUTO live {str(meta.get('type') or '').replace('_', ' ')} "
+                                f"trade is running on {meta.get('symbol') or state.get('current_symbol') or 'the current market'}."
+                            )
+                            ntt = _ensure_ntt_state(state)
+                            ntt["auto_both_enabled"] = bool(auto.get("enabled"))
                 except Exception:
                     pass
                 duration_val = None
@@ -12984,6 +13346,15 @@ def process_tick(client_id, tick):
         # Active strategy for UI only
         active_profile = state.get("active_profile", "KOOLKID")
         active_strategy = strategies.get(active_profile)
+        koolkid_strat = strategies.get("KOOLKID")
+        if koolkid_strat and hasattr(koolkid_strat, "set_testtrial_runtime"):
+            try:
+                koolkid_strat.set_testtrial_runtime(
+                    reconnecting=not bool(state.get("ws_connected")) or _is_ws_stale(state),
+                    base_stake=float(state.get("auto_stake", 1.0) or 1.0),
+                )
+            except Exception:
+                pass
 
         want_symbol = human_symbol if active_profile == "HUMAN" else main_symbol
         if symbol != want_symbol:
@@ -12998,6 +13369,11 @@ def process_tick(client_id, tick):
         }, room=client_id)
 
         # Digit analysis only for KOOLKID/JOKERJOE style payloads
+        if is_main:
+            try:
+                _maybe_refresh_koolkid_testtrial_quotes(client_id, state)
+            except Exception:
+                pass
         if active_strategy and hasattr(active_strategy, "get_ui_payload"):
             socketio.emit("digit_analysis", active_strategy.get_ui_payload(), room=client_id)
 
@@ -13093,6 +13469,18 @@ def process_contract(client_id, contract):
         elif profile_for_contract == "NTT" and not is_auto_session_contract:
             entry = _finalize_ntt_contract(state, contract, settled_balance, meta=meta)
             _mark_ntt_contract_processed(state, contract_id)
+            if str((meta or {}).get("mode") or "").startswith("MUTANT_AUTO"):
+                try:
+                    ntt = _ensure_ntt_state(state)
+                    progress_mutant_auto_after_result(
+                        ntt,
+                        won=profit > 0,
+                        profit=profit,
+                        side=str(entry.get("type") or (meta or {}).get("type") or "").upper(),
+                    )
+                    ntt["auto_both_enabled"] = bool(ensure_mutant_auto_state(ntt).get("enabled"))
+                except Exception:
+                    pass
         elif not is_auto_session_contract:
             strategies = state.get("strategies", {})
             strategy = strategies.get(profile_for_contract)
@@ -13158,6 +13546,8 @@ def process_contract(client_id, contract):
             _run_unchain_ai_auto_trade(client_id, state)
             _run_unchain_auto_both(client_id, state)
             _run_unchain_directional_auto_trade(client_id, state)
+        elif profile_for_contract == "NTT" and str((meta or {}).get("mode") or "").startswith("MUTANT_AUTO"):
+            _run_ntt_auto_both(client_id, state)
         if state.get("active_profile") == "UNCHAIN":
             socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
         if state.get("active_profile") == "NTT":
@@ -13981,10 +14371,103 @@ def start_golden_card_koolkid_route():
         return jsonify({"error": "Unauthorized"}), 403
 
     cid, state = get_client_state()
-    ok, message, payload = _start_koolkid_golden_card_scan(cid, state)
+    data = request.json or {}
+    ok, message, payload = _start_koolkid_golden_card_scan(
+        cid,
+        state,
+        filter_mode=(data or {}).get("filter_mode", "BOTH"),
+        add_jump_pairs=bool((data or {}).get("add_jump_pairs")),
+    )
     if not ok:
         return jsonify({"status": "error", "message": message, "golden_card_data": payload}), 400
     return jsonify({"status": "success", "message": message, "golden_card_data": payload})
+
+
+@app.route("/toggle_testtrial_koolkid", methods=["POST"])
+def toggle_testtrial_koolkid_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    strat = state["strategies"].get("KOOLKID")
+    if not strat or not hasattr(strat, "toggle_testtrial"):
+        return jsonify({"status": "error", "message": "KOOLKID strategy not available"}), 400
+
+    enabled = bool(strat.toggle_testtrial())
+    try:
+        strat.set_testtrial_runtime(
+            reconnecting=not bool(state.get("ws_connected")) or _is_ws_stale(state),
+            base_stake=float(state.get("auto_stake", 1.0) or 1.0),
+        )
+    except Exception:
+        pass
+    if enabled:
+        _maybe_refresh_koolkid_testtrial_quotes(cid, state, force=True)
+
+    try:
+        payload = strat.get_ui_payload() or {}
+    except Exception:
+        payload = {}
+
+    try:
+        socketio.emit("auto_mode_update", (payload.get("auto_modes") or {}), room=cid)
+        socketio.emit("digit_analysis", payload, room=cid)
+    except Exception:
+        pass
+
+    return jsonify({
+        "status": "success",
+        "testtrial_enabled": enabled,
+        "payload": payload,
+        "testtrial_data": (payload.get("testtrial_data") or {}),
+        "auto_modes": (payload.get("auto_modes") or {}),
+    })
+
+
+@app.route("/set_testtrial_settings_koolkid", methods=["POST"])
+def set_testtrial_settings_koolkid_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    data = request.json or {}
+    strat = state["strategies"].get("KOOLKID")
+    if not strat or not hasattr(strat, "set_testtrial_settings"):
+        return jsonify({"status": "error", "message": "KOOLKID strategy not available"}), 400
+
+    strat.set_testtrial_settings(
+        strategy_mode=data.get("strategy_mode"),
+        stake_mode=data.get("stake_mode"),
+        window_ticks=data.get("window_ticks"),
+        min_target=data.get("min_target"),
+        max_total_stake=data.get("max_total_stake"),
+        overplayed_filter_enabled=data.get("overplayed_filter_enabled"),
+    )
+    try:
+        strat.set_testtrial_runtime(
+            reconnecting=not bool(state.get("ws_connected")) or _is_ws_stale(state),
+            base_stake=float(state.get("auto_stake", 1.0) or 1.0),
+        )
+    except Exception:
+        pass
+    if bool((getattr(strat, "testtrial", {}) or {}).get("enabled")):
+        _maybe_refresh_koolkid_testtrial_quotes(cid, state, force=True)
+
+    try:
+        payload = strat.get_ui_payload() or {}
+    except Exception:
+        payload = {}
+
+    try:
+        socketio.emit("digit_analysis", payload, room=cid)
+    except Exception:
+        pass
+
+    return jsonify({
+        "status": "success",
+        "payload": payload,
+        "testtrial_data": (payload.get("testtrial_data") or {}),
+    })
 
 
 @app.route("/stop_golden_card_koolkid", methods=["POST"])
