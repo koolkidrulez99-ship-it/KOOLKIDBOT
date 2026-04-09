@@ -224,7 +224,7 @@ def _resolve_socketio_async_mode():
     configured = str(os.environ.get("SOCKETIO_ASYNC_MODE") or "").strip().lower()
     if configured:
         return configured
-    return "eventlet" if _is_render_environment() else "threading"
+    return "threading"
 
 
 SOCKETIO_ASYNC_MODE = _resolve_socketio_async_mode()
