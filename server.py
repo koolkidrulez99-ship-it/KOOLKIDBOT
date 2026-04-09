@@ -16,7 +16,7 @@ import ipaddress
 from decimal import Decimal, ROUND_DOWN
 from collections import deque
 
-from flask import Flask, render_template, request, jsonify, redirect, url_for, session, send_file
+from flask import Flask, render_template, request, jsonify, redirect, url_for, session, send_file, has_request_context
 from flask_socketio import SocketIO, join_room
 from datetime import datetime, timedelta
 import logging
@@ -25,6 +25,11 @@ from auth_storage import (
     find_existing_sqlite_auth_db,
     migrate_sqlite_auth_to_postgres,
     normalize_database_url,
+)
+from mutant_auto_store import (
+    clear_mutant_auto_runtime,
+    load_mutant_auto_runtime,
+    save_mutant_auto_runtime,
 )
 
 # STRATEGIES
@@ -177,6 +182,7 @@ DERIV_WS = "wss://ws.derivws.com/websockets/v3?app_id=1089"
 
 # DATABASE FILE (SQLite fallback for laptop/local testing)
 DB_FILE = (os.environ.get("SQLITE_DB_PATH") or "users.db").strip() or "users.db"
+MUTANT_AUTO_STATE_DB_PATH = (os.environ.get("MUTANT_AUTO_STATE_DB_PATH") or DB_FILE).strip() or DB_FILE
 
 
 def _compute_static_asset_version():
@@ -1470,6 +1476,9 @@ def _build_default_client_state():
         "balance_updated_at": 0.0,
         "session_start_balance": None,
         "loginid": "UNKNOWN",
+        "auth_user": "",
+        "mutant_auto_store_loaded": False,
+        "mutant_auto_restore_pending": False,
         "profile_budgets": _new_profile_budget_map(),
         "auto_stake": 1.0,
         "req_meta": {},          # req_id -> meta
@@ -1494,6 +1503,12 @@ def disconnect_client(client_id, reason="manual", emit=True):
         return
 
     logger.info(f"[{client_id}] 🔻 disconnect_client: reason={reason}")
+
+    try:
+        stop_mutant_auto(_ensure_ntt_state(state), f"Mutant AUTO is OFF ({reason}).")
+        _persist_mutant_auto_runtime_state(client_id, state)
+    except Exception:
+        pass
 
     try:
         state["ws_stop_event"].set()
@@ -1541,8 +1556,221 @@ def get_client_state():
     cid = get_client_id()
     if cid not in clients:
         init_client(cid)
+    _sync_client_identity_for_state(clients[cid])
+    _restore_mutant_auto_runtime_state(cid, clients[cid])
     _touch_client(cid)
     return cid, clients[cid]
+
+
+def _safe_session_user():
+    if not has_request_context():
+        return ""
+    try:
+        return str(session.get("user") or "").strip().lower()
+    except Exception:
+        return ""
+
+
+def _sync_client_identity_for_state(state):
+    if not isinstance(state, dict):
+        return ""
+    username = _safe_session_user()
+    if username:
+        state["auth_user"] = username
+    else:
+        state["auth_user"] = str(state.get("auth_user") or "").strip().lower()
+    return state.get("auth_user") or ""
+
+
+def _build_mutant_auto_persisted_payload(state):
+    if not isinstance(state, dict):
+        return None
+    ntt = _ensure_ntt_state(state)
+    auto = ensure_mutant_auto_state(ntt)
+    try:
+        auto_payload = json.loads(json.dumps(auto))
+    except Exception:
+        auto_payload = dict(auto)
+    return {
+        "version": 1,
+        "current_symbol": str(state.get("current_symbol") or "").upper() or None,
+        "ntt": {
+            "use_shared_duration": bool(ntt.get("use_shared_duration", True)),
+            "duration": int(ntt.get("duration", 5) or 5),
+            "duration_unit": _clean_ntt_duration_unit(ntt.get("duration_unit", "t")),
+            "touch_duration": int(ntt.get("touch_duration", ntt.get("duration", 5)) or ntt.get("duration", 5)),
+            "touch_duration_unit": _clean_ntt_duration_unit(ntt.get("touch_duration_unit", ntt.get("duration_unit", "t"))),
+            "no_touch_duration": int(ntt.get("no_touch_duration", ntt.get("duration", 5)) or ntt.get("duration", 5)),
+            "no_touch_duration_unit": _clean_ntt_duration_unit(ntt.get("no_touch_duration_unit", ntt.get("duration_unit", "t"))),
+            "touch_barrier": str(ntt.get("touch_barrier") or "+0.12"),
+            "no_touch_barrier": str(ntt.get("no_touch_barrier") or "+0.12"),
+            "market_default_symbol": str(ntt.get("market_default_symbol") or "").upper() or None,
+        },
+        "auto": auto_payload,
+    }
+
+
+def _persist_mutant_auto_runtime_state(client_id, state, *, force=False):
+    if not isinstance(state, dict):
+        return False
+    username = _sync_client_identity_for_state(state) or str(state.get("auth_user") or "").strip().lower()
+    if not username and not force:
+        return False
+    payload = _build_mutant_auto_persisted_payload(state)
+    if not payload:
+        return False
+    try:
+        return bool(
+            save_mutant_auto_runtime(
+                client_id,
+                payload,
+                username=username,
+                database_url=DATABASE_URL,
+                sqlite_path=MUTANT_AUTO_STATE_DB_PATH,
+            )
+        )
+    except Exception as exc:
+        logger.warning(f"[{client_id}] Mutant AUTO state save failed: {exc}")
+        return False
+
+
+def _restore_mutant_auto_runtime_state(client_id, state):
+    if not isinstance(state, dict) or state.get("mutant_auto_store_loaded"):
+        return False
+    state["mutant_auto_store_loaded"] = True
+    username = _sync_client_identity_for_state(state) or str(state.get("auth_user") or "").strip().lower()
+    if not username:
+        return False
+    try:
+        payload = load_mutant_auto_runtime(
+            client_id,
+            database_url=DATABASE_URL,
+            sqlite_path=MUTANT_AUTO_STATE_DB_PATH,
+        )
+    except Exception as exc:
+        logger.warning(f"[{client_id}] Mutant AUTO state load failed: {exc}")
+        return False
+    if not isinstance(payload, dict):
+        return False
+
+    persisted_ntt = payload.get("ntt") if isinstance(payload.get("ntt"), dict) else {}
+    ntt = _ensure_ntt_state(state)
+    for key in (
+        "use_shared_duration",
+        "duration",
+        "duration_unit",
+        "touch_duration",
+        "touch_duration_unit",
+        "no_touch_duration",
+        "no_touch_duration_unit",
+        "touch_barrier",
+        "no_touch_barrier",
+        "market_default_symbol",
+    ):
+        if key in persisted_ntt:
+            ntt[key] = persisted_ntt.get(key)
+
+    restored_symbol = str(payload.get("current_symbol") or "").upper()
+    if restored_symbol:
+        state["current_symbol"] = restored_symbol
+    ntt = _ensure_ntt_state(state)
+
+    restored_auto = payload.get("auto")
+    if isinstance(restored_auto, dict):
+        try:
+            ntt["auto"] = json.loads(json.dumps(restored_auto))
+        except Exception:
+            ntt["auto"] = dict(restored_auto)
+        auto = ensure_mutant_auto_state(ntt)
+        ntt["auto_both_enabled"] = bool(auto.get("enabled"))
+        ntt["auto_both_last_reason"] = str(auto.get("last_reason") or ntt.get("auto_both_last_reason") or "")
+        state["mutant_auto_restore_pending"] = bool(auto.get("enabled") or auto.get("pending_contract_id") or auto.get("request_in_flight"))
+        if auto.get("pending_contract_id"):
+            _rebuild_mutant_auto_contract_meta_from_state(state)
+        return True
+    return False
+
+
+def _rebuild_mutant_auto_contract_meta_from_state(state):
+    if not isinstance(state, dict):
+        return None
+    ntt = _ensure_ntt_state(state)
+    auto = ensure_mutant_auto_state(ntt)
+    contract_id = str(auto.get("pending_contract_id") or "").strip()
+    if not contract_id:
+        return None
+    chosen_side = str(auto.get("active_side") or auto.get("selected_side") or "TOUCH").strip().upper()
+    if chosen_side not in ("TOUCH", "NO_TOUCH"):
+        chosen_side = "TOUCH"
+    symbol = str(auto.get("active_symbol") or state.get("current_symbol") or "R_25").upper()
+    stake = round(float(auto.get("active_stake") or auto.get("current_stake") or mutant_auto_current_stake(auto) or MIN_MUTANT_AUTO_STAKE), 2)
+    duration, duration_unit = _get_ntt_side_duration(ntt, chosen_side)
+    barrier = _format_ntt_barrier(auto.get("barrier", "+0.12"), chosen_side, duration_unit)
+    trade_plan = build_mutant_auto_trade_plan(auto)
+    step_index = auto.get("active_step_index")
+    if step_index in (None, ""):
+        step_index = trade_plan.get("step_index", 0)
+    meta = {
+        "profile": "NTT",
+        "mode": "MUTANT_AUTO",
+        "type": chosen_side,
+        "symbol": symbol,
+        "stake": stake,
+        "barrier": barrier,
+        "time": now_time(),
+        "duration": duration,
+        "duration_unit": duration_unit,
+        "auto_mode": trade_plan.get("mode") or "BASE",
+        "auto_mode_label": trade_plan.get("mode_label") or mutant_auto_mode_label(auto),
+        "auto_budget": float(auto.get("budget", stake) or stake),
+        "auto_barrier": barrier,
+        "auto_selected_side": chosen_side,
+        "auto_step_index": int(step_index or 0),
+        "auto_current_stake": float(stake),
+        "auto_next_loss_stake": float(auto.get("active_next_loss_stake") or trade_plan.get("next_loss_stake") or 0.0),
+        "auto_stop_on_win": bool(trade_plan.get("stop_on_win")),
+        "auto_stop_on_loss": bool(trade_plan.get("stop_on_loss")),
+    }
+    state.setdefault("contract_meta", {})[contract_id] = meta
+    return meta
+
+
+def _resume_restored_mutant_auto(client_id, state, *, force=False):
+    if not isinstance(state, dict):
+        return False
+    ntt = _ensure_ntt_state(state)
+    auto = ensure_mutant_auto_state(ntt)
+    if not bool(auto.get("enabled")):
+        state["mutant_auto_restore_pending"] = False
+        return False
+    if not state.get("ws_connected") or not state.get("ws"):
+        return False
+
+    pending_contract_id = str(auto.get("pending_contract_id") or "").strip()
+    if pending_contract_id:
+        meta = _rebuild_mutant_auto_contract_meta_from_state(state)
+        try:
+            state["ws"].send(json.dumps({
+                "proposal_open_contract": 1,
+                "contract_id": pending_contract_id,
+                "subscribe": 1,
+            }))
+        except Exception as exc:
+            logger.warning(f"[{client_id}] Mutant AUTO live-contract resume failed: {exc}")
+            return False
+        auto["last_decision"] = "WAITING"
+        symbol = (meta or {}).get("symbol") or state.get("current_symbol") or "the current market"
+        auto["last_reason"] = f"Mutant AUTO restored and is reconnecting to the live trade on {symbol}."
+        state["mutant_auto_restore_pending"] = False
+        return True
+
+    if bool(auto.get("request_in_flight")) and not force:
+        auto["last_decision"] = "WAITING"
+        auto["last_reason"] = "Mutant AUTO restored while a buy confirmation was still pending."
+        return False
+
+    state["mutant_auto_restore_pending"] = False
+    return bool(_run_ntt_auto_both(client_id, state))
 
 
 def emit_jokerjoe_modes(cid, strat: JokerJoeStrategy):
@@ -1777,6 +2005,7 @@ def login():
             session["role"] = role
             session["client_id"] = str(uuid.uuid4())
             init_client(session["client_id"])
+            clients[session["client_id"]]["auth_user"] = str(session.get("user") or "").strip().lower()
 
             if role == "admin":
                 return redirect(url_for("admin_panel"))
@@ -3838,6 +4067,27 @@ def _apply_ntt_settings_update(state, data):
     if "auto_sl" in data:
         ntt["auto_sl"] = bool(data.get("auto_sl"))
     _check_ntt_risk_block(state)
+    if bool(ensure_mutant_auto_state(ntt).get("enabled")) or any(
+        key in data
+        for key in (
+            "touch_stake",
+            "no_touch_stake",
+            "duration",
+            "duration_unit",
+            "touch_duration",
+            "touch_duration_unit",
+            "no_touch_duration",
+            "no_touch_duration_unit",
+            "touch_barrier",
+            "no_touch_barrier",
+        )
+    ):
+        try:
+            cid = get_client_id() if has_request_context() else None
+        except Exception:
+            cid = None
+        if cid:
+            _persist_mutant_auto_runtime_state(cid, state)
     return ntt
 
 
@@ -5049,13 +5299,16 @@ def _run_ntt_auto_both(client_id, state):
     auto = ensure_mutant_auto_state(ntt)
     ntt["auto_both_enabled"] = bool(auto.get("enabled"))
     if not bool(auto.get("enabled")):
+        _persist_mutant_auto_runtime_state(client_id, state)
         return False
     if not state.get("ws_connected") or not state.get("ws"):
         auto["last_reason"] = "Connect API first for Mutant AUTO."
+        _persist_mutant_auto_runtime_state(client_id, state)
         return False
     risk_block = _check_ntt_risk_block(state)
     if risk_block:
         auto["last_reason"] = str(risk_block)
+        _persist_mutant_auto_runtime_state(client_id, state)
         return False
 
     open_entries = _get_open_ntt_active_entries(state)
@@ -5067,6 +5320,7 @@ def _run_ntt_auto_both(client_id, state):
         auto["request_started_at"] = 0.0
         auto["last_decision"] = "WAITING"
         auto["last_reason"] = f"Mutant AUTO waiting for {count} active Mutant trade{'s' if count != 1 else ''} to finish."
+        _persist_mutant_auto_runtime_state(client_id, state)
         return False
 
     pending_contract_id = str(auto.get("pending_contract_id") or "").strip()
@@ -5076,14 +5330,17 @@ def _run_ntt_auto_both(client_id, state):
         if _has_pending_mutant_auto_request_meta(state, auto, now_ts=now_ts):
             auto["last_decision"] = "WAITING"
             auto["last_reason"] = "Mutant AUTO sent a trade and is waiting for Deriv to confirm it."
+            _persist_mutant_auto_runtime_state(client_id, state)
             return False
         if started_at > 0.0 and (now_ts - started_at) >= confirm_timeout:
             clear_mutant_auto_pending(auto)
             auto["last_decision"] = "REARMED"
             auto["last_reason"] = "Mutant AUTO buy confirmation took too long. Re-arming now."
+            _persist_mutant_auto_runtime_state(client_id, state)
         else:
             auto["last_decision"] = "WAITING"
             auto["last_reason"] = "Mutant AUTO sent a trade and is waiting for Deriv to confirm it."
+            _persist_mutant_auto_runtime_state(client_id, state)
             return False
     elif pending_contract_id:
         stale_window = _get_mutant_auto_stale_pending_window(auto, ntt)
@@ -5092,9 +5349,11 @@ def _run_ntt_auto_both(client_id, state):
             clear_mutant_auto_pending(auto)
             auto["last_decision"] = "REARMED"
             auto["last_reason"] = "Mutant AUTO cleared a stale pending trade and is re-arming now."
+            _persist_mutant_auto_runtime_state(client_id, state)
         else:
             auto["last_decision"] = "WAITING"
             auto["last_reason"] = "Mutant AUTO is waiting for the current Mutant trade to settle."
+            _persist_mutant_auto_runtime_state(client_id, state)
             return False
 
     symbol = str(state.get("current_symbol") or "R_25").upper()
@@ -5120,6 +5379,7 @@ def _run_ntt_auto_both(client_id, state):
             f"using {trade_plan.get('mode_label') or mutant_auto_mode_label(auto)} stake {stake:.2f}."
         ),
     )
+    _persist_mutant_auto_runtime_state(client_id, state)
 
     ok, msg = _send_ntt_trade(
         client_id,
@@ -5148,6 +5408,7 @@ def _run_ntt_auto_both(client_id, state):
         clear_mutant_auto_pending(auto)
         auto["last_decision"] = "WAIT"
         auto["last_reason"] = str(msg or "Mutant AUTO could not send the next trade.")
+        _persist_mutant_auto_runtime_state(client_id, state)
         return False
 
     mark_mutant_auto_trade_sent(
@@ -5162,6 +5423,7 @@ def _run_ntt_auto_both(client_id, state):
         ),
     )
     ntt["last_action"] = f"Mutant AUTO sent {chosen_side.replace('_', ' ')} on {symbol}"
+    _persist_mutant_auto_runtime_state(client_id, state)
     return True
 
 
@@ -5754,6 +6016,7 @@ def _toggle_ntt_auto_both(cid, state, data):
         ntt["last_action"] = "Mutant AUTO OFF"
         message = "MUTANT AUTO OFF"
 
+    _persist_mutant_auto_runtime_state(cid, state)
     payload = _ntt_payload_response(state)
     if state.get("active_profile") == "NTT":
         socketio.emit("ntt_status", payload, room=cid)
@@ -12989,6 +13252,14 @@ def handle_on_message(client_id, ws, message, expected_nonce):
 
             # seed HUMAN candles early so chart is ready instantly
             request_human_seed(client_id)
+            try:
+                _resume_restored_mutant_auto(
+                    client_id,
+                    state,
+                    force=bool(state.get("mutant_auto_restore_pending")),
+                )
+            except Exception:
+                pass
 
         if "balance" in data:
             try:
@@ -13138,6 +13409,7 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                             )
                             ntt = _ensure_ntt_state(state)
                             ntt["auto_both_enabled"] = bool(auto.get("enabled"))
+                            _persist_mutant_auto_runtime_state(client_id, state)
                 except Exception:
                     pass
                 duration_val = None
@@ -13568,6 +13840,7 @@ def process_contract(client_id, contract):
                         contract_meta=meta,
                     )
                     ntt["auto_both_enabled"] = bool(ensure_mutant_auto_state(ntt).get("enabled"))
+                    _persist_mutant_auto_runtime_state(client_id, state)
                 except Exception:
                     pass
         elif not is_auto_session_contract:
@@ -14180,6 +14453,7 @@ def change_market():
             pass
 
     socketio.emit("market_change", {"symbol": state["current_symbol"]}, room=cid)
+    _persist_mutant_auto_runtime_state(cid, state)
     payload = _unchain_payload_response(state)
     if state.get("active_profile") == "UNCHAIN":
         socketio.emit("unchain_status", payload, room=cid)

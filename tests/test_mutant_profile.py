@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import server
@@ -1110,3 +1111,90 @@ def test_send_ntt_both_pair_blocks_when_pair_send_already_in_flight(monkeypatch)
     assert placed == []
     assert "already sending" in msg
     assert send_attempts == []
+
+
+def test_mutant_auto_runtime_state_round_trips_through_sqlite_store(tmp_path, monkeypatch):
+    db_path = tmp_path / "mutant-auto-state.sqlite"
+    monkeypatch.setattr(server, "DATABASE_URL", None)
+    monkeypatch.setattr(server, "MUTANT_AUTO_STATE_DB_PATH", str(db_path))
+
+    state = server._build_default_client_state()
+    state["auth_user"] = "mutant-user"
+    state["current_symbol"] = "R_75"
+    ntt = server._ensure_ntt_state(state)
+    ntt["touch_duration"] = 7
+    ntt["touch_duration_unit"] = "t"
+    ntt["no_touch_duration"] = 3
+    ntt["no_touch_duration_unit"] = "m"
+    ntt["touch_barrier"] = "+0.23"
+    ntt["no_touch_barrier"] = "+0.23"
+    arm_mutant_auto(
+        ntt,
+        barrier="+0.23",
+        budget=3.00,
+        selected_side="NO_TOUCH",
+        martingale_enabled=False,
+        step50_enabled=True,
+    )
+    auto = ntt["auto"]
+    auto["progression_step"] = 1
+    auto["current_stake"] = 0.85
+    auto["active_stake"] = 0.85
+    auto["active_side"] = "NO_TOUCH"
+    auto["active_symbol"] = "R_75"
+    auto["pending_contract_id"] = "98765"
+    auto["active_step_index"] = 1
+    auto["active_next_loss_stake"] = 1.35
+
+    assert server._persist_mutant_auto_runtime_state("cid-store", state, force=True) is True
+
+    restored = server._build_default_client_state()
+    restored["auth_user"] = "mutant-user"
+
+    assert server._restore_mutant_auto_runtime_state("cid-store", restored) is True
+    restored_ntt = server._ensure_ntt_state(restored)
+    restored_auto = restored_ntt["auto"]
+
+    assert restored["current_symbol"] == "R_75"
+    assert restored_auto["enabled"] is True
+    assert restored_auto["selected_side"] == "NO_TOUCH"
+    assert restored_auto["current_stake"] == 0.85
+    assert restored_auto["progression_step"] == 1
+    assert restored_auto["pending_contract_id"] == "98765"
+    assert restored_ntt["touch_duration"] == 7
+    assert restored_ntt["no_touch_duration"] == 3
+    assert restored["contract_meta"]["98765"]["mode"] == "MUTANT_AUTO"
+    assert restored["contract_meta"]["98765"]["auto_next_loss_stake"] == 1.35
+
+
+def test_resume_restored_mutant_auto_reconnects_live_contract_subscription():
+    sent = []
+
+    state = server._build_default_client_state()
+    state["auth_user"] = "mutant-user"
+    state["ws_connected"] = True
+    state["ws"] = SimpleNamespace(send=lambda payload: sent.append(json.loads(payload)))
+    state["current_symbol"] = "R_50"
+    ntt = server._ensure_ntt_state(state)
+    arm_mutant_auto(
+        ntt,
+        barrier="+0.17",
+        budget=10.0,
+        selected_side="TOUCH",
+        martingale_enabled=True,
+        step50_enabled=False,
+    )
+    auto = ntt["auto"]
+    auto["pending_contract_id"] = "54321"
+    auto["active_stake"] = 0.70
+    auto["current_stake"] = 0.70
+    auto["active_side"] = "TOUCH"
+    auto["active_symbol"] = "R_50"
+    auto["active_step_index"] = 1
+    auto["active_next_loss_stake"] = 1.40
+    state["mutant_auto_restore_pending"] = True
+
+    assert server._resume_restored_mutant_auto("cid-resume", state, force=True) is True
+    assert sent == [{"proposal_open_contract": 1, "contract_id": "54321", "subscribe": 1}]
+    assert state["contract_meta"]["54321"]["mode"] == "MUTANT_AUTO"
+    assert state["contract_meta"]["54321"]["stake"] == 0.70
