@@ -2743,14 +2743,6 @@
     scheduleHigherLowerPrediction(100);
     renderBarrierMarketChart(un, payload);
     scheduleExpectedProfitPreview(80);
-    try {
-      if (typeof window.syncUnchainPendingTradesFromStatus === "function") {
-        const changed = window.syncUnchainPendingTradesFromStatus(payload);
-        if (changed && isActive() && typeof renderTradeList === "function") {
-          renderTradeList(PROFILE);
-        }
-      }
-    } catch (e) {}
     renderActiveTrades(un);
   }
 
