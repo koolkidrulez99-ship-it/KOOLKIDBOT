@@ -3,7 +3,10 @@
 ## Runtime rule
 - Run the app as a single Gunicorn worker.
 - Current Procfile:
-  - `web: gunicorn -w 1 --threads 8 -b 0.0.0.0:$PORT server:app`
+  - `web: gunicorn -w 1 --threads 8 -b 0.0.0.0:$PORT serverapp:application`
+- Repo files that make deploy more tolerant:
+  - `Procfile`
+  - `serverapp.py`
 
 ## Why single worker matters
 - This bot keeps live trading state in memory.
@@ -16,6 +19,6 @@
 
 ## If deploy behaves differently from local
 1. Confirm the platform is actually using the repo Procfile.
-2. Confirm it is starting `server:app`.
+2. Confirm it is starting `serverapp:application` or `server:app`.
 3. Confirm it is using one worker.
 4. Hard refresh the browser after deploy.
