@@ -1307,7 +1307,7 @@ function bindSocketHandlers(){
         const settled = Object.assign({}, data || {});
         settled.profile = resolveTradeProfile(settled, activeProfile);
         const settledProfile = normalizeProfileName(settled.profile);
-        if(settledProfile === "KOOLKID" || settledProfile === "JOKERJOE" || settledProfile === "UNCHAIN"){
+        if(settledProfile === "KOOLKID" || settledProfile === "JOKERJOE" || settledProfile === "UNCHAIN" || settledProfile === "NTT"){
             const sortTs = resolveTradeSortTimestamp(settled, true);
             if(Number.isFinite(Number(sortTs))) settled._sort_ts = Number(sortTs);
         }
@@ -2222,6 +2222,7 @@ function buildPendingTradeFromNttActive(item, payload){
     const result = (rawStatus.includes("CLOSE REQUESTED") || rawStatus === "CLOSING") ? "CLOSING" : "PENDING";
     const root = payload || {};
     const ntt = (root && root.ntt) || {};
+    const sortTs = resolveTradeSortTimestamp(item, true);
     return {
         profile: "NTT",
         type: item.type || item.side || "TRADE",
@@ -2235,6 +2236,7 @@ function buildPendingTradeFromNttActive(item, payload){
         countdown_remaining: item.countdown_remaining,
         countdown_unit: item.countdown_unit,
         countdown_seconds: item.countdown_seconds,
+        _sort_ts: sortTs,
         open_profit: item.open_profit,
         status: rawStatus || result,
         result,
@@ -3029,7 +3031,7 @@ function renderTradeList(profile){
     filtered
         .slice()
         .sort((a, b)=>{
-            const useSnapshotTs = key === "KOOLKID" || key === "JOKERJOE";
+            const useSnapshotTs = key === "KOOLKID" || key === "JOKERJOE" || key === "NTT";
             if(useSnapshotTs){
                 const tsA = Number((a && a._sort_ts) || 0);
                 const tsB = Number((b && b._sort_ts) || 0);

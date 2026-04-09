@@ -64,6 +64,7 @@ from strategies.mutant_auto import (
     MIN_MUTANT_AUTO_STAKE,
     apply_mutant_auto_settings,
     arm_mutant_auto,
+    begin_mutant_auto_request,
     clear_mutant_auto_pending,
     default_mutant_auto_state,
     ensure_mutant_auto_state,
@@ -5046,6 +5047,17 @@ def _run_ntt_auto_both(client_id, state):
     stake = round(float(mutant_auto_current_stake(auto) or MIN_MUTANT_AUTO_STAKE), 2)
     duration, duration_unit = _get_ntt_side_duration(ntt, chosen_side)
     barrier_value = _format_ntt_barrier(auto.get("barrier", "+0.12"), chosen_side, duration_unit)
+    begin_mutant_auto_request(
+        auto,
+        side=chosen_side,
+        symbol=symbol,
+        stake=stake,
+        started_at=now_ts,
+        reason=(
+            f"Mutant AUTO is sending {chosen_side.replace('_', ' ')} on {symbol} at {barrier_value} "
+            f"using {mutant_auto_mode_label(auto)} stake {stake:.2f}."
+        ),
+    )
 
     ok, msg = _send_ntt_trade(
         client_id,
@@ -5065,6 +5077,7 @@ def _run_ntt_auto_both(client_id, state):
         emit_balance=False,
     )
     if not ok:
+        clear_mutant_auto_pending(auto)
         auto["last_decision"] = "WAIT"
         auto["last_reason"] = str(msg or "Mutant AUTO could not send the next trade.")
         return False

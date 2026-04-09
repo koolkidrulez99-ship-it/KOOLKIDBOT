@@ -848,6 +848,7 @@
     const data = (ntt && ntt.auto_both) || {};
     const btn = el("nttAutoBothBtn");
     if (!btn) return;
+    const quickOffBtn = el("nttAutoQuickOffBtn");
     const enabled = !!data.enabled;
     const label = String(data.label || (enabled ? "ARMED" : "OFF")).toUpperCase();
     btn.innerHTML = `
@@ -857,6 +858,12 @@
     btn.style.background = enabled ? "#0f766e" : "#155e75";
     btn.style.color = "#ecfeff";
     btn.title = String(data.last_reason || "Mutant AUTO is OFF.");
+    if (quickOffBtn) {
+      quickOffBtn.style.display = enabled ? "block" : "none";
+      quickOffBtn.disabled = !enabled;
+      quickOffBtn.style.opacity = enabled ? "1" : "0";
+      quickOffBtn.style.cursor = enabled ? "pointer" : "not-allowed";
+    }
     renderAutoBothPanel(data);
   }
   function syncAutoBothPanelInputs(data, force) {
@@ -1418,7 +1425,8 @@
     toast((data && data.message) || "MUTANT AUTO ON", "success");
     return true;
   }
-  async function stopAutoBoth() {
+  async function stopAutoBoth(options) {
+    const opts = options || {};
     const { ok, data } = await postJSON("/toggle_ntt_auto_both", { enabled: false });
     renderPayload((data && data.payload) || state.lastPayload || {}, { forceForm: true });
     const ntt = ((data && data.payload) || state.lastPayload || {}).ntt || ((data && data.payload) || state.lastPayload || {});
@@ -1426,7 +1434,13 @@
       state.autoBothDraft = Object.assign({}, ntt.auto_both);
       syncAutoBothPanelInputs(ntt.auto_both, true);
     }
-    setAutoBothPanelOpen(true, false);
+    if (opts.keepPanelOpen === false) {
+      if (state.autoPanelOpen) {
+        renderAutoBothPanel((ntt && ntt.auto_both) || {});
+      }
+    } else {
+      setAutoBothPanelOpen(true, false);
+    }
     if (!ok) {
       toast((data && (data.message || data.error)) || "Could not stop Mutant AUTO", "error");
       return false;
@@ -1542,6 +1556,7 @@
     if (key === "ntt-auto-close") return closeAutoBothPanel();
     if (key === "ntt-auto-start") return startAutoBoth();
     if (key === "ntt-auto-stop") return stopAutoBoth();
+    if (key === "ntt-auto-stop-quick") return stopAutoBoth({ keepPanelOpen: false });
     if (key === "ntt-auto-side-touch") return setAutoBothSelectedSide("TOUCH");
     if (key === "ntt-auto-side-no-touch") return setAutoBothSelectedSide("NO_TOUCH");
     if (key === "ntt-trade-touch") return sendTrade("TOUCH");
