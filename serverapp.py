@@ -1,6 +1,6 @@
 from server import app, socketio
 
-# Gunicorn accepts `serverapp` and defaults to `application` when no callable
-# name is given, so keep both names available for deploy compatibility.
+# Flask-SocketIO is attached to the Flask app inside server.py, so Gunicorn
+# should import the Flask application object from this small deploy entrypoint.
+# Keeping both names avoids platform/runtime ambiguity during deploys.
 application = app
-

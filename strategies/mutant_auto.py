@@ -29,6 +29,7 @@ STEP50_LADDER = tuple(
 MUTANT_AUTO_PHASE_IDLE = "IDLE"
 MUTANT_AUTO_PHASE_REQUESTING = "REQUESTING"
 MUTANT_AUTO_PHASE_LIVE = "LIVE"
+MUTANT_AUTO_PHASE_SETTLING = "SETTLING"
 MUTANT_AUTO_PHASE_UNKNOWN = "UNKNOWN"
 
 
@@ -62,6 +63,7 @@ def default_mutant_auto_state():
         "last_trade_result": None,
         "last_trade_contract_id": None,
         "consumed_contract_ids": [],
+        "pending_settlement": None,
     }
 
 
@@ -93,6 +95,7 @@ def _normalize_trade_phase(value):
         MUTANT_AUTO_PHASE_IDLE,
         MUTANT_AUTO_PHASE_REQUESTING,
         MUTANT_AUTO_PHASE_LIVE,
+        MUTANT_AUTO_PHASE_SETTLING,
         MUTANT_AUTO_PHASE_UNKNOWN,
     ):
         return phase
@@ -114,6 +117,20 @@ def _normalize_consumed_contract_ids(value):
         normalized.append(cid)
         seen.add(cid)
     return normalized[-50:]
+
+
+def _normalize_pending_settlement(value):
+    if not isinstance(value, dict):
+        return None
+    return {
+        "ready_at": max(0.0, _safe_float(value.get("ready_at", 0.0), 0.0)),
+        "won": bool(value.get("won", False)),
+        "profit": round(_safe_float(value.get("profit", 0.0), 0.0), 2),
+        "side": str(value.get("side") or "").strip().upper() or None,
+        "contract_id": _normalize_contract_text(value.get("contract_id")),
+        "contract_meta": dict(value.get("contract_meta") or {}) if isinstance(value.get("contract_meta"), dict) else {},
+        "reason": str(value.get("reason") or "").strip() or None,
+    }
 
 
 def mutant_auto_base_stake(auto):
@@ -269,6 +286,7 @@ def _debug_snapshot(auto, **extra):
         "martingale_state_reset": bool(extra.pop("martingale_state_reset", False)),
         "trade_phase": _normalize_trade_phase(safe.get("trade_phase")),
         "consumed_contracts": len(safe.get("consumed_contract_ids") or []),
+        "settle_pending": bool(safe.get("pending_settlement")),
         **extra,
     }
 
@@ -328,6 +346,7 @@ def ensure_mutant_auto_state(ntt):
     auto["last_trade_result"] = str(auto.get("last_trade_result") or "").strip().upper() or None
     auto["last_trade_contract_id"] = str(auto.get("last_trade_contract_id") or "").strip() or None
     auto["consumed_contract_ids"] = _normalize_consumed_contract_ids(auto.get("consumed_contract_ids"))
+    auto["pending_settlement"] = _normalize_pending_settlement(auto.get("pending_settlement"))
     ntt["auto"] = auto
     return auto
 
@@ -512,6 +531,7 @@ def arm_mutant_auto(
     reset_mutant_auto_current_stake(auto)
     auto["last_trade_result"] = None
     auto["last_trade_contract_id"] = None
+    auto["pending_settlement"] = None
     auto["last_started_at"] = max(0.0, _safe_float(started_at, 0.0))
     auto["last_decision"] = "ARMED"
     auto["last_reason"] = str(reason or f"Mutant AUTO armed in {mutant_auto_mode_label(auto)} mode.")
@@ -532,6 +552,7 @@ def stop_mutant_auto(ntt, reason=None):
     auto["active_next_loss_stake"] = 0.0
     auto["last_progress_contract_id"] = None
     reset_mutant_auto_current_stake(auto)
+    auto["pending_settlement"] = None
     auto["last_decision"] = "OFF"
     auto["last_reason"] = str(reason or "Mutant AUTO is OFF.")
     log_mutant_auto_debug("stopped", auto, martingale_state_reset=True)
@@ -549,6 +570,7 @@ def mark_mutant_auto_trade_sent(auto, *, contract_id=None, side=None, symbol=Non
     safe["active_stake"] = round(max(0.0, _safe_float(stake, 0.0)), 2)
     safe["current_stake"] = safe["active_stake"] or mutant_auto_current_stake(safe)
     safe["trade_phase"] = MUTANT_AUTO_PHASE_REQUESTING
+    safe["pending_settlement"] = None
     safe["last_decision"] = "RUNNING"
     if reason is not None:
         safe["last_reason"] = str(reason)
@@ -589,6 +611,7 @@ def begin_mutant_auto_request(auto, *, side=None, symbol=None, stake=None, reaso
     if safe["active_stake"] > 0:
         safe["current_stake"] = safe["active_stake"]
     safe["trade_phase"] = MUTANT_AUTO_PHASE_REQUESTING
+    safe["pending_settlement"] = None
     safe["last_decision"] = "SENDING"
     if reason is not None:
         safe["last_reason"] = str(reason)
@@ -607,9 +630,63 @@ def clear_mutant_auto_pending(auto, *, clear_plan=True):
     safe["active_step_index"] = None
     safe["active_next_loss_stake"] = 0.0
     safe["trade_phase"] = MUTANT_AUTO_PHASE_IDLE
+    safe["pending_settlement"] = None
     if clear_plan:
         safe["active_plan"] = None
     return safe
+
+
+def schedule_mutant_auto_settlement(
+    auto,
+    *,
+    won,
+    profit,
+    side=None,
+    contract_id=None,
+    contract_meta=None,
+    ready_at=0.0,
+    reason=None,
+):
+    safe = ensure_mutant_auto_state({"auto": auto})
+    safe["pending_contract_id"] = None
+    safe["request_in_flight"] = False
+    safe["request_started_at"] = 0.0
+    safe["trade_phase"] = MUTANT_AUTO_PHASE_SETTLING
+    safe["pending_settlement"] = _normalize_pending_settlement(
+        {
+            "ready_at": ready_at,
+            "won": won,
+            "profit": profit,
+            "side": side,
+            "contract_id": contract_id,
+            "contract_meta": contract_meta,
+            "reason": reason,
+        }
+    )
+    safe["last_decision"] = "WAITING"
+    if reason is not None:
+        safe["last_reason"] = str(reason)
+    log_mutant_auto_debug("settlement_waiting", safe)
+    return safe
+
+
+def consume_mutant_auto_scheduled_settlement(ntt, *, now_ts=None):
+    auto = ensure_mutant_auto_state(ntt)
+    pending = _normalize_pending_settlement(auto.get("pending_settlement"))
+    if not pending:
+        return None
+    current_ts = max(0.0, _safe_float(now_ts, 0.0))
+    if current_ts < float(pending.get("ready_at", 0.0) or 0.0):
+        return {"ready": False, "wait": True}
+    auto["pending_settlement"] = None
+    return progress_mutant_auto_after_result(
+        ntt,
+        won=bool(pending.get("won")),
+        profit=_safe_float(pending.get("profit", 0.0), 0.0),
+        side=str(pending.get("side") or "").upper(),
+        contract_id=pending.get("contract_id"),
+        contract_meta=pending.get("contract_meta") or {},
+    )
 
 
 def mutant_auto_has_consumed_contract(auto, contract_id):
@@ -797,6 +874,12 @@ def progress_mutant_auto_after_result(ntt, *, won, profit, side=None, contract_i
     auto["active_plan"] = None
     auto["trade_phase"] = MUTANT_AUTO_PHASE_IDLE
 
+    if not bool(auto.get("enabled")):
+        auto["last_decision"] = "OFF"
+        auto["last_reason"] = str(auto.get("last_reason") or "Mutant AUTO is OFF.")
+        log_mutant_auto_debug("settled_while_disabled", auto, martingale_state_reset=True)
+        return {"continue": False, "stopped": True, "next_stake": 0.0, "duplicate": False}
+
     if mode == "BASE":
         auto["current_stake"] = budget
         auto["progression_step"] = 0
@@ -860,12 +943,13 @@ def serialize_mutant_auto(auto, *, active_count=0):
     enabled = bool(safe.get("enabled"))
     pending_contract_id = str(safe.get("pending_contract_id") or "").strip()
     request_in_flight = bool(safe.get("request_in_flight", False))
+    pending_settlement = _normalize_pending_settlement(safe.get("pending_settlement"))
     mode_label = mutant_auto_mode_label(safe)
     current_stake = mutant_auto_current_stake(safe)
     active_plan = _normalize_active_plan(safe.get("active_plan"))
     if not enabled:
         label = "OFF"
-    elif active_count > 0 or pending_contract_id or request_in_flight:
+    elif active_count > 0 or pending_contract_id or request_in_flight or pending_settlement:
         label = "RUNNING"
     else:
         label = "ARMED"
@@ -883,6 +967,7 @@ def serialize_mutant_auto(auto, *, active_count=0):
         "pending_contract_id": pending_contract_id or None,
         "request_in_flight": request_in_flight,
         "trade_phase": safe.get("trade_phase", MUTANT_AUTO_PHASE_IDLE),
+        "pending_settlement_ready_at": float((pending_settlement or {}).get("ready_at") or 0.0),
         "active_side": safe.get("active_side"),
         "active_symbol": safe.get("active_symbol"),
         "next_loss_stake": round(_safe_float((active_plan or {}).get("next_loss_stake"), mutant_auto_next_loss_stake(safe)), 2),

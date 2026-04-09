@@ -73,6 +73,7 @@ from strategies.mutant_auto import (
     build_mutant_auto_trade_plan,
     clear_mutant_auto_pending,
     confirm_mutant_auto_trade,
+    consume_mutant_auto_scheduled_settlement,
     default_mutant_auto_state,
     ensure_mutant_auto_state,
     log_mutant_auto_debug,
@@ -83,6 +84,7 @@ from strategies.mutant_auto import (
     mutant_auto_mode_label,
     progress_mutant_auto_after_result,
     remember_mutant_auto_consumed_contract,
+    schedule_mutant_auto_settlement,
     serialize_mutant_auto,
     stop_mutant_auto,
 )
@@ -173,15 +175,37 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "Koolkid@12345")
 
 MAX_USERS = int(os.environ.get("MAX_USERS", "1500"))
 
-# NOTE: keep as you had it
+def _is_render_environment():
+    return any(
+        str(os.environ.get(name) or "").strip()
+        for name in (
+            "RENDER",
+            "RENDER_SERVICE_ID",
+            "RENDER_EXTERNAL_HOSTNAME",
+            "RENDER_INSTANCE_ID",
+        )
+    )
+
+
+def _resolve_socketio_async_mode():
+    configured = str(os.environ.get("SOCKETIO_ASYNC_MODE") or "").strip().lower()
+    if configured:
+        return configured
+    return "eventlet" if _is_render_environment() else "threading"
+
+
+SOCKETIO_ASYNC_MODE = _resolve_socketio_async_mode()
+
 socketio = SocketIO(
     app,
     cors_allowed_origins="*",
-    async_mode="threading",
+    async_mode=SOCKETIO_ASYNC_MODE,
     manage_session=False,
     ping_interval=25,
     ping_timeout=3600,
 )
+
+logger.info("Socket.IO async mode resolved to %s", SOCKETIO_ASYNC_MODE)
 
 DERIV_WS = "wss://ws.derivws.com/websockets/v3?app_id=1089"
 
@@ -5554,8 +5578,25 @@ def _run_ntt_auto_both(client_id, state):
             _persist_mutant_auto_runtime_state(client_id, state)
             return False
 
-        open_entries = _get_open_ntt_entries_for_mutant_auto(state)
         now_ts = time.time()
+        pending_settlement = auto.get("pending_settlement") if isinstance(auto.get("pending_settlement"), dict) else None
+        if pending_settlement:
+            ready_at = float(pending_settlement.get("ready_at") or 0.0)
+            if now_ts < ready_at:
+                auto["last_decision"] = "WAITING"
+                auto["trade_phase"] = "SETTLING"
+                auto["last_reason"] = "Mutant AUTO is waiting 2 seconds after the completed trade before deciding win or loss."
+                _persist_mutant_auto_runtime_state(client_id, state)
+                return False
+            settlement_result = consume_mutant_auto_scheduled_settlement(ntt, now_ts=now_ts)
+            ntt["auto_both_enabled"] = bool(ensure_mutant_auto_state(ntt).get("enabled"))
+            _persist_mutant_auto_runtime_state(client_id, state)
+            if isinstance(settlement_result, dict) and settlement_result.get("continue"):
+                auto = ensure_mutant_auto_state(ntt)
+            else:
+                return False
+
+        open_entries = _get_open_ntt_entries_for_mutant_auto(state)
         if open_entries:
             count = len(open_entries)
             auto["pending_contract_id"] = str((open_entries[0] or {}).get("contract_id") or auto.get("pending_contract_id") or "") or None
@@ -14275,13 +14316,15 @@ def process_contract(client_id, contract):
                 try:
                     with _get_mutant_auto_runtime_lock(state):
                         ntt = _ensure_ntt_state(state)
-                        mutant_auto_progress = progress_mutant_auto_after_result(
-                            ntt,
+                        schedule_mutant_auto_settlement(
+                            ntt.get("auto"),
                             won=contract_won,
                             profit=profit,
                             side=str(entry.get("type") or (meta or {}).get("type") or "").upper(),
                             contract_id=contract_id,
                             contract_meta=meta,
+                            ready_at=(time.time() + 2.0),
+                            reason="Mutant AUTO is waiting 2 seconds after the completed trade before deciding win or loss.",
                         )
                         ntt["auto_both_enabled"] = bool(ensure_mutant_auto_state(ntt).get("enabled"))
                         _persist_mutant_auto_runtime_state(client_id, state)
@@ -17671,6 +17714,7 @@ threading.Thread(target=heartbeat_sweeper, daemon=True).start()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
+    debug_mode = str(os.environ.get("FLASK_DEBUG", "0")).strip().lower() in {"1", "true", "yes", "on"}
 
     print("""
 ╔══════════════════════════════════════════════════════════════╗
@@ -17684,4 +17728,10 @@ if __name__ == "__main__":
 ╚══════════════════════════════════════════════════════════════╝
     """)
 
-    socketio.run(app, host="0.0.0.0", port=port, debug=True, allow_unsafe_werkzeug=True)
+    socketio.run(
+        app,
+        host="0.0.0.0",
+        port=port,
+        debug=debug_mode,
+        allow_unsafe_werkzeug=True,
+    )

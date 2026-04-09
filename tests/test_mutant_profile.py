@@ -830,17 +830,22 @@ def test_mutant_auto_martingale_doubles_after_loss_and_stops_after_win():
 
 
 def test_process_contract_rearms_mutant_auto_after_martingale_loss(monkeypatch):
-    reruns = []
-
+    sent = []
+    now_box = {"value": 100.0}
+    monkeypatch.setattr(server.time, "time", lambda: now_box["value"])
     monkeypatch.setattr(server, "send_stats_update", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(server, "_emit_balance_payload", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(server.socketio, "emit", lambda *args, **kwargs: None)
     monkeypatch.setattr(server, "_seqvix_jokerjoe_on_contract_settled", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(server, "handle_auto_session_contract_settled", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(server, "_run_ntt_auto_both", lambda cid, state: reruns.append((cid, state["ntt"]["auto"]["current_stake"])) or True)
+    monkeypatch.setattr(server, "_check_ntt_risk_block", lambda _state: None)
+    monkeypatch.setattr(server, "_persist_mutant_auto_runtime_state", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(server, "_send_ntt_trade", lambda cid, **kwargs: sent.append((cid, kwargs["stake"])) or (True, "Trade sent"))
 
     state = {
         "balance": 100.0,
+        "ws_connected": True,
+        "ws": object(),
         "active_profile": "NTT",
         "current_symbol": "R_25",
         "ntt": server._default_ntt_state(),
@@ -887,22 +892,37 @@ def test_process_contract_rearms_mutant_auto_after_martingale_loss(monkeypatch):
         server.clients.pop("cid-mutant-auto", None)
 
     assert state["ntt"]["auto"]["enabled"] is True
+    assert state["ntt"]["auto"]["pending_settlement"] is not None
+    assert sent == []
+
+    now_box["value"] = 101.0
+    assert server._run_ntt_auto_both("cid-mutant-auto", state) is False
+    assert sent == []
+
+    now_box["value"] = 102.1
+    assert server._run_ntt_auto_both("cid-mutant-auto", state) is True
+    assert state["ntt"]["auto"]["enabled"] is True
     assert state["ntt"]["auto"]["current_stake"] == 0.70
-    assert reruns == [("cid-mutant-auto", 0.70)]
+    assert sent == [("cid-mutant-auto", 0.70)]
 
 
 def test_process_contract_rearms_mutant_auto_after_step50_loss_using_frozen_meta(monkeypatch):
-    reruns = []
-
+    sent = []
+    now_box = {"value": 100.0}
+    monkeypatch.setattr(server.time, "time", lambda: now_box["value"])
     monkeypatch.setattr(server, "send_stats_update", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(server, "_emit_balance_payload", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(server.socketio, "emit", lambda *args, **kwargs: None)
     monkeypatch.setattr(server, "_seqvix_jokerjoe_on_contract_settled", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(server, "handle_auto_session_contract_settled", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(server, "_run_ntt_auto_both", lambda cid, state: reruns.append((cid, state["ntt"]["auto"]["current_stake"])) or True)
+    monkeypatch.setattr(server, "_check_ntt_risk_block", lambda _state: None)
+    monkeypatch.setattr(server, "_persist_mutant_auto_runtime_state", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(server, "_send_ntt_trade", lambda cid, **kwargs: sent.append((cid, kwargs["stake"])) or (True, "Trade sent"))
 
     state = {
         "balance": 100.0,
+        "ws_connected": True,
+        "ws": object(),
         "active_profile": "NTT",
         "current_symbol": "R_25",
         "ntt": server._default_ntt_state(),
@@ -955,21 +975,35 @@ def test_process_contract_rearms_mutant_auto_after_step50_loss_using_frozen_meta
     finally:
         server.clients.pop("cid-mutant-auto-step50", None)
 
-    assert reruns == [("cid-mutant-auto-step50", 1.35)]
+    assert state["ntt"]["auto"]["pending_settlement"] is not None
+    assert sent == []
+
+    now_box["value"] = 101.0
+    assert server._run_ntt_auto_both("cid-mutant-auto-step50", state) is False
+    assert sent == []
+
+    now_box["value"] = 102.1
+    assert server._run_ntt_auto_both("cid-mutant-auto-step50", state) is True
+    assert sent == [("cid-mutant-auto-step50", 1.35)]
 
 
 def test_process_contract_stops_mutant_auto_after_win_even_if_profit_field_is_zero(monkeypatch):
-    reruns = []
-
+    sent = []
+    now_box = {"value": 100.0}
+    monkeypatch.setattr(server.time, "time", lambda: now_box["value"])
     monkeypatch.setattr(server, "send_stats_update", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(server, "_emit_balance_payload", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(server.socketio, "emit", lambda *args, **kwargs: None)
     monkeypatch.setattr(server, "_seqvix_jokerjoe_on_contract_settled", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(server, "handle_auto_session_contract_settled", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(server, "_run_ntt_auto_both", lambda cid, state: reruns.append((cid, state["ntt"]["auto"]["current_stake"])) or True)
+    monkeypatch.setattr(server, "_check_ntt_risk_block", lambda _state: None)
+    monkeypatch.setattr(server, "_persist_mutant_auto_runtime_state", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(server, "_send_ntt_trade", lambda cid, **kwargs: sent.append((cid, kwargs["stake"])) or (True, "Trade sent"))
 
     state = {
         "balance": 100.0,
+        "ws_connected": True,
+        "ws": object(),
         "active_profile": "NTT",
         "current_symbol": "R_25",
         "ntt": server._default_ntt_state(),
@@ -1016,9 +1050,20 @@ def test_process_contract_stops_mutant_auto_after_win_even_if_profit_field_is_ze
     finally:
         server.clients.pop("cid-mutant-auto-win", None)
 
+    assert state["ntt"]["auto"]["enabled"] is True
+    assert state["ntt"]["auto"]["pending_settlement"] is not None
+    assert sent == []
+
+    now_box["value"] = 101.0
+    assert server._run_ntt_auto_both("cid-mutant-auto-win", state) is False
+    assert state["ntt"]["auto"]["enabled"] is True
+    assert sent == []
+
+    now_box["value"] = 102.1
+    assert server._run_ntt_auto_both("cid-mutant-auto-win", state) is False
     assert state["ntt"]["auto"]["enabled"] is False
     assert state["ntt"]["auto"]["last_trade_result"] == "WIN"
-    assert reruns == []
+    assert sent == []
 
 
 def test_mutant_auto_countdown_settles_after_two_seconds_and_stops_on_win(monkeypatch):
@@ -1305,6 +1350,46 @@ def test_stop_mutant_auto_resets_progression_back_to_base_stake():
 
     assert ntt["auto"]["enabled"] is False
     assert ntt["auto"]["current_stake"] == 0.35
+
+
+def test_mutant_auto_does_not_rearm_after_manual_stop_when_late_loss_arrives():
+    ntt = {"auto": default_mutant_auto_state()}
+    arm_mutant_auto(ntt, barrier="+0.12", budget=10.0, martingale_enabled=True, step50_enabled=False)
+    auto = ntt["auto"]
+    auto["active_stake"] = 0.35
+    auto["active_side"] = "TOUCH"
+    auto["active_plan"] = {
+        "mode": "MARTINGALE",
+        "mode_label": "MARTINGALE",
+        "step_index": 0,
+        "current_stake": 0.35,
+        "next_loss_stake": 0.70,
+        "budget": 10.0,
+        "stop_on_win": True,
+        "stop_on_loss": False,
+        "selected_side": "TOUCH",
+        "symbol": "R_25",
+        "barrier": "+0.12",
+        "contract_id": "late-stop-1",
+        "request_started_at": 0.0,
+    }
+
+    stop_mutant_auto(ntt, "Stopped by user.")
+    result = progress_mutant_auto_after_result(
+        ntt,
+        won=False,
+        profit=-0.35,
+        side="TOUCH",
+        contract_id="late-stop-1",
+        contract_meta={"auto_mode": "MARTINGALE", "auto_step_index": 0, "auto_current_stake": 0.35, "auto_next_loss_stake": 0.70},
+    )
+
+    assert result["continue"] is False
+    assert result["stopped"] is True
+    assert ntt["auto"]["enabled"] is False
+    assert ntt["auto"]["current_stake"] == 0.35
+    assert ntt["auto"]["last_trade_result"] == "LOSS"
+    assert ntt["auto"]["last_decision"] == "OFF"
 
 
 def test_send_ntt_both_pair_blocks_when_pair_send_already_in_flight(monkeypatch):
@@ -1712,17 +1797,22 @@ def test_handle_on_message_buy_recovers_missing_mutant_auto_req_id(monkeypatch):
 
 
 def test_process_contract_recovers_missing_mutant_auto_meta_and_rearms(monkeypatch):
-    reruns = []
+    sent = []
+    now_box = {"value": 100.0}
+    monkeypatch.setattr(server.time, "time", lambda: now_box["value"])
     monkeypatch.setattr(server.socketio, "emit", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(server, "send_stats_update", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(server, "_emit_balance_payload", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(server, "_persist_mutant_auto_runtime_state", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(server, "_run_ntt_auto_both", lambda cid, _state: reruns.append((cid, _state["ntt"]["auto"]["current_stake"])) or True)
+    monkeypatch.setattr(server, "_check_ntt_risk_block", lambda _state: None)
+    monkeypatch.setattr(server, "_send_ntt_trade", lambda cid, **kwargs: sent.append((cid, kwargs["stake"])) or (True, "Trade sent"))
 
     state = server._build_default_client_state()
     state["active_profile"] = "NTT"
     state["balance"] = 100.0
     state["last_live_balance"] = 100.0
+    state["ws_connected"] = True
+    state["ws"] = object()
     state["strategies"]["NTT"] = SimpleNamespace(
         risk_block_reason=None,
         on_contract=lambda contract, balance: None,
@@ -1783,7 +1873,14 @@ def test_process_contract_recovers_missing_mutant_auto_meta_and_rearms(monkeypat
     finally:
         server.clients.pop("cid-mutant-settle-recover", None)
 
-    assert reruns == [("cid-mutant-settle-recover", 0.85)]
+    assert state["ntt"]["auto"]["pending_settlement"] is not None
+    assert sent == []
+    now_box["value"] = 101.0
+    assert server._run_ntt_auto_both("cid-mutant-settle-recover", state) is False
+    assert sent == []
+    now_box["value"] = 102.1
+    assert server._run_ntt_auto_both("cid-mutant-settle-recover", state) is True
+    assert sent == [("cid-mutant-settle-recover", 0.85)]
     assert state["ntt"]["auto"]["enabled"] is True
     assert state["ntt"]["auto"]["current_stake"] == 0.85
 
