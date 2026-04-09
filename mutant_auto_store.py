@@ -1,10 +1,12 @@
 import json
+import logging
 import os
 import sqlite3
 import threading
 from datetime import datetime
 
 from auth_storage import find_existing_sqlite_auth_db, normalize_database_url
+from storage_fallback import connect_postgres_with_timeout, open_sqlite_with_fallback
 
 try:
     import psycopg2
@@ -14,6 +16,8 @@ except Exception:
 
 _TABLE_READY = set()
 _LOCK = threading.Lock()
+_POSTGRES_DISABLED = {}
+logger = logging.getLogger(__name__)
 
 
 def _normalize_sqlite_path(path):
@@ -28,33 +32,59 @@ def _normalize_sqlite_path(path):
 
 def _backend_key(*, database_url=None, sqlite_path=None):
     db_url = normalize_database_url(database_url)
-    if db_url:
+    if db_url and db_url not in _POSTGRES_DISABLED:
         return f"postgres:{db_url}"
     return f"sqlite:{os.path.abspath(_normalize_sqlite_path(sqlite_path))}"
 
 
-def _connect(*, database_url=None, sqlite_path=None, row_factory=False):
+def _log_postgres_fallback(db_url, exc):
+    reason = str(exc or "unknown error").strip() or "unknown error"
+    previous = _POSTGRES_DISABLED.get(db_url)
+    if previous == reason:
+        return
+    _POSTGRES_DISABLED[db_url] = reason
+    logger.warning("Mutant AUTO storage falling back to SQLite because Postgres is unavailable: %s", reason)
+
+
+def _resolve_backend(*, database_url=None, sqlite_path=None, row_factory=False):
     db_url = normalize_database_url(database_url)
-    if db_url:
+    if db_url and db_url not in _POSTGRES_DISABLED:
         if psycopg2 is None:
-            raise RuntimeError("psycopg2 is required for Mutant AUTO Postgres storage.")
-        return psycopg2.connect(db_url)
-    db_path = _normalize_sqlite_path(sqlite_path)
-    conn = sqlite3.connect(db_path)
-    if row_factory:
-        conn.row_factory = sqlite3.Row
-    return conn
+            _log_postgres_fallback(db_url, RuntimeError("psycopg2 is not installed."))
+        else:
+            try:
+                conn = connect_postgres_with_timeout(psycopg2, db_url, connect_timeout=3)
+                return {
+                    "kind": "postgres",
+                    "key": f"postgres:{db_url}",
+                    "connection": conn,
+                }
+            except Exception as exc:
+                _log_postgres_fallback(db_url, exc)
+    sqlite_info = open_sqlite_with_fallback(
+        preferred_path=_normalize_sqlite_path(sqlite_path),
+        default_name=_normalize_sqlite_path(sqlite_path),
+        row_factory=row_factory,
+        memory_namespace="mutant-auto-store",
+    )
+    return {
+        "kind": "sqlite",
+        "key": f"{sqlite_info['storage']}:{sqlite_info['target']}",
+        "connection": sqlite_info["connection"],
+    }
 
 
 def _ensure_tables(*, database_url=None, sqlite_path=None):
-    key = _backend_key(database_url=database_url, sqlite_path=sqlite_path)
     with _LOCK:
+        backend = _resolve_backend(database_url=database_url, sqlite_path=sqlite_path)
+        key = backend["key"]
         if key in _TABLE_READY:
+            backend["connection"].close()
             return
-        conn = _connect(database_url=database_url, sqlite_path=sqlite_path)
+        conn = backend["connection"]
         try:
             cur = conn.cursor()
-            if normalize_database_url(database_url):
+            if backend["kind"] == "postgres":
                 cur.execute(
                     """
                     CREATE TABLE IF NOT EXISTS mutant_auto_states (
@@ -89,10 +119,11 @@ def save_mutant_auto_runtime(client_id, payload, *, username="", database_url=No
     _ensure_tables(database_url=database_url, sqlite_path=sqlite_path)
     serialized = json.dumps(payload, separators=(",", ":"), sort_keys=True)
     updated_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    conn = _connect(database_url=database_url, sqlite_path=sqlite_path)
+    backend = _resolve_backend(database_url=database_url, sqlite_path=sqlite_path)
+    conn = backend["connection"]
     try:
         cur = conn.cursor()
-        if normalize_database_url(database_url):
+        if backend["kind"] == "postgres":
             cur.execute(
                 """
                 INSERT INTO mutant_auto_states (client_id, username, payload, updated_at)
@@ -127,10 +158,11 @@ def load_mutant_auto_runtime(client_id, *, database_url=None, sqlite_path=None):
     if not safe_client_id:
         return None
     _ensure_tables(database_url=database_url, sqlite_path=sqlite_path)
-    conn = _connect(database_url=database_url, sqlite_path=sqlite_path, row_factory=True)
+    backend = _resolve_backend(database_url=database_url, sqlite_path=sqlite_path, row_factory=True)
+    conn = backend["connection"]
     try:
         cur = conn.cursor()
-        if normalize_database_url(database_url):
+        if backend["kind"] == "postgres":
             cur.execute(
                 "SELECT client_id, username, payload, updated_at FROM mutant_auto_states WHERE client_id=%s",
                 (safe_client_id,),
@@ -163,10 +195,11 @@ def clear_mutant_auto_runtime(client_id, *, database_url=None, sqlite_path=None)
     if not safe_client_id:
         return False
     _ensure_tables(database_url=database_url, sqlite_path=sqlite_path)
-    conn = _connect(database_url=database_url, sqlite_path=sqlite_path)
+    backend = _resolve_backend(database_url=database_url, sqlite_path=sqlite_path)
+    conn = backend["connection"]
     try:
         cur = conn.cursor()
-        if normalize_database_url(database_url):
+        if backend["kind"] == "postgres":
             cur.execute("DELETE FROM mutant_auto_states WHERE client_id=%s", (safe_client_id,))
         else:
             cur.execute("DELETE FROM mutant_auto_states WHERE client_id=?", (safe_client_id,))

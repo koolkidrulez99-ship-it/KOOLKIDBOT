@@ -63,6 +63,7 @@ from trade_runtime_store import (
     load_trade_runtime,
     save_trade_runtime,
 )
+from storage_fallback import connect_postgres_with_timeout, open_sqlite_with_fallback
 from ws_recovery import build_post_authorize_requests
 
 # STRATEGIES
@@ -282,8 +283,34 @@ except Exception:
     psycopg2 = None
 
 DB_BACKEND = "postgres" if DATABASE_URL else "sqlite"
-if DB_BACKEND == "postgres" and psycopg2 is None:
-    raise RuntimeError("DATABASE_URL is set but psycopg2 is not installed. Add psycopg2-binary to requirements.txt")
+AUTH_SQLITE_TARGET = DB_FILE
+AUTH_SQLITE_STORAGE = "sqlite"
+
+
+def _activate_sqlite_auth_fallback(reason):
+    global DB_BACKEND
+    safe_reason = str(reason or "unknown error").strip() or "unknown error"
+    if DB_BACKEND != "sqlite":
+        logger.warning("Primary database unavailable; falling back to SQLite storage: %s", safe_reason)
+    DB_BACKEND = "sqlite"
+
+
+def _resolve_auth_backend():
+    if not DATABASE_URL:
+        return "sqlite"
+    if psycopg2 is None:
+        _activate_sqlite_auth_fallback("psycopg2 is not installed")
+        return "sqlite"
+    try:
+        conn = connect_postgres_with_timeout(psycopg2, DATABASE_URL, connect_timeout=3)
+        conn.close()
+        return "postgres"
+    except Exception as exc:
+        _activate_sqlite_auth_fallback(exc)
+        return "sqlite"
+
+
+DB_BACKEND = _resolve_auth_backend()
 
 # ==========================
 # MULTI-CLIENT STATE
@@ -315,12 +342,28 @@ def _db_is_postgres():
 
 
 def _db_connect(row_factory=False):
+    global AUTH_SQLITE_TARGET, AUTH_SQLITE_STORAGE
     if _db_is_postgres():
-        return psycopg2.connect(DATABASE_URL)
-    conn = sqlite3.connect(DB_FILE)
-    if row_factory:
-        conn.row_factory = sqlite3.Row
-    return conn
+        try:
+            return connect_postgres_with_timeout(psycopg2, DATABASE_URL, connect_timeout=3)
+        except Exception as exc:
+            _activate_sqlite_auth_fallback(exc)
+    sqlite_info = open_sqlite_with_fallback(
+        preferred_path=AUTH_SQLITE_TARGET or DB_FILE,
+        default_name=DB_FILE,
+        row_factory=row_factory,
+        memory_namespace="auth-storage",
+    )
+    AUTH_SQLITE_TARGET = sqlite_info["target"]
+    AUTH_SQLITE_STORAGE = sqlite_info["storage"]
+    if sqlite_info["errors"]:
+        last_target, last_exc = sqlite_info["errors"][-1]
+        logger.warning(
+            "SQLite auth storage fallback activated after database open failure on %s: %s",
+            last_target,
+            last_exc,
+        )
+    return sqlite_info["connection"]
 
 
 def _db_execute(cursor, sql, params=()):
@@ -1101,7 +1144,7 @@ if _db_is_postgres():
     logger.info("🗄️ Storage mode: postgres (Render persistent)")
     _maybe_migrate_sqlite_users_to_postgres()
 else:
-    logger.info(f"🗄️ Storage mode: sqlite fallback ({DB_FILE})")
+    logger.info(f"🗄️ Storage mode: {AUTH_SQLITE_STORAGE} fallback ({AUTH_SQLITE_TARGET})")
 ensure_admin_user()
 
 
