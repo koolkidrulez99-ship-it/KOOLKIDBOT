@@ -4830,6 +4830,7 @@ def _send_ntt_trade(
         "duration_unit": unit,
         "deriv_contract_type": contract_type,
         "budget_reservation": budget_reservation,
+        "request_started_at": time.time(),
     }
     if mode is not None:
         req_meta["mode"] = str(mode)
@@ -5016,6 +5017,32 @@ def _get_mutant_auto_stale_pending_window(auto, ntt):
     return None
 
 
+def _has_pending_mutant_auto_request_meta(state, auto, *, now_ts=None):
+    req_meta = (state or {}).get("req_meta") or {}
+    if not isinstance(req_meta, dict) or not req_meta:
+        return False
+    now_value = float(now_ts if now_ts is not None else time.time())
+    selected_side = str((auto or {}).get("selected_side") or (auto or {}).get("active_side") or "").strip().upper()
+    for meta in req_meta.values():
+        if not isinstance(meta, dict):
+            continue
+        if str(meta.get("profile") or "").upper().strip() != "NTT":
+            continue
+        if not str(meta.get("mode") or "").upper().strip().startswith("MUTANT_AUTO"):
+            continue
+        meta_side = str(meta.get("type") or meta.get("auto_selected_side") or "").strip().upper()
+        if selected_side and meta_side and meta_side != selected_side:
+            continue
+        try:
+            started_at = float(meta.get("request_started_at") or 0.0)
+        except Exception:
+            started_at = 0.0
+        if started_at > 0.0 and (now_value - started_at) > 20.0:
+            continue
+        return True
+    return False
+
+
 def _run_ntt_auto_both(client_id, state):
     ntt = _ensure_ntt_state(state)
     auto = ensure_mutant_auto_state(ntt)
@@ -5044,7 +5071,12 @@ def _run_ntt_auto_both(client_id, state):
     pending_contract_id = str(auto.get("pending_contract_id") or "").strip()
     if bool(auto.get("request_in_flight")):
         started_at = float(auto.get("request_started_at", 0.0) or 0.0)
-        if started_at > 0.0 and (now_ts - started_at) >= 3.0:
+        confirm_timeout = max(8.0, float(_get_mutant_auto_stale_pending_window(auto, ntt) or 0.0))
+        if _has_pending_mutant_auto_request_meta(state, auto, now_ts=now_ts):
+            auto["last_decision"] = "WAITING"
+            auto["last_reason"] = "Mutant AUTO sent a trade and is waiting for Deriv to confirm it."
+            return False
+        if started_at > 0.0 and (now_ts - started_at) >= confirm_timeout:
             clear_mutant_auto_pending(auto)
             auto["last_decision"] = "REARMED"
             auto["last_reason"] = "Mutant AUTO buy confirmation took too long. Re-arming now."
@@ -13473,6 +13505,7 @@ def process_contract(client_id, contract):
         return
 
     try:
+        mutant_auto_progress = None
         if not _is_contract_settled_fast(contract):
             return
 
@@ -13511,11 +13544,12 @@ def process_contract(client_id, contract):
             if str((meta or {}).get("mode") or "").startswith("MUTANT_AUTO"):
                 try:
                     ntt = _ensure_ntt_state(state)
-                    progress_mutant_auto_after_result(
+                    mutant_auto_progress = progress_mutant_auto_after_result(
                         ntt,
                         won=profit > 0,
                         profit=profit,
                         side=str(entry.get("type") or (meta or {}).get("type") or "").upper(),
+                        contract_id=contract_id,
                     )
                     ntt["auto_both_enabled"] = bool(ensure_mutant_auto_state(ntt).get("enabled"))
                 except Exception:
@@ -13586,7 +13620,8 @@ def process_contract(client_id, contract):
             _run_unchain_auto_both(client_id, state)
             _run_unchain_directional_auto_trade(client_id, state)
         elif profile_for_contract == "NTT" and str((meta or {}).get("mode") or "").startswith("MUTANT_AUTO"):
-            _run_ntt_auto_both(client_id, state)
+            if not (isinstance(mutant_auto_progress, dict) and mutant_auto_progress.get("duplicate")):
+                _run_ntt_auto_both(client_id, state)
         if state.get("active_profile") == "UNCHAIN":
             socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
         if state.get("active_profile") == "NTT":

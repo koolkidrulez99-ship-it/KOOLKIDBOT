@@ -18,6 +18,7 @@ def default_mutant_auto_state():
         "active_side": None,
         "active_symbol": None,
         "active_stake": 0.0,
+        "last_progress_contract_id": None,
         "last_reason": "Mutant AUTO is OFF.",
         "last_decision": "OFF",
         "last_score": 0.0,
@@ -79,6 +80,7 @@ def ensure_mutant_auto_state(ntt):
     auto["request_started_at"] = max(0.0, _safe_float(auto.get("request_started_at", 0.0), 0.0))
     auto["active_side"] = str(auto.get("active_side") or "").strip().upper() or None
     auto["active_symbol"] = str(auto.get("active_symbol") or "").strip().upper() or None
+    auto["last_progress_contract_id"] = str(auto.get("last_progress_contract_id") or "").strip() or None
     auto["last_reason"] = str(auto.get("last_reason") or "Mutant AUTO is OFF.")
     auto["last_decision"] = str(auto.get("last_decision") or "OFF").strip().upper() or "OFF"
     auto["last_score"] = round(_safe_float(auto.get("last_score", 0.0), 0.0), 1)
@@ -183,6 +185,7 @@ def arm_mutant_auto(
     auto["active_side"] = None
     auto["active_symbol"] = None
     auto["active_stake"] = 0.0
+    auto["last_progress_contract_id"] = None
     reset_mutant_auto_current_stake(auto)
     auto["last_started_at"] = max(0.0, _safe_float(started_at, 0.0))
     auto["last_decision"] = "ARMED"
@@ -199,6 +202,7 @@ def stop_mutant_auto(ntt, reason=None):
     auto["active_side"] = None
     auto["active_symbol"] = None
     auto["active_stake"] = 0.0
+    auto["last_progress_contract_id"] = None
     reset_mutant_auto_current_stake(auto)
     auto["last_decision"] = "OFF"
     auto["last_reason"] = str(reason or "Mutant AUTO is OFF.")
@@ -250,8 +254,18 @@ def clear_mutant_auto_pending(auto):
     return safe
 
 
-def progress_mutant_auto_after_result(ntt, *, won, profit, side=None):
+def progress_mutant_auto_after_result(ntt, *, won, profit, side=None, contract_id=None):
     auto = ensure_mutant_auto_state(ntt)
+    safe_contract_id = str(contract_id or "").strip() or None
+    if safe_contract_id and safe_contract_id == str(auto.get("last_progress_contract_id") or "").strip():
+        return {
+            "continue": bool(auto.get("enabled")),
+            "stopped": False,
+            "next_stake": round(mutant_auto_current_stake(auto), 2),
+            "duplicate": True,
+        }
+    if safe_contract_id:
+        auto["last_progress_contract_id"] = safe_contract_id
     mode = mutant_auto_mode(auto)
     active_stake = round(max(MIN_MUTANT_AUTO_STAKE, _safe_float(auto.get("active_stake", auto.get("current_stake", MIN_MUTANT_AUTO_STAKE)), MIN_MUTANT_AUTO_STAKE)), 2)
     budget = round(max(MIN_MUTANT_AUTO_STAKE, _safe_float(auto.get("budget", MIN_MUTANT_AUTO_STAKE), MIN_MUTANT_AUTO_STAKE)), 2)
@@ -263,13 +277,13 @@ def progress_mutant_auto_after_result(ntt, *, won, profit, side=None):
         if won:
             auto["last_decision"] = "CONTINUE"
             auto["last_reason"] = f"Base mode won on {safe_side}. AUTO keeps running at {budget:.2f}."
-            return {"continue": True, "stopped": False, "next_stake": budget}
+            return {"continue": True, "stopped": False, "next_stake": budget, "duplicate": False}
         stop_mutant_auto(ntt, f"Base mode stopped after a loss on {safe_side}.")
-        return {"continue": False, "stopped": True, "next_stake": 0.0}
+        return {"continue": False, "stopped": True, "next_stake": 0.0, "duplicate": False}
 
     if won:
         stop_mutant_auto(ntt, f"{mutant_auto_mode_label(auto)} stopped after a win on {safe_side}.")
-        return {"continue": False, "stopped": True, "next_stake": 0.0}
+        return {"continue": False, "stopped": True, "next_stake": 0.0, "duplicate": False}
 
     current_step = max(0, int(auto.get("progression_step", 0) or 0))
     next_step = current_step + 1
@@ -283,7 +297,7 @@ def progress_mutant_auto_after_result(ntt, *, won, profit, side=None):
             ntt,
             f"{mutant_auto_mode_label(auto)} stopped because next stake {next_stake:.2f} would exceed the {budget:.2f} budget.",
         )
-        return {"continue": False, "stopped": True, "next_stake": 0.0}
+        return {"continue": False, "stopped": True, "next_stake": 0.0, "duplicate": False}
 
     auto["enabled"] = True
     auto["progression_step"] = next_step
@@ -293,7 +307,7 @@ def progress_mutant_auto_after_result(ntt, *, won, profit, side=None):
         f"{mutant_auto_mode_label(auto)} lost on {safe_side}. Next stake is {next_stake:.2f} "
         f"within the {budget:.2f} budget."
     )
-    return {"continue": True, "stopped": False, "next_stake": next_stake}
+    return {"continue": True, "stopped": False, "next_stake": next_stake, "duplicate": False}
 
 
 def serialize_mutant_auto(auto, *, active_count=0):

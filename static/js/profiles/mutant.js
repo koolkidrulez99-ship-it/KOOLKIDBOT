@@ -1401,8 +1401,15 @@
   async function startAutoBoth() {
     const config = readAutoBothForm();
     state.autoBothDraft = Object.assign({}, state.autoBothDraft || {}, config);
-    const saved = await saveSettings(false);
-    if (!saved) return false;
+    const currentNtt = state.lastPayload && (state.lastPayload.ntt || state.lastPayload);
+    renderAutoBothPanel(Object.assign({}, (currentNtt && currentNtt.auto_both) || {}, config, {
+      enabled: true,
+      label: "ARMING",
+      mode_label: config.martingale_enabled ? "MARTINGALE" : (config.step50_enabled ? "50 CENTS MARTINGALE" : "BASE"),
+      current_stake: config.martingale_enabled || config.step50_enabled ? 0.35 : config.budget,
+      last_decision: "ARMING",
+      last_reason: "Starting Mutant AUTO...",
+    }));
     const { ok, data } = await postJSON("/toggle_ntt_auto_both", {
       enabled: true,
       barrier: config.barrier,

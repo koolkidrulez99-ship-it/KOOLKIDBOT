@@ -29,6 +29,30 @@ body{
     padding:20px;
 }
 
+.app-version-badge{
+    display:inline-flex;
+    align-items:center;
+    gap:8px;
+    padding:8px 12px;
+    border-radius:999px;
+    border:1px solid rgba(56,189,248,0.35);
+    background:rgba(15,23,42,0.9);
+    color:#cbd5e1;
+    font-size:12px;
+    font-weight:800;
+    letter-spacing:0.08em;
+    text-transform:uppercase;
+    box-shadow:0 0 0 1px rgba(56,189,248,0.08) inset;
+}
+
+.app-version-badge .label{
+    color:#67e8f9;
+}
+
+.app-version-badge .value{
+    color:#f8fafc;
+}
+
 h1{
     text-align:center;
     color:#38bdf8;
@@ -898,7 +922,13 @@ body.mobile-only-ui #profileContainer .unchain-history-grid{
 
 <div class="container">
     <h1>KOOLKID AI TRADING ENGINE</h1>
-    <a href="/logout" style="color:#ef4444; font-weight:bold;">Logout</a>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+        <a href="/logout" style="color:#ef4444; font-weight:bold;">Logout</a>
+        <div class="app-version-badge" title="Current dashboard asset version">
+            <span class="label">App Build</span>
+            <span class="value">{{ asset_version }}</span>
+        </div>
+    </div>
     <button id="koolkidAutoTradeLaunchBtn" class="koolkid-auto-trade-launch" type="button" onclick="openKoolkidAutoTradePlaceholder()">
         KOOLKID AUTO TRADE
     </button>
