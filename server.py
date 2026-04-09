@@ -1193,6 +1193,74 @@ def get_client_id():
     return cid
 
 
+def _normalize_client_id_hint(raw_client_id):
+    text = str(raw_client_id or "").strip()
+    return text or ""
+
+
+def _client_id_matches_user(client_id, username):
+    safe_client_id = _normalize_client_id_hint(client_id)
+    safe_username = str(username or "").strip().lower()
+    if not safe_client_id or not safe_username:
+        return False
+    live_state = clients.get(safe_client_id)
+    if isinstance(live_state, dict):
+        live_username = _sync_client_identity_for_state(live_state) or str(live_state.get("auth_user") or "").strip().lower()
+        if live_username == safe_username:
+            return True
+    try:
+        payload = load_trade_runtime(
+            safe_client_id,
+            database_url=DATABASE_URL,
+            sqlite_path=TRADE_RUNTIME_STATE_DB_PATH,
+        )
+    except Exception:
+        payload = None
+    if isinstance(payload, dict):
+        stored_username = str(payload.get("_stored_username") or payload.get("username") or "").strip().lower()
+        if stored_username == safe_username:
+            return True
+    return False
+
+
+def _client_id_is_unclaimed(client_id):
+    safe_client_id = _normalize_client_id_hint(client_id)
+    if not safe_client_id:
+        return False
+    live_state = clients.get(safe_client_id)
+    if isinstance(live_state, dict):
+        live_username = _sync_client_identity_for_state(live_state) or str(live_state.get("auth_user") or "").strip().lower()
+        if live_username:
+            return False
+    try:
+        payload = load_trade_runtime(
+            safe_client_id,
+            database_url=DATABASE_URL,
+            sqlite_path=TRADE_RUNTIME_STATE_DB_PATH,
+        )
+    except Exception:
+        payload = None
+    if isinstance(payload, dict):
+        stored_username = str(payload.get("_stored_username") or payload.get("username") or "").strip().lower()
+        if stored_username:
+            return False
+    return True
+
+
+def _resolve_login_client_id(username, hinted_client_id=""):
+    safe_username = str(username or "").strip().lower()
+    session_client_id = _normalize_client_id_hint(session.get("client_id"))
+    hinted = _normalize_client_id_hint(hinted_client_id)
+    for candidate in (session_client_id, hinted):
+        if candidate and _client_id_matches_user(candidate, safe_username):
+            return candidate
+    if session_client_id and _client_id_is_unclaimed(session_client_id):
+        return session_client_id
+    if hinted and _client_id_is_unclaimed(hinted):
+        return hinted
+    return str(uuid.uuid4())
+
+
 def _new_req_id():
     return int(uuid.uuid4().int % 1000000000)
 
@@ -1201,6 +1269,59 @@ def _touch_client(client_id):
     st = clients.get(client_id)
     if st:
         st["last_seen"] = time.time()
+
+
+def _frontend_socket_sid_set(state):
+    if not isinstance(state, dict):
+        return set()
+    raw = state.get("frontend_socket_sids")
+    if isinstance(raw, set):
+        return raw
+    if isinstance(raw, (list, tuple)):
+        raw = set(str(item or "").strip() for item in raw if str(item or "").strip())
+    else:
+        raw = set()
+    state["frontend_socket_sids"] = raw
+    return raw
+
+
+def _has_frontend_socket_connection(state):
+    return bool(isinstance(state, dict) and _frontend_socket_sid_set(state))
+
+
+def _mark_frontend_socket_connected(client_id, state, sid):
+    if not isinstance(state, dict):
+        return False
+    sid_text = str(sid or "").strip()
+    if not sid_text:
+        return False
+    sids = _frontend_socket_sid_set(state)
+    sids.add(sid_text)
+    state["frontend_socket_connected"] = True
+    state["frontend_last_connected_at"] = time.time()
+    state["frontend_last_disconnect_reason"] = ""
+    _log_runtime_debug("frontend_socket_connected", client_id, sid=sid_text, active_sockets=len(sids))
+    return True
+
+
+def _mark_frontend_socket_disconnected(client_id, state, sid, *, reason="socketio_disconnect"):
+    if not isinstance(state, dict):
+        return False
+    sid_text = str(sid or "").strip()
+    sids = _frontend_socket_sid_set(state)
+    if sid_text:
+        sids.discard(sid_text)
+    state["frontend_socket_connected"] = bool(sids)
+    state["frontend_last_disconnected_at"] = time.time()
+    state["frontend_last_disconnect_reason"] = str(reason or "socketio_disconnect")
+    _log_runtime_debug(
+        "frontend_socket_disconnected",
+        client_id,
+        sid=sid_text,
+        reason=reason,
+        active_sockets=len(sids),
+    )
+    return True
 
 
 def _hard_stop_all_strategies(state):
@@ -1442,6 +1563,11 @@ def _build_default_client_state():
         "ws_authorize_deadline_at": 0.0,
         "ws_stale_notified_at": 0.0,
         "ws_manual_disconnect": False,
+        "frontend_socket_connected": False,
+        "frontend_socket_sids": set(),
+        "frontend_last_connected_at": 0.0,
+        "frontend_last_disconnected_at": 0.0,
+        "frontend_last_disconnect_reason": "",
         "active_profile": "KOOLKID",
         # Keep backend default market in sync with the frontend selector default.
         "current_symbol": "R_10",
@@ -1621,7 +1747,7 @@ def disconnect_client(client_id, reason="manual", emit=True):
     if emit:
         socketio.emit(
             "connection_status",
-            {"connected": False, "loginid": "UNKNOWN", **_build_balance_payload(reset_state)},
+            {"connected": False, "loginid": "UNKNOWN", "client_id": client_id, **_build_balance_payload(reset_state)},
             room=client_id,
         )
         socketio.emit("reset_ui", room=client_id)
@@ -2083,6 +2209,15 @@ def _emit_trade_placed_from_execution(client_id, state, contract_id, meta):
             countdown_seconds = int(duration_val) * 60
         elif duration_unit_val == "h":
             countdown_seconds = int(duration_val) * 3600
+    if not _has_frontend_socket_connection(state):
+        _log_runtime_debug(
+            "backend_trade_placed_while_frontend_disconnected",
+            client_id,
+            contract_id=contract_id,
+            profile=safe_meta.get("profile"),
+            symbol=safe_meta.get("symbol"),
+            type=safe_meta.get("type"),
+        )
     socketio.emit("trade_placed", {
         "profile": safe_meta.get("profile"),
         "type": safe_meta.get("type"),
@@ -2447,6 +2582,13 @@ def emit_profile_snapshot(cid):
     except Exception:
         pass
 
+    # Mutant status snapshot
+    try:
+        if prof == "NTT":
+            socketio.emit("ntt_status", _ntt_payload_response(state), room=cid)
+    except Exception:
+        pass
+
     # human chart + rise/fall status
     try:
         if prof == "HUMAN" and strat and hasattr(strat, "get_chart_data"):
@@ -2637,10 +2779,13 @@ def login():
                 return render_template("login.html", error=reason)
 
             role = str((user_row or {}).get("role") or "user").lower()
-            session["user"] = str((user_row or {}).get("username") or username)
+            session_user = str((user_row or {}).get("username") or username)
+            hinted_client_id = request.form.get("client_id_hint", "")
+            session["user"] = session_user
             session["role"] = role
-            session["client_id"] = str(uuid.uuid4())
-            init_client(session["client_id"])
+            session["client_id"] = _resolve_login_client_id(session_user, hinted_client_id)
+            if session["client_id"] not in clients:
+                init_client(session["client_id"])
             clients[session["client_id"]]["auth_user"] = str(session.get("user") or "").strip().lower()
 
             if role == "admin":
@@ -2866,6 +3011,10 @@ def handle_connect(auth=None):
 
     cid, state = get_client_state()
     join_room(cid)
+    try:
+        _mark_frontend_socket_connected(cid, state, getattr(request, "sid", ""))
+    except Exception:
+        pass
     connected = bool(state["ws_connected"]) and not _is_ws_stale(state)
     if not connected and state.get("ws_connected"):
         _mark_ws_unhealthy_and_reconnect(cid, state, "Deriv connection went stale. Reconnecting now...", emit_error=False)
@@ -2873,10 +3022,22 @@ def handle_connect(auth=None):
     socketio.emit("connection_status", {
         "connected": connected,
         "loginid": state.get("loginid", "UNKNOWN"),
+        "client_id": cid,
         **_build_balance_payload(state),
     }, room=cid)
 
     emit_profile_snapshot(cid)
+
+
+@socketio.on("disconnect")
+def handle_socketio_disconnect():
+    if not login_required():
+        return
+    cid, state = get_client_state()
+    try:
+        _mark_frontend_socket_disconnected(cid, state, getattr(request, "sid", ""), reason="socketio_disconnect")
+    except Exception:
+        pass
 
 
 @socketio.on("client_heartbeat")
@@ -4314,7 +4475,7 @@ def _mark_ws_unhealthy_and_reconnect(client_id, state, message, *, emit_error=Tr
     state["loginid"] = "UNKNOWN"
     socketio.emit(
         "connection_status",
-        {"connected": False, "loginid": "UNKNOWN", **_build_balance_payload(state)},
+        {"connected": False, "loginid": "UNKNOWN", "client_id": client_id, **_build_balance_payload(state)},
         room=client_id,
     )
     if emit_error:
@@ -14234,6 +14395,7 @@ def handle_on_message(client_id, ws, message, expected_nonce):
             socketio.emit("connection_status", {
                 "connected": True,
                 "loginid": loginid,
+                "client_id": client_id,
                 **_build_balance_payload(state),
             }, room=client_id)
 
@@ -14960,6 +15122,14 @@ def process_contract(client_id, contract):
             except Exception:
                 pass
             if mark_trade_result_emitted(state, contract_id=contract_id):
+                if not _has_frontend_socket_connection(state):
+                    _log_runtime_debug(
+                        "backend_trade_result_while_frontend_disconnected",
+                        client_id,
+                        contract_id=contract_id,
+                        profile=profile_for_contract,
+                        result=(entry or {}).get("result"),
+                    )
                 socketio.emit("trade_result", entry, room=client_id)
         if profile_for_contract != "UNCHAIN" or is_auto_session_contract:
             _mark_regular_contract_processed(state, contract_id)
@@ -15138,6 +15308,7 @@ def handle_on_close(client_id, ws, code, msg, expected_nonce):
     socketio.emit("connection_status", {
         "connected": False,
         "loginid": "UNKNOWN",
+        "client_id": client_id,
         **_build_balance_payload(state),
     }, room=client_id)
     if not state.get("ws_stop_event") or not state["ws_stop_event"].is_set():
@@ -15277,6 +15448,7 @@ def api_connection_status():
         "connected": connected,
         "loginid": state.get("loginid", "UNKNOWN"),
         "has_token": has_token,
+        "client_id": _cid,
         **_build_balance_payload(state),
     })
 

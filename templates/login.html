@@ -125,8 +125,9 @@
   <div class="card">
     <h2>🔐 Login</h2>
 
-    <form method="POST">
+    <form method="POST" id="loginForm">
       <input type="text" name="username" placeholder="Username" required />
+      <input type="hidden" id="clientIdHint" name="client_id_hint" value="" />
       <div class="password-wrap">
         <input type="password" id="loginPassword" name="password" placeholder="Password" required />
         <button type="button" class="toggle-eye" aria-label="Show password" title="Show/Hide password" onclick="togglePassword()"> 👀</button>
@@ -151,11 +152,19 @@
   </div>
 
   <script>
+    const LOGIN_CLIENT_ID_STORAGE_KEY = "bot_last_client_id";
     function togglePassword(){
       const input = document.getElementById('loginPassword');
       if (!input) return;
       input.type = input.type === 'password' ? 'text' : 'password';
     }
+    (function attachClientHint(){
+      try{
+        const hint = String(localStorage.getItem(LOGIN_CLIENT_ID_STORAGE_KEY) || "").trim();
+        const hidden = document.getElementById('clientIdHint');
+        if (hidden && hint) hidden.value = hint;
+      }catch(_err){}
+    })();
   </script>
 </body>
 </html>

@@ -1127,6 +1127,121 @@ function buildMutantConstructionMarkup(){
 /* ===================== SOCKET.IO (BULLETPROOF INIT) ===================== */
 let socket = null;
 
+function logFrontendSession(event, details){
+    try{
+        console.info("[BOT_UI_SYNC]", event, details || {});
+    }catch(_err){}
+}
+
+function rememberFrontendClientId(clientId, reason){
+    const nextId = String(clientId || "").trim();
+    if(!nextId) return;
+    const prevId = String(frontendClientId || "").trim();
+    frontendClientId = nextId;
+    try{ localStorage.setItem(CLIENT_ID_STORAGE_KEY, nextId); }catch(_err){}
+    logFrontendSession("client_id_updated", { reason: reason || "", previous: prevId || null, current: nextId });
+}
+
+async function syncFrontendClientId(reason){
+    const syncReason = String(reason || "sync").trim() || "sync";
+    try{
+        const res = await fetch("/heartbeat", { method:"POST", cache:"no-store" });
+        if(!res.ok) return null;
+        const data = await res.json();
+        const nextId = String((data && data.client_id) || "").trim();
+        if(nextId){
+            rememberFrontendClientId(nextId, syncReason);
+            return nextId;
+        }
+    }catch(_err){}
+    return null;
+}
+
+function startFrontendHeartbeatLoop(){
+    if(frontendHeartbeatTimer){
+        clearInterval(frontendHeartbeatTimer);
+        frontendHeartbeatTimer = null;
+    }
+    frontendHeartbeatTimer = setInterval(()=>{
+        if(document.visibilityState === "hidden") return;
+        syncFrontendClientId("heartbeat_timer").catch(()=>{});
+        try{
+            if(socket && socket.connected){
+                socket.emit("client_heartbeat");
+            }
+        }catch(_err){}
+    }, 15000);
+}
+
+function notePageReloadReason(reason){
+    const safeReason = String(reason || "").trim();
+    if(!safeReason) return;
+    try{ sessionStorage.setItem(PAGE_RELOAD_REASON_KEY, safeReason); }catch(_err){}
+    logFrontendSession("page_reload_trigger", { reason: safeReason, client_id_before_reload: frontendClientId || null });
+}
+
+function consumePageReloadReason(){
+    try{
+        const reason = String(sessionStorage.getItem(PAGE_RELOAD_REASON_KEY) || "").trim();
+        if(reason){
+            sessionStorage.removeItem(PAGE_RELOAD_REASON_KEY);
+            logFrontendSession("page_reload_resumed", {
+                reason,
+                client_id_after_reload: String(localStorage.getItem(CLIENT_ID_STORAGE_KEY) || frontendClientId || "").trim() || null,
+            });
+        }
+    }catch(_err){}
+}
+
+async function restoreFrontendSession(reason){
+    const restoreReason = String(reason || "restore").trim() || "restore";
+    const nowTs = Date.now();
+    if(restoreSessionPromise) return restoreSessionPromise;
+    if((nowTs - Number(lastSessionRestoreAt || 0)) < 600){
+        return Promise.resolve(false);
+    }
+    lastSessionRestoreAt = nowTs;
+    restoreSessionPromise = (async ()=>{
+        logFrontendSession("active_trade_restore_start", {
+            reason: restoreReason,
+            profile: activeProfile,
+            client_id_before: frontendClientId || null,
+        });
+        await syncFrontendClientId(`restore:${restoreReason}`);
+        try{ await refreshApiConnectionState(true); }catch(_err){}
+        try{ await syncTradeHistorySnapshot(); }catch(_err){}
+        try{ await runProfileModuleHook(activeProfile, "onActivate", { profile: activeProfile, reconnect: true, restoreReason }); }catch(_err){}
+        if(normalizeProfileName(activeProfile) === "NTT"){
+            try{
+                const res = await fetch("/ntt_status", { method:"GET", cache:"no-store" });
+                if(res.ok){
+                    const payload = await res.json();
+                    const changed = syncNttPendingTradesFromStatus(payload || {});
+                    if(changed) renderTradeList("NTT");
+                }
+            }catch(_err){}
+        }else if(normalizeProfileName(activeProfile) === "UNCHAIN"){
+            try{
+                const res = await fetch("/unchain_status", { method:"GET", cache:"no-store" });
+                if(res.ok){
+                    const payload = await res.json();
+                    const changed = syncUnchainPendingTradesFromStatus(payload || {});
+                    if(changed) renderTradeList("UNCHAIN");
+                }
+            }catch(_err){}
+        }
+        logFrontendSession("active_trade_restore_end", {
+            reason: restoreReason,
+            profile: activeProfile,
+            client_id_after: frontendClientId || null,
+        });
+        return true;
+    })().finally(()=>{
+        restoreSessionPromise = null;
+    });
+    return restoreSessionPromise;
+}
+
 function initSocket(){
     if (socket) return;
 
@@ -1148,16 +1263,11 @@ function initSocket(){
         pingTimeout: 3600000,
     });
 
-    // ==================== PATCH D: beforeunload with humanKeepAlive check ====================
     window.addEventListener("beforeunload", () => {
-        if (humanKeepAlive) return;
-        try{
-            if(sessionStorage.getItem("skipDisconnectOnce") === "1"){
-                sessionStorage.removeItem("skipDisconnectOnce");
-                return;
-            }
-        }catch(_err){}
-        fetch("/disconnect", { method: "POST", keepalive: true });
+        logFrontendSession("page_unload", {
+            reason: "browser_beforeunload",
+            client_id_before_reload: frontendClientId || null,
+        });
     });
     bindSocketHandlers();
 }
@@ -1166,28 +1276,51 @@ function bindSocketHandlers(){
     if (!socket) return;
 
     socket.on("connect", ()=> {
-        // optional: showToast("🔌 Socket Connected", "success");
+        logFrontendSession("frontend_socket_connected", {
+            transport: socket.io && socket.io.engine && socket.io.engine.transport ? socket.io.engine.transport.name : "",
+            client_id: frontendClientId || null,
+        });
+        syncFrontendClientId("socket_connect").catch(()=>{});
+    });
+
+    socket.on("disconnect", (reason)=> {
+        logFrontendSession("frontend_socket_disconnected", {
+            reason: reason || "unknown",
+            client_id: frontendClientId || null,
+        });
     });
 
     socket.on("connect_error", (err)=> {
         console.error("Socket connect_error:", err);
-        showToast("Socket connect error (see console).", "error");
+        logFrontendSession("frontend_socket_connect_error", {
+            reason: (err && err.message) ? err.message : String(err || "unknown"),
+            client_id: frontendClientId || null,
+        });
     });
 
     socket.on("connection_status", (data)=>{
         const wasConnected = !!apiConnected;
         const connected = applyApiConnectionState(data || {});
+        rememberFrontendClientId((data && data.client_id) || frontendClientId, "connection_status");
         applyKnownApiBalance(data || {}, true);
 
         if(connected && !wasConnected){
             showToast("✅ API AUTHORIZED", "success");
+            restoreFrontendSession("connection_status_connected").catch(()=>{});
         }
-        if(connected){
-            syncTradeHistorySnapshot().catch(()=>{});
+        if(!connected && wasConnected){
+            logFrontendSession("frontend_api_disconnected", {
+                reason: "connection_status_false",
+                client_id: frontendClientId || null,
+            });
         }
     });
 
     socket.on("reset_ui", ()=>{
+        logFrontendSession("reset_ui_received", {
+            active_profile: activeProfile,
+            client_id: frontendClientId || null,
+        });
         clearBotTransientState();
         try{ renderTradeList(activeProfile); }catch(e){}
     });
@@ -1216,6 +1349,30 @@ function bindSocketHandlers(){
             console.warn("Suppressed api_error toast:", message);
         }
     });
+
+    try{
+        if(socket.io && typeof socket.io.on === "function"){
+            socket.io.on("reconnect_attempt", (attempt)=>{
+                logFrontendSession("frontend_socket_reconnect_attempt", {
+                    attempt: Number(attempt || 0),
+                    client_id: frontendClientId || null,
+                });
+            });
+            socket.io.on("reconnect", (attempt)=>{
+                logFrontendSession("frontend_socket_reconnect", {
+                    attempt: Number(attempt || 0),
+                    client_id: frontendClientId || null,
+                });
+                restoreFrontendSession("socket_reconnect").catch(()=>{});
+            });
+            socket.io.on("reconnect_error", (err)=>{
+                logFrontendSession("frontend_socket_reconnect_error", {
+                    reason: (err && err.message) ? err.message : String(err || "unknown"),
+                    client_id: frontendClientId || null,
+                });
+            });
+        }
+    }catch(_err){}
 
     socket.on("auto_mode_update", (modes)=>{
         updateAutoModeButtons(modes || {});
@@ -1324,8 +1481,23 @@ function bindSocketHandlers(){
     });
 
     socket.on("trade_placed", (data)=>{
+        if(!data || typeof data !== "object"){
+            logFrontendSession("trade_event_ignored", {
+                event: "trade_placed",
+                reason: "invalid_payload",
+                client_id: frontendClientId || null,
+            });
+            return;
+        }
         const placed = Object.assign({}, data || {});
         placed.profile = resolveTradeProfile(placed, activeProfile);
+        logFrontendSession("trade_event_received", {
+            event: "trade_placed",
+            profile: placed.profile,
+            contract_id: normalizeContractId(placed.contract_id ?? placed.contractId),
+            active_profile: activeProfile,
+            client_id: frontendClientId || null,
+        });
         onTradePlacedForToast(placed);
         upsertTradeInStore(buildPendingTradeFromPlacement(placed));
         schedulePendingTradeRescue(placed.profile, placed.contract_id ?? placed.contractId, 1);
@@ -1335,8 +1507,23 @@ function bindSocketHandlers(){
     });
 
     socket.on("trade_result", (data)=>{
+        if(!data || typeof data !== "object"){
+            logFrontendSession("trade_event_ignored", {
+                event: "trade_result",
+                reason: "invalid_payload",
+                client_id: frontendClientId || null,
+            });
+            return;
+        }
         const settled = Object.assign({}, data || {});
         settled.profile = resolveTradeProfile(settled, activeProfile);
+        logFrontendSession("trade_event_received", {
+            event: "trade_result",
+            profile: settled.profile,
+            contract_id: normalizeContractId(settled.contract_id ?? settled.contractId),
+            active_profile: activeProfile,
+            client_id: frontendClientId || null,
+        });
         const settledProfile = normalizeProfileName(settled.profile);
         if(settledProfile === "KOOLKID" || settledProfile === "JOKERJOE" || settledProfile === "UNCHAIN" || settledProfile === "NTT"){
             const sortTs = resolveTradeSortTimestamp(settled, true);
@@ -1512,6 +1699,8 @@ const pendingTradeRescueTimers = {};
 let tradeStoreSequence = 0;
 const PROFILE_DRAFTS_STORAGE_KEY = "bot_profile_drafts_v1";
 const HALF_AUTO_STAKES_STORAGE_KEY_KOOLKID = "koolkid_half_auto_stakes_v1";
+const CLIENT_ID_STORAGE_KEY = "bot_last_client_id";
+const PAGE_RELOAD_REASON_KEY = "bot_page_reload_reason";
 const fastBuyQueueByProfile = {};
 const profileTurboState = {};
 let profileDrafts = {};
@@ -1522,6 +1711,10 @@ let sessionStartBalanceForMilestone = null;
 let lastKnownBalanceForMilestone = null;
 let shownBalanceMilestones = {};
 let halfAutoStakeDraftKoolkid = null;
+let frontendClientId = "";
+let frontendHeartbeatTimer = null;
+let restoreSessionPromise = null;
+let lastSessionRestoreAt = 0;
 
 function clearBotTransientState(){
     try{ localStorage.removeItem(PROFILE_DRAFTS_STORAGE_KEY); }catch(e){}
@@ -1894,6 +2087,7 @@ async function refreshApiConnectionState(silent){
     try{
         const res = await fetch("/api_connection_status", {method:"GET", cache:"no-store"});
         const data = await res.json();
+        rememberFrontendClientId((data && data.client_id) || frontendClientId, "api_connection_status");
         return applyApiConnectionState(data || {});
     }catch(e){
         if(!silent) showToast("Failed to refresh API connection state", "error");
@@ -4750,6 +4944,7 @@ async function connect(){
         return;
     }
     apiConnectPendingUntil = Date.now() + 15000;
+    logFrontendSession("api_connect_requested", { client_id: frontendClientId || null });
     updateApiConnectionUi("pending", "CONNECTING API...");
     apiStatus.innerText = "Connecting...";
     apiStatus.className = "blue";
@@ -4770,6 +4965,7 @@ async function connect(){
 async function disconnect(){
     apiConnectPendingUntil = 0;
     stopApiConnectPolling();
+    notePageReloadReason("manual_disconnect");
     await fetch("/disconnect", {method:"POST"});
     clearBotTransientState();
 
@@ -5876,7 +6072,22 @@ window.addEventListener("orientationchange", syncMobileOnlyLayout);
 syncMobileOnlyLayout();
 
 /* ✅ STARTUP */
+consumePageReloadReason();
+try{
+    const rememberedClientId = String(localStorage.getItem(CLIENT_ID_STORAGE_KEY) || "").trim();
+    if(rememberedClientId){
+        rememberFrontendClientId(rememberedClientId, "startup_storage");
+    }
+}catch(_err){}
 initSocket();
+startFrontendHeartbeatLoop();
+(async ()=>{ try{ await syncFrontendClientId("startup"); }catch(_err){} })();
+document.addEventListener("visibilitychange", ()=>{
+    if(document.visibilityState === "visible"){
+        syncFrontendClientId("visibilitychange").catch(()=>{});
+        restoreFrontendSession("visibility_visible").catch(()=>{});
+    }
+});
 (async () => {
     try{ await refreshApiConnectionState(true); }catch(e){}
     try{ await ensureProfileModuleScript("KOOLKID"); }catch(e){}

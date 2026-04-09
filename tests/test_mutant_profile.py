@@ -34,6 +34,28 @@ def test_format_ntt_barrier_rounds_to_two_decimals():
     assert _format_ntt_barrier("-8.136", "NO_TOUCH", "t") == "-8.14"
 
 
+def test_emit_profile_snapshot_pushes_ntt_status(monkeypatch):
+    cid = "ntt-snapshot-client"
+    emitted = []
+    state = server._build_default_client_state()
+    state["active_profile"] = "NTT"
+    state["strategies"]["NTT"] = SimpleNamespace(
+        get_ui_payload=lambda: {"profile": "NTT"},
+        get_stats_payload=lambda balance, start: {"wins": 0, "losses": 0, "net_pnl": 0.0},
+        get_bias_payload=lambda config=None: {"touch_pct": 50.0, "no_touch_pct": 50.0},
+        last_price=100.0,
+    )
+    server.clients[cid] = state
+    monkeypatch.setattr(server.socketio, "emit", lambda event, payload=None, room=None: emitted.append((event, payload, room)))
+
+    server.emit_profile_snapshot(cid)
+
+    event_names = [event for event, _payload, room in emitted if room == cid]
+    assert "ntt_status" in event_names
+
+    server.clients.pop(cid, None)
+
+
 def test_build_ntt_expected_profit_preview_uses_best_pair_payout(monkeypatch):
     def fake_quote(state, *, side, stake, symbol, barrier, duration, duration_unit="t", timeout_sec=1.6):
         if side == "TOUCH":
