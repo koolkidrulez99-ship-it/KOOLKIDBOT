@@ -177,6 +177,31 @@ DERIV_WS = "wss://ws.derivws.com/websockets/v3?app_id=1089"
 # DATABASE FILE (SQLite fallback for laptop/local testing)
 DB_FILE = (os.environ.get("SQLITE_DB_PATH") or "users.db").strip() or "users.db"
 
+
+def _compute_static_asset_version():
+    env_version = str(os.environ.get("APP_ASSET_VERSION") or "").strip()
+    if env_version:
+        return env_version
+    candidates = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "server.py"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates", "index.html"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "js", "app.js"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "js", "profiles", "mutant.js"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "js", "profiles", "koolkid.js"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "js", "profiles", "jokerjoe.js"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "js", "profiles", "unchain.js"),
+    ]
+    latest_mtime = 0
+    for path in candidates:
+        try:
+            latest_mtime = max(latest_mtime, int(os.path.getmtime(path)))
+        except Exception:
+            continue
+    return str(latest_mtime or int(time.time()))
+
+
+STATIC_ASSET_VERSION = _compute_static_asset_version()
+
 # Render / production Postgres (persistent users across deploys/restarts)
 DATABASE_URL = normalize_database_url(os.environ.get("DATABASE_URL"))
 
@@ -2184,6 +2209,7 @@ def index():
         "index.html",
         username=session.get("user"),
         mutant_access=_mutant_access_state(),
+        asset_version=STATIC_ASSET_VERSION,
     )
 
 

@@ -1062,6 +1062,7 @@ body.mobile-only-ui #profileContainer .unchain-history-grid{
 </div>
 
 <script>
+window.ASSET_VERSION = {{ (asset_version or "")|tojson }};
 window.MUTANT_ACCESS = {{ (mutant_access or {})|tojson }};
 
 function isMutantAvailable(){
@@ -3242,25 +3243,33 @@ window.registerProfileModule = window.registerProfileModule || registerProfileMo
 const __phase2ScriptLoaded = window.__phase2ScriptLoaded || (window.__phase2ScriptLoaded = {});
 let __phase2AppLoaded = !!window.__phase2AppLoaded;
 
+function getPhase2ScriptUrl(path){
+    const rawPath = String(path || "");
+    const version = String(window.ASSET_VERSION || "").trim();
+    if(!rawPath || !version) return rawPath;
+    return rawPath.includes("?") ? `${rawPath}&v=${encodeURIComponent(version)}` : `${rawPath}?v=${encodeURIComponent(version)}`;
+}
+
 function loadScriptOncePhase2(src){
     return new Promise((resolve) => {
         try{
             if(!src){ resolve(false); return; }
-            if(__phase2ScriptLoaded[src]){ resolve(true); return; }
+            const resolvedSrc = getPhase2ScriptUrl(src);
+            if(__phase2ScriptLoaded[resolvedSrc]){ resolve(true); return; }
 
-            const existing = document.querySelector(`script[data-phase2-src="${src}"]`);
+            const existing = document.querySelector(`script[data-phase2-src="${resolvedSrc}"]`);
             if(existing){
-                __phase2ScriptLoaded[src] = true;
+                __phase2ScriptLoaded[resolvedSrc] = true;
                 resolve(true);
                 return;
             }
 
             const s = document.createElement("script");
-            s.src = src;
+            s.src = resolvedSrc;
             s.async = false;
             s.defer = true;
-            s.dataset.phase2Src = src;
-            s.onload = () => { __phase2ScriptLoaded[src] = true; resolve(true); };
+            s.dataset.phase2Src = resolvedSrc;
+            s.onload = () => { __phase2ScriptLoaded[resolvedSrc] = true; resolve(true); };
             s.onerror = () => { resolve(false); }; // fail-safe for empty/missing files
             document.head.appendChild(s);
         }catch(e){
