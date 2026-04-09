@@ -1,5 +1,35 @@
+import json
+import logging
+
+
+logger = logging.getLogger(__name__)
+
 MIN_MUTANT_AUTO_STAKE = 0.35
 STEP50_INCREMENT = 0.50
+MAX_MUTANT_AUTO_LADDER_STAKE = 2000.0
+MARTINGALE_LADDER = (
+    0.35,
+    0.70,
+    1.40,
+    2.80,
+    5.60,
+    11.20,
+    22.40,
+    44.80,
+    89.60,
+    179.20,
+    358.40,
+    716.80,
+    1433.60,
+)
+STEP50_LADDER = tuple(
+    round(MIN_MUTANT_AUTO_STAKE + (STEP50_INCREMENT * idx), 2)
+    for idx in range(int((MAX_MUTANT_AUTO_LADDER_STAKE - MIN_MUTANT_AUTO_STAKE) / STEP50_INCREMENT) + 1)
+)
+MUTANT_AUTO_PHASE_IDLE = "IDLE"
+MUTANT_AUTO_PHASE_REQUESTING = "REQUESTING"
+MUTANT_AUTO_PHASE_LIVE = "LIVE"
+MUTANT_AUTO_PHASE_UNKNOWN = "UNKNOWN"
 
 
 def default_mutant_auto_state():
@@ -27,6 +57,11 @@ def default_mutant_auto_state():
         "last_touch_pct": 0.0,
         "last_no_touch_pct": 0.0,
         "last_started_at": 0.0,
+        "trade_phase": MUTANT_AUTO_PHASE_IDLE,
+        "active_plan": None,
+        "last_trade_result": None,
+        "last_trade_contract_id": None,
+        "consumed_contract_ids": [],
     }
 
 
@@ -50,6 +85,199 @@ def _normalize_barrier_text(value, fallback="+0.12"):
         except Exception:
             numeric = 0.12
     return f"{numeric:+.2f}"
+
+
+def _normalize_trade_phase(value):
+    phase = str(value or MUTANT_AUTO_PHASE_IDLE).strip().upper()
+    if phase in (
+        MUTANT_AUTO_PHASE_IDLE,
+        MUTANT_AUTO_PHASE_REQUESTING,
+        MUTANT_AUTO_PHASE_LIVE,
+        MUTANT_AUTO_PHASE_UNKNOWN,
+    ):
+        return phase
+    return MUTANT_AUTO_PHASE_IDLE
+
+
+def _normalize_contract_text(value):
+    return str(value or "").strip() or None
+
+
+def _normalize_consumed_contract_ids(value):
+    raw_items = list(value or []) if isinstance(value, (list, tuple, set)) else []
+    normalized = []
+    seen = set()
+    for item in raw_items:
+        cid = _normalize_contract_text(item)
+        if not cid or cid in seen:
+            continue
+        normalized.append(cid)
+        seen.add(cid)
+    return normalized[-50:]
+
+
+def mutant_auto_base_stake(auto):
+    safe = ensure_mutant_auto_state({"auto": auto})
+    if mutant_auto_mode(safe) == "BASE":
+        return round(max(MIN_MUTANT_AUTO_STAKE, _safe_float(safe.get("budget", MIN_MUTANT_AUTO_STAKE), MIN_MUTANT_AUTO_STAKE)), 2)
+    return round(MIN_MUTANT_AUTO_STAKE, 2)
+
+
+def _normalize_active_plan(value):
+    if not isinstance(value, dict):
+        return None
+    plan = {
+        "mode": str(value.get("mode") or "BASE").strip().upper() or "BASE",
+        "mode_label": str(value.get("mode_label") or "").strip() or None,
+        "step_index": 0,
+        "current_stake": 0.0,
+        "next_loss_stake": 0.0,
+        "budget": 0.0,
+        "stop_on_win": bool(value.get("stop_on_win", False)),
+        "stop_on_loss": bool(value.get("stop_on_loss", False)),
+        "selected_side": str(value.get("selected_side") or "").strip().upper() or None,
+        "symbol": str(value.get("symbol") or "").strip().upper() or None,
+        "barrier": str(value.get("barrier") or "").strip() or None,
+        "contract_id": str(value.get("contract_id") or "").strip() or None,
+        "request_started_at": max(0.0, _safe_float(value.get("request_started_at", 0.0), 0.0)),
+    }
+    try:
+        plan["step_index"] = max(0, int(value.get("step_index", 0) or 0))
+    except Exception:
+        plan["step_index"] = 0
+    plan["current_stake"] = round(max(0.0, _safe_float(value.get("current_stake", 0.0), 0.0)), 2)
+    plan["next_loss_stake"] = round(max(0.0, _safe_float(value.get("next_loss_stake", 0.0), 0.0)), 2)
+    plan["budget"] = round(max(MIN_MUTANT_AUTO_STAKE, _safe_float(value.get("budget", MIN_MUTANT_AUTO_STAKE), MIN_MUTANT_AUTO_STAKE)), 2)
+    return plan
+
+
+def _build_active_plan(
+    *,
+    mode,
+    mode_label,
+    step_index,
+    current_stake,
+    next_loss_stake,
+    budget,
+    stop_on_win,
+    stop_on_loss,
+    selected_side=None,
+    symbol=None,
+    barrier=None,
+    contract_id=None,
+    request_started_at=0.0,
+):
+    return _normalize_active_plan(
+        {
+            "mode": mode,
+            "mode_label": mode_label,
+            "step_index": step_index,
+            "current_stake": current_stake,
+            "next_loss_stake": next_loss_stake,
+            "budget": budget,
+            "stop_on_win": stop_on_win,
+            "stop_on_loss": stop_on_loss,
+            "selected_side": selected_side,
+            "symbol": symbol,
+            "barrier": barrier,
+            "contract_id": contract_id,
+            "request_started_at": request_started_at,
+        }
+    )
+
+
+def _resolve_active_plan(auto, contract_meta=None):
+    safe = ensure_mutant_auto_state({"auto": auto})
+    trade_plan = build_mutant_auto_trade_plan(safe)
+    plan = _normalize_active_plan(safe.get("active_plan")) or _build_active_plan(
+        mode=trade_plan.get("mode") or mutant_auto_mode(safe),
+        mode_label=trade_plan.get("mode_label") or mutant_auto_mode_label(safe),
+        step_index=trade_plan.get("step_index", safe.get("progression_step", 0) or 0),
+        current_stake=trade_plan.get("current_stake") or mutant_auto_current_stake(safe),
+        next_loss_stake=trade_plan.get("next_loss_stake") or mutant_auto_next_loss_stake(safe),
+        budget=trade_plan.get("budget") or safe.get("budget", MIN_MUTANT_AUTO_STAKE),
+        stop_on_win=trade_plan.get("stop_on_win"),
+        stop_on_loss=trade_plan.get("stop_on_loss"),
+        selected_side=safe.get("active_side") or safe.get("selected_side"),
+        symbol=safe.get("active_symbol"),
+        barrier=safe.get("barrier"),
+        contract_id=safe.get("pending_contract_id"),
+        request_started_at=safe.get("request_started_at", 0.0),
+    )
+    meta = contract_meta if isinstance(contract_meta, dict) else {}
+    if meta:
+        meta_mode = str(meta.get("auto_mode") or plan.get("mode") or "BASE").strip().upper() or "BASE"
+        meta_mode_label = str(meta.get("auto_mode_label") or plan.get("mode_label") or mutant_auto_mode_label(safe)).strip() or None
+        try:
+            meta_step_index = max(0, int(meta.get("auto_step_index", plan.get("step_index", 0)) or 0))
+        except Exception:
+            meta_step_index = max(0, int(plan.get("step_index", 0) or 0))
+        meta_current_stake = round(
+            max(
+                0.0,
+                _safe_float(
+                    meta.get("auto_current_stake"),
+                    plan.get("current_stake", safe.get("active_stake", safe.get("current_stake", MIN_MUTANT_AUTO_STAKE))),
+                ),
+            ),
+            2,
+        )
+        meta_next_loss_stake = round(
+            max(
+                0.0,
+                _safe_float(
+                    meta.get("auto_next_loss_stake"),
+                    plan.get("next_loss_stake", mutant_auto_next_loss_stake(safe, step_index=meta_step_index)),
+                ),
+            ),
+            2,
+        )
+        plan = _build_active_plan(
+            mode=meta_mode,
+            mode_label=meta_mode_label,
+            step_index=meta_step_index,
+            current_stake=meta_current_stake,
+            next_loss_stake=meta_next_loss_stake,
+            budget=_safe_float(meta.get("auto_budget"), plan.get("budget", safe.get("budget", MIN_MUTANT_AUTO_STAKE))),
+            stop_on_win=bool(meta.get("auto_stop_on_win", plan.get("stop_on_win"))),
+            stop_on_loss=bool(meta.get("auto_stop_on_loss", plan.get("stop_on_loss"))),
+            selected_side=meta.get("auto_selected_side") or meta.get("type") or plan.get("selected_side"),
+            symbol=meta.get("symbol") or plan.get("symbol"),
+            barrier=meta.get("auto_barrier") or meta.get("barrier") or plan.get("barrier"),
+            contract_id=meta.get("contract_id") or plan.get("contract_id"),
+            request_started_at=meta.get("request_started_at", plan.get("request_started_at", 0.0)),
+        )
+    return plan
+
+
+def _debug_snapshot(auto, **extra):
+    safe = ensure_mutant_auto_state({"auto": auto})
+    plan = _normalize_active_plan(safe.get("active_plan"))
+    next_calculated_stake = extra.pop("next_calculated_stake", None)
+    if next_calculated_stake is None:
+        next_calculated_stake = (plan or {}).get("next_loss_stake")
+        if next_calculated_stake in (None, 0, 0.0):
+            next_calculated_stake = mutant_auto_next_loss_stake(safe)
+    return {
+        "martingale_enabled": bool(safe.get("martingale_enabled", False)),
+        "martingale_step": int(safe.get("progression_step", 0) or 0),
+        "base_stake": round(mutant_auto_base_stake(safe), 2),
+        "current_stake": round(mutant_auto_current_stake(safe), 2),
+        "last_trade_result": safe.get("last_trade_result"),
+        "next_calculated_stake": round(max(0.0, _safe_float(next_calculated_stake, 0.0)), 2),
+        "websocket_reconnect": bool(extra.pop("websocket_reconnect", False)),
+        "martingale_state_reset": bool(extra.pop("martingale_state_reset", False)),
+        "trade_phase": _normalize_trade_phase(safe.get("trade_phase")),
+        "consumed_contracts": len(safe.get("consumed_contract_ids") or []),
+        **extra,
+    }
+
+
+def log_mutant_auto_debug(event, auto, **extra):
+    try:
+        logger.info("[MUTANT_AUTO_DEBUG] %s %s", str(event or "state"), json.dumps(_debug_snapshot(auto, **extra), sort_keys=True))
+    except Exception:
+        logger.info("[MUTANT_AUTO_DEBUG] %s", str(event or "state"))
 
 
 def ensure_mutant_auto_state(ntt):
@@ -95,6 +323,11 @@ def ensure_mutant_auto_state(ntt):
     auto["last_touch_pct"] = round(_safe_float(auto.get("last_touch_pct", 0.0), 0.0), 1)
     auto["last_no_touch_pct"] = round(_safe_float(auto.get("last_no_touch_pct", 0.0), 0.0), 1)
     auto["last_started_at"] = max(0.0, _safe_float(auto.get("last_started_at", 0.0), 0.0))
+    auto["trade_phase"] = _normalize_trade_phase(auto.get("trade_phase", MUTANT_AUTO_PHASE_IDLE))
+    auto["active_plan"] = _normalize_active_plan(auto.get("active_plan"))
+    auto["last_trade_result"] = str(auto.get("last_trade_result") or "").strip().upper() or None
+    auto["last_trade_contract_id"] = str(auto.get("last_trade_contract_id") or "").strip() or None
+    auto["consumed_contract_ids"] = _normalize_consumed_contract_ids(auto.get("consumed_contract_ids"))
     ntt["auto"] = auto
     return auto
 
@@ -128,19 +361,51 @@ def mutant_auto_current_stake(auto):
     return round(MIN_MUTANT_AUTO_STAKE, 2)
 
 
+def _mutant_auto_ladder_for_mode(mode):
+    safe_mode = str(mode or "BASE").strip().upper()
+    if safe_mode == "MARTINGALE":
+        return MARTINGALE_LADDER
+    if safe_mode == "STEP50":
+        return STEP50_LADDER
+    return ()
+
+
+def _mutant_auto_budget_limit(budget):
+    return round(
+        min(
+            MAX_MUTANT_AUTO_LADDER_STAKE,
+            max(MIN_MUTANT_AUTO_STAKE, _safe_float(budget, MIN_MUTANT_AUTO_STAKE)),
+        ),
+        2,
+    )
+
+
+def _mutant_auto_capped_ladder(mode, budget):
+    ladder = _mutant_auto_ladder_for_mode(mode)
+    if not ladder:
+        return ()
+    safe_limit = _mutant_auto_budget_limit(budget)
+    capped = tuple(stake for stake in ladder if stake <= (safe_limit + 1e-9))
+    return capped or (round(MIN_MUTANT_AUTO_STAKE, 2),)
+
+
 def _project_mutant_auto_progression_stake(mode, budget, step_index):
     safe_mode = str(mode or "BASE").strip().upper()
-    safe_budget = round(max(MIN_MUTANT_AUTO_STAKE, _safe_float(budget, MIN_MUTANT_AUTO_STAKE)), 2)
-    safe_step = max(0, int(step_index or 0))
     if safe_mode == "BASE":
         return 0.0
-    if safe_mode == "MARTINGALE":
-        next_stake = round(MIN_MUTANT_AUTO_STAKE * (2 ** safe_step), 2)
-    else:
-        next_stake = round(MIN_MUTANT_AUTO_STAKE + (STEP50_INCREMENT * safe_step), 2)
-    if next_stake > (safe_budget + 1e-9):
+    ladder = _mutant_auto_capped_ladder(safe_mode, budget)
+    if not ladder:
         return 0.0
-    return next_stake
+    safe_step = max(0, int(step_index or 0))
+    safe_step = min(safe_step, len(ladder) - 1)
+    return round(float(ladder[safe_step]), 2)
+
+
+def _mutant_auto_last_step_index(mode, budget):
+    ladder = _mutant_auto_capped_ladder(mode, budget)
+    if not ladder:
+        return 0
+    return max(0, len(ladder) - 1)
 
 
 def mutant_auto_next_loss_stake(auto, *, step_index=None):
@@ -177,6 +442,8 @@ def reset_mutant_auto_current_stake(auto):
     safe["progression_step"] = 0
     safe["active_step_index"] = None
     safe["active_next_loss_stake"] = 0.0
+    safe["trade_phase"] = MUTANT_AUTO_PHASE_IDLE
+    safe["active_plan"] = None
     mode = mutant_auto_mode(safe)
     if mode == "BASE":
         safe["current_stake"] = round(safe.get("budget", MIN_MUTANT_AUTO_STAKE), 2)
@@ -243,9 +510,12 @@ def arm_mutant_auto(
     auto["active_next_loss_stake"] = 0.0
     auto["last_progress_contract_id"] = None
     reset_mutant_auto_current_stake(auto)
+    auto["last_trade_result"] = None
+    auto["last_trade_contract_id"] = None
     auto["last_started_at"] = max(0.0, _safe_float(started_at, 0.0))
     auto["last_decision"] = "ARMED"
     auto["last_reason"] = str(reason or f"Mutant AUTO armed in {mutant_auto_mode_label(auto)} mode.")
+    log_mutant_auto_debug("armed", auto, martingale_state_reset=True)
     return auto
 
 
@@ -264,6 +534,7 @@ def stop_mutant_auto(ntt, reason=None):
     reset_mutant_auto_current_stake(auto)
     auto["last_decision"] = "OFF"
     auto["last_reason"] = str(reason or "Mutant AUTO is OFF.")
+    log_mutant_auto_debug("stopped", auto, martingale_state_reset=True)
     return auto
 
 
@@ -277,15 +548,32 @@ def mark_mutant_auto_trade_sent(auto, *, contract_id=None, side=None, symbol=Non
     safe["active_symbol"] = str(symbol or "").strip().upper() or None
     safe["active_stake"] = round(max(0.0, _safe_float(stake, 0.0)), 2)
     safe["current_stake"] = safe["active_stake"] or mutant_auto_current_stake(safe)
+    safe["trade_phase"] = MUTANT_AUTO_PHASE_REQUESTING
     safe["last_decision"] = "RUNNING"
     if reason is not None:
         safe["last_reason"] = str(reason)
+    log_mutant_auto_debug("trade_sent", safe)
     return safe
 
 
 def begin_mutant_auto_request(auto, *, side=None, symbol=None, stake=None, reason=None, started_at=0.0, step_index=None, next_loss_stake=None):
     safe = ensure_mutant_auto_state({"auto": auto})
     started_ts = max(0.0, _safe_float(started_at, safe.get("last_started_at", 0.0)))
+    trade_plan = build_mutant_auto_trade_plan(safe)
+    safe["active_plan"] = _build_active_plan(
+        mode=trade_plan.get("mode") or mutant_auto_mode(safe),
+        mode_label=trade_plan.get("mode_label") or mutant_auto_mode_label(safe),
+        step_index=trade_plan.get("step_index") if step_index in (None, "") else step_index,
+        current_stake=stake if stake is not None else trade_plan.get("current_stake"),
+        next_loss_stake=trade_plan.get("next_loss_stake") if next_loss_stake is None else next_loss_stake,
+        budget=trade_plan.get("budget") or safe.get("budget", MIN_MUTANT_AUTO_STAKE),
+        stop_on_win=trade_plan.get("stop_on_win"),
+        stop_on_loss=trade_plan.get("stop_on_loss"),
+        selected_side=side or safe.get("selected_side"),
+        symbol=symbol or safe.get("active_symbol"),
+        barrier=safe.get("barrier"),
+        request_started_at=started_ts,
+    )
     safe["pending_contract_id"] = None
     safe["request_in_flight"] = True
     safe["request_started_at"] = started_ts
@@ -300,13 +588,15 @@ def begin_mutant_auto_request(auto, *, side=None, symbol=None, stake=None, reaso
     safe["active_next_loss_stake"] = round(max(0.0, _safe_float(next_loss_stake, 0.0)), 2)
     if safe["active_stake"] > 0:
         safe["current_stake"] = safe["active_stake"]
+    safe["trade_phase"] = MUTANT_AUTO_PHASE_REQUESTING
     safe["last_decision"] = "SENDING"
     if reason is not None:
         safe["last_reason"] = str(reason)
+    log_mutant_auto_debug("request_begin", safe)
     return safe
 
 
-def clear_mutant_auto_pending(auto):
+def clear_mutant_auto_pending(auto, *, clear_plan=True):
     safe = ensure_mutant_auto_state({"auto": auto})
     safe["pending_contract_id"] = None
     safe["request_in_flight"] = False
@@ -316,13 +606,167 @@ def clear_mutant_auto_pending(auto):
     safe["active_stake"] = 0.0
     safe["active_step_index"] = None
     safe["active_next_loss_stake"] = 0.0
+    safe["trade_phase"] = MUTANT_AUTO_PHASE_IDLE
+    if clear_plan:
+        safe["active_plan"] = None
+    return safe
+
+
+def mutant_auto_has_consumed_contract(auto, contract_id):
+    safe = ensure_mutant_auto_state({"auto": auto})
+    cid = _normalize_contract_text(contract_id)
+    if not cid:
+        return False
+    if cid == str(safe.get("last_progress_contract_id") or "").strip():
+        return True
+    return cid in set(_normalize_consumed_contract_ids(safe.get("consumed_contract_ids")))
+
+
+def remember_mutant_auto_consumed_contract(auto, contract_id):
+    safe = ensure_mutant_auto_state({"auto": auto})
+    cid = _normalize_contract_text(contract_id)
+    if not cid:
+        return safe
+    items = _normalize_consumed_contract_ids(safe.get("consumed_contract_ids"))
+    if cid not in items:
+        items.append(cid)
+    safe["consumed_contract_ids"] = _normalize_consumed_contract_ids(items)
+    safe["last_progress_contract_id"] = cid
+    return safe
+
+
+def evaluate_mutant_auto_early_result(
+    auto,
+    *,
+    contract_id=None,
+    tick_count=None,
+    duration=None,
+    duration_unit="t",
+    open_profit=None,
+    buy_price=None,
+    sell_price=None,
+):
+    safe = ensure_mutant_auto_state({"auto": auto})
+    mode = mutant_auto_mode(safe)
+    if mode not in ("MARTINGALE", "STEP50"):
+        return None
+
+    cid = _normalize_contract_text(contract_id)
+    if cid and mutant_auto_has_consumed_contract(safe, cid):
+        return {"decided": False, "duplicate": True, "contract_id": cid}
+
+    unit = str(duration_unit or "t").strip().lower()
+    if unit != "t":
+        return None
+
+    try:
+        total_ticks = max(1, int(float(duration or 0)))
+    except Exception:
+        total_ticks = 0
+    if total_ticks <= 1:
+        return None
+
+    try:
+        elapsed_ticks = max(0, int(float(tick_count or 0)))
+    except Exception:
+        elapsed_ticks = 0
+    if elapsed_ticks <= 0:
+        return None
+
+    try:
+        profit_value = float(open_profit)
+    except Exception:
+        profit_value = None
+    if profit_value is None or profit_value != profit_value:
+        return None
+    buy_value = _safe_float(buy_price, 0.0)
+    try:
+        sell_value = float(sell_price)
+    except Exception:
+        sell_value = buy_value + profit_value
+    final_check_tick = max(1, total_ticks - 1)
+    early_win_tick = max(2, total_ticks - 2)
+
+    if elapsed_ticks >= final_check_tick:
+        if profit_value < 0:
+            return {
+                "decided": True,
+                "won": False,
+                "result": "LOSS",
+                "profit": float(profit_value),
+                "contract_id": cid,
+                "tick_count": elapsed_ticks,
+                "reason": f"Mutant AUTO marked the trade as LOSS at {elapsed_ticks}/{total_ticks} ticks because open profit was negative.",
+            }
+        if profit_value > 0:
+            return {
+                "decided": True,
+                "won": True,
+                "result": "WIN",
+                "profit": float(profit_value),
+                "contract_id": cid,
+                "tick_count": elapsed_ticks,
+                "reason": f"Mutant AUTO marked the trade as WIN at {elapsed_ticks}/{total_ticks} ticks because open profit was positive.",
+            }
+
+    if elapsed_ticks >= early_win_tick and profit_value > 0 and sell_value > buy_value:
+        return {
+            "decided": True,
+            "won": True,
+            "result": "WIN",
+            "profit": float(profit_value),
+            "contract_id": cid,
+            "tick_count": elapsed_ticks,
+            "reason": f"Mutant AUTO helper marked the trade as WIN early at {elapsed_ticks}/{total_ticks} ticks because the contract stayed profitable before the 4/5 check.",
+        }
+
+    return {"decided": False, "duplicate": False, "contract_id": cid}
+
+
+def confirm_mutant_auto_trade(auto, *, contract_id=None, contract_meta=None, reason=None):
+    safe = ensure_mutant_auto_state({"auto": auto})
+    plan = _resolve_active_plan(safe, contract_meta)
+    safe_contract_id = str(contract_id or plan.get("contract_id") or "").strip() or None
+    if safe_contract_id:
+        plan["contract_id"] = safe_contract_id
+        safe["last_trade_contract_id"] = safe_contract_id
+    safe["active_plan"] = plan
+    safe["pending_contract_id"] = safe_contract_id
+    safe["request_in_flight"] = False
+    safe["request_started_at"] = 0.0
+    safe["active_side"] = str(plan.get("selected_side") or safe.get("selected_side") or "TOUCH").strip().upper() or None
+    safe["active_symbol"] = str(plan.get("symbol") or safe.get("active_symbol") or "").strip().upper() or None
+    safe["active_stake"] = round(max(0.0, _safe_float(plan.get("current_stake", 0.0), 0.0)), 2)
+    safe["current_stake"] = safe["active_stake"] or mutant_auto_current_stake(safe)
+    try:
+        safe["active_step_index"] = max(0, int(plan.get("step_index", 0) or 0))
+    except Exception:
+        safe["active_step_index"] = None
+    safe["active_next_loss_stake"] = round(max(0.0, _safe_float(plan.get("next_loss_stake", 0.0), 0.0)), 2)
+    safe["trade_phase"] = MUTANT_AUTO_PHASE_LIVE
+    safe["last_decision"] = "RUNNING"
+    if reason is not None:
+        safe["last_reason"] = str(reason)
+    log_mutant_auto_debug("buy_confirmed", safe)
+    return safe
+
+
+def mark_mutant_auto_unknown(auto, *, reason=None):
+    safe = ensure_mutant_auto_state({"auto": auto})
+    safe["request_in_flight"] = False
+    safe["request_started_at"] = 0.0
+    safe["trade_phase"] = MUTANT_AUTO_PHASE_UNKNOWN
+    safe["last_decision"] = "WAITING"
+    if reason is not None:
+        safe["last_reason"] = str(reason)
+    log_mutant_auto_debug("unknown_state", safe)
     return safe
 
 
 def progress_mutant_auto_after_result(ntt, *, won, profit, side=None, contract_id=None, contract_meta=None):
     auto = ensure_mutant_auto_state(ntt)
-    safe_contract_id = str(contract_id or "").strip() or None
-    if safe_contract_id and safe_contract_id == str(auto.get("last_progress_contract_id") or "").strip():
+    safe_contract_id = _normalize_contract_text(contract_id)
+    if safe_contract_id and mutant_auto_has_consumed_contract(auto, safe_contract_id):
         return {
             "continue": bool(auto.get("enabled")),
             "stopped": False,
@@ -330,72 +774,84 @@ def progress_mutant_auto_after_result(ntt, *, won, profit, side=None, contract_i
             "duplicate": True,
         }
     if safe_contract_id:
-        auto["last_progress_contract_id"] = safe_contract_id
-    mode = mutant_auto_mode(auto)
+        remember_mutant_auto_consumed_contract(auto, safe_contract_id)
     meta = contract_meta if isinstance(contract_meta, dict) else {}
-    meta_mode = str(meta.get("auto_mode") or "").strip().upper()
-    if meta_mode in ("MARTINGALE", "STEP50", "BASE"):
-        mode = meta_mode
+    active_plan = _resolve_active_plan(auto, meta)
+    mode = str(active_plan.get("mode") or mutant_auto_mode(auto)).strip().upper() or mutant_auto_mode(auto)
     active_stake = round(max(
         MIN_MUTANT_AUTO_STAKE,
-        _safe_float(
-            meta.get("auto_current_stake",
-                auto.get("active_stake", auto.get("current_stake", MIN_MUTANT_AUTO_STAKE))
-            ),
-            MIN_MUTANT_AUTO_STAKE
-        ),
+        _safe_float(active_plan.get("current_stake", auto.get("current_stake", MIN_MUTANT_AUTO_STAKE)), MIN_MUTANT_AUTO_STAKE),
     ), 2)
     budget = round(max(MIN_MUTANT_AUTO_STAKE, _safe_float(auto.get("budget", MIN_MUTANT_AUTO_STAKE), MIN_MUTANT_AUTO_STAKE)), 2)
-    safe_side = str(side or auto.get("active_side") or "TOUCH").strip().upper() or "TOUCH"
-    clear_mutant_auto_pending(auto)
+    safe_side = str(side or active_plan.get("selected_side") or auto.get("active_side") or "TOUCH").strip().upper() or "TOUCH"
+    auto["last_trade_result"] = "WIN" if won else "LOSS"
+    auto["last_trade_contract_id"] = safe_contract_id or auto.get("last_trade_contract_id")
+    auto["pending_contract_id"] = None
+    auto["request_in_flight"] = False
+    auto["request_started_at"] = 0.0
+    auto["active_side"] = None
+    auto["active_symbol"] = None
+    auto["active_stake"] = 0.0
+    auto["active_step_index"] = None
+    auto["active_next_loss_stake"] = 0.0
+    auto["active_plan"] = None
+    auto["trade_phase"] = MUTANT_AUTO_PHASE_IDLE
 
     if mode == "BASE":
         auto["current_stake"] = budget
+        auto["progression_step"] = 0
         if won:
             auto["last_decision"] = "CONTINUE"
             auto["last_reason"] = f"Base mode won on {safe_side}. AUTO keeps running at {budget:.2f}."
+            log_mutant_auto_debug("settled_win_continue", auto)
             return {"continue": True, "stopped": False, "next_stake": budget, "duplicate": False}
         stop_mutant_auto(ntt, f"Base mode stopped after a loss on {safe_side}.")
+        auto["last_trade_result"] = "LOSS"
+        log_mutant_auto_debug("settled_loss_stop", auto)
         return {"continue": False, "stopped": True, "next_stake": 0.0, "duplicate": False}
 
     if won:
         stop_mutant_auto(ntt, f"{mutant_auto_mode_label(auto)} stopped after a win on {safe_side}.")
+        auto["last_trade_result"] = "WIN"
+        log_mutant_auto_debug("settled_win_stop", auto)
         return {"continue": False, "stopped": True, "next_stake": 0.0, "duplicate": False}
 
-    live_active_step = auto.get("active_step_index")
-    if live_active_step in (None, ""):
-        live_active_step = auto.get("progression_step", 0)
     try:
-        active_step_index = max(0, int(meta.get("auto_step_index", live_active_step) or 0))
+        active_step_index = max(0, int(active_plan.get("step_index", auto.get("progression_step", 0)) or 0))
     except Exception:
         active_step_index = max(0, int(auto.get("progression_step", 0) or 0))
-    next_step = active_step_index + 1
+    last_step = _mutant_auto_last_step_index(mode, budget)
+    next_step = min(active_step_index + 1, last_step)
     next_stake = round(
         max(
             0.0,
             _safe_float(
-                meta.get("auto_next_loss_stake"),
+                active_plan.get("next_loss_stake"),
                 _project_mutant_auto_progression_stake(mode, budget, next_step),
             ),
         ),
         2,
     )
-
-    if next_stake <= 0.0 or next_stake > (budget + 1e-9):
-        stop_mutant_auto(
-            ntt,
-            f"{mutant_auto_mode_label(auto)} stopped because the next stake would exceed the {budget:.2f} budget.",
-        )
-        return {"continue": False, "stopped": True, "next_stake": 0.0, "duplicate": False}
+    if next_stake <= 0.0:
+        next_stake = _project_mutant_auto_progression_stake(mode, budget, next_step)
 
     auto["enabled"] = True
     auto["progression_step"] = next_step
     auto["current_stake"] = next_stake
+    auto["trade_phase"] = MUTANT_AUTO_PHASE_IDLE
     auto["last_decision"] = "REARMED"
-    auto["last_reason"] = (
-        f"{mutant_auto_mode_label(auto)} lost on {safe_side}. Next stake is {next_stake:.2f} "
-        f"within the {budget:.2f} budget."
-    )
+    if next_step >= last_step:
+        auto["last_reason"] = (
+            f"{mutant_auto_mode_label(auto)} lost on {safe_side}. Repeating {next_stake:.2f} "
+            f"as the top allowed stake within the {budget:.2f} budget."
+        )
+        log_mutant_auto_debug("loss_rearmed_repeat_top", auto, next_calculated_stake=next_stake)
+    else:
+        auto["last_reason"] = (
+            f"{mutant_auto_mode_label(auto)} lost on {safe_side}. Next stake is {next_stake:.2f} "
+            f"within the {budget:.2f} budget."
+        )
+        log_mutant_auto_debug("loss_rearmed", auto, next_calculated_stake=next_stake)
     return {"continue": True, "stopped": False, "next_stake": next_stake, "duplicate": False}
 
 
@@ -406,6 +862,7 @@ def serialize_mutant_auto(auto, *, active_count=0):
     request_in_flight = bool(safe.get("request_in_flight", False))
     mode_label = mutant_auto_mode_label(safe)
     current_stake = mutant_auto_current_stake(safe)
+    active_plan = _normalize_active_plan(safe.get("active_plan"))
     if not enabled:
         label = "OFF"
     elif active_count > 0 or pending_contract_id or request_in_flight:
@@ -425,9 +882,11 @@ def serialize_mutant_auto(auto, *, active_count=0):
         "current_stake": round(current_stake, 2),
         "pending_contract_id": pending_contract_id or None,
         "request_in_flight": request_in_flight,
+        "trade_phase": safe.get("trade_phase", MUTANT_AUTO_PHASE_IDLE),
         "active_side": safe.get("active_side"),
         "active_symbol": safe.get("active_symbol"),
-        "next_loss_stake": round(mutant_auto_next_loss_stake(safe), 2),
+        "next_loss_stake": round(_safe_float((active_plan or {}).get("next_loss_stake"), mutant_auto_next_loss_stake(safe)), 2),
+        "last_trade_result": safe.get("last_trade_result"),
         "last_reason": str(safe.get("last_reason") or "Mutant AUTO is OFF."),
         "last_decision": str(safe.get("last_decision") or "OFF"),
         "last_score": round(_safe_float(safe.get("last_score", 0.0), 0.0), 1),

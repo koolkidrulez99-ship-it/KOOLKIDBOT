@@ -944,6 +944,42 @@ def test_resolve_post_contract_balance_uses_fresher_current_balance_when_live_ba
     assert state["local_balance_adjustment"] == pytest.approx(0.0)
 
 
+def test_resolve_post_contract_balance_keeps_single_mutant_auto_loss_when_live_balance_already_reflects_buy():
+    state = {
+        "balance": 99.65,
+        "last_live_balance": 99.65,
+        "last_known_trade_balance": 100.0,
+        "last_live_balance_updated_at": 200.0,
+        "local_balance_adjustment": 0.0,
+        "balance_updated_at": 200.0,
+        "mutant_auto_balance_marker": {
+            "contract_id": "98765",
+            "opened_at": 150.0,
+            "buy_price": 0.35,
+        },
+    }
+
+    resolved = server._resolve_post_contract_balance(
+        state,
+        {
+            "contract_id": "98765",
+            "profit": -0.35,
+            "sell_price": 0.0,
+            "buy_price": 0.35,
+        },
+        meta={
+            "profile": "NTT",
+            "mode": "MUTANT_AUTO",
+            "stake": 0.35,
+        },
+    )
+
+    assert resolved == pytest.approx(99.65)
+    assert state["balance"] == pytest.approx(99.65)
+    assert state["last_known_trade_balance"] == pytest.approx(99.65)
+    assert state["mutant_auto_balance_marker"] is None
+
+
 def test_send_buy_allows_trade_when_current_balance_is_higher_than_stale_live_balance():
     class DummyWs:
         def __init__(self):

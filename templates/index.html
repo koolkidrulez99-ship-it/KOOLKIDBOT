@@ -2168,6 +2168,42 @@ function upsertTradeInStore(trade){
     return incoming;
 }
 
+function dedupeTradeStoreProfile(profile){
+    const key = normalizeProfileName(profile || activeProfile);
+    const arr = Array.isArray(tradeStore[key]) ? tradeStore[key] : [];
+    if(key !== "NTT" || arr.length < 2) return false;
+    const deduped = [];
+    const byCid = new Map();
+    let changed = false;
+    arr.forEach((item)=>{
+        const cid = normalizeContractId(item && (item.contract_id ?? item.contractId));
+        if(!cid){
+            deduped.push(item);
+            return;
+        }
+        if(!byCid.has(cid)){
+            byCid.set(cid, deduped.length);
+            deduped.push(item);
+            return;
+        }
+        const existingIndex = byCid.get(cid);
+        const merged = mergeTradeRecord(deduped[existingIndex], item);
+        const mergedSeq = Math.max(
+            Number(deduped[existingIndex] && deduped[existingIndex]._store_seq) || 0,
+            Number(item && item._store_seq) || 0,
+            Number(merged && merged._store_seq) || 0,
+        );
+        if(Number.isFinite(mergedSeq) && mergedSeq > 0){
+            merged._store_seq = mergedSeq;
+        }
+        deduped[existingIndex] = merged;
+        changed = true;
+    });
+    if(!changed && deduped.length === arr.length) return false;
+    tradeStore[key] = deduped.slice(-250);
+    return true;
+}
+
 function removeTradeFromStoreByContractId(profile, contractId){
     const p = normalizeProfileName(profile);
     const cid = normalizeContractId(contractId);
@@ -3042,6 +3078,9 @@ function renderTradeList(profile){
     if(!list) return;
 
     const key = normalizeProfileName(profile || activeProfile);
+    if(key === "NTT"){
+        dedupeTradeStoreProfile(key);
+    }
     const arr = tradeStore[key] || [];
     const filter = getTradeHistoryFilter(key);
     const filtered = arr.filter((trade)=>{

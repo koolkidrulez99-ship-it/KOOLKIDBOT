@@ -5,8 +5,10 @@ import server
 from strategies.mutant import NTTStrategy, _format_ntt_barrier
 from strategies.mutant_auto import (
     arm_mutant_auto,
+    begin_mutant_auto_request,
     build_mutant_auto_trade_plan,
     default_mutant_auto_state,
+    evaluate_mutant_auto_early_result,
     progress_mutant_auto_after_result,
     stop_mutant_auto,
 )
@@ -669,17 +671,16 @@ def test_run_ntt_auto_both_waits_until_open_pair_finishes(monkeypatch):
     assert "waiting for 1 active Mutant trade to finish" in state["ntt"]["auto"]["last_reason"]
 
 
-def test_run_ntt_auto_both_clears_stale_tick_pending_and_sends_next_trade(monkeypatch):
+def test_run_ntt_auto_both_clears_stale_pending_contract_and_continues(monkeypatch):
     sent = []
-
     monkeypatch.setattr(server, "_check_ntt_risk_block", lambda _state: None)
     monkeypatch.setattr(server, "_get_ntt_side_duration", lambda _ntt, _side: (5, "t"))
+    monkeypatch.setattr(server.time, "time", lambda: 100.0)
     monkeypatch.setattr(
         server,
         "_send_ntt_trade",
         lambda cid, **kwargs: sent.append((cid, kwargs)) or (True, "sent"),
     )
-    monkeypatch.setattr(server.time, "time", lambda: 100.0)
 
     state = {
         "ws_connected": True,
@@ -696,9 +697,9 @@ def test_run_ntt_auto_both_clears_stale_tick_pending_and_sends_next_trade(monkey
 
     assert ok is True
     assert len(sent) == 1
+    assert sent[0][1]["stake"] == 0.35
     assert state["ntt"]["auto"]["request_in_flight"] is True
-    assert state["ntt"]["auto"]["pending_contract_id"] is None
-    assert "re-arming now" in state["ntt"]["auto"]["last_reason"] or "sent" in state["ntt"]["auto"]["last_reason"].lower()
+    assert state["ntt"]["auto"]["trade_phase"] == "REQUESTING"
 
 
 def test_run_ntt_auto_both_waits_for_real_pending_buy_request_meta(monkeypatch):
@@ -957,6 +958,149 @@ def test_process_contract_rearms_mutant_auto_after_step50_loss_using_frozen_meta
     assert reruns == [("cid-mutant-auto-step50", 1.35)]
 
 
+def test_process_contract_stops_mutant_auto_after_win_even_if_profit_field_is_zero(monkeypatch):
+    reruns = []
+
+    monkeypatch.setattr(server, "send_stats_update", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_emit_balance_payload", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server.socketio, "emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "_seqvix_jokerjoe_on_contract_settled", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "handle_auto_session_contract_settled", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_run_ntt_auto_both", lambda cid, state: reruns.append((cid, state["ntt"]["auto"]["current_stake"])) or True)
+
+    state = {
+        "balance": 100.0,
+        "active_profile": "NTT",
+        "current_symbol": "R_25",
+        "ntt": server._default_ntt_state(),
+        "strategies": {
+            "NTT": SimpleNamespace(
+                on_contract=lambda contract, balance: None,
+                get_last_trade_entry=lambda: {},
+                risk_block_reason=None,
+            )
+        },
+        "contract_meta": {},
+    }
+    server.clients["cid-mutant-auto-win"] = state
+    try:
+        arm_mutant_auto(state["ntt"], barrier="+0.12", budget=10.0, selected_side="TOUCH", martingale_enabled=True, step50_enabled=False)
+        state["ntt"]["auto"]["active_stake"] = 0.35
+        state["ntt"]["auto"]["active_side"] = "TOUCH"
+        state["ntt"]["auto"]["pending_contract_id"] = "win-321"
+        state["ntt"]["active_contracts"] = {
+            "win-321": {"contract_id": "win-321", "status": "open", "type": "TOUCH"}
+        }
+        state["contract_meta"]["win-321"] = {
+            "profile": "NTT",
+            "type": "TOUCH",
+            "stake": 0.35,
+            "symbol": "R_25",
+            "time": "now",
+            "duration": 5,
+            "duration_unit": "t",
+            "mode": "MUTANT_AUTO",
+        }
+
+        server.process_contract(
+            "cid-mutant-auto-win",
+            {
+                "contract_id": "win-321",
+                "status": "won",
+                "is_sold": True,
+                "profit": 0.0,
+                "buy_price": 0.35,
+                "sell_price": 0.98,
+            },
+        )
+    finally:
+        server.clients.pop("cid-mutant-auto-win", None)
+
+    assert state["ntt"]["auto"]["enabled"] is False
+    assert state["ntt"]["auto"]["last_trade_result"] == "WIN"
+    assert reruns == []
+
+
+def test_mutant_auto_countdown_settles_after_two_seconds_and_stops_on_win(monkeypatch):
+    now_box = {"value": 100.0}
+    monkeypatch.setattr(server.time, "time", lambda: now_box["value"])
+    monkeypatch.setattr(server.socketio, "emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "send_stats_update", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_emit_balance_payload", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_persist_mutant_auto_runtime_state", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        server,
+        "_decorate_ntt_active_entry_countdown",
+        lambda entry, _state, now_ts=None: dict(entry, countdown_seconds=0, countdown_unit="t", countdown_remaining=0, open_profit=0.63),
+    )
+
+    state = server._build_default_client_state()
+    state["active_profile"] = "NTT"
+    state["ws_connected"] = True
+    state["ws"] = SimpleNamespace(send=lambda *_args, **_kwargs: None)
+    state["current_symbol"] = "R_25"
+    state["balance"] = 100.0
+    state["last_live_balance"] = 100.0
+    state["strategies"]["NTT"] = SimpleNamespace(
+        on_contract=lambda contract, balance: None,
+        get_last_trade_entry=lambda: {},
+        risk_block_reason=None,
+        tick_count=500,
+    )
+    ntt = server._ensure_ntt_state(state)
+    arm_mutant_auto(ntt, barrier="+0.12", budget=10.0, selected_side="TOUCH", martingale_enabled=True, step50_enabled=False)
+    auto = ntt["auto"]
+    auto["active_stake"] = 0.35
+    auto["active_side"] = "TOUCH"
+    auto["pending_contract_id"] = "countdown-win-1"
+    auto["trade_phase"] = "LIVE"
+    ntt["active_contracts"] = {
+        "countdown-win-1": {
+            "contract_id": "countdown-win-1",
+            "status": "open",
+            "contract_status": "open",
+            "type": "TOUCH",
+            "stake": 0.35,
+            "duration": 5,
+            "duration_unit": "t",
+            "open_profit": 0.63,
+        }
+    }
+    state["contract_meta"]["countdown-win-1"] = {
+        "profile": "NTT",
+        "mode": "MUTANT_AUTO",
+        "type": "TOUCH",
+        "stake": 0.35,
+        "symbol": "R_25",
+        "time": "now",
+        "duration": 5,
+        "duration_unit": "t",
+        "barrier": "+0.12",
+        "auto_mode": "MARTINGALE",
+        "auto_mode_label": "MARTINGALE",
+        "auto_step_index": 0,
+        "auto_current_stake": 0.35,
+        "auto_next_loss_stake": 0.70,
+    }
+
+    first = server._maybe_force_ntt_close_on_countdown("cid-mutant-countdown", state)
+    assert first == []
+    assert state["ntt"]["auto"]["enabled"] is True
+
+    now_box["value"] = 101.2
+    second_wait = server._maybe_force_ntt_close_on_countdown("cid-mutant-countdown", state)
+    assert second_wait == []
+    assert state["ntt"]["auto"]["enabled"] is True
+
+    now_box["value"] = 102.2
+    second = server._maybe_force_ntt_close_on_countdown("cid-mutant-countdown", state)
+
+    assert second == ["countdown-win-1"]
+    assert state["ntt"]["auto"]["enabled"] is False
+    assert state["ntt"]["auto"]["last_trade_result"] == "WIN"
+    assert state["ntt"]["auto"]["pending_contract_id"] is None
+
+
 def test_mutant_auto_step50_increments_by_fifty_cents_for_each_loss_chain():
     ntt = {"auto": default_mutant_auto_state()}
     arm_mutant_auto(ntt, barrier="+0.12", budget=3.00, martingale_enabled=False, step50_enabled=True)
@@ -999,9 +1143,30 @@ def test_mutant_auto_step50_stops_at_budget_cap():
     auto["active_stake"] = 0.85
     auto["active_side"] = "TOUCH"
     second_loss = progress_mutant_auto_after_result(ntt, won=False, profit=-0.85, side="TOUCH")
-    assert second_loss["continue"] is False
-    assert second_loss["stopped"] is True
-    assert ntt["auto"]["enabled"] is False
+    assert second_loss["continue"] is True
+    assert second_loss["stopped"] is False
+    assert second_loss["next_stake"] == 0.85
+    assert ntt["auto"]["enabled"] is True
+    assert ntt["auto"]["current_stake"] == 0.85
+
+
+def test_mutant_auto_martingale_repeats_top_allowed_stake_at_budget_cap():
+    ntt = {"auto": default_mutant_auto_state()}
+    arm_mutant_auto(ntt, barrier="+0.12", budget=2000.0, martingale_enabled=True, step50_enabled=False)
+    auto = ntt["auto"]
+    auto["progression_step"] = 12
+    auto["current_stake"] = 1433.60
+    auto["active_stake"] = 1433.60
+    auto["active_side"] = "TOUCH"
+
+    result = progress_mutant_auto_after_result(ntt, won=False, profit=-1433.60, side="TOUCH")
+
+    assert result["continue"] is True
+    assert result["stopped"] is False
+    assert result["next_stake"] == 1433.60
+    assert ntt["auto"]["enabled"] is True
+    assert ntt["auto"]["progression_step"] == 12
+    assert ntt["auto"]["current_stake"] == 1433.60
 
 
 def test_mutant_auto_progress_ignores_duplicate_contract_result():
@@ -1020,6 +1185,74 @@ def test_mutant_auto_progress_ignores_duplicate_contract_result():
     assert duplicate["duplicate"] is True
     assert duplicate["next_stake"] == 0.85
     assert ntt["auto"]["current_stake"] == 0.85
+
+
+def test_evaluate_mutant_auto_early_result_marks_loss_at_four_of_five_ticks():
+    ntt = {"auto": default_mutant_auto_state()}
+    arm_mutant_auto(ntt, barrier="+0.12", budget=10.0, martingale_enabled=True, step50_enabled=False)
+
+    decision = evaluate_mutant_auto_early_result(
+        ntt["auto"],
+        contract_id="early-loss-1",
+        tick_count=4,
+        duration=5,
+        duration_unit="t",
+        open_profit=-0.35,
+        buy_price=0.35,
+        sell_price=0.0,
+    )
+
+    assert decision["decided"] is True
+    assert decision["won"] is False
+    assert decision["result"] == "LOSS"
+
+
+def test_evaluate_mutant_auto_early_result_helper_marks_win_before_four_of_five_ticks():
+    ntt = {"auto": default_mutant_auto_state()}
+    arm_mutant_auto(ntt, barrier="+0.12", budget=3.0, martingale_enabled=False, step50_enabled=True)
+
+    decision = evaluate_mutant_auto_early_result(
+        ntt["auto"],
+        contract_id="early-win-1",
+        tick_count=3,
+        duration=5,
+        duration_unit="t",
+        open_profit=0.22,
+        buy_price=0.35,
+        sell_price=0.57,
+    )
+
+    assert decision["decided"] is True
+    assert decision["won"] is True
+    assert decision["result"] == "WIN"
+
+
+def test_mutant_auto_consumed_contract_ids_block_late_duplicate_settlement():
+    ntt = {"auto": default_mutant_auto_state()}
+    arm_mutant_auto(ntt, barrier="+0.12", budget=10.0, martingale_enabled=True, step50_enabled=False)
+
+    first = progress_mutant_auto_after_result(
+        ntt,
+        won=False,
+        profit=-0.35,
+        side="TOUCH",
+        contract_id="consumed-1",
+    )
+    assert first["continue"] is True
+    assert ntt["auto"]["current_stake"] == 0.70
+
+    ntt["auto"]["current_stake"] = 1.40
+    ntt["auto"]["progression_step"] = 2
+    duplicate = progress_mutant_auto_after_result(
+        ntt,
+        won=False,
+        profit=-0.35,
+        side="TOUCH",
+        contract_id="consumed-1",
+    )
+
+    assert duplicate["duplicate"] is True
+    assert ntt["auto"]["current_stake"] == 1.40
 
 
 def test_mutant_auto_progress_uses_frozen_contract_meta_for_step50_loss_chain():
@@ -1167,6 +1400,76 @@ def test_mutant_auto_runtime_state_round_trips_through_sqlite_store(tmp_path, mo
     assert restored["contract_meta"]["98765"]["auto_next_loss_stake"] == 1.35
 
 
+def test_mutant_auto_runtime_state_clears_after_auto_is_stopped(tmp_path, monkeypatch):
+    db_path = tmp_path / "mutant-auto-state-clear.sqlite"
+    monkeypatch.setattr(server, "DATABASE_URL", None)
+    monkeypatch.setattr(server, "MUTANT_AUTO_STATE_DB_PATH", str(db_path))
+
+    state = server._build_default_client_state()
+    state["auth_user"] = "mutant-user"
+    ntt = server._ensure_ntt_state(state)
+    arm_mutant_auto(
+        ntt,
+        barrier="+0.17",
+        budget=10.0,
+        selected_side="TOUCH",
+        martingale_enabled=True,
+        step50_enabled=False,
+    )
+
+    assert server._persist_mutant_auto_runtime_state("cid-clear", state, force=True) is True
+    assert server.load_mutant_auto_runtime(
+        "cid-clear",
+        database_url=None,
+        sqlite_path=str(db_path),
+    )
+
+    stop_mutant_auto(ntt, "Stopped by user.")
+
+    assert server._persist_mutant_auto_runtime_state("cid-clear", state, force=True) is True
+    assert (
+        server.load_mutant_auto_runtime(
+            "cid-clear",
+            database_url=None,
+            sqlite_path=str(db_path),
+        )
+        is None
+    )
+
+
+def test_restore_mutant_auto_runtime_ignores_stale_disabled_payload(tmp_path, monkeypatch):
+    db_path = tmp_path / "mutant-auto-state-stale.sqlite"
+    monkeypatch.setattr(server, "DATABASE_URL", None)
+    monkeypatch.setattr(server, "MUTANT_AUTO_STATE_DB_PATH", str(db_path))
+
+    payload = {
+        "version": 1,
+        "current_symbol": "R_25",
+        "ntt": {
+            "touch_barrier": "+0.17",
+            "no_touch_barrier": "+0.17",
+        },
+        "auto": default_mutant_auto_state(),
+    }
+    assert server.save_mutant_auto_runtime(
+        "cid-stale",
+        payload,
+        username="mutant-user",
+        database_url=None,
+        sqlite_path=str(db_path),
+    ) is True
+
+    restored = server._build_default_client_state()
+    restored["auth_user"] = "mutant-user"
+
+    assert server._restore_mutant_auto_runtime_state("cid-stale", restored) is False
+    assert server.load_mutant_auto_runtime(
+        "cid-stale",
+        database_url=None,
+        sqlite_path=str(db_path),
+    ) is None
+
+
 def test_resume_restored_mutant_auto_reconnects_live_contract_subscription():
     sent = []
 
@@ -1198,3 +1501,436 @@ def test_resume_restored_mutant_auto_reconnects_live_contract_subscription():
     assert sent == [{"proposal_open_contract": 1, "contract_id": "54321", "subscribe": 1}]
     assert state["contract_meta"]["54321"]["mode"] == "MUTANT_AUTO"
     assert state["contract_meta"]["54321"]["stake"] == 0.70
+
+
+def test_mutant_auto_progress_uses_frozen_active_plan_without_live_fields():
+    ntt = {"auto": default_mutant_auto_state()}
+    arm_mutant_auto(ntt, barrier="+0.12", budget=3.00, martingale_enabled=False, step50_enabled=True)
+    auto = ntt["auto"]
+    auto["progression_step"] = 1
+    auto["current_stake"] = 0.85
+    begin_mutant_auto_request(
+        auto,
+        side="NO_TOUCH",
+        symbol="R_50",
+        stake=0.85,
+        started_at=100.0,
+        step_index=1,
+        next_loss_stake=1.35,
+    )
+    auto["active_step_index"] = None
+    auto["active_next_loss_stake"] = 0.0
+    auto["active_stake"] = 0.0
+
+    result = progress_mutant_auto_after_result(
+        ntt,
+        won=False,
+        profit=-0.85,
+        side="NO_TOUCH",
+        contract_id="plan-1",
+        contract_meta={},
+    )
+
+    assert result["continue"] is True
+    assert result["next_stake"] == 1.35
+    assert ntt["auto"]["progression_step"] == 2
+    assert ntt["auto"]["current_stake"] == 1.35
+
+
+def test_run_ntt_auto_both_does_not_double_send_when_reentered_during_first_dispatch(monkeypatch):
+    sent = []
+    nested_results = []
+
+    monkeypatch.setattr(server, "_check_ntt_risk_block", lambda _state: None)
+    monkeypatch.setattr(server, "_get_open_ntt_active_entries", lambda _state: [])
+    monkeypatch.setattr(server, "_persist_mutant_auto_runtime_state", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(server, "_get_ntt_side_duration", lambda _ntt, _side: (5, "t"))
+
+    state = server._build_default_client_state()
+    state["ws_connected"] = True
+    state["ws"] = object()
+    state["balance"] = 100.0
+    state["current_symbol"] = "R_25"
+    ntt = server._ensure_ntt_state(state)
+    arm_mutant_auto(ntt, barrier="+0.17", budget=10.0, selected_side="TOUCH", martingale_enabled=True, step50_enabled=False)
+
+    def fake_send(cid, **kwargs):
+        nested_results.append(server._run_ntt_auto_both(cid, state))
+        sent.append(kwargs)
+        return True, "Trade sent"
+
+    monkeypatch.setattr(server, "_send_ntt_trade", fake_send)
+
+    ok = server._run_ntt_auto_both("cid-mutant-lock", state)
+
+    assert ok is True
+    assert len(sent) == 1
+    assert nested_results == [False]
+    assert state["ntt"]["auto"]["request_in_flight"] is True
+
+
+def test_run_ntt_auto_both_holds_unknown_state_instead_of_rearming_same_stake(monkeypatch):
+    monkeypatch.setattr(server, "_check_ntt_risk_block", lambda _state: None)
+    monkeypatch.setattr(server, "_get_open_ntt_active_entries", lambda _state: [])
+    monkeypatch.setattr(server, "_persist_mutant_auto_runtime_state", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(server.time, "time", lambda: 30.0)
+
+    state = server._build_default_client_state()
+    state["ws_connected"] = True
+    state["ws"] = SimpleNamespace(send=lambda *_args, **_kwargs: None)
+    state["balance"] = 100.0
+    state["current_symbol"] = "R_10"
+    ntt = server._ensure_ntt_state(state)
+    arm_mutant_auto(ntt, barrier="+0.17", budget=10.0, selected_side="TOUCH", martingale_enabled=True, step50_enabled=False)
+    auto = ntt["auto"]
+    begin_mutant_auto_request(
+        auto,
+        side="TOUCH",
+        symbol="R_10",
+        stake=0.35,
+        started_at=1.0,
+        step_index=0,
+        next_loss_stake=0.70,
+    )
+    auto["last_started_at"] = 1.0
+    state["req_meta"] = {}
+
+    sent = []
+    monkeypatch.setattr(server, "_send_ntt_trade", lambda *args, **kwargs: sent.append(kwargs) or (True, "Trade sent"))
+
+    ok = server._run_ntt_auto_both("cid-mutant-unknown", state)
+
+    assert ok is False
+    assert sent == []
+    assert state["ntt"]["auto"]["trade_phase"] == "UNKNOWN"
+    assert state["ntt"]["auto"]["request_in_flight"] is False
+
+
+def test_run_ntt_auto_both_clears_stale_pending_and_continues(monkeypatch):
+    sent = []
+    monkeypatch.setattr(server, "_check_ntt_risk_block", lambda _state: None)
+    monkeypatch.setattr(server, "_get_open_ntt_active_entries", lambda _state: [])
+    monkeypatch.setattr(server, "_persist_mutant_auto_runtime_state", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(server, "_get_ntt_side_duration", lambda _ntt, _side: (5, "t"))
+    monkeypatch.setattr(server.time, "time", lambda: 30.0)
+    monkeypatch.setattr(
+        server,
+        "_send_ntt_trade",
+        lambda cid, **kwargs: sent.append((cid, kwargs)) or (True, "sent"),
+    )
+
+    state = server._build_default_client_state()
+    state["ws_connected"] = True
+    state["ws"] = object()
+    state["current_symbol"] = "R_25"
+    ntt = server._ensure_ntt_state(state)
+    arm_mutant_auto(ntt, barrier="+0.17", budget=10.0, selected_side="TOUCH", martingale_enabled=True, step50_enabled=False)
+    auto = ntt["auto"]
+    auto["pending_contract_id"] = "stale-321"
+    auto["last_started_at"] = 1.0
+    auto["current_stake"] = 0.70
+    auto["progression_step"] = 1
+
+    ok = server._run_ntt_auto_both("cid-mutant-stale", state)
+
+    assert ok is True
+    assert len(sent) == 1
+    assert state["ntt"]["auto"]["pending_contract_id"] is None or state["ntt"]["auto"]["pending_contract_id"] == ""
+    assert state["ntt"]["auto"]["last_decision"] in ("SENDING", "RUNNING")
+
+
+def test_handle_on_message_buy_recovers_missing_mutant_auto_req_id(monkeypatch):
+    emitted = []
+    cid = "cid-mutant-buy-recover"
+    state = server._build_default_client_state()
+    state["ws_nonce"] = "nonce-1"
+    state["ws_connected"] = True
+    state["ws"] = SimpleNamespace(send=lambda payload: None)
+    state["current_symbol"] = "R_25"
+    ntt = server._ensure_ntt_state(state)
+    arm_mutant_auto(
+        ntt,
+        barrier="+0.17",
+        budget=3.00,
+        selected_side="NO_TOUCH",
+        martingale_enabled=False,
+        step50_enabled=True,
+    )
+    auto = ntt["auto"]
+    begin_mutant_auto_request(
+        auto,
+        side="NO_TOUCH",
+        symbol="R_25",
+        stake=0.35,
+        started_at=100.0,
+        step_index=0,
+        next_loss_stake=0.85,
+    )
+    state["req_meta"] = {
+        "pending-auto": {
+            "profile": "NTT",
+            "mode": "MUTANT_AUTO",
+            "type": "NO_TOUCH",
+            "stake": 0.35,
+            "symbol": "R_25",
+            "time": "10:00:00",
+            "duration": 5,
+            "duration_unit": "t",
+            "barrier": "+0.17",
+            "request_started_at": 100.0,
+            "budget_reservation": {"enabled": False, "stake": 0.35},
+            "auto_mode": "STEP50",
+            "auto_mode_label": "50 CENTS MARTINGALE",
+            "auto_step_index": 0,
+            "auto_current_stake": 0.35,
+            "auto_next_loss_stake": 0.85,
+        }
+    }
+    server.clients[cid] = state
+    monkeypatch.setattr(server.socketio, "emit", lambda *args, **kwargs: emitted.append((args, kwargs)))
+    monkeypatch.setattr(server, "_seqvix_jokerjoe_on_buy_confirmed", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "handle_auto_session_buy_confirmed", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_persist_mutant_auto_runtime_state", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(server, "_schedule_contract_open_refresh", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_ntt_payload_response", lambda _state: {"ntt": {"auto_both": server._serialize_ntt_auto_both(_state)}})
+
+    try:
+        server.handle_on_message(
+            cid,
+            state["ws"],
+            json.dumps({"buy": {"contract_id": "55555"}}),
+            "nonce-1",
+        )
+    finally:
+        server.clients.pop(cid, None)
+
+    assert state["req_meta"] == {}
+    assert state["contract_meta"]["55555"]["mode"] == "MUTANT_AUTO"
+    assert state["ntt"]["auto"]["pending_contract_id"] == "55555"
+    assert state["ntt"]["auto"]["request_in_flight"] is False
+    assert state["ntt"]["auto"]["trade_phase"] == "LIVE"
+
+
+def test_process_contract_recovers_missing_mutant_auto_meta_and_rearms(monkeypatch):
+    reruns = []
+    monkeypatch.setattr(server.socketio, "emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "send_stats_update", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_emit_balance_payload", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_persist_mutant_auto_runtime_state", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(server, "_run_ntt_auto_both", lambda cid, _state: reruns.append((cid, _state["ntt"]["auto"]["current_stake"])) or True)
+
+    state = server._build_default_client_state()
+    state["active_profile"] = "NTT"
+    state["balance"] = 100.0
+    state["last_live_balance"] = 100.0
+    state["strategies"]["NTT"] = SimpleNamespace(
+        risk_block_reason=None,
+        on_contract=lambda contract, balance: None,
+        get_last_trade_entry=lambda: {"type": "NO TOUCH", "result": "LOSS", "profit": -0.35},
+    )
+    ntt = server._ensure_ntt_state(state)
+    arm_mutant_auto(
+        ntt,
+        barrier="+0.12",
+        budget=3.00,
+        selected_side="NO_TOUCH",
+        martingale_enabled=False,
+        step50_enabled=True,
+    )
+    auto = ntt["auto"]
+    begin_mutant_auto_request(
+        auto,
+        side="NO_TOUCH",
+        symbol="R_10",
+        stake=0.35,
+        started_at=100.0,
+        step_index=0,
+        next_loss_stake=0.85,
+    )
+    server.confirm_mutant_auto_trade(
+        auto,
+        contract_id="step50-recover",
+        contract_meta={
+            "profile": "NTT",
+            "mode": "MUTANT_AUTO",
+            "type": "NO_TOUCH",
+            "stake": 0.35,
+            "symbol": "R_10",
+            "duration": 5,
+            "duration_unit": "t",
+            "barrier": "+0.12",
+            "auto_mode": "STEP50",
+            "auto_mode_label": "50 CENTS MARTINGALE",
+            "auto_step_index": 0,
+            "auto_current_stake": 0.35,
+            "auto_next_loss_stake": 0.85,
+        },
+    )
+    server.clients["cid-mutant-settle-recover"] = state
+
+    try:
+        server.process_contract(
+            "cid-mutant-settle-recover",
+            {
+                "contract_id": "step50-recover",
+                "status": "sold",
+                "is_sold": True,
+                "profit": -0.35,
+                "buy_price": 0.35,
+                "sell_price": 0.0,
+            },
+        )
+    finally:
+        server.clients.pop("cid-mutant-settle-recover", None)
+
+    assert reruns == [("cid-mutant-settle-recover", 0.85)]
+    assert state["ntt"]["auto"]["enabled"] is True
+    assert state["ntt"]["auto"]["current_stake"] == 0.85
+
+
+def test_handle_on_message_open_contract_waits_for_finish_before_changing_mutant_progression(monkeypatch):
+    reruns = []
+    monkeypatch.setattr(server.socketio, "emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_persist_mutant_auto_runtime_state", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(server, "_run_ntt_auto_both", lambda cid, _state: reruns.append((cid, _state["ntt"]["auto"]["current_stake"])) or True)
+
+    cid = "cid-mutant-open-early"
+    state = server._build_default_client_state()
+    state["active_profile"] = "NTT"
+    state["ws_connected"] = True
+    state["ws"] = SimpleNamespace(send=lambda *_args, **_kwargs: None)
+    state["current_symbol"] = "R_25"
+    ntt = server._ensure_ntt_state(state)
+    arm_mutant_auto(
+        ntt,
+        barrier="+0.12",
+        budget=10.0,
+        selected_side="TOUCH",
+        martingale_enabled=True,
+        step50_enabled=False,
+    )
+    auto = ntt["auto"]
+    begin_mutant_auto_request(
+        auto,
+        side="TOUCH",
+        symbol="R_25",
+        stake=0.35,
+        started_at=100.0,
+        step_index=0,
+        next_loss_stake=0.70,
+    )
+    server.confirm_mutant_auto_trade(
+        auto,
+        contract_id="early-open-1",
+        contract_meta={
+            "profile": "NTT",
+            "mode": "MUTANT_AUTO",
+            "type": "TOUCH",
+            "stake": 0.35,
+            "symbol": "R_25",
+            "duration": 5,
+            "duration_unit": "t",
+            "barrier": "+0.12",
+            "auto_mode": "MARTINGALE",
+            "auto_mode_label": "MARTINGALE",
+            "auto_step_index": 0,
+            "auto_current_stake": 0.35,
+            "auto_next_loss_stake": 0.70,
+        },
+    )
+    state.setdefault("contract_meta", {})["early-open-1"] = {
+        "profile": "NTT",
+        "mode": "MUTANT_AUTO",
+        "type": "TOUCH",
+        "stake": 0.35,
+        "symbol": "R_25",
+        "duration": 5,
+        "duration_unit": "t",
+        "barrier": "+0.12",
+        "auto_mode": "MARTINGALE",
+        "auto_mode_label": "MARTINGALE",
+        "auto_step_index": 0,
+        "auto_current_stake": 0.35,
+        "auto_next_loss_stake": 0.70,
+    }
+    server.clients[cid] = state
+
+    try:
+        server.handle_on_message(
+            cid,
+            state["ws"],
+            json.dumps({
+                "proposal_open_contract": {
+                    "contract_id": "early-open-1",
+                        "status": "open",
+                        "is_sold": False,
+                        "profit": -0.35,
+                        "buy_price": 0.35,
+                        "sell_price": None,
+                        "tick_count": 4,
+                    }
+                }),
+            state.get("ws_nonce"),
+        )
+    finally:
+        server.clients.pop(cid, None)
+
+    assert reruns == []
+    assert state["ntt"]["auto"]["current_stake"] == 0.35
+    assert state["ntt"]["auto"]["enabled"] is True
+    assert state["ntt"]["auto"]["last_trade_result"] is None
+
+
+def test_process_contract_ignores_duplicate_ntt_settlement(monkeypatch):
+    emitted = []
+    finalize_calls = []
+    monkeypatch.setattr(server.socketio, "emit", lambda *args, **kwargs: emitted.append((args, kwargs)))
+    monkeypatch.setattr(server, "send_stats_update", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_emit_balance_payload", lambda *_args, **_kwargs: None)
+
+    def fake_finalize_ntt_contract(state, contract, balance, meta=None):
+        finalize_calls.append(contract.get("contract_id"))
+        return {
+            "profile": "NTT",
+            "type": "NO TOUCH",
+            "result": "LOSS",
+            "profit": -0.35,
+            "contract_id": contract.get("contract_id"),
+        }
+
+    monkeypatch.setattr(server, "_finalize_ntt_contract", fake_finalize_ntt_contract)
+
+    state = server._build_default_client_state()
+    state["active_profile"] = "NTT"
+    state["balance"] = 100.0
+    state["last_live_balance"] = 100.0
+    state["strategies"]["NTT"] = SimpleNamespace(risk_block_reason=None)
+    state.setdefault("contract_meta", {})["dup-ntt-1"] = {
+        "profile": "NTT",
+        "type": "NO_TOUCH",
+        "stake": 0.35,
+        "symbol": "R_25",
+        "time": "10:00:00",
+        "duration": 5,
+        "duration_unit": "t",
+    }
+    server._mark_ntt_contract_processed(state, "dup-ntt-1")
+    server.clients["cid-dup-ntt"] = state
+
+    try:
+        server.process_contract(
+            "cid-dup-ntt",
+            {
+                "contract_id": "dup-ntt-1",
+                "status": "sold",
+                "is_sold": True,
+                "profit": -0.35,
+                "buy_price": 0.35,
+                "sell_price": 0.0,
+            },
+        )
+    finally:
+        server.clients.pop("cid-dup-ntt", None)
+
+    assert finalize_calls == []
+    assert not any(args and args[0] == "trade_result" for args, _kwargs in emitted)
