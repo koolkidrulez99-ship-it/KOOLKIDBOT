@@ -31,6 +31,39 @@ from mutant_auto_store import (
     load_mutant_auto_runtime,
     save_mutant_auto_runtime,
 )
+from trade_execution_state import (
+    STATE_CONFIRMED as TRADE_STATE_CONFIRMED,
+    STATE_FAILED as TRADE_STATE_FAILED,
+    STATE_RECONCILING as TRADE_STATE_RECONCILING,
+    STATE_SUBMITTING as TRADE_STATE_SUBMITTING,
+    describe_record as describe_trade_execution_record,
+    ensure_trade_execution_store,
+    get_execution_by_contract_id,
+    get_execution_by_req_id,
+    get_records_needing_reconcile,
+    handle_reconcile_response,
+    mark_buy_confirmed,
+    mark_contract_settled,
+    mark_disconnect_reconciling,
+    mark_execution_failed,
+    mark_execution_reconciling,
+    mark_trade_placed_emitted,
+    mark_trade_result_emitted,
+    normalize_contract_id as normalize_trade_execution_contract_id,
+    prune_trade_execution_store,
+    rebuild_meta_from_execution,
+    register_buy_submission,
+    restore_trade_execution_state,
+    snapshot_trade_execution_state,
+    start_reconcile_batch,
+    update_execution_meta_snapshot,
+)
+from trade_runtime_store import (
+    clear_trade_runtime,
+    load_trade_runtime,
+    save_trade_runtime,
+)
+from ws_recovery import build_post_authorize_requests
 
 # STRATEGIES
 from strategies.koolkid import KoolKidStrategy
@@ -240,6 +273,8 @@ STATIC_ASSET_VERSION = _compute_static_asset_version()
 
 # Render / production Postgres (persistent users across deploys/restarts)
 DATABASE_URL = normalize_database_url(os.environ.get("DATABASE_URL"))
+TRADE_RUNTIME_STATE_DB_PATH = (os.environ.get("TRADE_RUNTIME_STATE_DB_PATH") or DB_FILE).strip() or DB_FILE
+BUY_CONFIRM_TIMEOUT_SEC = max(3.0, min(5.0, float(os.environ.get("BUY_CONFIRM_TIMEOUT_SEC", "4.0") or 4.0)))
 
 try:
     import psycopg2
@@ -1406,6 +1441,7 @@ def _build_default_client_state():
         "ws_connect_started_at": 0.0,
         "ws_authorize_deadline_at": 0.0,
         "ws_stale_notified_at": 0.0,
+        "ws_manual_disconnect": False,
         "active_profile": "KOOLKID",
         # Keep backend default market in sync with the frontend selector default.
         "current_symbol": "R_10",
@@ -1518,6 +1554,7 @@ def _build_default_client_state():
         "loginid": "UNKNOWN",
         "auth_user": "",
         "mutant_auto_store_loaded": False,
+        "trade_runtime_store_loaded": False,
         "mutant_auto_restore_pending": False,
         "_runtime_locks": {},
         "profile_budgets": _new_profile_budget_map(),
@@ -1525,6 +1562,7 @@ def _build_default_client_state():
         "req_meta": {},          # req_id -> meta
         "_proposal_waiters": {}, # req_id -> {"event","proposal","error"}
         "contract_meta": {},     # contract_id -> meta
+        "trade_execution": ensure_trade_execution_store({}),
         "last_seen": time.time(),  # heartbeat (page open)
         "strategies": {
             "KOOLKID": KoolKidStrategy(),
@@ -1544,10 +1582,17 @@ def disconnect_client(client_id, reason="manual", emit=True):
         return
 
     logger.info(f"[{client_id}] 🔻 disconnect_client: reason={reason}")
+    if str(reason or "").strip().lower() in {"manual", "client_disconnect", "logout"}:
+        state["ws_manual_disconnect"] = True
+    _mark_trade_execution_disconnect_reconciling(client_id, state, reason=f"disconnect:{reason}")
 
     try:
         stop_mutant_auto(_ensure_ntt_state(state), f"Mutant AUTO is OFF ({reason}).")
         _persist_mutant_auto_runtime_state(client_id, state)
+    except Exception:
+        pass
+    try:
+        _persist_trade_runtime_state(client_id, state, force=True)
     except Exception:
         pass
 
@@ -1599,6 +1644,7 @@ def get_client_state():
         init_client(cid)
     _sync_client_identity_for_state(clients[cid])
     _restore_mutant_auto_runtime_state(cid, clients[cid])
+    _restore_trade_runtime_state(cid, clients[cid])
     _touch_client(cid)
     return cid, clients[cid]
 
@@ -1757,6 +1803,452 @@ def _persist_mutant_auto_runtime_state(client_id, state, *, force=False):
     except Exception as exc:
         logger.warning(f"[{client_id}] Mutant AUTO state save failed: {exc}")
         return False
+
+
+def _log_runtime_debug(event, client_id=None, **fields):
+    safe_fields = {}
+    for key, value in (fields or {}).items():
+        try:
+            json.dumps(value)
+            safe_fields[str(key)] = value
+        except Exception:
+            safe_fields[str(key)] = str(value)
+    prefix = f"[{client_id}] " if client_id not in (None, "") else ""
+    logger.info("%sBOT_RUNTIME_DEBUG %s %s", prefix, str(event), json.dumps(safe_fields, sort_keys=True))
+
+
+def _build_trade_runtime_persisted_payload(state):
+    if not isinstance(state, dict):
+        return None
+    scanner = state.get("unchain_scanner") if isinstance(state.get("unchain_scanner"), dict) else {}
+    golden = state.get("koolkid_golden_card") if isinstance(state.get("koolkid_golden_card"), dict) else {}
+    return {
+        "version": 1,
+        "api_token": str(state.get("api_token") or "").strip() or None,
+        "ws_manual_disconnect": bool(state.get("ws_manual_disconnect")),
+        "current_symbol": str(state.get("current_symbol") or "").upper() or None,
+        "human_symbol": str(state.get("human_symbol") or "").upper() or None,
+        "active_profile": str(state.get("active_profile") or "").upper() or None,
+        "unchain_scanner": {
+            "running": bool(scanner.get("running")),
+            "symbols": list(scanner.get("symbols") or []),
+        },
+        "koolkid_golden_card": {
+            "running": bool(golden.get("running")),
+            "symbols": list(golden.get("symbols") or []),
+        },
+        "trade_execution": snapshot_trade_execution_state(state),
+    }
+
+
+def _should_clear_trade_runtime_state(state):
+    if not isinstance(state, dict):
+        return True
+    if str(state.get("api_token") or "").strip():
+        return False
+    scanner = state.get("unchain_scanner") if isinstance(state.get("unchain_scanner"), dict) else {}
+    if bool(scanner.get("running")) and list(scanner.get("symbols") or []):
+        return False
+    golden = state.get("koolkid_golden_card") if isinstance(state.get("koolkid_golden_card"), dict) else {}
+    if bool(golden.get("running")) and list(golden.get("symbols") or []):
+        return False
+    snapshot = snapshot_trade_execution_state(state)
+    return not bool(list(snapshot.get("records") or []))
+
+
+def _persist_trade_runtime_state(client_id, state, *, force=False):
+    if not isinstance(state, dict):
+        return False
+    now_ts = time.time()
+    if not force:
+        try:
+            last_saved_at = float(state.get("trade_runtime_last_saved_at", 0.0) or 0.0)
+        except Exception:
+            last_saved_at = 0.0
+        if last_saved_at > 0.0 and (now_ts - last_saved_at) < 0.75:
+            return False
+    username = _sync_client_identity_for_state(state) or str(state.get("auth_user") or "").strip().lower()
+    if not username and not force:
+        return False
+    prune_trade_execution_store(state)
+    if _should_clear_trade_runtime_state(state):
+        try:
+            return bool(
+                clear_trade_runtime(
+                    client_id,
+                    database_url=DATABASE_URL,
+                    sqlite_path=TRADE_RUNTIME_STATE_DB_PATH,
+                )
+            )
+        except Exception as exc:
+            logger.warning(f"[{client_id}] Trade runtime state clear failed: {exc}")
+            return False
+    payload = _build_trade_runtime_persisted_payload(state)
+    if not isinstance(payload, dict):
+        return False
+    try:
+        saved = bool(
+            save_trade_runtime(
+                client_id,
+                payload,
+                username=username,
+                database_url=DATABASE_URL,
+                sqlite_path=TRADE_RUNTIME_STATE_DB_PATH,
+            )
+        )
+        if saved:
+            state["trade_runtime_last_saved_at"] = now_ts
+        return saved
+    except Exception as exc:
+        logger.warning(f"[{client_id}] Trade runtime state save failed: {exc}")
+        return False
+
+
+def _restore_trade_runtime_state(client_id, state):
+    if not isinstance(state, dict) or state.get("trade_runtime_store_loaded"):
+        return False
+    state["trade_runtime_store_loaded"] = True
+    username = _sync_client_identity_for_state(state) or str(state.get("auth_user") or "").strip().lower()
+    if not username:
+        return False
+    try:
+        payload = load_trade_runtime(
+            client_id,
+            database_url=DATABASE_URL,
+            sqlite_path=TRADE_RUNTIME_STATE_DB_PATH,
+        )
+    except Exception as exc:
+        logger.warning(f"[{client_id}] Trade runtime state load failed: {exc}")
+        return False
+    if not isinstance(payload, dict):
+        return False
+    restored_symbol = str(payload.get("current_symbol") or "").upper().strip()
+    if restored_symbol:
+        state["current_symbol"] = restored_symbol
+    restored_api_token = str(payload.get("api_token") or "").strip()
+    if restored_api_token and not str(state.get("api_token") or "").strip():
+        state["api_token"] = restored_api_token
+    state["ws_manual_disconnect"] = bool(payload.get("ws_manual_disconnect"))
+    restored_human_symbol = str(payload.get("human_symbol") or "").upper().strip()
+    if restored_human_symbol:
+        state["human_symbol"] = restored_human_symbol
+    restored_scanner = payload.get("unchain_scanner") if isinstance(payload.get("unchain_scanner"), dict) else {}
+    if isinstance(restored_scanner, dict):
+        scanner = state.get("unchain_scanner") if isinstance(state.get("unchain_scanner"), dict) else {}
+        scanner["running"] = bool(restored_scanner.get("running"))
+        scanner["symbols"] = list(restored_scanner.get("symbols") or [])
+    restored_golden = payload.get("koolkid_golden_card") if isinstance(payload.get("koolkid_golden_card"), dict) else {}
+    if isinstance(restored_golden, dict):
+        golden = state.get("koolkid_golden_card") if isinstance(state.get("koolkid_golden_card"), dict) else {}
+        golden["running"] = bool(restored_golden.get("running"))
+        golden["symbols"] = list(restored_golden.get("symbols") or [])
+    restored_records = restore_trade_execution_state(state, payload.get("trade_execution") or {})
+    for record in restored_records:
+        if not isinstance(record, dict):
+            continue
+        if str(record.get("pending_state") or "").strip().lower() == TRADE_STATE_CONFIRMED:
+            contract_id = normalize_trade_execution_contract_id(record.get("contract_id"))
+            if not contract_id:
+                continue
+            meta = rebuild_meta_from_execution(record)
+            state.setdefault("contract_meta", {})[contract_id] = meta
+            state["contract_meta"][str(contract_id)] = meta
+    if restored_records:
+        _log_runtime_debug(
+            "trade_runtime_restored",
+            client_id,
+            restored_records=[describe_trade_execution_record(record) for record in restored_records],
+        )
+        return True
+    return False
+
+
+def _register_trade_execution_submission(client_id, state, req_id, meta):
+    record = register_buy_submission(
+        state,
+        req_id,
+        meta,
+        confirm_timeout_sec=BUY_CONFIRM_TIMEOUT_SEC,
+    )
+    if isinstance(record, dict):
+        _log_runtime_debug(
+            "buy_sent",
+            client_id,
+            req_id=record.get("req_id"),
+            profile=record.get("profile"),
+            type=record.get("type"),
+            symbol=record.get("symbol"),
+            current_stake=record.get("stake"),
+        )
+        _log_runtime_debug(
+            "pending_state_changed",
+            client_id,
+            req_id=record.get("req_id"),
+            pending_state=record.get("pending_state"),
+            profile=record.get("profile"),
+            symbol=record.get("symbol"),
+        )
+        _persist_trade_runtime_state(client_id, state)
+    return record
+
+
+def _mark_trade_execution_buy_confirmed(client_id, state, req_id, contract_id, *, meta=None, source="buy_confirmed"):
+    if isinstance(meta, dict):
+        update_execution_meta_snapshot(state, req_id, meta)
+    record = mark_buy_confirmed(state, req_id, contract_id, source=source)
+    if isinstance(record, dict):
+        _log_runtime_debug(
+            "buy_confirmed",
+            client_id,
+            req_id=record.get("req_id"),
+            contract_id=record.get("contract_id"),
+            profile=record.get("profile"),
+            pending_state=record.get("pending_state"),
+        )
+        _log_runtime_debug(
+            "pending_state_changed",
+            client_id,
+            req_id=record.get("req_id"),
+            contract_id=record.get("contract_id"),
+            pending_state=record.get("pending_state"),
+            profile=record.get("profile"),
+        )
+        _persist_trade_runtime_state(client_id, state)
+    return record
+
+
+def _mark_trade_execution_failed(client_id, state, *, req_id=None, contract_id=None, reason="", source="failed"):
+    record = mark_execution_failed(state, req_id=req_id, contract_id=contract_id, reason=reason, source=source)
+    if isinstance(record, dict):
+        _log_runtime_debug(
+            "pending_state_changed",
+            client_id,
+            req_id=record.get("req_id"),
+            contract_id=record.get("contract_id"),
+            pending_state=record.get("pending_state"),
+            profile=record.get("profile"),
+            reason=reason,
+        )
+        _persist_trade_runtime_state(client_id, state)
+    return record
+
+
+def _mark_trade_execution_disconnect_reconciling(client_id, state, *, reason):
+    changed = mark_disconnect_reconciling(state, reason=reason)
+    for record in changed:
+        _log_runtime_debug(
+            "pending_state_changed",
+            client_id,
+            req_id=record.get("req_id"),
+            pending_state=record.get("pending_state"),
+            profile=record.get("profile"),
+            reason=reason,
+        )
+    if changed:
+        _persist_trade_runtime_state(client_id, state)
+    return changed
+
+
+def _mark_trade_execution_settled(client_id, state, contract_id, *, result=None):
+    record = mark_contract_settled(state, contract_id, result=result)
+    if isinstance(record, dict):
+        _log_runtime_debug(
+            "pending_state_changed",
+            client_id,
+            req_id=record.get("req_id"),
+            contract_id=record.get("contract_id"),
+            pending_state=record.get("pending_state"),
+            profile=record.get("profile"),
+            last_trade_result=result,
+        )
+        _persist_trade_runtime_state(client_id, state)
+    return record
+
+
+def _emit_trade_placed_from_execution(client_id, state, contract_id, meta):
+    if not mark_trade_placed_emitted(state, contract_id=contract_id):
+        return False
+    safe_meta = meta if isinstance(meta, dict) else {}
+    duration_val = None
+    duration_unit_val = _clean_unchain_duration_unit(safe_meta.get("duration_unit", "t"))
+    countdown_seconds = None
+    try:
+        duration_val = int(float(safe_meta.get("duration")))
+    except Exception:
+        duration_val = None
+    if duration_val is not None:
+        if duration_unit_val == "s":
+            countdown_seconds = int(duration_val)
+        elif duration_unit_val == "m":
+            countdown_seconds = int(duration_val) * 60
+        elif duration_unit_val == "h":
+            countdown_seconds = int(duration_val) * 3600
+    socketio.emit("trade_placed", {
+        "profile": safe_meta.get("profile"),
+        "type": safe_meta.get("type"),
+        "barrier": safe_meta.get("barrier"),
+        "stake": safe_meta.get("stake"),
+        "symbol": safe_meta.get("symbol"),
+        "time": safe_meta.get("time") or now_time(),
+        "contract_id": contract_id,
+        "duration": duration_val,
+        "duration_unit": duration_unit_val if duration_val is not None else None,
+        "countdown_remaining": duration_val,
+        "countdown_unit": duration_unit_val if duration_val is not None else None,
+        "countdown_seconds": countdown_seconds,
+        "status": "PENDING",
+        "result": "PENDING",
+        "pending": True,
+        "pending_state": TRADE_STATE_CONFIRMED,
+    }, room=client_id)
+    return True
+
+
+def _apply_trade_reconcile_result(client_id, state, ws, reconcile_result):
+    if not isinstance(reconcile_result, dict) or not reconcile_result.get("completed"):
+        return False
+    changed = False
+    for item in list(reconcile_result.get("confirmed") or []):
+        if not isinstance(item, dict):
+            continue
+        req_id = item.get("req_id")
+        contract_id = normalize_trade_execution_contract_id(item.get("contract_id"))
+        meta = item.get("meta_snapshot") if isinstance(item.get("meta_snapshot"), dict) else {}
+        if not req_id or not contract_id:
+            continue
+        try:
+            _pull_req_meta_by_req_id(state, req_id)
+        except Exception:
+            pass
+        state.setdefault("contract_meta", {})[contract_id] = meta
+        state["contract_meta"][str(contract_id)] = meta
+        _emit_trade_placed_from_execution(client_id, state, contract_id, meta)
+        try:
+            ws.send(json.dumps({
+                "proposal_open_contract": 1,
+                "contract_id": int(contract_id),
+                "subscribe": 1,
+            }))
+        except Exception:
+            try:
+                ws.send(json.dumps({
+                    "proposal_open_contract": 1,
+                    "contract_id": contract_id,
+                    "subscribe": 1,
+                }))
+            except Exception:
+                pass
+        _schedule_contract_open_refresh(client_id, state.get("ws_nonce"), contract_id, delays=(0.18, 0.55, 1.45, 3.2))
+        _log_runtime_debug(
+            "reconcile_result",
+            client_id,
+            req_id=req_id,
+            contract_id=contract_id,
+            outcome="confirmed",
+            source=item.get("source"),
+        )
+        changed = True
+    for item in list(reconcile_result.get("failed") or []):
+        if not isinstance(item, dict):
+            continue
+        req_id = item.get("req_id")
+        if req_id:
+            try:
+                _cleanup_failed_buy_request(state, req_id)
+            except Exception:
+                pass
+        _mark_trade_execution_failed(
+            client_id,
+            state,
+            req_id=req_id,
+            contract_id=item.get("contract_id"),
+            reason=item.get("reason") or "buy_confirmation_missing",
+            source="reconcile_failed",
+        )
+        _log_runtime_debug(
+            "reconcile_result",
+            client_id,
+            req_id=req_id,
+            contract_id=item.get("contract_id"),
+            outcome="failed",
+            reason=item.get("reason") or "buy_confirmation_missing",
+        )
+        changed = True
+    if changed:
+        _emit_balance_payload(client_id, state)
+        _persist_trade_runtime_state(client_id, state)
+    return changed
+
+
+def _maybe_start_trade_reconcile(client_id, state, *, reason="", force=False):
+    if not isinstance(state, dict):
+        return False
+    prune_trade_execution_store(state)
+    if not force and not get_records_needing_reconcile(state):
+        return False
+    if not state.get("ws_connected") or not state.get("ws"):
+        _mark_ws_unhealthy_and_reconnect(
+            client_id,
+            state,
+            "Deriv connection is unavailable while reconciling pending trades. Reconnecting now...",
+            emit_error=False,
+        )
+        return False
+    batch = start_reconcile_batch(state, _new_req_id)
+    if not isinstance(batch, dict):
+        return False
+    ws = state.get("ws")
+    try:
+        for payload in list(batch.get("requests") or []):
+            ws.send(json.dumps(payload))
+    except Exception:
+        _mark_ws_unhealthy_and_reconnect(
+            client_id,
+            state,
+            "Deriv reconciling request failed. Reconnecting now...",
+            emit_error=False,
+        )
+        return False
+    _log_runtime_debug(
+        "reconcile_started",
+        client_id,
+        reason=reason or "buy_confirmation_reconcile",
+        candidates=[describe_trade_execution_record(record) for record in get_records_needing_reconcile(state)],
+    )
+    _persist_trade_runtime_state(client_id, state)
+    return True
+
+
+def _check_trade_execution_timeouts(client_id, state, *, now_ts=None):
+    now_value = float(now_ts if now_ts is not None else time.time())
+    candidates = get_records_needing_reconcile(state, now_ts=now_value)
+    if not candidates:
+        return False
+    for record in candidates:
+        if str(record.get("pending_state") or "").strip().lower() == TRADE_STATE_SUBMITTING:
+            mark_execution_reconciling(
+                state,
+                req_id=record.get("req_id"),
+                reason="buy_confirmation_timeout",
+                now_ts=now_value,
+            )
+            _log_runtime_debug(
+                "buy_timeout",
+                client_id,
+                req_id=record.get("req_id"),
+                profile=record.get("profile"),
+                symbol=record.get("symbol"),
+                current_stake=record.get("stake"),
+            )
+            _log_runtime_debug(
+                "pending_state_changed",
+                client_id,
+                req_id=record.get("req_id"),
+                pending_state=TRADE_STATE_RECONCILING,
+                profile=record.get("profile"),
+            )
+    _persist_trade_runtime_state(client_id, state)
+    return _maybe_start_trade_reconcile(client_id, state, reason="buy_confirmation_timeout", force=True)
 
 
 def _restore_mutant_auto_runtime_state(client_id, state):
@@ -2698,6 +3190,10 @@ def heartbeat():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
     cid, _state = get_client_state()
+    try:
+        _persist_trade_runtime_state(cid, _state)
+    except Exception:
+        pass
     return jsonify({"status": "ok", "client_id": cid})
 
 
@@ -2945,6 +3441,7 @@ def send_buy(client_id, contract_type, stake, symbol, barrier, duration=1, durat
         "duration_unit": duration_unit,
         "budget_reservation": budget_reservation,
     }
+    _register_trade_execution_submission(client_id, state, req_id, state["req_meta"][req_id])
 
     payload = {
         "req_id": req_id,
@@ -2971,6 +3468,13 @@ def send_buy(client_id, contract_type, stake, symbol, barrier, duration=1, durat
             _pull_req_meta_by_req_id(state, req_id)
         except Exception:
             pass
+        _mark_trade_execution_failed(
+            client_id,
+            state,
+            req_id=req_id,
+            reason="send_failed",
+            source="send_exception",
+        )
         return False, str(e)
 
 
@@ -3062,6 +3566,7 @@ def send_buy_with_profile(
         "duration_unit": duration_unit,
         "budget_reservation": budget_reservation,
     }
+    _register_trade_execution_submission(client_id, state, req_id, state["req_meta"][req_id])
 
     payload = {
         "req_id": req_id,
@@ -3090,6 +3595,13 @@ def send_buy_with_profile(
             _pull_req_meta_by_req_id(state, req_id)
         except Exception:
             pass
+        _mark_trade_execution_failed(
+            client_id,
+            state,
+            req_id=req_id,
+            reason="send_failed",
+            source="send_exception",
+        )
         try:
             _release_profile_budget_reservation(state, budget_reservation)
             _emit_balance_payload(client_id, state)
@@ -3148,6 +3660,7 @@ def place_risefall_order(client_id, signal):
         "duration": duration,
         "budget_reservation": budget_reservation,
     }
+    _register_trade_execution_submission(client_id, state, req_id, state["req_meta"][req_id])
 
     payload = {
         "req_id": req_id,
@@ -3174,6 +3687,13 @@ def place_risefall_order(client_id, signal):
             _pull_req_meta_by_req_id(state, req_id)
         except Exception:
             pass
+        _mark_trade_execution_failed(
+            client_id,
+            state,
+            req_id=req_id,
+            reason="send_failed",
+            source="send_exception",
+        )
         try:
             _release_profile_budget_reservation(state, budget_reservation)
             _emit_balance_payload(client_id, state)
@@ -3773,6 +4293,9 @@ def _mark_ws_unhealthy_and_reconnect(client_id, state, message, *, emit_error=Tr
     if not state:
         return
     now_ts = time.time()
+    state["ws_manual_disconnect"] = False
+    _mark_trade_execution_disconnect_reconciling(client_id, state, reason="websocket_reconnect")
+    _log_runtime_debug("websocket_reconnect", client_id, reason=str(message or ""))
     try:
         auto = ensure_mutant_auto_state(_ensure_ntt_state(state))
         if bool(auto.get("enabled") or auto.get("request_in_flight") or auto.get("pending_contract_id")):
@@ -4965,6 +5488,7 @@ def _maybe_force_ntt_close_on_countdown(client_id, state):
         settled_entry["result_source"] = "BOT_LOCAL_COUNTDOWN"
         _mark_ntt_contract_processed(state, contract_id)
         _pull_contract_meta(state, contract_id)
+        _mark_trade_execution_settled(client_id, state, contract_id, result=settled_entry.get("result"))
         if is_mutant_auto_contract:
             try:
                 with _get_mutant_auto_runtime_lock(state):
@@ -4984,7 +5508,8 @@ def _maybe_force_ntt_close_on_countdown(client_id, state):
                         )
             except Exception:
                 pass
-        socketio.emit("trade_result", settled_entry, room=client_id)
+        if mark_trade_result_emitted(state, contract_id=contract_id):
+            socketio.emit("trade_result", settled_entry, room=client_id)
         settled.append(str(contract_id))
 
     if settled:
@@ -5346,6 +5871,7 @@ def _send_ntt_trade(
     if isinstance(extra_meta, dict):
         req_meta.update(extra_meta)
     state.setdefault("req_meta", {})[req_id] = req_meta
+    _register_trade_execution_submission(client_id, state, req_id, req_meta)
     payload = {
         "req_id": req_id,
         "buy": 1,
@@ -5372,6 +5898,13 @@ def _send_ntt_trade(
             _pull_req_meta_by_req_id(state, req_id)
         except Exception:
             pass
+        _mark_trade_execution_failed(
+            client_id,
+            state,
+            req_id=req_id,
+            reason="send_failed",
+            source="send_exception",
+        )
         try:
             _release_profile_budget_reservation(state, budget_reservation)
             if emit_balance:
@@ -7092,7 +7625,9 @@ def _maybe_force_unchain_close_on_countdown(client_id, state):
         settled_entry["result_source"] = "BOT_LOCAL_COUNTDOWN"
         _mark_unchain_contract_processed(state, contract_id)
         _pull_contract_meta(state, contract_id)
-        socketio.emit("trade_result", settled_entry, room=client_id)
+        _mark_trade_execution_settled(client_id, state, contract_id, result=settled_entry.get("result"))
+        if mark_trade_result_emitted(state, contract_id=contract_id):
+            socketio.emit("trade_result", settled_entry, room=client_id)
         settled.append(str(contract_id))
 
     if settled:
@@ -12053,6 +12588,7 @@ def _send_unchain_buy(client_id, *, stake, symbol, growth_rate, mode="AUTO", exi
         "growth_rate": float(growth_rate),
     }
     state.setdefault("req_meta", {})[req_id] = req_meta
+    _register_trade_execution_submission(client_id, state, req_id, req_meta)
 
     # mark pending in strategy immediately to prevent duplicate entries before buy ack
     try:
@@ -12089,6 +12625,13 @@ def _send_unchain_buy(client_id, *, stake, symbol, growth_rate, mode="AUTO", exi
             state.get("req_meta", {}).pop(req_id, None)
         except Exception:
             pass
+        _mark_trade_execution_failed(
+            client_id,
+            state,
+            req_id=req_id,
+            reason="send_failed",
+            source="send_exception",
+        )
         return False, str(e)
 
 
@@ -13584,6 +14127,7 @@ def handle_on_message(client_id, ws, message, expected_nonce):
     try:
         state["ws_last_message_at"] = time.time()
         data = json.loads(message)
+        _check_trade_execution_timeouts(client_id, state)
 
         echo_req = data.get("echo_req") or {}
         req_id = data.get("req_id")
@@ -13605,6 +14149,13 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 failed_buy_meta = _cleanup_failed_buy_request(state, req_id)
             except Exception:
                 pass
+            _mark_trade_execution_failed(
+                client_id,
+                state,
+                req_id=req_id,
+                reason=(data.get("error") or {}).get("message", "Unknown API Error"),
+                source="api_error",
+            )
             try:
                 _emit_balance_payload(client_id, state)
             except Exception:
@@ -13678,6 +14229,7 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 state["session_start_balance"] = balance
 
             logger.info(f"[{client_id}] ✅ Authorized: {loginid} Balance={balance}")
+            _log_runtime_debug("authorize_success", client_id, loginid=loginid, balance=balance)
 
             socketio.emit("connection_status", {
                 "connected": True,
@@ -13687,15 +14239,8 @@ def handle_on_message(client_id, ws, message, expected_nonce):
 
             _emit_balance_payload(client_id, state)
             emit_profile_snapshot(client_id)
-
-            ws.send(json.dumps({"ticks": state["current_symbol"], "subscribe": 1}))
-
-            # ✅ HUMAN runs its own market stream (independent)
-            human_sym = state.get("human_symbol") or state["current_symbol"]
-            if human_sym != state["current_symbol"]:
-                ws.send(json.dumps({"ticks": human_sym, "subscribe": 1}))
-
-            ws.send(json.dumps({"balance": 1, "subscribe": 1}))
+            for recovery_payload in build_post_authorize_requests(state, include_balance=True):
+                ws.send(json.dumps(recovery_payload))
 
             # seed HUMAN candles early so chart is ready instantly
             request_human_seed(client_id)
@@ -13705,6 +14250,10 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                     state,
                     force=bool(state.get("mutant_auto_restore_pending")),
                 )
+            except Exception:
+                pass
+            try:
+                _maybe_start_trade_reconcile(client_id, state, reason="authorize_success", force=True)
             except Exception:
                 pass
 
@@ -13718,8 +14267,23 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                     state["last_live_balance_updated_at"] = time.time()
                 state["local_balance_adjustment"] = 0.0
                 state["balance_updated_at"] = time.time()
+                _log_runtime_debug("balance_received", client_id, balance=balance)
                 _emit_balance_payload(client_id, state)
                 send_stats_update(client_id)
+            except Exception:
+                pass
+
+        if "portfolio" in data:
+            try:
+                reconcile_result = handle_reconcile_response(state, req_id, data)
+                _apply_trade_reconcile_result(client_id, state, ws, reconcile_result)
+            except Exception:
+                pass
+
+        if "statement" in data:
+            try:
+                reconcile_result = handle_reconcile_response(state, req_id, data)
+                _apply_trade_reconcile_result(client_id, state, ws, reconcile_result)
             except Exception:
                 pass
 
@@ -13809,6 +14373,13 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 except Exception:
                     meta = meta
 
+            if contract_id:
+                _mark_trade_execution_buy_confirmed(client_id, state, req_id, contract_id, meta=meta)
+            if contract_id and not isinstance(meta, dict):
+                meta = rebuild_meta_from_execution(
+                    get_execution_by_contract_id(state, contract_id)
+                    or get_execution_by_req_id(state, req_id)
+                )
             if contract_id and meta:
                 state["contract_meta"][contract_id] = meta
                 state["contract_meta"][str(contract_id)] = meta
@@ -13873,23 +14444,25 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                     elif duration_unit_val == "h":
                         countdown_seconds = int(duration_val) * 3600
                 if not is_auto_session_contract:
-                    socketio.emit("trade_placed", {
-                        "profile": meta.get("profile"),
-                        "type": meta.get("type"),
-                        "barrier": meta.get("barrier"),
-                        "stake": meta.get("stake"),
-                        "symbol": meta.get("symbol"),
-                        "time": meta.get("time"),
-                        "contract_id": contract_id,
-                        "duration": duration_val,
-                        "duration_unit": duration_unit_val if duration_val is not None else None,
-                        "countdown_remaining": duration_val,
-                        "countdown_unit": duration_unit_val if duration_val is not None else None,
-                        "countdown_seconds": countdown_seconds,
-                        "status": "PENDING",
-                        "result": "PENDING",
-                        "pending": True,
-                    }, room=client_id)
+                    if mark_trade_placed_emitted(state, req_id=req_id, contract_id=contract_id):
+                        socketio.emit("trade_placed", {
+                            "profile": meta.get("profile"),
+                            "type": meta.get("type"),
+                            "barrier": meta.get("barrier"),
+                            "stake": meta.get("stake"),
+                            "symbol": meta.get("symbol"),
+                            "time": meta.get("time"),
+                            "contract_id": contract_id,
+                            "duration": duration_val,
+                            "duration_unit": duration_unit_val if duration_val is not None else None,
+                            "countdown_remaining": duration_val,
+                            "countdown_unit": duration_unit_val if duration_val is not None else None,
+                            "countdown_seconds": countdown_seconds,
+                            "status": "PENDING",
+                            "result": "PENDING",
+                            "pending": True,
+                            "pending_state": TRADE_STATE_CONFIRMED,
+                        }, room=client_id)
             else:
                 socketio.emit("trade_placed", {
                     "profile": state.get("active_profile", "KOOLKID"),
@@ -14078,6 +14651,7 @@ def process_tick(client_id, tick):
         return
 
     try:
+        _check_trade_execution_timeouts(client_id, state)
         symbol = tick.get("symbol")
         price = tick.get("quote")
 
@@ -14378,7 +14952,15 @@ def process_contract(client_id, contract):
                 entry["exit_digit"] = exit_digit
 
         if not is_auto_session_contract:
-            socketio.emit("trade_result", entry, room=client_id)
+            try:
+                settled_result = (entry or {}).get("result") if isinstance(entry, dict) else None
+                if settled_result in (None, ""):
+                    settled_result = "WIN" if contract_won else "LOSS"
+                _mark_trade_execution_settled(client_id, state, contract_id, result=settled_result)
+            except Exception:
+                pass
+            if mark_trade_result_emitted(state, contract_id=contract_id):
+                socketio.emit("trade_result", entry, room=client_id)
         if profile_for_contract != "UNCHAIN" or is_auto_session_contract:
             _mark_regular_contract_processed(state, contract_id)
         _clear_mutant_auto_balance_marker(state, contract_id)
@@ -14465,6 +15047,7 @@ def handle_on_open(client_id, ws, expected_nonce):
         return
 
     logger.info(f"[{client_id}] 🔌 WebSocket transport connected")
+    _log_runtime_debug("websocket_connected", client_id, transport="deriv")
     state["ws_transport_connected"] = True
     state["ws_connected"] = False  # IMPORTANT: not authorized yet
     state["ws_last_message_at"] = time.time()
@@ -14473,6 +15056,7 @@ def handle_on_open(client_id, ws, expected_nonce):
 
     api_token = state.get("api_token")
     if api_token:
+        _log_runtime_debug("authorize_sent", client_id)
         ws.send(json.dumps({"authorize": api_token}))
 
 
@@ -14483,6 +15067,8 @@ def handle_on_error(client_id, ws, error, expected_nonce):
     if state.get("ws_nonce") != expected_nonce:
         return
     logger.error(f"[{client_id}] WebSocket Error: {error}")
+    _mark_trade_execution_disconnect_reconciling(client_id, state, reason="websocket_error")
+    _log_runtime_debug("websocket_disconnected", client_id, reason=str(error or ""))
     state["ws_connected"] = False
     state["ws_transport_connected"] = False
     state["ws_authorize_deadline_at"] = 0.0
@@ -14502,6 +15088,7 @@ def _schedule_ws_reconnect(client_id, expected_nonce, delay_sec=2.0):
     if not str(state.get("api_token", "") or "").strip():
         return False
     state["ws_reconnect_pending"] = True
+    _log_runtime_debug("websocket_reconnect", client_id, delay_sec=delay_sec, reason="scheduled")
 
     def _worker():
         try:
@@ -14538,6 +15125,8 @@ def handle_on_close(client_id, ws, code, msg, expected_nonce):
     if state.get("ws_nonce") != expected_nonce:
         return
 
+    _mark_trade_execution_disconnect_reconciling(client_id, state, reason="websocket_disconnected")
+    _log_runtime_debug("websocket_disconnected", client_id, code=code, message=msg)
     state["ws_connected"] = False
     state["ws_transport_connected"] = False
     state["ws_last_message_at"] = 0.0
@@ -14634,8 +15223,10 @@ def set_token():
     token = (request.json or {}).get("token", "")
 
     state["api_token"] = token
+    state["ws_manual_disconnect"] = False
     state["loginid"] = "UNKNOWN"
     state["session_start_balance"] = None
+    _persist_trade_runtime_state(cid, state, force=True)
 
     # start WS but avoid "2 instances" per browser session
     t = state.get("ws_thread")
@@ -14663,14 +15254,29 @@ def api_connection_status():
         return jsonify({"error": "Unauthorized"}), 403
 
     _cid, state = get_client_state()
-    _check_ws_connect_timeout(_cid, state)
+    timed_out = _check_ws_connect_timeout(_cid, state)
+    _check_trade_execution_timeouts(_cid, state)
+    has_token = bool(str(state.get("api_token", "") or "").strip())
+    ws_thread = state.get("ws_thread")
+    if (
+        (not timed_out)
+        and has_token
+        and not bool(state.get("ws_connected"))
+        and not bool(state.get("ws_manual_disconnect"))
+        and not bool(state.get("ws_reconnect_pending"))
+        and not (ws_thread and ws_thread.is_alive())
+    ):
+        try:
+            _schedule_ws_reconnect(_cid, state.get("ws_nonce"), delay_sec=0.05)
+        except Exception:
+            pass
     connected = bool(state.get("ws_connected")) and not _is_ws_stale(state)
     if not connected and state.get("ws_connected"):
         _mark_ws_unhealthy_and_reconnect(_cid, state, "Deriv connection went stale. Reconnecting now...", emit_error=False)
     return jsonify({
         "connected": connected,
         "loginid": state.get("loginid", "UNKNOWN"),
-        "has_token": bool(str(state.get("api_token", "") or "").strip()),
+        "has_token": has_token,
         **_build_balance_payload(state),
     })
 
