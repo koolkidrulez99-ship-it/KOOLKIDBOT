@@ -1017,6 +1017,12 @@
       if (state.lastSocket === socket && state.socketBound) return;
       state.lastSocket = socket;
       state.socketBound = true;
+      try {
+        if (window.BotPerf && typeof window.BotPerf.log === "function") {
+          const listeners = window.BotPerf.getSocketListenerCount ? window.BotPerf.getSocketListenerCount(socket) : null;
+          window.BotPerf.log("profile_socket_listener_count", { profile: PROFILE, listeners });
+        }
+      } catch (_e) {}
 
       socket.on("digit_analysis", (data) => {
         if (!isActive()) return;
@@ -1478,7 +1484,9 @@ window.toggleKidracksAIKoolkid = function () { return toggleAdvancedModeKoolkid(
       }
     } catch (e) {}
   }
-  setInterval(fallbackBootstrap, 900);
-  setTimeout(fallbackBootstrap, 200);
+  if (typeof window.registerProfileModule !== "function") {
+    setInterval(fallbackBootstrap, 900);
+    setTimeout(fallbackBootstrap, 200);
+  }
 
 })();

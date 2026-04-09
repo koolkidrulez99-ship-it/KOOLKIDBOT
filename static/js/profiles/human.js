@@ -1,8 +1,13 @@
 (function () {
   const PROFILE = "HUMAN";
+  const STATUS_POLL_INTERVAL_MS = 5000;
+  const STATUS_FETCH_MIN_INTERVAL_MS = 1000;
   let pollTimer = null;
   let cachedStatus = null;
   let socketHooked = false;
+  let statusFetchTimer = null;
+  let statusFetchPromise = null;
+  let lastStatusFetchAt = 0;
   const fxState = { active: false, firing: false, lastToast: 0 };
 
   function getApp() {
@@ -147,15 +152,50 @@
 
   async function fetchHumanRFStatus(){
     if(!rootExists()) return;
+    const nowTs = Date.now();
+    if(statusFetchPromise) return statusFetchPromise;
+    if((nowTs - Number(lastStatusFetchAt || 0)) < STATUS_FETCH_MIN_INTERVAL_MS) return false;
     try{
-      const res = await fetch("/human_rf_status");
-      if(!res.ok) return;
-      const data = await res.json();
-      renderHumanRFStatus(data);
-      maybeAutoFormulaX();
-    }catch(e){
-      // silent
+      if(window.BotPerf && typeof window.BotPerf.bump === "function"){
+        window.BotPerf.bump("status_fetch_frequency", { profile: PROFILE, source: "/human_rf_status" });
+      }
+    }catch(_e){}
+    statusFetchPromise = (async ()=>{
+      try{
+        const res = await fetch("/human_rf_status");
+        if(!res.ok) return false;
+        const data = await res.json();
+        lastStatusFetchAt = Date.now();
+        renderHumanRFStatus(data);
+        maybeAutoFormulaX();
+        return true;
+      }catch(e){
+        return false;
+      }finally{
+        statusFetchPromise = null;
+      }
+    })();
+    return statusFetchPromise;
+  }
+
+  function scheduleHumanRFStatusFetch(reason, delay){
+    if(statusFetchTimer){
+      clearTimeout(statusFetchTimer);
     }
+    statusFetchTimer = setTimeout(()=>{
+      statusFetchTimer = null;
+      try{
+        if(window.BotPerf && typeof window.BotPerf.log === "function"){
+          window.BotPerf.log("human_status_refresh_scheduled", { profile: PROFILE, reason: reason || "scheduled" });
+        }
+      }catch(_e){}
+      try{
+        const maybePromise = fetchHumanRFStatus();
+        if(maybePromise && typeof maybePromise.catch === "function"){
+          maybePromise.catch(()=>{});
+        }
+      }catch(_e){}
+    }, Math.max(40, Number(delay || 180)));
   }
 
   async function postJSON(url, body){
@@ -269,11 +309,11 @@
 
   function startPolling(){
     stopPolling();
-    fetchHumanRFStatus();
+    scheduleHumanRFStatusFetch("poll_start", 0);
     pollTimer = setInterval(() => {
       if(!rootExists()) return;
-      fetchHumanRFStatus();
-    }, 1000);
+      scheduleHumanRFStatusFetch("poll", 40);
+    }, STATUS_POLL_INTERVAL_MS);
   }
 
   function stopPolling(){
@@ -287,14 +327,20 @@
     if(socketHooked) return;
     try{
       if(typeof socket !== "undefined" && socket && typeof socket.on === "function"){
+        try{
+          if(window.BotPerf && typeof window.BotPerf.log === "function"){
+            const listeners = window.BotPerf.getSocketListenerCount ? window.BotPerf.getSocketListenerCount(socket) : null;
+            window.BotPerf.log("profile_socket_listener_count", { profile: PROFILE, listeners });
+          }
+        }catch(_e){}
         socket.on("human_rf_status", (payload) => {
           if(rootExists()) renderHumanRFStatus(payload);
         });
         socket.on("human_market_change", () => {
-          fetchHumanRFStatus();
+          scheduleHumanRFStatusFetch("human_market_change", 140);
         });
         socket.on("market_change", () => {
-          fetchHumanRFStatus();
+          scheduleHumanRFStatusFetch("market_change", 180);
         });
         socketHooked = true;
       }

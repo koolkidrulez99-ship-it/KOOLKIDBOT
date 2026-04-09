@@ -1,5 +1,9 @@
 (function () {
   const PROFILE = "UNCHAIN";
+  const STATUS_POLL_INTERVAL_MS = 6000;
+  const STATUS_FETCH_MIN_INTERVAL_MS = 900;
+  const STATUS_REFRESH_DEBOUNCE_MS = 320;
+  const CHART_RENDER_DEBOUNCE_MS = 90;
   const state = {
     socketBound: false,
     lastSocket: null,
@@ -42,6 +46,11 @@
     predictionTimer: null,
     predictionSignature: "",
     predictionLoading: false,
+    statusRefreshPromise: null,
+    statusRefreshTimer: null,
+    lastStatusFetchAt: 0,
+    chartRenderTimer: null,
+    chartRenderPayload: null,
   };
 
   const FORM_FIELDS = [
@@ -98,8 +107,27 @@
   function App() { return window.BotApp || {}; }
   function isActive() { try { return typeof activeProfile !== "undefined" && activeProfile === PROFILE; } catch (e) { return false; } }
   function el(id) { return document.getElementById(id); }
-  function setText(id, v) { const n = el(id); if (n) n.innerText = v == null ? "—" : String(v); }
+  function setText(id, v) {
+    const n = el(id);
+    if (!n) return;
+    const next = v == null ? "—" : String(v);
+    if (n.textContent !== next) n.textContent = next;
+  }
   function toast(msg, type) { try { if (typeof showToast === "function") showToast(msg, type || "info"); } catch (e) {} }
+  function perfLog(event, details) {
+    try {
+      if (window.BotPerf && typeof window.BotPerf.log === "function") {
+        window.BotPerf.log(event, Object.assign({ profile: PROFILE }, details || {}));
+      }
+    } catch (_e) {}
+  }
+  function perfBump(counterKey, details) {
+    try {
+      if (window.BotPerf && typeof window.BotPerf.bump === "function") {
+        window.BotPerf.bump(counterKey, Object.assign({ profile: PROFILE }, details || {}));
+      }
+    } catch (_e) {}
+  }
   function currencyPayload(payload) { return payload || state.lastPayload || {}; }
   function money(v, payload) {
     try { if (typeof formatCurrencyAmount === "function") return formatCurrencyAmount(v, currencyPayload(payload)); } catch (e) {}
@@ -2726,14 +2754,53 @@
     renderActiveTrades(un);
   }
 
-  async function refreshStatus(silent) {
-    if (!isActive()) return;
-    const r = await getJSON("/unchain_status");
-    if (r.ok && r.data) {
-      renderPayload(r.data);
-    } else if (!silent) {
-      toast((r.data && (r.data.message || r.data.error)) || "Failed to load UNCHAIN status", "error");
+  async function refreshStatus(silent, options) {
+    const opts = options || {};
+    if (!isActive()) return false;
+    const nowTs = Date.now();
+    if (state.statusRefreshPromise) return state.statusRefreshPromise;
+    if (!opts.force && (nowTs - Number(state.lastStatusFetchAt || 0)) < STATUS_FETCH_MIN_INTERVAL_MS) {
+      return true;
     }
+    perfBump("status_fetch_frequency", { source: "/unchain_status" });
+    state.statusRefreshPromise = (async () => {
+      const r = await getJSON("/unchain_status");
+      state.lastStatusFetchAt = Date.now();
+      if (r.ok && r.data) {
+        renderPayload(r.data);
+        return true;
+      }
+      if (!silent) {
+        toast((r.data && (r.data.message || r.data.error)) || "Failed to load UNCHAIN status", "error");
+      }
+      return false;
+    })().finally(() => {
+      state.statusRefreshPromise = null;
+    });
+    return state.statusRefreshPromise;
+  }
+
+  function scheduleStatusRefresh(reason, delay, options) {
+    const waitMs = Math.max(40, Number(delay || STATUS_REFRESH_DEBOUNCE_MS));
+    if (state.statusRefreshTimer) {
+      clearTimeout(state.statusRefreshTimer);
+    }
+    state.statusRefreshTimer = setTimeout(() => {
+      state.statusRefreshTimer = null;
+      perfLog("unchain_status_refresh_scheduled", { reason: reason || "scheduled" });
+      refreshStatus(true, options || {}).catch(() => {});
+    }, waitMs);
+  }
+
+  function scheduleBarrierChartRender(payload) {
+    state.chartRenderPayload = payload || state.chartRenderPayload;
+    if (state.chartRenderTimer) return;
+    state.chartRenderTimer = setTimeout(() => {
+      state.chartRenderTimer = null;
+      if (!isActive()) return;
+      const un = state.lastPayload && (state.lastPayload.unchain || state.lastPayload);
+      renderBarrierMarketChart(un || {}, state.chartRenderPayload || state.lastPayload || {});
+    }, CHART_RENDER_DEBOUNCE_MS);
   }
 
   async function saveSettings(showToastMsg) {
@@ -3045,12 +3112,16 @@
       if (state.lastSocket === socket && state.socketBound) return;
       state.lastSocket = socket;
       state.socketBound = true;
+      perfLog("profile_socket_listener_count", {
+        listeners: window.BotPerf && typeof window.BotPerf.getSocketListenerCount === "function"
+          ? window.BotPerf.getSocketListenerCount(socket)
+          : null,
+      });
       socket.on("tick", (data) => {
         if (!data) return;
         pushBarrierChartPrice(data.price != null ? data.price : data.quote, data.symbol);
         if (isActive()) {
-          const un = state.lastPayload && (state.lastPayload.unchain || state.lastPayload);
-          renderBarrierMarketChart(un || {}, state.lastPayload || data || {});
+          scheduleBarrierChartRender(state.lastPayload || data || {});
         }
       });
       socket.on("unchain_status", (data) => {
@@ -3067,12 +3138,12 @@
       });
       socket.on("trade_result", () => {
         if (!isActive()) return;
-        setTimeout(() => refreshStatus(true), 200);
+        scheduleStatusRefresh("trade_result", 260);
       });
       socket.on("trade_placed", (trade) => {
         if (!isActive() || !trade) return;
         if ((trade.profile || "").toUpperCase() === "UNCHAIN") {
-          setTimeout(() => refreshStatus(true), 120);
+          scheduleStatusRefresh("trade_placed", 220);
         }
       });
     } catch (e) {}
@@ -3088,7 +3159,7 @@
         markDirty(id);
         if (id === "unchainHigherStake") mirrorHigherStakeToLower();
         if (id === "unchainHigherBarrier" || id === "unchainLowerBarrier" || id === "unchainDirectionalAutoBarrier" || id === "unchainDirectionalAutoSide") {
-          renderBarrierMarketChart(state.lastPayload && (state.lastPayload.unchain || state.lastPayload) || {}, state.lastPayload || {});
+          scheduleBarrierChartRender(state.lastPayload || {});
         }
         if (id === "unchainAutoConfidence") applyAutoConfidenceLabel();
         if (id === "unchainDurationUnit") applyDurationPresets();
@@ -3117,7 +3188,7 @@
         markDirty(id);
         if (id === "unchainHigherStake") mirrorHigherStakeToLower();
         if (id === "unchainHigherBarrier" || id === "unchainLowerBarrier" || id === "unchainDirectionalAutoBarrier" || id === "unchainDirectionalAutoSide") {
-          renderBarrierMarketChart(state.lastPayload && (state.lastPayload.unchain || state.lastPayload) || {}, state.lastPayload || {});
+          scheduleBarrierChartRender(state.lastPayload || {});
         }
         if (id === "unchainDurationUnit") applyDurationPresets();
         if (id === "unchainHigherDurationUnit") applyDurationPresets("unchainHigherDuration", "unchainHigherDurationUnit");
@@ -3216,9 +3287,9 @@
   function startPolling() {
     stopPolling();
     state.pollTimer = setInterval(() => {
-      if (isActive()) refreshStatus(true);
+      if (isActive()) scheduleStatusRefresh("poll", 60);
       else removeTradeCountdownToast();
-    }, 1200);
+    }, STATUS_POLL_INTERVAL_MS);
   }
 
   function stopPolling() {
@@ -3233,21 +3304,23 @@
     bindUI(root);
     bindSocket();
     startPolling();
-    await refreshStatus(true);
+    await refreshStatus(true, { force: true });
   }
 
   async function afterLoadProfileUI() {
     bindUI(document.getElementById("profileContainer"));
     bindSocket();
     startPolling();
-    await refreshStatus(true);
+    await refreshStatus(true, { force: true });
   }
 
-  async function onActivate() {
+  async function onActivate(ctx) {
     bindSocket();
     bindUI(document.getElementById("profileContainer"));
     startPolling();
-    await refreshStatus(true);
+    if (!(ctx && ctx.skipImmediateRefresh)) {
+      await refreshStatus(true, { force: true });
+    }
   }
 
   if (typeof window.registerProfileModule === "function") {

@@ -1144,17 +1144,30 @@ function rememberFrontendClientId(clientId, reason){
 
 async function syncFrontendClientId(reason){
     const syncReason = String(reason || "sync").trim() || "sync";
-    try{
-        const res = await fetch("/heartbeat", { method:"POST", cache:"no-store" });
-        if(!res.ok) return null;
-        const data = await res.json();
-        const nextId = String((data && data.client_id) || "").trim();
-        if(nextId){
-            rememberFrontendClientId(nextId, syncReason);
-            return nextId;
-        }
-    }catch(_err){}
-    return null;
+    const nowTs = Date.now();
+    if(frontendClientIdSyncPromise){
+        return frontendClientIdSyncPromise;
+    }
+    if((nowTs - Number(frontendClientIdSyncAt || 0)) < 4000 && frontendClientId){
+        return frontendClientId;
+    }
+    frontendClientIdSyncPromise = (async ()=>{
+        try{
+            const res = await fetch("/heartbeat", { method:"POST", cache:"no-store" });
+            if(!res.ok) return null;
+            const data = await res.json();
+            const nextId = String((data && data.client_id) || "").trim();
+            if(nextId){
+                frontendClientIdSyncAt = Date.now();
+                rememberFrontendClientId(nextId, syncReason);
+                return nextId;
+            }
+        }catch(_err){}
+        return null;
+    })().finally(()=>{
+        frontendClientIdSyncPromise = null;
+    });
+    return frontendClientIdSyncPromise;
 }
 
 function startFrontendHeartbeatLoop(){
@@ -1209,15 +1222,15 @@ async function restoreFrontendSession(reason){
         });
         await syncFrontendClientId(`restore:${restoreReason}`);
         try{ await refreshApiConnectionState(true); }catch(_err){}
-        try{ await syncTradeHistorySnapshot(); }catch(_err){}
-        try{ await runProfileModuleHook(activeProfile, "onActivate", { profile: activeProfile, reconnect: true, restoreReason }); }catch(_err){}
+        try{ await syncTradeHistorySnapshot(activeProfile); }catch(_err){}
+        try{ await runProfileModuleHook(activeProfile, "onActivate", { profile: activeProfile, reconnect: true, restoreReason, skipImmediateRefresh: true }); }catch(_err){}
         if(normalizeProfileName(activeProfile) === "NTT"){
             try{
                 const res = await fetch("/ntt_status", { method:"GET", cache:"no-store" });
                 if(res.ok){
                     const payload = await res.json();
                     const changed = syncNttPendingTradesFromStatus(payload || {});
-                    if(changed) renderTradeList("NTT");
+                    if(changed) scheduleTradeListRender("NTT", "restore_ntt_status", 40);
                 }
             }catch(_err){}
         }else if(normalizeProfileName(activeProfile) === "UNCHAIN"){
@@ -1226,7 +1239,7 @@ async function restoreFrontendSession(reason){
                 if(res.ok){
                     const payload = await res.json();
                     const changed = syncUnchainPendingTradesFromStatus(payload || {});
-                    if(changed) renderTradeList("UNCHAIN");
+                    if(changed) scheduleTradeListRender("UNCHAIN", "restore_unchain_status", 40);
                 }
             }catch(_err){}
         }
@@ -1251,6 +1264,7 @@ function initSocket(){
         return;
     }
 
+    bumpFrontendPerfCounter("socket_init_count", { active_profile: activeProfile });
     socket = io({
         path: "/socket.io",
         transports: ["websocket", "polling"],
@@ -1305,7 +1319,11 @@ function bindSocketHandlers(){
         applyKnownApiBalance(data || {}, true);
 
         if(connected && !wasConnected){
-            showToast("✅ API AUTHORIZED", "success");
+            const nowTs = Date.now();
+            if((nowTs - Number(lastAuthorizedToastAt || 0)) > 15000){
+                showToast("✅ API AUTHORIZED", "success");
+                lastAuthorizedToastAt = nowTs;
+            }
             restoreFrontendSession("connection_status_connected").catch(()=>{});
         }
         if(!connected && wasConnected){
@@ -1359,6 +1377,9 @@ function bindSocketHandlers(){
                 });
             });
             socket.io.on("reconnect", (attempt)=>{
+                bumpFrontendPerfCounter("reconnect_count", {
+                    attempt: Number(attempt || 0),
+                });
                 logFrontendSession("frontend_socket_reconnect", {
                     attempt: Number(attempt || 0),
                     client_id: frontendClientId || null,
@@ -1374,6 +1395,10 @@ function bindSocketHandlers(){
         }
     }catch(_err){}
 
+    logFrontendSession("frontend_socket_listener_count", {
+        listeners: getSocketListenerCount(socket),
+    });
+
     socket.on("auto_mode_update", (modes)=>{
         updateAutoModeButtons(modes || {});
     });
@@ -1387,45 +1412,27 @@ function bindSocketHandlers(){
     socket.on("tick", (data)=>{
         if(!apiConnected) return;
 
-        tickCountEl.innerText = data.tick_count;
-
         digitBuffer.push(data.digit);
         if(digitBuffer.length > 20) digitBuffer.shift();
-
-        digitStream.innerHTML = digitBuffer.join(" ");
-        lastDigitBox.innerText = data.digit;
-
-        for(let i=0;i<10;i++){
-            const cell = document.getElementById(`digit-${i}`);
-            if(cell) cell.classList.remove("flash");
-        }
-
-        const activeCell = document.getElementById(`digit-${data.digit}`);
-        if(activeCell){
-            activeCell.classList.add("flash");
-            setTimeout(()=>activeCell.classList.remove("flash"), 250);
-        }
 
         const changedProfiles = decrementPendingTickCountdowns(data && data.symbol);
         const turboResolvedProfiles = resolveTurboDigitTradesFromTick(data);
         turboResolvedProfiles.forEach((profile)=> changedProfiles.add(profile));
-        if(changedProfiles.has(normalizeProfileName(activeProfile))){
-            renderTradeList(activeProfile);
-        }
+        scheduleSharedTickUi(data, Array.from(changedProfiles));
     });
 
     socket.on("digit_analysis", (data)=>{
         if(data.percentages){
             for(let i=0;i<10;i++){
                 const p = document.getElementById(`percent-${i}`);
-                if(p) p.innerText = (data.percentages[i] ?? 0) + "%";
+                if(p) setNodeTextIfChanged(p, (data.percentages[i] ?? 0) + "%");
             }
         }
 
         if(activeProfile === "JOKERJOE" && data.differs_analysis){
             renderDiffersAnalysis(data.differs_analysis);
         }else{
-            if(differsDigitsRow) differsDigitsRow.innerHTML = "";
+            if(differsDigitsRow) setNodeHtmlIfChanged(differsDigitsRow, "");
         }
 
         if(data.confidence && activeProfile === "KOOLKID"){
@@ -1453,14 +1460,14 @@ function bindSocketHandlers(){
                             : "none";
                     }
                 }
-                if(text) text.innerText = value.toFixed(1);
+                if(text) setNodeTextIfChanged(text, value.toFixed(1));
             });
         }
 
         if(activeProfile === "JOKERJOE"){
             const changed = syncJokerjoeMultiGPendingTrade(data);
             if(changed){
-                renderTradeList("JOKERJOE");
+                scheduleTradeListRender("JOKERJOE", "digit_analysis_multi_g", 40);
             }
         }
 
@@ -1502,7 +1509,7 @@ function bindSocketHandlers(){
         upsertTradeInStore(buildPendingTradeFromPlacement(placed));
         schedulePendingTradeRescue(placed.profile, placed.contract_id ?? placed.contractId, 1);
         if(normalizeProfileName(activeProfile) === placed.profile){
-            renderTradeList(activeProfile);
+            scheduleTradeListRender(activeProfile, "trade_placed", 30);
         }
     });
 
@@ -1539,7 +1546,7 @@ function bindSocketHandlers(){
         }
 
         if(normalizeProfileName(settled.profile) === normalizeProfileName(activeProfile)){
-            renderTradeList(activeProfile);
+            scheduleTradeListRender(activeProfile, "trade_result", 30);
         }
 
         const suppressIndividualToast = onTradeResultForToast(settled);
@@ -1559,14 +1566,14 @@ function bindSocketHandlers(){
     socket.on("unchain_status", (payload)=>{
         const changed = syncUnchainPendingTradesFromStatus(payload || {});
         if(changed && activeProfile === "UNCHAIN"){
-            renderTradeList("UNCHAIN");
+            scheduleTradeListRender("UNCHAIN", "unchain_status", 40);
         }
     });
 
     socket.on("ntt_status", (payload)=>{
         const changed = syncNttPendingTradesFromStatus(payload || {});
         if(changed && activeProfile === "NTT"){
-            renderTradeList("NTT");
+            scheduleTradeListRender("NTT", "ntt_status", 40);
         }
     });
 
@@ -1715,6 +1722,29 @@ let frontendClientId = "";
 let frontendHeartbeatTimer = null;
 let restoreSessionPromise = null;
 let lastSessionRestoreAt = 0;
+let frontendClientIdSyncAt = 0;
+let frontendClientIdSyncPromise = null;
+let apiConnectionRefreshPromise = null;
+let apiConnectionRefreshAt = 0;
+let lastAuthorizedToastAt = 0;
+let lastBalanceRenderSignature = "";
+let lastFlashedDigitCell = null;
+let lastFlashedDigitTimer = null;
+let sharedTickUiTimer = null;
+let sharedTickUiPayload = null;
+let sharedTickUiDirtyProfiles = new Set();
+const tradeListRenderTimers = {};
+const tradeListRenderReasons = {};
+const tradeListRenderSignatureByProfile = {};
+const FRONTEND_PERF_LOG_MODULO = 25;
+const frontendPerfCounters = {
+    socket_init_count: 0,
+    reconnect_count: 0,
+    status_fetch_frequency: 0,
+    trade_history_render_count: 0,
+    balance_render_count: 0,
+    tick_render_count: 0,
+};
 
 function clearBotTransientState(){
     try{ localStorage.removeItem(PROFILE_DRAFTS_STORAGE_KEY); }catch(e){}
@@ -1733,6 +1763,14 @@ function clearBotTransientState(){
     Object.keys(tradeHistorySnapshotSyncAt || {}).forEach((profile)=>{
         delete tradeHistorySnapshotSyncAt[profile];
     });
+    Object.keys(tradeListRenderTimers || {}).forEach((profile)=>{
+        try{
+            clearTimeout(tradeListRenderTimers[profile]);
+        }catch(e){}
+        delete tradeListRenderTimers[profile];
+        delete tradeListRenderReasons[profile];
+        delete tradeListRenderSignatureByProfile[profile];
+    });
     Object.keys(pendingTradeRescueTimers || {}).forEach((key)=>{
         try{
             clearTimeout(pendingTradeRescueTimers[key]);
@@ -1745,6 +1783,125 @@ function clearBotTransientState(){
         window.dispatchEvent(new CustomEvent("bot-transient-reset"));
     }catch(e){}
 }
+
+function bumpFrontendPerfCounter(counterKey, details){
+    if(!Object.prototype.hasOwnProperty.call(frontendPerfCounters, counterKey)){
+        frontendPerfCounters[counterKey] = 0;
+    }
+    frontendPerfCounters[counterKey] += 1;
+    const count = frontendPerfCounters[counterKey];
+    if(count <= 5 || count % FRONTEND_PERF_LOG_MODULO === 0){
+        logFrontendSession(counterKey, Object.assign({ count }, details || {}));
+    }
+    return count;
+}
+
+function getSocketListenerCount(target){
+    try{
+        const callbacks = target && target._callbacks;
+        if(!callbacks || typeof callbacks !== "object") return 0;
+        return Object.keys(callbacks).reduce((sum, key)=>{
+            const arr = callbacks[key];
+            return sum + (Array.isArray(arr) ? arr.length : 0);
+        }, 0);
+    }catch(_err){
+        return 0;
+    }
+}
+
+function setNodeTextIfChanged(node, value){
+    if(!node) return false;
+    const next = value == null ? "" : String(value);
+    if(node.textContent === next) return false;
+    node.textContent = next;
+    return true;
+}
+
+function setNodeHtmlIfChanged(node, value){
+    if(!node) return false;
+    const next = value == null ? "" : String(value);
+    if(node.innerHTML === next) return false;
+    node.innerHTML = next;
+    return true;
+}
+
+function scheduleTradeListRender(profile, reason, delayMs){
+    const key = normalizeProfileName(profile || activeProfile);
+    tradeListRenderReasons[key] = String(reason || "scheduled").trim() || "scheduled";
+    if(tradeListRenderTimers[key]){
+        return;
+    }
+    tradeListRenderTimers[key] = setTimeout(()=>{
+        delete tradeListRenderTimers[key];
+        const renderReason = tradeListRenderReasons[key] || "scheduled";
+        delete tradeListRenderReasons[key];
+        renderTradeList(key, renderReason);
+    }, Math.max(16, Number(delayMs || 60)));
+}
+
+function flushSharedTickUi(){
+    sharedTickUiTimer = null;
+    const data = sharedTickUiPayload;
+    sharedTickUiPayload = null;
+    const dirtyProfiles = new Set(sharedTickUiDirtyProfiles || []);
+    sharedTickUiDirtyProfiles = new Set();
+    if(!data || !apiConnected) return;
+
+    bumpFrontendPerfCounter("tick_render_count", {
+        active_profile: activeProfile,
+        symbol: data.symbol || null,
+    });
+
+    setNodeTextIfChanged(tickCountEl, data.tick_count);
+    setNodeTextIfChanged(digitStream, digitBuffer.join(" "));
+    setNodeTextIfChanged(lastDigitBox, data.digit);
+
+    const nextCell = document.getElementById(`digit-${data.digit}`);
+    if(lastFlashedDigitCell && lastFlashedDigitCell !== nextCell){
+        lastFlashedDigitCell.classList.remove("flash");
+    }
+    if(nextCell){
+        nextCell.classList.add("flash");
+        lastFlashedDigitCell = nextCell;
+        if(lastFlashedDigitTimer){
+            clearTimeout(lastFlashedDigitTimer);
+        }
+        lastFlashedDigitTimer = setTimeout(()=>{
+            try{
+                if(lastFlashedDigitCell === nextCell){
+                    nextCell.classList.remove("flash");
+                }
+            }catch(_err){}
+        }, 250);
+    }
+
+    if(dirtyProfiles.has(normalizeProfileName(activeProfile))){
+        scheduleTradeListRender(activeProfile, "tick_countdown", 40);
+    }
+}
+
+function scheduleSharedTickUi(data, changedProfiles){
+    sharedTickUiPayload = data || sharedTickUiPayload;
+    (changedProfiles || []).forEach((profile)=>{
+        sharedTickUiDirtyProfiles.add(normalizeProfileName(profile));
+    });
+    if(sharedTickUiTimer){
+        return;
+    }
+    sharedTickUiTimer = setTimeout(flushSharedTickUi, 80);
+}
+
+window.BotPerf = Object.assign({}, window.BotPerf || {}, {
+    log(event, details){
+        logFrontendSession(event, details || {});
+    },
+    bump(counterKey, details){
+        return bumpFrontendPerfCounter(counterKey, details || {});
+    },
+    getSocketListenerCount(target){
+        return getSocketListenerCount(target);
+    },
+});
 
 function resetBalanceMilestones(){
     sessionStartBalanceForMilestone = null;
@@ -2020,16 +2177,35 @@ function applyKnownApiBalance(data, syncMilestoneAnchor){
             ? Number(budgetSnapshot.display_balance)
             : balance);
 
+    const renderSignature = JSON.stringify([
+        normalizeProfileName(activeProfile),
+        Number.isFinite(shownBalance) ? shownBalance.toFixed(2) : "",
+        budgetEnabled ? "1" : "0",
+        Number.isFinite(totalBalance) ? totalBalance.toFixed(2) : "",
+        Number.isFinite(startBalance) ? startBalance.toFixed(2) : "",
+    ]);
+    if(renderSignature === lastBalanceRenderSignature){
+        if(syncMilestoneAnchor && Number.isFinite(balance)){
+            lastKnownBalanceForMilestone = balance;
+        }
+        return;
+    }
+    lastBalanceRenderSignature = renderSignature;
+    bumpFrontendPerfCounter("balance_render_count", {
+        profile: activeProfile,
+        budget_enabled: budgetEnabled,
+    });
+
     if(Number.isFinite(shownBalance) && balanceDisplay){
-        balanceDisplay.innerText = formatBalanceCurrencyAmount(shownBalance, data || budgetSnapshot);
+        setNodeTextIfChanged(balanceDisplay, formatBalanceCurrencyAmount(shownBalance, data || budgetSnapshot));
     }
     if(totalBalanceLabel){
         if(budgetEnabled && Number.isFinite(totalBalance)){
             totalBalanceLabel.style.display = "block";
-            totalBalanceLabel.innerText = `Total Balance (${formatBalanceCurrencyAmount(totalBalance, data || budgetSnapshot)})`;
+            setNodeTextIfChanged(totalBalanceLabel, `Total Balance (${formatBalanceCurrencyAmount(totalBalance, data || budgetSnapshot)})`);
         }else{
             totalBalanceLabel.style.display = "none";
-            totalBalanceLabel.innerText = "";
+            setNodeTextIfChanged(totalBalanceLabel, "");
         }
     }
     hydrateProfileBudgetControl(activeProfile);
@@ -2084,15 +2260,29 @@ function applyApiConnectionState(data){
 }
 
 async function refreshApiConnectionState(silent){
-    try{
-        const res = await fetch("/api_connection_status", {method:"GET", cache:"no-store"});
-        const data = await res.json();
-        rememberFrontendClientId((data && data.client_id) || frontendClientId, "api_connection_status");
-        return applyApiConnectionState(data || {});
-    }catch(e){
-        if(!silent) showToast("Failed to refresh API connection state", "error");
-        return false;
+    const nowTs = Date.now();
+    if(apiConnectionRefreshPromise){
+        return apiConnectionRefreshPromise;
     }
+    if((nowTs - Number(apiConnectionRefreshAt || 0)) < 500){
+        return apiConnected;
+    }
+    apiConnectionRefreshPromise = (async ()=>{
+        bumpFrontendPerfCounter("status_fetch_frequency", { source: "api_connection_status" });
+        try{
+            const res = await fetch("/api_connection_status", {method:"GET", cache:"no-store"});
+            const data = await res.json();
+            apiConnectionRefreshAt = Date.now();
+            rememberFrontendClientId((data && data.client_id) || frontendClientId, "api_connection_status");
+            return applyApiConnectionState(data || {});
+        }catch(e){
+            if(!silent) showToast("Failed to refresh API connection state", "error");
+            return false;
+        }
+    })().finally(()=>{
+        apiConnectionRefreshPromise = null;
+    });
+    return apiConnectionRefreshPromise;
 }
 
 function startApiConnectPolling(){
@@ -2777,7 +2967,7 @@ async function syncTradeHistorySnapshot(profile){
             });
         }
         if(changedProfiles.has(normalizeProfileName(activeProfile))){
-            renderTradeList(activeProfile);
+            scheduleTradeListRender(activeProfile, "history_snapshot", 40);
         }
         return true;
     }catch(e){
@@ -3267,7 +3457,7 @@ function bindProfileDraftAutosave(){
 loadProfileDraftsFromStorage();
 window.addEventListener("beforeunload", ()=> captureProfileDraft(activeProfile));
 
-function renderTradeList(profile){
+function renderTradeList(profile, reason){
     const list = getProfileScopedElement("profileTradeList");
     if(!list) return;
 
@@ -3286,13 +3476,7 @@ function renderTradeList(profile){
 
     renderTradeHistoryFilterState(key);
 
-    if(filtered.length === 0){
-        list.innerHTML = `<div style="text-align:center; color:#64748b; padding:20px;">${emptyLabel}</div>`;
-        return;
-    }
-
-    list.innerHTML = "";
-    filtered
+    const sorted = filtered
         .slice()
         .sort((a, b)=>{
             const useSnapshotTs = key === "KOOLKID" || key === "JOKERJOE" || key === "NTT";
@@ -3310,8 +3494,39 @@ function renderTradeList(profile){
             const cidA = normalizeContractId(a && (a.contract_id ?? a.contractId)) || "";
             const cidB = normalizeContractId(b && (b.contract_id ?? b.contractId)) || "";
             return String(cidB).localeCompare(String(cidA));
-        })
-        .forEach(t => list.appendChild(buildTradeItem(t)));
+        });
+    const signature = `${filter}|${sorted.map((trade)=>{
+        const cid = normalizeContractId(trade && (trade.contract_id ?? trade.contractId)) || "";
+        const result = normalizeTradeResultLabel(trade && trade.result, trade && trade.status);
+        const profit = typeof (trade && trade.profit) === "number" ? trade.profit : Number((trade && trade.profit_value) || 0);
+        const countdown = Number((trade && trade.countdown_remaining) || 0);
+        return [
+            cid,
+            result,
+            Number.isFinite(profit) ? profit.toFixed(2) : "",
+            countdown,
+            Number((trade && trade._sort_ts) || 0),
+            Number((trade && trade._store_seq) || 0),
+        ].join(":");
+    }).join("|")}`;
+    if(tradeListRenderSignatureByProfile[key] === signature){
+        return;
+    }
+    tradeListRenderSignatureByProfile[key] = signature;
+    bumpFrontendPerfCounter("trade_history_render_count", {
+        profile: key,
+        reason: String(reason || "direct"),
+        visible_items: sorted.length,
+    });
+
+    if(filtered.length === 0){
+        setNodeHtmlIfChanged(list, `<div style="text-align:center; color:#64748b; padding:20px;">${emptyLabel}</div>`);
+        return;
+    }
+
+    const frag = document.createDocumentFragment();
+    sorted.forEach((trade)=> frag.appendChild(buildTradeItem(trade)));
+    list.replaceChildren(frag);
 }
 
 function getTradeHistoryFilter(profile){

@@ -32,6 +32,10 @@
     m: Array.from({ length: 58 }, (_, idx) => idx + 2),
     h: Array.from({ length: 24 }, (_, idx) => idx + 1),
   };
+  const STATUS_POLL_INTERVAL_MS = 8000;
+  const STATUS_FETCH_MIN_INTERVAL_MS = 900;
+  const STATUS_REFRESH_DEBOUNCE_MS = 320;
+  const CHART_RENDER_DEBOUNCE_MS = 90;
   const state = {
     socketBound: false,
     lastSocket: null,
@@ -69,6 +73,11 @@
       previewBaseSymbol: null,
       wasActiveTrade: false,
     },
+    statusRefreshPromise: null,
+    statusRefreshTimer: null,
+    lastStatusFetchAt: 0,
+    chartRenderTimer: null,
+    chartRenderPayload: null,
   };
 
   function App() { return window.BotApp || {}; }
@@ -78,7 +87,23 @@
   function el(id) { return document.getElementById(id); }
   function setText(id, value) {
     const node = el(id);
-    if (node) node.innerText = value == null ? "-" : String(value);
+    if (!node) return;
+    const next = value == null ? "-" : String(value);
+    if (node.textContent !== next) node.textContent = next;
+  }
+  function perfLog(event, details) {
+    try {
+      if (window.BotPerf && typeof window.BotPerf.log === "function") {
+        window.BotPerf.log(event, Object.assign({ profile: PROFILE }, details || {}));
+      }
+    } catch (_e) {}
+  }
+  function perfBump(counterKey, details) {
+    try {
+      if (window.BotPerf && typeof window.BotPerf.bump === "function") {
+        window.BotPerf.bump(counterKey, Object.assign({ profile: PROFILE }, details || {}));
+      }
+    } catch (_e) {}
   }
   function toast(message, type) {
     try {
@@ -1310,14 +1335,53 @@
     scheduleTouchPrediction(80);
     scheduleExpectedProfitPreview(80);
   }
-  async function refreshStatus(silent) {
-    const { ok, data } = await getJSON("/ntt_status");
-    if (!ok) {
-      if (!silent) toast((data && (data.error || data.message)) || "Failed to load Mutant status", "error");
-      return false;
+  async function refreshStatus(silent, options) {
+    const opts = options || {};
+    const nowTs = Date.now();
+    if (state.statusRefreshPromise) return state.statusRefreshPromise;
+    if (!opts.force && (nowTs - Number(state.lastStatusFetchAt || 0)) < STATUS_FETCH_MIN_INTERVAL_MS) {
+      return true;
     }
-    renderPayload(data, { forceForm: false });
-    return true;
+    perfBump("status_fetch_frequency", { source: "/ntt_status" });
+    state.statusRefreshPromise = (async () => {
+      const { ok, data } = await getJSON("/ntt_status");
+      state.lastStatusFetchAt = Date.now();
+      if (!ok) {
+        if (!silent) toast((data && (data.error || data.message)) || "Failed to load Mutant status", "error");
+        return false;
+      }
+      renderPayload(data, { forceForm: false });
+      return true;
+    })().finally(() => {
+      state.statusRefreshPromise = null;
+    });
+    return state.statusRefreshPromise;
+  }
+
+  function scheduleStatusRefresh(reason, delay, options) {
+    const waitMs = Math.max(40, Number(delay || STATUS_REFRESH_DEBOUNCE_MS));
+    if (state.statusRefreshTimer) {
+      clearTimeout(state.statusRefreshTimer);
+    }
+    state.statusRefreshTimer = setTimeout(() => {
+      state.statusRefreshTimer = null;
+      perfLog("mutant_status_refresh_scheduled", { reason: reason || "scheduled" });
+      refreshStatus(true, options || {}).catch(() => {});
+    }, waitMs);
+  }
+
+  function scheduleBarrierChartRender(payload) {
+    state.chartRenderPayload = payload || state.chartRenderPayload;
+    if (state.chartRenderTimer) return;
+    state.chartRenderTimer = setTimeout(() => {
+      state.chartRenderTimer = null;
+      if (!isActive()) return;
+      renderBarrierMarketChart((state.lastPayload && state.lastPayload.ntt) || {}, state.chartRenderPayload || state.lastPayload || {});
+    }, CHART_RENDER_DEBOUNCE_MS);
+  }
+
+  async function refreshStatusNow(silent) {
+    return refreshStatus(silent, { force: true });
   }
   async function saveSettings(showToastMessage) {
     const body = readForm();
@@ -1703,22 +1767,27 @@
       if (state.lastSocket === socket && state.socketBound) return;
       state.lastSocket = socket;
       state.socketBound = true;
+      perfLog("profile_socket_listener_count", {
+        listeners: window.BotPerf && typeof window.BotPerf.getSocketListenerCount === "function"
+          ? window.BotPerf.getSocketListenerCount(socket)
+          : null,
+      });
       socket.on("tick", (data) => {
         if (!data) return;
         pushChartPrice(data.price != null ? data.price : data.quote, data.symbol);
-        if (isActive()) renderBarrierMarketChart((state.lastPayload && state.lastPayload.ntt) || {}, state.lastPayload || data || {});
+        if (isActive()) scheduleBarrierChartRender(state.lastPayload || data || {});
       });
       socket.on("ntt_status", (data) => {
         if (data && isActive()) renderPayload(data, { forceForm: false });
       });
       socket.on("trade_result", (trade) => {
         if (trade && String(trade.profile || "").toUpperCase() === PROFILE && isActive()) {
-          setTimeout(() => refreshStatus(true), 180);
+          scheduleStatusRefresh("trade_result", 260);
         }
       });
       socket.on("trade_placed", (trade) => {
         if (trade && String(trade.profile || "").toUpperCase() === PROFILE && isActive()) {
-          setTimeout(() => refreshStatus(true), 120);
+          scheduleStatusRefresh("trade_placed", 220);
         }
       });
     } catch (_e) {}
@@ -1740,7 +1809,7 @@
         if (id === "nttNoTouchDurationUnit") applyDurationPresets("nttNoTouchDuration", "nttNoTouchDurationUnit");
         if (id === "nttUseSharedDuration") updateDurationModeUI(true);
         if (id === "nttTouchBarrier" || id === "nttNoTouchBarrier") {
-          renderBarrierMarketChart((state.lastPayload && state.lastPayload.ntt) || {}, state.lastPayload || {});
+          scheduleBarrierChartRender(state.lastPayload || {});
         }
         if (
           id === "nttUseSharedDuration" ||
@@ -1818,7 +1887,7 @@
             persistCurrentMarketBarrierSettings(null, { custom: true });
             scheduleCurrentMarketBarrierSync(null, { custom: true });
           }
-          renderBarrierMarketChart((state.lastPayload && state.lastPayload.ntt) || {}, state.lastPayload || {});
+          scheduleBarrierChartRender(state.lastPayload || {});
           scheduleExpectedProfitPreview(80);
         }
         if (id === "nttKoolkidTouchBarrier" || id === "nttKoolkidNoTouchBarrier") {
@@ -1903,8 +1972,8 @@
     if (state.pollTimer) clearInterval(state.pollTimer);
     state.pollTimer = setInterval(() => {
       if (!isActive()) return;
-      refreshStatus(true).catch(() => {});
-    }, 2500);
+      scheduleStatusRefresh("poll", 60);
+    }, STATUS_POLL_INTERVAL_MS);
   }
   function stopPolling() {
     if (state.pollTimer) clearInterval(state.pollTimer);
@@ -1921,7 +1990,7 @@
     scheduleExpectedProfitPreview(25);
     if (isActive()) {
       startPolling();
-      await refreshStatus(true);
+      await refreshStatusNow(true);
     }
   }
   async function afterLoadProfileUI() {
@@ -1935,14 +2004,16 @@
     scheduleExpectedProfitPreview(25);
     if (isActive()) {
       startPolling();
-      await refreshStatus(true);
+      await refreshStatusNow(true);
     }
   }
-  async function onActivate() {
+  async function onActivate(ctx) {
     startPolling();
     bindSocket();
     scheduleExpectedProfitPreview(25);
-    await refreshStatus(true);
+    if (!(ctx && ctx.skipImmediateRefresh)) {
+      await refreshStatusNow(true);
+    }
   }
 
   window.registerProfileModule(PROFILE, {
