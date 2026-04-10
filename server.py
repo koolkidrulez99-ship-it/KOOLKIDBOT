@@ -14435,6 +14435,8 @@ def handle_on_message(client_id, ws, message, expected_nonce):
             except Exception:
                 pass
             msg = data["error"].get("message", "Unknown API Error")
+            if "authorize" in (echo_req or {}):
+                _log_runtime_debug("authorize_failure", client_id, error=msg)
             try:
                 handle_auto_session_buy_failed(state, failed_buy_meta, msg)
             except Exception:
@@ -14511,11 +14513,36 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 "client_id": client_id,
                 **_build_balance_payload(state),
             }, room=client_id)
+            _log_runtime_debug("api_connected_state_emitted", client_id, connected=True, loginid=loginid)
 
             _emit_balance_payload(client_id, state)
             emit_profile_snapshot(client_id)
             for recovery_payload in build_post_authorize_requests(state, include_balance=True):
-                ws.send(json.dumps(recovery_payload))
+                if recovery_payload.get("balance") == 1:
+                    _log_runtime_debug(
+                        "balance_subscribe_sent",
+                        client_id,
+                        subscribe=bool(recovery_payload.get("subscribe")),
+                    )
+                elif recovery_payload.get("ticks"):
+                    _log_runtime_debug(
+                        "tick_subscribe_sent",
+                        client_id,
+                        symbol=str(recovery_payload.get("ticks") or "").upper() or None,
+                        subscribe=bool(recovery_payload.get("subscribe")),
+                    )
+                try:
+                    ws.send(json.dumps(recovery_payload))
+                except Exception as exc:
+                    logger.exception("[%s] Failed to send post-authorize payload", client_id)
+                    _log_runtime_debug(
+                        "authorize_failure",
+                        client_id,
+                        stage="post_authorize_send",
+                        error=repr(exc),
+                        payload=recovery_payload,
+                    )
+                    raise
 
             # seed HUMAN candles early so chart is ready instantly
             request_human_seed(client_id)
@@ -14914,7 +14941,8 @@ def handle_on_message(client_id, ws, message, expected_nonce):
             process_contract(client_id, contract)
 
     except Exception as e:
-        logger.error(f"[{client_id}] on_message error: {e}")
+        logger.exception("[%s] on_message error", client_id)
+        _log_runtime_debug("deriv_websocket_thread_exception", client_id, stage="on_message", error=repr(e))
 
 
 
@@ -15329,6 +15357,7 @@ def handle_on_open(client_id, ws, expected_nonce):
 
     logger.info(f"[{client_id}] 🔌 WebSocket transport connected")
     _log_runtime_debug("websocket_connected", client_id, transport="deriv")
+    _log_runtime_debug("deriv_websocket_opened", client_id, nonce=expected_nonce)
     state["ws_transport_connected"] = True
     state["ws_connected"] = False  # IMPORTANT: not authorized yet
     state["ws_last_message_at"] = time.time()
@@ -15337,8 +15366,15 @@ def handle_on_open(client_id, ws, expected_nonce):
 
     api_token = state.get("api_token")
     if api_token:
-        _log_runtime_debug("authorize_sent", client_id)
-        ws.send(json.dumps({"authorize": api_token}))
+        _log_runtime_debug("authorize_sent", client_id, token_present=True)
+        try:
+            ws.send(json.dumps({"authorize": api_token}))
+        except Exception as exc:
+            logger.exception("[%s] Failed to send authorize request", client_id)
+            _log_runtime_debug("authorize_failure", client_id, stage="send", error=repr(exc))
+            raise
+    else:
+        _log_runtime_debug("authorize_failure", client_id, stage="missing_token")
 
 
 def handle_on_error(client_id, ws, error, expected_nonce):
@@ -15487,12 +15523,29 @@ def start_ws_for_client(client_id):
 
     # run until closed
     try:
+        _log_runtime_debug("deriv_websocket_thread_started", client_id, nonce=expected_nonce, ws_url=DERIV_WS)
         ws_app.run_forever(
             ping_interval=max(0.0, float(DERIV_WS_PING_INTERVAL_SEC)),
             ping_timeout=max(1.0, float(DERIV_WS_PING_TIMEOUT_SEC)),
         )
-    except Exception:
-        pass
+        _log_runtime_debug(
+            "deriv_websocket_thread_stopped",
+            client_id,
+            nonce=expected_nonce,
+            transport_connected=bool(state.get("ws_transport_connected")),
+            authorized=bool(state.get("ws_connected")),
+        )
+    except Exception as exc:
+        logger.exception("[%s] Deriv websocket thread crashed", client_id)
+        _log_runtime_debug("deriv_websocket_thread_exception", client_id, error=repr(exc), nonce=expected_nonce)
+        socketio.emit("connection_status", {
+            "connected": False,
+            "client_id": client_id,
+            **_build_balance_payload(state),
+        }, room=client_id)
+        socketio.emit("api_error", {
+            "message": "Deriv websocket failed during API connect. Check server logs.",
+        }, room=client_id)
 
 
 # ---------------- BOT API ROUTES ---------------- #
@@ -15503,6 +15556,13 @@ def set_token():
 
     cid, state = get_client_state()
     token = (request.json or {}).get("token", "")
+    _log_runtime_debug(
+        "api_connect_request_received",
+        cid,
+        token_present=bool(str(token or "").strip()),
+        received_client_id=cid,
+        profile=str(state.get("active_profile") or "").upper() or None,
+    )
 
     state["api_token"] = token
     state["ws_manual_disconnect"] = False
@@ -15523,9 +15583,15 @@ def set_token():
         except Exception:
             pass
 
+    _log_runtime_debug("deriv_websocket_thread_starting", cid, received_client_id=cid)
     t = threading.Thread(target=start_ws_for_client, args=(cid,), daemon=True)
     state["ws_thread"] = t
-    t.start()
+    try:
+        t.start()
+    except Exception as exc:
+        logger.exception("[%s] Failed to start Deriv websocket thread", cid)
+        _log_runtime_debug("deriv_websocket_thread_exception", cid, stage="thread_start", error=repr(exc))
+        return jsonify({"status": "error", "message": "Failed to start API connection"}), 500
 
     return jsonify({"status": "connecting"})
 

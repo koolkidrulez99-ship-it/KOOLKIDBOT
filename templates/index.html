@@ -1384,6 +1384,10 @@ function bindSocketHandlers(){
         applyKnownApiBalance(data || {}, true);
 
         if(connected && !wasConnected){
+            logFrontendSession("api_connected_state_received", {
+                client_id: frontendClientId || null,
+                loginid: (data && data.loginid) || null,
+            });
             const nowTs = Date.now();
             if((nowTs - Number(lastAuthorizedToastAt || 0)) > 15000){
                 showToast("✅ API AUTHORIZED", "success");

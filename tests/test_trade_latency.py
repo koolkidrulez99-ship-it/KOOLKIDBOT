@@ -2,6 +2,8 @@ import json
 import threading
 import time
 
+import pytest
+
 import server
 
 
@@ -26,6 +28,22 @@ class _DummyWs:
 
     def close(self):
         self.closed = True
+
+
+class _BrokenSendWs:
+    def send(self, _payload):
+        raise RuntimeError("send failed")
+
+
+class _ExplodingWebSocketApp:
+    def __init__(self, *_args, **_kwargs):
+        pass
+
+    def run_forever(self, **_kwargs):
+        raise RuntimeError("run_forever failed")
+
+    def close(self):
+        return None
 
 
 def test_schedule_contract_open_refresh_requests_one_shot_status(monkeypatch):
@@ -79,6 +97,125 @@ def test_request_open_contract_subscribes_only_once_until_cleared():
     assert second is True
     assert ws.messages == [{"proposal_open_contract": 1, "contract_id": "12345", "subscribe": 1}]
     assert state["open_contract_subs"]["12345"] == "__pending__"
+
+
+def test_set_token_logs_connect_request_and_thread_start(monkeypatch):
+    events = []
+    state = {
+        "active_profile": "KOOLKID",
+        "ws_stop_event": threading.Event(),
+        "profile_budgets": server._new_profile_budget_map(),
+    }
+
+    class _ThreadStub:
+        def __init__(self, target=None, args=None, kwargs=None, **_rest):
+            self.target = target
+            self.args = args or ()
+            self.kwargs = kwargs or {}
+            self.name = "ws-thread-test"
+
+        def is_alive(self):
+            return False
+
+        def start(self):
+            return None
+
+    monkeypatch.setattr(server, "login_required", lambda: True)
+    monkeypatch.setattr(server, "get_client_state", lambda: ("cid-connect", state))
+    monkeypatch.setattr(server, "_persist_trade_runtime_state", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server.threading, "Thread", _ThreadStub)
+    monkeypatch.setattr(server, "_log_runtime_debug", lambda event, client_id=None, **fields: events.append((event, client_id, fields)))
+
+    with server.app.test_request_context("/set_token", method="POST", json={"token": "abc123"}):
+        response = server.set_token()
+
+    assert response.status_code == 200
+    assert any(event == "api_connect_request_received" and client_id == "cid-connect" for event, client_id, _fields in events)
+    assert any(event == "deriv_websocket_thread_starting" and client_id == "cid-connect" for event, client_id, _fields in events)
+
+
+def test_start_ws_for_client_logs_hidden_run_forever_failure(monkeypatch):
+    events = []
+    emitted = []
+    state = {
+        "ws_nonce": 0,
+        "ws_stop_event": threading.Event(),
+        "ws": None,
+        "api_token": "token",
+        "balance": 0.0,
+        "profile_budgets": server._new_profile_budget_map(),
+    }
+    monkeypatch.setattr(server, "clients", {"cid-thread": state})
+    monkeypatch.setattr(server.websocket, "WebSocketApp", _ExplodingWebSocketApp)
+    monkeypatch.setattr(server.socketio, "emit", lambda event, payload=None, room=None: emitted.append((event, payload, room)))
+    monkeypatch.setattr(server, "_log_runtime_debug", lambda event, client_id=None, **fields: events.append((event, client_id, fields)))
+
+    server.start_ws_for_client("cid-thread")
+
+    assert any(event == "deriv_websocket_thread_started" for event, _client_id, _fields in events)
+    assert any(event == "deriv_websocket_thread_exception" and fields.get("error") == "RuntimeError('run_forever failed')" for event, _client_id, fields in events)
+    assert any(event == "connection_status" and payload.get("connected") is False for event, payload, _room in emitted)
+    assert any(event == "api_error" for event, _payload, _room in emitted)
+
+
+def test_handle_on_open_logs_authorize_send_failure(monkeypatch):
+    events = []
+    state = {
+        "ws_nonce": "nonce-open",
+        "api_token": "token-123",
+    }
+    monkeypatch.setattr(server, "clients", {"cid-open": state})
+    monkeypatch.setattr(server, "_log_runtime_debug", lambda event, client_id=None, **fields: events.append((event, client_id, fields)))
+
+    with pytest.raises(RuntimeError, match="send failed"):
+        server.handle_on_open("cid-open", _BrokenSendWs(), "nonce-open")
+
+    assert any(event == "deriv_websocket_opened" for event, _client_id, _fields in events)
+    assert any(event == "authorize_sent" for event, _client_id, _fields in events)
+    assert any(event == "authorize_failure" and fields.get("stage") == "send" for event, _client_id, fields in events)
+
+
+def test_handle_on_message_logs_authorize_success_and_balance_subscribe(monkeypatch):
+    events = []
+    emitted = []
+    ws = _DummyWs()
+    state = {
+        "ws_nonce": "nonce-msg",
+        "session_start_balance": None,
+        "profile_budgets": server._new_profile_budget_map(),
+        "strategies": {},
+        "active_profile": "KOOLKID",
+        "balance": 0.0,
+    }
+    monkeypatch.setattr(server, "clients", {"cid-msg": state})
+    monkeypatch.setattr(server, "_log_runtime_debug", lambda event, client_id=None, **fields: events.append((event, client_id, fields)))
+    monkeypatch.setattr(server.socketio, "emit", lambda event, payload=None, room=None: emitted.append((event, payload, room)))
+    monkeypatch.setattr(server, "_emit_balance_payload", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "emit_profile_snapshot", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "request_human_seed", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_resume_restored_mutant_auto", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_maybe_start_trade_reconcile", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        server,
+        "build_post_authorize_requests",
+        lambda _state, include_balance=True: [
+            {"balance": 1, "subscribe": 1},
+            {"ticks": "R_10", "subscribe": 1},
+        ],
+    )
+
+    server.handle_on_message(
+        "cid-msg",
+        ws,
+        json.dumps({"authorize": {"loginid": "CR111", "balance": 42.5}}),
+        "nonce-msg",
+    )
+
+    assert any(event == "authorize_success" for event, _client_id, _fields in events)
+    assert any(event == "api_connected_state_emitted" for event, _client_id, _fields in events)
+    assert any(event == "balance_subscribe_sent" for event, _client_id, _fields in events)
+    assert any(event == "tick_subscribe_sent" and fields.get("symbol") == "R_10" for event, _client_id, fields in events)
+    assert ws.messages == [{"balance": 1, "subscribe": 1}, {"ticks": "R_10", "subscribe": 1}]
 
 
 def test_forget_pending_open_contract_subscription_clears_without_forget_send():
