@@ -24,10 +24,16 @@
 .ui-btn-grid-3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
 .ui-section-title{font-size:12px;color:#94a3b8;text-transform:uppercase;letter-spacing:.04em;margin:2px 2px 0}
 .turbo-toggle-row{display:flex;align-items:center;justify-content:space-between;border:1px solid rgba(255,255,255,0.10);background:rgba(0,0,0,0.20);border-radius:16px;padding:12px 16px;color:rgba(255,255,255,0.70);font-size:12px}
-.turbo-toggle-btn{width:48px;min-width:48px;height:24px;border-radius:999px;position:relative;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.10);transition:background .2s,border-color .2s}
+.turbo-toggle-btn{width:48px;min-width:48px;height:24px;border-radius:999px;position:relative;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.10);transition:background .2s,border-color .2s;padding:0;cursor:pointer;touch-action:manipulation;-webkit-tap-highlight-color:transparent}
 .turbo-toggle-btn.is-on{background:rgba(249,115,22,0.70);border-color:rgba(251,146,60,0.60)}
 .turbo-toggle-knob{position:absolute;top:2px;left:2px;width:20px;height:20px;background:#fff;border-radius:999px;transition:transform .2s}
 .turbo-toggle-btn.is-on .turbo-toggle-knob{transform:translateX(24px)}
+@media (max-width: 640px){
+  .turbo-toggle-row{min-height:56px;padding:14px 16px}
+  .turbo-toggle-btn{width:64px;min-width:64px;height:34px}
+  .turbo-toggle-knob{top:2px;left:2px;width:28px;height:28px}
+  .turbo-toggle-btn.is-on .turbo-toggle-knob{transform:translateX(30px)}
+}
 .half-auto-popup-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .golden-card-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
 .golden-card-market{border-radius:14px;padding:10px;border:1px solid rgba(148,163,184,0.18);display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;min-height:74px}
@@ -152,9 +158,9 @@
           </div>
         </div>
 
-        <div class="turbo-toggle-row" style="margin-top:10px;">
+        <div class="turbo-toggle-row" style="margin-top:10px;" onclick="toggleTurboKoolkid()">
           <span>Turbo</span>
-          <button id="turboToggleBtnKoolkid" type="button" onclick="toggleTurboKoolkid()" class="turbo-toggle-btn" aria-pressed="false">
+          <button id="turboToggleBtnKoolkid" type="button" onclick="event.stopPropagation(); toggleTurboKoolkid()" class="turbo-toggle-btn" aria-pressed="false">
             <span class="turbo-toggle-knob"></span>
           </button>
         </div>

@@ -524,9 +524,48 @@ def test_run_ntt_auto_both_sends_single_fast_trade_with_request_lock(monkeypatch
     assert sent[0][1]["stake"] == 10.0
     assert sent[0][1]["mode"] == "MUTANT_AUTO"
     assert sent[0][1]["emit_balance"] is False
+    assert sent[0][1]["extra_meta"]["auto_mode"] == "BASE"
+    assert sent[0][1]["extra_meta"]["auto_current_stake"] == 10.0
+    assert sent[0][1]["extra_meta"]["auto_step_index"] == 0
     assert auto["request_in_flight"] is True
     assert auto["active_side"] == "NO_TOUCH"
     assert auto["active_symbol"] == "R_25"
+
+
+def test_run_ntt_auto_both_sends_frozen_ladder_plan_meta(monkeypatch):
+    sent = []
+    monkeypatch.setattr(server, "_check_ntt_risk_block", lambda _state: None)
+    monkeypatch.setattr(server, "_get_ntt_side_duration", lambda _ntt, _side: (5, "t"))
+    monkeypatch.setattr(
+        server,
+        "_send_ntt_trade",
+        lambda cid, **kwargs: sent.append((cid, kwargs)) or (True, "Trade sent"),
+    )
+
+    state = {
+        "ws_connected": True,
+        "ws": object(),
+        "current_symbol": "R_25",
+        "ntt": server._default_ntt_state(),
+    }
+    arm_mutant_auto(state["ntt"], barrier="+0.19", budget=10.0, selected_side="TOUCH", martingale_enabled=False, step50_enabled=True)
+    state["ntt"]["auto"]["progression_step"] = 1
+    state["ntt"]["auto"]["current_stake"] = 0.85
+
+    ok = server._run_ntt_auto_both("cid-mutant", state)
+    meta = sent[0][1]["extra_meta"]
+
+    assert ok is True
+    assert sent[0][1]["stake"] == 0.85
+    assert meta["auto_mode"] == "STEP50"
+    assert meta["auto_mode_label"] == "50 CENTS MARTINGALE"
+    assert meta["auto_step_index"] == 1
+    assert meta["auto_current_stake"] == 0.85
+    assert meta["auto_next_loss_stake"] == 1.35
+    assert meta["auto_stop_on_win"] is True
+    assert meta["auto_stop_on_loss"] is False
+    assert state["ntt"]["auto"]["active_step_index"] == 1
+    assert state["ntt"]["auto"]["active_next_loss_stake"] == 1.35
 
 
 def test_run_ntt_auto_both_prelocks_before_send_so_reentry_cannot_double_fire(monkeypatch):
@@ -827,7 +866,7 @@ def test_mutant_auto_step50_increments_by_fifty_cents_for_each_loss_chain():
     assert ntt["auto"]["current_stake"] == 1.85
 
 
-def test_mutant_auto_step50_stops_at_budget_cap():
+def test_mutant_auto_step50_repeats_top_allowed_stake_at_budget_cap():
     ntt = {"auto": default_mutant_auto_state()}
     arm_mutant_auto(ntt, barrier="+0.12", budget=1.00, martingale_enabled=False, step50_enabled=True)
     auto = ntt["auto"]
@@ -842,9 +881,30 @@ def test_mutant_auto_step50_stops_at_budget_cap():
     auto["active_stake"] = 0.85
     auto["active_side"] = "TOUCH"
     second_loss = progress_mutant_auto_after_result(ntt, won=False, profit=-0.85, side="TOUCH")
-    assert second_loss["continue"] is False
-    assert second_loss["stopped"] is True
-    assert ntt["auto"]["enabled"] is False
+    assert second_loss["continue"] is True
+    assert second_loss["stopped"] is False
+    assert second_loss["next_stake"] == 0.85
+    assert ntt["auto"]["enabled"] is True
+    assert ntt["auto"]["current_stake"] == 0.85
+
+
+def test_mutant_auto_martingale_repeats_top_allowed_stake_at_budget_cap():
+    ntt = {"auto": default_mutant_auto_state()}
+    arm_mutant_auto(ntt, barrier="+0.12", budget=2000.0, martingale_enabled=True, step50_enabled=False)
+    auto = ntt["auto"]
+    auto["progression_step"] = 12
+    auto["current_stake"] = 1433.60
+    auto["active_stake"] = 1433.60
+    auto["active_side"] = "TOUCH"
+
+    result = progress_mutant_auto_after_result(ntt, won=False, profit=-1433.60, side="TOUCH")
+
+    assert result["continue"] is True
+    assert result["stopped"] is False
+    assert result["next_stake"] == 1433.60
+    assert ntt["auto"]["enabled"] is True
+    assert ntt["auto"]["progression_step"] == 12
+    assert ntt["auto"]["current_stake"] == 1433.60
 
 
 def test_arm_mutant_auto_resets_progression_back_to_base_stake():

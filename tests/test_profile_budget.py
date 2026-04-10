@@ -37,6 +37,40 @@ def test_profile_budget_reservation_releases_and_applies_profit():
     assert state["profile_budgets"]["NTT"]["realized_pnl"] == 2.5
 
 
+def test_profile_budget_reservation_release_is_idempotent():
+    state = {
+        "profile_budgets": {
+            "NTT": {"amount": 20.0, "realized_pnl": 0.0, "reserved": 0.0},
+        },
+    }
+
+    ok, _msg, reservation = server._reserve_profile_budget(state, "NTT", 5.0)
+    assert ok is True
+    assert state["profile_budgets"]["NTT"]["reserved"] == 5.0
+
+    server._release_profile_budget_reservation(state, reservation)
+    server._release_profile_budget_reservation(state, reservation)
+
+    assert state["profile_budgets"]["NTT"]["reserved"] == 0.0
+
+
+def test_profile_budget_reservation_settle_is_idempotent():
+    state = {
+        "profile_budgets": {
+            "NTT": {"amount": 20.0, "realized_pnl": 0.0, "reserved": 0.0},
+        },
+    }
+
+    ok, _msg, reservation = server._reserve_profile_budget(state, "NTT", 0.35)
+    assert ok is True
+
+    server._settle_profile_budget_reservation(state, reservation, -0.35)
+    server._settle_profile_budget_reservation(state, reservation, -0.35)
+
+    assert state["profile_budgets"]["NTT"]["reserved"] == 0.0
+    assert state["profile_budgets"]["NTT"]["realized_pnl"] == -0.35
+
+
 def test_send_buy_with_profile_blocks_trade_above_profile_budget(monkeypatch):
     class DummyWs:
         def send(self, _payload):

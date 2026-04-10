@@ -635,12 +635,13 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     return Math.min(10, raw);
   }
 
-  async function placeBatchManualTradesJokerjoe(contractType, digits) {
+  async function placeBatchManualTradesJokerjoe(contractType, digits, options) {
     const stakeEl = document.getElementById("stake");
     let stake = Number(stakeEl && stakeEl.value);
     if (!Number.isFinite(stake) || stake <= 0) stake = 1;
     const duration = getDurationTicksJokerjoe();
-    const turboOn = currentTurboModeJokerjoe();
+    const sameTick = !!(options && options.sameTick);
+    const turboOn = sameTick ? true : currentTurboModeJokerjoe();
 
     // Send stake with each manual trade so batch actions (MatchSniper 5x) respect the UI stake.
     // Include both `stake` and `amount` for compatibility with different backend parsers.
@@ -648,8 +649,9 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
 
     const jobs = (digits || []).map((d) => sendFastManualTradeJokerjoe(Object.assign({}, base, { barrier: Number(d) }), {
       turbo: turboOn,
-      queue: !turboOn,
+      queue: sameTick ? false : !turboOn,
       useSocket: turboOn,
+      fireAndForget: sameTick,
     }));
     const results = await Promise.allSettled(jobs);
     let placed = 0;
@@ -933,7 +935,7 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     state.matchSniper5xBusy = true;
     updateMatchSniper5xStatusJokerjoe(sorted);
     try {
-      const r = await placeBatchManualTradesJokerjoe("MATCHES", currentSet);
+      const r = await placeBatchManualTradesJokerjoe("MATCHES", currentSet, { sameTick: true });
       if (r.placed === 5) {
         state.matchSniper5xLastTopKey = key;
         state.matchSniper5xCooldownUntil = Date.now() + 10000;

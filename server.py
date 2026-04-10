@@ -65,7 +65,9 @@ from strategies.mutant_auto import (
     apply_mutant_auto_settings,
     arm_mutant_auto,
     begin_mutant_auto_request,
+    build_mutant_auto_trade_plan,
     clear_mutant_auto_pending,
+    confirm_mutant_auto_trade,
     default_mutant_auto_state,
     ensure_mutant_auto_state,
     mark_mutant_auto_trade_sent,
@@ -1286,9 +1288,12 @@ def _reserve_profile_budget(state, profile, amount):
 
     amount_value = max(0.0, _safe_money(amount))
     reservation = {
+        "reservation_id": _new_req_id(),
         "profile": _normalize_profile_budget_key(profile),
         "stake": round(amount_value, 2),
         "enabled": bool(snapshot.get("enabled")),
+        "released": False,
+        "settled": False,
     }
     if reservation["enabled"] and amount_value > 0:
         entry = _ensure_profile_budget(state, reservation["profile"])
@@ -1299,24 +1304,32 @@ def _reserve_profile_budget(state, profile, amount):
 def _release_profile_budget_reservation(state, reservation):
     if not isinstance(reservation, dict):
         return
+    if reservation.get("released"):
+        return
     if not reservation.get("enabled"):
+        reservation["released"] = True
         return
     profile_key = _normalize_profile_budget_key(reservation.get("profile"))
     amount_value = max(0.0, _safe_money(reservation.get("stake")))
     entry = _ensure_profile_budget(state, profile_key)
     entry["reserved"] = round(max(0.0, _safe_money(entry.get("reserved")) - amount_value), 2)
+    reservation["released"] = True
 
 
 def _settle_profile_budget_reservation(state, reservation, profit):
     if not isinstance(reservation, dict):
         return
+    if reservation.get("settled"):
+        return
     profile_key = _normalize_profile_budget_key(reservation.get("profile"))
     was_enabled = bool(reservation.get("enabled"))
     _release_profile_budget_reservation(state, reservation)
     if not was_enabled:
+        reservation["settled"] = True
         return
     entry = _ensure_profile_budget(state, profile_key)
     entry["realized_pnl"] = round(_safe_money(entry.get("realized_pnl")) + _safe_money(profit), 2)
+    reservation["settled"] = True
 
 
 def _build_default_client_state():
@@ -5044,7 +5057,9 @@ def _run_ntt_auto_both(client_id, state):
         chosen_side = "TOUCH"
     auto["last_score"] = 100.0
 
-    stake = round(float(mutant_auto_current_stake(auto) or MIN_MUTANT_AUTO_STAKE), 2)
+    trade_plan = build_mutant_auto_trade_plan(auto)
+    stake = round(float(trade_plan.get("current_stake") or mutant_auto_current_stake(auto) or MIN_MUTANT_AUTO_STAKE), 2)
+    mode_label = str(trade_plan.get("mode_label") or mutant_auto_mode_label(auto))
     duration, duration_unit = _get_ntt_side_duration(ntt, chosen_side)
     barrier_value = _format_ntt_barrier(auto.get("barrier", "+0.12"), chosen_side, duration_unit)
     begin_mutant_auto_request(
@@ -5053,9 +5068,11 @@ def _run_ntt_auto_both(client_id, state):
         symbol=symbol,
         stake=stake,
         started_at=now_ts,
+        step_index=trade_plan.get("step_index"),
+        next_loss_stake=trade_plan.get("next_loss_stake"),
         reason=(
             f"Mutant AUTO is sending {chosen_side.replace('_', ' ')} on {symbol} at {barrier_value} "
-            f"using {mutant_auto_mode_label(auto)} stake {stake:.2f}."
+            f"using {mode_label} stake {stake:.2f}."
         ),
     )
 
@@ -5069,10 +5086,16 @@ def _run_ntt_auto_both(client_id, state):
         duration_unit=duration_unit,
         mode="MUTANT_AUTO",
         extra_meta={
-            "auto_mode": mutant_auto_mode_label(auto),
-            "auto_budget": float(auto.get("budget", stake) or stake),
+            "auto_mode": str(trade_plan.get("mode") or "BASE"),
+            "auto_mode_label": mode_label,
+            "auto_budget": float(trade_plan.get("budget") or auto.get("budget", stake) or stake),
             "auto_barrier": barrier_value,
             "auto_selected_side": chosen_side,
+            "auto_step_index": int(trade_plan.get("step_index") or 0),
+            "auto_current_stake": stake,
+            "auto_next_loss_stake": round(float(trade_plan.get("next_loss_stake") or 0.0), 2),
+            "auto_stop_on_win": bool(trade_plan.get("stop_on_win")),
+            "auto_stop_on_loss": bool(trade_plan.get("stop_on_loss")),
         },
         emit_balance=False,
     )
@@ -5090,7 +5113,7 @@ def _run_ntt_auto_both(client_id, state):
         started_at=now_ts,
         reason=(
             f"Mutant AUTO sent {chosen_side.replace('_', ' ')} on {symbol} at {barrier_value} "
-            f"using {mutant_auto_mode_label(auto)} stake {stake:.2f}."
+            f"using {mode_label} stake {stake:.2f}."
         ),
     )
     ntt["last_action"] = f"Mutant AUTO sent {chosen_side.replace('_', ' ')} on {symbol}"
@@ -13050,20 +13073,16 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                     elif (meta.get("profile") or "").upper() == "NTT":
                         _upsert_ntt_active_contract(state, contract_id, meta=meta, status="OPEN")
                         if str((meta or {}).get("mode") or "").startswith("MUTANT_AUTO"):
-                            auto = ensure_mutant_auto_state(_ensure_ntt_state(state))
-                            auto["pending_contract_id"] = str(contract_id or "").strip() or None
-                            auto["request_in_flight"] = False
-                            auto["request_started_at"] = 0.0
-                            auto["active_side"] = str(meta.get("type") or auto.get("active_side") or "").upper().strip() or None
-                            auto["active_symbol"] = str(meta.get("symbol") or auto.get("active_symbol") or "").upper().strip() or None
-                            auto["active_stake"] = round(float(meta.get("stake") or auto.get("active_stake") or 0.0), 2)
-                            auto["current_stake"] = auto["active_stake"] or mutant_auto_current_stake(auto)
-                            auto["last_decision"] = "RUNNING"
-                            auto["last_reason"] = (
-                                f"Mutant AUTO live {str(meta.get('type') or '').replace('_', ' ')} "
-                                f"trade is running on {meta.get('symbol') or state.get('current_symbol') or 'the current market'}."
-                            )
                             ntt = _ensure_ntt_state(state)
+                            auto = confirm_mutant_auto_trade(
+                                ensure_mutant_auto_state(ntt),
+                                contract_id=contract_id,
+                                contract_meta=meta,
+                                reason=(
+                                    f"Mutant AUTO live {str(meta.get('type') or '').replace('_', ' ')} "
+                                    f"trade is running on {meta.get('symbol') or state.get('current_symbol') or 'the current market'}."
+                                ),
+                            )
                             ntt["auto_both_enabled"] = bool(auto.get("enabled"))
                 except Exception:
                     pass
@@ -13490,6 +13509,8 @@ def process_contract(client_id, contract):
                         won=profit > 0,
                         profit=profit,
                         side=str(entry.get("type") or (meta or {}).get("type") or "").upper(),
+                        contract_id=contract_id,
+                        contract_meta=meta,
                     )
                     ntt["auto_both_enabled"] = bool(ensure_mutant_auto_state(ntt).get("enabled"))
                 except Exception:
