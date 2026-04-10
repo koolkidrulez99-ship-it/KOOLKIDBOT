@@ -1206,6 +1206,42 @@ function consumePageReloadReason(){
     }catch(_err){}
 }
 
+function shouldSkipUnloadDisconnect(){
+    try{
+        const skip = String(sessionStorage.getItem("skipDisconnectOnce") || "").trim();
+        if(skip){
+            sessionStorage.removeItem("skipDisconnectOnce");
+            return true;
+        }
+    }catch(_err){}
+    return false;
+}
+
+function requestUnloadDisconnect(reason){
+    const unloadReason = String(reason || "browser_beforeunload").trim() || "browser_beforeunload";
+    if(shouldSkipUnloadDisconnect()) return;
+    notePageReloadReason(unloadReason);
+    logFrontendSession("page_unload_disconnect_requested", {
+        reason: unloadReason,
+        client_id_before_reload: frontendClientId || null,
+        api_connected: !!apiConnected,
+    });
+    try{
+        if(navigator && typeof navigator.sendBeacon === "function"){
+            const ok = navigator.sendBeacon("/disconnect", new Blob([], { type: "text/plain" }));
+            if(ok) return;
+        }
+    }catch(_err){}
+    try{
+        fetch("/disconnect", {
+            method: "POST",
+            keepalive: true,
+            credentials: "same-origin",
+            cache: "no-store",
+        }).catch(()=>{});
+    }catch(_err){}
+}
+
 async function restoreFrontendSession(reason){
     const restoreReason = String(reason || "restore").trim() || "restore";
     const nowTs = Date.now();
@@ -1278,10 +1314,7 @@ function initSocket(){
     });
 
     window.addEventListener("beforeunload", () => {
-        logFrontendSession("page_unload", {
-            reason: "browser_beforeunload",
-            client_id_before_reload: frontendClientId || null,
-        });
+        requestUnloadDisconnect("browser_beforeunload");
     });
     bindSocketHandlers();
 }

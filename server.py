@@ -349,7 +349,7 @@ def _db_connect(row_factory=False):
         except Exception as exc:
             _activate_sqlite_auth_fallback(exc)
     sqlite_info = open_sqlite_with_fallback(
-        preferred_path=AUTH_SQLITE_TARGET or DB_FILE,
+        preferred_path=DB_FILE,
         default_name=DB_FILE,
         row_factory=row_factory,
         memory_namespace="auth-storage",
@@ -2301,21 +2301,7 @@ def _apply_trade_reconcile_result(client_id, state, ws, reconcile_result):
         state.setdefault("contract_meta", {})[contract_id] = meta
         state["contract_meta"][str(contract_id)] = meta
         _emit_trade_placed_from_execution(client_id, state, contract_id, meta)
-        try:
-            ws.send(json.dumps({
-                "proposal_open_contract": 1,
-                "contract_id": int(contract_id),
-                "subscribe": 1,
-            }))
-        except Exception:
-            try:
-                ws.send(json.dumps({
-                    "proposal_open_contract": 1,
-                    "contract_id": contract_id,
-                    "subscribe": 1,
-                }))
-            except Exception:
-                pass
+        _request_open_contract(state, contract_id, subscribe=True, ws=ws)
         _schedule_contract_open_refresh(client_id, state.get("ws_nonce"), contract_id, delays=(0.18, 0.55, 1.45, 3.2))
         _log_runtime_debug(
             "reconcile_result",
@@ -2562,11 +2548,7 @@ def _resume_restored_mutant_auto(client_id, state, *, force=False):
         if pending_contract_id:
             meta = _rebuild_mutant_auto_contract_meta_from_state(state)
             try:
-                state["ws"].send(json.dumps({
-                    "proposal_open_contract": 1,
-                    "contract_id": pending_contract_id,
-                    "subscribe": 1,
-                }))
+                _request_open_contract(state, pending_contract_id, subscribe=True, ws=state.get("ws"))
             except Exception as exc:
                 logger.warning(f"[{client_id}] Mutant AUTO live-contract resume failed: {exc}")
                 return False
@@ -5564,21 +5546,8 @@ def _maybe_force_ntt_close_on_countdown(client_id, state):
                 return False
             if last_refresh and (now_ts - last_refresh) < float(min_gap_sec):
                 return False
-            try:
-                ws.send(json.dumps({
-                    "proposal_open_contract": 1,
-                    "contract_id": int(float(contract_id)),
-                    "subscribe": 1,
-                }))
-            except Exception:
-                try:
-                    ws.send(json.dumps({
-                        "proposal_open_contract": 1,
-                        "contract_id": contract_id,
-                        "subscribe": 1,
-                    }))
-                except Exception:
-                    return False
+            if not _request_open_contract(state, contract_id, subscribe=False, ws=ws, prefer_int=True):
+                return False
             entry["_auto_refresh_requested_at"] = now_ts
             refreshed.append(str(contract_id))
             return True
@@ -7133,6 +7102,13 @@ def _get_open_contract_sub_map(state):
     return subs
 
 
+def _has_open_contract_subscription(state, contract_id):
+    norm = _normalize_contract_id(contract_id)
+    if not norm:
+        return False
+    return norm in _get_open_contract_sub_map(state)
+
+
 def _remember_unchain_open_contract_subscription(state, contract_id, subscription_id):
     norm = _normalize_contract_id(contract_id)
     if not norm or subscription_id in (None, ""):
@@ -7152,6 +7128,8 @@ def _forget_unchain_open_contract_subscription(state, contract_id, subscription_
         sub_id = str(subscription_id)
     if not sub_id:
         return False
+    if sub_id == "__pending__":
+        return True
     ws = state.get("ws")
     if state.get("ws_connected") and ws:
         try:
@@ -7159,6 +7137,49 @@ def _forget_unchain_open_contract_subscription(state, contract_id, subscription_
         except Exception:
             pass
     return True
+
+
+def _request_open_contract(state, contract_id, *, subscribe=False, ws=None, prefer_int=False):
+    norm = _normalize_contract_id(contract_id)
+    if not norm:
+        return False
+    target_ws = ws or state.get("ws")
+    if not target_ws:
+        return False
+    subs = _get_open_contract_sub_map(state)
+    if subscribe and norm in subs:
+        return True
+    payload = {"proposal_open_contract": 1, "contract_id": norm}
+    if subscribe:
+        payload["subscribe"] = 1
+    candidates = []
+    if prefer_int:
+        try:
+            candidates.append(int(norm))
+        except Exception:
+            pass
+    raw_candidate = contract_id
+    if raw_candidate not in (None, ""):
+        candidates.append(raw_candidate)
+    candidates.append(norm)
+    seen = set()
+    ordered_candidates = []
+    for candidate in candidates:
+        marker = (type(candidate), str(candidate))
+        if marker in seen:
+            continue
+        seen.add(marker)
+        ordered_candidates.append(candidate)
+    for candidate in ordered_candidates:
+        try:
+            payload["contract_id"] = candidate
+            target_ws.send(json.dumps(payload))
+            if subscribe:
+                subs[norm] = "__pending__"
+            return True
+        except Exception:
+            continue
+    return False
 
 
 def _schedule_contract_open_refresh(client_id, expected_nonce, contract_id, delays=(0.20, 0.65, 1.8, 3.8)):
@@ -7718,21 +7739,8 @@ def _maybe_force_unchain_close_on_countdown(client_id, state):
                 return False
             if last_refresh and (now_ts - last_refresh) < float(min_gap_sec):
                 return False
-            try:
-                ws.send(json.dumps({
-                    "proposal_open_contract": 1,
-                    "contract_id": int(float(contract_id)),
-                    "subscribe": 1,
-                }))
-            except Exception:
-                try:
-                    ws.send(json.dumps({
-                        "proposal_open_contract": 1,
-                        "contract_id": contract_id,
-                        "subscribe": 1,
-                    }))
-                except Exception:
-                    return False
+            if not _request_open_contract(state, contract_id, subscribe=False, ws=ws, prefer_int=True):
+                return False
             entry["_auto_refresh_requested_at"] = now_ts
             refreshed.append(str(contract_id))
             return True
@@ -12866,11 +12874,12 @@ def _request_sell_contract(client_id, contract_id):
                 sub_contract_id = int(float(sell_contract_id))
             except Exception:
                 pass
-            ws.send(json.dumps({
-                "proposal_open_contract": 1,
-                "contract_id": sub_contract_id,
-                "subscribe": 1,
-            }))
+            _request_open_contract(
+                state,
+                sub_contract_id,
+                subscribe=not _has_open_contract_subscription(state, sub_contract_id),
+                ws=ws,
+            )
         except Exception:
             pass
         return True, "Sell request sent"
@@ -14680,11 +14689,7 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 }, room=client_id)
 
             if contract_id:
-                ws.send(json.dumps({
-                    "proposal_open_contract": 1,
-                    "contract_id": contract_id,
-                    "subscribe": 1
-                }))
+                _request_open_contract(state, contract_id, subscribe=True, ws=ws)
             _schedule_contract_open_refresh(client_id, expected_nonce, contract_id, delays=(0.18, 0.55, 1.45, 3.2))
             profile_name = str((meta or {}).get("profile") or "").upper()
             if profile_name == "UNCHAIN" and state.get("active_profile") == "UNCHAIN":
@@ -14740,11 +14745,12 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                             status="CLOSE REQUESTED",
                         )
                         try:
-                            ws.send(json.dumps({
-                                "proposal_open_contract": 1,
-                                "contract_id": int(float(cid_val)),
-                                "subscribe": 1,
-                            }))
+                            _request_open_contract(
+                                state,
+                                cid_val,
+                                subscribe=not _has_open_contract_subscription(state, cid_val),
+                                ws=ws,
+                            )
                         except Exception:
                             pass
                     if state.get("active_profile") == "UNCHAIN":
@@ -14790,11 +14796,12 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                             status="CLOSE REQUESTED",
                         )
                         try:
-                            ws.send(json.dumps({
-                                "proposal_open_contract": 1,
-                                "contract_id": int(float(cid_val)),
-                                "subscribe": 1,
-                            }))
+                            _request_open_contract(
+                                state,
+                                cid_val,
+                                subscribe=not _has_open_contract_subscription(state, cid_val),
+                                ws=ws,
+                            )
                         except Exception:
                             pass
                     if state.get("active_profile") == "NTT":

@@ -64,6 +64,38 @@ def test_schedule_contract_open_refresh_skips_when_subscription_already_exists(m
     assert ws.messages == []
 
 
+def test_request_open_contract_subscribes_only_once_until_cleared():
+    ws = _DummyWs()
+    state = {
+        "ws_connected": True,
+        "ws": ws,
+        "open_contract_subs": {},
+    }
+
+    first = server._request_open_contract(state, "12345", subscribe=True, ws=ws)
+    second = server._request_open_contract(state, "12345", subscribe=True, ws=ws)
+
+    assert first is True
+    assert second is True
+    assert ws.messages == [{"proposal_open_contract": 1, "contract_id": "12345", "subscribe": 1}]
+    assert state["open_contract_subs"]["12345"] == "__pending__"
+
+
+def test_forget_pending_open_contract_subscription_clears_without_forget_send():
+    ws = _DummyWs()
+    state = {
+        "ws_connected": True,
+        "ws": ws,
+        "open_contract_subs": {"12345": "__pending__"},
+    }
+
+    cleared = server._forget_unchain_open_contract_subscription(state, "12345")
+
+    assert cleared is True
+    assert ws.messages == []
+    assert state["open_contract_subs"] == {}
+
+
 def test_send_buy_marks_stale_socket_unhealthy_and_requests_reconnect(monkeypatch):
     emitted = []
     reconnects = []

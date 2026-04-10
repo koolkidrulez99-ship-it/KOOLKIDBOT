@@ -107,3 +107,63 @@ def test_mutant_auto_store_falls_back_to_sqlite_when_postgres_is_down(monkeypatc
     assert saved is True
     assert isinstance(restored, dict)
     assert restored["auto"]["enabled"] is True
+
+
+def test_trade_runtime_store_load_handles_postgres_tuple_rows(monkeypatch):
+    tuple_row = ("client-3", "alice", '{"active": true}', "2026-04-10 10:00:00")
+
+    class FakeCursor:
+        def execute(self, *_args, **_kwargs):
+            return None
+
+        def fetchone(self):
+            return tuple_row
+
+    class FakeConn:
+        def cursor(self):
+            return FakeCursor()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(trade_runtime_store, "_ensure_tables", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        trade_runtime_store,
+        "_resolve_backend",
+        lambda **_kwargs: {"kind": "postgres", "connection": FakeConn(), "key": "postgres:test"},
+    )
+
+    payload = trade_runtime_store.load_trade_runtime("client-3", database_url="postgresql://example/render")
+
+    assert payload["active"] is True
+    assert payload["_stored_username"] == "alice"
+
+
+def test_mutant_auto_store_load_handles_postgres_tuple_rows(monkeypatch):
+    tuple_row = ("client-4", "alice", '{"auto": {"enabled": true}}', "2026-04-10 10:00:00")
+
+    class FakeCursor:
+        def execute(self, *_args, **_kwargs):
+            return None
+
+        def fetchone(self):
+            return tuple_row
+
+    class FakeConn:
+        def cursor(self):
+            return FakeCursor()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(mutant_auto_store, "_ensure_tables", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        mutant_auto_store,
+        "_resolve_backend",
+        lambda **_kwargs: {"kind": "postgres", "connection": FakeConn(), "key": "postgres:test"},
+    )
+
+    payload = mutant_auto_store.load_mutant_auto_runtime("client-4", database_url="postgresql://example/render")
+
+    assert payload["auto"]["enabled"] is True
+    assert payload["_stored_username"] == "alice"

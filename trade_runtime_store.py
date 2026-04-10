@@ -37,6 +37,14 @@ def _backend_key(*, database_url=None, sqlite_path=None):
     return f"sqlite:{os.path.abspath(_normalize_sqlite_path(sqlite_path))}"
 
 
+def _row_value(row, index, key):
+    if row is None:
+        return None
+    if isinstance(row, sqlite3.Row):
+        return row[key]
+    return row[index]
+
+
 def _log_postgres_fallback(db_url, exc):
     reason = str(exc or "unknown error").strip() or "unknown error"
     previous = _POSTGRES_DISABLED.get(db_url)
@@ -175,7 +183,7 @@ def load_trade_runtime(client_id, *, database_url=None, sqlite_path=None):
         row = cur.fetchone()
         if not row:
             return None
-        raw_payload = row["payload"] if hasattr(row, "__getitem__") else row[2]
+        raw_payload = _row_value(row, 2, "payload")
         try:
             payload = json.loads(raw_payload or "{}")
         except Exception:
@@ -183,8 +191,8 @@ def load_trade_runtime(client_id, *, database_url=None, sqlite_path=None):
         if not isinstance(payload, dict):
             return None
         payload["_stored_client_id"] = safe_client_id
-        payload["_stored_username"] = str((row["username"] if hasattr(row, "__getitem__") else row[1]) or "").strip().lower()
-        payload["_stored_updated_at"] = str((row["updated_at"] if hasattr(row, "__getitem__") else row[3]) or "").strip()
+        payload["_stored_username"] = str(_row_value(row, 1, "username") or "").strip().lower()
+        payload["_stored_updated_at"] = str(_row_value(row, 3, "updated_at") or "").strip()
         return payload
     finally:
         conn.close()
