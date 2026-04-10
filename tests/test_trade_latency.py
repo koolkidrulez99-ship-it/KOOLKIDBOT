@@ -206,3 +206,35 @@ def test_batch_trade_sleep_seconds_gives_turbo_a_much_faster_lane():
     assert normal >= 0.08
     assert turbo == 0.002
     assert turbo < normal
+
+
+def test_profile_history_snapshot_includes_live_confirmed_execution_record():
+    client_id = "cid-history-live"
+    if client_id in server.clients:
+        server.clients.pop(client_id, None)
+    server.init_client(client_id)
+    state = server.clients[client_id]
+
+    meta = {
+        "profile": "KOOLKID",
+        "type": "OVER",
+        "barrier": 5,
+        "stake": 1.0,
+        "symbol": "R_25",
+        "time": "10:00:00",
+        "duration": 1,
+        "duration_unit": "t",
+        "mode": "MANUAL",
+    }
+
+    server._register_trade_execution_submission(client_id, state, "req-live-1", meta)
+    server._mark_trade_execution_buy_confirmed(client_id, state, "req-live-1", "999", meta=meta)
+
+    snapshot = server._get_profile_trade_history_snapshot(state, "KOOLKID")
+    items = snapshot["KOOLKID"]
+
+    assert any(item.get("contract_id") == "999" for item in items)
+    live_item = next(item for item in items if item.get("contract_id") == "999")
+    assert live_item["pending"] is True
+    assert live_item["result"] == "PENDING"
+    assert live_item["pending_state"] == server.TRADE_STATE_CONFIRMED

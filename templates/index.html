@@ -1126,6 +1126,10 @@ function buildMutantConstructionMarkup(){
 
 /* ===================== SOCKET.IO (BULLETPROOF INIT) ===================== */
 let socket = null;
+let frontendSocketCreateCount = 0;
+let frontendSocketListenerAttachCount = 0;
+let frontendSocketBoundInstance = null;
+let frontendBeforeUnloadBound = false;
 
 function logFrontendSession(event, details){
     try{
@@ -1292,7 +1296,14 @@ async function restoreFrontendSession(reason){
 }
 
 function initSocket(){
-    if (socket) return;
+    if (socket){
+        logFrontendSession("frontend_socket_reused", {
+            create_count: frontendSocketCreateCount,
+            attach_count: frontendSocketListenerAttachCount,
+            raw_listener_total: getSocketListenerCount(socket),
+        });
+        return;
+    }
 
     if (typeof io === "undefined"){
         console.error("Socket.IO client missing (io is undefined).");
@@ -1301,6 +1312,7 @@ function initSocket(){
     }
 
     bumpFrontendPerfCounter("socket_init_count", { active_profile: activeProfile });
+    frontendSocketCreateCount += 1;
     socket = io({
         path: "/socket.io",
         transports: ["websocket", "polling"],
@@ -1313,14 +1325,34 @@ function initSocket(){
         pingTimeout: 3600000,
     });
 
-    window.addEventListener("beforeunload", () => {
-        requestUnloadDisconnect("browser_beforeunload");
+    logFrontendSession("frontend_socket_created", {
+        create_count: frontendSocketCreateCount,
     });
+
+    if(!frontendBeforeUnloadBound){
+        window.addEventListener("beforeunload", () => {
+            requestUnloadDisconnect("browser_beforeunload");
+        });
+        frontendBeforeUnloadBound = true;
+    }
     bindSocketHandlers();
 }
 
 function bindSocketHandlers(){
     if (!socket) return;
+    if(frontendSocketBoundInstance === socket){
+        logFrontendSession("frontend_socket_listeners_attached", {
+            attach_count: frontendSocketListenerAttachCount || 1,
+            raw_listener_total: getSocketListenerCount(socket),
+        });
+        logFrontendSession("frontend_socket_listener_count", {
+            listeners: frontendSocketListenerAttachCount || 1,
+            raw_listener_total: getSocketListenerCount(socket),
+        });
+        return;
+    }
+    frontendSocketBoundInstance = socket;
+    frontendSocketListenerAttachCount = 1;
 
     socket.on("connect", ()=> {
         logFrontendSession("frontend_socket_connected", {
@@ -1427,10 +1459,6 @@ function bindSocketHandlers(){
             });
         }
     }catch(_err){}
-
-    logFrontendSession("frontend_socket_listener_count", {
-        listeners: getSocketListenerCount(socket),
-    });
 
     socket.on("auto_mode_update", (modes)=>{
         updateAutoModeButtons(modes || {});
@@ -1691,6 +1719,15 @@ function bindSocketHandlers(){
             seqVixState.JOKERJOE.activeMarkets = Array.isArray(data.active_markets) ? data.active_markets : [];
             updateSeqVixUI("JOKERJOE", running, done, total);
         }
+    });
+
+    logFrontendSession("frontend_socket_listeners_attached", {
+        attach_count: frontendSocketListenerAttachCount,
+        raw_listener_total: getSocketListenerCount(socket),
+    });
+    logFrontendSession("frontend_socket_listener_count", {
+        listeners: frontendSocketListenerAttachCount,
+        raw_listener_total: getSocketListenerCount(socket),
     });
 }
 

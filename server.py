@@ -2705,6 +2705,54 @@ def _serialize_profile_trade_history_entry(profile, entry, index):
     return snapshot
 
 
+def _serialize_trade_execution_snapshot_entry(profile, record):
+    if not isinstance(record, dict):
+        return None
+    pending_state = str(record.get("pending_state") or "").strip().lower()
+    if pending_state not in (TRADE_STATE_SUBMITTING, TRADE_STATE_CONFIRMED, TRADE_STATE_RECONCILING):
+        return None
+    safe_profile = str(profile or "").upper().strip()
+    record_profile = str(record.get("profile") or "").upper().strip()
+    if safe_profile and record_profile and safe_profile != record_profile:
+        return None
+
+    meta = rebuild_meta_from_execution(record)
+    contract_id = normalize_trade_execution_contract_id(record.get("contract_id"))
+    req_id = str(record.get("req_id") or "").strip()
+    if contract_id in (None, ""):
+        contract_id = f"REQ-{req_id}" if req_id else None
+    if contract_id in (None, ""):
+        return None
+
+    submitted_at = _safe_money(record.get("submitted_at"), 0.0)
+    confirmed_at = _safe_money(record.get("confirmed_at"), 0.0)
+    sort_ts = confirmed_at if confirmed_at > 0 else submitted_at
+    time_text = str(meta.get("time") or now_time()).strip() or now_time()
+
+    snapshot = {
+        "profile": safe_profile or record_profile or "KOOLKID",
+        "contract_id": str(contract_id),
+        "time": time_text,
+        "result": "PENDING",
+        "status": "PENDING",
+        "pending": True,
+        "pending_state": pending_state,
+        "profit": 0.0,
+        "stake": round(_safe_money(record.get("stake"), 0.0), 2),
+        "symbol": str(meta.get("symbol") or record.get("symbol") or "").strip(),
+        "type": str(meta.get("type") or record.get("type") or "TRADE").strip(),
+    }
+    if meta.get("barrier") not in (None, ""):
+        snapshot["barrier"] = meta.get("barrier")
+    if meta.get("duration") not in (None, ""):
+        snapshot["duration"] = meta.get("duration")
+    if meta.get("duration_unit") not in (None, ""):
+        snapshot["duration_unit"] = meta.get("duration_unit")
+    if sort_ts > 0:
+        snapshot["_sort_ts"] = float(sort_ts)
+    return snapshot
+
+
 def _get_profile_trade_history_snapshot(state, profile=None):
     strategies = (state or {}).get("strategies") or {}
     targets = []
@@ -2718,10 +2766,23 @@ def _get_profile_trade_history_snapshot(state, profile=None):
         strat = strategies.get(prof)
         raw_history = list(getattr(strat, "trade_history", []) or []) if strat else []
         items = []
+        seen_contract_ids = set()
         for idx, entry in enumerate(raw_history):
             serialized = _serialize_profile_trade_history_entry(prof, entry, idx)
             if serialized:
                 items.append(serialized)
+                seen_contract_ids.add(str(serialized.get("contract_id") or "").strip())
+        trade_execution_store = ensure_trade_execution_store(state)
+        for record in list((trade_execution_store.get("records") or {}).values()):
+            serialized = _serialize_trade_execution_snapshot_entry(prof, record)
+            if not serialized:
+                continue
+            serialized_contract_id = str(serialized.get("contract_id") or "").strip()
+            if serialized_contract_id and serialized_contract_id in seen_contract_ids:
+                continue
+            items.append(serialized)
+            if serialized_contract_id:
+                seen_contract_ids.add(serialized_contract_id)
         snapshots[prof] = items
     return snapshots
 
