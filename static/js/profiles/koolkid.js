@@ -3,6 +3,8 @@
   const FAST_INTERVAL_MS_NORMAL = 400; // 0.4s as requested
   const FAST_INTERVAL_MS_TURBO = 120;  // faster Turbo lane for KOOLKID
   const FAST_MAX_BUY_QUEUE = 12;       // safety limit
+  const DIGIT_RENDER_THROTTLE_MS = 350;
+  const GOLDEN_RENDER_THROTTLE_MS = 500;
   const state = {
     lastSocket: null,
     socketBound: false,
@@ -20,6 +22,12 @@
     dual2xAnalysis: { tickCount: 0, pctByDigit: null, ready: false },
   };
   const fastBuyQueueKoolkid = { items: [], running: false, lastRunAt: 0 };
+  let pendingDigitAnalysisRender = null;
+  let digitAnalysisRenderTimer = null;
+  let lastDigitAnalysisRenderAt = 0;
+  let pendingGoldenCardRender = null;
+  let goldenCardRenderTimer = null;
+  let lastGoldenCardRenderAt = 0;
 
   function App() { return window.BotApp || {}; }
   function isActive() { try { return typeof activeProfile !== "undefined" && activeProfile === PROFILE; } catch (e) { return false; } }
@@ -1011,32 +1019,94 @@
     updateAdvancedAIModeButtons(modes || {}, payload || null);
   }
 
+  function paintDigitAnalysisKoolkid(data) {
+    lastDigitAnalysisRenderAt = Date.now();
+    renderDual2xAnalysisKoolkid(data || {});
+    if (data && data.barrier_analysis) renderBarrierAnalysis(data.barrier_analysis);
+    if (data && data.over3_analysis_data) renderOver3AnalysisKoolkid(data.over3_analysis_data);
+    if (data && data.golden_card_data) scheduleGoldenCardRenderKoolkid(data.golden_card_data);
+    if (data && data.kid2vix_data) renderKid2vixKoolkid(data.kid2vix_data);
+    if (data && data.auto_modes) updateModeButtonsFromPayload(data.auto_modes, data);
+  }
+
+  function flushDigitAnalysisRenderKoolkid() {
+    if (digitAnalysisRenderTimer) {
+      clearTimeout(digitAnalysisRenderTimer);
+      digitAnalysisRenderTimer = null;
+    }
+    const payload = pendingDigitAnalysisRender;
+    pendingDigitAnalysisRender = null;
+    if (isActive()) paintDigitAnalysisKoolkid(payload || {});
+  }
+
+  function scheduleDigitAnalysisRenderKoolkid(data) {
+    pendingDigitAnalysisRender = data || pendingDigitAnalysisRender || {};
+    const elapsed = Date.now() - Number(lastDigitAnalysisRenderAt || 0);
+    if (elapsed >= DIGIT_RENDER_THROTTLE_MS) {
+      flushDigitAnalysisRenderKoolkid();
+      return;
+    }
+    if (!digitAnalysisRenderTimer) {
+      digitAnalysisRenderTimer = setTimeout(flushDigitAnalysisRenderKoolkid, Math.max(50, DIGIT_RENDER_THROTTLE_MS - elapsed));
+    }
+  }
+
+  function paintGoldenCardRenderKoolkid(data) {
+    lastGoldenCardRenderAt = Date.now();
+    renderGoldenCardKoolkid(data || {});
+  }
+
+  function flushGoldenCardRenderKoolkid() {
+    if (goldenCardRenderTimer) {
+      clearTimeout(goldenCardRenderTimer);
+      goldenCardRenderTimer = null;
+    }
+    const payload = pendingGoldenCardRender;
+    pendingGoldenCardRender = null;
+    if (isActive()) paintGoldenCardRenderKoolkid(payload || {});
+  }
+
+  function scheduleGoldenCardRenderKoolkid(data) {
+    pendingGoldenCardRender = data || pendingGoldenCardRender || {};
+    const elapsed = Date.now() - Number(lastGoldenCardRenderAt || 0);
+    if (elapsed >= GOLDEN_RENDER_THROTTLE_MS) {
+      flushGoldenCardRenderKoolkid();
+      return;
+    }
+    if (!goldenCardRenderTimer) {
+      goldenCardRenderTimer = setTimeout(flushGoldenCardRenderKoolkid, Math.max(50, GOLDEN_RENDER_THROTTLE_MS - elapsed));
+    }
+  }
+
   function bindSocketListeners() {
     try {
-      if (typeof socket === "undefined" || !socket) return;
-      if (state.lastSocket === socket && state.socketBound) return;
-      state.lastSocket = socket;
+      const app = App();
+      const currentSocket = (typeof socket !== "undefined") ? socket : null;
+      const hasAppBinder = app && typeof app.bindSocketListener === "function";
+      if (!hasAppBinder) return;
+      if (state.lastSocket === currentSocket && state.socketBound) return;
+      const bind = (eventName, handler) => {
+        return app.bindSocketListener(PROFILE, eventName, handler);
+      };
+      state.lastSocket = currentSocket;
       state.socketBound = true;
 
-      socket.on("digit_analysis", (data) => {
+      bind("digit_analysis", (data) => {
         if (!isActive()) return;
-        renderDual2xAnalysisKoolkid(data || {});
-        if (data && data.barrier_analysis) renderBarrierAnalysis(data.barrier_analysis);
-        if (data && data.over3_analysis_data) renderOver3AnalysisKoolkid(data.over3_analysis_data);
-        if (data && data.golden_card_data) renderGoldenCardKoolkid(data.golden_card_data);
-        if (data && data.kid2vix_data) renderKid2vixKoolkid(data.kid2vix_data);
-        if (data && data.auto_modes) updateModeButtonsFromPayload(data.auto_modes, data);
+        scheduleDigitAnalysisRenderKoolkid(data || {});
       });
 
-      socket.on("golden_card_update", (data) => {
-        renderGoldenCardKoolkid(data || {});
+      bind("golden_card_update", (data) => {
+        if (!isActive()) return;
+        scheduleGoldenCardRenderKoolkid(data || {});
       });
 
-      socket.on("auto_mode_update", (modes) => {
+      bind("auto_mode_update", (modes) => {
         if (!isActive()) return;
         updateModeButtonsFromPayload(modes || {});
       });
 
+      if (app && typeof app.logSocketListenerCounts === "function") app.logSocketListenerCounts("koolkid_profile_init");
     } catch (e) {}
   }
 
@@ -1469,8 +1539,26 @@ window.toggleKidracksAIKoolkid = function () { return toggleAdvancedModeKoolkid(
   }
 
   // Fallback bootstrap for index versions without Phase 2 hooks
+  const FALLBACK_BOOTSTRAP_INTERVAL_LABEL = "koolkid_fallback_bootstrap";
+  let fallbackBootstrapTimer = null;
+
+  function stopFallbackBootstrap() {
+    const app = App();
+    const clearedTracked = !!(app && typeof app.clearFrontendInterval === "function" && app.clearFrontendInterval(FALLBACK_BOOTSTRAP_INTERVAL_LABEL));
+    if (fallbackBootstrapTimer && !clearedTracked) {
+      clearInterval(fallbackBootstrapTimer);
+    }
+    if (fallbackBootstrapTimer || clearedTracked) fallbackBootstrapTimer = null;
+  }
+
   function fallbackBootstrap() {
     try {
+      if (typeof window.registerProfileModule === "function") {
+        stopFallbackBootstrap();
+        const app = App();
+        if (app && typeof app.logActiveIntervalCount === "function") app.logActiveIntervalCount("koolkid_fallback_module_loaded");
+        return;
+      }
       if (typeof window.registerProfileModule !== "function") {
         if (typeof onMount === "function") onMount();
         if (typeof afterLoadProfileUI === "function") afterLoadProfileUI();
@@ -1478,7 +1566,15 @@ window.toggleKidracksAIKoolkid = function () { return toggleAdvancedModeKoolkid(
       }
     } catch (e) {}
   }
-  setInterval(fallbackBootstrap, 900);
-  setTimeout(fallbackBootstrap, 200);
+  if (typeof window.registerProfileModule !== "function") {
+    fallbackBootstrapTimer = setInterval(fallbackBootstrap, 1200);
+    const app = App();
+    if (app && typeof app.registerFrontendInterval === "function") app.registerFrontendInterval(FALLBACK_BOOTSTRAP_INTERVAL_LABEL, fallbackBootstrapTimer);
+    setTimeout(fallbackBootstrap, 200);
+  } else {
+    stopFallbackBootstrap();
+    const app = App();
+    if (app && typeof app.logActiveIntervalCount === "function") app.logActiveIntervalCount("koolkid_fallback_not_needed");
+  }
 
 })();

@@ -1095,6 +1095,174 @@ function buildMutantConstructionMarkup(){
 
 /* ===================== SOCKET.IO (BULLETPROOF INIT) ===================== */
 let socket = null;
+const SOCKET_INDEX_NAMESPACE = "__INDEX__";
+const SOCKET_DISPATCH_ONLY_EVENTS = [
+    "golden_card_update",
+    "human_rf_status",
+    "human_market_change",
+    "market_change",
+    "unchain_scanner",
+    "unchain_toast",
+];
+const socketListenerRegistry = window.__botSocketListenerRegistry || (window.__botSocketListenerRegistry = {
+    mainHandlers: {},
+    profileHandlers: {},
+});
+
+function normalizeSocketNamespace(namespace){
+    return String(namespace || "").trim().toUpperCase() || "GLOBAL";
+}
+
+function getSocketEventListenerCount(eventName){
+    if(!socket || !eventName) return 0;
+    try{
+        if(typeof socket.listeners === "function"){
+            const listeners = socket.listeners(eventName);
+            return Array.isArray(listeners) ? listeners.length : 0;
+        }
+    }catch(e){}
+    try{
+        const callbacks = socket._callbacks || {};
+        const items = callbacks["$" + eventName] || callbacks[eventName] || [];
+        return Array.isArray(items) ? items.length : 0;
+    }catch(e){}
+    return 0;
+}
+
+function getSocketListenerCounts(){
+    const events = new Set();
+    Object.keys((socketListenerRegistry && socketListenerRegistry.mainHandlers) || {}).forEach((eventName)=> events.add(eventName));
+    Object.keys((socketListenerRegistry && socketListenerRegistry.profileHandlers) || {}).forEach((eventName)=> events.add(eventName));
+    const perEvent = {};
+    const duplicateEvents = [];
+    let maxPerEvent = 0;
+    let total = 0;
+    events.forEach((eventName)=>{
+        const count = getSocketEventListenerCount(eventName);
+        perEvent[eventName] = count;
+        if(count > maxPerEvent) maxPerEvent = count;
+        if(count > 1) duplicateEvents.push(eventName);
+        total += count;
+    });
+    return { total, perEvent, maxPerEvent, duplicateEvents };
+}
+
+function getProfileSocketHandlerCount(){
+    let total = 0;
+    const handlers = (socketListenerRegistry && socketListenerRegistry.profileHandlers) || {};
+    Object.keys(handlers).forEach((eventName)=>{
+        total += Object.keys(handlers[eventName] || {}).length;
+    });
+    return total;
+}
+
+function logSocketListenerCounts(reason){
+    try{
+        const counts = getSocketListenerCounts();
+        console.info("frontend_socket_listener_count", {
+            reason: reason || "socket_listener_audit",
+            total: counts.total,
+            max_per_event: counts.maxPerEvent,
+            duplicate_events: counts.duplicateEvents,
+            per_event: counts.perEvent,
+            profile_dispatch_handlers: getProfileSocketHandlerCount(),
+        });
+    }catch(e){}
+}
+
+function dispatchProfileSocketEvent(eventName, args){
+    const handlersByNamespace = ((socketListenerRegistry.profileHandlers || {})[eventName]) || {};
+    Object.keys(handlersByNamespace).forEach((namespace)=>{
+        const handler = handlersByNamespace[namespace];
+        if(typeof handler !== "function") return;
+        try{
+            handler.apply(null, args || []);
+        }catch(err){
+            console.error("profile socket handler failed", eventName, namespace, err);
+        }
+    });
+}
+
+function bindMainSocketListener(eventName, handler){
+    if(!socket || !eventName || typeof handler !== "function") return false;
+    const previous = socketListenerRegistry.mainHandlers[eventName];
+    if(previous && previous.socket && previous.handler && typeof previous.socket.off === "function"){
+        try{ previous.socket.off(eventName, previous.handler); }catch(e){}
+    }
+    const wrapped = function(){
+        const args = Array.prototype.slice.call(arguments);
+        try{
+            handler.apply(null, args);
+        }catch(err){
+            console.error("socket handler failed", eventName, err);
+        }
+        dispatchProfileSocketEvent(eventName, args);
+    };
+    socketListenerRegistry.mainHandlers[eventName] = { socket, handler: wrapped };
+    socket.on(eventName, wrapped);
+    return true;
+}
+
+function bindProfileSocketListener(namespace, eventName, handler){
+    if(!eventName || typeof handler !== "function") return false;
+    const safeNamespace = normalizeSocketNamespace(namespace);
+    socketListenerRegistry.profileHandlers[eventName] = socketListenerRegistry.profileHandlers[eventName] || {};
+    socketListenerRegistry.profileHandlers[eventName][safeNamespace] = handler;
+    return true;
+}
+
+function bindSocketListener(namespace, eventName, handler){
+    const safeNamespace = normalizeSocketNamespace(namespace);
+    if(safeNamespace === SOCKET_INDEX_NAMESPACE){
+        return bindMainSocketListener(eventName, handler);
+    }
+    return bindProfileSocketListener(safeNamespace, eventName, handler);
+}
+
+window.BotApp = window.BotApp || {};
+window.BotApp.bindSocketListener = bindSocketListener;
+window.BotApp.logSocketListenerCounts = logSocketListenerCounts;
+window.BotApp.getSocketListenerCounts = getSocketListenerCounts;
+
+const frontendIntervalRegistry = window.__botFrontendIntervalRegistry || (window.__botFrontendIntervalRegistry = {});
+
+function logActiveIntervalCount(reason){
+    try{
+        const labels = Object.keys(frontendIntervalRegistry || {});
+        console.info("frontend_active_interval_count", {
+            reason: reason || "interval_audit",
+            count: labels.length,
+            intervals: labels,
+        });
+    }catch(e){}
+}
+
+function registerFrontendInterval(label, timerId){
+    if(!label || !timerId) return timerId;
+    try{
+        const existing = frontendIntervalRegistry[label];
+        if(existing && existing !== timerId){
+            clearInterval(existing);
+        }
+        frontendIntervalRegistry[label] = timerId;
+        logActiveIntervalCount(`${label}_started`);
+    }catch(e){}
+    return timerId;
+}
+
+function clearFrontendInterval(label){
+    if(!label) return false;
+    const timerId = frontendIntervalRegistry[label];
+    if(!timerId) return false;
+    try{ clearInterval(timerId); }catch(e){}
+    try{ delete frontendIntervalRegistry[label]; }catch(e){}
+    logActiveIntervalCount(`${label}_stopped`);
+    return true;
+}
+
+window.BotApp.registerFrontendInterval = registerFrontendInterval;
+window.BotApp.clearFrontendInterval = clearFrontendInterval;
+window.BotApp.logActiveIntervalCount = logActiveIntervalCount;
 
 function initSocket(){
     if (socket) return;
@@ -1133,17 +1301,18 @@ function initSocket(){
 
 function bindSocketHandlers(){
     if (!socket) return;
+    const bind = (eventName, handler)=> bindSocketListener(SOCKET_INDEX_NAMESPACE, eventName, handler);
 
-    socket.on("connect", ()=> {
+    bind("connect", ()=> {
         // optional: showToast("🔌 Socket Connected", "success");
     });
 
-    socket.on("connect_error", (err)=> {
+    bind("connect_error", (err)=> {
         console.error("Socket connect_error:", err);
         showToast("Socket connect error (see console).", "error");
     });
 
-    socket.on("connection_status", (data)=>{
+    bind("connection_status", (data)=>{
         const wasConnected = !!apiConnected;
         const connected = applyApiConnectionState(data || {});
         applyKnownApiBalance(data || {}, true);
@@ -1156,12 +1325,12 @@ function bindSocketHandlers(){
         }
     });
 
-    socket.on("reset_ui", ()=>{
+    bind("reset_ui", ()=>{
         clearBotTransientState();
         try{ renderTradeList(activeProfile); }catch(e){}
     });
 
-    socket.on("api_error", (data)=>{
+    bind("api_error", (data)=>{
         const message = String((data && data.message) || "").trim();
         if(isAuthApiErrorMessage(message)){
             apiConnectPendingUntil = 0;
@@ -1186,37 +1355,22 @@ function bindSocketHandlers(){
         }
     });
 
-    socket.on("auto_mode_update", (modes)=>{
+    bind("auto_mode_update", (modes)=>{
         updateAutoModeButtons(modes || {});
     });
 
-    socket.on("balance_update", (data)=>{
+    bind("balance_update", (data)=>{
         const balance = Number(data && data.balance);
         applyKnownApiBalance(data || {}, false);
         maybeShowBalanceMilestones(balance);
     });
 
-    socket.on("tick", (data)=>{
+    bind("tick", (data)=>{
         if(!apiConnected) return;
-
-        tickCountEl.innerText = data.tick_count;
 
         digitBuffer.push(data.digit);
         if(digitBuffer.length > 20) digitBuffer.shift();
-
-        digitStream.innerHTML = digitBuffer.join(" ");
-        lastDigitBox.innerText = data.digit;
-
-        for(let i=0;i<10;i++){
-            const cell = document.getElementById(`digit-${i}`);
-            if(cell) cell.classList.remove("flash");
-        }
-
-        const activeCell = document.getElementById(`digit-${data.digit}`);
-        if(activeCell){
-            activeCell.classList.add("flash");
-            setTimeout(()=>activeCell.classList.remove("flash"), 250);
-        }
+        scheduleTickUiUpdate(data);
 
         const changedProfiles = decrementPendingTickCountdowns(data && data.symbol);
         const turboResolvedProfiles = resolveTurboDigitTradesFromTick(data);
@@ -1226,48 +1380,8 @@ function bindSocketHandlers(){
         }
     });
 
-    socket.on("digit_analysis", (data)=>{
-        if(data.percentages){
-            for(let i=0;i<10;i++){
-                const p = document.getElementById(`percent-${i}`);
-                if(p) p.innerText = (data.percentages[i] ?? 0) + "%";
-            }
-        }
-
-        if(activeProfile === "JOKERJOE" && data.differs_analysis){
-            renderDiffersAnalysis(data.differs_analysis);
-        }else{
-            if(differsDigitsRow) differsDigitsRow.innerHTML = "";
-        }
-
-        if(data.confidence && activeProfile === "KOOLKID"){
-            const koolkidConfidenceEntries = [
-                ["over1", confOver1, confOver1Text],
-                ["over2", confOver2, confOver2Text],
-                ["under8", confUnder8, confUnder8Text],
-                ["under9", confUnder9, confUnder9Text],
-            ];
-            const koolkidConfidenceValues = koolkidConfidenceEntries.map(([key]) => Number(data.confidence[key] || 0));
-            const strongestConfidence = Math.max.apply(null, koolkidConfidenceValues);
-            koolkidConfidenceEntries.forEach(([key, bar, text]) => {
-                const value = Number(data.confidence[key] || 0);
-                if(bar) {
-                    bar.style.width = value + "%";
-                    bar.style.opacity = strongestConfidence > 0 && value >= strongestConfidence ? "1" : "0.72";
-                    bar.style.filter = strongestConfidence > 0 && value >= strongestConfidence
-                        ? "drop-shadow(0 0 10px rgba(250,204,21,0.35))"
-                        : "none";
-                    const confItem = bar.parentElement && bar.parentElement.parentElement;
-                    if(confItem){
-                        confItem.style.borderColor = strongestConfidence > 0 && value >= strongestConfidence ? "rgba(250,204,21,0.7)" : "#334155";
-                        confItem.style.boxShadow = strongestConfidence > 0 && value >= strongestConfidence
-                            ? "0 0 0 1px rgba(250,204,21,0.22), 0 8px 18px rgba(250,204,21,0.10)"
-                            : "none";
-                    }
-                }
-                if(text) text.innerText = value.toFixed(1);
-            });
-        }
+    bind("digit_analysis", (data)=>{
+        scheduleDigitAnalysisUiUpdate(data || {});
 
         if(activeProfile === "JOKERJOE"){
             const changed = syncJokerjoeMultiGPendingTrade(data);
@@ -1287,12 +1401,12 @@ function bindSocketHandlers(){
         }
     });
 
-    socket.on("human_chart_data", (data)=>{
+    bind("human_chart_data", (data)=>{
         if(activeProfile !== "HUMAN") return;
         if (window.updateHumanChart) window.updateHumanChart(data);
     });
 
-    socket.on("trade_placed", (data)=>{
+    bind("trade_placed", (data)=>{
         const placed = Object.assign({}, data || {});
         placed.profile = resolveTradeProfile(placed, activeProfile);
         onTradePlacedForToast(placed);
@@ -1303,7 +1417,7 @@ function bindSocketHandlers(){
         }
     });
 
-    socket.on("trade_result", (data)=>{
+    bind("trade_result", (data)=>{
         const settled = Object.assign({}, data || {});
         settled.profile = resolveTradeProfile(settled, activeProfile);
         const settledProfile = normalizeProfileName(settled.profile);
@@ -1338,21 +1452,21 @@ function bindSocketHandlers(){
         }
     });
 
-    socket.on("unchain_status", (payload)=>{
+    bind("unchain_status", (payload)=>{
         const changed = syncUnchainPendingTradesFromStatus(payload || {});
         if(changed && activeProfile === "UNCHAIN"){
             renderTradeList("UNCHAIN");
         }
     });
 
-    socket.on("ntt_status", (payload)=>{
+    bind("ntt_status", (payload)=>{
         const changed = syncNttPendingTradesFromStatus(payload || {});
         if(changed && activeProfile === "NTT"){
             renderTradeList("NTT");
         }
     });
 
-    socket.on("stats_update", (data)=>{
+    bind("stats_update", (data)=>{
         const pnl = data.net_pnl || 0;
         const statsProfile = normalizeProfileName((data && data.profile) || activeProfile);
         const wins = Number((data && data.wins) || 0);
@@ -1362,8 +1476,8 @@ function bindSocketHandlers(){
             ? Number(data.winrate)
             : (totalTrades ? ((wins / totalTrades) * 100) : 0);
         const safeLossrate = totalTrades ? (100 - safeWinrate) : 0;
-        netPnlBox.innerText = formatSignedCurrencyAmount(pnl, data || {});
-        netPnlBox.style.color = pnl >= 0 ? "#22c55e" : "#ef4444";
+        setNodeTextIfChanged(netPnlBox, formatSignedCurrencyAmount(pnl, data || {}));
+        setNodeStyleIfChanged(netPnlBox, "color", pnl >= 0 ? "#22c55e" : "#ef4444");
 
         const btn = document.getElementById("autoBtn");
         if(btn){
@@ -1383,21 +1497,21 @@ function bindSocketHandlers(){
         const lossRateEl = getProfileScopedElement("profileLossRate");
         const netProfitLossEl = getProfileScopedElement("profileNetProfitLoss");
         if (totalEl) {
-            totalEl.innerText = totalTrades;
-            if (winsEl) winsEl.innerText = wins;
-            if (lossesEl) lossesEl.innerText = losses;
-            if (winRateEl) winRateEl.innerText = safeWinrate.toFixed(1) + "%";
-            if (lossRateEl) lossRateEl.innerText = safeLossrate.toFixed(1) + "%";
+            setNodeTextIfChanged(totalEl, totalTrades);
+            if (winsEl) setNodeTextIfChanged(winsEl, wins);
+            if (lossesEl) setNodeTextIfChanged(lossesEl, losses);
+            if (winRateEl) setNodeTextIfChanged(winRateEl, safeWinrate.toFixed(1) + "%");
+            if (lossRateEl) setNodeTextIfChanged(lossRateEl, safeLossrate.toFixed(1) + "%");
             if (netProfitLossEl) {
-                netProfitLossEl.innerText = formatSignedCurrencyAmount(pnl, data || {});
-                netProfitLossEl.style.color = pnl > 0 ? "#22c55e" : (pnl < 0 ? "#ef4444" : "#e2e8f0");
+                setNodeTextIfChanged(netProfitLossEl, formatSignedCurrencyAmount(pnl, data || {}));
+                setNodeStyleIfChanged(netProfitLossEl, "color", pnl > 0 ? "#22c55e" : (pnl < 0 ? "#ef4444" : "#e2e8f0"));
             }
         }
         maybeSyncTradeHistoryFromStats(statsProfile, totalTrades);
     });
 
     // ==================== PATCH A: risk_block_update toast ====================
-    socket.on("risk_block_update", (data)=>{
+    bind("risk_block_update", (data)=>{
         const p = (data.profile || "").toUpperCase();
         const r = (data.reason || "").toUpperCase();
 
@@ -1406,7 +1520,7 @@ function bindSocketHandlers(){
     });
 
     // ==================== PATCH 2C: seqvix_progress listener ====================
-    socket.on("seqvix_progress", (data)=>{
+    bind("seqvix_progress", (data)=>{
         if(!data || !data.profile) return;
         const p = String(data.profile).toUpperCase();
         const running = !!data.running;
@@ -1434,6 +1548,10 @@ function bindSocketHandlers(){
             updateSeqVixUI("JOKERJOE", running, done, total);
         }
     });
+    SOCKET_DISPATCH_ONLY_EVENTS.forEach((eventName)=>{
+        bind(eventName, ()=>{});
+    });
+    logSocketListenerCounts("index_socket_init");
 }
 
 /* ===================== YOUR ORIGINAL CODE BELOW (UNCHANGED LOGIC) ===================== */
@@ -1487,10 +1605,52 @@ let profileDrafts = {};
 let profileDraftSaveTimer = null;
 let apiConnectPollTimer = null;
 let apiConnectPendingUntil = 0;
+const API_CONNECT_POLL_INTERVAL_MS = 2000;
+const API_CONNECT_POLL_MAX_ATTEMPTS = 8;
+const TICK_UI_THROTTLE_MS = 300;
+const DIGIT_ANALYSIS_UI_THROTTLE_MS = 350;
 let sessionStartBalanceForMilestone = null;
 let lastKnownBalanceForMilestone = null;
 let shownBalanceMilestones = {};
 let halfAutoStakeDraftKoolkid = null;
+let pendingTickUiData = null;
+let tickUiTimer = null;
+let lastTickUiPaintAt = 0;
+let lastFlashedDigit = null;
+let lastFlashClearTimer = null;
+let pendingDigitAnalysisUiData = null;
+let digitAnalysisUiTimer = null;
+let lastDigitAnalysisUiPaintAt = 0;
+const balanceUiCache = {
+    balanceText: "",
+    totalDisplay: "",
+    totalText: "",
+    budgetSignature: "",
+};
+
+function setNodeTextIfChanged(node, value){
+    if(!node) return false;
+    const text = String(value ?? "");
+    if(node.textContent === text) return false;
+    node.textContent = text;
+    return true;
+}
+
+function setNodeHtmlIfChanged(node, value){
+    if(!node) return false;
+    const html = String(value ?? "");
+    if(node.innerHTML === html) return false;
+    node.innerHTML = html;
+    return true;
+}
+
+function setNodeStyleIfChanged(node, prop, value){
+    if(!node || !prop) return false;
+    const text = String(value ?? "");
+    if(node.style[prop] === text) return false;
+    node.style[prop] = text;
+    return true;
+}
 
 function clearBotTransientState(){
     try{ localStorage.removeItem(PROFILE_DRAFTS_STORAGE_KEY); }catch(e){}
@@ -1517,6 +1677,7 @@ function clearBotTransientState(){
     });
     tradeStoreSequence = 0;
     resetBalanceMilestones();
+    resetUiRenderCaches();
     try{
         window.dispatchEvent(new CustomEvent("bot-transient-reset"));
     }catch(e){}
@@ -1526,6 +1687,30 @@ function resetBalanceMilestones(){
     sessionStartBalanceForMilestone = null;
     lastKnownBalanceForMilestone = null;
     shownBalanceMilestones = {};
+}
+
+function resetUiRenderCaches(){
+    pendingTickUiData = null;
+    if(tickUiTimer){
+        clearTimeout(tickUiTimer);
+        tickUiTimer = null;
+    }
+    if(lastFlashClearTimer){
+        clearTimeout(lastFlashClearTimer);
+        lastFlashClearTimer = null;
+    }
+    lastTickUiPaintAt = 0;
+    lastFlashedDigit = null;
+    pendingDigitAnalysisUiData = null;
+    if(digitAnalysisUiTimer){
+        clearTimeout(digitAnalysisUiTimer);
+        digitAnalysisUiTimer = null;
+    }
+    lastDigitAnalysisUiPaintAt = 0;
+    balanceUiCache.balanceText = "";
+    balanceUiCache.totalDisplay = "";
+    balanceUiCache.totalText = "";
+    balanceUiCache.budgetSignature = "";
 }
 
 function setSessionStartBalanceForMilestones(startBalance){
@@ -1797,18 +1982,45 @@ function applyKnownApiBalance(data, syncMilestoneAnchor){
             : balance);
 
     if(Number.isFinite(shownBalance) && balanceDisplay){
-        balanceDisplay.innerText = formatBalanceCurrencyAmount(shownBalance, data || budgetSnapshot);
+        const balanceText = formatBalanceCurrencyAmount(shownBalance, data || budgetSnapshot);
+        if(balanceUiCache.balanceText !== balanceText){
+            setNodeTextIfChanged(balanceDisplay, balanceText);
+            balanceUiCache.balanceText = balanceText;
+        }
     }
     if(totalBalanceLabel){
         if(budgetEnabled && Number.isFinite(totalBalance)){
-            totalBalanceLabel.style.display = "block";
-            totalBalanceLabel.innerText = `Total Balance (${formatBalanceCurrencyAmount(totalBalance, data || budgetSnapshot)})`;
+            const totalText = `Total Balance (${formatBalanceCurrencyAmount(totalBalance, data || budgetSnapshot)})`;
+            if(balanceUiCache.totalDisplay !== "block"){
+                totalBalanceLabel.style.display = "block";
+                balanceUiCache.totalDisplay = "block";
+            }
+            if(balanceUiCache.totalText !== totalText){
+                setNodeTextIfChanged(totalBalanceLabel, totalText);
+                balanceUiCache.totalText = totalText;
+            }
         }else{
-            totalBalanceLabel.style.display = "none";
-            totalBalanceLabel.innerText = "";
+            if(balanceUiCache.totalDisplay !== "none"){
+                totalBalanceLabel.style.display = "none";
+                balanceUiCache.totalDisplay = "none";
+            }
+            if(balanceUiCache.totalText !== ""){
+                setNodeTextIfChanged(totalBalanceLabel, "");
+                balanceUiCache.totalText = "";
+            }
         }
     }
-    hydrateProfileBudgetControl(activeProfile);
+    const budgetSignature = JSON.stringify({
+        profile: normalizeProfileBudgetKey(activeProfile),
+        enabled: budgetEnabled,
+        configured: budgetSnapshot && budgetSnapshot.configured_budget,
+        display: Number.isFinite(shownBalance) ? shownBalance : null,
+        total: Number.isFinite(totalBalance) ? totalBalance : null,
+    });
+    if(balanceUiCache.budgetSignature !== budgetSignature){
+        balanceUiCache.budgetSignature = budgetSignature;
+        hydrateProfileBudgetControl(activeProfile);
+    }
     if(Number.isFinite(startBalance) && startBalance > 0){
         setSessionStartBalanceForMilestones(startBalance);
     }
@@ -1817,9 +2029,138 @@ function applyKnownApiBalance(data, syncMilestoneAnchor){
     }
 }
 
+function paintTickUi(data){
+    if(!data) return;
+    lastTickUiPaintAt = Date.now();
+    setNodeTextIfChanged(tickCountEl, data.tick_count);
+    setNodeTextIfChanged(digitStream, digitBuffer.length ? digitBuffer.join(" ") : "-");
+    setNodeTextIfChanged(lastDigitBox, data.digit);
+
+    const digit = Number(data && data.digit);
+    if(!Number.isInteger(digit) || digit < 0 || digit > 9) return;
+    if(lastFlashedDigit !== null && lastFlashedDigit !== digit){
+        const previousCell = document.getElementById(`digit-${lastFlashedDigit}`);
+        if(previousCell) previousCell.classList.remove("flash");
+    }
+    const activeCell = document.getElementById(`digit-${digit}`);
+    if(activeCell){
+        activeCell.classList.add("flash");
+        lastFlashedDigit = digit;
+        if(lastFlashClearTimer) clearTimeout(lastFlashClearTimer);
+        lastFlashClearTimer = setTimeout(()=>{
+            const cell = document.getElementById(`digit-${digit}`);
+            if(cell) cell.classList.remove("flash");
+            if(lastFlashedDigit === digit) lastFlashedDigit = null;
+            lastFlashClearTimer = null;
+        }, 250);
+    }
+}
+
+function flushTickUi(){
+    if(tickUiTimer){
+        clearTimeout(tickUiTimer);
+        tickUiTimer = null;
+    }
+    const data = pendingTickUiData;
+    pendingTickUiData = null;
+    if(data) paintTickUi(data);
+}
+
+function scheduleTickUiUpdate(data){
+    pendingTickUiData = data || pendingTickUiData;
+    const elapsed = Date.now() - Number(lastTickUiPaintAt || 0);
+    if(elapsed >= TICK_UI_THROTTLE_MS){
+        flushTickUi();
+        return;
+    }
+    if(!tickUiTimer){
+        tickUiTimer = setTimeout(flushTickUi, Math.max(40, TICK_UI_THROTTLE_MS - elapsed));
+    }
+}
+
+function paintDigitAnalysisUi(data){
+    if(!data) return;
+    lastDigitAnalysisUiPaintAt = Date.now();
+    if(data.percentages){
+        for(let i=0;i<10;i++){
+            const p = document.getElementById(`percent-${i}`);
+            if(p) setNodeTextIfChanged(p, (data.percentages[i] ?? 0) + "%");
+        }
+    }
+
+    if(activeProfile === "JOKERJOE" && data.differs_analysis){
+        renderDiffersAnalysis(data.differs_analysis);
+    }else{
+        if(differsDigitsRow) setNodeHtmlIfChanged(differsDigitsRow, "");
+    }
+
+    if(data.confidence && activeProfile === "KOOLKID"){
+        const koolkidConfidenceEntries = [
+            ["over1", confOver1, confOver1Text],
+            ["over2", confOver2, confOver2Text],
+            ["under8", confUnder8, confUnder8Text],
+            ["under9", confUnder9, confUnder9Text],
+        ];
+        const koolkidConfidenceValues = koolkidConfidenceEntries.map(([key]) => Number(data.confidence[key] || 0));
+        const strongestConfidence = Math.max.apply(null, koolkidConfidenceValues);
+        koolkidConfidenceEntries.forEach(([key, bar, text]) => {
+            const value = Number(data.confidence[key] || 0);
+            if(bar) {
+                setNodeStyleIfChanged(bar, "width", value + "%");
+                setNodeStyleIfChanged(bar, "opacity", strongestConfidence > 0 && value >= strongestConfidence ? "1" : "0.72");
+                setNodeStyleIfChanged(
+                    bar,
+                    "filter",
+                    strongestConfidence > 0 && value >= strongestConfidence
+                        ? "drop-shadow(0 0 10px rgba(250,204,21,0.35))"
+                        : "none"
+                );
+                const confItem = bar.parentElement && bar.parentElement.parentElement;
+                if(confItem){
+                    const isStrongest = strongestConfidence > 0 && value >= strongestConfidence;
+                    setNodeStyleIfChanged(confItem, "borderColor", isStrongest ? "rgba(250,204,21,0.7)" : "#334155");
+                    setNodeStyleIfChanged(
+                        confItem,
+                        "boxShadow",
+                        isStrongest
+                            ? "0 0 0 1px rgba(250,204,21,0.22), 0 8px 18px rgba(250,204,21,0.10)"
+                            : "none"
+                    );
+                }
+            }
+            if(text) setNodeTextIfChanged(text, value.toFixed(1));
+        });
+    }
+}
+
+function flushDigitAnalysisUi(){
+    if(digitAnalysisUiTimer){
+        clearTimeout(digitAnalysisUiTimer);
+        digitAnalysisUiTimer = null;
+    }
+    const data = pendingDigitAnalysisUiData;
+    pendingDigitAnalysisUiData = null;
+    if(data) paintDigitAnalysisUi(data);
+}
+
+function scheduleDigitAnalysisUiUpdate(data){
+    pendingDigitAnalysisUiData = data || pendingDigitAnalysisUiData;
+    const elapsed = Date.now() - Number(lastDigitAnalysisUiPaintAt || 0);
+    if(elapsed >= DIGIT_ANALYSIS_UI_THROTTLE_MS){
+        flushDigitAnalysisUi();
+        return;
+    }
+    if(!digitAnalysisUiTimer){
+        digitAnalysisUiTimer = setTimeout(flushDigitAnalysisUi, Math.max(40, DIGIT_ANALYSIS_UI_THROTTLE_MS - elapsed));
+    }
+}
+
 function stopApiConnectPolling(){
     if(apiConnectPollTimer){
-        clearInterval(apiConnectPollTimer);
+        if(!clearFrontendInterval("api_connection_status")){
+            clearInterval(apiConnectPollTimer);
+            logActiveIntervalCount("api_connection_status_stopped_untracked");
+        }
         apiConnectPollTimer = null;
     }
 }
@@ -1872,18 +2213,27 @@ async function refreshApiConnectionState(silent){
 
 function startApiConnectPolling(){
     stopApiConnectPolling();
+    if(apiConnected && socket && socket.connected){
+        logActiveIntervalCount("api_connection_status_skipped_socket_healthy");
+        return;
+    }
     let attempts = 0;
     apiConnectPollTimer = setInterval(async ()=>{
         attempts += 1;
+        if(apiConnected && socket && socket.connected){
+            stopApiConnectPolling();
+            return;
+        }
         const connected = await refreshApiConnectionState(true);
-        if(connected || attempts >= 20){
-            if(!connected && attempts >= 20){
+        if(connected || attempts >= API_CONNECT_POLL_MAX_ATTEMPTS){
+            if(!connected && attempts >= API_CONNECT_POLL_MAX_ATTEMPTS){
                 apiConnectPendingUntil = 0;
                 applyApiConnectionState({connected:false});
             }
             stopApiConnectPolling();
         }
-    }, 750);
+    }, API_CONNECT_POLL_INTERVAL_MS);
+    registerFrontendInterval("api_connection_status", apiConnectPollTimer);
 }
 
 function normalizeProfileName(v){
@@ -2995,12 +3345,21 @@ function scheduleProfileDraftSave(profile){
     }, 160);
 }
 
+function bindDomListenerOnce(node, flag, eventName, handler, options){
+    if(!node || !flag || !eventName || typeof handler !== "function") return false;
+    const attr = `data-bound-${flag}`;
+    if(node.getAttribute(attr) === "1") return false;
+    node.setAttribute(attr, "1");
+    node.addEventListener(eventName, handler, options);
+    return true;
+}
+
 function bindProfileDraftAutosave(){
     const root = document.getElementById("profileContainer");
     if(!root || root.dataset.profileDraftBound === "1") return;
     root.dataset.profileDraftBound = "1";
-    root.addEventListener("input", ()=> scheduleProfileDraftSave(activeProfile));
-    root.addEventListener("change", ()=> scheduleProfileDraftSave(activeProfile));
+    bindDomListenerOnce(root, "profile-draft-input", "input", ()=> scheduleProfileDraftSave(activeProfile));
+    bindDomListenerOnce(root, "profile-draft-change", "change", ()=> scheduleProfileDraftSave(activeProfile));
 }
 
 loadProfileDraftsFromStorage();
@@ -3023,12 +3382,18 @@ function renderTradeList(profile){
     renderTradeHistoryFilterState(key);
 
     if(filtered.length === 0){
-        list.innerHTML = `<div style="text-align:center; color:#64748b; padding:20px;">${emptyLabel}</div>`;
+        const emptyHtml = `<div style="text-align:center; color:#64748b; padding:20px;">${emptyLabel}</div>`;
+        if(list.dataset.tradeEmptyLabel !== emptyLabel || list.dataset.tradeRenderProfile !== key || list.dataset.tradeRenderFilter !== filter){
+            setNodeHtmlIfChanged(list, emptyHtml);
+            list.dataset.tradeEmpty = "1";
+            list.dataset.tradeEmptyLabel = emptyLabel;
+            list.dataset.tradeRenderProfile = key;
+            list.dataset.tradeRenderFilter = filter;
+        }
         return;
     }
 
-    list.innerHTML = "";
-    filtered
+    const sorted = filtered
         .slice()
         .sort((a, b)=>{
             const useSnapshotTs = key === "KOOLKID" || key === "JOKERJOE" || key === "NTT";
@@ -3046,8 +3411,79 @@ function renderTradeList(profile){
             const cidA = normalizeContractId(a && (a.contract_id ?? a.contractId)) || "";
             const cidB = normalizeContractId(b && (b.contract_id ?? b.contractId)) || "";
             return String(cidB).localeCompare(String(cidA));
-        })
-        .forEach(t => list.appendChild(buildTradeItem(t)));
+        });
+
+    if(list.dataset.tradeEmpty === "1"){
+        list.innerHTML = "";
+        list.dataset.tradeEmpty = "0";
+        list.dataset.tradeEmptyLabel = "";
+    }
+    list.dataset.tradeRenderProfile = key;
+    list.dataset.tradeRenderFilter = filter;
+
+    const existingByKey = new Map();
+    Array.from(list.children || []).forEach((node)=>{
+        const domKey = node && node.dataset ? node.dataset.tradeKey : "";
+        if(domKey) existingByKey.set(domKey, node);
+    });
+
+    sorted.forEach((trade, index)=>{
+        const domKey = getTradeDomKey(trade, index);
+        const signature = getTradeRenderSignature(trade);
+        let node = existingByKey.get(domKey);
+        if(!node || (node.dataset && node.dataset.tradeSignature !== signature)){
+            const replacement = buildTradeItem(trade);
+            replacement.dataset.tradeKey = domKey;
+            replacement.dataset.tradeSignature = signature;
+            if(node && node.parentNode === list){
+                node.replaceWith(replacement);
+            }
+            node = replacement;
+        }
+        existingByKey.delete(domKey);
+        list.appendChild(node);
+    });
+
+    existingByKey.forEach((node)=>{
+        if(node && node.parentNode === list) node.remove();
+    });
+}
+
+function getTradeDomKey(trade, index){
+    const cid = normalizeContractId(trade && (trade.contract_id ?? trade.contractId));
+    if(cid) return `cid:${cid}`;
+    const seq = Number(trade && trade._store_seq);
+    if(Number.isFinite(seq) && seq > 0) return `seq:${seq}`;
+    return `idx:${Number(index) || 0}`;
+}
+
+function getTradeRenderSignature(trade){
+    const source = (trade && typeof trade === "object") ? trade : {};
+    return JSON.stringify([
+        normalizeProfileName(source.profile || activeProfile),
+        source.type,
+        source.contract_type,
+        source.barrier,
+        source.stake,
+        source.buy_price,
+        source.symbol,
+        source.market,
+        source.duration,
+        source.duration_unit,
+        source.countdown_remaining,
+        source.countdown_unit,
+        source.countdown_seconds,
+        source.exitDigit,
+        source.exit_digit,
+        source.time,
+        source.status,
+        normalizeTradeResultLabel(source.result, source.status),
+        source.profit,
+        source.profit_value,
+        source.open_profit,
+        !!source.local_resolution_pending_confirmation,
+        !!source.is_simulation,
+    ]);
 }
 
 function getTradeHistoryFilter(profile){
@@ -3399,14 +3835,14 @@ function refreshDynamicElements(){
     confUnder9Text = document.getElementById("confUnder9Text");
 
     if(stakeInput){
-        stakeInput.addEventListener("input", scheduleAutoStakeSync);
-        stakeInput.addEventListener("change", syncAutoStake);
-        stakeInput.addEventListener("blur", syncAutoStake);
+        bindDomListenerOnce(stakeInput, "auto-stake-input", "input", scheduleAutoStakeSync);
+        bindDomListenerOnce(stakeInput, "auto-stake-change", "change", syncAutoStake);
+        bindDomListenerOnce(stakeInput, "auto-stake-blur", "blur", syncAutoStake);
     }
 
     if(barrierInput){
-        barrierInput.addEventListener("change", updateInsta5Label);
-        barrierInput.addEventListener("blur", updateInsta5Label);
+        bindDomListenerOnce(barrierInput, "insta5-label-change", "change", updateInsta5Label);
+        bindDomListenerOnce(barrierInput, "insta5-label-blur", "blur", updateInsta5Label);
     }
 
     const btn = document.getElementById("autoSlBtn");
@@ -4701,21 +5137,22 @@ async function disconnect(){
     accountDashboard.style.display = "none";
 
     clearCurrencyContext();
-    balanceDisplay.innerText = "0.00";
-    netPnlBox.innerText = "0.00";
-    netPnlBox.style.color = "white";
+    setNodeTextIfChanged(balanceDisplay, "0.00");
+    balanceUiCache.balanceText = "0.00";
+    setNodeTextIfChanged(netPnlBox, "0.00");
+    setNodeStyleIfChanged(netPnlBox, "color", "white");
 
-    tickCountEl.innerText = "0";
-    lastDigitBox.innerText = "-";
-    digitStream.innerHTML = "-";
+    setNodeTextIfChanged(tickCountEl, "0");
+    setNodeTextIfChanged(lastDigitBox, "-");
+    setNodeTextIfChanged(digitStream, "-");
 
     for(let i=0;i<10;i++){
         const p = document.getElementById(`percent-${i}`);
-        if(p) p.innerText = "0%";
+        if(p) setNodeTextIfChanged(p, "0%");
     }
 
     hidePopup();
-    if(differsDigitsRow) differsDigitsRow.innerHTML = "";
+    if(differsDigitsRow) setNodeHtmlIfChanged(differsDigitsRow, "");
 
     // PATCH A: update disconnect reset with new auto modes
     updateAutoModeButtons({kidracks:false, koolkidspeed:false, kidbagz:false, mpull:false, koolluck:false, auto_dollar:false, sludgex:false, triplex:false, kidx:false, multig:false, kidpairs:false});

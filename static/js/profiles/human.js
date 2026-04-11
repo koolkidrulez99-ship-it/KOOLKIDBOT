@@ -1,8 +1,13 @@
 (function () {
   const PROFILE = "HUMAN";
+  const POLL_INTERVAL_LABEL = "human_rf_status_poll";
+  const STATUS_RENDER_THROTTLE_MS = 500;
   let pollTimer = null;
   let cachedStatus = null;
   let socketHooked = false;
+  let pendingStatusPayload = null;
+  let statusRenderTimer = null;
+  let lastStatusRenderAt = 0;
   const fxState = { active: false, firing: false, lastToast: 0 };
 
   function getApp() {
@@ -19,6 +24,15 @@
 
   function byId(id){ return document.getElementById(id); }
   function rootExists(){ return !!byId("humanRiseFallCard"); }
+  function isActive(){
+    try{
+      if(typeof activeProfile !== "undefined") return String(activeProfile || "").toUpperCase() === PROFILE;
+    }catch(e){}
+    try{
+      return String(window.activeProfile || "").toUpperCase() === PROFILE;
+    }catch(e){}
+    return rootExists();
+  }
 
   function clampNum(v, min, max, fallback){
     let n = Number(v);
@@ -66,6 +80,7 @@
   }
 
   function renderHumanRFStatus(data){
+    lastStatusRenderAt = Date.now();
     if(!data || !rootExists()) return;
     cachedStatus = data;
 
@@ -269,16 +284,52 @@
 
   function startPolling(){
     stopPolling();
+    if(!isActive() || !rootExists()){
+      const App = getApp();
+      if(App && typeof App.logActiveIntervalCount === "function") App.logActiveIntervalCount("human_poll_skipped_inactive");
+      return;
+    }
     fetchHumanRFStatus();
     pollTimer = setInterval(() => {
-      if(!rootExists()) return;
+      if(!isActive() || !rootExists()){
+        stopPolling();
+        return;
+      }
       fetchHumanRFStatus();
-    }, 1000);
+    }, 1500);
+    const App = getApp();
+    if(App && typeof App.registerFrontendInterval === "function") App.registerFrontendInterval(POLL_INTERVAL_LABEL, pollTimer);
+  }
+
+  function flushHumanRFStatusRender(){
+    if(statusRenderTimer){
+      clearTimeout(statusRenderTimer);
+      statusRenderTimer = null;
+    }
+    const payload = pendingStatusPayload;
+    pendingStatusPayload = null;
+    if(payload) renderHumanRFStatus(payload);
+  }
+
+  function scheduleHumanRFStatusRender(payload){
+    pendingStatusPayload = payload || pendingStatusPayload;
+    const elapsed = Date.now() - Number(lastStatusRenderAt || 0);
+    if(elapsed >= STATUS_RENDER_THROTTLE_MS){
+      flushHumanRFStatusRender();
+      return;
+    }
+    if(!statusRenderTimer){
+      statusRenderTimer = setTimeout(flushHumanRFStatusRender, Math.max(50, STATUS_RENDER_THROTTLE_MS - elapsed));
+    }
   }
 
   function stopPolling(){
-    if(pollTimer){
+    const App = getApp();
+    const clearedTracked = !!(App && typeof App.clearFrontendInterval === "function" && App.clearFrontendInterval(POLL_INTERVAL_LABEL));
+    if(pollTimer && !clearedTracked){
       clearInterval(pollTimer);
+    }
+    if(pollTimer || clearedTracked){
       pollTimer = null;
     }
   }
@@ -286,17 +337,23 @@
   function bindSocketIfPossible(){
     if(socketHooked) return;
     try{
-      if(typeof socket !== "undefined" && socket && typeof socket.on === "function"){
-        socket.on("human_rf_status", (payload) => {
-          if(rootExists()) renderHumanRFStatus(payload);
+      const App = getApp();
+      const hasAppBinder = App && typeof App.bindSocketListener === "function";
+      if(hasAppBinder){
+        const bind = (eventName, handler) => {
+          return App.bindSocketListener(PROFILE, eventName, handler);
+        };
+        bind("human_rf_status", (payload) => {
+          if(rootExists()) scheduleHumanRFStatusRender(payload);
         });
-        socket.on("human_market_change", () => {
+        bind("human_market_change", () => {
           fetchHumanRFStatus();
         });
-        socket.on("market_change", () => {
+        bind("market_change", () => {
           fetchHumanRFStatus();
         });
         socketHooked = true;
+        if(App && typeof App.logSocketListenerCounts === "function") App.logSocketListenerCounts("human_profile_init");
       }
     }catch(e){}
   }

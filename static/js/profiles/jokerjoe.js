@@ -1,10 +1,16 @@
 (function () {
   const PROFILE = "JOKERJOE";
+const FALLBACK_BOOTSTRAP_INTERVAL_LABEL = "jokerjoe_fallback_bootstrap";
+const ACTIVITY_POLL_INTERVAL_LABEL = "jokerjoe_activity_poll";
 const FAST_INTERVAL_MS_NORMAL = 400; // 0.4s as requested
 const FAST_INTERVAL_MS_TURBO = 120;  // faster Turbo lane for JOKERJOE
 const FAST_MAX_BUY_QUEUE = 12;       // safety limit
+const BLACKCARD_RENDER_THROTTLE_MS = 300;
 const state = { lastSocket: null, socketBound: false, autoModes: {}, turboMode: loadTurboModeJokerjoe(), kidgxBarrier: 5, matchesAnalysisOn: false, matchesLastKey: "", matchesObserverBound: false, matchSniperOn: false, matchSniperCooldownUntil: 0, matchSniperActiveDigit: null, matchSniperConsumed: false, matchSniperBusy: false, matchesSnapshot: null, matchesSorted: [], matchSniper5xOn: false, matchSniper5xCooldownUntil: 0, matchSniper5xBusy: false, matchSniper5xLastTopKey: "", matchSniper5xRotationSets: null, matchSniper5xRotationIndex: 0, matchSniper5xCurrentDigits: [], aiAutoModeChoice: "golden_digits", aiAutoLowestTradeCountChoice: 5, aiAutoLowestLocalOn: false, aiAutoModalOpen: false, aiLowestLastTickCount: 0, aiLowestTouches: {}, aiLowestArmed: null, aiLowestBatchActive: false, aiLowestBatchPending: 0, aiLowestBatchBarrier: null, aiLowestBatchProfit: 0, aiLowestCooldownUntil: 0, aiLowestSubmitting: false, aiLowestRecoveryDeficit: 0, aiLowestRecoveryOnly: false, randomMatchesDiffersOn: false, randomMatchesDiffersMode: "DIFFERS", randomMatchesDiffersModalOpen: false, randomMatchesDiffersBusy: false, randomMatchesDiffersCooldownUntil: 0, randomMatchesDiffersLastSignalKey: "", randomMatchesDiffersTickHistory: [], randomMatchesDiffersLastTickCount: 0, randomMatchesDiffersSnapshot: null, blackcard: { lastDigit: null, recentDigits: [], percentages: {}, busy: false }, insta2Busy: false };
   const fastBuyQueueJokerjoe = { items: [], running: false, lastRunAt: 0 };
+  let activityPollTimerJokerjoe = null;
+  let blackcardRenderTimerJokerjoe = null;
+  let lastBlackcardRenderAtJokerjoe = 0;
 
   function App() { return window.BotApp || {}; }
   function isActive() { try { return typeof activeProfile !== "undefined" && activeProfile === PROFILE; } catch (e) { return false; } }
@@ -119,6 +125,21 @@ function renderTurboToggleJokerjoe() {
   }
 
   function getEl(id) { return document.getElementById(id); }
+  function setTextIfChanged(node, value) {
+    if (!node) return;
+    const text = String(value ?? "");
+    if (node.textContent !== text) node.textContent = text;
+  }
+  function setHtmlIfChanged(node, value) {
+    if (!node) return;
+    const html = String(value ?? "");
+    if (node.innerHTML !== html) node.innerHTML = html;
+  }
+  function setStyleIfChanged(node, prop, value) {
+    if (!node || !prop) return;
+    const text = String(value ?? "");
+    if (node.style[prop] !== text) node.style[prop] = text;
+  }
 
   function getBlackcardPopupJokerjoe() { return getEl("blackcardPopupJokerjoe"); }
 
@@ -168,6 +189,7 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
   }
 
   function renderBlackcardJokerjoe() {
+    lastBlackcardRenderAtJokerjoe = Date.now();
     const popup = getBlackcardPopupJokerjoe();
     const liveDigitEl = getEl("blackcardLiveDigitJokerjoe");
     const statusEl = getEl("blackcardStatusJokerjoe");
@@ -181,35 +203,53 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     const busy = !!state.blackcard.busy;
 
     if (liveDigitEl) {
-      liveDigitEl.innerText = hasDigit ? String(lastDigit) : "-";
-      liveDigitEl.style.borderColor = hasDigit ? "#38bdf8" : "#334155";
-      liveDigitEl.style.boxShadow = hasDigit ? "0 0 0 1px rgba(56,189,248,0.35), 0 10px 24px rgba(15,23,42,0.45)" : "0 10px 24px rgba(15,23,42,0.45)";
-      liveDigitEl.style.color = hasDigit ? "#67e8f9" : "#f8fafc";
+      setTextIfChanged(liveDigitEl, hasDigit ? String(lastDigit) : "-");
+      setStyleIfChanged(liveDigitEl, "borderColor", hasDigit ? "#38bdf8" : "#334155");
+      setStyleIfChanged(liveDigitEl, "boxShadow", hasDigit ? "0 0 0 1px rgba(56,189,248,0.35), 0 10px 24px rgba(15,23,42,0.45)" : "0 10px 24px rgba(15,23,42,0.45)");
+      setStyleIfChanged(liveDigitEl, "color", hasDigit ? "#67e8f9" : "#f8fafc");
     }
     if (statusEl) {
-      if (busy) statusEl.innerText = "Sending DIFFERS trade...";
-      else if (hasDigit) statusEl.innerText = `Last digit ${lastDigit} just played. Tap any digit to send DIFFERS instantly.`;
-      else statusEl.innerText = "Waiting for market ticks...";
-      statusEl.style.color = busy ? "#38bdf8" : "#cbd5e1";
+      if (busy) setTextIfChanged(statusEl, "Sending DIFFERS trade...");
+      else if (hasDigit) setTextIfChanged(statusEl, `Last digit ${lastDigit} just played. Tap any digit to send DIFFERS instantly.`);
+      else setTextIfChanged(statusEl, "Waiting for market ticks...");
+      setStyleIfChanged(statusEl, "color", busy ? "#38bdf8" : "#cbd5e1");
     }
     if (recentEl) {
-      recentEl.innerText = recentDigits.length ? `Recent digits: ${recentDigits.join(" ")}` : "Recent digits: warming up...";
+      setTextIfChanged(recentEl, recentDigits.length ? `Recent digits: ${recentDigits.join(" ")}` : "Recent digits: warming up...");
     }
     getBlackcardDigitButtonsJokerjoe().forEach((btn) => {
       const digit = Number(btn.getAttribute("data-blackcard-digit-jokerjoe"));
       const isLast = hasDigit && digit === lastDigit;
       const pct = Number((percentages || {})[digit]);
       btn.disabled = busy;
-      btn.style.cursor = busy ? "wait" : "pointer";
-      btn.style.opacity = busy ? "0.75" : "1";
-      btn.style.height = "60px";
-      btn.style.touchAction = "manipulation";
-      btn.style.background = isLast ? "linear-gradient(135deg,#0f766e,#06b6d4)" : "#111827";
-      btn.style.borderColor = isLast ? "#67e8f9" : "#334155";
-      btn.style.boxShadow = isLast ? "0 0 0 1px rgba(103,232,249,0.4), 0 10px 18px rgba(6,182,212,0.18)" : "none";
-      btn.innerHTML = `<span style="display:block; font-size:18px; line-height:1; font-weight:800;">${digit}</span><span style="display:block; font-size:11px; line-height:1.2; margin-top:4px; color:${isLast ? "#e0fbff" : "#94a3b8"};">${Number.isFinite(pct) ? pct.toFixed(1) : "0.0"}%</span>`;
+      setStyleIfChanged(btn, "cursor", busy ? "wait" : "pointer");
+      setStyleIfChanged(btn, "opacity", busy ? "0.75" : "1");
+      setStyleIfChanged(btn, "height", "60px");
+      setStyleIfChanged(btn, "touchAction", "manipulation");
+      setStyleIfChanged(btn, "background", isLast ? "linear-gradient(135deg,#0f766e,#06b6d4)" : "#111827");
+      setStyleIfChanged(btn, "borderColor", isLast ? "#67e8f9" : "#334155");
+      setStyleIfChanged(btn, "boxShadow", isLast ? "0 0 0 1px rgba(103,232,249,0.4), 0 10px 18px rgba(6,182,212,0.18)" : "none");
+      setHtmlIfChanged(btn, `<span style="display:block; font-size:18px; line-height:1; font-weight:800;">${digit}</span><span style="display:block; font-size:11px; line-height:1.2; margin-top:4px; color:${isLast ? "#e0fbff" : "#94a3b8"};">${Number.isFinite(pct) ? pct.toFixed(1) : "0.0"}%</span>`);
     });
     if (popup && popup.style.display === "block") positionBlackcardPopupJokerjoe();
+  }
+
+  function scheduleBlackcardRenderJokerjoe() {
+    const elapsed = Date.now() - Number(lastBlackcardRenderAtJokerjoe || 0);
+    if (elapsed >= BLACKCARD_RENDER_THROTTLE_MS) {
+      if (blackcardRenderTimerJokerjoe) {
+        clearTimeout(blackcardRenderTimerJokerjoe);
+        blackcardRenderTimerJokerjoe = null;
+      }
+      renderBlackcardJokerjoe();
+      return;
+    }
+    if (!blackcardRenderTimerJokerjoe) {
+      blackcardRenderTimerJokerjoe = setTimeout(() => {
+        blackcardRenderTimerJokerjoe = null;
+        renderBlackcardJokerjoe();
+      }, Math.max(40, BLACKCARD_RENDER_THROTTLE_MS - elapsed));
+    }
   }
 
   function trackBlackcardTickJokerjoe(data) {
@@ -220,7 +260,7 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     next.push(digit);
     while (next.length > 12) next.shift();
     state.blackcard.recentDigits = next;
-    renderBlackcardJokerjoe();
+    scheduleBlackcardRenderJokerjoe();
   }
 
   function bindBlackcardDigitHandlersJokerjoe() {
@@ -603,6 +643,7 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     state.randomMatchesDiffersModalOpen = true;
     modal.style.display = "flex";
     updateRandomMatchesDiffersModalUiJokerjoe();
+    refreshActivityPollJokerjoe();
   }
 
   function closeRandomMatchesDiffersModalJokerjoe() {
@@ -610,6 +651,7 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     if (!modal) return;
     state.randomMatchesDiffersModalOpen = false;
     modal.style.display = "none";
+    refreshActivityPollJokerjoe();
   }
 
   function getEligibleLowPctDigitsJokerjoe(percentages) {
@@ -1249,6 +1291,59 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     state.matchesObserverBound = true;
   }
 
+  function shouldRunActivityPollJokerjoe() {
+    return isActive() && (
+      state.matchesAnalysisOn ||
+      state.matchSniperOn ||
+      state.matchSniper5xOn ||
+      state.randomMatchesDiffersOn ||
+      state.randomMatchesDiffersModalOpen
+    );
+  }
+
+  function runActivityPollOnceJokerjoe() {
+    try {
+      if (state.matchesAnalysisOn || state.matchSniperOn || state.matchSniper5xOn) {
+        refreshMatchesAnalysisJokerjoe();
+        updateMatchSniperStatusJokerjoe();
+        updateMatchSniper5xStatusJokerjoe();
+        updateAIAutoModeModalUiJokerjoe();
+      }
+      if (state.randomMatchesDiffersOn || state.randomMatchesDiffersModalOpen) {
+        updateRandomMatchesDiffersStatusJokerjoe();
+        updateRandomMatchesDiffersModalUiJokerjoe();
+      }
+    } catch (e) {}
+  }
+
+  function stopActivityPollJokerjoe() {
+    const app = App();
+    const clearedTracked = !!(app && typeof app.clearFrontendInterval === "function" && app.clearFrontendInterval(ACTIVITY_POLL_INTERVAL_LABEL));
+    if (activityPollTimerJokerjoe && !clearedTracked) {
+      clearInterval(activityPollTimerJokerjoe);
+    }
+    if (activityPollTimerJokerjoe || clearedTracked) activityPollTimerJokerjoe = null;
+  }
+
+  function refreshActivityPollJokerjoe() {
+    if (!shouldRunActivityPollJokerjoe()) {
+      stopActivityPollJokerjoe();
+      const app = App();
+      if (app && typeof app.logActiveIntervalCount === "function") app.logActiveIntervalCount("jokerjoe_activity_poll_idle");
+      return;
+    }
+    if (activityPollTimerJokerjoe) return;
+    activityPollTimerJokerjoe = setInterval(() => {
+      if (!shouldRunActivityPollJokerjoe()) {
+        stopActivityPollJokerjoe();
+        return;
+      }
+      runActivityPollOnceJokerjoe();
+    }, 1500);
+    const app = App();
+    if (app && typeof app.registerFrontendInterval === "function") app.registerFrontendInterval(ACTIVITY_POLL_INTERVAL_LABEL, activityPollTimerJokerjoe);
+  }
+
   window.toggleMatchesAnalysisJokerjoe = function () {
     state.matchesAnalysisOn = !state.matchesAnalysisOn;
     updateMatchesAnalysisButtonJokerjoe();
@@ -1258,6 +1353,7 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     updateMatchSniper5xStatusJokerjoe();
     bindMatchesAnalysisObserverJokerjoe();
     if (state.matchesAnalysisOn) refreshMatchesAnalysisJokerjoe();
+    refreshActivityPollJokerjoe();
   };
 
 
@@ -1272,6 +1368,7 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     refreshMatchesAnalysisJokerjoe();
     updateMatchSniperStatusJokerjoe();
     updateMatchSniper5xStatusJokerjoe();
+    refreshActivityPollJokerjoe();
     safeToast(`🎯 MatchSniper 1x: ${state.matchSniperOn ? "ON" : "OFF"}`, state.matchSniperOn ? "success" : "error");
   };
 
@@ -1291,6 +1388,7 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     bindMatchesAnalysisObserverJokerjoe();
     refreshMatchesAnalysisJokerjoe();
     updateMatchSniper5xStatusJokerjoe();
+    refreshActivityPollJokerjoe();
     safeToast(`🎯 MatchSniper 5x: ${state.matchSniper5xOn ? "ON" : "OFF"}`, state.matchSniper5xOn ? "success" : "error");
   };
 
@@ -1396,12 +1494,18 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
 
   function bindSocketListeners() {
     try {
-      if (typeof socket === "undefined" || !socket) return;
-      if (state.lastSocket === socket && state.socketBound) return;
-      state.lastSocket = socket;
+      const app = App();
+      const currentSocket = (typeof socket !== "undefined") ? socket : null;
+      const hasAppBinder = app && typeof app.bindSocketListener === "function";
+      if (!hasAppBinder) return;
+      if (state.lastSocket === currentSocket && state.socketBound) return;
+      const bind = (eventName, handler) => {
+        return app.bindSocketListener(PROFILE, eventName, handler);
+      };
+      state.lastSocket = currentSocket;
       state.socketBound = true;
 
-      socket.on("digit_analysis", (data) => {
+      bind("digit_analysis", (data) => {
         if (!isActive() || !data) return;
         if (data.auto_modes) state.autoModes = Object.assign({}, state.autoModes, data.auto_modes);
         if (data.auto_settings && data.auto_settings.kidgx_barrier !== undefined) state.kidgxBarrier = Number(data.auto_settings.kidgx_barrier);
@@ -1414,22 +1518,23 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
         refreshMatchesAnalysisJokerjoe(data);
       });
 
-      socket.on("auto_mode_update", (modes) => {
+      bind("auto_mode_update", (modes) => {
         if (!isActive()) return;
         state.autoModes = Object.assign({}, state.autoModes, modes || {});
         updateButtons();
         updateAdvancedAIModeButtonsJokerjoe();
       });
 
-      socket.on("trade_result", (entry) => {
+      bind("trade_result", (entry) => {
         if (!isActive()) return;
         onJokerjoeTradeResultForLowestAI(entry || {});
       });
 
-      socket.on("tick", (data) => {
+      bind("tick", (data) => {
         if (!isActive()) return;
         trackBlackcardTickJokerjoe(data || {});
       });
+      if (app && typeof app.logSocketListenerCounts === "function") app.logSocketListenerCounts("jokerjoe_profile_init");
     } catch (e) {}
   }
 
@@ -1504,6 +1609,7 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     renderBlackcardJokerjoe();
     currentTurboModeJokerjoe();
     renderTurboToggleJokerjoe();
+    refreshActivityPollJokerjoe();
   }
 
   async function afterLoadProfileUI() {
@@ -1526,6 +1632,7 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     renderBlackcardJokerjoe();
     currentTurboModeJokerjoe();
     renderTurboToggleJokerjoe();
+    refreshActivityPollJokerjoe();
   }
 
   async function onActivate() {
@@ -1550,6 +1657,7 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     currentTurboModeJokerjoe();
     renderTurboToggleJokerjoe();
     refreshMatchesAnalysisJokerjoe();
+    refreshActivityPollJokerjoe();
   }
 
 window.toggleTurboJokerjoe = function () {
@@ -1678,6 +1786,7 @@ if (!window.__jokerjoeTurboSyncBound) {
     updateRandomMatchesDiffersStatusJokerjoe();
     updateRandomMatchesDiffersModalUiJokerjoe();
     closeRandomMatchesDiffersModalJokerjoe();
+    refreshActivityPollJokerjoe();
     safeToast("🎲 Random Matches/Differs: OFF", "error");
   };
 
@@ -1688,6 +1797,7 @@ if (!window.__jokerjoeTurboSyncBound) {
     updateRandomMatchesDiffersStatusJokerjoe();
     updateRandomMatchesDiffersModalUiJokerjoe();
     closeRandomMatchesDiffersModalJokerjoe();
+    refreshActivityPollJokerjoe();
     safeToast(`🎲 Random Matches/Differs: ${state.randomMatchesDiffersMode} ON`, "success");
     tryRandomMatchesDiffersTradeJokerjoe(state.randomMatchesDiffersSnapshot || buildRandomMatchesDiffersSnapshotJokerjoe());
   };
@@ -1810,8 +1920,25 @@ window.insta2Jokerjoe = async function () {
   }
 
   // Fallback bootstrap for index versions without Phase 2 hooks
+  let fallbackBootstrapTimerJokerjoe = null;
+
+  function stopFallbackBootstrapJokerjoe() {
+    const app = App();
+    const clearedTracked = !!(app && typeof app.clearFrontendInterval === "function" && app.clearFrontendInterval(FALLBACK_BOOTSTRAP_INTERVAL_LABEL));
+    if (fallbackBootstrapTimerJokerjoe && !clearedTracked) {
+      clearInterval(fallbackBootstrapTimerJokerjoe);
+    }
+    if (fallbackBootstrapTimerJokerjoe || clearedTracked) fallbackBootstrapTimerJokerjoe = null;
+  }
+
   function fallbackBootstrap() {
     try {
+      if (typeof window.registerProfileModule === "function") {
+        stopFallbackBootstrapJokerjoe();
+        const app = App();
+        if (app && typeof app.logActiveIntervalCount === "function") app.logActiveIntervalCount("jokerjoe_fallback_module_loaded");
+        return;
+      }
       if (typeof window.registerProfileModule !== "function") {
         if (typeof onMount === "function") onMount();
         if (typeof afterLoadProfileUI === "function") afterLoadProfileUI();
@@ -1819,22 +1946,15 @@ window.insta2Jokerjoe = async function () {
       }
     } catch (e) {}
   }
-  setInterval(fallbackBootstrap, 900);
-  setTimeout(fallbackBootstrap, 200);
-  setInterval(() => {
-    try {
-      if (!isActive()) return;
-      if (state.matchesAnalysisOn || state.matchSniperOn || state.matchSniper5xOn) {
-        refreshMatchesAnalysisJokerjoe();
-        updateMatchSniperStatusJokerjoe();
-        updateMatchSniper5xStatusJokerjoe();
-        updateAIAutoModeModalUiJokerjoe();
-      }
-      if (state.randomMatchesDiffersOn || state.randomMatchesDiffersModalOpen) {
-        updateRandomMatchesDiffersStatusJokerjoe();
-        updateRandomMatchesDiffersModalUiJokerjoe();
-      }
-    } catch (e) {}
-  }, 1000);
+  if (typeof window.registerProfileModule !== "function") {
+    fallbackBootstrapTimerJokerjoe = setInterval(fallbackBootstrap, 1200);
+    const app = App();
+    if (app && typeof app.registerFrontendInterval === "function") app.registerFrontendInterval(FALLBACK_BOOTSTRAP_INTERVAL_LABEL, fallbackBootstrapTimerJokerjoe);
+    setTimeout(fallbackBootstrap, 200);
+  } else {
+    stopFallbackBootstrapJokerjoe();
+    const app = App();
+    if (app && typeof app.logActiveIntervalCount === "function") app.logActiveIntervalCount("jokerjoe_fallback_not_needed");
+  }
 
 })();

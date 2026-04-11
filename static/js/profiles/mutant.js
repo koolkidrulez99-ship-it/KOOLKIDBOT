@@ -1,5 +1,14 @@
 (function () {
   const PROFILE = "NTT";
+  const POLL_INTERVAL_LABEL = "ntt_status_poll";
+  const LIVE_CHART_RENDER_THROTTLE_MS = 400;
+  const STATUS_RENDER_THROTTLE_MS = 500;
+  let pendingLiveChartArgs = null;
+  let liveChartRenderTimer = null;
+  let lastLiveChartRenderAt = 0;
+  let pendingStatusPayload = null;
+  let statusRenderTimer = null;
+  let lastStatusRenderAt = 0;
   const FORM_FIELDS = [
     "nttTouchStake",
     "nttNoTouchStake",
@@ -1690,30 +1699,83 @@
     if (side === "NO_TOUCH") return sendTrade("NO_TOUCH");
     return sendTrade("TOUCH");
   }
+  function flushLiveChartRender() {
+    if (liveChartRenderTimer) {
+      clearTimeout(liveChartRenderTimer);
+      liveChartRenderTimer = null;
+    }
+    const args = pendingLiveChartArgs;
+    pendingLiveChartArgs = null;
+    if (!args || !isActive()) return;
+    lastLiveChartRenderAt = Date.now();
+    renderBarrierMarketChart(args.ntt || {}, args.payload || {});
+  }
+  function scheduleLiveChartRender(ntt, payload) {
+    if (!isActive()) return;
+    pendingLiveChartArgs = { ntt: ntt || {}, payload: payload || {} };
+    const elapsed = Date.now() - Number(lastLiveChartRenderAt || 0);
+    if (elapsed >= LIVE_CHART_RENDER_THROTTLE_MS) {
+      flushLiveChartRender();
+      return;
+    }
+    if (!liveChartRenderTimer) {
+      liveChartRenderTimer = setTimeout(flushLiveChartRender, Math.max(50, LIVE_CHART_RENDER_THROTTLE_MS - elapsed));
+    }
+  }
+  function flushStatusRender() {
+    if (statusRenderTimer) {
+      clearTimeout(statusRenderTimer);
+      statusRenderTimer = null;
+    }
+    const payload = pendingStatusPayload;
+    pendingStatusPayload = null;
+    if (!payload || !isActive()) return;
+    lastStatusRenderAt = Date.now();
+    renderPayload(payload, { forceForm: false });
+  }
+  function scheduleStatusRender(payload) {
+    if (!isActive()) return;
+    pendingStatusPayload = payload || pendingStatusPayload;
+    const elapsed = Date.now() - Number(lastStatusRenderAt || 0);
+    if (elapsed >= STATUS_RENDER_THROTTLE_MS) {
+      flushStatusRender();
+      return;
+    }
+    if (!statusRenderTimer) {
+      statusRenderTimer = setTimeout(flushStatusRender, Math.max(50, STATUS_RENDER_THROTTLE_MS - elapsed));
+    }
+  }
   function bindSocket() {
     try {
-      if (typeof socket === "undefined" || !socket) return;
-      if (state.lastSocket === socket && state.socketBound) return;
-      state.lastSocket = socket;
+      const app = App();
+      const currentSocket = (typeof socket !== "undefined") ? socket : null;
+      const hasAppBinder = app && typeof app.bindSocketListener === "function";
+      if (!hasAppBinder) return;
+      if (state.lastSocket === currentSocket && state.socketBound) return;
+      const bind = (eventName, handler) => {
+        return app.bindSocketListener(PROFILE, eventName, handler);
+      };
+      state.lastSocket = currentSocket;
       state.socketBound = true;
-      socket.on("tick", (data) => {
+      bind("tick", (data) => {
         if (!data) return;
         pushChartPrice(data.price != null ? data.price : data.quote, data.symbol);
-        if (isActive()) renderBarrierMarketChart((state.lastPayload && state.lastPayload.ntt) || {}, state.lastPayload || data || {});
+        if (isActive()) scheduleLiveChartRender((state.lastPayload && state.lastPayload.ntt) || {}, state.lastPayload || data || {});
       });
-      socket.on("ntt_status", (data) => {
-        if (data && isActive()) renderPayload(data, { forceForm: false });
+      bind("ntt_status", (data) => {
+        if (data && isActive()) scheduleStatusRender(data);
       });
-      socket.on("trade_result", (trade) => {
+      bind("trade_result", (trade) => {
         if (trade && String(trade.profile || "").toUpperCase() === PROFILE && isActive()) {
           setTimeout(() => refreshStatus(true), 180);
         }
       });
-      socket.on("trade_placed", (trade) => {
+      bind("trade_placed", (trade) => {
         if (trade && String(trade.profile || "").toUpperCase() === PROFILE && isActive()) {
           setTimeout(() => refreshStatus(true), 120);
         }
       });
+      if (app && typeof app.logSocketListenerCounts === "function") app.logSocketListenerCounts("mutant_profile_init");
     } catch (_e) {}
   }
   function bindFormInputs() {
@@ -1893,15 +1955,29 @@
     bindSymbolPicker();
   }
   function startPolling() {
-    if (state.pollTimer) clearInterval(state.pollTimer);
+    stopPolling();
+    if (!isActive()) {
+      const app = App();
+      if (app && typeof app.logActiveIntervalCount === "function") app.logActiveIntervalCount("ntt_poll_skipped_inactive");
+      return;
+    }
     state.pollTimer = setInterval(() => {
-      if (!isActive()) return;
+      if (!isActive()) {
+        stopPolling();
+        return;
+      }
       refreshStatus(true).catch(() => {});
     }, 2500);
+    const app = App();
+    if (app && typeof app.registerFrontendInterval === "function") app.registerFrontendInterval(POLL_INTERVAL_LABEL, state.pollTimer);
   }
   function stopPolling() {
-    if (state.pollTimer) clearInterval(state.pollTimer);
-    state.pollTimer = null;
+    const app = App();
+    const clearedTracked = !!(app && typeof app.clearFrontendInterval === "function" && app.clearFrontendInterval(POLL_INTERVAL_LABEL));
+    if (state.pollTimer && !clearedTracked) {
+      clearInterval(state.pollTimer);
+    }
+    if (state.pollTimer || clearedTracked) state.pollTimer = null;
   }
   async function onMount(ctx) {
     bindUI((ctx && ctx.root) || el("nttRoot"));
