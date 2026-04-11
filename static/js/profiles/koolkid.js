@@ -871,10 +871,62 @@
     info.innerText = `Scanning ${marketLabel} ticks with Over 3 analysis • ${counts} • ${session}`;
   }
 
+  function escapeHtmlKoolkid(value) {
+    return String(value == null ? "" : value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function findGoldenCardFocusRowKoolkid(results) {
+    const rows = Array.isArray(results) ? results : [];
+    const ready = rows.find((row) => row && (row.ready_confirmed || row.entry_ready));
+    if (ready) return ready;
+    return rows.reduce((best, row) => {
+      if (!row) return best;
+      const confidence = Number(row.confidence_pct || 0);
+      const bestConfidence = best ? Number(best.confidence_pct || 0) : -1;
+      return confidence > bestConfidence ? row : best;
+    }, null);
+  }
+
+  function renderGoldenCardHeroKoolkid(data, results) {
+    const d = data || {};
+    const btn = document.getElementById("goldenCardBtnKoolkid");
+    const statePill = document.getElementById("goldenCardStatePillKoolkid");
+    const confidenceEl = document.getElementById("goldenCardConfidenceKoolkid");
+    const subtextEl = document.getElementById("goldenCardSubtextKoolkid");
+    const reasonEl = document.getElementById("goldenCardReasonKoolkid");
+    const running = !!d.running;
+    const focus = findGoldenCardFocusRowKoolkid(results);
+    const ready = !!(focus && (focus.ready_confirmed || focus.entry_ready));
+    const visualState = ready ? "ready" : (running ? "active" : "waiting");
+    const confidence = Number(d.best_confidence_pct != null ? d.best_confidence_pct : (focus ? focus.confidence_pct : 0)) || 0;
+    const tradeLabel = String((ready && (d.ready_trade_label || (focus && focus.recommended_label))) || (focus && focus.recommended_label) || "OVER 1 / UNDER 8");
+    const marketLabel = String((ready && (d.ready_market || (focus && (focus.market_label || focus.symbol)))) || (focus && (focus.market_label || focus.symbol)) || "best market");
+    const reason = String(d.ready_reason || (focus && focus.ready_reason) || (running ? "Scanning live markets for a premium setup." : "Waiting for Golden Card scan to start."));
+
+    if (btn) {
+      btn.classList.remove("is-waiting", "is-ready", "is-active");
+      btn.classList.add(`is-${visualState}`);
+      btn.setAttribute("data-golden-state", visualState);
+      btn.setAttribute("aria-label", `Golden Card ${visualState}`);
+    }
+    if (statePill) statePill.innerText = visualState === "ready" ? "READY" : (visualState === "active" ? "ACTIVE" : "WAITING");
+    if (confidenceEl) confidenceEl.innerText = confidence > 0 ? `${confidence.toFixed(0)}% CONF` : "--% CONF";
+    if (subtextEl) {
+      subtextEl.innerText = ready
+        ? `${tradeLabel} on ${marketLabel}`
+        : (running ? "Live scan needs 2 clean checks in a row" : "Premium multi-market setup finder");
+    }
+    if (reasonEl) reasonEl.innerText = reason;
+  }
+
   function renderGoldenCardKoolkid(data) {
     if (data && typeof data === "object") state.goldenCard = data;
     const d = state.goldenCard || {};
-    const btn = document.getElementById("goldenCardBtnKoolkid");
     const info = document.getElementById("goldenCardInfoKoolkid");
     const statusEl = document.getElementById("goldenCardStatusKoolkid");
     const progressEl = document.getElementById("goldenCardProgressKoolkid");
@@ -891,16 +943,11 @@
 
     syncGoldenCardControlsKoolkid(d);
 
-    if (btn) {
-      btn.innerText = running ? "🂠 GOLDEN CARD • SCANNING" : "🂠 GOLDEN CARD";
-      btn.style.background = running
-        ? "linear-gradient(135deg,#f59e0b,#fde047)"
-        : "linear-gradient(135deg,#ca8a04,#facc15)";
-      btn.style.color = "#111827";
-    }
+    renderGoldenCardHeroKoolkid(d, results);
     if (info) {
-      info.style.color = running ? "#facc15" : "#94a3b8";
-      info.innerText = statusText;
+      const stateReason = String(d.ready_reason || statusText);
+      info.style.color = d.ready_state === "ready" ? "#facc15" : (running ? "#fde68a" : "#94a3b8");
+      info.innerText = stateReason || statusText;
     }
     if (statusEl) statusEl.innerText = statusText;
     if (progressEl) {
@@ -926,20 +973,34 @@
       const setupDigit = Number(row.setup_digit || 3);
       const ticksReady = Number(row.ticks_ready || 0);
       const blocked = !!row.loss_guard_blocked;
+      const conflictBlocked = !!row.conflict_blocked;
+      const qualityOk = row.market_quality_ok !== false;
+      const confirmedReady = !!(row.ready_confirmed || row.entry_ready);
+      const rawReady = !!row.raw_entry_ready;
+      const confirmationCount = Number(row.confirmation_count || 0);
+      const confirmationRequired = Number(row.confirmation_required || d.confirmation_required || 2) || 2;
       const tradeLabel = String(row.recommended_label || "OVER 1");
-      const canTrade = ticksReady >= historyTarget;
-      const actionable = canTrade;
+      const canSample = ticksReady >= historyTarget;
       const readyText = blocked
         ? `${tradeLabel} • SKIP • ${String(row.loss_guard_digits_label || "").trim()} HOT`
-        : (row.entry_ready ? `READY • ${tradeLabel}` : (canTrade ? `${tradeLabel} LIVE` : `${tradeLabel} • ${ticksReady}/${historyTarget}`));
+        : (conflictBlocked
+          ? "WAITING • TRADE ACTIVE"
+          : (!qualityOk
+            ? `${tradeLabel} • CONF < ${Number(row.confidence_threshold || d.confidence_threshold || 70).toFixed(0)}%`
+            : (confirmedReady
+              ? `READY • ${tradeLabel}`
+              : (rawReady ? `CONFIRMING ${confirmationCount}/${confirmationRequired} • ${tradeLabel}` : (canSample ? `${tradeLabel} LIVE` : `${tradeLabel} • ${ticksReady}/${historyTarget}`)))));
+      const reasonText = String(row.ready_reason || readyText);
+      const stateClass = confirmedReady ? "ready" : (rawReady ? "pending-confirm" : "");
       return `
-        <div class="golden-card-market ${tier}" data-golden-card-symbol="${String(row.symbol || "").replace(/"/g, "&quot;")}">
+        <div class="golden-card-market ${tier} ${stateClass}" data-golden-card-symbol="${escapeHtmlKoolkid(row.symbol || "")}">
           <div style="min-width:0;">
             <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
-              <div style="font-size:17px; font-weight:800; color:#f8fafc; line-height:1.1;">${marketLabel}</div>
+              <div style="font-size:17px; font-weight:800; color:#f8fafc; line-height:1.1;">${escapeHtmlKoolkid(marketLabel)}</div>
               <div style="font-size:12px; color:#e2e8f0; font-weight:700; white-space:nowrap;">${confidence.toFixed(1)}%</div>
             </div>
-            <div style="margin-top:6px; font-size:11px; color:${blocked ? "#fca5a5" : (row.entry_ready ? "#86efac" : "#cbd5e1")}; font-weight:700; letter-spacing:.02em;">${readyText}</div>
+            <div style="margin-top:6px; font-size:11px; color:${blocked || conflictBlocked ? "#fca5a5" : (confirmedReady ? "#fde68a" : (rawReady ? "#facc15" : "#cbd5e1"))}; font-weight:700; letter-spacing:.02em;">${escapeHtmlKoolkid(readyText)}</div>
+            <div style="margin-top:4px; font-size:10px; color:#94a3b8; line-height:1.25;">${escapeHtmlKoolkid(reasonText)}</div>
           </div>
           <div class="golden-card-digit">${setupDigit}</div>
         </div>
@@ -948,7 +1009,12 @@
     Array.from(resultsEl.querySelectorAll("[data-golden-card-symbol]")).forEach((node) => {
       const symbol = String(node.getAttribute("data-golden-card-symbol") || "").toUpperCase();
       const row = results.find((item) => String(item.symbol || "").toUpperCase() === symbol);
-      const canTrade = !!row && Number(row.ticks_ready || 0) >= historyTarget;
+      const canTrade = !!row
+        && Number(row.ticks_ready || 0) >= historyTarget
+        && !!(row.ready_confirmed || row.entry_ready)
+        && !row.loss_guard_blocked
+        && !row.conflict_blocked
+        && row.market_quality_ok !== false;
       if (canTrade) {
         node.addEventListener("click", () => {
           if (!symbol || !window.placeGoldenCardTradeKoolkid) return;
@@ -1363,8 +1429,20 @@
     const row = Array.isArray(current.results)
       ? current.results.find((item) => String(item.symbol || "").toUpperCase() === market)
       : null;
+    if (!row || !(row.ready_confirmed || row.entry_ready)) {
+      safeToast((row && row.ready_reason) || "Golden Card needs 2 clean checks before entry", "info");
+      return;
+    }
     if (row && row.loss_guard_blocked) {
       safeToast(`Golden Card skipped on ${market}: ${row.loss_guard_reason || "losing digits are too hot"}`, "error");
+      return;
+    }
+    if (row && row.conflict_blocked) {
+      safeToast("Golden Card skipped: another KOOLKID trade is still active", "info");
+      return;
+    }
+    if (row && row.market_quality_ok === false) {
+      safeToast(`Golden Card skipped: confidence must stay above ${Number(row.confidence_threshold || 70).toFixed(0)}%`, "info");
       return;
     }
     state.goldenCardTradeBusy = true;

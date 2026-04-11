@@ -48,6 +48,13 @@
     btn.style.background = enabled ? (onColor || "#22c55e") : (offColor || "#1e293b");
   }
 
+  function setAutoToast(modeKey, enabled, label){
+    const App = getApp();
+    if(App && typeof App.setAutoScanningToast === "function"){
+      App.setAutoScanningToast(PROFILE, modeKey, !!enabled, label);
+    }
+  }
+
   function prettySignalStyles(signalEl, signalState, tradeDirection){
     if(!signalEl) return;
     const state = (signalState || "WAIT").toUpperCase();
@@ -158,6 +165,7 @@
     setBtnState(byId("humanRfBiasLockBtn"), !!settings.bias_lock, "Bias Lock: ON", "Bias Lock: OFF", "#a855f7", "#334155");
     setBtnState(byId("humanRfNoTradeBtn"), !!settings.no_trade_filter, "No-Trade Filter: ON", "No-Trade Filter: OFF", "#f59e0b", "#334155");
     setBtnState(byId("humanRfAdaptiveBtn"), !!settings.adaptive_cooldown, "Adaptive Cooldown: ON", "Adaptive Cooldown: OFF", "#14b8a6", "#334155");
+    setAutoToast("human_rf_auto", !!settings.auto_assist, "HUMAN Rise/Fall Auto");
   }
 
   async function fetchHumanRFStatus(){
@@ -365,14 +373,16 @@
 
   function updateFormulaXButton(){
     const btn = byId("formulaXBtn");
-    if(!btn) return;
-    if(fxState.active){
-      btn.innerText = "FormulaX • ON (waiting)";
-      btn.style.background = "#38bdf8";
-    }else{
-      btn.innerText = "FormulaX";
-      btn.style.background = "#0ea5e9";
+    if(btn){
+      if(fxState.active){
+        btn.innerText = "FormulaX • ON (waiting)";
+        btn.style.background = "#38bdf8";
+      }else{
+        btn.innerText = "FormulaX";
+        btn.style.background = "#0ea5e9";
+      }
     }
+    setAutoToast("formula_x", !!fxState.active, "HUMAN FormulaX");
   }
 
   function inferMarketDirection(){

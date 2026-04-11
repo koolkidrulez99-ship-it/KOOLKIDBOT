@@ -564,10 +564,15 @@ def _get_license_row(license_key):
 def _license_is_expired(license_row):
     if not license_row:
         return True
-    if str(license_row.get("license_type") or "").lower() == "lifetime":
+    license_type = str(license_row.get("license_type") or "").strip().lower()
+    if license_type == "lifetime":
         return False
     exp = _parse_dt(license_row.get("expires_at"))
     if exp is None:
+        # A linked/activated monthly key without an expiry is unsafe. Treat it
+        # as blocked so admin must explicitly reassign/renew the account.
+        if license_type == "monthly" and (license_row.get("used_by") or license_row.get("activated_at")):
+            return True
         return False
     return datetime.utcnow() > exp
 
@@ -592,8 +597,77 @@ def check_user_license_access(user_row):
     if str(lic.get("status") or "").lower() == "revoked":
         return False, "Your license was revoked. Contact admin."
     if _license_is_expired(lic):
-        return False, "Your license has expired. Please renew."
+        return False, "Your license key has expired. Please contact admin to renew."
     return True, "active"
+
+
+def get_user_license_context(username=None):
+    """Small UI/route helper for monthly feature gating."""
+    context = {
+        "license_type": "unknown",
+        "access": "unknown",
+        "is_monthly": False,
+        "is_lifetime": False,
+        "is_full_access": False,
+    }
+    user_row = _get_user_row(username or session.get("user"))
+    if not user_row:
+        return context
+
+    role = str(user_row.get("role") or "user").lower()
+    if role == "admin":
+        return {
+            **context,
+            "license_type": "admin",
+            "access": "admin",
+            "is_full_access": True,
+        }
+    if int(user_row.get("license_exempt") or 0) == 1:
+        return {
+            **context,
+            "license_type": "lifetime",
+            "access": "license_exempt",
+            "is_lifetime": True,
+            "is_full_access": True,
+        }
+    if int(user_row.get("grandfathered") if user_row.get("grandfathered") is not None else 1) == 1:
+        return {
+            **context,
+            "license_type": "lifetime",
+            "access": "grandfathered",
+            "is_lifetime": True,
+            "is_full_access": True,
+        }
+
+    linked_key = normalize_license_key(user_row.get("license_key"))
+    lic = _get_license_row(linked_key) if linked_key else None
+    ltype = str((lic or {}).get("license_type") or "").lower().strip()
+    status = str((lic or {}).get("status") or "").lower().strip()
+    active = bool(lic and status != "revoked" and not _license_is_expired(lic))
+    is_monthly = bool(active and ltype == "monthly")
+    is_lifetime = bool(active and ltype == "lifetime")
+    return {
+        **context,
+        "license_type": ltype or "unknown",
+        "access": "active" if active else "inactive",
+        "is_monthly": is_monthly,
+        "is_lifetime": is_lifetime,
+        "is_full_access": bool(is_lifetime),
+    }
+
+
+def is_monthly_license_user():
+    try:
+        return bool(get_user_license_context().get("is_monthly"))
+    except Exception:
+        return False
+
+
+def monthly_feature_forbidden_response(feature="This feature"):
+    return jsonify({
+        "status": "error",
+        "message": f"{feature} is available for lifetime users only.",
+    }), 403
 
 
 def _validate_license_for_registration(conn, license_key):
@@ -998,6 +1072,8 @@ def get_admin_licenses_view():
     _db_execute(c, "SELECT license_key, license_type, status, used_by, created_at, activated_at, expires_at FROM licenses ORDER BY created_at DESC, license_key DESC")
     rows = _db_fetchall_dicts(c)
     conn.close()
+    for row in rows:
+        row["expired"] = bool(_license_is_expired(row))
     return rows
 
 
@@ -1334,6 +1410,8 @@ def _settle_profile_budget_reservation(state, reservation, profit):
 
 def _build_default_client_state():
     return {
+        "username": None,
+        "license_access_cache": {"checked_at": 0.0, "ok": False, "reason": "not checked"},
         "api_token": "",
         "ws": None,
         "ws_thread": None,
@@ -1448,6 +1526,9 @@ def _build_default_client_state():
             "running": False,
             "symbols": [],
             "owned_syms": set(),
+            "confirmations": {},
+            "confirmation_required": 2,
+            "confidence_threshold": 70.0,
         },
         "balance": 0.0,
         "last_live_balance": 0.0,
@@ -1528,8 +1609,59 @@ def get_client_state():
     cid = get_client_id()
     if cid not in clients:
         init_client(cid)
+    username = session.get("user")
+    if username:
+        clients[cid]["username"] = username
     _touch_client(cid)
     return cid, clients[cid]
+
+
+def _client_license_access(client_id, state=None, force=False):
+    runtime_state = state or clients.get(client_id) or {}
+    cache = runtime_state.get("license_access_cache") if isinstance(runtime_state, dict) else None
+    if (
+        not force
+        and isinstance(cache, dict)
+        and (time.time() - float(cache.get("checked_at") or 0.0)) < 5.0
+    ):
+        return bool(cache.get("ok")), cache.get("reason") or "cached"
+
+    username = runtime_state.get("username")
+    if not username:
+        result = (False, "No user is linked to this bot session.")
+    else:
+        user_row = _get_user_row(username)
+        if not user_row:
+            result = (False, "User not found")
+        else:
+            result = check_user_license_access(user_row)
+    if isinstance(runtime_state, dict):
+        runtime_state["license_access_cache"] = {
+            "checked_at": time.time(),
+            "ok": bool(result[0]),
+            "reason": result[1],
+        }
+    return result
+
+
+def _pause_client_for_license_block(client_id, state, reason):
+    logger.warning(f"[{client_id}] license_runtime_block: {reason}")
+    try:
+        socketio.emit("api_error", {"message": reason}, room=client_id)
+    except Exception:
+        pass
+    disconnect_client(client_id, reason="license_blocked", emit=True)
+
+
+def _guard_client_license_for_runtime(client_id, state=None):
+    runtime_state = state or clients.get(client_id)
+    if isinstance(runtime_state, dict) and "username" not in runtime_state and "license_access_cache" not in runtime_state:
+        return True
+    ok, reason = _client_license_access(client_id, runtime_state)
+    if ok:
+        return True
+    _pause_client_for_license_block(client_id, runtime_state, reason)
+    return False
 
 
 def emit_jokerjoe_modes(cid, strat: JokerJoeStrategy):
@@ -1544,6 +1676,62 @@ def emit_jokerjoe_modes(cid, strat: JokerJoeStrategy):
         }, room=cid)
     except Exception:
         pass
+
+
+MONTHLY_KOOLKID_MASTER_MODE_ATTRS = (
+    "kidracks_auto",
+    "koolkidspeed_auto",
+    "koolluck_auto",
+    "kidbagz_auto",
+    "mpull_auto",
+    "kidpairs_auto",
+    "kidgx_auto",
+    "ai_auto_trading",
+    "mpull_all_digits_auto",
+    "over3_analysis_auto",
+    "kid2vix_auto",
+)
+MONTHLY_JOKERJOE_MASTER_MODE_ATTRS = (
+    "sludgex_auto",
+    "triplex_auto",
+    "kidx_auto",
+    "multig_auto",
+    "kidgx_auto",
+    "ai_auto_trading",
+)
+
+
+def _monthly_master_mode_attrs(profile):
+    profile = str(profile or "").upper().strip()
+    if profile == "KOOLKID":
+        return MONTHLY_KOOLKID_MASTER_MODE_ATTRS
+    if profile == "JOKERJOE":
+        return MONTHLY_JOKERJOE_MASTER_MODE_ATTRS
+    return ()
+
+
+def _monthly_profile_has_active_auto_mode(strategy, profile):
+    return any(bool(getattr(strategy, attr, False)) for attr in _monthly_master_mode_attrs(profile))
+
+
+def _sync_monthly_profile_master_auto(state, profile, just_enabled=None):
+    """Monthly users do not see Master Auto, so allowed auto buttons arm it internally."""
+    if not is_monthly_license_user():
+        return False
+    profile = str(profile or "").upper().strip()
+    if profile not in ("KOOLKID", "JOKERJOE"):
+        return False
+    strategy = (state.get("strategies") or {}).get(profile)
+    if not strategy or not hasattr(strategy, "auto_trade"):
+        return False
+
+    should_enable = bool(just_enabled) or _monthly_profile_has_active_auto_mode(strategy, profile)
+    before = bool(getattr(strategy, "auto_trade", False))
+    try:
+        strategy.auto_trade = bool(should_enable)
+    except Exception:
+        return False
+    return before != bool(should_enable)
 
 
 def emit_profile_snapshot(cid):
@@ -1764,6 +1952,7 @@ def login():
             session["role"] = role
             session["client_id"] = str(uuid.uuid4())
             init_client(session["client_id"])
+            clients[session["client_id"]]["username"] = session["user"]
 
             if role == "admin":
                 return redirect(url_for("admin_panel"))
@@ -2197,6 +2386,7 @@ def index():
         "index.html",
         username=session.get("user"),
         mutant_access=_mutant_access_state(),
+        license_context=get_user_license_context(),
     )
 
 
@@ -12372,15 +12562,233 @@ def _ensure_koolkid_golden_card_state(state):
     scan.setdefault("symbols", [])
     scan.setdefault("market_pool_size", 0)
     scan.setdefault("owned_syms", set())
+    scan.setdefault("confirmations", {})
+    scan.setdefault("confirmation_required", 2)
+    scan.setdefault("confidence_threshold", 70.0)
     state["koolkid_golden_card"] = scan
     return scan
+
+
+def _safe_golden_float(value, default=0.0):
+    try:
+        value = float(value)
+        if math.isfinite(value):
+            return value
+    except Exception:
+        pass
+    return float(default)
+
+
+def _safe_golden_int(value, default=0):
+    try:
+        return int(float(value))
+    except Exception:
+        return int(default)
+
+
+def _koolkid_has_conflicting_digit_trade(state, symbol=None):
+    target_symbol = str(symbol or "").upper().strip()
+    for meta in list((state.get("req_meta") or {}).values()):
+        if not isinstance(meta, dict):
+            continue
+        if str(meta.get("profile") or "").upper() != "KOOLKID":
+            continue
+        meta_symbol = str(meta.get("symbol") or "").upper().strip()
+        if target_symbol and meta_symbol and meta_symbol != target_symbol:
+            continue
+        return True
+
+    seen_meta = set()
+    for meta in list((state.get("contract_meta") or {}).values()):
+        if not isinstance(meta, dict):
+            continue
+        marker = id(meta)
+        if marker in seen_meta:
+            continue
+        seen_meta.add(marker)
+        if str(meta.get("profile") or "").upper() != "KOOLKID":
+            continue
+        meta_symbol = str(meta.get("symbol") or "").upper().strip()
+        if target_symbol and meta_symbol and meta_symbol != target_symbol:
+            continue
+        return True
+    return False
+
+
+def _golden_card_reason_for_row(
+    *,
+    row,
+    running,
+    warmed,
+    raw_ready,
+    loss_blocked,
+    market_quality_ok,
+    conflict_blocked,
+    valid_now,
+    confirmed,
+    confirmation_count,
+    confirmation_required,
+    confidence_threshold,
+):
+    label = str(row.get("recommended_label") or "setup").upper()
+    confidence = _safe_golden_float(row.get("confidence_pct"), 0.0)
+    ticks_ready = _safe_golden_int(row.get("ticks_ready"), 0)
+    history_target = _safe_golden_int(row.get("history_target"), 20)
+    if not running:
+        return "Waiting for Golden Card scan to start."
+    if not warmed:
+        return f"Building sample: {ticks_ready}/{history_target} ticks ready."
+    if loss_blocked:
+        reason = str(row.get("loss_guard_reason") or "losing digits are too hot").strip()
+        return f"Skipped: {reason}"
+    if conflict_blocked:
+        return "Waiting: another KOOLKID trade is still active."
+    if not market_quality_ok:
+        return f"Waiting: confidence {confidence:.1f}% below {confidence_threshold:.0f}%."
+    if not raw_ready:
+        return "Waiting: core Golden Card setup is not valid yet."
+    if valid_now and not confirmed:
+        return f"Confirming {label}: {confirmation_count}/{confirmation_required} checks."
+    if confirmed:
+        return f"Ready: {label} held for {confirmation_required} checks."
+    return "Waiting for a cleaner Golden Card setup."
+
+
+def _enrich_koolkid_golden_card_payload(state, payload, *, advance_confirmation=False, checked_symbol=None):
+    scan = _ensure_koolkid_golden_card_state(state)
+    safe_payload = dict(payload or {})
+    running = bool(safe_payload.get("running"))
+    checked_symbol = str(checked_symbol or "").upper().strip()
+    try:
+        confirmation_required = max(1, min(5, int(scan.get("confirmation_required", 2) or 2)))
+    except Exception:
+        confirmation_required = 2
+    confidence_threshold = max(0.0, min(100.0, _safe_golden_float(scan.get("confidence_threshold"), 70.0)))
+    confirmations = scan.setdefault("confirmations", {})
+    if not isinstance(confirmations, dict):
+        confirmations = {}
+        scan["confirmations"] = confirmations
+
+    active_conflict_any = _koolkid_has_conflicting_digit_trade(state)
+    enriched_rows = []
+    seen_symbols = set()
+    ready_row = None
+    best_row = None
+
+    for raw_row in list(safe_payload.get("results") or []):
+        if not isinstance(raw_row, dict):
+            continue
+        row = dict(raw_row)
+        symbol = str(row.get("symbol") or "").upper().strip()
+        if symbol:
+            seen_symbols.add(symbol)
+        history_target = _safe_golden_int(row.get("history_target") or safe_payload.get("history_target"), 20)
+        ticks_ready = _safe_golden_int(row.get("ticks_ready"), 0)
+        warmed = ticks_ready >= history_target
+        confidence = _safe_golden_float(row.get("confidence_pct"), 0.0)
+        raw_ready = bool(row.get("entry_ready"))
+        loss_blocked = bool(row.get("loss_guard_blocked"))
+        market_quality_ok = confidence >= confidence_threshold
+        conflict_blocked = _koolkid_has_conflicting_digit_trade(state, symbol) if symbol else active_conflict_any
+        signal_key = "|".join([
+            symbol,
+            str(row.get("recommended_key") or ""),
+            str(row.get("recommended_type") or ""),
+            str(row.get("recommended_barrier") or ""),
+        ])
+        valid_now = bool(
+            running
+            and warmed
+            and raw_ready
+            and not loss_blocked
+            and market_quality_ok
+            and not conflict_blocked
+        )
+
+        previous = confirmations.get(symbol) if symbol else None
+        if not isinstance(previous, dict):
+            previous = {}
+        count = _safe_golden_int(previous.get("count"), 0) if previous.get("key") == signal_key else 0
+        should_advance_row = bool(advance_confirmation and symbol and (not checked_symbol or symbol == checked_symbol))
+        if should_advance_row:
+            if valid_now:
+                count = count + 1 if previous.get("key") == signal_key else 1
+            else:
+                count = 0
+            confirmations[symbol] = {
+                "key": signal_key,
+                "count": count,
+                "updated_at": time.time(),
+            }
+
+        confirmed = bool(valid_now and count >= confirmation_required)
+        row["raw_entry_ready"] = raw_ready
+        row["entry_ready"] = confirmed
+        row["ready_confirmed"] = confirmed
+        row["ready_state"] = "ready" if confirmed else ("active" if running else "waiting")
+        row["confirmation_count"] = int(min(count, confirmation_required))
+        row["confirmation_required"] = int(confirmation_required)
+        row["confidence_threshold"] = float(confidence_threshold)
+        row["market_quality_ok"] = bool(market_quality_ok)
+        row["conflict_blocked"] = bool(conflict_blocked)
+        row["ready_reason"] = _golden_card_reason_for_row(
+            row=row,
+            running=running,
+            warmed=warmed,
+            raw_ready=raw_ready,
+            loss_blocked=loss_blocked,
+            market_quality_ok=market_quality_ok,
+            conflict_blocked=conflict_blocked,
+            valid_now=valid_now,
+            confirmed=confirmed,
+            confirmation_count=int(min(count, confirmation_required)),
+            confirmation_required=int(confirmation_required),
+            confidence_threshold=float(confidence_threshold),
+        )
+        enriched_rows.append(row)
+        if best_row is None or confidence > _safe_golden_float(best_row.get("confidence_pct"), 0.0):
+            best_row = row
+        if confirmed and (
+            ready_row is None
+            or confidence > _safe_golden_float(ready_row.get("confidence_pct"), 0.0)
+        ):
+            ready_row = row
+
+    if advance_confirmation:
+        for symbol in list(confirmations.keys()):
+            if symbol not in seen_symbols:
+                confirmations.pop(symbol, None)
+
+    safe_payload["results"] = enriched_rows
+    safe_payload["confirmation_required"] = int(confirmation_required)
+    safe_payload["confidence_threshold"] = float(confidence_threshold)
+    safe_payload["active_conflict"] = bool(active_conflict_any)
+    focus_row = ready_row or best_row or {}
+    safe_payload["best_confidence_pct"] = _safe_golden_float(focus_row.get("confidence_pct"), 0.0)
+    safe_payload["ready_market"] = str((ready_row or {}).get("market_label") or (ready_row or {}).get("symbol") or "")
+    safe_payload["ready_trade_label"] = str((ready_row or {}).get("recommended_label") or "")
+    if ready_row:
+        safe_payload["ready_state"] = "ready"
+        safe_payload["ready_reason"] = str(ready_row.get("ready_reason") or "Golden Card setup is ready.")
+    elif running:
+        safe_payload["ready_state"] = "active"
+        if active_conflict_any:
+            safe_payload["ready_reason"] = "Scanning paused for entry: another KOOLKID trade is active."
+        elif best_row:
+            safe_payload["ready_reason"] = str(best_row.get("ready_reason") or "Scanning for a cleaner setup.")
+        else:
+            safe_payload["ready_reason"] = "Scanning live markets for a premium setup."
+    else:
+        safe_payload["ready_state"] = "waiting"
+        safe_payload["ready_reason"] = "Waiting for Golden Card scan to start."
+    return safe_payload
 
 
 def _emit_koolkid_golden_card(client_id, state):
     strat = (state.get("strategies") or {}).get("KOOLKID")
     if not strat or not hasattr(strat, "get_golden_card_state"):
         return {}
-    payload = strat.get_golden_card_state() or {}
+    payload = _enrich_koolkid_golden_card_payload(state, strat.get_golden_card_state() or {})
     try:
         socketio.emit("golden_card_update", payload, room=client_id)
     except Exception:
@@ -12390,6 +12798,8 @@ def _emit_koolkid_golden_card(client_id, state):
 
 def _cleanup_koolkid_golden_card_subscriptions(state, preserve_scan_state=False):
     scan = _ensure_koolkid_golden_card_state(state)
+    if not preserve_scan_state:
+        scan["confirmations"] = {}
     ws = state.get("ws")
     if not state.get("ws_connected") or not ws:
         scan["owned_syms"] = set()
@@ -12476,6 +12886,7 @@ def _start_koolkid_golden_card_scan(client_id, state, *, filter_mode="BOTH", add
         add_jump_pairs=add_jump_pairs,
     ) or {}
     scan["running"] = True
+    scan["confirmations"] = {}
     scan["market_pool_size"] = int(payload.get("market_pool_size", 0) or 0)
     _sync_koolkid_golden_card_subscriptions(state, payload.get("symbols") or [])
 
@@ -12496,6 +12907,7 @@ def _stop_koolkid_golden_card_scan(client_id, state, status=None):
         except Exception:
             pass
     _cleanup_koolkid_golden_card_subscriptions(state)
+    _ensure_koolkid_golden_card_state(state)["confirmations"] = {}
     payload = _emit_koolkid_golden_card(client_id, state)
     try:
         if state.get("active_profile") == "KOOLKID" and strat:
@@ -12603,6 +13015,7 @@ def _process_koolkid_golden_card_tick(client_id, tick):
     except Exception:
         return
     payload = strat.record_golden_card_tick(sym, digit) or {}
+    payload = _enrich_koolkid_golden_card_payload(state, payload, advance_confirmation=True, checked_symbol=sym)
     scan["market_pool_size"] = int(payload.get("market_pool_size", 0) or 0)
     _sync_koolkid_golden_card_subscriptions(state, payload.get("symbols") or scan.get("symbols") or [])
     try:
@@ -12829,6 +13242,8 @@ def handle_on_message(client_id, ws, message, expected_nonce):
     try:
         state["ws_last_message_at"] = time.time()
         data = json.loads(message)
+        if not _guard_client_license_for_runtime(client_id, state):
+            return
 
         echo_req = data.get("echo_req") or {}
         req_id = data.get("req_id")
@@ -13738,6 +14153,8 @@ def start_ws_for_client(client_id):
     state = clients.get(client_id)
     if not state:
         return
+    if not _guard_client_license_for_runtime(client_id, state):
+        return
 
     # bump nonce -> invalidates older WS callbacks
     state["ws_nonce"] = state.get("ws_nonce", 0) + 1
@@ -13850,6 +14267,7 @@ def api_connection_status():
         "connected": connected,
         "loginid": state.get("loginid", "UNKNOWN"),
         "has_token": bool(str(state.get("api_token", "") or "").strip()),
+        "license_context": get_user_license_context(),
         **_build_balance_payload(state),
     })
 
@@ -14024,6 +14442,7 @@ def set_profile():
         "profile": profile,
         "mutant_locked": bool(profile == "NTT" and not mutant_access.get("enabled")),
         "mutant_access": mutant_access,
+        "license_context": get_user_license_context(),
         "main_symbol": state.get("current_symbol"),
         "human_symbol": state.get("human_symbol") or state.get("current_symbol"),
         "symbol": (state.get("human_symbol") if profile == "HUMAN" else state.get("current_symbol")),
@@ -14214,6 +14633,8 @@ def toggle_auto():
         return jsonify({"error": "Unauthorized"}), 403
 
     cid, state = get_client_state()
+    if is_monthly_license_user() and state.get("active_profile") in ("KOOLKID", "JOKERJOE"):
+        return monthly_feature_forbidden_response("Master Auto")
 
     strategy = state["strategies"].get(state["active_profile"])
     if not strategy or not hasattr(strategy, "toggle_auto"):
@@ -14239,6 +14660,8 @@ def toggle_kidracks_auto_route():
     cid, state = get_client_state()
     strat = state["strategies"].get("KOOLKID")
     state_val = strat.toggle_kidracks_auto()
+    if _sync_monthly_profile_master_auto(state, "KOOLKID", state_val):
+        send_stats_update(cid)
 
     socketio.emit("auto_mode_update", strat.get_ui_payload().get("auto_modes", {}), room=cid)
     return jsonify({"status": "success", "kidracks_auto": state_val})
@@ -14252,6 +14675,8 @@ def toggle_koolkidspeed_auto_route():
     cid, state = get_client_state()
     strat = state["strategies"].get("KOOLKID")
     state_val = strat.toggle_koolkidspeed_auto()
+    if _sync_monthly_profile_master_auto(state, "KOOLKID", state_val):
+        send_stats_update(cid)
 
     socketio.emit("auto_mode_update", strat.get_ui_payload().get("auto_modes", {}), room=cid)
     return jsonify({"status": "success", "koolkidspeed_auto": state_val})
@@ -14265,6 +14690,8 @@ def toggle_koolluck_auto_route():
     cid, state = get_client_state()
     strat = state["strategies"].get("KOOLKID")
     state_val = strat.toggle_koolluck_auto()
+    if _sync_monthly_profile_master_auto(state, "KOOLKID", state_val):
+        send_stats_update(cid)
 
     socketio.emit("auto_mode_update", strat.get_ui_payload().get("auto_modes", {}), room=cid)
     return jsonify({"status": "success", "koolluck_auto": state_val})
@@ -14274,6 +14701,9 @@ def toggle_koolluck_auto_route():
 def toggle_auto_dollar_koolkid_route():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
+
+    if is_monthly_license_user():
+        return monthly_feature_forbidden_response("AUTO$")
 
     cid, state = get_client_state()
     strat = state["strategies"].get("KOOLKID")
@@ -14294,6 +14724,8 @@ def toggle_kidbagz_auto_route():
     cid, state = get_client_state()
     strat = state["strategies"].get("KOOLKID")
     state_val = strat.toggle_kidbagz_auto()
+    if _sync_monthly_profile_master_auto(state, "KOOLKID", state_val):
+        send_stats_update(cid)
 
     socketio.emit("auto_mode_update", strat.get_ui_payload().get("auto_modes", {}), room=cid)
     return jsonify({"status": "success", "kidbagz_auto": state_val})
@@ -14307,6 +14739,8 @@ def toggle_mpull_auto_route():
     cid, state = get_client_state()
     strat = state["strategies"].get("KOOLKID")
     state_val = strat.toggle_mpull_auto()
+    if _sync_monthly_profile_master_auto(state, "KOOLKID", state_val):
+        send_stats_update(cid)
 
     socketio.emit("auto_mode_update", strat.get_ui_payload().get("auto_modes", {}), room=cid)
     return jsonify({"status": "success", "mpull_auto": state_val})
@@ -14321,6 +14755,8 @@ def toggle_kidpairs_auto_route():
     cid, state = get_client_state()
     strat = state["strategies"].get("KOOLKID")
     state_val = strat.toggle_kidpairs_auto()
+    if _sync_monthly_profile_master_auto(state, "KOOLKID", state_val):
+        send_stats_update(cid)
 
     socketio.emit("auto_mode_update", strat.get_ui_payload().get("auto_modes", {}), room=cid)
     return jsonify({"status": "success", "kidpairs_auto": state_val})
@@ -14337,6 +14773,8 @@ def toggle_over3_analysis_koolkid_route():
         return jsonify({"status": "error", "message": "KOOLKID strategy not available"}), 400
 
     enabled = bool(strat.toggle_over3_analysis_auto())
+    if _sync_monthly_profile_master_auto(state, "KOOLKID", enabled):
+        send_stats_update(cid)
     payload = {}
     try:
         payload = strat.get_ui_payload() or {}
@@ -14422,6 +14860,9 @@ def toggle_testtrial_koolkid_route():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
 
+    if is_monthly_license_user():
+        return monthly_feature_forbidden_response("testtrial")
+
     cid, state = get_client_state()
     strat = state["strategies"].get("KOOLKID")
     if not strat or not hasattr(strat, "toggle_testtrial"):
@@ -14462,6 +14903,9 @@ def toggle_testtrial_koolkid_route():
 def set_testtrial_settings_koolkid_route():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
+
+    if is_monthly_license_user():
+        return monthly_feature_forbidden_response("testtrial")
 
     cid, state = get_client_state()
     data = request.json or {}
@@ -14525,6 +14969,8 @@ def toggle_kid2vix_koolkid_route():
         return jsonify({"status": "error", "message": "KOOLKID strategy not available"}), 400
 
     enabled = bool(strat.toggle_kid2vix_auto())
+    if _sync_monthly_profile_master_auto(state, "KOOLKID", enabled):
+        send_stats_update(cid)
     try:
         payload = strat.get_ui_payload() or {}
     except Exception:
@@ -14651,6 +15097,9 @@ def _toggle_koolkid_advanced_alias(cid, state, *, method_name, base_key, alias_k
     2) Fallback to directly toggling the boolean attr if the method is missing.
     3) Never hard-fail the UI just because an older/newer strategy build renamed a helper.
     """
+    if is_monthly_license_user():
+        return monthly_feature_forbidden_response("Advanced AI modes")
+
     strat = state.get("strategies", {}).get("KOOLKID")
     if not strat:
         return jsonify({"status": "error", "message": "KOOLKID strategy not available"}), 400
@@ -14812,6 +15261,7 @@ def toggle_sludgex_auto_route():
         return jsonify({"status": "error", "message": "JOKERJOE strategy not available"}), 400
 
     new_val = strat.toggle_sludgex_auto()
+    _sync_monthly_profile_master_auto(state, "JOKERJOE", new_val)
     send_stats_update(cid)
 
     emit_jokerjoe_modes(cid, strat)
@@ -14829,6 +15279,7 @@ def toggle_triplex_auto_route():
         return jsonify({"status": "error", "message": "JOKERJOE strategy not available"}), 400
 
     new_val = strat.toggle_triplex_auto()
+    _sync_monthly_profile_master_auto(state, "JOKERJOE", new_val)
     send_stats_update(cid)
 
     emit_jokerjoe_modes(cid, strat)
@@ -14849,6 +15300,7 @@ def toggle_kidx_auto_route():
     barrier = int(data.get("barrier", 5))
 
     new_val = strat.toggle_kidx_auto(barrier=barrier)
+    _sync_monthly_profile_master_auto(state, "JOKERJOE", new_val)
     send_stats_update(cid)
 
     emit_jokerjoe_modes(cid, strat)
@@ -14866,6 +15318,7 @@ def toggle_multig_auto_route():
         return jsonify({"status": "error", "message": "JOKERJOE strategy not available"}), 400
 
     new_val = strat.toggle_multig_auto()
+    _sync_monthly_profile_master_auto(state, "JOKERJOE", new_val)
     send_stats_update(cid)
 
     emit_jokerjoe_modes(cid, strat)
@@ -14876,6 +15329,9 @@ def toggle_multig_auto_route():
 def kidgamblex_route():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
+
+    if is_monthly_license_user():
+        return monthly_feature_forbidden_response("kidgambleX")
 
     cid, state = get_client_state()
     data = request.json or {}
@@ -14938,6 +15394,9 @@ def toggle_kidgx_auto_route():
             new_val = strat.toggle_kidgx_auto()
     except TypeError:
         new_val = strat.toggle_kidgx_auto()
+
+    if _sync_monthly_profile_master_auto(state, profile, new_val):
+        send_stats_update(cid)
 
     try:
         socketio.emit("auto_mode_update", strat.get_ui_payload().get("auto_modes", {}), room=cid)
@@ -15028,6 +15487,8 @@ def toggle_ai_auto_trading_route():
         return jsonify({"status": "error", "message": f"{profile} strategy not available"}), 400
 
     new_val = strat.toggle_ai_auto_trading()
+    if _sync_monthly_profile_master_auto(state, profile, new_val):
+        send_stats_update(cid)
     try:
         socketio.emit("auto_mode_update", strat.get_ui_payload().get("auto_modes", {}), room=cid)
         socketio.emit("digit_analysis", strat.get_ui_payload(), room=cid)
@@ -15049,6 +15510,8 @@ def toggle_mpull_all_digits_auto_route():
         return jsonify({"status": "error", "message": "KOOLKID strategy not available"}), 400
 
     new_val = strat.toggle_mpull_all_digits_auto()
+    if _sync_monthly_profile_master_auto(state, "KOOLKID", new_val):
+        send_stats_update(cid)
     payload = strat.get_ui_payload()
     socketio.emit("auto_mode_update", payload.get("auto_modes", {}), room=cid)
     socketio.emit("digit_analysis", payload, room=cid)
@@ -15206,6 +15669,9 @@ def _parse_koolkid_half_auto_stakes(data, fallback_stake):
 def koolkid_half_auto_route():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
+
+    if is_monthly_license_user():
+        return monthly_feature_forbidden_response("Half Auto")
 
     cid, state = get_client_state()
     data = request.json or {}
@@ -16850,6 +17316,8 @@ def toggle_named_ai_mode_route():
 
     if profile not in ("KOOLKID", "JOKERJOE"):
         return jsonify({"status": "error", "message": "Invalid profile"}), 400
+    if is_monthly_license_user():
+        return monthly_feature_forbidden_response("Advanced AI modes")
 
     strat = state["strategies"].get(profile)
     if not strat or not hasattr(strat, "toggle_named_ai_mode"):

@@ -859,6 +859,10 @@
     if (!btn) return;
     const quickOffBtn = el("nttAutoQuickOffBtn");
     const enabled = !!data.enabled;
+    const app = App();
+    if (app && typeof app.setAutoScanningToast === "function") {
+      app.setAutoScanningToast(PROFILE, "mutant_auto", enabled, "Mutant AUTO");
+    }
     const label = String(data.label || (enabled ? "ARMED" : "OFF")).toUpperCase();
     btn.innerHTML = `
       <span style="display:block;font-weight:900;">🤖 AUTO</span>

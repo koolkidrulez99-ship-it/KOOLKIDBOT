@@ -1338,6 +1338,19 @@
     }
   }
 
+  function syncAutoScanningToasts(un) {
+    const app = App();
+    if (!app || typeof app.setAutoScanningToast !== "function") return;
+    const data = un || {};
+    app.setAutoScanningToast(PROFILE, "unchain_auto_both", !!data.auto_both_enabled, "UNCHAIN AUTO BOTH");
+    app.setAutoScanningToast(PROFILE, "unchain_ai_auto", !!data.ai_auto_trade_enabled, "UNCHAIN AI AUTO TRADE");
+    app.setAutoScanningToast(PROFILE, "unchain_directional_auto", !!data.directional_auto_enabled, "UNCHAIN Directional Auto");
+    app.setAutoScanningToast(PROFILE, "unchain_primordial_blue", !!data.primordial_blue_enabled, "UNCHAIN Primordial Blue");
+    app.setAutoScanningToast(PROFILE, "unchain_hybrid", !!data.hybrid_enabled, "UNCHAIN Hybrid");
+    app.setAutoScanningToast(PROFILE, "unchain_koolkid_hl", !!(data.koolkid_hl && data.koolkid_hl.enabled), "UNCHAIN KOOLKID Higher/Lower");
+    app.setAutoScanningToast(PROFILE, "unchain_koolkid_both", !!(data.koolkid_both && data.koolkid_both.enabled), "UNCHAIN KOOLKID Both");
+  }
+
 
   function renderAutoBoth(un) {
     const autoBothBtn = el("unchainAutoBothBtn");
@@ -2666,6 +2679,7 @@
   function renderPayload(payload, opts) {
     if (!payload) return;
     const un = payload.unchain || payload;
+    syncAutoScanningToasts(un);
     const nextSymbol = String(
       payload.main_symbol || payload.symbol || un.main_symbol || un.symbol || ""
     ).toUpperCase();

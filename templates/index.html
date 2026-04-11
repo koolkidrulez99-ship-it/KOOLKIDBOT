@@ -1063,6 +1063,15 @@ body.mobile-only-ui #profileContainer .unchain-history-grid{
 
 <script>
 window.MUTANT_ACCESS = {{ (mutant_access or {})|tojson }};
+window.LICENSE_CONTEXT = {{ (license_context or {})|tojson }};
+window.BotApp = window.BotApp || {};
+window.BotApp.licenseContext = window.LICENSE_CONTEXT;
+
+function isMonthlyLicenseUser(){
+    return !!(window.LICENSE_CONTEXT && window.LICENSE_CONTEXT.is_monthly);
+}
+
+window.BotApp.isMonthlyLicenseUser = isMonthlyLicenseUser;
 
 function isMutantAvailable(){
     return !!(window.MUTANT_ACCESS && window.MUTANT_ACCESS.enabled);
@@ -1507,6 +1516,13 @@ function bindSocketHandlers(){
                 setNodeStyleIfChanged(netProfitLossEl, "color", pnl > 0 ? "#22c55e" : (pnl < 0 ? "#ef4444" : "#e2e8f0"));
             }
         }
+        const hideMonthlyMasterToast = isMonthlyLicenseUser() && (statsProfile === "KOOLKID" || statsProfile === "JOKERJOE");
+        setAutoScanningToast(
+            statsProfile,
+            "master_auto",
+            !hideMonthlyMasterToast && !!(data && data.auto_trade),
+            `${getProfileDisplayName(statsProfile)} Master Auto`
+        );
         maybeSyncTradeHistoryFromStats(statsProfile, totalTrades);
     });
 
@@ -1594,6 +1610,27 @@ const FAST_INTERVAL_MS_NORMAL = 400; // 0.4s as requested
 const FAST_INTERVAL_MS_TURBO = 250;  // recommended faster in Turbo
 const FAST_MAX_BUY_QUEUE = 12;       // safety limit
 const tradeToastByProfile = {};
+const autoScanningToasts = {};
+const AUTO_SCANNING_MODE_KEYS = new Set([
+    "master_auto",
+    "kidracks",
+    "koolkidspeed",
+    "kidbagz",
+    "mpull",
+    "kidpairs",
+    "koolluck",
+    "auto_dollar",
+    "kidgx",
+    "ai_auto_trading",
+    "mpull_all_digits",
+    "over3_analysis",
+    "kid2vix",
+    "testtrial",
+    "sludgex",
+    "triplex",
+    "kidx",
+    "multig",
+]);
 const tradeHistorySnapshotSyncAt = {};
 const pendingTradeRescueTimers = {};
 let tradeStoreSequence = 0;
@@ -1652,6 +1689,85 @@ function setNodeStyleIfChanged(node, prop, value){
     return true;
 }
 
+function normalizeAutoToastKey(profile, modeKey){
+    return `${String(profile || "GLOBAL").toUpperCase()}:${String(modeKey || "auto").toLowerCase()}`;
+}
+
+function formatAutoModeLabel(modeKey){
+    const labels = {
+        master_auto: "Master Auto",
+        kidracks: "KIDRACKS",
+        koolkidspeed: "KOOLKIDSPEED",
+        kidbagz: "kidBagz",
+        mpull: "MPull",
+        kidpairs: "kidPairs",
+        koolluck: "KOOLKID LUCK",
+        auto_dollar: "AUTO$",
+        kidgx: "kidGx",
+        ai_auto_trading: "AI AUTO-TRADING",
+        mpull_all_digits: "MPull ALL DIGITS",
+        over3_analysis: "Over Analysis",
+        kid2vix: "Kid2vix",
+        sludgex: "sludgeX",
+        triplex: "tripleX",
+        kidx: "kidX",
+        multig: "MultiG",
+    };
+    return labels[String(modeKey || "").toLowerCase()] || String(modeKey || "Auto").replaceAll("_", " ");
+}
+
+function setAutoScanningToast(profile, modeKey, enabled, label){
+    const key = normalizeAutoToastKey(profile, modeKey);
+    const existing = autoScanningToasts[key];
+    if(!enabled){
+        if(existing){
+            try{
+                existing.classList.remove("show");
+                setTimeout(()=>existing.remove(), 250);
+            }catch(e){
+                try{ existing.remove(); }catch(_err){}
+            }
+            delete autoScanningToasts[key];
+        }
+        return;
+    }
+    if(existing && document.body.contains(existing)){
+        return;
+    }
+    const container = document.getElementById("toastContainer");
+    if(!container) return;
+    const toast = document.createElement("div");
+    toast.className = "toast info";
+    toast.dataset.autoScanningToast = key;
+    toast.innerText = `${label || formatAutoModeLabel(modeKey)} is scanning for perfect conditions.`;
+    container.appendChild(toast);
+    autoScanningToasts[key] = toast;
+    setTimeout(()=>toast.classList.add("show"), 30);
+}
+
+function clearAutoScanningToasts(profile){
+    const prefix = profile ? `${String(profile).toUpperCase()}:` : "";
+    Object.keys(autoScanningToasts || {}).forEach((key)=>{
+        if(prefix && !key.startsWith(prefix)) return;
+        const toast = autoScanningToasts[key];
+        try{ toast.remove(); }catch(e){}
+        delete autoScanningToasts[key];
+    });
+}
+
+function syncAutoScanningToasts(profile, modes){
+    const p = normalizeProfileName(profile || activeProfile);
+    Object.keys(modes || {}).forEach((modeKey)=>{
+        if(!AUTO_SCANNING_MODE_KEYS.has(String(modeKey || "").toLowerCase())) return;
+        const enabled = !!modes[modeKey];
+        setAutoScanningToast(p, modeKey, enabled, `${getProfileDisplayName(p)} ${formatAutoModeLabel(modeKey)}`);
+    });
+}
+
+window.BotApp.setAutoScanningToast = setAutoScanningToast;
+window.BotApp.syncAutoScanningToasts = syncAutoScanningToasts;
+window.BotApp.clearAutoScanningToasts = clearAutoScanningToasts;
+
 function clearBotTransientState(){
     try{ localStorage.removeItem(PROFILE_DRAFTS_STORAGE_KEY); }catch(e){}
     try{ localStorage.removeItem(HALF_AUTO_STAKES_STORAGE_KEY_KOOLKID); }catch(e){}
@@ -1666,6 +1782,7 @@ function clearBotTransientState(){
     Object.keys(tradeToastByProfile || {}).forEach((profile)=>{
         delete tradeToastByProfile[profile];
     });
+    clearAutoScanningToasts();
     Object.keys(tradeHistorySnapshotSyncAt || {}).forEach((profile)=>{
         delete tradeHistorySnapshotSyncAt[profile];
     });
@@ -2241,6 +2358,89 @@ function normalizeProfileName(v){
     if(!p) return "KOOLKID";
     return p;
 }
+
+async function openGoldenCardFromAnyProfile(){
+    try{
+        if(typeof setProfile === "function" && normalizeProfileName(activeProfile) !== "KOOLKID"){
+            await setProfile("KOOLKID");
+        }
+        await new Promise((resolve)=>setTimeout(resolve, 120));
+        if(typeof window.handleGoldenCardBtnKoolkid === "function"){
+            await window.handleGoldenCardBtnKoolkid();
+            return;
+        }
+        if(typeof window.openGoldenCardPopupKoolkid === "function"){
+            window.openGoldenCardPopupKoolkid();
+            return;
+        }
+        if(typeof showToast === "function"){
+            showToast("Golden Card is loading. Open KOOLKID and tap Golden Card again.", "info");
+        }
+    }catch(e){
+        if(typeof showToast === "function"){
+            showToast("Could not open Golden Card yet. Try again after KOOLKID loads.", "error");
+        }
+    }
+}
+
+window.openGoldenCardFromAnyProfile = openGoldenCardFromAnyProfile;
+
+function hideMonthlyElement(id, options){
+    const el = document.getElementById(id);
+    if(!el) return;
+    const target = (options && options.closest)
+        ? (el.closest(options.closest) || el)
+        : el;
+    target.style.display = "none";
+    target.setAttribute("data-monthly-hidden", "1");
+}
+
+function applyMonthlyLicenseGate(profile){
+    if(!isMonthlyLicenseUser()) return;
+    const p = normalizeProfileName(profile || activeProfile);
+    if(p === "KOOLKID"){
+        [
+            "autoBtn",
+            "halfAutoBtnKoolkid",
+            "under3SplitBtnKoolkid",
+            "autoDollarBtnKoolkid",
+            "dual2xOver2Under1BtnKoolkid",
+            "dual2xOver8Under7BtnKoolkid",
+            "dual2xAnalysisPanelKoolkid",
+            "kidbrainBtnKoolkid",
+            "edgeBrainBtnKoolkid",
+            "smartFlowBtnKoolkid",
+            "metaAiBtnKoolkid",
+            "kidracksAiBtnKoolkid",
+            "testtrialBtnKoolkid",
+            "metaBrainInfoKoolkid",
+        ].forEach((id)=>hideMonthlyElement(id));
+    }
+    if(p === "JOKERJOE"){
+        [
+            "autoBtn",
+            "matchesAnalysisWrapJokerjoe",
+            "kidgambleXBtnJokerjoe",
+            "randomMatchesDiffersBtnJokerjoe",
+            "randomMatchesDiffersStatusJokerjoe",
+            "randomMatchesDiffersModalJokerjoe",
+        ].forEach((id)=>hideMonthlyElement(id));
+        hideMonthlyElement("jokerjoeAdvancedAIModesCard", { closest: "details" });
+    }
+    if(p === "UNCHAIN"){
+        [
+            "unchainKoolkidBtn",
+            "unchainAiAutoTradeBtn",
+        ].forEach((id)=>hideMonthlyElement(id));
+    }
+    if(p === "NTT"){
+        [
+            "nttKoolkidBtn",
+        ].forEach((id)=>hideMonthlyElement(id));
+    }
+}
+
+window.BotApp.applyMonthlyLicenseGate = applyMonthlyLicenseGate;
 
 function normalizeContractId(v){
     if(v === undefined || v === null || v === "") return null;
@@ -3771,6 +3971,7 @@ async function loadProfileUI(profile){
         syncAutoStake();
         sendRiskControls();
         renderTradeList(activeProfile);
+        applyMonthlyLicenseGate(profile);
         return;
     }
 
@@ -3806,6 +4007,7 @@ async function loadProfileUI(profile){
     renderTradeList(activeProfile);
 
     try{ await runProfileModuleHook(profile, "afterLoadProfileUI", { profile }); }catch(e){}
+    applyMonthlyLicenseGate(profile);
 }
 
 function refreshDynamicElements(){
@@ -5082,6 +5284,7 @@ async function setProfile(profile){
     hydrateProfileBudgetControl(profile);
     try{ await runProfileModuleHook(profile, "onActivate", { profile }); }catch(e){}
     applyProfileDraft(profile);
+    applyMonthlyLicenseGate(profile);
     setConfirmedMarketSymbol(profileData.symbol || (profile === "HUMAN" ? profileData.human_symbol : profileData.main_symbol) || getConfirmedMarketSymbol());
     await syncAutoStake();
     await sendRiskControls(profile);
@@ -5338,6 +5541,7 @@ function updateAutoModeButtons(modes){
         multiGBtn.innerText = modes.multig ? "MultiG: ON" : "MultiG: OFF";
         multiGBtn.style.background = modes.multig ? "#1d4ed8" : "#ef4444";
     }
+    syncAutoScanningToasts(activeProfile, modes || {});
 }
 
 // ==================== PATCH B: helper UI functions ====================
