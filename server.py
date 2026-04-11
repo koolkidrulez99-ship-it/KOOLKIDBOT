@@ -6008,6 +6008,62 @@ def _forget_unchain_open_contract_subscription(state, contract_id, subscription_
     return True
 
 
+def _runtime_subscription_counts(state):
+    tick_subs = state.get("tick_subs") if isinstance(state, dict) else {}
+    open_subs = state.get("open_contract_subs") if isinstance(state, dict) else {}
+    if not isinstance(tick_subs, dict):
+        tick_subs = {}
+    if not isinstance(open_subs, dict):
+        open_subs = {}
+    return {
+        "tick_subscriptions": len(tick_subs),
+        "open_contract_subscriptions": len(open_subs),
+        "active_subscriptions": len(tick_subs) + len(open_subs),
+    }
+
+
+def _log_runtime_subscription_counts(client_id, state, reason, force=False):
+    if not isinstance(state, dict):
+        return
+    try:
+        now = time.time()
+        last = float(state.get("_runtime_subscription_log_at", 0.0) or 0.0)
+        if not force and (now - last) < 5.0:
+            return
+        state["_runtime_subscription_log_at"] = now
+        counts = _runtime_subscription_counts(state)
+        logger.info(
+            "[%s] runtime_subscription_count reason=%s active=%s ticks=%s open_contracts=%s",
+            client_id,
+            reason,
+            counts.get("active_subscriptions"),
+            counts.get("tick_subscriptions"),
+            counts.get("open_contract_subscriptions"),
+        )
+    except Exception:
+        pass
+
+
+def _clear_stale_ws_subscription_tracking(client_id, state, reason):
+    if not isinstance(state, dict):
+        return
+    try:
+        before = _runtime_subscription_counts(state)
+        state["tick_subs"] = {}
+        state["open_contract_subs"] = {}
+        logger.info(
+            "[%s] stale_ws_subscription_tracking_cleared reason=%s previous_active=%s previous_ticks=%s previous_open_contracts=%s",
+            client_id,
+            reason,
+            before.get("active_subscriptions"),
+            before.get("tick_subscriptions"),
+            before.get("open_contract_subscriptions"),
+        )
+        _log_runtime_subscription_counts(client_id, state, f"{reason}_after_clear", force=True)
+    except Exception:
+        pass
+
+
 def _schedule_contract_open_refresh(client_id, expected_nonce, contract_id, delays=(0.20, 0.65, 1.8, 3.8)):
     norm = _normalize_contract_id(contract_id)
     if not norm:
@@ -13356,6 +13412,7 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 ws.send(json.dumps({"ticks": human_sym, "subscribe": 1}))
 
             ws.send(json.dumps({"balance": 1, "subscribe": 1}))
+            _log_runtime_subscription_counts(client_id, state, "authorize_subscriptions_sent", force=True)
 
             # seed HUMAN candles early so chart is ready instantly
             request_human_seed(client_id)
@@ -13430,7 +13487,10 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 sym = tick.get("symbol")
                 if sub_id and sym:
                     state.setdefault("tick_subs", {})
+                    previous_sub_id = state["tick_subs"].get(sym)
                     state["tick_subs"][sym] = sub_id
+                    if previous_sub_id != sub_id:
+                        _log_runtime_subscription_counts(client_id, state, f"tick_subscription_updated:{sym}")
             except Exception:
                 pass
             try:
@@ -13683,8 +13743,10 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 is_settled_fast = _is_contract_settled_fast(contract)
                 if unchain_known and sub_id not in (None, ""):
                     _remember_unchain_open_contract_subscription(state, cid_val, sub_id)
+                    _log_runtime_subscription_counts(client_id, state, "open_contract_subscription_updated")
                 if ntt_known and sub_id not in (None, ""):
                     _remember_unchain_open_contract_subscription(state, cid_val, sub_id)
+                    _log_runtime_subscription_counts(client_id, state, "open_contract_subscription_updated")
                 # If user manually cleared active trades, ignore non-settled stream updates
                 # so they do not pop back into the active list.
                 if unchain_known and (not is_processed) and (not is_settled_fast):
@@ -14113,6 +14175,12 @@ def _schedule_ws_reconnect(client_id, expected_nonce, delay_sec=2.0):
             if existing and existing.is_alive():
                 return
             live_state["ws_reconnect_attempts"] = int(live_state.get("ws_reconnect_attempts", 0) or 0) + 1
+            logger.info(
+                "[%s] websocket_reconnect count=%s",
+                client_id,
+                live_state.get("ws_reconnect_attempts"),
+            )
+            _log_runtime_subscription_counts(client_id, live_state, "before_ws_reconnect", force=True)
             t = threading.Thread(target=start_ws_for_client, args=(client_id,), daemon=True)
             live_state["ws_thread"] = t
             t.start()
@@ -14181,6 +14249,7 @@ def start_ws_for_client(client_id):
     state["ws_last_authorized_at"] = 0.0
     state["ws_connect_started_at"] = time.time()
     state["ws_authorize_deadline_at"] = 0.0
+    _clear_stale_ws_subscription_tracking(client_id, state, f"ws_start_nonce_{expected_nonce}")
 
     def _on_message(ws, message, cid=client_id, nonce=expected_nonce):
         if state["ws_stop_event"].is_set():

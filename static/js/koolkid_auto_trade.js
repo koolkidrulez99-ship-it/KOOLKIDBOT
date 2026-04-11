@@ -1,10 +1,40 @@
 (function () {
+  if (window.__koolkidAutoTradeRuntimeBooted) {
+    console.info('auto_session_runtime_duplicate_init_skipped');
+    return;
+  }
+  window.__koolkidAutoTradeRuntimeBooted = true;
   const catalog = Array.isArray(window.AUTO_SESSION_CATALOG) ? window.AUTO_SESSION_CATALOG : [];
   const initialStatus = window.AUTO_SESSION_INITIAL_STATUS || {};
   const initialDashboard = window.KOOLKID_AUTO_TRADE_DASHBOARD || {};
   const marketUniverse = Array.isArray(window.AUTO_SESSION_MARKETS) ? window.AUTO_SESSION_MARKETS : [];
   const username = String(window.AUTO_SESSION_USERNAME || 'Trader');
   const DEFAULT_PROFILE_ID = 'KOOLKID';
+  const HISTORY_RENDER_MAX_ITEMS = 120;
+  const runtimeIntervals = [];
+
+  function registerRuntimeInterval(label, fn, delay) {
+    const timer = window.setInterval(fn, delay);
+    runtimeIntervals.push({ label: label, timer: timer });
+    console.info('auto_session_active_interval_count', {
+      reason: label + '_started',
+      count: runtimeIntervals.length,
+      intervals: runtimeIntervals.map(function (item) { return item.label; })
+    });
+    return timer;
+  }
+
+  function clearRuntimeIntervals(reason) {
+    while (runtimeIntervals.length) {
+      const item = runtimeIntervals.pop();
+      try { window.clearInterval(item.timer); } catch (_err) {}
+    }
+    console.info('auto_session_active_interval_count', {
+      reason: reason || 'runtime_cleanup',
+      count: runtimeIntervals.length,
+      intervals: []
+    });
+  }
 
   const refs = {
     mode: document.getElementById('autoSessionMode'),
@@ -99,7 +129,9 @@
     mobileHistorySwipeOn: true,
     predictionTimer: null,
     predictionSignature: '',
-    predictionLoading: false
+    predictionLoading: false,
+    historySignature: '',
+    lastHistoryLogAt: 0
   };
 
   const draftConfig = {
@@ -278,7 +310,8 @@
 
   function renderHistory(dashboard) {
     const stats = (dashboard && dashboard.stats) || {};
-    const history = Array.isArray(dashboard && dashboard.history) ? dashboard.history : [];
+    const fullHistory = Array.isArray(dashboard && dashboard.history) ? dashboard.history : [];
+    const history = fullHistory.slice(0, HISTORY_RENDER_MAX_ITEMS);
     syncCurrency(stats);
     const historyMarkup = history.length ? history.map(function (row) {
       const payout = row && row.payout !== undefined && row.payout !== null ? money(row.payout, row) : 'Payout --';
@@ -329,8 +362,19 @@
       }
     }
 
-    if (refs.historyBody) refs.historyBody.innerHTML = historyMarkup;
-    if (refs.historyBodyMobile) refs.historyBodyMobile.innerHTML = historyMarkup;
+    if (runtime.historySignature !== historyMarkup) {
+      if (refs.historyBody) refs.historyBody.innerHTML = historyMarkup;
+      if (refs.historyBodyMobile) refs.historyBodyMobile.innerHTML = historyMarkup;
+      runtime.historySignature = historyMarkup;
+    }
+    if (Date.now() - Number(runtime.lastHistoryLogAt || 0) > 5000) {
+      runtime.lastHistoryLogAt = Date.now();
+      console.info('auto_session_trade_history_item_count', {
+        rendered: history.length,
+        total: fullHistory.length,
+        cap: HISTORY_RENDER_MAX_ITEMS
+      });
+    }
   }
 
   function predictionBreakdownText(section) {
@@ -454,6 +498,7 @@
     }
     const snapshot = status || runtime.lastStatus || {};
     runtime.predictionTimer = window.setTimeout(function () {
+      runtime.predictionTimer = null;
       refreshPrediction(snapshot);
     }, Math.max(100, Number(delay || 220)));
   }
@@ -707,6 +752,21 @@
     } catch (_err) {}
   }
 
+  function cleanupRuntime(reason) {
+    clearRuntimeIntervals(reason || 'page_cleanup');
+    if (runtime.predictionTimer) {
+      try { window.clearTimeout(runtime.predictionTimer); } catch (_err) {}
+      runtime.predictionTimer = null;
+    }
+    window.__koolkidAutoTradeRuntimeBooted = false;
+  }
+
+  window.addEventListener('pagehide', function (event) {
+    if (event && event.persisted) return;
+    cleanupRuntime('pagehide');
+  });
+  window.addEventListener('beforeunload', function () { cleanupRuntime('beforeunload'); });
+
   if (refs.userInitials) refs.userInitials.textContent = initialsFromName(username).slice(0, 2).toUpperCase();
   if (refs.modeSingle) refs.modeSingle.addEventListener('click', function () { if (refs.mode) refs.mode.value = 'single'; captureDraftConfig(); });
   if (refs.modeDual) refs.modeDual.addEventListener('click', function () { if (refs.mode) refs.mode.value = 'dual'; captureDraftConfig(); });
@@ -752,8 +812,8 @@
   tickClock();
   animateChart();
   fetchStatus();
-  window.setInterval(fetchStatus, 2500);
-  window.setInterval(heartbeat, 20000);
-  window.setInterval(tickClock, 1000);
-  window.setInterval(animateChart, 800);
+  registerRuntimeInterval('auto_session_status_poll', fetchStatus, 2500);
+  registerRuntimeInterval('auto_session_heartbeat', heartbeat, 20000);
+  registerRuntimeInterval('auto_session_clock', tickClock, 1000);
+  registerRuntimeInterval('auto_session_chart_animation', animateChart, 800);
 })();

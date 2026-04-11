@@ -238,7 +238,10 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     const elapsed = Date.now() - Number(lastBlackcardRenderAtJokerjoe || 0);
     if (elapsed >= BLACKCARD_RENDER_THROTTLE_MS) {
       if (blackcardRenderTimerJokerjoe) {
-        clearTimeout(blackcardRenderTimerJokerjoe);
+        const app = App();
+        if (!(app && typeof app.clearFrontendTimeout === "function" && app.clearFrontendTimeout("jokerjoe_blackcard_render"))) {
+          clearTimeout(blackcardRenderTimerJokerjoe);
+        }
         blackcardRenderTimerJokerjoe = null;
       }
       renderBlackcardJokerjoe();
@@ -246,9 +249,13 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     }
     if (!blackcardRenderTimerJokerjoe) {
       blackcardRenderTimerJokerjoe = setTimeout(() => {
+        const app = App();
+        if (app && typeof app.completeFrontendTimeout === "function") app.completeFrontendTimeout("jokerjoe_blackcard_render");
         blackcardRenderTimerJokerjoe = null;
         renderBlackcardJokerjoe();
       }, Math.max(40, BLACKCARD_RENDER_THROTTLE_MS - elapsed));
+      const app = App();
+      if (app && typeof app.registerFrontendTimeout === "function") app.registerFrontendTimeout("jokerjoe_blackcard_render", blackcardRenderTimerJokerjoe);
     }
   }
 
@@ -1660,6 +1667,20 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     refreshActivityPollJokerjoe();
   }
 
+  async function onDeactivate() {
+    const app = App();
+    stopActivityPollJokerjoe();
+    if (blackcardRenderTimerJokerjoe) {
+      if (!(app && typeof app.clearFrontendTimeout === "function" && app.clearFrontendTimeout("jokerjoe_blackcard_render"))) {
+        clearTimeout(blackcardRenderTimerJokerjoe);
+      }
+      blackcardRenderTimerJokerjoe = null;
+    }
+    stopFallbackBootstrapJokerjoe();
+    state.lastSocket = null;
+    state.socketBound = false;
+  }
+
 window.toggleTurboJokerjoe = function () {
   const next = !currentTurboModeJokerjoe();
   state.turboMode = next;
@@ -1913,10 +1934,10 @@ window.insta2Jokerjoe = async function () {
 };
 
   if (typeof window.registerProfileModule === "function") {
-    window.registerProfileModule(PROFILE, { onMount, afterLoadProfileUI, onActivate });
+    window.registerProfileModule(PROFILE, { onMount, afterLoadProfileUI, onActivate, onDeactivate });
   } else {
     window.ProfileModules = window.ProfileModules || {};
-    window.ProfileModules[PROFILE] = { onMount, afterLoadProfileUI, onActivate };
+    window.ProfileModules[PROFILE] = { onMount, afterLoadProfileUI, onActivate, onDeactivate };
   }
 
   // Fallback bootstrap for index versions without Phase 2 hooks

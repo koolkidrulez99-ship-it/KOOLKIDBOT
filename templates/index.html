@@ -1142,6 +1142,11 @@ function getSocketListenerCounts(){
     const events = new Set();
     Object.keys((socketListenerRegistry && socketListenerRegistry.mainHandlers) || {}).forEach((eventName)=> events.add(eventName));
     Object.keys((socketListenerRegistry && socketListenerRegistry.profileHandlers) || {}).forEach((eventName)=> events.add(eventName));
+    try{
+        Object.keys((socket && socket._callbacks) || {}).forEach((eventName)=>{
+            events.add(String(eventName || "").replace(/^\$/, ""));
+        });
+    }catch(e){}
     const perEvent = {};
     const duplicateEvents = [];
     let maxPerEvent = 0;
@@ -1181,7 +1186,9 @@ function logSocketListenerCounts(reason){
 
 function dispatchProfileSocketEvent(eventName, args){
     const handlersByNamespace = ((socketListenerRegistry.profileHandlers || {})[eventName]) || {};
+    const activeNamespace = String((typeof activeProfile !== "undefined" ? activeProfile : "KOOLKID") || "KOOLKID").toUpperCase();
     Object.keys(handlersByNamespace).forEach((namespace)=>{
+        if(String(namespace || "").toUpperCase() !== activeNamespace) return;
         const handler = handlersByNamespace[namespace];
         if(typeof handler !== "function") return;
         try{
@@ -1220,6 +1227,28 @@ function bindProfileSocketListener(namespace, eventName, handler){
     return true;
 }
 
+function unbindProfileSocketNamespace(namespace){
+    const safeNamespace = normalizeSocketNamespace(namespace);
+    let removed = 0;
+    try{
+        const handlers = socketListenerRegistry.profileHandlers || {};
+        Object.keys(handlers).forEach((eventName)=>{
+            if(handlers[eventName] && handlers[eventName][safeNamespace]){
+                delete handlers[eventName][safeNamespace];
+                removed += 1;
+            }
+            if(handlers[eventName] && Object.keys(handlers[eventName]).length === 0){
+                delete handlers[eventName];
+            }
+        });
+        if(removed){
+            console.info("frontend_socket_profile_handlers_removed", { namespace: safeNamespace, removed });
+            logSocketListenerCounts(`profile_${safeNamespace}_socket_cleanup`);
+        }
+    }catch(e){}
+    return removed;
+}
+
 function bindSocketListener(namespace, eventName, handler){
     const safeNamespace = normalizeSocketNamespace(namespace);
     if(safeNamespace === SOCKET_INDEX_NAMESPACE){
@@ -1230,10 +1259,24 @@ function bindSocketListener(namespace, eventName, handler){
 
 window.BotApp = window.BotApp || {};
 window.BotApp.bindSocketListener = bindSocketListener;
+window.BotApp.unbindProfileSocketNamespace = unbindProfileSocketNamespace;
 window.BotApp.logSocketListenerCounts = logSocketListenerCounts;
 window.BotApp.getSocketListenerCounts = getSocketListenerCounts;
 
 const frontendIntervalRegistry = window.__botFrontendIntervalRegistry || (window.__botFrontendIntervalRegistry = {});
+const frontendTimeoutRegistry = window.__botFrontendTimeoutRegistry || (window.__botFrontendTimeoutRegistry = {});
+const frontendCounterLogThrottle = window.__botFrontendCounterLogThrottle || (window.__botFrontendCounterLogThrottle = {});
+
+function shouldLogFrontendCounter(key, gapMs){
+    try{
+        const safeKey = String(key || "counter");
+        const now = Date.now();
+        const last = Number(frontendCounterLogThrottle[safeKey] || 0);
+        if((now - last) < Number(gapMs || 5000)) return false;
+        frontendCounterLogThrottle[safeKey] = now;
+    }catch(e){}
+    return true;
+}
 
 function logActiveIntervalCount(reason){
     try{
@@ -1273,6 +1316,55 @@ window.BotApp.registerFrontendInterval = registerFrontendInterval;
 window.BotApp.clearFrontendInterval = clearFrontendInterval;
 window.BotApp.logActiveIntervalCount = logActiveIntervalCount;
 
+function logActiveTimeoutCount(reason){
+    try{
+        const logKey = `timeout:${String(reason || "timeout_audit").replace(/_(started|stopped|completed)$/i, "")}`;
+        if(!shouldLogFrontendCounter(logKey, 5000)) return;
+        const labels = Object.keys(frontendTimeoutRegistry || {});
+        console.info("frontend_active_timeout_count", {
+            reason: reason || "timeout_audit",
+            count: labels.length,
+            timeouts: labels,
+        });
+    }catch(e){}
+}
+
+function registerFrontendTimeout(label, timerId){
+    if(!label || !timerId) return timerId;
+    try{
+        const existing = frontendTimeoutRegistry[label];
+        if(existing && existing !== timerId){
+            clearTimeout(existing);
+        }
+        frontendTimeoutRegistry[label] = timerId;
+        logActiveTimeoutCount(`${label}_started`);
+    }catch(e){}
+    return timerId;
+}
+
+function clearFrontendTimeout(label){
+    if(!label) return false;
+    const timerId = frontendTimeoutRegistry[label];
+    if(!timerId) return false;
+    try{ clearTimeout(timerId); }catch(e){}
+    try{ delete frontendTimeoutRegistry[label]; }catch(e){}
+    logActiveTimeoutCount(`${label}_stopped`);
+    return true;
+}
+
+function completeFrontendTimeout(label){
+    if(!label) return false;
+    if(!frontendTimeoutRegistry[label]) return false;
+    try{ delete frontendTimeoutRegistry[label]; }catch(e){}
+    logActiveTimeoutCount(`${label}_completed`);
+    return true;
+}
+
+window.BotApp.registerFrontendTimeout = registerFrontendTimeout;
+window.BotApp.clearFrontendTimeout = clearFrontendTimeout;
+window.BotApp.completeFrontendTimeout = completeFrontendTimeout;
+window.BotApp.logActiveTimeoutCount = logActiveTimeoutCount;
+
 function initSocket(){
     if (socket) return;
 
@@ -1293,6 +1385,9 @@ function initSocket(){
         pingInterval: 25000,
         pingTimeout: 3600000,
     });
+    console.info("frontend_socket_created", { already_existing: false });
+    logSocketListenerCounts("socket_created");
+    logRuntimeCounters("socket_created", true);
 
     // ==================== PATCH D: beforeunload with humanKeepAlive check ====================
     window.addEventListener("beforeunload", () => {
@@ -1305,6 +1400,23 @@ function initSocket(){
         }catch(_err){}
         fetch("/disconnect", { method: "POST", keepalive: true });
     });
+    try{
+        socket.on("disconnect", (reason)=>{
+            console.info("frontend_socket_disconnected", { reason });
+            logRuntimeCounters("socket_disconnected", true);
+        });
+        if(socket.io && typeof socket.io.on === "function"){
+            socket.io.on("reconnect_attempt", (attempt)=>{
+                frontendReconnectCount += 1;
+                console.info("frontend_socket_reconnect_attempt", { attempt, reconnect_count: frontendReconnectCount });
+                logRuntimeCounters("socket_reconnect_attempt", true);
+            });
+            socket.io.on("reconnect", (attempt)=>{
+                console.info("frontend_socket_reconnected", { attempt, reconnect_count: frontendReconnectCount });
+                logRuntimeCounters("socket_reconnected", true);
+            });
+        }
+    }catch(e){}
     bindSocketHandlers();
 }
 
@@ -1314,6 +1426,8 @@ function bindSocketHandlers(){
 
     bind("connect", ()=> {
         // optional: showToast("🔌 Socket Connected", "success");
+        console.info("frontend_socket_connected", { id: socket && socket.id ? socket.id : null });
+        logRuntimeCounters("socket_connected", true);
     });
 
     bind("connect_error", (err)=> {
@@ -1610,6 +1724,8 @@ const FAST_INTERVAL_MS_NORMAL = 400; // 0.4s as requested
 const FAST_INTERVAL_MS_TURBO = 250;  // recommended faster in Turbo
 const FAST_MAX_BUY_QUEUE = 12;       // safety limit
 const tradeToastByProfile = {};
+const TRADE_STORE_MAX_ITEMS = 250;
+const TRADE_RENDER_MAX_ITEMS = 120;
 const autoScanningToasts = {};
 const AUTO_SCANNING_MODE_KEYS = new Set([
     "master_auto",
@@ -1658,6 +1774,9 @@ let lastFlashClearTimer = null;
 let pendingDigitAnalysisUiData = null;
 let digitAnalysisUiTimer = null;
 let lastDigitAnalysisUiPaintAt = 0;
+let frontendReconnectCount = 0;
+let profileSwitchCleanupCount = 0;
+const runtimeCounterLastLogAt = {};
 const balanceUiCache = {
     balanceText: "",
     totalDisplay: "",
@@ -1788,7 +1907,9 @@ function clearBotTransientState(){
     });
     Object.keys(pendingTradeRescueTimers || {}).forEach((key)=>{
         try{
-            clearTimeout(pendingTradeRescueTimers[key]);
+            if(!clearFrontendTimeout(`pending_trade_rescue:${key}`)){
+                clearTimeout(pendingTradeRescueTimers[key]);
+            }
         }catch(e){}
         delete pendingTradeRescueTimers[key];
     });
@@ -1809,18 +1930,18 @@ function resetBalanceMilestones(){
 function resetUiRenderCaches(){
     pendingTickUiData = null;
     if(tickUiTimer){
-        clearTimeout(tickUiTimer);
+        if(!clearFrontendTimeout("tick_ui_render")) clearTimeout(tickUiTimer);
         tickUiTimer = null;
     }
     if(lastFlashClearTimer){
-        clearTimeout(lastFlashClearTimer);
+        if(!clearFrontendTimeout("last_digit_flash_clear")) clearTimeout(lastFlashClearTimer);
         lastFlashClearTimer = null;
     }
     lastTickUiPaintAt = 0;
     lastFlashedDigit = null;
     pendingDigitAnalysisUiData = null;
     if(digitAnalysisUiTimer){
-        clearTimeout(digitAnalysisUiTimer);
+        if(!clearFrontendTimeout("digit_analysis_ui_render")) clearTimeout(digitAnalysisUiTimer);
         digitAnalysisUiTimer = null;
     }
     lastDigitAnalysisUiPaintAt = 0;
@@ -1829,6 +1950,50 @@ function resetUiRenderCaches(){
     balanceUiCache.totalText = "";
     balanceUiCache.budgetSignature = "";
 }
+
+function shouldLogRuntimeCounter(reason, minGapMs){
+    const key = String(reason || "runtime");
+    const now = Date.now();
+    const last = Number(runtimeCounterLastLogAt[key] || 0);
+    const gap = Number(minGapMs || 5000);
+    if((now - last) < gap) return false;
+    runtimeCounterLastLogAt[key] = now;
+    return true;
+}
+
+function countVisibleTradeHistoryItems(){
+    try{
+        const list = getProfileScopedElement("profileTradeList");
+        return list && list.children ? list.children.length : 0;
+    }catch(e){
+        return 0;
+    }
+}
+
+function logRuntimeCounters(reason, force){
+    try{
+        const logReason = reason || "runtime_audit";
+        if(!force && !shouldLogRuntimeCounter(logReason, 5000)) return;
+        const intervalLabels = Object.keys(frontendIntervalRegistry || {});
+        const timeoutLabels = Object.keys(frontendTimeoutRegistry || {});
+        console.info("frontend_runtime_counters", {
+            reason: logReason,
+            active_socket_listener_count: getSocketListenerCounts().total,
+            profile_socket_handler_count: getProfileSocketHandlerCount(),
+            active_interval_count: intervalLabels.length,
+            active_timeout_count: timeoutLabels.length,
+            interval_labels: intervalLabels,
+            timeout_labels: timeoutLabels,
+            trade_history_item_count: countVisibleTradeHistoryItems(),
+            live_digit_feed_item_count: Array.isArray(digitBuffer) ? digitBuffer.length : 0,
+            reconnect_count: frontendReconnectCount,
+            profile_switch_cleanup_count: profileSwitchCleanupCount,
+            active_profile: activeProfile,
+        });
+    }catch(e){}
+}
+
+window.BotApp.logRuntimeCounters = logRuntimeCounters;
 
 function setSessionStartBalanceForMilestones(startBalance){
     const parsed = Number(startBalance);
@@ -2163,19 +2328,22 @@ function paintTickUi(data){
     if(activeCell){
         activeCell.classList.add("flash");
         lastFlashedDigit = digit;
-        if(lastFlashClearTimer) clearTimeout(lastFlashClearTimer);
-        lastFlashClearTimer = setTimeout(()=>{
+        if(lastFlashClearTimer){
+            if(!clearFrontendTimeout("last_digit_flash_clear")) clearTimeout(lastFlashClearTimer);
+        }
+        lastFlashClearTimer = registerFrontendTimeout("last_digit_flash_clear", setTimeout(()=>{
+            completeFrontendTimeout("last_digit_flash_clear");
             const cell = document.getElementById(`digit-${digit}`);
             if(cell) cell.classList.remove("flash");
             if(lastFlashedDigit === digit) lastFlashedDigit = null;
             lastFlashClearTimer = null;
-        }, 250);
+        }, 250));
     }
 }
 
 function flushTickUi(){
     if(tickUiTimer){
-        clearTimeout(tickUiTimer);
+        if(!clearFrontendTimeout("tick_ui_render")) clearTimeout(tickUiTimer);
         tickUiTimer = null;
     }
     const data = pendingTickUiData;
@@ -2191,7 +2359,7 @@ function scheduleTickUiUpdate(data){
         return;
     }
     if(!tickUiTimer){
-        tickUiTimer = setTimeout(flushTickUi, Math.max(40, TICK_UI_THROTTLE_MS - elapsed));
+        tickUiTimer = registerFrontendTimeout("tick_ui_render", setTimeout(flushTickUi, Math.max(40, TICK_UI_THROTTLE_MS - elapsed)));
     }
 }
 
@@ -2252,7 +2420,7 @@ function paintDigitAnalysisUi(data){
 
 function flushDigitAnalysisUi(){
     if(digitAnalysisUiTimer){
-        clearTimeout(digitAnalysisUiTimer);
+        if(!clearFrontendTimeout("digit_analysis_ui_render")) clearTimeout(digitAnalysisUiTimer);
         digitAnalysisUiTimer = null;
     }
     const data = pendingDigitAnalysisUiData;
@@ -2268,7 +2436,7 @@ function scheduleDigitAnalysisUiUpdate(data){
         return;
     }
     if(!digitAnalysisUiTimer){
-        digitAnalysisUiTimer = setTimeout(flushDigitAnalysisUi, Math.max(40, DIGIT_ANALYSIS_UI_THROTTLE_MS - elapsed));
+        digitAnalysisUiTimer = registerFrontendTimeout("digit_analysis_ui_render", setTimeout(flushDigitAnalysisUi, Math.max(40, DIGIT_ANALYSIS_UI_THROTTLE_MS - elapsed)));
     }
 }
 
@@ -2683,7 +2851,7 @@ function upsertTradeInStore(trade){
         incoming._store_seq = tradeStoreSequence;
     }
     arr.push(incoming);
-    if(arr.length > 250) arr.shift();
+    if(arr.length > TRADE_STORE_MAX_ITEMS) arr.shift();
     return incoming;
 }
 
@@ -3086,12 +3254,20 @@ function clearPendingTradeRescue(profile, contractId){
     if(!cid) return;
     const explicitKey = pendingTradeRescueKey(profile, cid);
     if(explicitKey && pendingTradeRescueTimers[explicitKey]){
-        try{ clearTimeout(pendingTradeRescueTimers[explicitKey]); }catch(e){}
+        try{
+            if(!clearFrontendTimeout(`pending_trade_rescue:${explicitKey}`)){
+                clearTimeout(pendingTradeRescueTimers[explicitKey]);
+            }
+        }catch(e){}
         delete pendingTradeRescueTimers[explicitKey];
     }
     Object.keys(pendingTradeRescueTimers || {}).forEach((key)=>{
         if(!key.endsWith(`:${cid}`)) return;
-        try{ clearTimeout(pendingTradeRescueTimers[key]); }catch(e){}
+        try{
+            if(!clearFrontendTimeout(`pending_trade_rescue:${key}`)){
+                clearTimeout(pendingTradeRescueTimers[key]);
+            }
+        }catch(e){}
         delete pendingTradeRescueTimers[key];
     });
 }
@@ -3118,14 +3294,16 @@ function schedulePendingTradeRescue(profile, contractId, attempt){
     const stepDelay = turboOn ? 160 : 420;
     const waitMs = baseDelay + ((tryNumber - 1) * stepDelay);
     const timerKey = pendingTradeRescueKey(key, cid);
-    pendingTradeRescueTimers[timerKey] = setTimeout(async ()=>{
+    const timeoutLabel = `pending_trade_rescue:${timerKey}`;
+    pendingTradeRescueTimers[timerKey] = registerFrontendTimeout(timeoutLabel, setTimeout(async ()=>{
+        completeFrontendTimeout(timeoutLabel);
         delete pendingTradeRescueTimers[timerKey];
         if(!isTradeStillPendingInStore(key, cid)) return;
         await syncTradeHistorySnapshot(key);
         if(isTradeStillPendingInStore(key, cid)){
             schedulePendingTradeRescue(key, cid, tryNumber + 1);
         }
-    }, waitMs);
+    }, waitMs));
 }
 
 function decrementPendingTickCountdowns(symbol){
@@ -3539,10 +3717,14 @@ function applyProfileDraft(profile){
 }
 
 function scheduleProfileDraftSave(profile){
-    if(profileDraftSaveTimer) clearTimeout(profileDraftSaveTimer);
-    profileDraftSaveTimer = setTimeout(()=>{
+    if(profileDraftSaveTimer){
+        if(!clearFrontendTimeout("profile_draft_save")) clearTimeout(profileDraftSaveTimer);
+    }
+    profileDraftSaveTimer = registerFrontendTimeout("profile_draft_save", setTimeout(()=>{
+        completeFrontendTimeout("profile_draft_save");
+        profileDraftSaveTimer = null;
         captureProfileDraft(profile || activeProfile);
-    }, 160);
+    }, 160));
 }
 
 function bindDomListenerOnce(node, flag, eventName, handler, options){
@@ -3612,6 +3794,7 @@ function renderTradeList(profile){
             const cidB = normalizeContractId(b && (b.contract_id ?? b.contractId)) || "";
             return String(cidB).localeCompare(String(cidA));
         });
+    const visibleSorted = sorted.slice(0, TRADE_RENDER_MAX_ITEMS);
 
     if(list.dataset.tradeEmpty === "1"){
         list.innerHTML = "";
@@ -3627,7 +3810,7 @@ function renderTradeList(profile){
         if(domKey) existingByKey.set(domKey, node);
     });
 
-    sorted.forEach((trade, index)=>{
+    visibleSorted.forEach((trade, index)=>{
         const domKey = getTradeDomKey(trade, index);
         const signature = getTradeRenderSignature(trade);
         let node = existingByKey.get(domKey);
@@ -3647,6 +3830,7 @@ function renderTradeList(profile){
     existingByKey.forEach((node)=>{
         if(node && node.parentNode === list) node.remove();
     });
+    logRuntimeCounters("trade_history_render");
 }
 
 function getTradeDomKey(trade, index){
@@ -3944,6 +4128,25 @@ async function runProfileModuleHook(profile, hookName, payload){
     return null;
 }
 
+async function deactivateProfileModule(profile, payload){
+    const p = normalizeProfileName(profile || activeProfile);
+    if(!p) return;
+    try{
+        await runProfileModuleHook(p, "onDeactivate", Object.assign({ profile: p }, payload || {}));
+    }catch(e){}
+    try{
+        if(window.BotApp && typeof window.BotApp.unbindProfileSocketNamespace === "function"){
+            window.BotApp.unbindProfileSocketNamespace(p);
+        }
+    }catch(e){}
+    profileSwitchCleanupCount += 1;
+    console.info("frontend_profile_switch_cleanup", {
+        profile: p,
+        next_profile: payload && payload.nextProfile,
+        cleanup_count: profileSwitchCleanupCount,
+    });
+    logRuntimeCounters(`profile_cleanup_${p}`, true);
+}
 
 async function loadProfileUI(profile){
     closeTransientUiOverlays();
@@ -5218,6 +5421,7 @@ function openKoolkidAutoTradePlaceholder(){
 }
 
 async function setProfile(profile){
+    profile = normalizeProfileName(profile);
     const previousProfile = activeProfile;
     captureProfileDraft(previousProfile);
     closeTransientUiOverlays();
@@ -5235,6 +5439,9 @@ async function setProfile(profile){
     }catch(e){
         showToast((e && e.message) ? e.message : "Failed to change profile", "error");
         return;
+    }
+    if(normalizeProfileName(previousProfile) !== normalizeProfileName(profile)){
+        await deactivateProfileModule(previousProfile, { nextProfile: profile });
     }
     activeProfile = profile;
     rememberProfileBudgetPayload(profileData || {});
@@ -5432,11 +5639,14 @@ async function syncAutoStake(){
 }
 
 function scheduleAutoStakeSync(){
-    if(autoStakeSyncTimer) clearTimeout(autoStakeSyncTimer);
-    autoStakeSyncTimer = setTimeout(() => {
+    if(autoStakeSyncTimer){
+        if(!clearFrontendTimeout("auto_stake_sync")) clearTimeout(autoStakeSyncTimer);
+    }
+    autoStakeSyncTimer = registerFrontendTimeout("auto_stake_sync", setTimeout(() => {
+        completeFrontendTimeout("auto_stake_sync");
         autoStakeSyncTimer = null;
         syncAutoStake().catch(()=>{});
-    }, 180);
+    }, 180));
 }
 
 async function sendRiskControls(profileOverride){

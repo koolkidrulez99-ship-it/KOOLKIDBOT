@@ -170,11 +170,21 @@
 
   App.ensureDigitClickPatchSoon = function () {
     if (App.ensureDigitClickPatch()) return;
+    if (App.__digitClickPatchTimer) return;
     let tries = 0;
     const t = setInterval(() => {
       tries += 1;
-      if (App.ensureDigitClickPatch() || tries > 40) clearInterval(t);
+      if (App.ensureDigitClickPatch() || tries > 40) {
+        if (typeof App.clearFrontendInterval === "function") {
+          App.clearFrontendInterval("digit_click_patch_retry");
+        } else {
+          clearInterval(t);
+        }
+        App.__digitClickPatchTimer = null;
+      }
     }, 250);
+    App.__digitClickPatchTimer = t;
+    if (typeof App.registerFrontendInterval === "function") App.registerFrontendInterval("digit_click_patch_retry", t);
   };
 
   App.ensureDigitClickPatchSoon();

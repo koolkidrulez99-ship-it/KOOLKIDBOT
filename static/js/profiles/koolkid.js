@@ -1097,7 +1097,10 @@
 
   function flushDigitAnalysisRenderKoolkid() {
     if (digitAnalysisRenderTimer) {
-      clearTimeout(digitAnalysisRenderTimer);
+      const app = App();
+      if (!(app && typeof app.clearFrontendTimeout === "function" && app.clearFrontendTimeout("koolkid_digit_analysis_render"))) {
+        clearTimeout(digitAnalysisRenderTimer);
+      }
       digitAnalysisRenderTimer = null;
     }
     const payload = pendingDigitAnalysisRender;
@@ -1114,6 +1117,8 @@
     }
     if (!digitAnalysisRenderTimer) {
       digitAnalysisRenderTimer = setTimeout(flushDigitAnalysisRenderKoolkid, Math.max(50, DIGIT_RENDER_THROTTLE_MS - elapsed));
+      const app = App();
+      if (app && typeof app.registerFrontendTimeout === "function") app.registerFrontendTimeout("koolkid_digit_analysis_render", digitAnalysisRenderTimer);
     }
   }
 
@@ -1124,7 +1129,10 @@
 
   function flushGoldenCardRenderKoolkid() {
     if (goldenCardRenderTimer) {
-      clearTimeout(goldenCardRenderTimer);
+      const app = App();
+      if (!(app && typeof app.clearFrontendTimeout === "function" && app.clearFrontendTimeout("koolkid_golden_card_render"))) {
+        clearTimeout(goldenCardRenderTimer);
+      }
       goldenCardRenderTimer = null;
     }
     const payload = pendingGoldenCardRender;
@@ -1141,6 +1149,8 @@
     }
     if (!goldenCardRenderTimer) {
       goldenCardRenderTimer = setTimeout(flushGoldenCardRenderKoolkid, Math.max(50, GOLDEN_RENDER_THROTTLE_MS - elapsed));
+      const app = App();
+      if (app && typeof app.registerFrontendTimeout === "function") app.registerFrontendTimeout("koolkid_golden_card_render", goldenCardRenderTimer);
     }
   }
 
@@ -1232,6 +1242,27 @@
     renderKid2vixKoolkid();
     currentTurboModeKoolkid();
     renderTurboToggleKoolkid();
+  }
+
+  async function onDeactivate() {
+    const app = App();
+    if (digitAnalysisRenderTimer) {
+      if (!(app && typeof app.clearFrontendTimeout === "function" && app.clearFrontendTimeout("koolkid_digit_analysis_render"))) {
+        clearTimeout(digitAnalysisRenderTimer);
+      }
+      digitAnalysisRenderTimer = null;
+    }
+    if (goldenCardRenderTimer) {
+      if (!(app && typeof app.clearFrontendTimeout === "function" && app.clearFrontendTimeout("koolkid_golden_card_render"))) {
+        clearTimeout(goldenCardRenderTimer);
+      }
+      goldenCardRenderTimer = null;
+    }
+    pendingDigitAnalysisRender = null;
+    pendingGoldenCardRender = null;
+    state.socketBound = false;
+    state.lastSocket = null;
+    try { stopFallbackBootstrap(); } catch (e) {}
   }
 
   window.toggleTurboKoolkid = function () {
@@ -1610,10 +1641,10 @@ window.toggleMetaAIKoolkid = function () { return toggleAdvancedModeKoolkid("met
 window.toggleKidracksAIKoolkid = function () { return toggleAdvancedModeKoolkid("kidracks_ai", "🤓 KIDRACKS AI"); };
 
   if (typeof window.registerProfileModule === "function") {
-    window.registerProfileModule(PROFILE, { onMount, afterLoadProfileUI, onActivate });
+    window.registerProfileModule(PROFILE, { onMount, afterLoadProfileUI, onActivate, onDeactivate });
   } else {
     window.ProfileModules = window.ProfileModules || {};
-    window.ProfileModules[PROFILE] = { onMount, afterLoadProfileUI, onActivate };
+    window.ProfileModules[PROFILE] = { onMount, afterLoadProfileUI, onActivate, onDeactivate };
   }
 
   // Fallback bootstrap for index versions without Phase 2 hooks

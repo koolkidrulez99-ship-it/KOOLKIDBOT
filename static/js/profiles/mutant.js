@@ -81,6 +81,17 @@
   };
 
   function App() { return window.BotApp || {}; }
+  function trackTimeout(label, timerId) {
+    const app = App();
+    if (app && typeof app.registerFrontendTimeout === "function") app.registerFrontendTimeout(label, timerId);
+    return timerId;
+  }
+  function clearTrackedTimeout(label, timerId) {
+    const app = App();
+    const cleared = !!(app && typeof app.clearFrontendTimeout === "function" && app.clearFrontendTimeout(label));
+    if (timerId && !cleared) clearTimeout(timerId);
+    return null;
+  }
   function isActive() {
     try { return typeof activeProfile !== "undefined" && activeProfile === PROFILE; } catch (_e) { return false; }
   }
@@ -309,18 +320,19 @@
     if (!sym) return;
     const savedNow = persistCurrentMarketBarrierSettings(sym, opts);
     if (state.marketBarrierSyncTimer) {
-      clearTimeout(state.marketBarrierSyncTimer);
-      state.marketBarrierSyncTimer = null;
+      state.marketBarrierSyncTimer = clearTrackedTimeout("ntt_market_barrier_sync", state.marketBarrierSyncTimer);
     }
     if (!(savedNow && savedNow.is_custom)) return;
-    state.marketBarrierSyncTimer = setTimeout(() => {
+    state.marketBarrierSyncTimer = trackTimeout("ntt_market_barrier_sync", setTimeout(() => {
+      const app = App();
+      if (app && typeof app.completeFrontendTimeout === "function") app.completeFrontendTimeout("ntt_market_barrier_sync");
       state.marketBarrierSyncTimer = null;
       const current = currentSymbol();
       if (sym !== current) return;
       const saved = getSavedMarketBarrierSettings(sym);
       if (!(saved && saved.is_custom)) return;
       syncSavedMarketBarrierSettingsToServer(sym, saved).catch(() => {});
-    }, 180);
+    }, 180));
   }
   function hasDirtyBarrierFields() {
     let anyDirty = false;
@@ -1553,12 +1565,14 @@
   }
   function scheduleExpectedProfitPreview(delay) {
     if (state.expectedProfitTimer) {
-      clearTimeout(state.expectedProfitTimer);
-      state.expectedProfitTimer = null;
+      state.expectedProfitTimer = clearTrackedTimeout("ntt_expected_profit_preview", state.expectedProfitTimer);
     }
-    state.expectedProfitTimer = setTimeout(() => {
+    state.expectedProfitTimer = trackTimeout("ntt_expected_profit_preview", setTimeout(() => {
+      const app = App();
+      if (app && typeof app.completeFrontendTimeout === "function") app.completeFrontendTimeout("ntt_expected_profit_preview");
+      state.expectedProfitTimer = null;
       refreshExpectedProfitPreview().catch(() => {});
-    }, Math.max(60, Number(delay || 180)));
+    }, Math.max(60, Number(delay || 180))));
   }
   async function handleAction(action, btn) {
     const key = String(action || "");
@@ -1640,10 +1654,13 @@
     }
   }
   function scheduleTouchPrediction(delay) {
-    clearTimeout(state.predictionTimer);
-    state.predictionTimer = setTimeout(() => {
+    state.predictionTimer = clearTrackedTimeout("ntt_touch_prediction", state.predictionTimer);
+    state.predictionTimer = trackTimeout("ntt_touch_prediction", setTimeout(() => {
+      const app = App();
+      if (app && typeof app.completeFrontendTimeout === "function") app.completeFrontendTimeout("ntt_touch_prediction");
+      state.predictionTimer = null;
       refreshTouchPrediction().catch(() => {});
-    }, Math.max(0, Number(delay || 0)));
+    }, Math.max(0, Number(delay || 0))));
   }
   async function handleSelectorPrimary() {
     const btn = el("nttSelectorPrimaryAction");
@@ -1705,8 +1722,7 @@
   }
   function flushLiveChartRender() {
     if (liveChartRenderTimer) {
-      clearTimeout(liveChartRenderTimer);
-      liveChartRenderTimer = null;
+      liveChartRenderTimer = clearTrackedTimeout("ntt_live_chart_render", liveChartRenderTimer);
     }
     const args = pendingLiveChartArgs;
     pendingLiveChartArgs = null;
@@ -1723,13 +1739,12 @@
       return;
     }
     if (!liveChartRenderTimer) {
-      liveChartRenderTimer = setTimeout(flushLiveChartRender, Math.max(50, LIVE_CHART_RENDER_THROTTLE_MS - elapsed));
+      liveChartRenderTimer = trackTimeout("ntt_live_chart_render", setTimeout(flushLiveChartRender, Math.max(50, LIVE_CHART_RENDER_THROTTLE_MS - elapsed)));
     }
   }
   function flushStatusRender() {
     if (statusRenderTimer) {
-      clearTimeout(statusRenderTimer);
-      statusRenderTimer = null;
+      statusRenderTimer = clearTrackedTimeout("ntt_status_render", statusRenderTimer);
     }
     const payload = pendingStatusPayload;
     pendingStatusPayload = null;
@@ -1746,7 +1761,7 @@
       return;
     }
     if (!statusRenderTimer) {
-      statusRenderTimer = setTimeout(flushStatusRender, Math.max(50, STATUS_RENDER_THROTTLE_MS - elapsed));
+      statusRenderTimer = trackTimeout("ntt_status_render", setTimeout(flushStatusRender, Math.max(50, STATUS_RENDER_THROTTLE_MS - elapsed)));
     }
   }
   function bindSocket() {
@@ -1771,12 +1786,22 @@
       });
       bind("trade_result", (trade) => {
         if (trade && String(trade.profile || "").toUpperCase() === PROFILE && isActive()) {
-          setTimeout(() => refreshStatus(true), 180);
+          const t = setTimeout(() => {
+            const app = App();
+            if (app && typeof app.completeFrontendTimeout === "function") app.completeFrontendTimeout("ntt_trade_result_refresh");
+            refreshStatus(true);
+          }, 180);
+          trackTimeout("ntt_trade_result_refresh", t);
         }
       });
       bind("trade_placed", (trade) => {
         if (trade && String(trade.profile || "").toUpperCase() === PROFILE && isActive()) {
-          setTimeout(() => refreshStatus(true), 120);
+          const t = setTimeout(() => {
+            const app = App();
+            if (app && typeof app.completeFrontendTimeout === "function") app.completeFrontendTimeout("ntt_trade_placed_refresh");
+            refreshStatus(true);
+          }, 120);
+          trackTimeout("ntt_trade_placed_refresh", t);
         }
       });
       if (app && typeof app.logSocketListenerCounts === "function") app.logSocketListenerCounts("mutant_profile_init");
@@ -1983,6 +2008,18 @@
     }
     if (state.pollTimer || clearedTracked) state.pollTimer = null;
   }
+  function clearProfileTimers() {
+    stopPolling();
+    state.marketBarrierSyncTimer = clearTrackedTimeout("ntt_market_barrier_sync", state.marketBarrierSyncTimer);
+    state.expectedProfitTimer = clearTrackedTimeout("ntt_expected_profit_preview", state.expectedProfitTimer);
+    state.predictionTimer = clearTrackedTimeout("ntt_touch_prediction", state.predictionTimer);
+    liveChartRenderTimer = clearTrackedTimeout("ntt_live_chart_render", liveChartRenderTimer);
+    statusRenderTimer = clearTrackedTimeout("ntt_status_render", statusRenderTimer);
+    clearTrackedTimeout("ntt_trade_result_refresh", null);
+    clearTrackedTimeout("ntt_trade_placed_refresh", null);
+    pendingLiveChartArgs = null;
+    pendingStatusPayload = null;
+  }
   async function onMount(ctx) {
     bindUI((ctx && ctx.root) || el("nttRoot"));
     bindSocket();
@@ -2017,10 +2054,16 @@
     scheduleExpectedProfitPreview(25);
     await refreshStatus(true);
   }
+  async function onDeactivate() {
+    clearProfileTimers();
+    state.socketBound = false;
+    state.lastSocket = null;
+  }
 
   window.registerProfileModule(PROFILE, {
     onMount,
     afterLoadProfileUI,
     onActivate,
+    onDeactivate,
   });
 })();

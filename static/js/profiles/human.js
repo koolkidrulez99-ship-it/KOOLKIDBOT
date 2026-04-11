@@ -311,7 +311,10 @@
 
   function flushHumanRFStatusRender(){
     if(statusRenderTimer){
-      clearTimeout(statusRenderTimer);
+      const App = getApp();
+      if(!(App && typeof App.clearFrontendTimeout === "function" && App.clearFrontendTimeout("human_status_render"))){
+        clearTimeout(statusRenderTimer);
+      }
       statusRenderTimer = null;
     }
     const payload = pendingStatusPayload;
@@ -327,7 +330,10 @@
       return;
     }
     if(!statusRenderTimer){
-      statusRenderTimer = setTimeout(flushHumanRFStatusRender, Math.max(50, STATUS_RENDER_THROTTLE_MS - elapsed));
+      const delay = Math.max(50, STATUS_RENDER_THROTTLE_MS - elapsed);
+      statusRenderTimer = setTimeout(flushHumanRFStatusRender, delay);
+      const App = getApp();
+      if(App && typeof App.registerFrontendTimeout === "function") App.registerFrontendTimeout("human_status_render", statusRenderTimer);
     }
   }
 
@@ -340,6 +346,16 @@
     if(pollTimer || clearedTracked){
       pollTimer = null;
     }
+  }
+
+  function clearStatusRenderTimer(){
+    const App = getApp();
+    const clearedTracked = !!(App && typeof App.clearFrontendTimeout === "function" && App.clearFrontendTimeout("human_status_render"));
+    if(statusRenderTimer && !clearedTracked){
+      clearTimeout(statusRenderTimer);
+    }
+    statusRenderTimer = null;
+    pendingStatusPayload = null;
   }
 
   function bindSocketIfPossible(){
@@ -503,14 +519,21 @@
     maybeAutoFormulaX();
   }
 
+  async function onDeactivate() {
+    stopPolling();
+    clearStatusRenderTimer();
+    socketHooked = false;
+  }
+
   if (typeof window.registerProfileModule === "function") {
     window.registerProfileModule(PROFILE, {
       onMount,
       afterLoadProfileUI,
-      onActivate
+      onActivate,
+      onDeactivate
     });
   } else {
     window.ProfileModules = window.ProfileModules || {};
-    window.ProfileModules[PROFILE] = { onMount, afterLoadProfileUI, onActivate };
+    window.ProfileModules[PROFILE] = { onMount, afterLoadProfileUI, onActivate, onDeactivate };
   }
 })();

@@ -105,6 +105,17 @@
     h: range(1, 24, 1),
   };
   function App() { return window.BotApp || {}; }
+  function trackTimeout(label, timerId) {
+    const app = App();
+    if (app && typeof app.registerFrontendTimeout === "function") app.registerFrontendTimeout(label, timerId);
+    return timerId;
+  }
+  function clearTrackedTimeout(label, timerId) {
+    const app = App();
+    const cleared = !!(app && typeof app.clearFrontendTimeout === "function" && app.clearFrontendTimeout(label));
+    if (timerId && !cleared) clearTimeout(timerId);
+    return null;
+  }
   function isActive() { try { return typeof activeProfile !== "undefined" && activeProfile === PROFILE; } catch (e) { return false; } }
   function el(id) { return document.getElementById(id); }
   function setText(id, v) { const n = el(id); if (n) n.innerText = v == null ? "—" : String(v); }
@@ -406,18 +417,19 @@
     if (!sym) return;
     const savedNow = persistCurrentMarketBarrierSettings(sym, opts);
     if (state.marketBarrierSyncTimer) {
-      clearTimeout(state.marketBarrierSyncTimer);
-      state.marketBarrierSyncTimer = null;
+      state.marketBarrierSyncTimer = clearTrackedTimeout("unchain_market_barrier_sync", state.marketBarrierSyncTimer);
     }
     if (!(savedNow && savedNow.is_custom)) return;
-    state.marketBarrierSyncTimer = setTimeout(() => {
+    state.marketBarrierSyncTimer = trackTimeout("unchain_market_barrier_sync", setTimeout(() => {
+      const app = App();
+      if (app && typeof app.completeFrontendTimeout === "function") app.completeFrontendTimeout("unchain_market_barrier_sync");
       state.marketBarrierSyncTimer = null;
       const currentSymbol = getCurrentMarketSymbol();
       if (sym !== currentSymbol) return;
       const saved = getSavedMarketBarrierSettings(sym);
       if (!(saved && saved.is_custom)) return;
       syncSavedMarketBarrierSettingsToServer(sym, saved).catch(() => {});
-    }, 180);
+    }, 180));
   }
 
   function hasDirtyBarrierFields() {
@@ -1615,12 +1627,14 @@
 
   function scheduleExpectedProfitPreview(delay) {
     if (state.expectedProfitTimer) {
-      clearTimeout(state.expectedProfitTimer);
-      state.expectedProfitTimer = null;
+      state.expectedProfitTimer = clearTrackedTimeout("unchain_expected_profit_preview", state.expectedProfitTimer);
     }
-    state.expectedProfitTimer = setTimeout(() => {
+    state.expectedProfitTimer = trackTimeout("unchain_expected_profit_preview", setTimeout(() => {
+      const app = App();
+      if (app && typeof app.completeFrontendTimeout === "function") app.completeFrontendTimeout("unchain_expected_profit_preview");
+      state.expectedProfitTimer = null;
       refreshExpectedProfitPreview().catch(() => {});
-    }, Math.max(60, Number(delay || 180)));
+    }, Math.max(60, Number(delay || 180))));
   }
 
   function predictionBreakdownText(section) {
@@ -1877,12 +1891,14 @@
 
   function scheduleHigherLowerPrediction(delay) {
     if (state.predictionTimer) {
-      clearTimeout(state.predictionTimer);
-      state.predictionTimer = null;
+      state.predictionTimer = clearTrackedTimeout("unchain_higher_lower_prediction", state.predictionTimer);
     }
-    state.predictionTimer = setTimeout(() => {
+    state.predictionTimer = trackTimeout("unchain_higher_lower_prediction", setTimeout(() => {
+      const app = App();
+      if (app && typeof app.completeFrontendTimeout === "function") app.completeFrontendTimeout("unchain_higher_lower_prediction");
+      state.predictionTimer = null;
       refreshHigherLowerPrediction().catch(() => {});
-    }, Math.max(80, Number(delay || 180)));
+    }, Math.max(80, Number(delay || 180))));
   }
 
   function renderBothAnalyzer(un) {
@@ -3064,8 +3080,7 @@
 
   function flushLiveChartRender() {
     if (liveChartRenderTimer) {
-      clearTimeout(liveChartRenderTimer);
-      liveChartRenderTimer = null;
+      liveChartRenderTimer = clearTrackedTimeout("unchain_live_chart_render", liveChartRenderTimer);
     }
     const args = pendingLiveChartArgs;
     pendingLiveChartArgs = null;
@@ -3083,14 +3098,13 @@
       return;
     }
     if (!liveChartRenderTimer) {
-      liveChartRenderTimer = setTimeout(flushLiveChartRender, Math.max(50, LIVE_CHART_RENDER_THROTTLE_MS - elapsed));
+      liveChartRenderTimer = trackTimeout("unchain_live_chart_render", setTimeout(flushLiveChartRender, Math.max(50, LIVE_CHART_RENDER_THROTTLE_MS - elapsed)));
     }
   }
 
   function flushStatusRender() {
     if (statusRenderTimer) {
-      clearTimeout(statusRenderTimer);
-      statusRenderTimer = null;
+      statusRenderTimer = clearTrackedTimeout("unchain_status_render", statusRenderTimer);
     }
     const payload = pendingStatusPayload;
     pendingStatusPayload = null;
@@ -3108,7 +3122,7 @@
       return;
     }
     if (!statusRenderTimer) {
-      statusRenderTimer = setTimeout(flushStatusRender, Math.max(50, STATUS_RENDER_THROTTLE_MS - elapsed));
+      statusRenderTimer = trackTimeout("unchain_status_render", setTimeout(flushStatusRender, Math.max(50, STATUS_RENDER_THROTTLE_MS - elapsed)));
     }
   }
 
@@ -3146,12 +3160,22 @@
       });
       bind("trade_result", () => {
         if (!isActive()) return;
-        setTimeout(() => refreshStatus(true), 200);
+        const t = setTimeout(() => {
+          const app = App();
+          if (app && typeof app.completeFrontendTimeout === "function") app.completeFrontendTimeout("unchain_trade_result_refresh");
+          refreshStatus(true);
+        }, 200);
+        trackTimeout("unchain_trade_result_refresh", t);
       });
       bind("trade_placed", (trade) => {
         if (!isActive() || !trade) return;
         if ((trade.profile || "").toUpperCase() === "UNCHAIN") {
-          setTimeout(() => refreshStatus(true), 120);
+          const t = setTimeout(() => {
+            const app = App();
+            if (app && typeof app.completeFrontendTimeout === "function") app.completeFrontendTimeout("unchain_trade_placed_refresh");
+            refreshStatus(true);
+          }, 120);
+          trackTimeout("unchain_trade_placed_refresh", t);
         }
       });
       if (app && typeof app.logSocketListenerCounts === "function") app.logSocketListenerCounts("unchain_profile_init");
@@ -3323,6 +3347,19 @@
     }
   }
 
+  function clearProfileTimers() {
+    stopPolling();
+    state.marketBarrierSyncTimer = clearTrackedTimeout("unchain_market_barrier_sync", state.marketBarrierSyncTimer);
+    state.expectedProfitTimer = clearTrackedTimeout("unchain_expected_profit_preview", state.expectedProfitTimer);
+    state.predictionTimer = clearTrackedTimeout("unchain_higher_lower_prediction", state.predictionTimer);
+    liveChartRenderTimer = clearTrackedTimeout("unchain_live_chart_render", liveChartRenderTimer);
+    statusRenderTimer = clearTrackedTimeout("unchain_status_render", statusRenderTimer);
+    clearTrackedTimeout("unchain_trade_result_refresh", null);
+    clearTrackedTimeout("unchain_trade_placed_refresh", null);
+    pendingLiveChartArgs = null;
+    pendingStatusPayload = null;
+  }
+
   async function onMount(payload) {
     const root = payload && payload.root ? payload.root : document.getElementById("profileContainer");
     bindUI(root);
@@ -3345,10 +3382,17 @@
     await refreshStatus(true);
   }
 
+  async function onDeactivate() {
+    clearProfileTimers();
+    removeTradeCountdownToast();
+    state.socketBound = false;
+    state.lastSocket = null;
+  }
+
   if (typeof window.registerProfileModule === "function") {
-    window.registerProfileModule(PROFILE, { onMount, afterLoadProfileUI, onActivate });
+    window.registerProfileModule(PROFILE, { onMount, afterLoadProfileUI, onActivate, onDeactivate });
   } else {
     window.ProfileModules = window.ProfileModules || {};
-    window.ProfileModules[PROFILE] = { onMount, afterLoadProfileUI, onActivate };
+    window.ProfileModules[PROFILE] = { onMount, afterLoadProfileUI, onActivate, onDeactivate };
   }
 })();
