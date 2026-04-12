@@ -1276,7 +1276,7 @@ def _profile_budget_snapshot(state, profile=None):
     configured_budget = _effective_trade_balance(entry.get("amount", 0.0))
     realized_pnl = round(_safe_money(entry.get("realized_pnl", 0.0)), 2)
     reserved = _effective_trade_balance(entry.get("reserved", 0.0))
-    total_balance = _get_effective_state_balance(state)
+    total_balance = _get_live_account_balance(state)
     enabled = configured_budget > 0.0
 
     if enabled:
@@ -1326,8 +1326,12 @@ def _format_state_money(state, value, *, signed=False, trim_trailing=False, fall
 
 def _build_balance_payload(state, profile=None):
     snapshot = _profile_budget_snapshot(state, profile)
+    account_balance = _get_live_account_balance(state)
+    effective_balance = _get_effective_state_balance(state)
     return {
-        "balance": _get_effective_state_balance(state),
+        "balance": account_balance,
+        "account_balance": account_balance,
+        "effective_balance": effective_balance,
         "display_balance": snapshot.get("display_balance", 0.0),
         "total_balance": snapshot.get("total_balance", 0.0),
         "session_start_balance": state.get("session_start_balance"),
@@ -1338,7 +1342,21 @@ def _build_balance_payload(state, profile=None):
 
 
 def _emit_balance_payload(client_id, state):
-    socketio.emit("balance_update", _build_balance_payload(state), room=client_id)
+    payload = _build_balance_payload(state)
+    budget = payload.get("active_profile_budget") or {}
+    logger.info(
+        "[%s] TEMP balance_display_computed live_account=%s effective=%s display=%s total=%s "
+        "budget_enabled=%s budget_remaining=%s session_pnl=%s",
+        client_id,
+        payload.get("account_balance"),
+        payload.get("effective_balance"),
+        payload.get("display_balance"),
+        payload.get("total_balance"),
+        budget.get("enabled"),
+        budget.get("remaining_budget"),
+        budget.get("realized_pnl"),
+    )
+    socketio.emit("balance_update", payload, room=client_id)
 
 
 def _check_profile_budget_capacity(state, profile, amount):
@@ -1374,6 +1392,12 @@ def _reserve_profile_budget(state, profile, amount):
     if reservation["enabled"] and amount_value > 0:
         entry = _ensure_profile_budget(state, reservation["profile"])
         entry["reserved"] = round(max(0.0, _safe_money(entry.get("reserved")) + amount_value), 2)
+        logger.info(
+            "TEMP session_budget_remaining profile=%s reserved=%s remaining_snapshot=%s",
+            reservation["profile"],
+            entry["reserved"],
+            max(0.0, _safe_money(snapshot.get("remaining_budget")) - amount_value),
+        )
     return True, None, reservation
 
 
@@ -1405,6 +1429,13 @@ def _settle_profile_budget_reservation(state, reservation, profit):
         return
     entry = _ensure_profile_budget(state, profile_key)
     entry["realized_pnl"] = round(_safe_money(entry.get("realized_pnl")) + _safe_money(profit), 2)
+    logger.info(
+        "TEMP session_profit_loss_updated profile=%s profit=%s realized_pnl=%s reserved=%s",
+        profile_key,
+        _safe_money(profit),
+        entry.get("realized_pnl"),
+        entry.get("reserved"),
+    )
     reservation["settled"] = True
 
 
@@ -2545,6 +2576,20 @@ def _get_effective_state_balance(state):
             return _effective_trade_balance(last_known_trade_balance + local_adjustment)
         return _effective_trade_balance(last_known_trade_balance)
     return current_balance
+
+
+def _get_live_account_balance(state):
+    """Return the last Deriv account balance without local session adjustments."""
+    if not isinstance(state, dict):
+        return 0.0
+    last_live_balance = _safe_money(state.get("last_live_balance", 0.0))
+    if _safe_money(state.get("last_live_balance_updated_at", 0.0)) > 0.0 or last_live_balance > 0.0:
+        return _effective_trade_balance(last_live_balance)
+    current_balance = _safe_money(state.get("balance", 0.0))
+    if _safe_money(state.get("balance_updated_at", 0.0)) > 0.0 or current_balance > 0.0:
+        return _effective_trade_balance(current_balance)
+    last_known_trade_balance = _safe_money(state.get("last_known_trade_balance", 0.0))
+    return _effective_trade_balance(last_known_trade_balance)
 
 
 def _estimate_profile_open_budget_exposure(state, profile):
@@ -5193,6 +5238,26 @@ def _get_mutant_auto_stale_pending_window(auto, ntt):
     return None
 
 
+def _handle_mutant_auto_buy_failed(state, meta, message):
+    if not isinstance(meta, dict):
+        return False
+    if str(meta.get("profile") or "").upper() != "NTT":
+        return False
+    if not str(meta.get("mode") or "").startswith("MUTANT_AUTO"):
+        return False
+    ntt = _ensure_ntt_state(state)
+    auto = clear_mutant_auto_pending(ensure_mutant_auto_state(ntt))
+    auto["last_decision"] = "WAIT"
+    auto["last_reason"] = str(message or "Mutant AUTO buy failed before confirmation.")
+    ntt["auto_both_enabled"] = bool(auto.get("enabled"))
+    logger.info(
+        "TEMP mutant_auto_lock_released buy_failed signal_id=%s message=%s",
+        auto.get("last_signal_id"),
+        message,
+    )
+    return True
+
+
 def _run_ntt_auto_both(client_id, state):
     ntt = _ensure_ntt_state(state)
     auto = ensure_mutant_auto_state(ntt)
@@ -5216,19 +5281,32 @@ def _run_ntt_auto_both(client_id, state):
         auto["request_started_at"] = 0.0
         auto["last_decision"] = "WAITING"
         auto["last_reason"] = f"Mutant AUTO waiting for {count} active Mutant trade{'s' if count != 1 else ''} to finish."
+        logger.info(
+            "[%s] TEMP mutant_auto_buy_blocked_due_lock active_entries=%s signal_id=%s",
+            client_id,
+            count,
+            auto.get("active_signal_id") or auto.get("last_signal_id"),
+        )
         return False
 
     pending_contract_id = str(auto.get("pending_contract_id") or "").strip()
     if bool(auto.get("request_in_flight")):
         started_at = float(auto.get("request_started_at", 0.0) or 0.0)
-        if started_at > 0.0 and (now_ts - started_at) >= 3.0:
-            clear_mutant_auto_pending(auto)
-            auto["last_decision"] = "REARMED"
-            auto["last_reason"] = "Mutant AUTO buy confirmation took too long. Re-arming now."
-        else:
-            auto["last_decision"] = "WAITING"
-            auto["last_reason"] = "Mutant AUTO sent a trade and is waiting for Deriv to confirm it."
-            return False
+        elapsed = round(max(0.0, now_ts - started_at), 2) if started_at > 0.0 else 0.0
+        auto["execution_lock"] = True
+        auto["last_decision"] = "WAITING"
+        auto["last_reason"] = (
+            "Mutant AUTO sent a trade and is waiting for Deriv to confirm it. "
+            "Execution lock is holding to prevent a duplicate same-stake entry."
+        )
+        logger.info(
+            "[%s] TEMP mutant_auto_buy_blocked_due_lock request_in_flight=True elapsed=%s signal_id=%s stake=%s",
+            client_id,
+            elapsed,
+            auto.get("active_signal_id") or auto.get("last_signal_id"),
+            auto.get("active_stake"),
+        )
+        return False
     elif pending_contract_id:
         stale_window = _get_mutant_auto_stale_pending_window(auto, ntt)
         started_at = float(auto.get("last_started_at", 0.0) or 0.0)
@@ -5237,9 +5315,25 @@ def _run_ntt_auto_both(client_id, state):
             auto["last_decision"] = "REARMED"
             auto["last_reason"] = "Mutant AUTO cleared a stale pending trade and is re-arming now."
         else:
+            auto["execution_lock"] = True
             auto["last_decision"] = "WAITING"
             auto["last_reason"] = "Mutant AUTO is waiting for the current Mutant trade to settle."
+            logger.info(
+                "[%s] TEMP mutant_auto_buy_blocked_due_lock pending_contract_id=%s signal_id=%s",
+                client_id,
+                pending_contract_id,
+                auto.get("active_signal_id") or auto.get("last_signal_id"),
+            )
             return False
+    elif bool(auto.get("execution_lock")):
+        auto["last_decision"] = "WAITING"
+        auto["last_reason"] = "Mutant AUTO execution lock is active until the previous cycle is safely released."
+        logger.info(
+            "[%s] TEMP mutant_auto_buy_blocked_due_lock orphan_lock=True signal_id=%s",
+            client_id,
+            auto.get("active_signal_id") or auto.get("last_signal_id"),
+        )
+        return False
 
     symbol = str(state.get("current_symbol") or "R_25").upper()
     chosen_side = str(auto.get("selected_side") or "TOUCH").strip().upper()
@@ -5252,6 +5346,23 @@ def _run_ntt_auto_both(client_id, state):
     mode_label = str(trade_plan.get("mode_label") or mutant_auto_mode_label(auto))
     duration, duration_unit = _get_ntt_side_duration(ntt, chosen_side)
     barrier_value = _format_ntt_barrier(auto.get("barrier", "+0.12"), chosen_side, duration_unit)
+    try:
+        auto["entry_cycle_id"] = max(0, int(auto.get("entry_cycle_id", 0) or 0)) + 1
+    except Exception:
+        auto["entry_cycle_id"] = 1
+    signal_id = (
+        f"MUTANT_AUTO:{auto.get('entry_cycle_id')}:{symbol}:{chosen_side}:"
+        f"{barrier_value}:{trade_plan.get('mode') or 'BASE'}:"
+        f"{int(trade_plan.get('step_index') or 0)}:{stake:.2f}"
+    )
+    logger.info(
+        "[%s] TEMP mutant_auto_signal_detected signal_id=%s stake=%s mode=%s execution_lock=%s",
+        client_id,
+        signal_id,
+        stake,
+        mode_label,
+        bool(auto.get("execution_lock") or auto.get("request_in_flight") or auto.get("pending_contract_id")),
+    )
     begin_mutant_auto_request(
         auto,
         side=chosen_side,
@@ -5260,10 +5371,18 @@ def _run_ntt_auto_both(client_id, state):
         started_at=now_ts,
         step_index=trade_plan.get("step_index"),
         next_loss_stake=trade_plan.get("next_loss_stake"),
+        signal_id=signal_id,
         reason=(
             f"Mutant AUTO is sending {chosen_side.replace('_', ' ')} on {symbol} at {barrier_value} "
             f"using {mode_label} stake {stake:.2f}."
         ),
+    )
+    logger.info(
+        "[%s] TEMP mutant_auto_buy_requested signal_id=%s execution_lock=%s stake=%s",
+        client_id,
+        signal_id,
+        bool(auto.get("execution_lock")),
+        stake,
     )
 
     ok, msg = _send_ntt_trade(
@@ -5286,11 +5405,19 @@ def _run_ntt_auto_both(client_id, state):
             "auto_next_loss_stake": round(float(trade_plan.get("next_loss_stake") or 0.0), 2),
             "auto_stop_on_win": bool(trade_plan.get("stop_on_win")),
             "auto_stop_on_loss": bool(trade_plan.get("stop_on_loss")),
+            "auto_signal_id": signal_id,
         },
         emit_balance=False,
     )
     if not ok:
+        logger.info(
+            "[%s] TEMP mutant_auto_buy_failed signal_id=%s message=%s",
+            client_id,
+            signal_id,
+            msg,
+        )
         clear_mutant_auto_pending(auto)
+        logger.info("[%s] TEMP mutant_auto_lock_released signal_id=%s reason=send_failed", client_id, signal_id)
         auto["last_decision"] = "WAIT"
         auto["last_reason"] = str(msg or "Mutant AUTO could not send the next trade.")
         return False
@@ -5301,6 +5428,7 @@ def _run_ntt_auto_both(client_id, state):
         symbol=symbol,
         stake=stake,
         started_at=now_ts,
+        signal_id=signal_id,
         reason=(
             f"Mutant AUTO sent {chosen_side.replace('_', ' ')} on {symbol} at {barrier_value} "
             f"using {mode_label} stake {stake:.2f}."
@@ -13312,6 +13440,11 @@ def handle_on_message(client_id, ws, message, expected_nonce):
         if "error" in data:
             if _resolve_proposal_waiter(state, req_id, proposal=None, error=(data.get("error") or {}).get("message", "Quote error")):
                 return
+            msg = data["error"].get("message", "Unknown API Error")
+            if (echo_req or {}).get("authorize") is not None:
+                state["ws_connected"] = False
+                state["ws_authorize_deadline_at"] = 0.0
+                logger.warning("[%s] TEMP authorize_failure message=%s", client_id, msg)
             failed_buy_meta = None
             try:
                 _seqvix_jokerjoe_handle_buy_error(state, req_id)
@@ -13325,11 +13458,14 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 _emit_balance_payload(client_id, state)
             except Exception:
                 pass
-            msg = data["error"].get("message", "Unknown API Error")
             try:
                 handle_auto_session_buy_failed(state, failed_buy_meta, msg)
             except Exception:
                 pass
+            try:
+                _handle_mutant_auto_buy_failed(state, failed_buy_meta, msg)
+            except Exception:
+                logger.exception("[%s] TEMP mutant_auto_buy_failed_handler_error", client_id)
             sell_req_cid = None
             try:
                 sell_req_cid = (echo_req or {}).get("sell")
@@ -13383,10 +13519,10 @@ def handle_on_message(client_id, ws, message, expected_nonce):
 
             state["loginid"] = loginid
             state["balance"] = balance
+            state["last_live_balance"] = balance
             if balance > 0.0:
-                state["last_live_balance"] = balance
                 state["last_known_trade_balance"] = balance
-                state["last_live_balance_updated_at"] = time.time()
+            state["last_live_balance_updated_at"] = time.time()
             state["local_balance_adjustment"] = 0.0
             state["balance_updated_at"] = time.time()
 
@@ -13394,12 +13530,14 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 state["session_start_balance"] = balance
 
             logger.info(f"[{client_id}] ✅ Authorized: {loginid} Balance={balance}")
+            logger.info("[%s] TEMP authorize_success loginid=%s live_account_balance=%s", client_id, loginid, balance)
 
             socketio.emit("connection_status", {
                 "connected": True,
                 "loginid": loginid,
                 **_build_balance_payload(state),
             }, room=client_id)
+            logger.info("[%s] TEMP connected_state_emitted", client_id)
 
             _emit_balance_payload(client_id, state)
             emit_profile_snapshot(client_id)
@@ -13421,12 +13559,13 @@ def handle_on_message(client_id, ws, message, expected_nonce):
             try:
                 balance = float(data["balance"]["balance"])
                 state["balance"] = balance
+                state["last_live_balance"] = balance
                 if balance > 0.0:
-                    state["last_live_balance"] = balance
                     state["last_known_trade_balance"] = balance
-                    state["last_live_balance_updated_at"] = time.time()
+                state["last_live_balance_updated_at"] = time.time()
                 state["local_balance_adjustment"] = 0.0
                 state["balance_updated_at"] = time.time()
+                logger.info("[%s] TEMP live_account_balance_received balance=%s", client_id, balance)
                 _emit_balance_payload(client_id, state)
                 send_stats_update(client_id)
             except Exception:
@@ -13557,6 +13696,13 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                                     f"Mutant AUTO live {str(meta.get('type') or '').replace('_', ' ')} "
                                     f"trade is running on {meta.get('symbol') or state.get('current_symbol') or 'the current market'}."
                                 ),
+                            )
+                            logger.info(
+                                "[%s] TEMP mutant_auto_buy_confirmed signal_id=%s contract_id=%s stake=%s",
+                                client_id,
+                                (meta or {}).get("auto_signal_id") or auto.get("active_signal_id") or auto.get("last_signal_id"),
+                                contract_id,
+                                auto.get("active_stake"),
                             )
                             ntt["auto_both_enabled"] = bool(auto.get("enabled"))
                 except Exception:
@@ -13981,13 +14127,21 @@ def process_contract(client_id, contract):
             if str((meta or {}).get("mode") or "").startswith("MUTANT_AUTO"):
                 try:
                     ntt = _ensure_ntt_state(state)
-                    progress_mutant_auto_after_result(
+                    auto_progress = progress_mutant_auto_after_result(
                         ntt,
                         won=profit > 0,
                         profit=profit,
                         side=str(entry.get("type") or (meta or {}).get("type") or "").upper(),
                         contract_id=contract_id,
                         contract_meta=meta,
+                    )
+                    logger.info(
+                        "[%s] TEMP mutant_auto_lock_released after_settlement signal_id=%s contract_id=%s result=%s next_calculated_stake=%s",
+                        client_id,
+                        (meta or {}).get("auto_signal_id"),
+                        contract_id,
+                        "WIN" if profit > 0 else "LOSS",
+                        (auto_progress or {}).get("next_stake"),
                     )
                     ntt["auto_both_enabled"] = bool(ensure_mutant_auto_state(ntt).get("enabled"))
                 except Exception:
@@ -14121,6 +14275,7 @@ def handle_on_open(client_id, ws, expected_nonce):
         return
 
     logger.info(f"[{client_id}] 🔌 WebSocket transport connected")
+    logger.info("[%s] TEMP deriv_websocket_open nonce=%s", client_id, expected_nonce)
     state["ws_transport_connected"] = True
     state["ws_connected"] = False  # IMPORTANT: not authorized yet
     state["ws_last_message_at"] = time.time()
@@ -14129,7 +14284,14 @@ def handle_on_open(client_id, ws, expected_nonce):
 
     api_token = state.get("api_token")
     if api_token:
-        ws.send(json.dumps({"authorize": api_token}))
+        try:
+            logger.info("[%s] TEMP authorize_sent token_present=True nonce=%s", client_id, expected_nonce)
+            ws.send(json.dumps({"authorize": api_token}))
+        except Exception as exc:
+            logger.exception("[%s] TEMP authorize_failure send_exception=%s", client_id, exc)
+            socketio.emit("api_error", {"message": f"Authorize failed: {exc}"}, room=client_id)
+    else:
+        logger.warning("[%s] TEMP authorize_failure token_present=False", client_id)
 
 
 def handle_on_error(client_id, ws, error, expected_nonce):
@@ -14147,6 +14309,7 @@ def handle_on_error(client_id, ws, error, expected_nonce):
     except Exception:
         pass
     socketio.emit("api_error", {"message": str(error)}, room=client_id)
+    logger.info("[%s] TEMP connect_error_emitted message=%s", client_id, error)
 
 
 def _schedule_ws_reconnect(client_id, expected_nonce, delay_sec=2.0):
@@ -14227,6 +14390,7 @@ def start_ws_for_client(client_id):
     # bump nonce -> invalidates older WS callbacks
     state["ws_nonce"] = state.get("ws_nonce", 0) + 1
     expected_nonce = state["ws_nonce"]
+    logger.info("[%s] TEMP deriv_websocket_thread_starting nonce=%s", client_id, expected_nonce)
 
     # stop old ws/thread
     try:
@@ -14249,6 +14413,7 @@ def start_ws_for_client(client_id):
     state["ws_last_authorized_at"] = 0.0
     state["ws_connect_started_at"] = time.time()
     state["ws_authorize_deadline_at"] = 0.0
+    state["ws_reconnect_pending"] = False
     _clear_stale_ws_subscription_tracking(client_id, state, f"ws_start_nonce_{expected_nonce}")
 
     def _on_message(ws, message, cid=client_id, nonce=expected_nonce):
@@ -14278,6 +14443,7 @@ def start_ws_for_client(client_id):
     )
 
     state["ws"] = ws_app
+    logger.info("[%s] TEMP deriv_websocket_thread_started nonce=%s", client_id, expected_nonce)
 
     # run until closed
     try:
@@ -14285,8 +14451,8 @@ def start_ws_for_client(client_id):
             ping_interval=max(0.0, float(DERIV_WS_PING_INTERVAL_SEC)),
             ping_timeout=max(1.0, float(DERIV_WS_PING_TIMEOUT_SEC)),
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.exception("[%s] TEMP deriv_websocket_run_exception nonce=%s error=%s", client_id, expected_nonce, exc)
 
 
 # ---------------- BOT API ROUTES ---------------- #
@@ -14296,15 +14462,29 @@ def set_token():
         return jsonify({"error": "Unauthorized"}), 403
 
     cid, state = get_client_state()
-    token = (request.json or {}).get("token", "")
+    data = request.get_json(silent=True) or {}
+    token = str(data.get("token", "") or "").strip()
+    logger.info("[%s] TEMP connect_request_received token_present=%s", cid, bool(token))
+    if not token:
+        logger.warning("[%s] TEMP connect_error_emitted message=missing_token", cid)
+        return jsonify({"status": "error", "message": "API token is required"}), 400
 
     state["api_token"] = token
     state["loginid"] = "UNKNOWN"
     state["session_start_balance"] = None
+    state["ws_connected"] = False
+    state["ws_transport_connected"] = False
+    state["ws_last_message_at"] = 0.0
+    state["ws_last_authorized_at"] = 0.0
+    state["ws_connect_started_at"] = 0.0
+    state["ws_authorize_deadline_at"] = 0.0
+    state["ws_reconnect_pending"] = False
+    state["ws_reconnect_attempts"] = 0
 
     # start WS but avoid "2 instances" per browser session
     t = state.get("ws_thread")
     if t and t.is_alive():
+        logger.info("[%s] TEMP old_session_socket_cleared alive_thread=True", cid)
         try:
             state["ws_stop_event"].set()
         except Exception:
@@ -14314,10 +14494,13 @@ def set_token():
                 state["ws"].close()
         except Exception:
             pass
+    else:
+        logger.info("[%s] TEMP old_session_socket_cleared alive_thread=False", cid)
 
     t = threading.Thread(target=start_ws_for_client, args=(cid,), daemon=True)
     state["ws_thread"] = t
     t.start()
+    logger.info("[%s] TEMP deriv_websocket_thread_started_from_connect", cid)
 
     return jsonify({"status": "connecting"})
 
@@ -14332,13 +14515,24 @@ def api_connection_status():
     connected = bool(state.get("ws_connected")) and not _is_ws_stale(state)
     if not connected and state.get("ws_connected"):
         _mark_ws_unhealthy_and_reconnect(_cid, state, "Deriv connection went stale. Reconnecting now...", emit_error=False)
-    return jsonify({
+    payload = {
         "connected": connected,
         "loginid": state.get("loginid", "UNKNOWN"),
         "has_token": bool(str(state.get("api_token", "") or "").strip()),
         "license_context": get_user_license_context(),
         **_build_balance_payload(state),
-    })
+    }
+    budget = payload.get("active_profile_budget") or {}
+    logger.info(
+        "[%s] TEMP reconnect_restore_values connected=%s live_account=%s display=%s budget_remaining=%s session_pnl=%s",
+        _cid,
+        connected,
+        payload.get("account_balance"),
+        payload.get("display_balance"),
+        budget.get("remaining_budget"),
+        budget.get("realized_pnl"),
+    )
+    return jsonify(payload)
 
 
 @app.route("/profile_budget", methods=["POST"])
@@ -14371,7 +14565,16 @@ def profile_budget_route():
         entry["amount"] = round(budget_amount, 2)
         entry["realized_pnl"] = 0.0
         entry["reserved"] = _estimate_profile_open_budget_exposure(state, profile)
-    message = f"{profile} budget set to {_format_state_money(state, entry['amount'])}"
+        message = f"{profile} budget set to {_format_state_money(state, entry['amount'])}"
+    logger.info(
+        "[%s] TEMP session_budget_set profile=%s configured=%s remaining=%s realized_pnl=%s live_account=%s",
+        cid,
+        profile,
+        entry.get("amount"),
+        _profile_budget_snapshot(state, profile).get("remaining_budget"),
+        entry.get("realized_pnl"),
+        _get_live_account_balance(state),
+    )
 
     payload = {
         "status": "success",

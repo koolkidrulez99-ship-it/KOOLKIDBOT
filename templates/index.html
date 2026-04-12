@@ -1758,6 +1758,8 @@ let profileDrafts = {};
 let profileDraftSaveTimer = null;
 let apiConnectPollTimer = null;
 let apiConnectPendingUntil = 0;
+let apiConnectSubmitting = false;
+let apiConnectRequestSeq = 0;
 const API_CONNECT_POLL_INTERVAL_MS = 2000;
 const API_CONNECT_POLL_MAX_ATTEMPTS = 8;
 const TICK_UI_THROTTLE_MS = 300;
@@ -2247,7 +2249,8 @@ window.saveProfileBudget = saveProfileBudget;
 
 function applyKnownApiBalance(data, syncMilestoneAnchor){
     rememberProfileBudgetPayload(data || {});
-    const balance = Number(data && data.balance);
+    const accountBalanceRaw = Number(data && (data.account_balance ?? data.balance));
+    const balance = Number.isFinite(accountBalanceRaw) ? accountBalanceRaw : Number(data && data.balance);
     const displayBalanceRaw = Number(data && data.display_balance);
     const startBalance = Number(data && data.session_start_balance);
     const budgetSnapshot = getActiveProfileBudgetSnapshot(data || {});
@@ -2262,6 +2265,14 @@ function applyKnownApiBalance(data, syncMilestoneAnchor){
         : (budgetSnapshot && Number.isFinite(Number(budgetSnapshot.display_balance))
             ? Number(budgetSnapshot.display_balance)
             : balance);
+    console.info("TEMP displayed_total_balance_computed", {
+        live_account_balance: Number.isFinite(balance) ? balance : null,
+        displayed_balance: Number.isFinite(shownBalance) ? shownBalance : null,
+        total_balance: Number.isFinite(totalBalance) ? totalBalance : null,
+        budget_enabled: budgetEnabled,
+        session_budget_remaining: budgetSnapshot ? budgetSnapshot.remaining_budget : null,
+        session_profit_loss: budgetSnapshot ? budgetSnapshot.realized_pnl : null,
+    });
 
     if(Number.isFinite(shownBalance) && balanceDisplay){
         const balanceText = formatBalanceCurrencyAmount(shownBalance, data || budgetSnapshot);
@@ -2570,7 +2581,6 @@ function applyMonthlyLicenseGate(profile){
         [
             "autoBtn",
             "halfAutoBtnKoolkid",
-            "under3SplitBtnKoolkid",
             "autoDollarBtnKoolkid",
             "dual2xOver2Under1BtnKoolkid",
             "dual2xOver8Under7BtnKoolkid",
@@ -5511,28 +5521,50 @@ async function setProfile(profile){
 }
 
 async function connect(){
+    if(apiConnectSubmitting){
+        console.info("TEMP connect_clicked_blocked_already_submitting");
+        showToast("API connection is already starting...", "info");
+        return;
+    }
     const tokenInput = document.getElementById("token");
     const token = tokenInput ? tokenInput.value : "";
     if(!token.trim()){
         showToast("Enter an API token first", "error");
         return;
     }
+    const connectRequestId = ++apiConnectRequestSeq;
+    apiConnectSubmitting = true;
+    console.info("TEMP connect_clicked", { request_id: connectRequestId, token_present: !!token.trim() });
     apiConnectPendingUntil = Date.now() + 15000;
     updateApiConnectionUi("pending", "CONNECTING API...");
     apiStatus.innerText = "Connecting...";
     apiStatus.className = "blue";
-    const res = await fetch("/set_token", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token})});
-    if(tokenInput) tokenInput.value = "";
-    if(!res.ok){
+    try{
+        console.info("TEMP api_connect_requested", { request_id: connectRequestId });
+        const res = await fetch("/set_token", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token})});
+        const data = await res.json().catch(()=>({}));
+        if(tokenInput) tokenInput.value = "";
+        if(!res.ok){
+            apiConnectPendingUntil = 0;
+            updateApiConnectionUi("disconnected");
+            apiStatus.innerText = "Not Connected";
+            apiStatus.className = "red";
+            showToast(data.message || data.error || "Failed to start API connection", "error");
+            console.info("TEMP connect_error_emitted", { request_id: connectRequestId, status: res.status, data });
+            return;
+        }
+        startApiConnectPolling();
+        setTimeout(() => { refreshApiConnectionState(true).catch(() => {}); }, 150);
+    }catch(err){
         apiConnectPendingUntil = 0;
         updateApiConnectionUi("disconnected");
         apiStatus.innerText = "Not Connected";
         apiStatus.className = "red";
-        showToast("Failed to start API connection", "error");
-        return;
+        console.error("TEMP connect_error_emitted", { request_id: connectRequestId, error: err });
+        showToast((err && err.message) ? err.message : "Failed to start API connection", "error");
+    }finally{
+        apiConnectSubmitting = false;
     }
-    startApiConnectPolling();
-    setTimeout(() => { refreshApiConnectionState(true).catch(() => {}); }, 150);
 }
 
 async function disconnect(){

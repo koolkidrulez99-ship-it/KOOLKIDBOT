@@ -46,6 +46,11 @@ def default_mutant_auto_state():
         "pending_contract_id": None,
         "request_in_flight": False,
         "request_started_at": 0.0,
+        "execution_lock": False,
+        "entry_cycle_id": 0,
+        "active_signal_id": None,
+        "last_signal_id": None,
+        "last_signal_started_at": 0.0,
         "active_side": None,
         "active_symbol": None,
         "active_stake": 0.0,
@@ -326,6 +331,14 @@ def ensure_mutant_auto_state(ntt):
     auto["pending_contract_id"] = str(auto.get("pending_contract_id") or "").strip() or None
     auto["request_in_flight"] = bool(auto.get("request_in_flight", False))
     auto["request_started_at"] = max(0.0, _safe_float(auto.get("request_started_at", 0.0), 0.0))
+    auto["execution_lock"] = bool(auto.get("execution_lock", False))
+    try:
+        auto["entry_cycle_id"] = max(0, int(auto.get("entry_cycle_id", 0) or 0))
+    except Exception:
+        auto["entry_cycle_id"] = 0
+    auto["active_signal_id"] = str(auto.get("active_signal_id") or "").strip() or None
+    auto["last_signal_id"] = str(auto.get("last_signal_id") or "").strip() or None
+    auto["last_signal_started_at"] = max(0.0, _safe_float(auto.get("last_signal_started_at", 0.0), 0.0))
     auto["active_side"] = str(auto.get("active_side") or "").strip().upper() or None
     auto["active_symbol"] = str(auto.get("active_symbol") or "").strip().upper() or None
     try:
@@ -522,6 +535,11 @@ def arm_mutant_auto(
     auto["pending_contract_id"] = None
     auto["request_in_flight"] = False
     auto["request_started_at"] = 0.0
+    auto["execution_lock"] = False
+    auto["entry_cycle_id"] = 0
+    auto["active_signal_id"] = None
+    auto["last_signal_id"] = None
+    auto["last_signal_started_at"] = 0.0
     auto["active_side"] = None
     auto["active_symbol"] = None
     auto["active_stake"] = 0.0
@@ -545,6 +563,10 @@ def stop_mutant_auto(ntt, reason=None):
     auto["pending_contract_id"] = None
     auto["request_in_flight"] = False
     auto["request_started_at"] = 0.0
+    auto["execution_lock"] = False
+    auto["active_signal_id"] = None
+    auto["last_signal_id"] = None
+    auto["last_signal_started_at"] = 0.0
     auto["active_side"] = None
     auto["active_symbol"] = None
     auto["active_stake"] = 0.0
@@ -559,12 +581,16 @@ def stop_mutant_auto(ntt, reason=None):
     return auto
 
 
-def mark_mutant_auto_trade_sent(auto, *, contract_id=None, side=None, symbol=None, stake=None, reason=None, started_at=0.0):
+def mark_mutant_auto_trade_sent(auto, *, contract_id=None, side=None, symbol=None, stake=None, reason=None, started_at=0.0, signal_id=None):
     safe = ensure_mutant_auto_state({"auto": auto})
     safe["pending_contract_id"] = str(contract_id or "").strip() or None
     safe["request_in_flight"] = True
     safe["request_started_at"] = max(0.0, _safe_float(started_at, safe.get("last_started_at", 0.0)))
     safe["last_started_at"] = max(0.0, _safe_float(started_at, safe.get("last_started_at", 0.0)))
+    safe["execution_lock"] = True
+    safe["active_signal_id"] = str(signal_id or safe.get("active_signal_id") or "").strip() or None
+    safe["last_signal_id"] = safe["active_signal_id"] or safe.get("last_signal_id")
+    safe["last_signal_started_at"] = safe["request_started_at"]
     safe["active_side"] = str(side or "").strip().upper() or None
     safe["active_symbol"] = str(symbol or "").strip().upper() or None
     safe["active_stake"] = round(max(0.0, _safe_float(stake, 0.0)), 2)
@@ -578,7 +604,7 @@ def mark_mutant_auto_trade_sent(auto, *, contract_id=None, side=None, symbol=Non
     return safe
 
 
-def begin_mutant_auto_request(auto, *, side=None, symbol=None, stake=None, reason=None, started_at=0.0, step_index=None, next_loss_stake=None):
+def begin_mutant_auto_request(auto, *, side=None, symbol=None, stake=None, reason=None, started_at=0.0, step_index=None, next_loss_stake=None, signal_id=None):
     safe = ensure_mutant_auto_state({"auto": auto})
     started_ts = max(0.0, _safe_float(started_at, safe.get("last_started_at", 0.0)))
     trade_plan = build_mutant_auto_trade_plan(safe)
@@ -600,6 +626,10 @@ def begin_mutant_auto_request(auto, *, side=None, symbol=None, stake=None, reaso
     safe["request_in_flight"] = True
     safe["request_started_at"] = started_ts
     safe["last_started_at"] = started_ts
+    safe["execution_lock"] = True
+    safe["active_signal_id"] = str(signal_id or safe.get("active_signal_id") or "").strip() or None
+    safe["last_signal_id"] = safe["active_signal_id"] or safe.get("last_signal_id")
+    safe["last_signal_started_at"] = started_ts
     safe["active_side"] = str(side or safe.get("active_side") or "").strip().upper() or None
     safe["active_symbol"] = str(symbol or safe.get("active_symbol") or "").strip().upper() or None
     safe["active_stake"] = round(max(0.0, _safe_float(stake, 0.0)), 2)
@@ -624,6 +654,8 @@ def clear_mutant_auto_pending(auto, *, clear_plan=True):
     safe["pending_contract_id"] = None
     safe["request_in_flight"] = False
     safe["request_started_at"] = 0.0
+    safe["execution_lock"] = False
+    safe["active_signal_id"] = None
     safe["active_side"] = None
     safe["active_symbol"] = None
     safe["active_stake"] = 0.0
@@ -651,6 +683,7 @@ def schedule_mutant_auto_settlement(
     safe["pending_contract_id"] = None
     safe["request_in_flight"] = False
     safe["request_started_at"] = 0.0
+    safe["execution_lock"] = True
     safe["trade_phase"] = MUTANT_AUTO_PHASE_SETTLING
     safe["pending_settlement"] = _normalize_pending_settlement(
         {
@@ -811,6 +844,7 @@ def confirm_mutant_auto_trade(auto, *, contract_id=None, contract_meta=None, rea
     safe["pending_contract_id"] = safe_contract_id
     safe["request_in_flight"] = False
     safe["request_started_at"] = 0.0
+    safe["execution_lock"] = True
     safe["active_side"] = str(plan.get("selected_side") or safe.get("selected_side") or "TOUCH").strip().upper() or None
     safe["active_symbol"] = str(plan.get("symbol") or safe.get("active_symbol") or "").strip().upper() or None
     safe["active_stake"] = round(max(0.0, _safe_float(plan.get("current_stake", 0.0), 0.0)), 2)
@@ -832,6 +866,7 @@ def mark_mutant_auto_unknown(auto, *, reason=None):
     safe = ensure_mutant_auto_state({"auto": auto})
     safe["request_in_flight"] = False
     safe["request_started_at"] = 0.0
+    safe["execution_lock"] = True
     safe["trade_phase"] = MUTANT_AUTO_PHASE_UNKNOWN
     safe["last_decision"] = "WAITING"
     if reason is not None:
@@ -866,6 +901,8 @@ def progress_mutant_auto_after_result(ntt, *, won, profit, side=None, contract_i
     auto["pending_contract_id"] = None
     auto["request_in_flight"] = False
     auto["request_started_at"] = 0.0
+    auto["execution_lock"] = False
+    auto["active_signal_id"] = None
     auto["active_side"] = None
     auto["active_symbol"] = None
     auto["active_stake"] = 0.0
@@ -949,7 +986,7 @@ def serialize_mutant_auto(auto, *, active_count=0):
     active_plan = _normalize_active_plan(safe.get("active_plan"))
     if not enabled:
         label = "OFF"
-    elif active_count > 0 or pending_contract_id or request_in_flight or pending_settlement:
+    elif active_count > 0 or pending_contract_id or request_in_flight or pending_settlement or bool(safe.get("execution_lock", False)):
         label = "RUNNING"
     else:
         label = "ARMED"
@@ -966,6 +1003,9 @@ def serialize_mutant_auto(auto, *, active_count=0):
         "current_stake": round(current_stake, 2),
         "pending_contract_id": pending_contract_id or None,
         "request_in_flight": request_in_flight,
+        "execution_lock": bool(safe.get("execution_lock", False)),
+        "active_signal_id": safe.get("active_signal_id"),
+        "last_signal_id": safe.get("last_signal_id"),
         "trade_phase": safe.get("trade_phase", MUTANT_AUTO_PHASE_IDLE),
         "pending_settlement_ready_at": float((pending_settlement or {}).get("ready_at") or 0.0),
         "active_side": safe.get("active_side"),
