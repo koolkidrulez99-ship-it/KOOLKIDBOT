@@ -127,6 +127,44 @@
     try { data = await res.json(); } catch (_e) {}
     return { ok: res.ok, data };
   }
+  function guardMartha(action, proceed) {
+    if (window.MarthaAI && typeof window.MarthaAI.guardAction === "function") {
+      return window.MarthaAI.guardAction(action || {}, proceed);
+    }
+    return proceed();
+  }
+  function isMarthaBlocked(result) {
+    return !!(result && (result.status === "blocked" || (result.data && result.data.status === "blocked")));
+  }
+  function buildMarthaTradeAction(side, form) {
+    const s = String(side || "TOUCH").toUpperCase();
+    const both = s === "BOTH";
+    const noTouch = s === "NO_TOUCH";
+    const stake = both
+      ? (Number(form.touch_stake || 0) + Number(form.no_touch_stake || 0))
+      : (noTouch ? form.no_touch_stake : form.touch_stake);
+    const barrier = both
+      ? `${form.touch_barrier || ""}/${form.no_touch_barrier || ""}`
+      : (noTouch ? form.no_touch_barrier : form.touch_barrier);
+    const duration = form.use_shared_duration
+      ? form.duration
+      : (noTouch ? form.no_touch_duration : form.touch_duration);
+    const durationUnit = form.use_shared_duration
+      ? form.duration_unit
+      : (noTouch ? form.no_touch_duration_unit : form.touch_duration_unit);
+    return {
+      profile: PROFILE,
+      source: "ntt_trade",
+      type: s,
+      label: `Mutant ${s}`,
+      symbol: form.symbol || currentSymbol(),
+      stake,
+      barrier,
+      duration,
+      duration_unit: durationUnit || "t",
+      batch_count: both ? 2 : 1,
+    };
+  }
   async function getJSON(url) {
     const res = await fetch(url, { method: "GET", cache: "no-store" });
     let data = {};
@@ -1357,12 +1395,19 @@
   }
   async function sendTrade(side) {
     if (state.tradeRequestInFlight) return false;
-    state.tradeRequestInFlight = true;
-    state.tradeRequestSide = side;
     const body = Object.assign(readForm(), { side: side });
-    const { ok, data } = await postJSON("/ntt_trade", body);
-    state.tradeRequestInFlight = false;
-    state.tradeRequestSide = null;
+    const result = await guardMartha(buildMarthaTradeAction(side, body), async () => {
+      state.tradeRequestInFlight = true;
+      state.tradeRequestSide = side;
+      try {
+        return await postJSON("/ntt_trade", body);
+      } finally {
+        state.tradeRequestInFlight = false;
+        state.tradeRequestSide = null;
+      }
+    });
+    if (isMarthaBlocked(result)) return false;
+    const { ok, data } = result || {};
     renderPayload((data && data.payload) || state.lastPayload || {}, { forceForm: false });
     if (!ok) {
       toast((data && (data.message || data.error)) || `Failed to send ${side}`, "error");

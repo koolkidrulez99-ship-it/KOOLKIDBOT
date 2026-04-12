@@ -55,6 +55,16 @@
     }
   }
 
+  function guardMartha(action, proceed){
+    if(window.MarthaAI && typeof window.MarthaAI.guardAction === "function"){
+      return window.MarthaAI.guardAction(action || {}, proceed);
+    }
+    return proceed();
+  }
+  function isMarthaBlocked(result){
+    return !!(result && (result.status === "blocked" || (result.data && result.data.status === "blocked")));
+  }
+
   function prettySignalStyles(signalEl, signalState, tradeDirection){
     if(!signalEl) return;
     const state = (signalState || "WAIT").toUpperCase();
@@ -267,7 +277,17 @@
         stake: stakeVal,
         duration_ticks: durationTicks
       };
-      const data = await postJSON("/human_rf_trade", payload);
+      const data = await guardMartha({
+        profile: PROFILE,
+        source: "human_rf_trade",
+        type: payload.direction,
+        label: `HUMAN ${payload.direction}`,
+        stake: stakeVal,
+        duration: durationTicks,
+        duration_unit: "t",
+        batch_count: 1,
+      }, ()=>postJSON("/human_rf_trade", payload));
+      if(isMarthaBlocked(data)) return;
       if(typeof showToast === "function"){
         const d = (data && data.signal && data.signal.direction) ? data.signal.direction : (direction || "AUTO");
         showToast(`HUMAN ${d} trade sent`, "success");
@@ -440,11 +460,25 @@
       const riseStake = dir === "RISE" ? bigStake : smallStake;
       const fallStake = dir === "FALL" ? bigStake : smallStake;
 
-      const r = await postJSON("/human_formula_x", {
+      const formulaPayload = {
         rise_stake: riseStake,
         fall_stake: fallStake,
         duration_ticks: durationTicks,
-      });
+      };
+      const r = await guardMartha({
+        profile: PROFILE,
+        source: "human_formula_x",
+        type: dir || "FORMULA_X",
+        label: `FormulaX ${dir}`,
+        stake: stakeVal,
+        duration: durationTicks,
+        duration_unit: "t",
+        batch_count: 2,
+      }, ()=>postJSON("/human_formula_x", formulaPayload));
+      if(isMarthaBlocked(r)){
+        fxState.active = false;
+        return;
+      }
       const ok = r && r.status === "success";
       if(typeof showToast === "function"){
         showToast(`FormulaX sent RISE ${money(riseStake)} + FALL ${money(fallStake)} (${dir} favored)`, ok ? "success" : "warn");

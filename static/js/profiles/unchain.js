@@ -177,6 +177,47 @@
     return { ok: res.ok, data };
   }
 
+  function guardMartha(action, proceed) {
+    if (window.MarthaAI && typeof window.MarthaAI.guardAction === "function") {
+      return window.MarthaAI.guardAction(action || {}, proceed);
+    }
+    return proceed();
+  }
+
+  function isMarthaBlocked(result) {
+    return !!(result && (result.status === "blocked" || (result.data && result.data.status === "blocked")));
+  }
+
+  function buildMarthaTradeAction(side, form) {
+    const s = String(side || "HIGHER").toUpperCase();
+    const both = s === "BOTH";
+    const lower = s === "LOWER";
+    const stake = both
+      ? (Number(form.higher_stake || 0) + Number(form.lower_stake || 0))
+      : (lower ? form.lower_stake : form.higher_stake);
+    const barrier = both
+      ? `${form.higher_barrier || ""}/${form.lower_barrier || ""}`
+      : (lower ? form.lower_barrier : form.higher_barrier);
+    const duration = form.use_shared_duration
+      ? form.duration
+      : (lower ? form.lower_duration : form.higher_duration);
+    const durationUnit = form.use_shared_duration
+      ? form.duration_unit
+      : (lower ? form.lower_duration_unit : form.higher_duration_unit);
+    return {
+      profile: PROFILE,
+      source: "unchain_trade",
+      type: s,
+      label: `UNCHAIN ${s}`,
+      symbol: getCurrentMarketSymbol(),
+      stake,
+      barrier,
+      duration,
+      duration_unit: durationUnit || "t",
+      batch_count: both ? 2 : 1,
+    };
+  }
+
   async function getJSON(url) {
     const res = await fetch(url, { method: "GET" });
     let data = {};
@@ -2806,10 +2847,19 @@
       return;
     }
     const form = readForm();
-    state.tradeRequestInFlight = true;
-    state.tradeRequestSide = side;
     try {
-      const r = await postJSON("/unchain_trade", Object.assign({ side }, form));
+      const body = Object.assign({ side }, form);
+      const r = await guardMartha(buildMarthaTradeAction(side, form), async () => {
+        state.tradeRequestInFlight = true;
+        state.tradeRequestSide = side;
+        try {
+          return await postJSON("/unchain_trade", body);
+        } finally {
+          state.tradeRequestInFlight = false;
+          state.tradeRequestSide = null;
+        }
+      });
+      if (isMarthaBlocked(r)) return;
       if (r.ok && r.data) {
         clearDirtyFields();
         if (r.data.payload) renderPayload(r.data.payload, { forceForm: true });
@@ -2818,9 +2868,10 @@
         toast((r.data && (r.data.message || r.data.error)) || `${side} failed`, "error");
         if (r.data && r.data.payload) renderPayload(r.data.payload);
       }
-    } finally {
+    } catch (e) {
       state.tradeRequestInFlight = false;
       state.tradeRequestSide = null;
+      toast((e && e.message) || `${side} failed`, "error");
     }
   }
 

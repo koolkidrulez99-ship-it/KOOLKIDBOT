@@ -244,6 +244,19 @@
           fireAndForget: turbo,
         }));
       }
+      if (window.MarthaAI && typeof window.MarthaAI.guardAction === "function") {
+        return window.MarthaAI.guardAction({
+          profile: PROFILE,
+          source: "manual_trade",
+          type: requestPayload.type || "TRADE",
+          label: `KOOLKID ${requestPayload.type || "TRADE"}`,
+          barrier: requestPayload.barrier,
+          symbol: requestPayload.symbol,
+          stake: requestPayload.stake,
+          duration: requestPayload.duration,
+          duration_unit: requestPayload.duration_unit || "t",
+        }, () => postJSON("/manual_trade", requestPayload));
+      }
       return postJSON("/manual_trade", requestPayload);
     };
     if (shouldQueue) {

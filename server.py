@@ -102,6 +102,7 @@ from strategies.contract_selector import (
 from strategies.higher_lower_predictor import predict_higher_lower_percentages
 from strategies.hybrid import analyze_hybrid_market_state, build_hybrid_trade_plan, get_hybrid_market
 from strategies.market_moment import infer_simulation_winner, score_market_moment
+from strategies.martha_ai_guard import evaluate_martha_auto_signal, normalize_martha_settings
 from strategies.primordial_blue import (
     analyze_primordial_blue_market_state,
     build_primordial_blue_trade_plan,
@@ -1561,6 +1562,7 @@ def _build_default_client_state():
             "confirmation_required": 2,
             "confidence_threshold": 70.0,
         },
+        "martha_ai": normalize_martha_settings({}),
         "balance": 0.0,
         "last_live_balance": 0.0,
         "last_known_trade_balance": 0.0,
@@ -11831,6 +11833,32 @@ def run_auto_trade(client_id, state):
             duration = sig.get("duration", 1)
             duration_unit = sig.get("duration_unit", "t")
             mode = sig.get("mode")
+            martha_decision = evaluate_martha_auto_signal(
+                state.get("martha_ai"),
+                active_profile,
+                sig,
+                strategy,
+                symbol=symbol,
+                stake=stake,
+                duration=duration,
+                duration_unit=duration_unit,
+            )
+            if martha_decision.get("active"):
+                try:
+                    socketio.emit("martha_ai_auto_decision", martha_decision, room=client_id)
+                except Exception:
+                    pass
+                if not martha_decision.get("approved"):
+                    logger.info(
+                        "[%s] Martha AI blocked auto signal (%s): confidence=%s threshold=%s barrier=%s mode=%s",
+                        client_id,
+                        active_profile,
+                        martha_decision.get("confidence"),
+                        martha_decision.get("threshold"),
+                        barrier,
+                        mode,
+                    )
+                    continue
 
             if active_profile == "UNCHAIN" or str(ctype).upper() == "ACCU":
                 un = (state.get("strategies") or {}).get("UNCHAIN")
@@ -14456,6 +14484,51 @@ def start_ws_for_client(client_id):
 
 
 # ---------------- BOT API ROUTES ---------------- #
+def _restart_deriv_websocket_preserve_session(client_id, state, reason="manual_restart"):
+    """
+    Restart only the Deriv websocket/token session.
+    This preserves strategy state and budgets; it is used by Martha AI's optional
+    emergency mode, not by the normal pre-trade block path.
+    """
+    if not state:
+        return False, "Session not found"
+    token = str(state.get("api_token", "") or "").strip()
+    if not token:
+        return False, "No API token is saved for this session"
+
+    logger.warning("[%s] martha_ai_emergency_websocket_restart reason=%s", client_id, reason)
+    state["loginid"] = "UNKNOWN"
+    state["ws_connected"] = False
+    state["ws_transport_connected"] = False
+    state["ws_last_message_at"] = 0.0
+    state["ws_last_authorized_at"] = 0.0
+    state["ws_connect_started_at"] = 0.0
+    state["ws_authorize_deadline_at"] = 0.0
+    state["ws_reconnect_pending"] = False
+
+    try:
+        state["ws_stop_event"].set()
+    except Exception:
+        pass
+    try:
+        ws = state.get("ws")
+        if ws:
+            ws.close()
+    except Exception:
+        logger.exception("[%s] Martha AI emergency close failed", client_id)
+
+    t = threading.Thread(target=start_ws_for_client, args=(client_id,), daemon=True)
+    state["ws_thread"] = t
+    t.start()
+    socketio.emit("connection_status", {
+        "connected": False,
+        "loginid": "UNKNOWN",
+        "has_token": True,
+        **_build_balance_payload(state),
+    }, room=client_id)
+    return True, "Martha AI emergency reconnect started"
+
+
 @app.route("/set_token", methods=["POST"])
 def set_token():
     if not login_required():
@@ -14623,6 +14696,56 @@ def disconnect():
     cid, _state = get_client_state()
     disconnect_client(cid, reason="client_disconnect", emit=True)
     return jsonify({"status": "disconnected"})
+
+
+@app.route("/martha_ai/settings", methods=["POST"])
+def martha_ai_settings():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    data = request.get_json(silent=True) or {}
+    ctx = get_user_license_context()
+    allowed = bool(
+        ctx.get("is_full_access")
+        or ctx.get("is_lifetime")
+        or str(ctx.get("license_type") or "").lower() == "admin"
+        or str(ctx.get("access") or "").lower() == "admin"
+    )
+    settings = normalize_martha_settings({
+        "enabled": bool(data.get("enabled")) and allowed,
+        "threshold": data.get("threshold"),
+        "emergency_reconnect": bool(data.get("emergency_reconnect")),
+        "updated_at": time.time(),
+    })
+    state["martha_ai"] = settings
+    logger.info(
+        "[%s] Martha AI settings synced enabled=%s threshold=%s allowed=%s",
+        cid,
+        settings.get("enabled"),
+        settings.get("threshold"),
+        allowed,
+    )
+    return jsonify({"status": "success", "allowed": allowed, "settings": settings})
+
+
+@app.route("/martha_ai/emergency_reconnect", methods=["POST"])
+def martha_ai_emergency_reconnect():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    data = request.get_json(silent=True) or {}
+    ok, message = _restart_deriv_websocket_preserve_session(
+        cid,
+        state,
+        reason=str(data.get("reason") or "martha_ai_blocked_trade"),
+    )
+    status_code = 200 if ok else 400
+    return jsonify({
+        "status": "reconnecting" if ok else "error",
+        "message": message,
+    }), status_code
 
 
 @app.route("/clear_profile_history", methods=["POST"])

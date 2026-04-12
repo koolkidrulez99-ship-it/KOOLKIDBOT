@@ -41,7 +41,7 @@
 #blackcardPopupJokerjoe.blackcard-lifetime-ui #blackcardLiveDigitJokerjoe{background:linear-gradient(145deg,#030712,#111827 55%,#020617)!important;border-color:rgba(226,232,240,.42)!important;color:#f8fafc!important;text-shadow:0 0 18px rgba(226,232,240,.30);box-shadow:inset 0 1px 0 rgba(255,255,255,.16),0 16px 38px rgba(0,0,0,.46),0 0 22px rgba(148,163,184,.18)!important}
 #blackcardPopupJokerjoe.blackcard-lifetime-ui [data-blackcard-digit-jokerjoe]{position:relative;overflow:hidden;background:linear-gradient(145deg,#020617,#09090b 48%,#111827)!important;border-color:rgba(100,116,139,.62)!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.08),0 12px 22px rgba(0,0,0,.34)!important;transition:transform .18s ease,border-color .18s ease,box-shadow .18s ease}
 #blackcardPopupJokerjoe.blackcard-lifetime-ui [data-blackcard-digit-jokerjoe]:hover{transform:translateY(-1px);border-color:rgba(226,232,240,.50)!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.12),0 16px 30px rgba(0,0,0,.42),0 0 18px rgba(148,163,184,.14)!important}
-#blackcardPopupJokerjoe.blackcard-lifetime-ui [data-blackcard-digit-jokerjoe].blackcard-live-digit{border-color:rgba(125,211,252,.78)!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.15),0 16px 34px rgba(0,0,0,.44),0 0 26px rgba(56,189,248,.22)!important}
+#blackcardPopupJokerjoe.blackcard-lifetime-ui [data-blackcard-digit-jokerjoe].blackcard-live-digit{background:linear-gradient(135deg,#0f766e,#06b6d4)!important;border-color:rgba(103,232,249,.24)!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.16),0 12px 24px rgba(6,182,212,.22)!important}
 #blackcardPopupJokerjoe.blackcard-lifetime-ui [data-blackcard-digit-jokerjoe].blackcard-winning-digit{border-color:rgba(248,250,252,.92)!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.22),0 0 0 1px rgba(255,255,255,.20),0 0 38px rgba(226,232,240,.34),0 18px 38px rgba(0,0,0,.54)!important;animation:blackcardWinningPulse 1.15s ease-in-out 4}
 #blackcardPopupJokerjoe.blackcard-lifetime-ui [data-blackcard-digit-jokerjoe].blackcard-winning-digit:before{content:"";position:absolute;inset:3px;border-radius:10px;border:1px solid rgba(248,250,252,.58);box-shadow:0 0 18px rgba(248,250,252,.28),inset 0 0 18px rgba(148,163,184,.12);pointer-events:none;z-index:0}
 #blackcardPopupJokerjoe.blackcard-lifetime-ui [data-blackcard-digit-jokerjoe].blackcard-winning-digit:after{content:"";position:absolute;inset:-40%;background:conic-gradient(from 120deg,transparent,rgba(248,250,252,.24),transparent 35%);animation:blackcardWinningSweep 1.8s linear 3;pointer-events:none;z-index:0}
@@ -277,6 +277,9 @@
               <button id="blackcardBtnJokerjoe" onclick="showBlackcardPopupJokerjoe()" style="width:100%; height:46px; background:linear-gradient(135deg,#020617,#111827); color:#f8fafc; border:1px solid #334155; box-shadow:0 8px 22px rgba(2,6,23,0.45);">
                 🂡 BLACKCARD
               </button>
+              <button id="kid100WinsBtnJokerjoe" onclick="openKid100WinsPopupJokerjoe()" style="display:none; width:100%; height:46px; background:linear-gradient(135deg,#7f1d1d,#dc2626); color:#fff7ed; border:1px solid rgba(251,146,60,0.45); box-shadow:0 10px 24px rgba(127,29,29,0.32);">
+                😈 kid100%wins 😈
+              </button>
             </div>
           </details>
 
@@ -346,6 +349,49 @@
             </div>
           </details>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="kid100WinsPopupJokerjoe" onclick="if(event.target===this) closeKid100WinsPopupJokerjoe()" style="display:none; position:fixed; inset:0; z-index:78; padding:18px; align-items:center; justify-content:center; background:rgba(2,6,23,0.78);">
+    <div style="width:min(430px,100%); background:linear-gradient(180deg,#111827,#020617); border:1px solid rgba(251,146,60,0.32); border-radius:18px; padding:14px; box-shadow:0 24px 54px rgba(0,0,0,.48),0 0 30px rgba(220,38,38,.14);">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:8px;">
+        <div>
+          <div style="font-size:11px; color:#fb923c; font-weight:900; letter-spacing:.12em; text-transform:uppercase;">Same tick pair</div>
+          <div style="font-size:20px; font-weight:900; color:#fff7ed;">😈 kid100%wins 😈</div>
+        </div>
+        <button type="button" onclick="closeKid100WinsPopupJokerjoe()" style="height:34px; min-width:34px; border-radius:10px; background:#1e293b;">✕</button>
+      </div>
+      <div style="font-size:12px; color:#cbd5e1; line-height:1.45; margin-bottom:10px;">
+        Sends one MATCHES and one DIFFERS contract on the same digit using the fastest JokerJoe trade path.
+      </div>
+      <div style="display:grid; gap:9px;">
+        <label style="display:grid; gap:4px; font-size:12px; color:#94a3b8; font-weight:700;">
+          Barrier digit
+          <input id="kid100WinsBarrierJokerjoe" type="number" min="0" max="9" step="1" value="5" style="width:100%; min-height:40px;">
+        </label>
+        <label style="display:grid; gap:4px; font-size:12px; color:#94a3b8; font-weight:700;">
+          MATCHES stake
+          <input id="kid100WinsMatchStakeJokerjoe" type="number" min="0.35" step="0.01" value="1" style="width:100%; min-height:40px;">
+        </label>
+        <label style="display:grid; gap:4px; font-size:12px; color:#94a3b8; font-weight:700;">
+          DIFFERS stake
+          <input id="kid100WinsDiffersStakeJokerjoe" type="number" min="0.35" step="0.01" value="1" style="width:100%; min-height:40px;">
+        </label>
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; border:1px solid rgba(251,146,60,0.24); border-radius:14px; padding:10px 12px; background:rgba(127,29,29,0.16);">
+          <div>
+            <div style="font-size:12px; color:#fff7ed; font-weight:900;">Auto Trader</div>
+            <div id="kid100WinsAutoStatusJokerjoe" style="font-size:11px; color:#94a3b8; margin-top:3px;">OFF • picks highest % every 5 ticks</div>
+          </div>
+          <button id="kid100WinsAutoTraderToggleJokerjoe" type="button" onclick="toggleKid100WinsAutoTraderJokerjoe()" style="min-width:86px; height:38px; border-radius:999px; background:#334155; color:#f8fafc; font-weight:900;">OFF</button>
+        </div>
+      </div>
+      <div id="kid100WinsStatusJokerjoe" style="margin-top:10px; font-size:12px; color:#94a3b8;">
+        Uses the current JokerJoe duration and market.
+      </div>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:12px;">
+        <button id="kid100WinsStartBtnJokerjoe" type="button" onclick="startKid100WinsJokerjoe()" style="height:44px; background:#dc2626; color:#fff7ed; border-radius:12px;">START</button>
+        <button type="button" onclick="closeKid100WinsPopupJokerjoe()" style="height:44px; background:#334155; border-radius:12px;">CANCEL</button>
       </div>
     </div>
   </div>

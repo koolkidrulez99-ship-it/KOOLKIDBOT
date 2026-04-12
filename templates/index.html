@@ -8,6 +8,7 @@
 <!-- ✅ BULLETPROOF: Local Socket.IO client (v4) -->
 <script src="/static/vendor/socket.io.min.js"></script>
 <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+<script src="/static/js/martha_ai.js"></script>
 
 
 <style>
@@ -63,6 +64,121 @@ input, select{
     border:none;
     background:#1f2937;
     color:white;
+}
+
+.martha-ai-panel{
+    border:1px solid rgba(56,189,248,0.28);
+    background:
+        radial-gradient(circle at top left, rgba(56,189,248,0.18), transparent 34%),
+        linear-gradient(135deg, rgba(15,23,42,0.98), rgba(2,6,23,0.98));
+    box-shadow:0 0 30px rgba(56,189,248,0.12), inset 0 1px 0 rgba(255,255,255,0.04);
+}
+.martha-ai-panel.martha-ai-on{
+    border-color:rgba(34,197,94,0.45);
+    box-shadow:0 0 34px rgba(34,197,94,0.15), inset 0 1px 0 rgba(255,255,255,0.05);
+}
+.martha-ai-header{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:14px;
+    flex-wrap:wrap;
+}
+.martha-ai-kicker{
+    color:#67e8f9;
+    font-size:12px;
+    letter-spacing:0.18em;
+    text-transform:uppercase;
+    font-weight:900;
+}
+.martha-ai-title{
+    margin:4px 0 0;
+    font-size:24px;
+    color:#f8fafc;
+    text-shadow:0 0 16px rgba(56,189,248,0.35);
+}
+.martha-ai-sub{
+    margin:6px 0 0;
+    color:#94a3b8;
+    font-size:13px;
+    line-height:1.5;
+}
+.martha-ai-controls{
+    display:flex;
+    align-items:center;
+    justify-content:flex-end;
+    gap:10px;
+    flex-wrap:wrap;
+}
+.martha-ai-pill{
+    padding:8px 12px;
+    border-radius:999px;
+    background:rgba(15,23,42,0.75);
+    border:1px solid rgba(148,163,184,0.22);
+    color:#cbd5e1;
+    font-size:12px;
+    font-weight:800;
+}
+#marthaAiToggleBtn{
+    min-width:78px;
+    background:#334155;
+    box-shadow:0 0 14px rgba(148,163,184,0.16);
+}
+#marthaAiToggleBtn.martha-toggle-on{
+    background:#22c55e;
+    color:#04130a;
+    box-shadow:0 0 20px rgba(34,197,94,0.35);
+}
+.martha-ai-threshold{
+    display:flex;
+    align-items:center;
+    gap:6px;
+    color:#cbd5e1;
+    font-size:12px;
+    font-weight:800;
+}
+.martha-ai-threshold input{
+    width:68px;
+    margin:0;
+}
+.martha-ai-emergency{
+    display:flex;
+    align-items:center;
+    gap:7px;
+    color:#fbbf24;
+    font-size:12px;
+    font-weight:800;
+    padding:8px 10px;
+    border-radius:12px;
+    border:1px solid rgba(251,191,36,0.22);
+    background:rgba(120,53,15,0.16);
+}
+.martha-ai-emergency input{ margin:0; }
+.martha-ai-decision{
+    margin-top:14px;
+    display:none;
+    padding:14px;
+    border-radius:14px;
+    background:rgba(15,23,42,0.72);
+    border:1px solid rgba(148,163,184,0.18);
+}
+.martha-ai-decision.martha-decision-approved{
+    border-color:rgba(34,197,94,0.36);
+    box-shadow:0 0 20px rgba(34,197,94,0.1);
+}
+.martha-ai-decision.martha-decision-blocked{
+    border-color:rgba(248,113,113,0.42);
+    box-shadow:0 0 20px rgba(248,113,113,0.12);
+}
+.martha-ai-decision strong{
+    display:block;
+    color:#f8fafc;
+    margin-bottom:4px;
+}
+.martha-ai-decision div{
+    color:#cbd5e1;
+    font-size:13px;
+    margin-top:3px;
 }
 
 .green{color:#22c55e;}
@@ -914,6 +1030,33 @@ body.mobile-only-ui #profileContainer .unchain-history-grid{
         <h4 id="profileTitle" style="margin-top:10px; color:#38bdf8;">KOOLKID MODE: OVER & UNDER</h4>
     </div>
 
+    <div id="marthaAiPanel" class="card martha-ai-panel" style="display:none;">
+        <div class="martha-ai-header">
+            <div>
+                <div class="martha-ai-kicker">Local smart assistant</div>
+                <h3 class="martha-ai-title">Martha AI</h3>
+                <p class="martha-ai-sub">Quietly watches the active profile and only shows its confidence after you press a trade button.</p>
+            </div>
+            <div class="martha-ai-controls">
+                <span id="marthaAiStatus" class="martha-ai-pill">Martha AI: OFF</span>
+                <label class="martha-ai-threshold" title="Minimum confidence needed before Martha allows a manual trade">
+                    Min
+                    <input id="marthaAiThreshold" type="number" min="1" max="95" step="1" value="60">
+                </label>
+                <button id="marthaAiToggleBtn" type="button">OFF</button>
+                <label class="martha-ai-emergency" title="Optional hard-stop: if Martha blocks, reconnect the Deriv websocket/token session">
+                    <input id="marthaAiEmergencyToggle" type="checkbox">
+                    Emergency reconnect on block
+                </label>
+            </div>
+        </div>
+        <div id="marthaAiLastDecision" class="martha-ai-decision">
+            <strong id="marthaAiDecisionConfidence">Martha AI Confidence: --</strong>
+            <div id="marthaAiDecisionStatus">Decision: --</div>
+            <div id="marthaAiDecisionReason">Reason: --</div>
+        </div>
+    </div>
+
     <div class="card">
         <h3>🔌 API CONNECTION</h3>
 
@@ -1482,6 +1625,10 @@ function bindSocketHandlers(){
         updateAutoModeButtons(modes || {});
     });
 
+    bind("martha_ai_auto_decision", (data)=>{
+        try{ if(window.MarthaAI && typeof window.MarthaAI.observeAutoDecision === "function") window.MarthaAI.observeAutoDecision(data || {}); }catch(e){}
+    });
+
     bind("balance_update", (data)=>{
         const balance = Number(data && data.balance);
         applyKnownApiBalance(data || {}, false);
@@ -1490,6 +1637,7 @@ function bindSocketHandlers(){
 
     bind("tick", (data)=>{
         if(!apiConnected) return;
+        try{ if(window.MarthaAI && typeof window.MarthaAI.observeTick === "function") window.MarthaAI.observeTick(data || {}); }catch(e){}
 
         digitBuffer.push(data.digit);
         if(digitBuffer.length > 20) digitBuffer.shift();
@@ -1504,6 +1652,7 @@ function bindSocketHandlers(){
     });
 
     bind("digit_analysis", (data)=>{
+        try{ if(window.MarthaAI && typeof window.MarthaAI.observeDigitAnalysis === "function") window.MarthaAI.observeDigitAnalysis(data || {}); }catch(e){}
         scheduleDigitAnalysisUiUpdate(data || {});
 
         if(activeProfile === "JOKERJOE"){
@@ -1532,6 +1681,7 @@ function bindSocketHandlers(){
     bind("trade_placed", (data)=>{
         const placed = Object.assign({}, data || {});
         placed.profile = resolveTradeProfile(placed, activeProfile);
+        try{ if(window.MarthaAI && typeof window.MarthaAI.observeTradeEvent === "function") window.MarthaAI.observeTradeEvent(placed); }catch(e){}
         onTradePlacedForToast(placed);
         upsertTradeInStore(buildPendingTradeFromPlacement(placed));
         schedulePendingTradeRescue(placed.profile, placed.contract_id ?? placed.contractId, 1);
@@ -1543,6 +1693,7 @@ function bindSocketHandlers(){
     bind("trade_result", (data)=>{
         const settled = Object.assign({}, data || {});
         settled.profile = resolveTradeProfile(settled, activeProfile);
+        try{ if(window.MarthaAI && typeof window.MarthaAI.observeTradeEvent === "function") window.MarthaAI.observeTradeEvent(settled); }catch(e){}
         const settledProfile = normalizeProfileName(settled.profile);
         if(settledProfile === "KOOLKID" || settledProfile === "JOKERJOE" || settledProfile === "UNCHAIN" || settledProfile === "NTT"){
             const sortTs = resolveTradeSortTimestamp(settled, true);
@@ -1590,6 +1741,7 @@ function bindSocketHandlers(){
     });
 
     bind("stats_update", (data)=>{
+        try{ if(window.MarthaAI && typeof window.MarthaAI.observeStats === "function") window.MarthaAI.observeStats(data || {}); }catch(e){}
         const pnl = data.net_pnl || 0;
         const statsProfile = normalizeProfileName((data && data.profile) || activeProfile);
         const wins = Number((data && data.wins) || 0);
@@ -4185,6 +4337,7 @@ async function loadProfileUI(profile){
         sendRiskControls();
         renderTradeList(activeProfile);
         applyMonthlyLicenseGate(profile);
+        try{ if(window.MarthaAI && typeof window.MarthaAI.scanCurrentProfile === "function") window.MarthaAI.scanCurrentProfile(); }catch(e){}
         return;
     }
 
@@ -4221,6 +4374,7 @@ async function loadProfileUI(profile){
 
     try{ await runProfileModuleHook(profile, "afterLoadProfileUI", { profile }); }catch(e){}
     applyMonthlyLicenseGate(profile);
+    try{ if(window.MarthaAI && typeof window.MarthaAI.scanCurrentProfile === "function") window.MarthaAI.scanCurrentProfile(); }catch(e){}
 }
 
 function refreshDynamicElements(){
@@ -4414,6 +4568,41 @@ function buildFastProfileTradePayload(profile, payload, options){
     return { key, requestPayload, turboRequested };
 }
 
+function buildMarthaTradeAction(profile, payload, options){
+    const body = payload || {};
+    const opts = options || {};
+    const symbolNode = document.getElementById("symbol");
+    const currentSymbol = symbolNode ? (symbolNode.dataset.confirmedSymbol || symbolNode.value || "") : "";
+    const rawType = body.type || body.side || body.direction || body.contract_type || opts.type || opts.source || "TRADE";
+    const rawStake = body.stake ?? body.amount ?? body.rise_stake ?? body.fall_stake ?? body.touch_stake ?? body.no_touch_stake ?? body.fallback_stake;
+    return {
+        profile: normalizeProfileName(profile || body.profile || activeProfile),
+        source: opts.source || "manual_trade",
+        label: opts.label || `${rawType}${body.barrier !== undefined ? " " + body.barrier : ""}`,
+        type: rawType,
+        barrier: body.barrier ?? body.barrier_digit ?? body.touch_barrier ?? body.no_touch_barrier ?? opts.barrier ?? "",
+        symbol: body.symbol || body.main_symbol || currentSymbol || getConfirmedMarketSymbol(),
+        stake: rawStake,
+        duration: body.duration || body.duration_ticks || body.durationTick || "",
+        duration_unit: body.duration_unit || body.durationUnit || "t",
+        batch_count: opts.batchCount || opts.batch_count || body.batch_count || 1,
+    };
+}
+
+async function guardMarthaTrade(action, proceed){
+    if(window.MarthaAI && typeof window.MarthaAI.guardAction === "function"){
+        return window.MarthaAI.guardAction(action || {}, proceed);
+    }
+    return proceed();
+}
+
+function isMarthaBlockedTradeResult(result){
+    return !!(result && (
+        result.status === "blocked" ||
+        (result.data && result.data.status === "blocked")
+    ));
+}
+
 function sendFastProfileTradeOverSocket(profile, payload, options){
     return new Promise((resolve)=>{
         try{
@@ -4473,7 +4662,9 @@ async function sendFastProfileTradeNow(profile, payload, options){
 
 function postFastProfileTrade(profile, payload, options){
     const built = buildFastProfileTradePayload(profile, payload, options || {});
-    const task = ()=> sendFastProfileTradeNow(built.key || profile, built.requestPayload, Object.assign({}, options || {}, { turbo: built.turboRequested }));
+    const action = buildMarthaTradeAction(built.key || profile, built.requestPayload, Object.assign({ source: "fast_profile_trade" }, options || {}));
+    const sendTask = ()=> sendFastProfileTradeNow(built.key || profile, built.requestPayload, Object.assign({}, options || {}, { turbo: built.turboRequested }));
+    const task = ()=> (options && options.skipMartha) ? sendTask() : guardMarthaTrade(action, sendTask);
     if(options && options.queue === false){
         return task();
     }
@@ -4484,6 +4675,9 @@ window.BotApp = window.BotApp || {};
 window.BotApp.enqueueFastBuyTask = enqueueFastBuyTask;
 window.BotApp.getFastBuyIntervalMs = getFastBuyIntervalMs;
 window.BotApp.sendFastProfileTrade = postFastProfileTrade;
+window.BotApp.buildMarthaTradeAction = buildMarthaTradeAction;
+window.BotApp.guardMarthaTrade = guardMarthaTrade;
+window.BotApp.isMarthaBlockedTradeResult = isMarthaBlockedTradeResult;
 window.BotApp.getProfileTurboEnabled = getProfileTurboEnabled;
 window.BotApp.setProfileTurboEnabled = setProfileTurboEnabled;
 
@@ -5454,6 +5648,7 @@ async function setProfile(profile){
         await deactivateProfileModule(previousProfile, { nextProfile: profile });
     }
     activeProfile = profile;
+    try{ if(window.MarthaAI && typeof window.MarthaAI.setProfile === "function") window.MarthaAI.setProfile(profile); }catch(e){}
     rememberProfileBudgetPayload(profileData || {});
     applyKnownApiBalance(profileData || {}, false);
     await ensureProfileModuleScript(profile);
@@ -5972,10 +6167,17 @@ async function insta5(){
     const barrier = parseInt(barrierInput.value || "5", 10);
     const duration = getManualDurationTicks();
     const turbo = isTurboEnabledForFastBuys(activeProfile);
+    const payload = { stake, symbol, barrier: isNaN(barrier) ? 5 : barrier, duration, duration_unit:"t", turbo };
 
     try{
-        const res = await fetch("/insta5", {method:"POST",headers:{"Content-Type":"application/json"},body: JSON.stringify({ stake, symbol, barrier: isNaN(barrier) ? 5 : barrier, duration, duration_unit:"t", turbo })});
-        const data = await res.json();
+        const action = buildMarthaTradeAction(activeProfile, Object.assign({ type:"INSTA5" }, payload), { source:"insta5", label:"INSTA 5", batchCount:5 });
+        const guarded = await guardMarthaTrade(action, async ()=>{
+            const res = await fetch("/insta5", {method:"POST",headers:{"Content-Type":"application/json"},body: JSON.stringify(payload)});
+            const data = await res.json();
+            return { ok: res.ok, data };
+        });
+        if(isMarthaBlockedTradeResult(guarded)) return;
+        const data = (guarded && guarded.data) || {};
         if(data.status === "success") showToast("⚡ INSTA 5 SENT", "warn");
         else showToast(data.message || "INSTA 5 failed", "error");
     }catch(e){
@@ -5990,10 +6192,17 @@ async function kidgambleX(){
     const symbol = document.getElementById("symbol").value;
     const duration = getManualDurationTicks();
     const turbo = isTurboEnabledForFastBuys(activeProfile);
+    const payload = { stake, symbol, duration, duration_unit:"t", turbo };
 
     try{
-        const res = await fetch("/kidgamblex", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ stake, symbol, duration, duration_unit:"t", turbo })});
-        const data = await res.json();
+        const action = buildMarthaTradeAction(activeProfile, Object.assign({ type:"KIDGAMBLEX" }, payload), { source:"kidgamblex", label:"kidgambleX", batchCount:3 });
+        const guarded = await guardMarthaTrade(action, async ()=>{
+            const res = await fetch("/kidgamblex", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+            const data = await res.json();
+            return { ok: res.ok, data };
+        });
+        if(isMarthaBlockedTradeResult(guarded)) return;
+        const data = (guarded && guarded.data) || {};
         if(data.status === "success") showToast("🎲 kidgambleX sent", "warn");
         else showToast(data.message || "kidgambleX failed", "error");
     }catch(e){
@@ -6020,7 +6229,8 @@ async function trade(type, barrierOverride=null){
                 useSocket: turbo,
             });
         }else{
-            await fetch("/manual_trade", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+            const action = buildMarthaTradeAction(activeProfile, payload, { source:"manual_trade" });
+            await guardMarthaTrade(action, ()=>fetch("/manual_trade", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}));
         }
     }catch(e){
         showToast((e && e.message) || "Fast trade queue is busy", "error");
@@ -6034,8 +6244,11 @@ async function take3(type){
     const barrier = barrierInput.value;
     const duration = getManualDurationTicks();
     const turbo = isTurboEnabledForFastBuys(activeProfile);
+    const payload = {type, stake, symbol, barrier, duration, duration_unit:"t", turbo};
 
-    await fetch("/manual_3_trades", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type, stake, symbol, barrier, duration, duration_unit:"t", turbo})});
+    const action = buildMarthaTradeAction(activeProfile, payload, { source:"manual_3_trades", batchCount:3 });
+    const guarded = await guardMarthaTrade(action, ()=>fetch("/manual_3_trades", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}));
+    if(isMarthaBlockedTradeResult(guarded)) return;
     showToast("🔥 TAKE 3 SENT (" + type + ")", "info");
 }
 
@@ -6046,8 +6259,11 @@ async function burst4(type){
     const barrier = barrierInput.value;
     const duration = getManualDurationTicks();
     const turbo = isTurboEnabledForFastBuys(activeProfile);
+    const payload = {type, stake, symbol, barrier, duration, duration_unit:"t", turbo};
 
-    await fetch("/burst_4", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type, stake, symbol, barrier, duration, duration_unit:"t", turbo})});
+    const action = buildMarthaTradeAction(activeProfile, payload, { source:"burst_4", batchCount:4 });
+    const guarded = await guardMarthaTrade(action, ()=>fetch("/burst_4", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}));
+    if(isMarthaBlockedTradeResult(guarded)) return;
     showToast("⚡ BURST 4 SENT (" + type + ")", "warn");
 }
 
@@ -6681,6 +6897,7 @@ window.addEventListener("orientationchange", syncMobileOnlyLayout);
 syncMobileOnlyLayout();
 
 /* ✅ STARTUP */
+try{ if(window.MarthaAI && typeof window.MarthaAI.init === "function") window.MarthaAI.init(); }catch(e){}
 initSocket();
 (async () => {
     try{ await refreshApiConnectionState(true); }catch(e){}
