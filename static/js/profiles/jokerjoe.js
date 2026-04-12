@@ -6,11 +6,13 @@ const FAST_INTERVAL_MS_NORMAL = 400; // 0.4s as requested
 const FAST_INTERVAL_MS_TURBO = 120;  // faster Turbo lane for JOKERJOE
 const FAST_MAX_BUY_QUEUE = 12;       // safety limit
 const BLACKCARD_RENDER_THROTTLE_MS = 300;
-const state = { lastSocket: null, socketBound: false, autoModes: {}, turboMode: loadTurboModeJokerjoe(), kidgxBarrier: 5, matchesAnalysisOn: false, matchesLastKey: "", matchesObserverBound: false, matchSniperOn: false, matchSniperCooldownUntil: 0, matchSniperActiveDigit: null, matchSniperConsumed: false, matchSniperBusy: false, matchesSnapshot: null, matchesSorted: [], matchSniper5xOn: false, matchSniper5xCooldownUntil: 0, matchSniper5xBusy: false, matchSniper5xLastTopKey: "", matchSniper5xRotationSets: null, matchSniper5xRotationIndex: 0, matchSniper5xCurrentDigits: [], aiAutoModeChoice: "golden_digits", aiAutoLowestTradeCountChoice: 5, aiAutoLowestLocalOn: false, aiAutoModalOpen: false, aiLowestLastTickCount: 0, aiLowestTouches: {}, aiLowestArmed: null, aiLowestBatchActive: false, aiLowestBatchPending: 0, aiLowestBatchBarrier: null, aiLowestBatchProfit: 0, aiLowestCooldownUntil: 0, aiLowestSubmitting: false, aiLowestRecoveryDeficit: 0, aiLowestRecoveryOnly: false, randomMatchesDiffersOn: false, randomMatchesDiffersMode: "DIFFERS", randomMatchesDiffersModalOpen: false, randomMatchesDiffersBusy: false, randomMatchesDiffersCooldownUntil: 0, randomMatchesDiffersLastSignalKey: "", randomMatchesDiffersTickHistory: [], randomMatchesDiffersLastTickCount: 0, randomMatchesDiffersSnapshot: null, blackcard: { lastDigit: null, recentDigits: [], percentages: {}, busy: false }, insta2Busy: false };
+const state = { lastSocket: null, socketBound: false, autoModes: {}, turboMode: loadTurboModeJokerjoe(), kidgxBarrier: 5, matchesAnalysisOn: false, matchesLastKey: "", matchesObserverBound: false, matchSniperOn: false, matchSniperCooldownUntil: 0, matchSniperActiveDigit: null, matchSniperConsumed: false, matchSniperBusy: false, matchesSnapshot: null, matchesSorted: [], matchSniper5xOn: false, matchSniper5xCooldownUntil: 0, matchSniper5xBusy: false, matchSniper5xLastTopKey: "", matchSniper5xRotationSets: null, matchSniper5xRotationIndex: 0, matchSniper5xCurrentDigits: [], aiAutoModeChoice: "golden_digits", aiAutoLowestTradeCountChoice: 5, aiAutoLowestLocalOn: false, aiAutoModalOpen: false, aiLowestLastTickCount: 0, aiLowestTouches: {}, aiLowestArmed: null, aiLowestBatchActive: false, aiLowestBatchPending: 0, aiLowestBatchBarrier: null, aiLowestBatchProfit: 0, aiLowestCooldownUntil: 0, aiLowestSubmitting: false, aiLowestRecoveryDeficit: 0, aiLowestRecoveryOnly: false, randomMatchesDiffersOn: false, randomMatchesDiffersMode: "DIFFERS", randomMatchesDiffersModalOpen: false, randomMatchesDiffersBusy: false, randomMatchesDiffersCooldownUntil: 0, randomMatchesDiffersLastSignalKey: "", randomMatchesDiffersTickHistory: [], randomMatchesDiffersLastTickCount: 0, randomMatchesDiffersSnapshot: null, blackcard: { lastDigit: null, recentDigits: [], percentages: {}, busy: false, winMarkerDigit: null, winMarkerUntil: 0, praiseShownForTenWins: false, lastWinCount: null }, insta2Busy: false };
   const fastBuyQueueJokerjoe = { items: [], running: false, lastRunAt: 0 };
   let activityPollTimerJokerjoe = null;
   let blackcardRenderTimerJokerjoe = null;
   let lastBlackcardRenderAtJokerjoe = 0;
+  let blackcardWinMarkerTimerJokerjoe = null;
+  let blackcardPraiseTimerJokerjoe = null;
 
   function App() { return window.BotApp || {}; }
   function isActive() { try { return typeof activeProfile !== "undefined" && activeProfile === PROFILE; } catch (e) { return false; } }
@@ -125,6 +127,18 @@ function renderTurboToggleJokerjoe() {
   }
 
   function getEl(id) { return document.getElementById(id); }
+  function isLifetimeBlackcardUserJokerjoe() {
+    const ctx = window.LICENSE_CONTEXT || (App() && App().licenseContext) || {};
+    return !!(ctx && (ctx.is_lifetime || String(ctx.license_type || "").toLowerCase() === "lifetime"));
+  }
+  function applyBlackcardLifetimeUiJokerjoe() {
+    const enabled = isLifetimeBlackcardUserJokerjoe();
+    const root = getEl("jokerjoeProfileUi");
+    const popup = getBlackcardPopupJokerjoe();
+    if (root) root.classList.toggle("blackcard-lifetime-ui", enabled);
+    if (popup) popup.classList.toggle("blackcard-lifetime-ui", enabled);
+    return enabled;
+  }
   function setTextIfChanged(node, value) {
     if (!node) return;
     const text = String(value ?? "");
@@ -190,6 +204,8 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
 
   function renderBlackcardJokerjoe() {
     lastBlackcardRenderAtJokerjoe = Date.now();
+    const lifetimeBlackcard = applyBlackcardLifetimeUiJokerjoe();
+    const nowMs = Date.now();
     const popup = getBlackcardPopupJokerjoe();
     const liveDigitEl = getEl("blackcardLiveDigitJokerjoe");
     const statusEl = getEl("blackcardStatusJokerjoe");
@@ -220,8 +236,14 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     getBlackcardDigitButtonsJokerjoe().forEach((btn) => {
       const digit = Number(btn.getAttribute("data-blackcard-digit-jokerjoe"));
       const isLast = hasDigit && digit === lastDigit;
+      const isWinningMarker = lifetimeBlackcard
+        && Number(state.blackcard.winMarkerDigit) === digit
+        && nowMs < Number(state.blackcard.winMarkerUntil || 0);
       const pct = Number((percentages || {})[digit]);
       btn.disabled = busy;
+      btn.classList.toggle("blackcard-premium-digit", lifetimeBlackcard);
+      btn.classList.toggle("blackcard-live-digit", lifetimeBlackcard && isLast);
+      btn.classList.toggle("blackcard-winning-digit", isWinningMarker);
       setStyleIfChanged(btn, "cursor", busy ? "wait" : "pointer");
       setStyleIfChanged(btn, "opacity", busy ? "0.75" : "1");
       setStyleIfChanged(btn, "height", "60px");
@@ -229,7 +251,7 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
       setStyleIfChanged(btn, "background", isLast ? "linear-gradient(135deg,#0f766e,#06b6d4)" : "#111827");
       setStyleIfChanged(btn, "borderColor", isLast ? "#67e8f9" : "#334155");
       setStyleIfChanged(btn, "boxShadow", isLast ? "0 0 0 1px rgba(103,232,249,0.4), 0 10px 18px rgba(6,182,212,0.18)" : "none");
-      setHtmlIfChanged(btn, `<span style="display:block; font-size:18px; line-height:1; font-weight:800;">${digit}</span><span style="display:block; font-size:11px; line-height:1.2; margin-top:4px; color:${isLast ? "#e0fbff" : "#94a3b8"};">${Number.isFinite(pct) ? pct.toFixed(1) : "0.0"}%</span>`);
+      setHtmlIfChanged(btn, `<span class="blackcard-digit-number" style="display:block; font-size:18px; line-height:1; font-weight:800;">${digit}</span><span class="blackcard-digit-percent" style="display:block; font-size:11px; line-height:1.2; margin-top:4px; color:${isLast ? "#e0fbff" : "#94a3b8"};">${Number.isFinite(pct) ? pct.toFixed(1) : "0.0"}%</span>`);
     });
     if (popup && popup.style.display === "block") positionBlackcardPopupJokerjoe();
   }
@@ -268,6 +290,121 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     while (next.length > 12) next.shift();
     state.blackcard.recentDigits = next;
     scheduleBlackcardRenderJokerjoe();
+  }
+
+  function normalizeBlackcardTradeTypeJokerjoe(entry) {
+    const raw = String((entry && (entry.type || entry.contract_type || entry.deriv_contract_type)) || "")
+      .toUpperCase()
+      .replace(/[_-]+/g, " ")
+      .replace(/\s+/g, "");
+    if (raw === "DIFFERS" || raw === "DIGITDIFF" || raw === "DIGITDIFFERS") return "DIFFERS";
+    return raw;
+  }
+
+  function normalizeBlackcardResultJokerjoe(entry) {
+    const raw = String((entry && (entry.result || entry.status)) || "").toUpperCase();
+    if (raw.includes("WIN")) return "WIN";
+    if (raw.includes("LOSS") || raw.includes("LOST")) return "LOSS";
+    const profit = Number(entry && (entry.profit ?? entry.profit_value));
+    if (Number.isFinite(profit) && profit > 0) return "WIN";
+    if (Number.isFinite(profit) && profit < 0) return "LOSS";
+    return "";
+  }
+
+  function extractBlackcardExitDigitJokerjoe(entry) {
+    const candidates = [
+      entry && entry.exit_digit,
+      entry && entry.exitDigit,
+      entry && entry.last_digit,
+      entry && entry.digit,
+      entry && entry.final_digit,
+    ];
+    for (const value of candidates) {
+      const digit = Number(value);
+      if (Number.isInteger(digit) && digit >= 0 && digit <= 9) return digit;
+    }
+    return null;
+  }
+
+  function clearBlackcardWinMarkerTimerJokerjoe() {
+    if (!blackcardWinMarkerTimerJokerjoe) return;
+    const app = App();
+    if (!(app && typeof app.clearFrontendTimeout === "function" && app.clearFrontendTimeout("jokerjoe_blackcard_win_marker"))) {
+      clearTimeout(blackcardWinMarkerTimerJokerjoe);
+    }
+    blackcardWinMarkerTimerJokerjoe = null;
+  }
+
+  function triggerBlackcardWinningDigitJokerjoe(digit) {
+    if (!isLifetimeBlackcardUserJokerjoe()) return;
+    if (!Number.isInteger(digit) || digit < 0 || digit > 9) return;
+    const markerMs = 7200;
+    state.blackcard.winMarkerDigit = digit;
+    state.blackcard.winMarkerUntil = Date.now() + markerMs;
+    clearBlackcardWinMarkerTimerJokerjoe();
+    blackcardWinMarkerTimerJokerjoe = setTimeout(() => {
+      const app = App();
+      if (app && typeof app.completeFrontendTimeout === "function") app.completeFrontendTimeout("jokerjoe_blackcard_win_marker");
+      blackcardWinMarkerTimerJokerjoe = null;
+      if (Date.now() >= Number(state.blackcard.winMarkerUntil || 0)) {
+        state.blackcard.winMarkerDigit = null;
+        state.blackcard.winMarkerUntil = 0;
+      }
+      renderBlackcardJokerjoe();
+    }, markerMs + 150);
+    const app = App();
+    if (app && typeof app.registerFrontendTimeout === "function") app.registerFrontendTimeout("jokerjoe_blackcard_win_marker", blackcardWinMarkerTimerJokerjoe);
+    renderBlackcardJokerjoe();
+  }
+
+  function handleBlackcardTradeResultJokerjoe(entry) {
+    if (!isLifetimeBlackcardUserJokerjoe()) return;
+    if (normalizeBlackcardTradeTypeJokerjoe(entry) !== "DIFFERS") return;
+    if (normalizeBlackcardResultJokerjoe(entry) !== "WIN") return;
+    const digit = extractBlackcardExitDigitJokerjoe(entry || {});
+    if (digit === null) return;
+    triggerBlackcardWinningDigitJokerjoe(digit);
+  }
+
+  function hideBlackcardPraiseFoolJokerjoe() {
+    const el = getEl("blackcardPraiseFoolJokerjoe");
+    if (el) {
+      el.classList.remove("is-visible");
+      el.setAttribute("aria-hidden", "true");
+    }
+  }
+
+  function showBlackcardPraiseFoolJokerjoe() {
+    if (!isLifetimeBlackcardUserJokerjoe()) return;
+    const el = getEl("blackcardPraiseFoolJokerjoe");
+    if (!el) {
+      safeToast("Praise the fool.", "success");
+      return;
+    }
+    if (blackcardPraiseTimerJokerjoe) clearTimeout(blackcardPraiseTimerJokerjoe);
+    el.classList.remove("is-visible");
+    void el.offsetWidth;
+    el.setAttribute("aria-hidden", "false");
+    el.classList.add("is-visible");
+    blackcardPraiseTimerJokerjoe = setTimeout(() => {
+      blackcardPraiseTimerJokerjoe = null;
+      hideBlackcardPraiseFoolJokerjoe();
+    }, 3600);
+  }
+
+  function handleBlackcardStatsJokerjoe(data) {
+    if (!isLifetimeBlackcardUserJokerjoe()) return;
+    const profile = String((data && data.profile) || PROFILE).toUpperCase();
+    if (profile !== PROFILE) return;
+    const wins = Number(data && data.wins);
+    if (!Number.isFinite(wins)) return;
+    const previousWins = Number(state.blackcard.lastWinCount);
+    if (wins < 10) state.blackcard.praiseShownForTenWins = false;
+    if (wins === 10 && !state.blackcard.praiseShownForTenWins && previousWins !== 10) {
+      state.blackcard.praiseShownForTenWins = true;
+      showBlackcardPraiseFoolJokerjoe();
+    }
+    state.blackcard.lastWinCount = wins;
   }
 
   function bindBlackcardDigitHandlersJokerjoe() {
@@ -1534,7 +1671,13 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
 
       bind("trade_result", (entry) => {
         if (!isActive()) return;
+        handleBlackcardTradeResultJokerjoe(entry || {});
         onJokerjoeTradeResultForLowestAI(entry || {});
+      });
+
+      bind("stats_update", (data) => {
+        if (!isActive()) return;
+        handleBlackcardStatsJokerjoe(data || {});
       });
 
       bind("tick", (data) => {
@@ -1676,6 +1819,12 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
       }
       blackcardRenderTimerJokerjoe = null;
     }
+    clearBlackcardWinMarkerTimerJokerjoe();
+    if (blackcardPraiseTimerJokerjoe) {
+      clearTimeout(blackcardPraiseTimerJokerjoe);
+      blackcardPraiseTimerJokerjoe = null;
+    }
+    hideBlackcardPraiseFoolJokerjoe();
     stopFallbackBootstrapJokerjoe();
     state.lastSocket = null;
     state.socketBound = false;
