@@ -6,7 +6,7 @@ const FAST_INTERVAL_MS_NORMAL = 400; // 0.4s as requested
 const FAST_INTERVAL_MS_TURBO = 120;  // faster Turbo lane for JOKERJOE
 const FAST_MAX_BUY_QUEUE = 12;       // safety limit
 const BLACKCARD_RENDER_THROTTLE_MS = 300;
-  const state = { lastSocket: null, socketBound: false, autoModes: {}, turboMode: loadTurboModeJokerjoe(), kidgxBarrier: 5, matchesAnalysisOn: false, matchesLastKey: "", matchesObserverBound: false, matchSniperOn: false, matchSniperCooldownUntil: 0, matchSniperActiveDigit: null, matchSniperConsumed: false, matchSniperBusy: false, matchesSnapshot: null, matchesSorted: [], matchSniper5xOn: false, matchSniper5xCooldownUntil: 0, matchSniper5xBusy: false, matchSniper5xLastTopKey: "", matchSniper5xRotationSets: null, matchSniper5xRotationIndex: 0, matchSniper5xCurrentDigits: [], aiAutoModeChoice: "golden_digits", aiAutoLowestTradeCountChoice: 5, aiAutoLowestLocalOn: false, aiAutoModalOpen: false, aiLowestLastTickCount: 0, aiLowestTouches: {}, aiLowestArmed: null, aiLowestBatchActive: false, aiLowestBatchPending: 0, aiLowestBatchBarrier: null, aiLowestBatchProfit: 0, aiLowestCooldownUntil: 0, aiLowestSubmitting: false, aiLowestRecoveryDeficit: 0, aiLowestRecoveryOnly: false, randomMatchesDiffersOn: false, randomMatchesDiffersMode: "DIFFERS", randomMatchesDiffersModalOpen: false, randomMatchesDiffersBusy: false, randomMatchesDiffersCooldownUntil: 0, randomMatchesDiffersLastSignalKey: "", randomMatchesDiffersTickHistory: [], randomMatchesDiffersLastTickCount: 0, randomMatchesDiffersSnapshot: null, blackcard: { lastDigit: null, recentDigits: [], percentages: {}, busy: false, winMarkerDigit: null, winMarkerUntil: 0, praiseShownForTenWins: false, lastWinCount: null }, insta2Busy: false, kid100WinsBusy: false, kid100WinsAutoOn: false, kid100WinsAutoBusy: false, kid100WinsAutoLastTick: null, kid100WinsLatestTick: null, kid100WinsLatestBest: null };
+  const state = { lastSocket: null, socketBound: false, autoModes: {}, turboMode: loadTurboModeJokerjoe(), kidgxBarrier: 5, matchesAnalysisOn: false, matchesLastKey: "", matchesObserverBound: false, matchSniperOn: false, matchSniperCooldownUntil: 0, matchSniperActiveDigit: null, matchSniperConsumed: false, matchSniperBusy: false, matchesSnapshot: null, matchesSorted: [], matchSniper5xOn: false, matchSniper5xCooldownUntil: 0, matchSniper5xBusy: false, matchSniper5xLastTopKey: "", matchSniper5xRotationSets: null, matchSniper5xRotationIndex: 0, matchSniper5xCurrentDigits: [], aiAutoModeChoice: "golden_digits", aiAutoLowestTradeCountChoice: 5, aiAutoLowestLocalOn: false, aiAutoModalOpen: false, aiLowestLastTickCount: 0, aiLowestTouches: {}, aiLowestArmed: null, aiLowestBatchActive: false, aiLowestBatchPending: 0, aiLowestBatchBarrier: null, aiLowestBatchProfit: 0, aiLowestCooldownUntil: 0, aiLowestSubmitting: false, aiLowestRecoveryDeficit: 0, aiLowestRecoveryOnly: false, randomMatchesDiffersOn: false, randomMatchesDiffersMode: "DIFFERS", randomMatchesDiffersModalOpen: false, randomMatchesDiffersBusy: false, randomMatchesDiffersCooldownUntil: 0, randomMatchesDiffersLastSignalKey: "", randomMatchesDiffersTickHistory: [], randomMatchesDiffersLastTickCount: 0, randomMatchesDiffersSnapshot: null, blackcard: { lastDigit: null, recentDigits: [], percentages: {}, busy: false, winMarkerDigit: null, winMarkerUntil: 0, praiseShownForTenWins: false, lastWinCount: null }, insta2Busy: false, kid100WinsBusy: false, kid100WinsAutoOn: false, kid100WinsAutoBusy: false, kid100WinsAutoLastTick: null, kid100WinsLatestTick: null, kid100WinsLatestBest: null, kid100WinsLowPercentOn: false, kid100WinsAiDiffersOn: false, kid100WinsStopRequested: false, kid100WinsLastSeenDigit: null };
   const fastBuyQueueJokerjoe = { items: [], running: false, lastRunAt: 0 };
   let activityPollTimerJokerjoe = null;
   let blackcardRenderTimerJokerjoe = null;
@@ -143,11 +143,15 @@ function renderTurboToggleJokerjoe() {
     return enabled;
   }
   function applyKid100WinsLifetimeGateJokerjoe() {
-    const enabled = isLifetimeFeatureUserJokerjoe();
     const btn = getEl("kid100WinsBtnJokerjoe");
-    const popup = getEl("kid100WinsPopupJokerjoe");
-    if (btn) btn.style.display = enabled ? "" : "none";
-    if (!enabled && popup) popup.style.display = "none";
+    if (btn) btn.style.display = "";
+    return true;
+  }
+  function applyKid100WinsAiDiffersGateJokerjoe() {
+    const enabled = isLifetimeFeatureUserJokerjoe();
+    const row = getEl("kid100WinsAiDiffersRowJokerjoe");
+    if (row) row.style.display = enabled ? "flex" : "none";
+    if (!enabled) state.kid100WinsAiDiffersOn = false;
     return enabled;
   }
   function setTextIfChanged(node, value) {
@@ -870,10 +874,27 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
 
   function getKid100WinsStakeJokerjoe(id, fallback) {
     const node = getEl(id);
-    let stake = Number(node && node.value);
-    if (!Number.isFinite(stake) || stake < 0.35) stake = fallback;
-    stake = Math.max(0.35, Number(stake || 0.35));
+    const raw = node ? String(node.value ?? "").trim() : "";
+    let fallbackStake = Number(fallback);
+    if (!Number.isFinite(fallbackStake) || fallbackStake <= 0) fallbackStake = 1;
+    let stake = raw === "" ? fallbackStake : Number(raw);
+    if (!Number.isFinite(stake) || stake < 0) stake = fallbackStake;
+    if (stake <= 0) return 0;
+    stake = Math.max(0.35, Number(stake));
     return Number(stake.toFixed(2));
+  }
+
+  function parseKid100WinsPctValueJokerjoe(value) {
+    if (typeof value === "number") return Number.isFinite(value) ? value : NaN;
+    if (typeof value === "string") {
+      const cleaned = value.replace("%", "").trim();
+      const match = cleaned.match(/-?\d+(?:\.\d+)?/);
+      return match ? Number(match[0]) : NaN;
+    }
+    if (value && typeof value === "object") {
+      return parseKid100WinsPctValueJokerjoe(value.pct ?? value.percent ?? value.percentage ?? value.value);
+    }
+    return NaN;
   }
 
   function setKid100WinsStatusJokerjoe(message, color) {
@@ -883,20 +904,59 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     status.style.color = color || "#94a3b8";
   }
 
+  function getKid100WinsPickLabelJokerjoe() {
+    return state.kid100WinsLowPercentOn ? "lowest" : "highest";
+  }
+
+  function getKid100WinsModeLabelJokerjoe() {
+    return state.kid100WinsLowPercentOn ? "Low % Auto" : "Auto Trader";
+  }
+
+  function isKid100WinsAutoActiveJokerjoe() {
+    return !!(state.kid100WinsAutoOn || state.kid100WinsLowPercentOn);
+  }
+
+  function isKid100WinsAiDiffersActiveJokerjoe() {
+    return !!(state.kid100WinsAiDiffersOn && isLifetimeFeatureUserJokerjoe());
+  }
+
   function getKid100WinsBestDigitJokerjoe(entries) {
     const rows = Array.isArray(entries) ? entries : [];
+    const lowMode = !!state.kid100WinsLowPercentOn;
     const sorted = rows
-      .map((row) => ({ digit: Number(row && row.digit), pct: Number(row && row.pct) }))
+      .map((row) => ({ digit: Number(row && row.digit), pct: parseKid100WinsPctValueJokerjoe(row && row.pct) }))
       .filter((row) => Number.isInteger(row.digit) && row.digit >= 0 && row.digit <= 9 && Number.isFinite(row.pct))
-      .sort((a, b) => b.pct - a.pct || a.digit - b.digit);
+      .sort((a, b) => lowMode ? (a.pct - b.pct || a.digit - b.digit) : (b.pct - a.pct || a.digit - b.digit));
     return sorted.length ? sorted[0] : null;
   }
 
-  function getKid100WinsLatestBestJokerjoe() {
-    if (state.kid100WinsLatestBest) return state.kid100WinsLatestBest;
-    const best = getKid100WinsBestDigitJokerjoe(parseMatchesEntriesFromDiffersDomJokerjoe());
+  function parseKid100WinsEntriesFromDigitGridJokerjoe() {
+    const out = [];
+    for (let digit = 0; digit <= 9; digit++) {
+      const node = getEl(`percent-${digit}`);
+      const pct = parseKid100WinsPctValueJokerjoe(node && (node.innerText || node.textContent || ""));
+      if (Number.isFinite(pct)) out.push({ digit, pct });
+    }
+    return out;
+  }
+
+  function hasKid100WinsPctSignalJokerjoe(entries) {
+    return Array.isArray(entries) && entries.some((row) => parseKid100WinsPctValueJokerjoe(row && row.pct) > 0);
+  }
+
+  function getKid100WinsFreshEntriesJokerjoe(data) {
+    const fromPayload = parseMatchesEntriesFromDigitAnalysisPayloadJokerjoe(data);
+    if (hasKid100WinsPctSignalJokerjoe(fromPayload)) return fromPayload;
+    const fromGrid = parseKid100WinsEntriesFromDigitGridJokerjoe();
+    if (hasKid100WinsPctSignalJokerjoe(fromGrid)) return fromGrid;
+    return [];
+  }
+
+  function getKid100WinsLatestBestJokerjoe(data) {
+    const hasLivePayload = data !== undefined && data !== null;
+    const best = getKid100WinsBestDigitJokerjoe(getKid100WinsFreshEntriesJokerjoe(data));
     if (best) state.kid100WinsLatestBest = best;
-    return best || null;
+    return best || (hasLivePayload ? null : state.kid100WinsLatestBest) || null;
   }
 
   function syncKid100WinsBarrierToBestJokerjoe(best) {
@@ -906,44 +966,95 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
   }
 
   function renderKid100WinsAutoTraderJokerjoe() {
-    if (!applyKid100WinsLifetimeGateJokerjoe()) return;
+    applyKid100WinsLifetimeGateJokerjoe();
+    const aiDiffersAllowed = applyKid100WinsAiDiffersGateJokerjoe();
     const btn = getEl("kid100WinsAutoTraderToggleJokerjoe");
+    const lowBtn = getEl("kid100WinsLowPercentToggleJokerjoe");
+    const dockQuickStopBtn = getEl("kid100WinsQuickStopDockBtnJokerjoe");
+    const aiBtn = getEl("kid100WinsAiDiffersToggleJokerjoe");
     const status = getEl("kid100WinsAutoStatusJokerjoe");
-    const on = !!state.kid100WinsAutoOn;
+    const modeStatus = getEl("kid100WinsPickModeStatusJokerjoe");
+    const aiStatus = getEl("kid100WinsAiDiffersStatusJokerjoe");
+    const quickStopBtn = getEl("kid100WinsQuickStopBtnJokerjoe");
+    const highOn = !!state.kid100WinsAutoOn;
+    const lowOn = !!state.kid100WinsLowPercentOn;
+    const on = isKid100WinsAutoActiveJokerjoe();
     const busy = !!(state.kid100WinsAutoBusy || state.kid100WinsBusy);
     const best = state.kid100WinsLatestBest;
+    const pickLabel = getKid100WinsPickLabelJokerjoe();
+    const modeLabel = getKid100WinsModeLabelJokerjoe();
     const tick = state.kid100WinsLatestTick === null ? NaN : Number(state.kid100WinsLatestTick);
     const lastTick = state.kid100WinsAutoLastTick === null ? NaN : Number(state.kid100WinsAutoLastTick);
     const remaining = Number.isFinite(tick) && Number.isFinite(lastTick)
       ? Math.max(0, 5 - Math.max(0, tick - lastTick))
       : 5;
     if (btn) {
-      btn.innerText = on ? "ON" : "OFF";
-      btn.style.background = on ? "#22c55e" : "#334155";
-      btn.style.color = on ? "#03140a" : "#f8fafc";
-      btn.style.boxShadow = on ? "0 0 18px rgba(34,197,94,0.24)" : "none";
+      btn.innerText = highOn ? "ON" : "OFF";
+      btn.style.background = highOn ? "#22c55e" : "#334155";
+      btn.style.color = highOn ? "#03140a" : "#f8fafc";
+      btn.style.boxShadow = highOn ? "0 0 18px rgba(34,197,94,0.24)" : "none";
+    }
+    if (lowBtn) {
+      lowBtn.innerText = lowOn ? "ON" : "OFF";
+      lowBtn.style.background = lowOn ? "#38bdf8" : "#334155";
+      lowBtn.style.color = lowOn ? "#02111d" : "#f8fafc";
+      lowBtn.style.boxShadow = lowOn ? "0 0 18px rgba(56,189,248,0.24)" : "none";
+    }
+    if (modeStatus) {
+      modeStatus.innerText = lowOn ? "ON • waits for lowest % digit to print" : "OFF • waits for lowest % digit to print";
+      modeStatus.style.color = lowOn ? "#7dd3fc" : "#94a3b8";
+    }
+    if (aiBtn) {
+      const aiOn = isKid100WinsAiDiffersActiveJokerjoe();
+      aiBtn.innerText = aiOn ? "ON" : "OFF";
+      aiBtn.style.background = aiOn ? "#a855f7" : "#334155";
+      aiBtn.style.color = aiOn ? "#f5f3ff" : "#f8fafc";
+      aiBtn.style.boxShadow = aiOn ? "0 0 18px rgba(168,85,247,0.24)" : "none";
+    }
+    if (aiStatus) {
+      if (!aiDiffersAllowed) {
+        aiStatus.innerText = "Lifetime only • blocks repeat-risk differs trades";
+        aiStatus.style.color = "#94a3b8";
+      } else if (isKid100WinsAiDiffersActiveJokerjoe()) {
+        aiStatus.innerText = "ON • Martha blocks DIFFERS when repeat risk is too high";
+        aiStatus.style.color = "#d8b4fe";
+      } else {
+        aiStatus.innerText = "OFF • DIFFERS trades pass without Martha repeat-risk veto";
+        aiStatus.style.color = "#94a3b8";
+      }
+    }
+    if (quickStopBtn) {
+      quickStopBtn.disabled = !on;
+      quickStopBtn.style.opacity = on ? "1" : "0.65";
+      quickStopBtn.style.cursor = on ? "pointer" : "not-allowed";
+    }
+    if (dockQuickStopBtn) {
+      dockQuickStopBtn.style.display = on ? "" : "none";
+      dockQuickStopBtn.disabled = !on;
+      dockQuickStopBtn.style.opacity = on ? "1" : "0.65";
+      dockQuickStopBtn.style.cursor = on ? "pointer" : "not-allowed";
     }
     if (status) {
       if (!on) {
-        status.innerText = "OFF • picks highest % every 5 ticks";
+        status.innerText = "OFF • ready";
         status.style.color = "#94a3b8";
       } else if (busy) {
         status.innerText = best
-          ? `ON • sending highest digit ${best.digit} (${best.pct.toFixed(1)}%)`
+          ? `${modeLabel} • sending DIFFERS ${best.digit} right after it printed`
           : "ON • sending...";
         status.style.color = "#38bdf8";
       } else if (best) {
-        status.innerText = `ON • highest ${best.digit} (${best.pct.toFixed(1)}%) • next in ${remaining} tick${remaining === 1 ? "" : "s"}`;
+        status.innerText = `${modeLabel} • watching ${pickLabel} % digit ${best.digit} (${best.pct.toFixed(1)}%) • next trade in ${remaining} tick${remaining === 1 ? "" : "s"}`;
         status.style.color = "#86efac";
       } else {
-        status.innerText = "ON • waiting for live digit percentages...";
+        status.innerText = `${modeLabel} • waiting for live digit percentages...`;
         status.style.color = "#facc15";
       }
     }
   }
 
   function renderKid100WinsButtonJokerjoe() {
-    if (!applyKid100WinsLifetimeGateJokerjoe()) return;
+    applyKid100WinsLifetimeGateJokerjoe();
     const btn = getEl("kid100WinsStartBtnJokerjoe");
     if (!btn) return;
     btn.disabled = !!state.kid100WinsBusy;
@@ -965,25 +1076,51 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     }
     if (barrierNode) barrierNode.value = String(barrier);
     const fallbackStake = getManualStakeValueJokerjoe();
-    const matchStake = getKid100WinsStakeJokerjoe("kid100WinsMatchStakeJokerjoe", fallbackStake);
     const differsStake = getKid100WinsStakeJokerjoe("kid100WinsDiffersStakeJokerjoe", fallbackStake);
     const duration = getDurationTicksJokerjoe();
     const symbol = (typeof window.getConfirmedMarketSymbol === "function")
       ? window.getConfirmedMarketSymbol()
       : ((document.getElementById("symbol") || {}).value || "R_25");
-    return [
-      { type: "MATCHES", barrier, stake: matchStake, amount: matchStake, duration, duration_unit: "t", symbol },
-      { type: "DIFFERS", barrier, stake: differsStake, amount: differsStake, duration, duration_unit: "t", symbol },
-    ];
+    if (!(differsStake > 0)) throw new Error("Set DIFFERS stake above $0.");
+    return [{ type: "DIFFERS", barrier, stake: differsStake, amount: differsStake, duration, duration_unit: "t", symbol }];
+  }
+
+  function publishKid100WinsAiDiffersDecisionJokerjoe(decision) {
+    try {
+      if (window.MarthaAI && typeof window.MarthaAI.observeAutoDecision === "function") {
+        window.MarthaAI.observeAutoDecision({
+          active: true,
+          action: decision && decision.action,
+          approved: !!(decision && decision.approved),
+          confidence: Number((decision && decision.confidence) || 0),
+          threshold: Number((decision && decision.threshold) || 0),
+          reason: (decision && decision.reason) || "",
+        });
+      }
+    } catch (_err) {}
+  }
+
+  function evaluateKid100WinsAiDiffersJokerjoe(action) {
+    if (!isKid100WinsAiDiffersActiveJokerjoe()) return { approved: true };
+    if (!(window.MarthaAI && typeof window.MarthaAI.evaluateDiffersRepeatRisk === "function")) {
+      return { approved: true, reason: "AI DIFFERS fallback allowed the trade because Martha repeat-risk data is unavailable." };
+    }
+    const threshold = window.MarthaAI.getState && window.MarthaAI.getState().threshold;
+    const decision = window.MarthaAI.evaluateDiffersRepeatRisk(Object.assign({}, action || {}, {
+      profile: PROFILE,
+      source: (action && action.source) || "jokerjoe_kid100wins_ai_differs",
+      type: "DIFFERS",
+    }), {
+      minimumThreshold: Math.max(75, Number(threshold || 75)),
+    });
+    publishKid100WinsAiDiffersDecisionJokerjoe(decision);
+    return decision || { approved: true };
   }
 
   async function runKid100WinsPairJokerjoe(options) {
     const opts = options || {};
     const autoRun = !!opts.auto;
-    if (!applyKid100WinsLifetimeGateJokerjoe()) {
-      safeToast("kid100%wins is for lifetime users only.", "error");
-      return { placed: 0, status: "blocked" };
-    }
+    applyKid100WinsLifetimeGateJokerjoe();
     if (state.kid100WinsBusy) return { placed: 0, status: "busy" };
     if (typeof apiConnected !== "undefined" && !apiConnected) {
       const msg = "Connect your API first.";
@@ -1002,62 +1139,72 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
       return { placed: 0, status: "invalid" };
     }
 
-    const barrier = Number(payloads[0].barrier);
-    const totalStake = payloads.reduce((sum, item) => sum + Number(item.stake || 0), 0);
-    const sendPair = async () => {
+    const payload = payloads[0];
+    const barrier = Number(payload.barrier);
+    const totalStake = Number(payload.stake || 0);
+    const pickLabel = autoRun || state.kid100WinsLowPercentOn ? getKid100WinsPickLabelJokerjoe() : "";
+    const action = {
+      profile: PROFILE,
+      source: autoRun ? "jokerjoe_kid100wins_auto_differs" : "jokerjoe_kid100wins_differs",
+      type: "DIFFERS",
+      label: `${autoRun ? `${getKid100WinsModeLabelJokerjoe()} ` : ""}kid100%wins ${barrier}`,
+      barrier,
+      symbol: payload.symbol,
+      stake: totalStake,
+      duration: payload.duration,
+      duration_unit: "t",
+      batch_count: 1,
+      trigger_tick: opts.triggerTick,
+      trigger_digit: opts.triggerDigit,
+    };
+    const sendDiffers = async () => {
       state.kid100WinsBusy = true;
       renderKid100WinsButtonJokerjoe();
-      const label = autoRun ? "Auto Trader" : "kid100%wins";
-      setKid100WinsStatusJokerjoe(`${label} sending MATCHES + DIFFERS on ${barrier}...`, "#38bdf8");
-      const jobs = payloads.map((payload) => sendFastManualTradeJokerjoe(payload, {
+      const label = autoRun ? getKid100WinsModeLabelJokerjoe() : "kid100%wins";
+      setKid100WinsStatusJokerjoe(`${label} sending DIFFERS ${barrier} right after the trigger digit printed...`, "#38bdf8");
+      const result = await sendFastManualTradeJokerjoe(payload, {
         turbo: true,
         queue: false,
         useSocket: true,
         fireAndForget: true,
         skipMartha: true,
-      }));
-      const results = await Promise.allSettled(jobs);
-      const placed = results.filter((result) => (
-        result.status === "fulfilled" &&
-        result.value &&
-        result.value.data &&
-        result.value.data.status === "success"
-      )).length;
-      return { placed, results };
+      });
+      const placed = !!(result && result.data && result.data.status === "success") ? 1 : 0;
+      return { placed, result };
     };
 
     try {
-      const action = {
-        profile: PROFILE,
-        source: autoRun ? "jokerjoe_kid100wins_auto_pair" : "jokerjoe_kid100wins_pair",
-        type: "MATCHES_DIFFERS_PAIR",
-        label: `${autoRun ? "Auto Trader " : ""}kid100%wins ${barrier}`,
-        barrier,
-        symbol: payloads[0].symbol,
-        stake: totalStake,
-        duration: payloads[0].duration,
-        duration_unit: "t",
-        batch_count: 2,
-      };
-      const useMartha = !autoRun && window.MarthaAI && typeof window.MarthaAI.guardAction === "function";
-      const result = useMartha ? await window.MarthaAI.guardAction(action, sendPair) : await sendPair();
+      const aiDiffersDecision = evaluateKid100WinsAiDiffersJokerjoe(action);
+      if (aiDiffersDecision && aiDiffersDecision.approved === false) {
+        const msg = `AI DIFFERS blocked DIFFERS ${barrier}. ${aiDiffersDecision.reason || "Repeat risk is too high."}`;
+        setKid100WinsStatusJokerjoe(msg, "#fca5a5");
+        if (!autoRun) safeToast(msg, "error");
+        return {
+          placed: 0,
+          status: "blocked",
+          data: { status: "blocked", message: msg, martha_ai: aiDiffersDecision },
+          martha_ai: aiDiffersDecision,
+        };
+      }
+      const useMartha = !autoRun && !isKid100WinsAiDiffersActiveJokerjoe() && window.MarthaAI && typeof window.MarthaAI.guardAction === "function";
+      const result = useMartha ? await window.MarthaAI.guardAction(action, sendDiffers) : await sendDiffers();
       if (result && (result.status === "blocked" || (result.data && result.data.status === "blocked"))) return result;
       const placed = Number(result && result.placed);
-      if (placed === 2) {
-        const msg = `MATCHES + DIFFERS ${barrier} sent on the same tick request.`;
-        setKid100WinsStatusJokerjoe(autoRun ? `Auto Trader: ${msg}` : msg, "#86efac");
+      if (placed === 1) {
+        const msg = `DIFFERS ${barrier} sent instantly after the trigger digit.`;
+        setKid100WinsStatusJokerjoe(autoRun ? `${getKid100WinsModeLabelJokerjoe()}: ${msg}` : msg, "#86efac");
         if (!autoRun) {
-          safeToast(`😈 kid100%wins ${barrier}: MATCHES + DIFFERS sent`, "success");
+          safeToast(`😈 kid100%wins ${barrier}: DIFFERS sent`, "success");
           window.closeKid100WinsPopupJokerjoe();
         }
       } else {
-        const msg = `Partial send (${Number.isFinite(placed) ? placed : 0}/2). Try again.`;
-        setKid100WinsStatusJokerjoe(autoRun ? `Auto Trader: ${msg}` : msg, "#fca5a5");
-        if (!autoRun) safeToast(`kid100%wins partial send (${Number.isFinite(placed) ? placed : 0}/2)`, "error");
+        const msg = "DIFFERS trade failed to send. Try again.";
+        setKid100WinsStatusJokerjoe(autoRun ? `${getKid100WinsModeLabelJokerjoe()}: ${msg}` : msg, "#fca5a5");
+        if (!autoRun) safeToast("kid100%wins DIFFERS failed", "error");
       }
       return result;
     } catch (_err) {
-      setKid100WinsStatusJokerjoe(autoRun ? "Auto Trader failed to send." : "kid100%wins failed to send.", "#fca5a5");
+      setKid100WinsStatusJokerjoe(autoRun ? `${getKid100WinsModeLabelJokerjoe()} failed to send.` : "kid100%wins failed to send.", "#fca5a5");
       if (!autoRun) safeToast("kid100%wins failed", "error");
       return { placed: 0, status: "failed" };
     } finally {
@@ -1066,20 +1213,21 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     }
   }
 
-  async function maybeRunKid100WinsAutoTraderJokerjoe(tickCount) {
-    if (!state.kid100WinsAutoOn || !isActive()) return;
-    if (!applyKid100WinsLifetimeGateJokerjoe()) {
-      state.kid100WinsAutoOn = false;
-      renderKid100WinsAutoTraderJokerjoe();
-      return;
-    }
-    const rawTick = tickCount !== undefined && tickCount !== null ? tickCount : state.kid100WinsLatestTick;
-    const tick = Number(rawTick);
-    if (!Number.isFinite(tick)) {
+  async function maybeRunKid100WinsAutoTraderJokerjoe(analysisData) {
+    if (!isKid100WinsAutoActiveJokerjoe() || !isActive()) return;
+    applyKid100WinsLifetimeGateJokerjoe();
+    const tick = Number(analysisData && analysisData.tick_count);
+    const lastDigit = Number((analysisData && (analysisData.last_digit ?? analysisData.digit)));
+    if (!Number.isFinite(tick) || !Number.isInteger(lastDigit) || lastDigit < 0 || lastDigit > 9) {
       renderKid100WinsAutoTraderJokerjoe();
       return;
     }
     state.kid100WinsLatestTick = tick;
+    state.kid100WinsLastSeenDigit = lastDigit;
+    if (state.kid100WinsStopRequested) {
+      renderKid100WinsAutoTraderJokerjoe();
+      return;
+    }
     const lastTick = state.kid100WinsAutoLastTick === null ? NaN : Number(state.kid100WinsAutoLastTick);
     if (!Number.isFinite(lastTick) || tick < lastTick) {
       state.kid100WinsAutoLastTick = tick;
@@ -1090,8 +1238,12 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
       renderKid100WinsAutoTraderJokerjoe();
       return;
     }
-    const best = getKid100WinsLatestBestJokerjoe();
+    const best = getKid100WinsLatestBestJokerjoe(analysisData);
     if (!best) {
+      renderKid100WinsAutoTraderJokerjoe();
+      return;
+    }
+    if (Number(best.digit) !== lastDigit) {
       renderKid100WinsAutoTraderJokerjoe();
       return;
     }
@@ -1101,7 +1253,7 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     syncKid100WinsBarrierToBestJokerjoe(best);
     renderKid100WinsAutoTraderJokerjoe();
     try {
-      await runKid100WinsPairJokerjoe({ auto: true, barrierOverride: best.digit });
+      await runKid100WinsPairJokerjoe({ auto: true, barrierOverride: best.digit, triggerTick: tick, triggerDigit: lastDigit });
     } finally {
       state.kid100WinsAutoBusy = false;
       renderKid100WinsAutoTraderJokerjoe();
@@ -1111,14 +1263,15 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
   function updateKid100WinsAutoSnapshotJokerjoe(data) {
     const tick = data && data.tick_count !== undefined ? Number(data.tick_count) : NaN;
     if (Number.isFinite(tick)) state.kid100WinsLatestTick = tick;
-    const entries = parseMatchesEntriesFromDigitAnalysisPayloadJokerjoe(data) || parseMatchesEntriesFromDiffersDomJokerjoe();
-    const best = getKid100WinsBestDigitJokerjoe(entries);
+    const lastDigit = Number((data && (data.last_digit ?? data.digit)));
+    if (Number.isInteger(lastDigit) && lastDigit >= 0 && lastDigit <= 9) state.kid100WinsLastSeenDigit = lastDigit;
+    const best = getKid100WinsLatestBestJokerjoe(data);
     if (best) {
       state.kid100WinsLatestBest = best;
-      if (state.kid100WinsAutoOn) syncKid100WinsBarrierToBestJokerjoe(best);
+      if (isKid100WinsAutoActiveJokerjoe()) syncKid100WinsBarrierToBestJokerjoe(best);
     }
     renderKid100WinsAutoTraderJokerjoe();
-    if (state.kid100WinsAutoOn && Number.isFinite(tick)) maybeRunKid100WinsAutoTraderJokerjoe(tick);
+    if (isKid100WinsAutoActiveJokerjoe() && Number.isFinite(tick)) maybeRunKid100WinsAutoTraderJokerjoe(data);
   }
 
   async function placeExactFiveDiffersBatchJokerjoe(digit) {
@@ -1618,11 +1771,14 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
       if (Array.isArray(src)) {
         const arr = [];
         src.forEach((item, idx) => {
-          if (typeof item === "number") arr.push({ digit: idx, pct: Number(item) });
+          if (item !== null && item !== undefined && typeof item !== "object") {
+            const p = parseKid100WinsPctValueJokerjoe(item);
+            if (Number.isFinite(p)) arr.push({ digit: idx, pct: p });
+          }
           else if (item && typeof item === "object") {
             const d = item.digit ?? item.number ?? item.n ?? idx;
             const p = item.pct ?? item.percent ?? item.percentage ?? item.value;
-            if (d !== undefined && p !== undefined) arr.push({ digit: d, pct: Number(p) });
+            if (d !== undefined && p !== undefined) arr.push({ digit: d, pct: parseKid100WinsPctValueJokerjoe(p) });
           }
         });
         if (arr.length) return arr;
@@ -1633,9 +1789,10 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
           if (v && typeof v === "object") {
             const p = v.pct ?? v.percent ?? v.percentage ?? v.value;
             const d = v.digit ?? v.number ?? k;
-            if (p !== undefined) arr.push({ digit: d, pct: Number(p) });
-          } else if (!Number.isNaN(Number(v))) {
-            arr.push({ digit: Number(k), pct: Number(v) });
+            if (p !== undefined) arr.push({ digit: d, pct: parseKid100WinsPctValueJokerjoe(p) });
+          } else {
+            const p = parseKid100WinsPctValueJokerjoe(v);
+            if (Number.isFinite(p)) arr.push({ digit: Number(k), pct: p });
           }
         });
         if (arr.length) return arr;
@@ -1706,7 +1863,7 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
       state.matchSniper5xOn ||
       state.randomMatchesDiffersOn ||
       state.randomMatchesDiffersModalOpen ||
-      state.kid100WinsAutoOn
+      isKid100WinsAutoActiveJokerjoe()
     );
   }
 
@@ -1722,7 +1879,7 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
         updateRandomMatchesDiffersStatusJokerjoe();
         updateRandomMatchesDiffersModalUiJokerjoe();
       }
-      if (state.kid100WinsAutoOn) {
+      if (isKid100WinsAutoActiveJokerjoe()) {
         updateKid100WinsAutoSnapshotJokerjoe(null);
       }
     } catch (e) {}
@@ -1965,9 +2122,9 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
       bind("tick", (data) => {
         if (!isActive()) return;
         trackBlackcardTickJokerjoe(data || {});
-        if (state.kid100WinsAutoOn && data && data.tick_count !== undefined) {
+        if (isKid100WinsAutoActiveJokerjoe() && data && data.tick_count !== undefined) {
           state.kid100WinsLatestTick = Number(data.tick_count);
-          maybeRunKid100WinsAutoTraderJokerjoe(data.tick_count);
+          renderKid100WinsAutoTraderJokerjoe();
         }
       });
       if (app && typeof app.logSocketListenerCounts === "function") app.logSocketListenerCounts("jokerjoe_profile_init");
@@ -2302,24 +2459,21 @@ window.hideBlackcardPopupJokerjoe = function () {
 };
 
 window.openKid100WinsPopupJokerjoe = function () {
-  if (!applyKid100WinsLifetimeGateJokerjoe()) {
-    safeToast("kid100%wins is for lifetime users only.", "error");
-    return;
-  }
+  applyKid100WinsLifetimeGateJokerjoe();
+  applyKid100WinsAiDiffersGateJokerjoe();
   const popup = getEl("kid100WinsPopupJokerjoe");
   if (!popup) return;
   const barrierNode = getEl("kid100WinsBarrierJokerjoe");
-  const matchStakeNode = getEl("kid100WinsMatchStakeJokerjoe");
   const differsStakeNode = getEl("kid100WinsDiffersStakeJokerjoe");
   const stake = getManualStakeValueJokerjoe();
   if (barrierNode) barrierNode.value = String(currentBarrier());
-  if (matchStakeNode && !Number(matchStakeNode.value)) matchStakeNode.value = String(stake);
-  if (differsStakeNode && !Number(differsStakeNode.value)) differsStakeNode.value = String(stake);
+  if (differsStakeNode && String(differsStakeNode.value ?? "").trim() === "") differsStakeNode.value = String(stake);
   const best = getKid100WinsLatestBestJokerjoe();
-  if (state.kid100WinsAutoOn && best) syncKid100WinsBarrierToBestJokerjoe(best);
-  setKid100WinsStatusJokerjoe(state.kid100WinsAutoOn
-    ? "Auto Trader is ON. It uses the highest % digit, popup stakes, and the JokerJoe budget cap."
-    : "Uses the current JokerJoe duration, market, popup stakes, and JokerJoe budget cap.", "#94a3b8");
+  if (isKid100WinsAutoActiveJokerjoe() && best) syncKid100WinsBarrierToBestJokerjoe(best);
+  const pickLabel = getKid100WinsPickLabelJokerjoe();
+  setKid100WinsStatusJokerjoe(isKid100WinsAutoActiveJokerjoe()
+    ? `${getKid100WinsModeLabelJokerjoe()} is ON. It waits for the ${pickLabel} % digit to print, then sends DIFFERS instantly.`
+    : "Manual START sends a fast DIFFERS trade on the selected barrier. Auto modes wait for the watched digit to print first.", "#94a3b8");
   renderKid100WinsButtonJokerjoe();
   popup.style.display = "flex";
 };
@@ -2329,25 +2483,76 @@ window.closeKid100WinsPopupJokerjoe = function () {
   if (popup) popup.style.display = "none";
 };
 
-window.toggleKid100WinsAutoTraderJokerjoe = function () {
-  if (!applyKid100WinsLifetimeGateJokerjoe()) {
-    safeToast("kid100%wins is for lifetime users only.", "error");
+window.toggleKid100WinsLowPercentJokerjoe = function () {
+  applyKid100WinsLifetimeGateJokerjoe();
+  const nextOn = !state.kid100WinsLowPercentOn;
+  if (nextOn && typeof apiConnected !== "undefined" && !apiConnected) {
+    safeToast("Connect your API first.", "error");
     return;
   }
+  state.kid100WinsLowPercentOn = nextOn;
+  if (nextOn) state.kid100WinsAutoOn = false;
+  state.kid100WinsAutoBusy = false;
+  state.kid100WinsStopRequested = false;
+  state.kid100WinsAutoLastTick = nextOn && state.kid100WinsLatestTick !== null && Number.isFinite(Number(state.kid100WinsLatestTick))
+    ? (Number(state.kid100WinsLatestTick) - 5)
+    : null;
+  state.kid100WinsLatestBest = null;
+  const best = getKid100WinsLatestBestJokerjoe();
+  if (best && isKid100WinsAutoActiveJokerjoe()) syncKid100WinsBarrierToBestJokerjoe(best);
+  setKid100WinsStatusJokerjoe(state.kid100WinsLowPercentOn
+    ? "Low % Auto ON. It will wait for the lowest % digit to print, then send DIFFERS instantly."
+    : "Low % Auto OFF. Manual kid100%wins is ready.", state.kid100WinsLowPercentOn ? "#7dd3fc" : "#94a3b8");
+  safeToast(`kid100%wins Low % Auto: ${state.kid100WinsLowPercentOn ? "ON" : "OFF"}`, state.kid100WinsLowPercentOn ? "success" : "error");
+  renderKid100WinsAutoTraderJokerjoe();
+  refreshActivityPollJokerjoe();
+};
+
+window.toggleKid100WinsAiDiffersJokerjoe = function () {
+  if (!applyKid100WinsAiDiffersGateJokerjoe()) {
+    safeToast("AI DIFFERS is for lifetime users only.", "error");
+    return;
+  }
+  state.kid100WinsAiDiffersOn = !state.kid100WinsAiDiffersOn;
+  setKid100WinsStatusJokerjoe(state.kid100WinsAiDiffersOn
+    ? "AI DIFFERS ON. Martha will block DIFFERS when repeat risk looks too high."
+    : "AI DIFFERS OFF. DIFFERS trades will not use Martha repeat-risk veto.", state.kid100WinsAiDiffersOn ? "#d8b4fe" : "#94a3b8");
+  safeToast(`AI DIFFERS: ${state.kid100WinsAiDiffersOn ? "ON" : "OFF"}`, state.kid100WinsAiDiffersOn ? "success" : "error");
+  renderKid100WinsAutoTraderJokerjoe();
+};
+
+window.stopKid100WinsAutosJokerjoe = function () {
+  const wasActive = isKid100WinsAutoActiveJokerjoe();
+  state.kid100WinsAutoOn = false;
+  state.kid100WinsLowPercentOn = false;
+  state.kid100WinsAutoBusy = false;
+  state.kid100WinsStopRequested = true;
+  state.kid100WinsLatestBest = null;
+  setKid100WinsStatusJokerjoe("Quick Stop pressed. Kid100 auto modes are OFF.", "#fca5a5");
+  renderKid100WinsAutoTraderJokerjoe();
+  refreshActivityPollJokerjoe();
+  if (wasActive) safeToast("kid100%wins Quick Stop: OFF", "error");
+};
+
+window.toggleKid100WinsAutoTraderJokerjoe = function () {
+  applyKid100WinsLifetimeGateJokerjoe();
   const nextOn = !state.kid100WinsAutoOn;
   if (nextOn && typeof apiConnected !== "undefined" && !apiConnected) {
     safeToast("Connect your API first.", "error");
     return;
   }
   state.kid100WinsAutoOn = nextOn;
+  if (nextOn) state.kid100WinsLowPercentOn = false;
   state.kid100WinsAutoBusy = false;
+  state.kid100WinsStopRequested = false;
+  state.kid100WinsLatestBest = null;
   if (nextOn) {
     state.kid100WinsAutoLastTick = state.kid100WinsLatestTick !== null && Number.isFinite(Number(state.kid100WinsLatestTick))
-      ? Number(state.kid100WinsLatestTick)
+      ? (Number(state.kid100WinsLatestTick) - 5)
       : null;
     const best = getKid100WinsLatestBestJokerjoe();
     if (best) syncKid100WinsBarrierToBestJokerjoe(best);
-    setKid100WinsStatusJokerjoe("Auto Trader ON. It will fire the highest % digit every 5 ticks.", "#86efac");
+    setKid100WinsStatusJokerjoe("Auto Trader ON. It will wait for the highest % digit to print, then send DIFFERS instantly.", "#86efac");
     safeToast("😈 kid100%wins Auto Trader: ON", "success");
   } else {
     setKid100WinsStatusJokerjoe("Auto Trader OFF. Manual kid100%wins is ready.", "#94a3b8");

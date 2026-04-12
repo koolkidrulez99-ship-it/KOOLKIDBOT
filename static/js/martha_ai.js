@@ -320,7 +320,7 @@
   }
 
   function observeTick(data) {
-    if (!state.enabled || !isAllowedForUser()) return;
+    if (!isAllowedForUser()) return;
     const digit = Number(data && data.digit);
     const price = Number(
       (data && (data.quote ?? data.price ?? data.tick ?? data.value ?? data.spot)) ||
@@ -335,16 +335,16 @@
     };
     state.ticks.push(entry);
     if (state.ticks.length > MAX_TICKS) state.ticks.splice(0, state.ticks.length - MAX_TICKS);
-    if (nowMs() - state.lastScanAt > SCAN_INTERVAL_MS) scanCurrentProfile();
+    if (state.enabled && nowMs() - state.lastScanAt > SCAN_INTERVAL_MS) scanCurrentProfile();
   }
 
   function observeDigitAnalysis(data) {
-    if (!state.enabled || !isAllowedForUser()) return;
+    if (!isAllowedForUser()) return;
     state.latestDigitAnalysis = data || {};
   }
 
   function observeStats(data) {
-    if (!state.enabled || !isAllowedForUser()) return;
+    if (!isAllowedForUser()) return;
     const profile = normalizeProfile((data && data.profile) || state.activeProfile);
     state.profileStats[profile] = {
       wins: Number((data && data.wins) || 0),
@@ -355,7 +355,7 @@
   }
 
   function observeTradeEvent(data) {
-    if (!state.enabled || !isAllowedForUser()) return;
+    if (!isAllowedForUser()) return;
     const result = normalizeType(data && (data.result || data.status));
     if (!result || (result !== "WIN" && result !== "LOSS")) return;
     state.recentResults.push({
@@ -417,6 +417,120 @@
   function countDigit(digits, wanted) {
     const set = new Set(Array.isArray(wanted) ? wanted.map(Number) : [Number(wanted)]);
     return digits.filter((d) => set.has(Number(d))).length;
+  }
+
+  function readLatestDigitPercentage(target) {
+    const digit = Number(target);
+    if (!Number.isInteger(digit) || digit < 0 || digit > 9) return NaN;
+    const src = state.latestDigitAnalysis || {};
+    const candidates = [src.percentages, src.digit_percentages, src.digitPercents, src.digit_percent];
+    for (const candidate of candidates) {
+      if (!candidate) continue;
+      if (Array.isArray(candidate) && candidate[digit] !== undefined) {
+        const pct = Number(candidate[digit]);
+        if (Number.isFinite(pct)) return pct;
+      } else if (typeof candidate === "object") {
+        const raw = candidate[digit] !== undefined ? candidate[digit] : candidate[String(digit)];
+        if (raw && typeof raw === "object") {
+          const pct = Number(raw.pct ?? raw.percent ?? raw.percentage ?? raw.value);
+          if (Number.isFinite(pct)) return pct;
+        }
+        const pct = Number(raw);
+        if (Number.isFinite(pct)) return pct;
+      }
+    }
+    return NaN;
+  }
+
+  function evaluateDiffersRepeatRisk(action, options) {
+    const a = Object.assign({}, action || {});
+    a.profile = normalizeProfile(a.profile || state.activeProfile);
+    a.type = "DIFFERS";
+    a.symbol = safeText(a.symbol || readCurrentSymbol());
+
+    const barrier = Number(a.barrier);
+    const thresholdFloor = Number((options && options.minimumThreshold) || 75);
+    const threshold = Math.max(thresholdFloor, Number(state.threshold || DEFAULT_THRESHOLD));
+    if (!Number.isInteger(barrier) || barrier < 0 || barrier > 9) {
+      return {
+        action: a,
+        approved: true,
+        confidence: threshold,
+        threshold,
+        reason: "AI DIFFERS did not receive a valid barrier digit, so it allowed the trade safely",
+      };
+    }
+
+    const digits = recentDigits(20);
+    if (digits.length < 6) {
+      return {
+        action: a,
+        approved: true,
+        confidence: Math.max(threshold, 78),
+        threshold,
+        reason: "AI DIFFERS has limited live digit history, so it allowed the trade safely",
+      };
+    }
+
+    let score = 82;
+    const reasons = [];
+    const last = digits[digits.length - 1];
+    const prev = digits[digits.length - 2];
+    const last6 = digits.slice(-6);
+    const last10 = digits.slice(-10);
+    const last20 = digits.slice(-20);
+    const repeatPairs = last20.reduce((count, digit, idx) => (
+      idx > 0 && digit === barrier && last20[idx - 1] === barrier ? count + 1 : count
+    ), 0);
+    const recentCount6 = countDigit(last6, barrier);
+    const recentCount10 = countDigit(last10, barrier);
+    const livePct = readLatestDigitPercentage(barrier);
+
+    if (last === barrier && prev === barrier) {
+      score -= 34;
+      reasons.push(`Digit ${barrier} already printed back-to-back`);
+    } else if (repeatPairs >= 2) {
+      score -= 24;
+      reasons.push(`Digit ${barrier} has repeated back-to-back recently`);
+    } else if (repeatPairs === 1) {
+      score -= 12;
+      reasons.push(`Digit ${barrier} showed one recent back-to-back repeat`);
+    }
+
+    if (recentCount6 >= 3) {
+      score -= 16;
+      reasons.push(`Digit ${barrier} is clustering in the last 6 ticks`);
+    } else if (recentCount10 <= 1) {
+      score += 8;
+      reasons.push(`Digit ${barrier} is not overplayed in the last 10 ticks`);
+    }
+
+    if (Number.isFinite(livePct)) {
+      if (livePct >= 17) {
+        score -= 18;
+        reasons.push(`Digit ${barrier} is running hot at ${livePct.toFixed(1)}%`);
+      } else if (livePct >= 14) {
+        score -= 10;
+        reasons.push(`Digit ${barrier} is elevated at ${livePct.toFixed(1)}%`);
+      } else if (livePct <= 9) {
+        score += 10;
+        reasons.push(`Digit ${barrier} is calm at ${livePct.toFixed(1)}%`);
+      }
+    }
+
+    const movement = movementQuality();
+    score += Math.round((movement.clean - 0.5) * 8);
+    if (movement.clean >= 0.6) reasons.push("Market flow looks clean for a DIFFERS reaction");
+    else if (movement.clean <= 0.38) reasons.push("Choppy flow raises repeat-risk uncertainty");
+
+    const confidence = Math.round(clamp(score, 5, 95));
+    return {
+      action: a,
+      approved: confidence >= threshold,
+      confidence,
+      threshold,
+      reason: reasons.filter(Boolean).slice(0, 3).join(", ") || "AI DIFFERS repeat-risk scan completed",
+    };
   }
 
   function digitSetupScore(action) {
@@ -692,6 +806,7 @@
     observeAutoDecision,
     scanCurrentProfile,
     evaluateAction,
+    evaluateDiffersRepeatRisk,
     isEnabled: () => !!state.enabled,
     getState: () => Object.assign({}, state, {
       ticks: state.ticks.slice(-10),
