@@ -220,6 +220,31 @@ def test_apply_ntt_settings_update_supports_side_specific_durations():
     assert updated["no_touch_duration_unit"] == "m"
 
 
+def test_apply_ntt_settings_update_marks_current_market_when_manual_barriers_change():
+    state = {
+        "current_symbol": "R_25",
+        "ntt": {
+            "duration": 5,
+            "duration_unit": "t",
+            "touch_barrier": "+0.12",
+            "no_touch_barrier": "+0.12",
+        },
+    }
+
+    updated = server._apply_ntt_settings_update(
+        state,
+        {
+            "touch_barrier": "+0.19",
+            "no_touch_barrier": "+0.27",
+        },
+    )
+
+    assert updated["touch_barrier"] == "+0.19"
+    assert updated["no_touch_barrier"] == "+0.27"
+    assert updated["market_default_symbol"] == "R_25"
+    assert updated["market_default_key"] == "R_25|5|T"
+
+
 def test_apply_ntt_market_default_barriers_uses_side_durations_when_shared_off(monkeypatch):
     calls = []
     state = {

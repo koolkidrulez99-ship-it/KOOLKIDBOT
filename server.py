@@ -4004,6 +4004,7 @@ def _build_unchain_side_duration_key(state, symbol, u):
 def _apply_ntt_settings_update(state, data):
     ntt = _ensure_ntt_state(state)
     data = data or {}
+    barrier_fields_updated = False
     if "touch_stake" in data:
         ntt["touch_stake"] = max(0.35, float(data.get("touch_stake") or 0.35))
     if "no_touch_stake" in data:
@@ -4032,8 +4033,10 @@ def _apply_ntt_settings_update(state, data):
         )
     if "touch_barrier" in data:
         ntt["touch_barrier"] = _format_ntt_barrier(data.get("touch_barrier"), "TOUCH", ntt.get("duration_unit", "t"))
+        barrier_fields_updated = True
     if "no_touch_barrier" in data:
         ntt["no_touch_barrier"] = _format_ntt_barrier(data.get("no_touch_barrier"), "NO_TOUCH", ntt.get("duration_unit", "t"))
+        barrier_fields_updated = True
     if "koolkid_touch_barrier" in data:
         ntt["koolkid_touch_barrier"] = _format_ntt_barrier(data.get("koolkid_touch_barrier"), "TOUCH", "t")
     if "koolkid_no_touch_barrier" in data:
@@ -4070,6 +4073,11 @@ def _apply_ntt_settings_update(state, data):
         ntt["sl"] = max(0.0, float(data.get("sl") or 0.0))
     if "auto_sl" in data:
         ntt["auto_sl"] = bool(data.get("auto_sl"))
+    if barrier_fields_updated:
+        current_symbol = str(state.get("current_symbol") or "").upper()
+        if current_symbol:
+            ntt["market_default_symbol"] = current_symbol
+            ntt["market_default_key"] = _build_ntt_market_default_key(state, current_symbol, ntt)
     _check_ntt_risk_block(state)
     return ntt
 
