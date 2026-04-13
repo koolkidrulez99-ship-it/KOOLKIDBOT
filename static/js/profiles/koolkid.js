@@ -4,7 +4,7 @@
   const FAST_INTERVAL_MS_TURBO = 120;  // faster Turbo lane for KOOLKID
   const FAST_MAX_BUY_QUEUE = 12;       // safety limit
   const DIGIT_RENDER_THROTTLE_MS = 350;
-  const GOLDEN_RENDER_THROTTLE_MS = 500;
+  const GOLDEN_RENDER_THROTTLE_MS = 180;
   const state = {
     lastSocket: null,
     socketBound: false,
@@ -15,6 +15,9 @@
     testtrial: null,
     kid2vix: null,
     goldenCardTradeBusy: false,
+    goldenCardAutoOn: false,
+    goldenCardAutoLastSignalKey: "",
+    goldenCardAutoWaitingReset: false,
     autoModes: {},
     turboMode: loadTurboModeKoolkid(),
     dual2xOpen: false,
@@ -94,9 +97,11 @@
     const safe = data || state.goldenCard || {};
     const modeNode = document.getElementById("goldenCardTradeModeKoolkid");
     const jumpNode = document.getElementById("goldenCardAddJumpPairsKoolkid");
+    const autoNode = document.getElementById("goldenCardAutoTraderKoolkid");
     const filterMode = normalizeGoldenCardFilterModeKoolkid(safe.filter_mode || "BOTH");
     if (modeNode) modeNode.value = filterMode;
     if (jumpNode) jumpNode.checked = !!safe.add_jump_pairs;
+    if (autoNode) autoNode.checked = !!state.goldenCardAutoOn;
   }
 
   function readGoldenCardOptionsKoolkid() {
@@ -905,6 +910,57 @@
     }, null);
   }
 
+  function getGoldenCardAutoCandidateKoolkid(data) {
+    const d = data || state.goldenCard || {};
+    const results = Array.isArray(d.results) ? d.results : [];
+    return results.find((row) => {
+      if (!row) return false;
+      if (!(row.ready_confirmed || row.entry_ready)) return false;
+      if (row.loss_guard_blocked || row.conflict_blocked || row.market_quality_ok === false) return false;
+      return Number(row.confidence_pct || 0) >= 85;
+    }) || null;
+  }
+
+  function syncGoldenCardAutoUiKoolkid() {
+    const autoNode = document.getElementById("goldenCardAutoTraderKoolkid");
+    const statusNode = document.getElementById("goldenCardAutoStatusKoolkid");
+    if (autoNode) autoNode.checked = !!state.goldenCardAutoOn;
+    if (statusNode) {
+      statusNode.style.color = state.goldenCardAutoOn ? "#fde68a" : "#94a3b8";
+      statusNode.innerText = state.goldenCardAutoOn
+        ? (state.goldenCardAutoWaitingReset
+            ? "Auto Trader ON. One 85%+ trade already fired. Waiting for the board to reset before the next one."
+            : "Auto Trader ON. Fires one trade instantly when a ready setup hits 85%+ confidence.")
+        : "Auto Trader OFF.";
+    }
+  }
+
+  async function maybeRunGoldenCardAutoKoolkid(data) {
+    if (!state.goldenCardAutoOn || state.goldenCardTradeBusy || !isActive()) return;
+    const row = getGoldenCardAutoCandidateKoolkid(data);
+    if (!row) {
+      state.goldenCardAutoLastSignalKey = "";
+      state.goldenCardAutoWaitingReset = false;
+      syncGoldenCardAutoUiKoolkid();
+      return;
+    }
+    if (state.goldenCardAutoWaitingReset) return;
+    const signalKey = [
+      String(row.symbol || "").toUpperCase(),
+      String(row.recommended_type || "").toUpperCase(),
+      Number(row.recommended_barrier || 0),
+      Number(row.confidence_pct || 0).toFixed(1),
+      Number(row.confirmation_count || 0),
+    ].join("|");
+    if (signalKey === state.goldenCardAutoLastSignalKey) return;
+    state.goldenCardAutoLastSignalKey = signalKey;
+    const placed = await window.placeGoldenCardTradeKoolkid(String(row.symbol || "").toUpperCase());
+    if (placed) {
+      state.goldenCardAutoWaitingReset = true;
+      syncGoldenCardAutoUiKoolkid();
+    }
+  }
+
   function renderGoldenCardHeroKoolkid(data, results) {
     const d = data || {};
     const btn = document.getElementById("goldenCardBtnKoolkid");
@@ -962,6 +1018,7 @@
       info.style.color = d.ready_state === "ready" ? "#facc15" : (running ? "#fde68a" : "#94a3b8");
       info.innerText = stateReason || statusText;
     }
+    syncGoldenCardAutoUiKoolkid();
     if (statusEl) statusEl.innerText = statusText;
     if (progressEl) {
       const modeText = filterMode === "OVER1" ? "OVER 1 only" : (filterMode === "UNDER8" ? "UNDER 8 only" : "Both");
@@ -1040,6 +1097,9 @@
         node.style.opacity = "0.78";
       }
     });
+    if (running && state.goldenCardAutoOn) {
+      Promise.resolve().then(() => maybeRunGoldenCardAutoKoolkid(d)).catch(() => {});
+    }
   }
 
 
@@ -1437,6 +1497,8 @@
       safeToast("Golden Card is already off", "info");
       return;
     }
+    state.goldenCardAutoLastSignalKey = "";
+    state.goldenCardAutoWaitingReset = false;
     const r = await postJSON("/stop_golden_card_koolkid", {});
     if (r.data && r.data.golden_card_data) renderGoldenCardKoolkid(r.data.golden_card_data);
     window.hideGoldenCardPopupKoolkid();
@@ -1462,12 +1524,23 @@
     }
   };
 
+  window.toggleGoldenCardAutoTraderKoolkid = function () {
+    state.goldenCardAutoOn = !state.goldenCardAutoOn;
+    if (!state.goldenCardAutoOn) {
+      state.goldenCardAutoLastSignalKey = "";
+      state.goldenCardAutoWaitingReset = false;
+    }
+    syncGoldenCardAutoUiKoolkid();
+    renderGoldenCardKoolkid(state.goldenCard || {});
+    safeToast(`Golden Card Auto Trader: ${state.goldenCardAutoOn ? "ON" : "OFF"}`, state.goldenCardAutoOn ? "success" : "error");
+  };
+
   window.placeGoldenCardTradeKoolkid = async function (symbol) {
-    if (state.goldenCardTradeBusy) return;
+    if (state.goldenCardTradeBusy) return false;
     const market = String(symbol || "").toUpperCase().trim();
     if (!market) {
       safeToast("Golden Card market missing", "error");
-      return;
+      return false;
     }
     const current = state.goldenCard || {};
     const row = Array.isArray(current.results)
@@ -1475,19 +1548,19 @@
       : null;
     if (!row || !(row.ready_confirmed || row.entry_ready)) {
       safeToast((row && row.ready_reason) || "Golden Card needs 2 clean checks before entry", "info");
-      return;
+      return false;
     }
     if (row && row.loss_guard_blocked) {
       safeToast(`Golden Card skipped on ${market}: ${row.loss_guard_reason || "losing digits are too hot"}`, "error");
-      return;
+      return false;
     }
     if (row && row.conflict_blocked) {
       safeToast("Golden Card skipped: another KOOLKID trade is still active", "info");
-      return;
+      return false;
     }
     if (row && row.market_quality_ok === false) {
       safeToast(`Golden Card skipped: confidence must stay above ${Number(row.confidence_threshold || 70).toFixed(0)}%`, "info");
-      return;
+      return false;
     }
     state.goldenCardTradeBusy = true;
     try {
@@ -1513,8 +1586,10 @@
       const ok = !!(r && r.data && r.data.status === "success");
       if (ok) safeToast(`Golden Card sent ${tradeLabel} on ${market}`, "success");
       else safeToast((r && r.data && r.data.message) || `Golden Card trade failed on ${market}`, "error");
+      return ok;
     } catch (e) {
       safeToast(`Golden Card trade failed on ${market}`, "error");
+      return false;
     } finally {
       state.goldenCardTradeBusy = false;
     }

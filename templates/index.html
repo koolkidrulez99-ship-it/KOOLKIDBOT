@@ -1638,6 +1638,11 @@ function bindSocketHandlers(){
     bind("tick", (data)=>{
         if(!apiConnected) return;
         try{ if(window.MarthaAI && typeof window.MarthaAI.observeTick === "function") window.MarthaAI.observeTick(data || {}); }catch(e){}
+        globalObservedTickCount = Math.max(
+            Number(globalObservedTickCount || 0) + 1,
+            Number((data && data.tick_count) || 0),
+            Number(globalObservedTickCount || 0)
+        );
 
         digitBuffer.push(data.digit);
         if(digitBuffer.length > 20) digitBuffer.shift();
@@ -1912,6 +1917,7 @@ let apiConnectPollTimer = null;
 let apiConnectPendingUntil = 0;
 let apiConnectSubmitting = false;
 let apiConnectRequestSeq = 0;
+let globalObservedTickCount = 0;
 const API_CONNECT_POLL_INTERVAL_MS = 2000;
 const API_CONNECT_POLL_MAX_ATTEMPTS = 8;
 const TICK_UI_THROTTLE_MS = 300;
@@ -1930,6 +1936,7 @@ let digitAnalysisUiTimer = null;
 let lastDigitAnalysisUiPaintAt = 0;
 let frontendReconnectCount = 0;
 let profileSwitchCleanupCount = 0;
+const profileInitCountByProfile = {};
 const runtimeCounterLastLogAt = {};
 const balanceUiCache = {
     balanceText: "",
@@ -2142,12 +2149,28 @@ function logRuntimeCounters(reason, force){
             live_digit_feed_item_count: Array.isArray(digitBuffer) ? digitBuffer.length : 0,
             reconnect_count: frontendReconnectCount,
             profile_switch_cleanup_count: profileSwitchCleanupCount,
+            profile_init_count: profileInitCountByProfile[normalizeProfileName(activeProfile)] || 0,
             active_profile: activeProfile,
         });
     }catch(e){}
 }
 
 window.BotApp.logRuntimeCounters = logRuntimeCounters;
+window.BotApp.getObservedTickCount = function(){
+    return Number(globalObservedTickCount || 0);
+};
+window.BotApp.markProfileInit = function(profile, reason){
+    try{
+        const key = normalizeProfileName(profile || activeProfile);
+        profileInitCountByProfile[key] = Number(profileInitCountByProfile[key] || 0) + 1;
+        console.info("frontend_profile_init_count", {
+            profile: key,
+            reason: reason || "profile_init",
+            count: profileInitCountByProfile[key],
+        });
+        logRuntimeCounters(`profile_init_${key}`, true);
+    }catch(e){}
+};
 
 function setSessionStartBalanceForMilestones(startBalance){
     const parsed = Number(startBalance);
@@ -4349,8 +4372,14 @@ async function loadProfileUI(profile){
         root.style.minHeight = "0";
         root.style.height = "auto";
         root.innerHTML = html;
+        root.dataset.profileLoaded = normalizeProfileName(profile);
     }
     bindProfileDraftAutosave();
+    try{
+        if(window.BotApp && typeof window.BotApp.markProfileInit === "function"){
+            window.BotApp.markProfileInit(profile, "load_profile_ui");
+        }
+    }catch(e){}
 
     try{ await runProfileModuleHook(profile, "onMount", { profile, root: document.getElementById("profileContainer") }); }catch(e){}
 
@@ -4372,7 +4401,6 @@ async function loadProfileUI(profile){
 
     renderTradeList(activeProfile);
 
-    try{ await runProfileModuleHook(profile, "afterLoadProfileUI", { profile }); }catch(e){}
     applyMonthlyLicenseGate(profile);
     try{ if(window.MarthaAI && typeof window.MarthaAI.scanCurrentProfile === "function") window.MarthaAI.scanCurrentProfile(); }catch(e){}
 }
@@ -5694,7 +5722,6 @@ async function setProfile(profile){
 
     await loadProfileUI(profile);
     hydrateProfileBudgetControl(profile);
-    try{ await runProfileModuleHook(profile, "onActivate", { profile }); }catch(e){}
     applyProfileDraft(profile);
     applyMonthlyLicenseGate(profile);
     setConfirmedMarketSymbol(profileData.symbol || (profile === "HUMAN" ? profileData.human_symbol : profileData.main_symbol) || getConfirmedMarketSymbol());

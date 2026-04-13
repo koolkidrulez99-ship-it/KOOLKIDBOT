@@ -2580,6 +2580,16 @@ def _get_effective_state_balance(state):
     return current_balance
 
 
+def _get_pre_trade_available_balance(state):
+    if not isinstance(state, dict):
+        return 0.0
+    effective_balance = _get_effective_state_balance(state)
+    live_balance = _get_live_account_balance(state)
+    if live_balance > (effective_balance + 0.01):
+        return live_balance
+    return effective_balance
+
+
 def _get_live_account_balance(state):
     """Return the last Deriv account balance without local session adjustments."""
     if not isinstance(state, dict):
@@ -2692,7 +2702,7 @@ def send_buy(client_id, contract_type, stake, symbol, barrier, duration=1, durat
         stake_value = float(stake)
     except Exception:
         stake_value = 0.0
-    balance_value = _get_effective_state_balance(state)
+    balance_value = _get_pre_trade_available_balance(state)
     if balance_value > 0.0:
         state["last_known_trade_balance"] = balance_value
     if stake_value > 0 and (_effective_trade_balance(balance_value) + 1e-9) < stake_value:
@@ -2805,7 +2815,7 @@ def send_buy_with_profile(
         stake_value = float(stake)
     except Exception:
         stake_value = 0.0
-    balance_value = _get_effective_state_balance(state)
+    balance_value = _get_pre_trade_available_balance(state)
     if balance_value > 0.0:
         state["last_known_trade_balance"] = balance_value
     if (
@@ -5029,7 +5039,7 @@ def _send_ntt_trade(
         return False, "Invalid stake"
     if stake <= 0:
         return False, "Stake must be greater than 0"
-    balance_value = _get_effective_state_balance(state)
+    balance_value = _get_pre_trade_available_balance(state)
     if stake > 0 and (_effective_trade_balance(balance_value) + 1e-9) < stake:
         return False, "Insufficient funds"
     unit = _clean_ntt_duration_unit(duration_unit)
@@ -5129,7 +5139,7 @@ def _send_ntt_both_pair(
     if not budget_ok:
         return False, budget_msg, []
 
-    balance_value = _get_effective_state_balance(state)
+    balance_value = _get_pre_trade_available_balance(state)
     if total_stake > 0 and (_effective_trade_balance(balance_value) + 1e-9) < total_stake:
         return False, f"Trade failed: need {_format_state_money(state, total_stake)} total balance for both trades", []
 
