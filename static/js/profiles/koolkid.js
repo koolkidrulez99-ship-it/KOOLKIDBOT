@@ -11,6 +11,8 @@
     barrierAnalysis: null,
     over3Analysis: null,
     goldenCard: null,
+    predictionRecentDigits: [],
+    predictionLastTickCount: null,
     goldenCardSettingsBusy: false,
     testtrial: null,
     kid2vix: null,
@@ -18,6 +20,9 @@
     goldenCardAutoOn: false,
     goldenCardAutoLastSignalKey: "",
     goldenCardAutoWaitingReset: false,
+    g1AutoOn: false,
+    g1AutoBusy: false,
+    g1AutoLastTick: null,
     autoModes: {},
     turboMode: loadTurboModeKoolkid(),
     dual2xOpen: false,
@@ -490,23 +495,24 @@
     const settings = d.settings || {};
   }
 
-  function updateDual2xUIKoolkid() {
-    const btn = document.getElementById("dual2xBtnKoolkid");
-    const wrap = document.getElementById("dual2xOptionsKoolkid");
-    const optionA = document.getElementById("dual2xOver6Under4BtnKoolkid");
-    const optionB = document.getElementById("dual2xOver5Under4BtnKoolkid");
-    const optionC = document.getElementById("dual2xOver2Under1BtnKoolkid");
-    const optionD = document.getElementById("dual2xOver8Under7BtnKoolkid");
+function updateDual2xUIKoolkid() {
+const btn = document.getElementById("dual2xBtnKoolkid");
+const wrap = document.getElementById("dual2xOptionsKoolkid");
+const optionA = document.getElementById("dual2xOver6Under4BtnKoolkid");
+const optionB = document.getElementById("dual2xOver5Under4BtnKoolkid");
+const optionC = document.getElementById("dual2xOver2Under1BtnKoolkid");
+const optionD = document.getElementById("dual2xOver8Under7BtnKoolkid");
+const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
     const under3SplitBtn = document.getElementById("under3SplitBtnKoolkid");
     if (btn) {
       btn.innerText = state.dual2xBusy ? "DUAL 2x (RUNNING...)" : (state.dual2xOpen ? "DUAL 2x ▼" : "DUAL 2x");
       btn.style.background = state.dual2xBusy ? "#0ea5e9" : (state.dual2xOpen ? "#22c55e" : "#1e293b");
     }
     if (wrap) wrap.style.display = state.dual2xOpen ? "block" : "none";
-    [optionA, optionB, optionC, optionD].forEach((b) => {
-      if (!b) return;
-      b.disabled = !!state.dual2xBusy;
-      b.style.opacity = state.dual2xBusy ? "0.7" : "1";
+  [optionA, optionB, optionC, optionD, optionE].forEach((b) => {
+    if (!b) return;
+    b.disabled = !!state.dual2xBusy;
+    b.style.opacity = state.dual2xBusy ? "0.7" : "1";
       b.style.cursor = state.dual2xBusy ? "not-allowed" : "pointer";
     });
     if (under3SplitBtn) {
@@ -726,6 +732,143 @@
   function selectedDigits() {
     const a = App();
     return Array.isArray(a.koolkidSelectedDigits) ? a.koolkidSelectedDigits.slice() : [];
+  }
+
+  function getPredictionBarrierKoolkid() {
+    const node = document.getElementById("barrier");
+    const value = Number(node && node.value);
+    return Number.isInteger(value) && value >= 0 && value <= 9 ? value : 5;
+  }
+
+  function getPredictionContractKoolkid(barrier) {
+    const normalized = Math.max(0, Math.min(9, Number(barrier) || 0));
+    return normalized <= 5
+      ? { type: "OVER", barrier: normalized, label: `OVER ${normalized}` }
+      : { type: "UNDER", barrier: normalized, label: `UNDER ${normalized}` };
+  }
+
+  function extractPredictionDigitsKoolkid(data) {
+    const sources = [
+      data && data.last20_digits,
+      data && data.recent_digits,
+      data && data.testtrial_data && data.testtrial_data.last20_digits,
+      data && data.kid2vix_data && data.kid2vix_data.last20_digits,
+      data && data.barrier_analysis && data.barrier_analysis.last20_digits,
+    ];
+    for (const source of sources) {
+      if (!Array.isArray(source) || !source.length) continue;
+      return source
+        .map((digit) => Number(digit))
+        .filter((digit) => Number.isInteger(digit) && digit >= 0 && digit <= 9)
+        .slice(-20);
+    }
+    return null;
+  }
+
+  function extractPredictionTickCountKoolkid(data) {
+    const candidates = [
+      data && data.tick_count,
+      data && data.global_tick_count,
+    ];
+    for (const candidate of candidates) {
+      const tick = Number(candidate);
+      if (Number.isFinite(tick)) return tick;
+    }
+    return null;
+  }
+
+  function extractPredictionLastDigitKoolkid(data) {
+    const candidates = [
+      data && data.last_digit,
+      data && data.digit,
+      data && data.current_digit,
+      data && data.testtrial_data && data.testtrial_data.last_digit,
+      data && data.kid2vix_data && data.kid2vix_data.last_digit,
+    ];
+    for (const candidate of candidates) {
+      const digit = Number(candidate);
+      if (Number.isInteger(digit) && digit >= 0 && digit <= 9) return digit;
+    }
+    return null;
+  }
+
+  function syncPredictionRecentDigitsKoolkid(data) {
+    const explicitDigits = extractPredictionDigitsKoolkid(data);
+    if (explicitDigits && explicitDigits.length) {
+      state.predictionRecentDigits = explicitDigits.slice(-20);
+      const explicitTick = extractPredictionTickCountKoolkid(data);
+      if (Number.isFinite(explicitTick)) state.predictionLastTickCount = explicitTick;
+      return;
+    }
+    const tick = extractPredictionTickCountKoolkid(data);
+    const digit = extractPredictionLastDigitKoolkid(data);
+    if (!Number.isInteger(digit)) return;
+    if (Number.isFinite(tick) && tick === state.predictionLastTickCount) return;
+    if (Number.isFinite(tick)) state.predictionLastTickCount = tick;
+    const next = Array.isArray(state.predictionRecentDigits) ? state.predictionRecentDigits.slice(-19) : [];
+    next.push(digit);
+    state.predictionRecentDigits = next;
+  }
+
+  function buildPredictionSummaryKoolkid() {
+    const barrier = getPredictionBarrierKoolkid();
+    const contract = getPredictionContractKoolkid(barrier);
+    const digits = Array.isArray(state.predictionRecentDigits) ? state.predictionRecentDigits.slice(-20) : [];
+    const total = digits.length;
+    if (total < 6) {
+      return {
+        label: contract.label,
+        confidence: 50,
+        analysis: "Analyzing digit distribution...",
+        stream: digits,
+      };
+    }
+
+    const isWin = (digit) => (contract.type === "OVER" ? digit > contract.barrier : digit < contract.barrier);
+    const winCount = digits.filter(isWin).length;
+    const lossCount = total - winCount;
+    let maxLossStreak = 0;
+    let currentLossStreak = 0;
+    digits.forEach((digit) => {
+      currentLossStreak = isWin(digit) ? 0 : currentLossStreak + 1;
+      if (currentLossStreak > maxLossStreak) maxLossStreak = currentLossStreak;
+    });
+    const rawConfidence = (winCount / total) * 100;
+    const confidence = Math.max(5, Math.min(99, Math.round(rawConfidence - (Math.max(0, maxLossStreak - 1) * 4))));
+    const winningDigitsLabel = contract.type === "OVER" ? `${contract.barrier + 1}-9` : `0-${contract.barrier - 1}`;
+    const losingDigitsLabel = contract.type === "OVER" ? `0-${contract.barrier}` : `${contract.barrier}-9`;
+    const analysisLead = confidence >= 70
+      ? `Winning digits ${winningDigitsLabel} dominated the last ${total} ticks.`
+      : (confidence <= 40
+        ? `Losing digits ${losingDigitsLabel} played too often across the last ${total} ticks.`
+        : `The last ${total} ticks are mixed, so the edge is moderate right now.`);
+    const analysisTail = contract.type === "OVER"
+      ? `OVER ${contract.barrier} won ${winCount}/${total} checks, while ${losingDigitsLabel} printed ${lossCount} times.`
+      : `UNDER ${contract.barrier} won ${winCount}/${total} checks, while ${losingDigitsLabel} printed ${lossCount} times.`;
+    return {
+      label: contract.label,
+      confidence,
+      analysis: `${analysisLead} ${analysisTail}`,
+      stream: digits,
+    };
+  }
+
+  function renderPredictionSummaryKoolkid(data) {
+    if (data) syncPredictionRecentDigitsKoolkid(data);
+    const card = document.getElementById("predictionSummaryCardKoolkid");
+    const labelNode = document.getElementById("predictionSummaryLabelKoolkid");
+    const confidenceNode = document.getElementById("predictionSummaryConfidenceKoolkid");
+    const analysisNode = document.getElementById("predictionSummaryAnalysisKoolkid");
+    const streamNode = document.getElementById("predictionSummaryStreamKoolkid");
+    if (!card || !labelNode || !confidenceNode || !analysisNode || !streamNode) return;
+
+    const summary = buildPredictionSummaryKoolkid();
+    labelNode.innerText = summary.label;
+    confidenceNode.innerText = `${summary.confidence}%`;
+    analysisNode.innerText = summary.analysis;
+    streamNode.innerHTML = summary.stream.length
+      ? summary.stream.map((digit) => `<span class="prediction-summary-digit-chip">${digit}</span>`).join("")
+      : `<span style="color:#8fb1c9;">Waiting for live digits...</span>`;
   }
 
   async function syncSelectedDigitsToServer() {
@@ -1132,6 +1275,192 @@
   }
 }
 
+  function parseG1AutoStakeKoolkid(inputId) {
+    const node = document.getElementById(inputId);
+    const value = Number(node && node.value);
+    if (!Number.isFinite(value) || value < 0.35) return NaN;
+    return Number(value.toFixed(2));
+  }
+
+  function getG1AutoLegsKoolkid() {
+    const over1 = parseG1AutoStakeKoolkid("g1AutoStakeOver1Koolkid");
+    const under1 = parseG1AutoStakeKoolkid("g1AutoStakeUnder1Koolkid");
+    const under8 = parseG1AutoStakeKoolkid("g1AutoStakeUnder8Koolkid");
+    const over8 = parseG1AutoStakeKoolkid("g1AutoStakeOver8Koolkid");
+    if (!(over1 >= 0.35) || !(under1 >= 0.35) || !(under8 >= 0.35) || !(over8 >= 0.35)) {
+      return null;
+    }
+    return [
+      { type: "OVER", barrier: 1, fixedStake: over1, label: "OVER 1" },
+      { type: "UNDER", barrier: 1, fixedStake: under1, label: "UNDER 1" },
+      { type: "UNDER", barrier: 8, fixedStake: under8, label: "UNDER 8" },
+      { type: "OVER", barrier: 8, fixedStake: over8, label: "OVER 8" },
+    ];
+  }
+
+  function renderG1AutoUiKoolkid() {
+    const mainBtn = document.getElementById("g1AutoBtnKoolkid");
+    const popupBtn = document.getElementById("g1AutoToggleBtnKoolkid");
+    const statusEl = document.getElementById("g1AutoStatusKoolkid");
+    if (mainBtn) {
+      mainBtn.innerText = state.g1AutoOn ? "G1🤖 ON" : "G1🤖";
+      mainBtn.style.background = state.g1AutoOn ? "#22c55e" : "#0f172a";
+      mainBtn.style.border = state.g1AutoOn ? "1px solid #22c55e" : "1px solid #334155";
+      mainBtn.style.color = state.g1AutoOn ? "#04130a" : "#f8fafc";
+    }
+    if (popupBtn) {
+      popupBtn.innerText = state.g1AutoOn ? "STOP G1🤖" : "START G1🤖";
+      popupBtn.style.background = state.g1AutoOn ? "#ef4444" : "#22c55e";
+    }
+    if (statusEl) {
+      if (!state.g1AutoOn) {
+        statusEl.innerText = "OFF • waiting for start";
+        statusEl.style.color = "#94a3b8";
+      } else if (state.g1AutoBusy) {
+        statusEl.innerText = "ON • sending OVER 1 / UNDER 1 / UNDER 8 / OVER 8 on this tick";
+        statusEl.style.color = "#38bdf8";
+      } else {
+        statusEl.innerText = "ON • armed for the next live tick";
+        statusEl.style.color = "#86efac";
+      }
+    }
+  }
+
+  async function maybeRunG1AutoKoolkid(data) {
+    if (!state.g1AutoOn || state.g1AutoBusy || state.dual2xBusy || !isActive()) return;
+    const tick = Number(data && data.tick_count);
+    if (!Number.isFinite(tick)) return;
+    if (Number(state.g1AutoLastTick) === tick) return;
+    const legs = getG1AutoLegsKoolkid();
+    if (!legs) {
+      safeToast("Set all G1🤖 stakes to at least $0.35.", "error");
+      state.g1AutoOn = false;
+      renderG1AutoUiKoolkid();
+      return;
+    }
+    state.g1AutoBusy = true;
+    state.g1AutoLastTick = tick;
+    renderG1AutoUiKoolkid();
+    try {
+      const r = await placeDual2xLegsSameTickKoolkid(legs);
+      if (r.placed !== legs.length) {
+        safeToast(`G1🤖 partial (${r.placed}/${legs.length})`, "error");
+      }
+    } catch (e) {
+      safeToast("G1🤖 failed on this tick", "error");
+    } finally {
+      state.g1AutoBusy = false;
+      renderG1AutoUiKoolkid();
+    }
+  }
+
+  window.openG1AutoPopupKoolkid = function () {
+    showCenteredPopupKoolkid("g1AutoPopupKoolkid");
+    renderG1AutoUiKoolkid();
+  };
+
+  window.hideG1AutoPopupKoolkid = function () {
+    hideCenteredPopupKoolkid("g1AutoPopupKoolkid");
+  };
+
+  window.toggleG1AutoKoolkid = function () {
+    if (state.g1AutoOn) {
+      state.g1AutoOn = false;
+      state.g1AutoBusy = false;
+      safeToast("G1🤖 OFF", "error");
+    } else {
+      const legs = getG1AutoLegsKoolkid();
+      if (!legs) {
+        safeToast("Set all G1🤖 stakes to at least $0.35.", "error");
+        return;
+      }
+      state.g1AutoOn = true;
+      state.g1AutoBusy = false;
+      state.g1AutoLastTick = state.dual2xAnalysis && Number.isFinite(Number(state.dual2xAnalysis.tickCount))
+        ? Number(state.dual2xAnalysis.tickCount)
+        : null;
+      safeToast("G1🤖 ON", "success");
+    }
+    renderG1AutoUiKoolkid();
+  };
+
+  function getDual2xCustomConfigKoolkid() {
+    const mode = String((document.getElementById("dual2xCustomModeKoolkid") || {}).value || "UNDER8_OVER8").toUpperCase();
+    if (mode === "UNDER1_OVER1") {
+      return {
+        mode,
+        legs: [
+          { type: "UNDER", barrier: 1, label: "UNDER 1" },
+          { type: "OVER", barrier: 1, label: "OVER 1" },
+        ],
+      };
+    }
+    return {
+      mode: "UNDER8_OVER8",
+      legs: [
+        { type: "UNDER", barrier: 8, label: "UNDER 8" },
+        { type: "OVER", barrier: 8, label: "OVER 8" },
+      ],
+    };
+  }
+
+  function parseDual2xCustomStakeKoolkid(inputId) {
+    const node = document.getElementById(inputId);
+    const value = Number(node && node.value);
+    if (!Number.isFinite(value) || value < 0.35) return NaN;
+    return Number(value.toFixed(2));
+  }
+
+  window.syncDual2xCustomPopupKoolkid = function () {
+    const config = getDual2xCustomConfigKoolkid();
+    const labelA = document.getElementById("dual2xCustomStakeLabelAKoolkid");
+    const labelB = document.getElementById("dual2xCustomStakeLabelBKoolkid");
+    if (labelA) labelA.innerText = config.legs[0].label;
+    if (labelB) labelB.innerText = config.legs[1].label;
+  };
+
+  window.openDual2xCustomPopupKoolkid = function () {
+    if (state.dual2xBusy) return;
+    showCenteredPopupKoolkid("dual2xCustomPopupKoolkid");
+    window.syncDual2xCustomPopupKoolkid();
+  };
+
+  window.hideDual2xCustomPopupKoolkid = function () {
+    hideCenteredPopupKoolkid("dual2xCustomPopupKoolkid");
+  };
+
+  window.confirmDual2xCustomKoolkid = async function () {
+    if (state.dual2xBusy) return;
+    const config = getDual2xCustomConfigKoolkid();
+    const stakeA = parseDual2xCustomStakeKoolkid("dual2xCustomStakeAKoolkid");
+    const stakeB = parseDual2xCustomStakeKoolkid("dual2xCustomStakeBKoolkid");
+    if (!(stakeA >= 0.35) || !(stakeB >= 0.35)) {
+      safeToast("Set both stakes to at least $0.35.", "error");
+      return;
+    }
+    state.dual2xBusy = true;
+    updateDual2xUIKoolkid();
+    try {
+      const r = await placeDual2xLegsSameTickKoolkid([
+        Object.assign({}, config.legs[0], { fixedStake: stakeA }),
+        Object.assign({}, config.legs[1], { fixedStake: stakeB }),
+      ]);
+      if (r.placed === 2) {
+        safeToast(`${config.legs[0].label} ${money(stakeA)} / ${config.legs[1].label} ${money(stakeB)} sent (same tick)`, "success");
+        window.hideDual2xCustomPopupKoolkid();
+      } else if (r.placed === 1) {
+        safeToast(`${config.legs[0].label} / ${config.legs[1].label} partial (1/2)`, "error");
+      } else {
+        safeToast(`${config.legs[0].label} / ${config.legs[1].label} failed`, "error");
+      }
+    } catch (e) {
+      safeToast("Dual 2x custom combo failed", "error");
+    } finally {
+      state.dual2xBusy = false;
+      updateDual2xUIKoolkid();
+    }
+  };
+
   function updateModeButtonsFromPayload(modes, payload) {
     state.autoModes = Object.assign({}, state.autoModes || {}, modes || {});
     const kidGxBtn = document.getElementById("kidGxBtnKoolkid");
@@ -1160,6 +1489,7 @@
 
   function paintDigitAnalysisKoolkid(data) {
     lastDigitAnalysisRenderAt = Date.now();
+    renderPredictionSummaryKoolkid(data || {});
     renderDual2xAnalysisKoolkid(data || {});
     if (data && data.barrier_analysis) renderBarrierAnalysis(data.barrier_analysis);
     if (data && data.over3_analysis_data) renderOver3AnalysisKoolkid(data.over3_analysis_data);
@@ -1243,6 +1573,7 @@
       bind("digit_analysis", (data) => {
         if (!isActive()) return;
         scheduleDigitAnalysisRenderKoolkid(data || {});
+        maybeRunG1AutoKoolkid(data || {}).catch(() => {});
       });
 
       bind("golden_card_update", (data) => {
@@ -1273,6 +1604,9 @@
       if (target && target.id === "stake") {
         renderKid2vixKoolkid();
       }
+      if (target && target.id === "barrier") {
+        renderPredictionSummaryKoolkid();
+      }
     });
 
   }
@@ -1283,9 +1617,11 @@
     bindSocketListeners();
     bindWindowEvents();
     updateDual2xUIKoolkid();
+    renderG1AutoUiKoolkid();
     renderDual2xAnalysisKoolkid();
     renderOver3AnalysisKoolkid();
     renderGoldenCardKoolkid();
+    renderPredictionSummaryKoolkid();
     renderKid2vixKoolkid();
     currentTurboModeKoolkid();
     renderTurboToggleKoolkid();
@@ -1296,9 +1632,11 @@
     try { App().applyDigitSelectionUI && App().applyDigitSelectionUI(); } catch (e) {}
     bindSocketListeners();
     updateDual2xUIKoolkid();
+    renderG1AutoUiKoolkid();
     renderDual2xAnalysisKoolkid();
     renderOver3AnalysisKoolkid();
     renderGoldenCardKoolkid();
+    renderPredictionSummaryKoolkid();
     renderKid2vixKoolkid();
     currentTurboModeKoolkid();
     renderTurboToggleKoolkid();
@@ -1309,9 +1647,11 @@
     try { App().applyDigitSelectionUI && App().applyDigitSelectionUI(); } catch (e) {}
     bindSocketListeners();
     updateDual2xUIKoolkid();
+    renderG1AutoUiKoolkid();
     renderDual2xAnalysisKoolkid();
     renderOver3AnalysisKoolkid();
     renderGoldenCardKoolkid();
+    renderPredictionSummaryKoolkid();
     renderKid2vixKoolkid();
     currentTurboModeKoolkid();
     renderTurboToggleKoolkid();

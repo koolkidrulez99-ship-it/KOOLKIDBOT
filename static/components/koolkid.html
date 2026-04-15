@@ -65,6 +65,23 @@
 .golden-card-toggle-knob{position:absolute;top:2px;left:2px;width:20px;height:20px;background:#fff;border-radius:999px;transition:transform .2s}
 .golden-card-toggle-input:checked + .golden-card-toggle-btn{background:rgba(250,204,21,0.72);border-color:rgba(250,204,21,0.68)}
 .golden-card-toggle-input:checked + .golden-card-toggle-btn .golden-card-toggle-knob{transform:translateX(24px)}
+.prediction-summary-card{margin-top:14px;background:linear-gradient(180deg,rgba(14,23,39,0.98),rgba(7,12,24,0.96));border:1px solid rgba(71,85,105,0.6);border-radius:18px;padding:18px;box-shadow:0 14px 34px rgba(2,6,23,0.28)}
+.prediction-summary-title{display:flex;align-items:center;gap:10px;font-size:14px;font-weight:900;color:#eef7ff}
+.prediction-summary-bolt{color:#27f0ff;font-size:18px;line-height:1;filter:drop-shadow(0 0 10px rgba(39,240,255,0.28))}
+.prediction-summary-inner{margin-top:16px;padding:22px;border-radius:20px;border:2px solid rgba(255,141,141,0.9);background:radial-gradient(circle at top left,rgba(255,173,173,0.08),rgba(11,16,28,0.96) 36%,rgba(12,17,31,0.98));box-shadow:inset 0 0 0 1px rgba(255,255,255,0.03),0 0 22px rgba(255,141,141,0.14)}
+.prediction-summary-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.prediction-summary-contract{display:flex;align-items:flex-start;gap:12px}
+.prediction-summary-target{width:30px;height:30px;border-radius:999px;display:flex;align-items:center;justify-content:center;background:radial-gradient(circle,rgba(255,247,237,0.95),rgba(251,113,133,0.5) 36%,rgba(125,30,30,0.2) 68%,rgba(255,255,255,0));box-shadow:0 0 18px rgba(251,113,133,0.36);font-size:16px}
+.prediction-summary-label{font-size:24px;line-height:1;font-weight:900;color:#39f3e7;letter-spacing:.01em;text-shadow:0 0 18px rgba(57,243,231,0.14)}
+.prediction-summary-subtitle{margin-top:4px;font-size:13px;font-weight:800;color:#f8fafc}
+.prediction-summary-confidence{text-align:right;color:#ffe7d0}
+.prediction-summary-confidence-value{font-size:24px;line-height:1;font-weight:900}
+.prediction-summary-confidence-label{margin-top:4px;font-size:12px;font-weight:800;color:#f8fafc}
+.prediction-summary-analysis-box{margin-top:16px;padding:16px 18px;border-radius:16px;border:1px solid rgba(96,165,250,0.34);background:linear-gradient(180deg,rgba(19,153,214,0.98),rgba(14,116,144,0.92));box-shadow:inset 0 0 0 1px rgba(255,255,255,0.08)}
+.prediction-summary-analysis-title{font-size:14px;font-weight:900;color:#ecfeff}
+.prediction-summary-analysis-body{margin-top:6px;font-size:13px;line-height:1.4;color:#effbff}
+.prediction-summary-stream{margin-top:12px;display:flex;flex-wrap:wrap;gap:6px}
+.prediction-summary-digit-chip{min-width:30px;height:30px;padding:0 10px;border-radius:999px;display:inline-flex;align-items:center;justify-content:center;background:rgba(15,23,42,0.7);border:1px solid rgba(191,219,254,0.22);color:#e2e8f0;font-size:12px;font-weight:800}
 @media (max-width: 900px){
   .ui-btn-grid-2,.ui-btn-grid-3{grid-template-columns:1fr}
   .half-auto-popup-grid{grid-template-columns:1fr}
@@ -256,6 +273,34 @@
             <div id="barrierAnalysisRecommended" style="margin-top:8px; font-size:12px; color:#cbd5e1;">Recommended: -</div>
           </div>
         </div>
+        <div id="predictionSummaryCardKoolkid" class="prediction-summary-card">
+          <div class="prediction-summary-title">
+            <span class="prediction-summary-bolt">⚡</span>
+            <span>Prediction Summary</span>
+          </div>
+          <div class="prediction-summary-inner">
+            <div class="prediction-summary-head">
+              <div class="prediction-summary-contract">
+                <div class="prediction-summary-target">🎯</div>
+                <div>
+                  <div id="predictionSummaryLabelKoolkid" class="prediction-summary-label">OVER 5</div>
+                  <div class="prediction-summary-subtitle">Mini X Strategy Prediction</div>
+                </div>
+              </div>
+              <div class="prediction-summary-confidence">
+                <div id="predictionSummaryConfidenceKoolkid" class="prediction-summary-confidence-value">50%</div>
+                <div class="prediction-summary-confidence-label">Confidence</div>
+              </div>
+            </div>
+            <div class="prediction-summary-analysis-box">
+              <div class="prediction-summary-analysis-title">📊 Analysis</div>
+              <div id="predictionSummaryAnalysisKoolkid" class="prediction-summary-analysis-body">Analyzing digit distribution...</div>
+            </div>
+            <div id="predictionSummaryStreamKoolkid" class="prediction-summary-stream">
+              <span style="color:#8fb1c9;">Waiting for live digits...</span>
+            </div>
+          </div>
+        </div>
 <script>
 (function () {
   function syncBarrierAnalysisKoolkidVisibility() {
@@ -332,6 +377,7 @@
               <button id="dual2xOver5Under4BtnKoolkid" onclick="runDual2xKoolkid('OVER5_UNDER4')" style="width:100%; height:42px; background:#0f172a; border:1px solid #334155;">OVER 5 &amp; UNDER 4</button>
               <button id="dual2xOver2Under1BtnKoolkid" onclick="runDual2xKoolkid('OVER2_UNDER1')" style="width:100%; height:42px; background:#0f172a; border:1px solid #334155;">OVER 2 &amp; UNDER 1 (5:1 split)</button>
               <button id="dual2xOver8Under7BtnKoolkid" onclick="runDual2xKoolkid('OVER8_UNDER7')" style="width:100%; height:42px; background:#0f172a; border:1px solid #334155;">OVER 8 &amp; UNDER 7 (5:1 split)</button>
+              <button id="dual2xCustomComboBtnKoolkid" onclick="openDual2xCustomPopupKoolkid()" style="width:100%; height:42px; background:#0f172a; border:1px solid #334155; grid-column:1 / -1;">UNDER 8 &amp; OVER 8 / UNDER 1 &amp; OVER 1</button>
             </div>
             <div id="dual2xAnalysisPanelKoolkid" style="margin-top:8px; background:#0b1220; border:1px solid #334155; border-radius:12px; padding:10px;">
               <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
@@ -383,6 +429,9 @@
             </div>
             <button id="under3SplitBtnKoolkid" onclick="runUnder3SplitKoolkid()" style="width:100%; height:46px; background:#0ea5e9;">
               UNDER 3 (OVER 3 + UNDER 3 SAME TICK)
+            </button>
+            <button id="g1AutoBtnKoolkid" onclick="openG1AutoPopupKoolkid()" style="width:100%; height:46px; background:#0f172a; border:1px solid #334155;">
+              G1🤖
             </button>
             <button id="halfAutoBtnKoolkid" onclick="showHalfAutoPopupKoolkid()" style="width:100%; height:46px; background:#8b5cf6;">
               HALF AUTO
@@ -561,6 +610,60 @@
   </div>
   <button onclick="confirmHalfAutoKoolkid()" style="background:#22c55e; width:100%; margin-top:10px;">SEND HALF AUTO</button>
   <button onclick="hideHalfAutoPopupKoolkid()" style="background:#ef4444; width:100%; margin-top:6px;">CANCEL</button>
+</div>
+
+<div id="dual2xCustomPopupKoolkid" class="digit-popup" style="display:none; min-width:320px; max-width:min(380px, calc(100vw - 20px)); z-index:10001;">
+  <h4>DUAL 2x CUSTOM</h4>
+  <div style="font-size:12px; color:#94a3b8; margin-bottom:8px;">
+    Set the stake for both same-tick trades. Choose either `UNDER 8 + OVER 8` or `UNDER 1 + OVER 1`.
+  </div>
+  <div style="margin-bottom:10px;">
+    <div style="color:#94a3b8; font-size:12px; margin-bottom:4px;">Combo</div>
+    <select id="dual2xCustomModeKoolkid" onchange="syncDual2xCustomPopupKoolkid()" style="width:100%;">
+      <option value="UNDER8_OVER8">UNDER 8 + OVER 8</option>
+      <option value="UNDER1_OVER1">UNDER 1 + OVER 1</option>
+    </select>
+  </div>
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+    <div>
+      <div id="dual2xCustomStakeLabelAKoolkid" style="color:#94a3b8; font-size:12px; margin-bottom:4px;">UNDER 8</div>
+      <input id="dual2xCustomStakeAKoolkid" type="number" min="0.35" step="0.01" value="1.00" style="width:100%;">
+    </div>
+    <div>
+      <div id="dual2xCustomStakeLabelBKoolkid" style="color:#94a3b8; font-size:12px; margin-bottom:4px;">OVER 8</div>
+      <input id="dual2xCustomStakeBKoolkid" type="number" min="0.35" step="0.01" value="1.00" style="width:100%;">
+    </div>
+  </div>
+  <button onclick="confirmDual2xCustomKoolkid()" style="background:#22c55e; width:100%; margin-top:10px;">SEND SAME TICK</button>
+  <button onclick="hideDual2xCustomPopupKoolkid()" style="background:#ef4444; width:100%; margin-top:6px;">CANCEL</button>
+</div>
+
+<div id="g1AutoPopupKoolkid" class="digit-popup" style="display:none; min-width:320px; max-width:min(390px, calc(100vw - 20px)); z-index:10001;">
+  <h4>G1🤖 AUTO</h4>
+  <div style="font-size:12px; color:#94a3b8; margin-bottom:8px;">
+    Set the stake for all 4 same-tick trades. G1🤖 keeps sending `OVER 1`, `UNDER 1`, `UNDER 8`, and `OVER 8` until you turn it off.
+  </div>
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+    <div>
+      <div style="color:#94a3b8; font-size:12px; margin-bottom:4px;">OVER 1</div>
+      <input id="g1AutoStakeOver1Koolkid" type="number" min="0.35" step="0.01" value="1.00" style="width:100%;">
+    </div>
+    <div>
+      <div style="color:#94a3b8; font-size:12px; margin-bottom:4px;">UNDER 1</div>
+      <input id="g1AutoStakeUnder1Koolkid" type="number" min="0.35" step="0.01" value="1.00" style="width:100%;">
+    </div>
+    <div>
+      <div style="color:#94a3b8; font-size:12px; margin-bottom:4px;">UNDER 8</div>
+      <input id="g1AutoStakeUnder8Koolkid" type="number" min="0.35" step="0.01" value="1.00" style="width:100%;">
+    </div>
+    <div>
+      <div style="color:#94a3b8; font-size:12px; margin-bottom:4px;">OVER 8</div>
+      <input id="g1AutoStakeOver8Koolkid" type="number" min="0.35" step="0.01" value="1.00" style="width:100%;">
+    </div>
+  </div>
+  <div id="g1AutoStatusKoolkid" style="font-size:12px; color:#94a3b8; margin-top:10px;">OFF • waiting for start</div>
+  <button id="g1AutoToggleBtnKoolkid" onclick="toggleG1AutoKoolkid()" style="background:#22c55e; width:100%; margin-top:10px;">START G1🤖</button>
+  <button onclick="hideG1AutoPopupKoolkid()" style="background:#ef4444; width:100%; margin-top:6px;">CLOSE</button>
 </div>
 
 <div id="goldenCardPopupKoolkid" class="digit-popup" style="display:none; width:min(760px, calc(100vw - 28px)); min-width:min(620px, calc(100vw - 28px)); max-width:min(760px, calc(100vw - 28px)); padding:14px; border-radius:18px; z-index:10001;">
