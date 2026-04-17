@@ -82,6 +82,11 @@
 .prediction-summary-analysis-body{margin-top:6px;font-size:13px;line-height:1.4;color:#effbff}
 .prediction-summary-stream{margin-top:12px;display:flex;flex-wrap:wrap;gap:6px}
 .prediction-summary-digit-chip{min-width:30px;height:30px;padding:0 10px;border-radius:999px;display:inline-flex;align-items:center;justify-content:center;background:rgba(15,23,42,0.7);border:1px solid rgba(191,219,254,0.22);color:#e2e8f0;font-size:12px;font-weight:800}
+#koolkidConfidenceBarsBlock.monthly-prediction-summary-mode{display:flex;flex-direction:column}
+#koolkidConfidenceBarsBlock.monthly-prediction-summary-mode #koolkidConfidenceBarsTitle,
+#koolkidConfidenceBarsBlock.monthly-prediction-summary-mode #koolkidConfidenceBarsWrap{display:none!important}
+#koolkidConfidenceBarsBlock.monthly-prediction-summary-mode #predictionSummaryCardKoolkid{order:0;margin-top:0}
+#koolkidConfidenceBarsBlock.monthly-prediction-summary-mode #barrierAnalysisCard{order:1}
 @media (max-width: 900px){
   .ui-btn-grid-2,.ui-btn-grid-3{grid-template-columns:1fr}
   .half-auto-popup-grid{grid-template-columns:1fr}
@@ -234,8 +239,8 @@
       </div>
 
       <div id="koolkidConfidenceBarsBlock" style="margin-top:12px;">
-        <div style="font-weight:bold; margin-bottom:8px;">📊 Confidence Bars</div>
-        <div class="confidence-wrap">
+        <div id="koolkidConfidenceBarsTitle" style="font-weight:bold; margin-bottom:8px;">📊 Confidence Bars</div>
+        <div id="koolkidConfidenceBarsWrap" class="confidence-wrap">
           <div class="conf-item">
             <div style="display:flex; justify-content:space-between;">
               <span>OVER 1</span><span><b id="confOver1Text">0</b>%</span>
