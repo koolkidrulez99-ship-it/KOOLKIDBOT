@@ -8,4 +8,4 @@ websocket-client==1.9.0
 # Persistent auth storage on Render Postgres
 psycopg2-binary
 pytest==8.3.4
-
+gunicorn
