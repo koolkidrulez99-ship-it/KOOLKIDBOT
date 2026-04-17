@@ -891,7 +891,7 @@ def test_mutant_auto_step50_increments_by_fifty_cents_for_each_loss_chain():
     assert ntt["auto"]["current_stake"] == 1.85
 
 
-def test_mutant_auto_step50_repeats_top_allowed_stake_at_budget_cap():
+def test_mutant_auto_step50_continues_past_budget_input():
     ntt = {"auto": default_mutant_auto_state()}
     arm_mutant_auto(ntt, barrier="+0.12", budget=1.00, martingale_enabled=False, step50_enabled=True)
     auto = ntt["auto"]
@@ -908,28 +908,85 @@ def test_mutant_auto_step50_repeats_top_allowed_stake_at_budget_cap():
     second_loss = progress_mutant_auto_after_result(ntt, won=False, profit=-0.85, side="TOUCH")
     assert second_loss["continue"] is True
     assert second_loss["stopped"] is False
-    assert second_loss["next_stake"] == 0.85
+    assert second_loss["next_stake"] == 1.35
     assert ntt["auto"]["enabled"] is True
-    assert ntt["auto"]["current_stake"] == 0.85
+    assert ntt["auto"]["current_stake"] == 1.35
+
+
+def test_mutant_auto_martingale_continues_past_budget_input():
+    ntt = {"auto": default_mutant_auto_state()}
+    arm_mutant_auto(ntt, barrier="+0.12", budget=1.00, martingale_enabled=True, step50_enabled=False)
+    auto = ntt["auto"]
+    auto["active_stake"] = 0.35
+    auto["active_side"] = "TOUCH"
+
+    first_loss = progress_mutant_auto_after_result(ntt, won=False, profit=-0.35, side="TOUCH")
+    assert first_loss["continue"] is True
+    assert first_loss["next_stake"] == 0.70
+    assert ntt["auto"]["current_stake"] == 0.70
+
+    auto["active_stake"] = 0.70
+    auto["active_side"] = "TOUCH"
+    second_loss = progress_mutant_auto_after_result(ntt, won=False, profit=-0.70, side="TOUCH")
+    assert second_loss["continue"] is True
+    assert second_loss["stopped"] is False
+    assert second_loss["next_stake"] == 1.40
+    assert ntt["auto"]["enabled"] is True
+    assert ntt["auto"]["current_stake"] == 1.40
+
+    auto["active_stake"] = 1.40
+    auto["active_side"] = "TOUCH"
+    third_loss = progress_mutant_auto_after_result(ntt, won=False, profit=-1.40, side="TOUCH")
+    assert third_loss["continue"] is True
+    assert third_loss["stopped"] is False
+    assert third_loss["next_stake"] == 2.80
+    assert ntt["auto"]["enabled"] is True
+    assert ntt["auto"]["current_stake"] == 2.80
+
+
+def test_mutant_auto_martingale_ignores_stale_meta_next_loss_stake():
+    ntt = {"auto": default_mutant_auto_state()}
+    arm_mutant_auto(ntt, barrier="+0.12", budget=1.00, martingale_enabled=True, step50_enabled=False)
+    auto = ntt["auto"]
+    auto["active_stake"] = 0.70
+    auto["active_side"] = "TOUCH"
+    auto["progression_step"] = 1
+
+    result = progress_mutant_auto_after_result(
+        ntt,
+        won=False,
+        profit=-0.70,
+        side="TOUCH",
+        contract_meta={
+            "auto_mode": "MARTINGALE",
+            "auto_step_index": 1,
+            "auto_current_stake": 0.70,
+            "auto_next_loss_stake": 1.40,
+        },
+    )
+
+    assert result["continue"] is True
+    assert result["next_stake"] == 1.40
+    assert ntt["auto"]["current_stake"] == 1.40
 
 
 def test_mutant_auto_martingale_repeats_top_allowed_stake_at_budget_cap():
     ntt = {"auto": default_mutant_auto_state()}
     arm_mutant_auto(ntt, barrier="+0.12", budget=2000.0, martingale_enabled=True, step50_enabled=False)
     auto = ntt["auto"]
-    auto["progression_step"] = 12
-    auto["current_stake"] = 1433.60
-    auto["active_stake"] = 1433.60
+    auto["progression_step"] = 13
+    auto["current_stake"] = 2000.00
+    auto["active_stake"] = 2000.00
     auto["active_side"] = "TOUCH"
 
-    result = progress_mutant_auto_after_result(ntt, won=False, profit=-1433.60, side="TOUCH")
+    result = progress_mutant_auto_after_result(ntt, won=False, profit=-2000.00, side="TOUCH")
 
     assert result["continue"] is True
     assert result["stopped"] is False
-    assert result["next_stake"] == 1433.60
+    assert result["next_stake"] == 2000.00
     assert ntt["auto"]["enabled"] is True
-    assert ntt["auto"]["progression_step"] == 12
-    assert ntt["auto"]["current_stake"] == 1433.60
+    assert ntt["auto"]["progression_step"] == 13
+    assert ntt["auto"]["current_stake"] == 2000.00
 
 
 def test_arm_mutant_auto_resets_progression_back_to_base_stake():

@@ -1700,7 +1700,7 @@ function bindSocketHandlers(){
         settled.profile = resolveTradeProfile(settled, activeProfile);
         try{ if(window.MarthaAI && typeof window.MarthaAI.observeTradeEvent === "function") window.MarthaAI.observeTradeEvent(settled); }catch(e){}
         const settledProfile = normalizeProfileName(settled.profile);
-        if(settledProfile === "KOOLKID" || settledProfile === "JOKERJOE" || settledProfile === "UNCHAIN" || settledProfile === "NTT"){
+        if(settledProfile === "KOOLKID" || settledProfile === "JOKERJOE" || settledProfile === "UNCHAIN" || settledProfile === "NTT" || settledProfile === "HUMAN"){
             const sortTs = resolveTradeSortTimestamp(settled, true);
             if(Number.isFinite(Number(sortTs))) settled._sort_ts = Number(sortTs);
         }
@@ -2767,6 +2767,7 @@ function applyMonthlyLicenseGate(profile){
             "kidracksAiBtnKoolkid",
             "testtrialBtnKoolkid",
             "metaBrainInfoKoolkid",
+            "koolkidConfidenceBarsBlock",
         ].forEach((id)=>hideMonthlyElement(id));
     }
     if(p === "JOKERJOE"){
@@ -4246,27 +4247,59 @@ window.registerProfileModule = window.registerProfileModule || registerProfileMo
 
 const __phase2ScriptLoaded = window.__phase2ScriptLoaded || (window.__phase2ScriptLoaded = {});
 let __phase2AppLoaded = !!window.__phase2AppLoaded;
+const __phase2AssetVersion = window.__phase2AssetVersion || (window.__phase2AssetVersion = String(Date.now()));
+
+function getPhase2ScriptUrl(src){
+    const raw = String(src || "");
+    if(!raw) return raw;
+    const joiner = raw.indexOf("?") === -1 ? "?" : "&";
+    return `${raw}${joiner}v=${encodeURIComponent(__phase2AssetVersion)}`;
+}
+window.getPhase2ScriptUrl = window.getPhase2ScriptUrl || getPhase2ScriptUrl;
 
 function loadScriptOncePhase2(src){
     return new Promise((resolve) => {
         try{
             if(!src){ resolve(false); return; }
-            if(__phase2ScriptLoaded[src]){ resolve(true); return; }
+            const versionedSrc = getPhase2ScriptUrl(src);
+            if(__phase2ScriptLoaded[versionedSrc]){ resolve(true); return; }
 
-            const existing = document.querySelector(`script[data-phase2-src="${src}"]`);
+            const existing = document.querySelector(`script[data-phase2-src="${versionedSrc}"]`);
             if(existing){
-                __phase2ScriptLoaded[src] = true;
-                resolve(true);
+                if(existing.dataset.phase2Loaded === "1"){
+                    __phase2ScriptLoaded[versionedSrc] = true;
+                    resolve(true);
+                    return;
+                }
+                if(existing.dataset.phase2Error === "1"){
+                    resolve(false);
+                    return;
+                }
+                existing.addEventListener("load", () => {
+                    __phase2ScriptLoaded[versionedSrc] = true;
+                    resolve(true);
+                }, { once: true });
+                existing.addEventListener("error", () => {
+                    resolve(false);
+                }, { once: true });
                 return;
             }
 
             const s = document.createElement("script");
-            s.src = src;
+            s.src = versionedSrc;
             s.async = false;
             s.defer = true;
-            s.dataset.phase2Src = src;
-            s.onload = () => { __phase2ScriptLoaded[src] = true; resolve(true); };
-            s.onerror = () => { resolve(false); }; // fail-safe for empty/missing files
+            s.dataset.phase2Src = versionedSrc;
+            s.dataset.phase2RawSrc = src;
+            s.onload = () => {
+                s.dataset.phase2Loaded = "1";
+                __phase2ScriptLoaded[versionedSrc] = true;
+                resolve(true);
+            };
+            s.onerror = () => {
+                s.dataset.phase2Error = "1";
+                resolve(false);
+            };
             document.head.appendChild(s);
         }catch(e){
             resolve(false);
@@ -4276,8 +4309,9 @@ function loadScriptOncePhase2(src){
 
 async function ensureAppScript(){
     if(__phase2AppLoaded) return true;
-    await loadScriptOncePhase2("/static/js/app.js");
-    __phase2AppLoaded = true; // safe even if file is empty
+    const loaded = await loadScriptOncePhase2("/static/js/app.js");
+    if(!loaded) throw new Error("Failed to load the main app script.");
+    __phase2AppLoaded = true;
     window.__phase2AppLoaded = true;
     return true;
 }
@@ -4285,21 +4319,50 @@ async function ensureAppScript(){
 async function ensureProfileModuleScript(profile){
     const p = String(profile || "").toUpperCase();
     await ensureAppScript();
+    let profileScript = "";
 
     if(p === "KOOLKID"){
-        await loadScriptOncePhase2("/static/js/profiles/koolkid.js");
+        profileScript = "/static/js/profiles/koolkid.js";
     }else if(p === "JOKERJOE"){
-        await loadScriptOncePhase2("/static/js/profiles/jokerjoe.js");
+        profileScript = "/static/js/profiles/jokerjoe.js";
     }else if(p === "HUMAN"){
-        await loadScriptOncePhase2("/static/js/profiles/human.js");
+        profileScript = "/static/js/profiles/human.js";
     }else if(p === "UNCHAIN"){
-        await loadScriptOncePhase2("/static/js/profiles/unchain.js");
+        profileScript = "/static/js/profiles/unchain.js";
     }else if(p === "NTT"){
         if(isMutantAvailable()){
-            await loadScriptOncePhase2("/static/js/profiles/mutant.js");
+            profileScript = "/static/js/profiles/mutant.js";
         }
     }
+    if(!profileScript) return true;
+    const loaded = await loadScriptOncePhase2(profileScript);
+    if(!loaded) throw new Error(`${getProfileDisplayName(p)} script failed to load.`);
+    if(!(window.ProfileModules || {})[p]){
+        throw new Error(`${getProfileDisplayName(p)} module did not initialize.`);
+    }
     return true;
+}
+
+function renderProfileLoadFallback(profile, detail){
+    const root = document.getElementById("profileContainer");
+    if(!root) return;
+    const safeProfile = getProfileDisplayName(profile || activeProfile || "profile");
+    const safeDetail = String(detail || "Please refresh the page to load the newest version.").replace(/[<>&"]/g, (ch) => ({
+        "<": "&lt;",
+        ">": "&gt;",
+        "&": "&amp;",
+        "\"": "&quot;"
+    })[ch] || ch);
+    root.style.minHeight = "180px";
+    root.style.height = "auto";
+    root.dataset.profileLoaded = "";
+    root.innerHTML = `
+        <div class="glass-card" style="border-color:rgba(248,113,113,0.45);padding:18px;">
+            <h3 style="margin:0 0 8px;color:#fecaca;">${safeProfile} could not load</h3>
+            <p style="margin:0;color:#cbd5e1;">We could not load the latest profile files after the deploy.</p>
+            <p style="margin:10px 0 0;color:#94a3b8;font-size:13px;">${safeDetail}</p>
+        </div>
+    `;
 }
 
 async function runProfileModuleHook(profile, hookName, payload){
@@ -4335,74 +4398,94 @@ async function deactivateProfileModule(profile, payload){
 
 async function loadProfileUI(profile){
     closeTransientUiOverlays();
-    await ensureProfileModuleScript(profile);
 
-    let file = "koolkid.html";
-    if(profile === "KOOLKID") file = "koolkid.html";
-    if(profile === "JOKERJOE") file = "jokerjoe.html";
-    if(profile === "HUMAN") file = "human.html";
-    if(profile === "UNCHAIN") file = "unchain.html";
-    if(profile === "NTT") file = "mutant.html";
+    try{
+        await ensureProfileModuleScript(profile);
 
-    if(profile === "NTT" && !isMutantAvailable()){
-        const blockedRoot = document.getElementById("profileContainer");
-        if(blockedRoot){
-            blockedRoot.style.minHeight = "0";
-            blockedRoot.style.height = "auto";
-            blockedRoot.innerHTML = buildMutantConstructionMarkup();
+        let file = "koolkid.html";
+        if(profile === "KOOLKID") file = "koolkid.html";
+        if(profile === "JOKERJOE") file = "jokerjoe.html";
+        if(profile === "HUMAN") file = "human.html";
+        if(profile === "UNCHAIN") file = "unchain.html";
+        if(profile === "NTT") file = "mutant.html";
+
+        if(profile === "NTT" && !isMutantAvailable()){
+            const blockedRoot = document.getElementById("profileContainer");
+            if(blockedRoot){
+                blockedRoot.style.minHeight = "0";
+                blockedRoot.style.height = "auto";
+                blockedRoot.innerHTML = buildMutantConstructionMarkup();
+            }
+            bindProfileDraftAutosave();
+            refreshDynamicElements();
+            initDigitGrid();
+            refreshHowTo();
+            updateInsta5Label();
+            syncAutoStake();
+            sendRiskControls();
+            renderTradeList(activeProfile);
+            applyMonthlyLicenseGate(profile);
+            try{ if(window.MarthaAI && typeof window.MarthaAI.scanCurrentProfile === "function") window.MarthaAI.scanCurrentProfile(); }catch(e){}
+            return;
+        }
+
+        const componentUrl = getPhase2ScriptUrl(`/static/components/${file}`);
+        const res = await fetch(componentUrl, {
+            cache: "no-store",
+            headers: {
+                "Cache-Control": "no-cache"
+            }
+        });
+        if(!res.ok){
+            throw new Error(`Profile component request failed (${res.status}).`);
+        }
+        const html = await res.text();
+        if(!String(html || "").trim()){
+            throw new Error("Profile component returned an empty response.");
+        }
+
+        const root = document.getElementById("profileContainer");
+        if(root){
+            root.style.minHeight = "0";
+            root.style.height = "auto";
+            root.innerHTML = html;
+            root.dataset.profileLoaded = normalizeProfileName(profile);
         }
         bindProfileDraftAutosave();
+        try{
+            if(window.BotApp && typeof window.BotApp.markProfileInit === "function"){
+                window.BotApp.markProfileInit(profile, "load_profile_ui");
+            }
+        }catch(e){}
+
+        try{ await runProfileModuleHook(profile, "onMount", { profile, root: document.getElementById("profileContainer") }); }catch(e){}
+
+
+        // HUMAN: init chart + pull Keep Alive status
+        if(profile === "HUMAN"){
+            setTimeout(() => {
+                try{ initHumanChartIfPresent(); }catch(e){}
+                try{ refreshHumanKeepAliveStatus(); }catch(e){}
+            }, 0);
+        }
+
         refreshDynamicElements();
         initDigitGrid();
         refreshHowTo();
         updateInsta5Label();
         syncAutoStake();
         sendRiskControls();
+
         renderTradeList(activeProfile);
+
         applyMonthlyLicenseGate(profile);
         try{ if(window.MarthaAI && typeof window.MarthaAI.scanCurrentProfile === "function") window.MarthaAI.scanCurrentProfile(); }catch(e){}
-        return;
+    }catch(e){
+        const message = (e && e.message) ? e.message : "Profile files could not be loaded.";
+        renderProfileLoadFallback(profile, message);
+        try{ showToast("Profile failed to load. Refresh to get the latest version.", "error"); }catch(_err){}
+        throw e;
     }
-
-    const res = await fetch(`/static/components/${file}`);
-    const html = await res.text();
-
-    const root = document.getElementById("profileContainer");
-    if(root){
-        root.style.minHeight = "0";
-        root.style.height = "auto";
-        root.innerHTML = html;
-        root.dataset.profileLoaded = normalizeProfileName(profile);
-    }
-    bindProfileDraftAutosave();
-    try{
-        if(window.BotApp && typeof window.BotApp.markProfileInit === "function"){
-            window.BotApp.markProfileInit(profile, "load_profile_ui");
-        }
-    }catch(e){}
-
-    try{ await runProfileModuleHook(profile, "onMount", { profile, root: document.getElementById("profileContainer") }); }catch(e){}
-
-
-    // HUMAN: init chart + pull Keep Alive status
-    if(profile === "HUMAN"){
-        setTimeout(() => {
-            try{ initHumanChartIfPresent(); }catch(e){}
-            try{ refreshHumanKeepAliveStatus(); }catch(e){}
-        }, 0);
-    }
-
-    refreshDynamicElements();
-    initDigitGrid();
-    refreshHowTo();
-    updateInsta5Label();
-    syncAutoStake();
-    sendRiskControls();
-
-    renderTradeList(activeProfile);
-
-    applyMonthlyLicenseGate(profile);
-    try{ if(window.MarthaAI && typeof window.MarthaAI.scanCurrentProfile === "function") window.MarthaAI.scanCurrentProfile(); }catch(e){}
 }
 
 function refreshDynamicElements(){
@@ -5679,7 +5762,6 @@ async function setProfile(profile){
     try{ if(window.MarthaAI && typeof window.MarthaAI.setProfile === "function") window.MarthaAI.setProfile(profile); }catch(e){}
     rememberProfileBudgetPayload(profileData || {});
     applyKnownApiBalance(profileData || {}, false);
-    await ensureProfileModuleScript(profile);
 
     document.getElementById("koolkidBtn").classList.remove("active");
     document.getElementById("jokerjoeBtn").classList.remove("active");
@@ -5720,7 +5802,11 @@ async function setProfile(profile){
     applyLiveTickVisibility();
     syncKoolkidAutoTradeLaunchVisibility();
 
-    await loadProfileUI(profile);
+    try{
+        await loadProfileUI(profile);
+    }catch(e){
+        return;
+    }
     hydrateProfileBudgetControl(profile);
     applyProfileDraft(profile);
     applyMonthlyLicenseGate(profile);

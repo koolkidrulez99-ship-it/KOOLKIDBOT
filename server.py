@@ -109,6 +109,22 @@ from strategies.primordial_blue import (
     get_primordial_blue_market,
 )
 from strategies.touch_no_touch_predictor import predict_touch_no_touch_percentages
+from human_profile_contracts import (
+    normalize_human_manual_action,
+)
+from bot_modules.time_digits import (
+    extract_exit_digit_from_contract,
+    extract_last_decimal_digit,
+    now_time,
+)
+from bot_modules.trade_history import (
+    get_profile_trade_history_snapshot as _get_profile_trade_history_snapshot,
+    serialize_profile_trade_history_entry as _serialize_profile_trade_history_entry,
+)
+from bot_modules.human_manual_contracts import (
+    fetch_human_manual_contracts_for_state as _module_fetch_human_manual_contracts_for_state,
+    fetch_human_manual_contracts_for_symbol as _module_fetch_human_manual_contracts_for_symbol,
+)
 try:
     import strategies.unchain as _unchain_module
     UnchainStrategy = _unchain_module.UnchainStrategy
@@ -1089,63 +1105,6 @@ ensure_admin_user()
 
 
 # ---------------- HELPERS ---------------- #
-def now_time():
-    return datetime.now().strftime("%H:%M:%S")
-
-
-def extract_last_decimal_digit(price, pip_size=2):
-    try:
-        fmt = "{:0." + str(int(pip_size)) + "f}"
-        price_str = fmt.format(float(price))
-
-        if "." not in price_str:
-            return int(price_str[-1])
-
-        decimal_part = price_str.split(".")[1]
-        return int(decimal_part[-1])
-    except Exception:
-        return 0
-
-
-def extract_exit_digit_from_contract(contract: dict):
-    """
-    Deriv digit contracts often include:
-      - exit_tick_display_value (string)
-      - exit_tick (float)
-      - sell_spot / exit_spot (fallback)
-    We want the LAST decimal digit.
-    """
-    try:
-        val = contract.get("exit_tick_display_value")
-        if val is None or val == "":
-            val = contract.get("exit_tick")
-        if val is None or val == "":
-            val = contract.get("sell_spot") or contract.get("exit_spot")
-        if val is None or val == "":
-            val = contract.get("current_spot_display_value")
-        if val is None or val == "":
-            val = contract.get("current_spot")
-
-        if val is None or val == "":
-            return None
-
-        s = str(val)
-
-        if "." in s:
-            dec = s.split(".", 1)[1]
-            dec_digits = "".join(ch for ch in dec if ch.isdigit())
-            if not dec_digits:
-                return None
-            return int(dec_digits[-1])
-
-        digits = "".join(ch for ch in s if ch.isdigit())
-        if not digits:
-            return None
-        return int(digits[-1])
-    except Exception:
-        return None
-
-
 def login_required():
     username = session.get("user")
     if not username:
@@ -1576,6 +1535,7 @@ def _build_default_client_state():
         "req_meta": {},          # req_id -> meta
         "_proposal_waiters": {}, # req_id -> {"event","proposal","error"}
         "contract_meta": {},     # contract_id -> meta
+        "bot_auto_close_timers": {}, # contract_id -> Timer for bot-requested close
         "last_seen": time.time(),  # heartbeat (page open)
         "strategies": {
             "KOOLKID": KoolKidStrategy(),
@@ -1610,6 +1570,15 @@ def disconnect_client(client_id, reason="manual", emit=True):
 
     try:
         _stop_unchain_scanner_worker(state)
+    except Exception:
+        pass
+    try:
+        for timer in list((state.get("bot_auto_close_timers") or {}).values()):
+            try:
+                timer.cancel()
+            except Exception:
+                pass
+        state["bot_auto_close_timers"] = {}
     except Exception:
         pass
 
@@ -1808,99 +1777,6 @@ def emit_profile_snapshot(cid):
             emit_jokerjoe_modes(cid, strat)
     except Exception:
         pass
-
-
-def _serialize_profile_trade_history_entry(profile, entry, index):
-    raw = dict(entry or {}) if isinstance(entry, dict) else {}
-    if not raw:
-        return None
-
-    profile_name = str(profile or "").upper().strip() or "KOOLKID"
-    try:
-        profit_value = float(raw.get("profit", 0) or 0)
-    except Exception:
-        profit_value = 0.0
-    try:
-        stake_value = float(raw.get("stake", raw.get("buy_price", 0)) or 0)
-    except Exception:
-        stake_value = 0.0
-
-    result = str(raw.get("result") or ("WIN" if profit_value > 0 else "LOSS")).upper().strip() or "LOSS"
-    time_text = str(raw.get("time") or raw.get("date_start") or raw.get("purchase_time") or now_time()).strip()
-    symbol = str(raw.get("symbol") or raw.get("underlying") or "").strip()
-    trade_type = str(raw.get("type") or raw.get("contract_type") or "TRADE").strip()
-    contract_id = raw.get("contract_id")
-    if contract_id in (None, ""):
-        seed = f"{profile_name}|{index}|{time_text}|{trade_type}|{symbol}|{profit_value:.2f}|{stake_value:.2f}"
-        contract_id = f"SNAPSHOT-{profile_name}-{hashlib.sha1(seed.encode('utf-8')).hexdigest()[:16]}"
-
-    snapshot = {
-        "profile": profile_name,
-        "contract_id": str(contract_id),
-        "time": time_text,
-        "result": result,
-        "status": result,
-        "pending": False,
-        "profit": round(profit_value, 2),
-        "stake": round(stake_value, 2),
-        "symbol": symbol,
-        "type": trade_type,
-    }
-    sort_ts = None
-    for candidate in (
-        raw.get("sell_time"),
-        raw.get("exit_tick_time"),
-        raw.get("date_expiry"),
-        raw.get("date_start"),
-        raw.get("purchase_time"),
-        raw.get("entry_tick_time"),
-    ):
-        normalized_ts = _normalize_tick_timestamp(candidate)
-        if normalized_ts is None:
-            continue
-        if sort_ts is None or normalized_ts > sort_ts:
-            sort_ts = normalized_ts
-    if sort_ts is not None:
-        snapshot["_sort_ts"] = float(sort_ts)
-    try:
-        payout_value = float(raw.get("payout", raw.get("sell_price", 0)) or 0)
-    except Exception:
-        payout_value = 0.0
-    if payout_value:
-        snapshot["payout"] = round(payout_value, 2)
-
-    if raw.get("barrier") not in (None, ""):
-        snapshot["barrier"] = raw.get("barrier")
-    if raw.get("duration") not in (None, ""):
-        snapshot["duration"] = raw.get("duration")
-    if raw.get("duration_unit") not in (None, ""):
-        snapshot["duration_unit"] = raw.get("duration_unit")
-    if raw.get("exit_digit") not in (None, ""):
-        snapshot["exit_digit"] = raw.get("exit_digit")
-    elif raw.get("exitDigit") not in (None, ""):
-        snapshot["exitDigit"] = raw.get("exitDigit")
-    return snapshot
-
-
-def _get_profile_trade_history_snapshot(state, profile=None):
-    strategies = (state or {}).get("strategies") or {}
-    targets = []
-    if profile:
-        targets = [str(profile).upper().strip()]
-    else:
-        targets = [str(name).upper().strip() for name in strategies.keys()]
-
-    snapshots = {}
-    for prof in targets:
-        strat = strategies.get(prof)
-        raw_history = list(getattr(strat, "trade_history", []) or []) if strat else []
-        items = []
-        for idx, entry in enumerate(raw_history):
-            serialized = _serialize_profile_trade_history_entry(prof, entry, idx)
-            if serialized:
-                items.append(serialized)
-        snapshots[prof] = items
-    return snapshots
 
 
 def _get_koolkid_auto_trade_dashboard_payload(state):
@@ -2999,6 +2875,239 @@ def place_risefall_order(client_id, signal):
         return False, str(e)
 
 
+def _fetch_human_manual_contracts_for_symbol(symbol, *, force_refresh=False):
+    return _module_fetch_human_manual_contracts_for_symbol(
+        symbol,
+        deriv_ws_url=DERIV_WS,
+        force_refresh=force_refresh,
+    )
+
+
+def _fetch_human_manual_contracts_for_state(state, *, force_refresh=False):
+    return _module_fetch_human_manual_contracts_for_state(
+        state,
+        deriv_ws_url=DERIV_WS,
+        force_refresh=force_refresh,
+    )
+
+
+def _request_human_manual_proposal_quote(
+    state,
+    *,
+    contract_type,
+    stake,
+    symbol,
+    duration,
+    duration_unit="t",
+    selected_tick=None,
+    timeout_sec=5.0,
+):
+    client_id = None
+    for _cid, _state in clients.items():
+        if _state is state:
+            client_id = _cid
+            break
+    if client_id is not None:
+        ready, ready_msg = _ensure_trade_socket_ready(client_id, state, emit_error=False)
+        if not ready:
+            return None, ready_msg
+    ws = state.get("ws")
+    if not ws:
+        return None, "Not connected"
+
+    try:
+        amount = float(stake)
+    except Exception:
+        return None, "Invalid stake"
+    if amount <= 0:
+        return None, "Stake must be greater than 0"
+
+    try:
+        duration_val = int(float(duration))
+    except Exception:
+        return None, "Invalid duration"
+    duration_val = max(1, duration_val)
+    unit = str(duration_unit or "t").strip().lower()
+    if unit not in ("t", "s", "m", "h", "d"):
+        unit = "t"
+
+    req_id = _new_req_id()
+    waiter = {"event": threading.Event(), "proposal": None, "error": None}
+    waiters = state.setdefault("_proposal_waiters", {})
+    waiters[req_id] = waiter
+    waiters[str(req_id)] = waiter
+
+    payload = {
+        "proposal": 1,
+        "amount": float(amount),
+        "basis": "stake",
+        "contract_type": str(contract_type or "").upper().strip(),
+        "currency": "USD",
+        "duration": int(duration_val),
+        "duration_unit": unit,
+        "symbol": symbol,
+        "req_id": req_id,
+    }
+    if selected_tick is not None:
+        payload["selected_tick"] = int(selected_tick)
+
+    try:
+        ws.send(json.dumps(payload))
+    except Exception as e:
+        if client_id is not None:
+            _mark_ws_unhealthy_and_reconnect(client_id, state, "Deriv connection failed while requesting a quote. Reconnecting now...", emit_error=False)
+        waiters.pop(req_id, None)
+        waiters.pop(str(req_id), None)
+        return None, str(e)
+
+    if not waiter["event"].wait(max(0.40, float(timeout_sec))):
+        waiters.pop(req_id, None)
+        waiters.pop(str(req_id), None)
+        return None, "Quote timeout"
+
+    waiters.pop(req_id, None)
+    waiters.pop(str(req_id), None)
+    if waiter.get("error"):
+        return None, str(waiter.get("error"))
+
+    proposal = waiter.get("proposal") or {}
+    proposal_id = proposal.get("id")
+    if proposal_id in (None, ""):
+        return None, "Proposal id missing"
+    ask_price = _safe_float(proposal.get("ask_price"), _safe_float(proposal.get("display_value"), amount))
+    return {
+        "id": proposal_id,
+        "ask_price": float(max(0.0, ask_price if ask_price is not None else amount)),
+        "contract_type": str(contract_type or "").upper().strip(),
+        "duration": int(duration_val),
+        "duration_unit": unit,
+        "symbol": symbol,
+        "selected_tick": selected_tick,
+    }, None
+
+
+def place_human_manual_contract(client_id, *, action, stake, selected_tick=None, duration_ticks=None):
+    state = clients.get(client_id)
+    ready, ready_msg = _ensure_trade_socket_ready(client_id, state)
+    if not ready:
+        return False, ready_msg, None
+
+    action_key = normalize_human_manual_action(action)
+    if not action_key:
+        return False, "Invalid HUMAN manual action", None
+
+    try:
+        stake_value = max(0.35, float(stake))
+    except Exception:
+        return False, "Invalid stake", None
+
+    strategy = state.get("strategies", {}).get("HUMAN")
+    if strategy and hasattr(strategy, "enforce_tp_sl"):
+        try:
+            strategy.enforce_tp_sl()
+            if getattr(strategy, "risk_block_reason", None):
+                return False, f"{strategy.risk_block_reason} (session limit reached)", None
+        except Exception:
+            pass
+
+    info, err, symbol = _fetch_human_manual_contracts_for_state(state)
+    if err:
+        return False, err, None
+    action_info = (info or {}).get(action_key) or {}
+    if not action_info.get("available") or not action_info.get("contract_type"):
+        return False, "This contract is not available for the selected market.", None
+
+    duration_unit = str(action_info.get("duration_unit") or "t").lower()
+    min_duration = int(action_info.get("min_duration") or 1)
+    max_duration = action_info.get("max_duration")
+    if action_key in ("HIGH_TICK", "LOW_TICK"):
+        try:
+            selected_tick_value = int(float(selected_tick))
+        except Exception:
+            return False, "Selected Tick must be an integer from 1 to 5", None
+        if selected_tick_value < 1 or selected_tick_value > 5:
+            return False, "Selected Tick must be an integer from 1 to 5", None
+        duration_value = max(min_duration, int(action_info.get("default_duration") or 5), 5)
+        if max_duration is not None:
+            duration_value = min(duration_value, int(max_duration))
+        selected_tick_for_proposal = selected_tick_value
+    else:
+        try:
+            duration_value = int(float(duration_ticks))
+        except Exception:
+            return False, "Tick duration must be a valid integer", None
+        if duration_value < min_duration:
+            return False, f"Tick duration must be at least {min_duration}", None
+        if max_duration is not None and duration_value > int(max_duration):
+            return False, f"Tick duration must be {int(max_duration)} or less", None
+        selected_tick_for_proposal = None
+
+    quote, quote_err = _request_human_manual_proposal_quote(
+        state,
+        contract_type=action_info.get("contract_type"),
+        stake=stake_value,
+        symbol=symbol,
+        duration=duration_value,
+        duration_unit=duration_unit,
+        selected_tick=selected_tick_for_proposal,
+        timeout_sec=5.0,
+    )
+    if quote_err:
+        return False, quote_err, None
+
+    budget_ok, budget_msg, budget_reservation = _reserve_profile_budget(state, "HUMAN", stake_value)
+    if not budget_ok:
+        try:
+            socketio.emit("api_error", {"message": budget_msg}, room=client_id)
+        except Exception:
+            pass
+        return False, budget_msg, None
+
+    req_id = _new_req_id()
+    label = str(action_info.get("label") or action_key.replace("_", " ")).upper()
+    state.setdefault("req_meta", {})[req_id] = {
+        "profile": "HUMAN",
+        "type": label,
+        "barrier": selected_tick_for_proposal,
+        "stake": stake_value,
+        "symbol": symbol,
+        "time": now_time(),
+        "mode": "human_manual_contract",
+        "duration": int(duration_value),
+        "duration_unit": duration_unit,
+        "contract_type": action_info.get("contract_type"),
+        "selected_tick": selected_tick_for_proposal,
+        "budget_reservation": budget_reservation,
+    }
+
+    payload = {
+        "req_id": req_id,
+        "buy": quote.get("id"),
+        "price": float(quote.get("ask_price") or stake_value),
+    }
+    try:
+        state["ws"].send(json.dumps(payload))
+        _emit_balance_payload(client_id, state)
+        return True, "Trade sent", {
+            "action": action_key,
+            "label": action_info.get("label"),
+            "contract_type": action_info.get("contract_type"),
+            "symbol": symbol,
+            "duration": duration_value,
+            "duration_unit": duration_unit,
+            "selected_tick": selected_tick_for_proposal,
+        }
+    except Exception as e:
+        _mark_ws_unhealthy_and_reconnect(client_id, state, "Deriv connection failed while sending a trade. Reconnecting now...")
+        try:
+            _pull_req_meta_by_req_id(state, req_id)
+            _release_profile_budget_reservation(state, budget_reservation)
+            _emit_balance_payload(client_id, state)
+        except Exception:
+            pass
+        return False, str(e), None
+
+
 def _execute_auto_session_plan(client_id, state, plan):
     if not isinstance(plan, dict):
         return
@@ -3713,6 +3822,14 @@ def _ensure_ntt_state(state):
         cur["no_touch_barrier"] = _format_ntt_barrier(cur.get("no_touch_barrier", "+0.12"), "NO_TOUCH", cur["duration_unit"])
     except Exception:
         cur["no_touch_barrier"] = "+0.12"
+    try:
+        cur["tp"] = max(0.0, float(cur.get("tp", 0.0) or 0.0))
+    except Exception:
+        cur["tp"] = 0.0
+    try:
+        cur["sl"] = max(0.0, float(cur.get("sl", 0.0) or 0.0))
+    except Exception:
+        cur["sl"] = 0.0
     cur["auto_sl"] = bool(cur.get("auto_sl", True))
     cur.setdefault("last_action", "Ready")
     cur.setdefault("last_result", None)
@@ -3941,10 +4058,41 @@ def _check_ntt_risk_block(state):
             strat.enforce_tp_sl()
             reason = getattr(strat, "risk_block_reason", None)
             ntt["risk_block_reason"] = reason
+            if reason:
+                _stop_ntt_trading_after_risk_block(ntt, reason)
             return reason
         except Exception:
             pass
-    return ntt.get("risk_block_reason")
+    reason = ntt.get("risk_block_reason")
+    if reason:
+        _stop_ntt_trading_after_risk_block(ntt, reason)
+    return reason
+
+
+def _stop_ntt_trading_after_risk_block(ntt, reason):
+    if not isinstance(ntt, dict) or not reason:
+        return
+    ntt["auto_both_enabled"] = False
+    ntt["auto_both_pair_active"] = False
+    ntt["pair_send_in_flight"] = False
+    ntt["koolkid_hl_enabled"] = False
+    ntt["koolkid_both_enabled"] = False
+    ntt["koolkid_hl_simulation"] = None
+    ntt["koolkid_both_simulation"] = None
+    ntt["koolkid_hl_last_reason"] = str(reason)
+    ntt["koolkid_both_last_reason"] = str(reason)
+    try:
+        stop_mutant_auto(ntt, str(reason))
+    except Exception:
+        auto = ensure_mutant_auto_state(ntt)
+        auto["enabled"] = False
+        auto["request_in_flight"] = False
+        auto["execution_lock"] = False
+        auto["pending_contract_id"] = None
+        auto["last_reason"] = str(reason)
+    auto = ensure_mutant_auto_state(ntt)
+    ntt["auto_both_enabled"] = bool(auto.get("enabled"))
+    ntt["last_action"] = f"Mutant trading stopped • {reason}"
 
 
 def _get_ntt_side_duration(ntt, side):
@@ -5133,6 +5281,9 @@ def _send_ntt_both_pair(
     ntt = _ensure_ntt_state(state)
     if bool(ntt.get("pair_send_in_flight")):
         return False, "Mutant pair already sending. Waiting for the current pair request to finish.", []
+    risk_block = _check_ntt_risk_block(state)
+    if risk_block:
+        return False, str(risk_block), []
     plan = [
         ("TOUCH", touch_stake, touch_barrier, touch_duration, touch_duration_unit),
         ("NO_TOUCH", no_touch_stake, no_touch_barrier, no_touch_duration, no_touch_duration_unit),
@@ -5215,6 +5366,8 @@ def _finalize_ntt_contract(state, contract, balance, meta=None):
     }
     ntt["last_action"] = f"{normalized_type} settled {_format_state_money(state, profit, signed=True)}"
     ntt["risk_block_reason"] = getattr(strat, "risk_block_reason", ntt.get("risk_block_reason"))
+    if ntt.get("risk_block_reason"):
+        _stop_ntt_trading_after_risk_block(ntt, ntt.get("risk_block_reason"))
     return entry
 
 
@@ -5951,6 +6104,13 @@ def _toggle_ntt_koolkid_hl(cid, state, data):
     requested = (data or {}).get("enabled")
     ntt["koolkid_hl_enabled"] = (not bool(ntt.get("koolkid_hl_enabled"))) if requested is None else bool(requested)
     if ntt["koolkid_hl_enabled"]:
+        risk_block = _check_ntt_risk_block(state)
+        if risk_block:
+            ntt["koolkid_hl_enabled"] = False
+            payload = _ntt_payload_response(state)
+            if state.get("active_profile") == "NTT":
+                socketio.emit("ntt_status", payload, room=cid)
+            return jsonify({"status": "error", "message": str(risk_block), "enabled": False, "payload": payload}), 400
         ntt["koolkid_both_enabled"] = False
         _clear_ntt_koolkid_both_simulation(
             ntt,
@@ -5995,6 +6155,12 @@ def _toggle_ntt_auto_both(cid, state, data):
     enabled = (not bool(auto.get("enabled"))) if requested is None else bool(requested)
 
     if enabled:
+        risk_block = _check_ntt_risk_block(state)
+        if risk_block:
+            payload = _ntt_payload_response(state)
+            if state.get("active_profile") == "NTT":
+                socketio.emit("ntt_status", payload, room=cid)
+            return jsonify({"status": "error", "message": str(risk_block), "enabled": False, "payload": payload}), 400
         barrier = (data or {}).get("barrier", auto.get("barrier", "+0.12"))
         budget = (data or {}).get("budget", auto.get("budget", 10.0))
         selected_side = (data or {}).get("selected_side", auto.get("selected_side", "TOUCH"))
@@ -6063,6 +6229,13 @@ def _toggle_ntt_koolkid_both(cid, state, data):
     requested = (data or {}).get("enabled")
     ntt["koolkid_both_enabled"] = (not bool(ntt.get("koolkid_both_enabled"))) if requested is None else bool(requested)
     if ntt["koolkid_both_enabled"]:
+        risk_block = _check_ntt_risk_block(state)
+        if risk_block:
+            ntt["koolkid_both_enabled"] = False
+            payload = _ntt_payload_response(state)
+            if state.get("active_profile") == "NTT":
+                socketio.emit("ntt_status", payload, room=cid)
+            return jsonify({"status": "error", "message": str(risk_block), "enabled": False, "payload": payload}), 400
         ntt["koolkid_hl_enabled"] = False
         _clear_ntt_koolkid_hl_simulation(
             ntt,
@@ -11731,6 +11904,79 @@ def _send_unchain_buy(client_id, *, stake, symbol, growth_rate, mode="AUTO", exi
         return False, str(e)
 
 
+BOT_AUTO_CLOSE_DELAY_SECONDS = 3.0
+
+
+def _contract_needs_bot_auto_close(meta):
+    if not isinstance(meta, dict):
+        return False
+    profile = str(meta.get("profile") or "").upper().strip()
+    return profile in ("HUMAN", "NTT")
+
+
+def _clear_bot_auto_close_timer(state, contract_id):
+    if not state or contract_id in (None, ""):
+        return
+    timers = state.setdefault("bot_auto_close_timers", {})
+    norm = _normalize_contract_id(contract_id) or str(contract_id)
+    for key in {norm, str(contract_id)}:
+        timer = timers.pop(key, None)
+        if timer:
+            try:
+                timer.cancel()
+            except Exception:
+                pass
+
+
+def _request_bot_auto_close_contract(client_id, contract_id):
+    state = clients.get(client_id)
+    if not state:
+        return
+    meta = _peek_contract_meta(state, contract_id) or {}
+    if not _contract_needs_bot_auto_close(meta):
+        _clear_bot_auto_close_timer(state, contract_id)
+        return
+    norm = _normalize_contract_id(contract_id) or str(contract_id)
+    timers = state.setdefault("bot_auto_close_timers", {})
+    timers.pop(norm, None)
+    if _is_regular_contract_processed(state, contract_id) or _is_ntt_contract_processed(state, contract_id):
+        return
+    try:
+        if str(meta.get("profile") or "").upper() == "NTT":
+            entry = _get_ntt_active_entry(state, contract_id)
+            if entry is not None:
+                entry["status"] = "CLOSE REQUESTED"
+                entry["updated_at"] = now_time()
+                if state.get("active_profile") == "NTT":
+                    socketio.emit("ntt_status", _ntt_payload_response(state), room=client_id)
+    except Exception:
+        pass
+    ok, msg = _request_sell_contract(client_id, contract_id)
+    if not ok:
+        logger.warning("[%s] bot auto-close failed for contract %s: %s", client_id, contract_id, msg)
+
+
+def _schedule_bot_auto_close(client_id, state, contract_id, meta):
+    if not state or contract_id in (None, "") or not _contract_needs_bot_auto_close(meta):
+        return
+    norm = _normalize_contract_id(contract_id) or str(contract_id)
+    timers = state.setdefault("bot_auto_close_timers", {})
+    existing = timers.pop(norm, None)
+    if existing:
+        try:
+            existing.cancel()
+        except Exception:
+            pass
+    timer = threading.Timer(
+        BOT_AUTO_CLOSE_DELAY_SECONDS,
+        _request_bot_auto_close_contract,
+        args=(client_id, contract_id),
+    )
+    timer.daemon = True
+    timers[norm] = timer
+    timer.start()
+
+
 def _request_sell_contract(client_id, contract_id):
     state = clients.get(client_id)
     if not state:
@@ -13753,6 +13999,7 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                             ntt["auto_both_enabled"] = bool(auto.get("enabled"))
                 except Exception:
                     pass
+                _schedule_bot_auto_close(client_id, state, contract_id, meta)
                 duration_val = None
                 duration_unit_val = _clean_unchain_duration_unit(meta.get("duration_unit", "t"))
                 countdown_seconds = None
@@ -13778,6 +14025,9 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                         "contract_id": contract_id,
                         "duration": duration_val,
                         "duration_unit": duration_unit_val if duration_val is not None else None,
+                        "mode": meta.get("mode"),
+                        "contract_type": meta.get("contract_type"),
+                        "selected_tick": meta.get("selected_tick"),
                         "countdown_remaining": duration_val,
                         "countdown_unit": duration_unit_val if duration_val is not None else None,
                         "countdown_seconds": countdown_seconds,
@@ -13916,6 +14166,45 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                             pass
                     if state.get("active_profile") == "NTT":
                         socketio.emit("ntt_status", _ntt_payload_response(state), room=client_id)
+                elif meta_for_contract and str((meta_for_contract.get("profile") or "")).upper() == "HUMAN":
+                    sold_for_raw = sell_info.get("sold_for")
+                    if sold_for_raw in (None, ""):
+                        sold_for_raw = sell_info.get("sell_price")
+                    profit_raw = sell_info.get("profit")
+                    buy_price_raw = sell_info.get("buy_price")
+                    if buy_price_raw in (None, ""):
+                        buy_price_raw = meta_for_contract.get("stake")
+
+                    if sold_for_raw not in (None, "") or profit_raw not in (None, ""):
+                        try:
+                            sold_for = float(sold_for_raw or 0)
+                        except Exception:
+                            sold_for = 0.0
+                        try:
+                            buy_price = float(buy_price_raw or 0)
+                        except Exception:
+                            buy_price = 0.0
+                        try:
+                            profit_value = float(profit_raw) if profit_raw not in (None, "") else (sold_for - buy_price)
+                        except Exception:
+                            profit_value = sold_for - buy_price
+                        process_contract(client_id, {
+                            "contract_id": cid_val,
+                            "status": "sold",
+                            "is_sold": True,
+                            "sell_price": sold_for,
+                            "buy_price": buy_price,
+                            "profit": profit_value,
+                        })
+                    else:
+                        try:
+                            ws.send(json.dumps({
+                                "proposal_open_contract": 1,
+                                "contract_id": int(float(cid_val)),
+                                "subscribe": 1,
+                            }))
+                        except Exception:
+                            pass
             except Exception:
                 pass
 
@@ -14139,6 +14428,7 @@ def process_contract(client_id, contract):
             return
 
         contract_id = contract.get("contract_id")
+        _clear_bot_auto_close_timer(state, contract_id)
         if _is_regular_contract_processed(state, contract_id):
             return
         if _is_unchain_contract_processed(state, contract_id):
@@ -14221,6 +14511,9 @@ def process_contract(client_id, contract):
                 entry.setdefault("time", meta.get("time"))
                 entry.setdefault("duration", meta.get("duration"))
                 entry.setdefault("duration_unit", meta.get("duration_unit"))
+                entry.setdefault("mode", meta.get("mode"))
+                entry.setdefault("contract_type", meta.get("contract_type"))
+                entry.setdefault("selected_tick", meta.get("selected_tick"))
             else:
                 entry.setdefault("profile", profile_for_contract)
             # Always emit the same contract id used at placement so frontend can
@@ -17531,6 +17824,50 @@ def human_rf_settings_route():
     }
     payload = strat.set_human_rf_settings(**kwargs)
     return jsonify({"status": "success", "rise_fall": payload})
+
+
+@app.route("/human_manual_contracts", methods=["GET"])
+def human_manual_contracts_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    _cid, state = get_client_state()
+    symbol = state.get("human_symbol") or state.get("current_symbol")
+    force_refresh = str(request.args.get("refresh") or "").lower() in ("1", "true", "yes")
+    info, err, resolved_symbol = _fetch_human_manual_contracts_for_state(state, force_refresh=force_refresh)
+    if err:
+        return jsonify({
+            "status": "error",
+            "symbol": resolved_symbol or symbol,
+            "error": err,
+            "actions": {},
+        }), 400
+    return jsonify({
+        "status": "success",
+        "symbol": resolved_symbol or symbol,
+        "requested_symbol": symbol,
+        "actions": info or {},
+        "ws_connected": bool(state.get("ws_connected")),
+    })
+
+
+@app.route("/human_manual_trade", methods=["POST"])
+def human_manual_trade_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, _state = get_client_state()
+    data = request.json or {}
+    ok, msg, trade = place_human_manual_contract(
+        cid,
+        action=data.get("action"),
+        stake=data.get("stake"),
+        selected_tick=data.get("selected_tick"),
+        duration_ticks=data.get("duration_ticks"),
+    )
+    if ok:
+        return jsonify({"status": "success", "message": msg, "trade": trade})
+    return jsonify({"error": msg}), 400
 
 
 @app.route("/human_rf_trade", methods=["POST"])

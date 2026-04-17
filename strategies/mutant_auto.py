@@ -7,21 +7,24 @@ logger = logging.getLogger(__name__)
 MIN_MUTANT_AUTO_STAKE = 0.35
 STEP50_INCREMENT = 0.50
 MAX_MUTANT_AUTO_LADDER_STAKE = 2000.0
-MARTINGALE_LADDER = (
-    0.35,
-    0.70,
-    1.40,
-    2.80,
-    5.60,
-    11.20,
-    22.40,
-    44.80,
-    89.60,
-    179.20,
-    358.40,
-    716.80,
-    1433.60,
-)
+MARTINGALE_MULTIPLIER = 2.0
+
+
+def _build_mutant_multiplier_ladder():
+    ladder = []
+    stake = round(MIN_MUTANT_AUTO_STAKE, 2)
+    max_stake = round(MAX_MUTANT_AUTO_LADDER_STAKE, 2)
+    while stake < max_stake:
+        ladder.append(stake)
+        stake = round(stake * MARTINGALE_MULTIPLIER, 2)
+        if stake > max_stake:
+            stake = max_stake
+    if not ladder or ladder[-1] != max_stake:
+        ladder.append(max_stake)
+    return tuple(ladder)
+
+
+MARTINGALE_LADDER = _build_mutant_multiplier_ladder()
 STEP50_LADDER = tuple(
     round(MIN_MUTANT_AUTO_STAKE + (STEP50_INCREMENT * idx), 2)
     for idx in range(int((MAX_MUTANT_AUTO_LADDER_STAKE - MIN_MUTANT_AUTO_STAKE) / STEP50_INCREMENT) + 1)
@@ -402,21 +405,11 @@ def _mutant_auto_ladder_for_mode(mode):
     return ()
 
 
-def _mutant_auto_budget_limit(budget):
-    return round(
-        min(
-            MAX_MUTANT_AUTO_LADDER_STAKE,
-            max(MIN_MUTANT_AUTO_STAKE, _safe_float(budget, MIN_MUTANT_AUTO_STAKE)),
-        ),
-        2,
-    )
-
-
-def _mutant_auto_capped_ladder(mode, budget):
+def _mutant_auto_capped_ladder(mode, budget=None):
     ladder = _mutant_auto_ladder_for_mode(mode)
     if not ladder:
         return ()
-    safe_limit = _mutant_auto_budget_limit(budget)
+    safe_limit = round(max(MIN_MUTANT_AUTO_STAKE, float(MAX_MUTANT_AUTO_LADDER_STAKE)), 2)
     capped = tuple(stake for stake in ladder if stake <= (safe_limit + 1e-9))
     return capped or (round(MIN_MUTANT_AUTO_STAKE, 2),)
 
@@ -942,16 +935,9 @@ def progress_mutant_auto_after_result(ntt, *, won, profit, side=None, contract_i
         active_step_index = max(0, int(auto.get("progression_step", 0) or 0))
     last_step = _mutant_auto_last_step_index(mode, budget)
     next_step = min(active_step_index + 1, last_step)
-    next_stake = round(
-        max(
-            0.0,
-            _safe_float(
-                active_plan.get("next_loss_stake"),
-                _project_mutant_auto_progression_stake(mode, budget, next_step),
-            ),
-        ),
-        2,
-    )
+    # Always project from the current ladder/step. Stored metadata can survive
+    # from an older frontend/backend cycle and must not override martingale.
+    next_stake = round(max(0.0, _project_mutant_auto_progression_stake(mode, budget, next_step)), 2)
     if next_stake <= 0.0:
         next_stake = _project_mutant_auto_progression_stake(mode, budget, next_step)
 

@@ -6,6 +6,8 @@
 #humanProfilePanel .human-rf-settings-grid,
 #humanProfilePanel .human-score-grid,
 #humanProfilePanel .human-exec-grid,
+#humanProfilePanel .human-manual-action-grid,
+#humanProfilePanel .human-manual-control-grid,
 #humanProfilePanel .human-history-stats {
   min-width: 0;
 }
@@ -87,6 +89,10 @@
     grid-column: span 1 !important;
   }
   #humanProfilePanel .human-rf-settings-grid {
+    grid-template-columns: 1fr !important;
+  }
+  #humanProfilePanel .human-manual-action-grid,
+  #humanProfilePanel .human-manual-control-grid {
     grid-template-columns: 1fr !important;
   }
   #humanProfilePanel .human-score-grid {
@@ -302,6 +308,132 @@
     <div class="human-exec-toggle-row" style="margin-top:10px; display:flex; gap:10px; flex-wrap:wrap;">
         <button id="autoSlBtn" onclick="toggleAutoSL()" style="background:#facc15; flex:1; min-width:220px;">AUTO SL: ON</button>
         <button id="keepAliveBtn" onclick="toggleHumanKeepAlive()" style="background:#64748b; flex:1; min-width:220px;">KEEP ALIVE: OFF</button>
+    </div>
+
+    <div style="margin-top:14px; background:#0f172a; border:1px solid #334155; border-radius:14px; padding:12px;">
+        <div style="display:flex; justify-content:space-between; gap:10px; align-items:center; flex-wrap:wrap;">
+            <div>
+                <div style="font-weight:800;">⚡ HUMAN SPECIAL TICK ACTIONS</div>
+                <div id="humanManualContractNote" style="color:#94a3b8; font-size:12px; margin-top:3px;">Checking contract availability for this market...</div>
+            </div>
+            <button type="button" onclick="refreshHumanManualContracts(true)" style="background:#334155; min-width:120px;">Refresh</button>
+        </div>
+
+        <div class="human-manual-action-grid" style="margin-top:10px; display:grid; grid-template-columns:repeat(4,minmax(130px,1fr)); gap:8px;">
+            <button id="humanHighTickBtn" type="button" onclick="humanManualTrade('HIGH_TICK')" style="background:#0ea5e9;">High Tick</button>
+            <button id="humanLowTickBtn" type="button" onclick="humanManualTrade('LOW_TICK')" style="background:#2563eb;">Low Tick</button>
+            <button id="humanOnlyUpsBtn" type="button" onclick="humanManualTrade('ONLY_UPS')" style="background:#16a34a;">Only Ups</button>
+            <button id="humanOnlyDownsBtn" type="button" onclick="humanManualTrade('ONLY_DOWNS')" style="background:#dc2626;">Only Downs</button>
+        </div>
+
+        <div style="margin-top:10px;">
+            <button id="humanSpecialAutoBtn" type="button" onclick="openHumanSpecialAutoPopup()" style="background:#f59e0b; color:#111827; width:100%; font-weight:900;">AUTO / BOTH SPECIAL TICKS</button>
+        </div>
+
+        <div class="human-manual-control-grid" style="margin-top:10px; display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+            <div>
+                <div style="color:#94a3b8; font-size:12px; margin-bottom:4px;">Selected Tick Position (1-5)</div>
+                <input id="humanSelectedTick" type="number" min="1" max="5" step="1" value="5" style="width:100%;">
+                <div style="color:#64748b; font-size:11px; margin-top:4px;">High/Low Tick chooses which of the next 5 ticks must be highest or lowest.</div>
+            </div>
+            <div>
+                <div style="color:#94a3b8; font-size:12px; margin-bottom:4px;">Only Ups/Downs Duration (ticks)</div>
+                <input id="humanOnlyDuration" type="number" min="2" step="1" value="2" style="width:100%;">
+                <div style="color:#64748b; font-size:11px; margin-top:4px;">Only Ups/Only Downs requires every tick to keep moving in the same direction.</div>
+            </div>
+        </div>
+
+        <div style="margin-top:12px; border:1px solid rgba(245,158,11,0.28); border-radius:14px; padding:10px; background:rgba(15,23,42,0.72);">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+                <div>
+                    <div style="font-weight:900; color:#fef3c7;">Single Contract Martingale</div>
+                    <div id="humanMartingaleAvailabilityNote" style="color:#94a3b8; font-size:11px; margin-top:3px;">Choose one special contract, then place with optional martingale.</div>
+                </div>
+                <button id="humanMartingaleToggleBtn" type="button" onclick="toggleHumanSingleMartingale()" style="background:#334155; min-width:120px;">MARTINGALE: OFF</button>
+            </div>
+            <div style="margin-top:10px; display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:8px;">
+                <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                    Contract
+                    <select id="humanMartingaleAction" onchange="setHumanSingleMartingaleAction(this.value)" style="width:100%; min-height:38px;">
+                        <option value="ONLY_UPS">Only Ups</option>
+                        <option value="ONLY_DOWNS">Only Downs</option>
+                        <option value="HIGH_TICK">High Tick</option>
+                        <option value="LOW_TICK">Low Tick</option>
+                    </select>
+                </label>
+                <label id="humanMartingaleDurationWrap" style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                    Duration
+                    <input id="humanMartingaleDuration" type="number" min="2" step="1" value="2" style="width:100%; min-height:38px;">
+                </label>
+                <label id="humanMartingaleSelectedTickWrap" style="display:none; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                    Prediction
+                    <input id="humanMartingaleSelectedTick" type="number" min="1" max="5" step="1" value="5" style="width:100%; min-height:38px;">
+                </label>
+                <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                    Start Stake
+                    <input id="humanMartingaleStartStake" type="number" min="0.35" step="0.01" value="0.35" oninput="updateHumanSingleMartingalePanel()" style="width:100%; min-height:38px;">
+                </label>
+            </div>
+            <div style="margin-top:8px; display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:8px;">
+                <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                    Multiplier
+                    <input id="humanMartingaleMultiplier" type="number" min="1" step="0.05" value="2" oninput="updateHumanSingleMartingalePanel()" style="width:100%; min-height:38px;">
+                </label>
+                <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                    Max Steps
+                    <input id="humanMartingaleMaxSteps" type="number" min="1" step="1" value="8" oninput="updateHumanSingleMartingalePanel()" style="width:100%; min-height:38px;">
+                </label>
+                <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                    Max Stake
+                    <input id="humanMartingaleMaxStake" type="number" min="0" step="0.01" placeholder="optional" oninput="updateHumanSingleMartingalePanel()" style="width:100%; min-height:38px;">
+                </label>
+            </div>
+            <div id="humanMartingaleStatus" style="margin-top:8px; color:#94a3b8; font-size:12px;">Ready. Step 1 • Current stake $0.35 • Next stake $0.70 • Last result: none</div>
+            <div style="margin-top:8px; display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+                <button id="humanMartingalePlaceBtn" type="button" onclick="placeHumanSingleMartingaleTrade()" style="background:#22c55e; color:#052e16; font-weight:900;">PLACE SELECTED CONTRACT</button>
+                <button id="humanMartingaleQuickStopBtn" type="button" onclick="quickStopHumanSingleMartingale()" style="background:#ef4444; color:#fff7ed; font-weight:900;">QUICK STOP</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="humanSpecialAutoPopup" style="display:none; position:fixed; inset:0; z-index:9999; align-items:center; justify-content:center; padding:18px; background:rgba(2,6,23,0.72); backdrop-filter:blur(8px);">
+        <div style="width:min(560px,100%); max-height:92vh; overflow:auto; background:#0f172a; border:1px solid #334155; border-radius:18px; padding:16px; box-shadow:0 24px 80px rgba(0,0,0,.45);">
+            <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px;">
+                <div>
+                    <div style="font-weight:900; font-size:18px;">⚡ Human Special Auto</div>
+                    <div style="color:#94a3b8; font-size:12px; margin-top:4px;">Auto ON fires both selected trades back to back. Auto OFF fires the first side only.</div>
+                </div>
+                <button type="button" onclick="closeHumanSpecialAutoPopup()" style="background:#1e293b; min-width:42px;">✕</button>
+            </div>
+            <div style="margin-top:12px; display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+                <button id="humanSpecialPairTicksBtn" type="button" onclick="setHumanSpecialPair('TICKS')" style="background:#0ea5e9;">High + Low Ticks</button>
+                <button id="humanSpecialPairRunsBtn" type="button" onclick="setHumanSpecialPair('RUNS')" style="background:#16a34a;">Only Ups + Downs</button>
+            </div>
+            <div style="margin-top:12px; display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+                <div>
+                    <div id="humanSpecialStakeALabel" style="color:#94a3b8; font-size:12px; margin-bottom:4px;">First Stake</div>
+                    <input id="humanSpecialStakeA" type="number" min="0.35" step="0.01" value="0.35" style="width:100%;">
+                </div>
+                <div>
+                    <div id="humanSpecialStakeBLabel" style="color:#94a3b8; font-size:12px; margin-bottom:4px;">Second Stake</div>
+                    <input id="humanSpecialStakeB" type="number" min="0.35" step="0.01" value="0.35" style="width:100%;">
+                </div>
+            </div>
+            <div style="margin-top:12px; display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+                <label style="display:flex; align-items:center; gap:8px; background:#111827; border:1px solid #334155; border-radius:12px; padding:10px; font-weight:800;">
+                    <input id="humanSpecialAutoToggle" type="checkbox" onchange="setHumanSpecialAutoBackToBack(this.checked)"> Auto back-to-back
+                </label>
+                <label style="display:flex; align-items:center; gap:8px; background:#111827; border:1px solid #334155; border-radius:12px; padding:10px; font-weight:800;">
+                    <input id="humanSpecialMartingaleToggle" type="checkbox" onchange="setHumanSpecialMartingale(this.checked)"> Martingale from $0.35
+                </label>
+            </div>
+            <div id="humanSpecialAutoStatus" style="margin-top:10px; color:#94a3b8; font-size:12px;">Ready.</div>
+            <div style="margin-top:12px; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px;">
+                <button id="humanSpecialPlaceBtn" type="button" onclick="runHumanSpecialPair()" style="background:#22c55e; color:#052e16;">PLACE</button>
+                <button id="humanSpecialQuickStopBtn" type="button" onclick="quickStopHumanSpecialAuto()" style="background:#ef4444; color:#fff7ed;">QUICK STOP</button>
+                <button type="button" onclick="closeHumanSpecialAutoPopup()" style="background:#334155;">CLOSE</button>
+            </div>
+        </div>
     </div>
 
     <div style="margin-top:10px; color:#94a3b8; font-size:12px;">

@@ -6,7 +6,7 @@ const FAST_INTERVAL_MS_NORMAL = 400; // 0.4s as requested
 const FAST_INTERVAL_MS_TURBO = 120;  // faster Turbo lane for JOKERJOE
 const FAST_MAX_BUY_QUEUE = 12;       // safety limit
 const BLACKCARD_RENDER_THROTTLE_MS = 300;
-  const state = { lastSocket: null, socketBound: false, autoModes: {}, turboMode: loadTurboModeJokerjoe(), kidgxBarrier: 5, matchesAnalysisOn: false, matchesLastKey: "", matchesObserverBound: false, matchSniperOn: false, matchSniperCooldownUntil: 0, matchSniperActiveDigit: null, matchSniperConsumed: false, matchSniperBusy: false, matchesSnapshot: null, matchesSorted: [], matchSniper5xOn: false, matchSniper5xCooldownUntil: 0, matchSniper5xBusy: false, matchSniper5xLastTopKey: "", matchSniper5xRotationSets: null, matchSniper5xRotationIndex: 0, matchSniper5xCurrentDigits: [], aiAutoModeChoice: "golden_digits", aiAutoLowestTradeCountChoice: 5, aiAutoLowestLocalOn: false, aiAutoModalOpen: false, aiLowestLastTickCount: 0, aiLowestTouches: {}, aiLowestArmed: null, aiLowestBatchActive: false, aiLowestBatchPending: 0, aiLowestBatchBarrier: null, aiLowestBatchProfit: 0, aiLowestCooldownUntil: 0, aiLowestSubmitting: false, aiLowestRecoveryDeficit: 0, aiLowestRecoveryOnly: false, randomMatchesDiffersOn: false, randomMatchesDiffersMode: "DIFFERS", randomMatchesDiffersModalOpen: false, randomMatchesDiffersBusy: false, randomMatchesDiffersCooldownUntil: 0, randomMatchesDiffersLastSignalKey: "", randomMatchesDiffersTickHistory: [], randomMatchesDiffersLastTickCount: 0, randomMatchesDiffersSnapshot: null, blackcard: { lastDigit: null, recentDigits: [], percentages: {}, busy: false, winMarkerDigit: null, winMarkerUntil: 0, praiseShownForTenWins: false, lastWinCount: null, reinvestProfitsOn: false, reinvestProfitPct: 25, lastProfit: 0, reinvestBaseStake: null, reinvestCycleStake: null }, insta2Busy: false, kid100WinsBusy: false, kid100WinsAutoOn: false, kid100WinsAutoBusy: false, kid100WinsAutoLastTick: null, kid100WinsAutoEnabledAtGlobalTick: null, kid100WinsAutoEnabledAtAnalysisTick: null, kid100WinsAutoLastSignalTick: null, kid100WinsLatestTick: null, kid100WinsLatestBest: null, kid100WinsLowPercentOn: false, kid100WinsAiDiffersOn: false, kid100WinsStopRequested: false, kid100WinsLastSeenDigit: null, kid100WinsManualArmed: false, kid100WinsManualBarrier: null, kid100WinsManualEnabledAtGlobalTick: null, kid100WinsManualEnabledAtAnalysisTick: null, kid100WinsManualLastSignalTick: null };
+  const state = { lastSocket: null, socketBound: false, autoModes: {}, turboMode: loadTurboModeJokerjoe(), kidgxBarrier: 5, matchesAnalysisOn: false, matchesLastKey: "", matchesObserverBound: false, matchSniperOn: false, matchSniperCooldownUntil: 0, matchSniperActiveDigit: null, matchSniperConsumed: false, matchSniperBusy: false, matchesSnapshot: null, matchesSorted: [], matchSniper5xOn: false, matchSniper5xCooldownUntil: 0, matchSniper5xBusy: false, matchSniper5xLastTopKey: "", matchSniper5xRotationSets: null, matchSniper5xRotationIndex: 0, matchSniper5xCurrentDigits: [], aiAutoModeChoice: "golden_digits", aiAutoLowestTradeCountChoice: 5, aiAutoLowestLocalOn: false, aiAutoModalOpen: false, aiLowestLastTickCount: 0, aiLowestTouches: {}, aiLowestArmed: null, aiLowestBatchActive: false, aiLowestBatchPending: 0, aiLowestBatchBarrier: null, aiLowestBatchProfit: 0, aiLowestCooldownUntil: 0, aiLowestSubmitting: false, aiLowestRecoveryDeficit: 0, aiLowestRecoveryOnly: false, randomMatchesDiffersOn: false, randomMatchesDiffersMode: "DIFFERS", randomMatchesDiffersModalOpen: false, randomMatchesDiffersBusy: false, randomMatchesDiffersCooldownUntil: 0, randomMatchesDiffersLastSignalKey: "", randomMatchesDiffersTickHistory: [], randomMatchesDiffersLastTickCount: 0, randomMatchesDiffersSnapshot: null, blackcard: { lastDigit: null, recentDigits: [], percentages: {}, busy: false, winMarkerDigit: null, winMarkerUntil: 0, praiseShownForTenWins: false, lastWinCount: null, reinvestProfitsOn: false, reinvestProfitPct: 25, lastProfit: 0, reinvestBaseStake: null, reinvestCycleStake: null }, insta2Busy: false, kid100WinsBusy: false, kid100WinsAutoOn: false, kid100WinsAutoBusy: false, kid100WinsAutoLastTick: null, kid100WinsAutoEnabledAtGlobalTick: null, kid100WinsAutoEnabledAtAnalysisTick: null, kid100WinsAutoLastSignalTick: null, kid100WinsLatestTick: null, kid100WinsLatestBest: null, kid100WinsLowPercentOn: false, kid100WinsAiDiffersOn: false, kid100WinsStopRequested: false, kid100WinsLastSeenDigit: null, kid100WinsManualArmed: false, kid100WinsManualBarrier: null, kid100WinsManualEnabledAtGlobalTick: null, kid100WinsManualEnabledAtAnalysisTick: null, kid100WinsManualLastSignalTick: null, kid100WinsReinvestProfitsOn: false, kid100WinsReinvestPct: 25, kid100WinsReinvestBaseStake: null, kid100WinsReinvestCycleStake: null, kid100WinsReinvestLastProfit: 0, kid100WinsReinvestPending: 0 };
   const fastBuyQueueJokerjoe = { items: [], running: false, lastRunAt: 0 };
   let activityPollTimerJokerjoe = null;
   let blackcardRenderTimerJokerjoe = null;
@@ -132,12 +132,10 @@ function renderTurboToggleJokerjoe() {
     return !!(ctx && (ctx.is_lifetime || String(ctx.license_type || "").toLowerCase() === "lifetime"));
   }
   function isKid100WinsFeatureUserJokerjoe() {
-    const ctx = window.LICENSE_CONTEXT || (App() && App().licenseContext) || {};
-    const licenseType = String((ctx && ctx.license_type) || "").toLowerCase();
-    return !!(ctx && (ctx.is_lifetime || ctx.is_monthly || licenseType === "lifetime" || licenseType === "monthly"));
+    return true;
   }
   function isLifetimeFeatureUserJokerjoe() {
-    return isLifetimeBlackcardUserJokerjoe();
+    return isKid100WinsFeatureUserJokerjoe();
   }
   function applyBlackcardLifetimeUiJokerjoe() {
     const enabled = isLifetimeBlackcardUserJokerjoe();
@@ -242,6 +240,7 @@ function renderTurboToggleJokerjoe() {
     if (state.blackcard.reinvestProfitsOn && ![25, 50, 75, 100].includes(Number(state.blackcard.reinvestProfitPct))) {
       state.blackcard.reinvestProfitPct = 25;
     }
+    state.blackcard.lastProfit = 0;
     if (state.blackcard.reinvestProfitsOn) {
       state.blackcard.reinvestBaseStake = Number((Number(getManualStakeValueJokerjoe()) || 0).toFixed(2));
       state.blackcard.reinvestCycleStake = null;
@@ -1039,6 +1038,107 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     return Number(stake.toFixed(2));
   }
 
+  function getKid100WinsReinvestPctJokerjoe() {
+    const pct = Number(state.kid100WinsReinvestPct);
+    return [25, 50, 75, 100].includes(pct) ? pct : 25;
+  }
+
+  function getKid100WinsReinvestAdjustedStakeJokerjoe(baseStake) {
+    const base = Number(baseStake);
+    if (!Number.isFinite(base) || base <= 0) return 0;
+    if (!state.kid100WinsReinvestProfitsOn) {
+      state.kid100WinsReinvestBaseStake = Number(base.toFixed(2));
+      state.kid100WinsReinvestCycleStake = null;
+      return Number(base.toFixed(2));
+    }
+    if (!Number.isFinite(Number(state.kid100WinsReinvestBaseStake)) || Math.abs(Number(state.kid100WinsReinvestBaseStake) - base) > 0.009) {
+      state.kid100WinsReinvestBaseStake = Number(base.toFixed(2));
+      state.kid100WinsReinvestCycleStake = Number(base.toFixed(2));
+    }
+    const cycle = Number(state.kid100WinsReinvestCycleStake);
+    return Number((Number.isFinite(cycle) && cycle > 0 ? cycle : base).toFixed(2));
+  }
+
+  function setKid100WinsReinvestCycleStakeFromTradeJokerjoe(stake) {
+    const value = Number(stake);
+    if (!Number.isFinite(value) || value <= 0) return;
+    state.kid100WinsReinvestCycleStake = Number(value.toFixed(2));
+    if (!Number.isFinite(Number(state.kid100WinsReinvestBaseStake))) {
+      state.kid100WinsReinvestBaseStake = Number(value.toFixed(2));
+    }
+  }
+
+  function markKid100WinsReinvestTradePlacedJokerjoe(stake) {
+    if (!state.kid100WinsReinvestProfitsOn) return;
+    setKid100WinsReinvestCycleStakeFromTradeJokerjoe(stake);
+    state.kid100WinsReinvestPending = Math.min(1000, Math.max(0, Number(state.kid100WinsReinvestPending) || 0) + 1);
+    renderKid100WinsReinvestControlsJokerjoe();
+  }
+
+  function armKid100WinsReinvestProfitJokerjoe(profit) {
+    if (!state.kid100WinsReinvestProfitsOn) return;
+    const gain = Number(profit);
+    if (!Number.isFinite(gain) || gain <= 0) return;
+    const currentStake = Number(state.kid100WinsReinvestCycleStake);
+    const baseStake = Number.isFinite(currentStake) && currentStake > 0
+      ? currentStake
+      : getKid100WinsStakeJokerjoe("kid100WinsDiffersStakeJokerjoe", getManualStakeValueJokerjoe());
+    const add = gain * (getKid100WinsReinvestPctJokerjoe() / 100);
+    state.kid100WinsReinvestLastProfit = Number(gain.toFixed(2));
+    state.kid100WinsReinvestCycleStake = Number((baseStake + add).toFixed(2));
+    renderKid100WinsReinvestControlsJokerjoe();
+  }
+
+  function renderKid100WinsReinvestControlsJokerjoe() {
+    const reinvestBtn = getEl("kid100WinsReinvestToggleJokerjoe");
+    const reinvestStatus = getEl("kid100WinsReinvestStatusJokerjoe");
+    const pctRow = getEl("kid100WinsReinvestPctRowJokerjoe");
+    const preview = getEl("kid100WinsReinvestPreviewJokerjoe");
+    const reinvestOn = !!state.kid100WinsReinvestProfitsOn;
+    if (reinvestBtn) {
+      reinvestBtn.innerText = reinvestOn ? "ON" : "OFF";
+      reinvestBtn.style.background = reinvestOn ? "#f59e0b" : "#334155";
+      reinvestBtn.style.color = reinvestOn ? "#1f1300" : "#f8fafc";
+      reinvestBtn.style.boxShadow = reinvestOn ? "0 0 18px rgba(245,158,11,0.24)" : "none";
+    }
+    if (reinvestStatus) {
+      reinvestStatus.innerText = reinvestOn
+        ? `ON - adds ${getKid100WinsReinvestPctJokerjoe()}% of each win profit to the next stake`
+        : "OFF - uses the fixed DIFFERS stake";
+      reinvestStatus.style.color = reinvestOn ? "#fcd34d" : "#94a3b8";
+    }
+    if (pctRow) pctRow.style.display = reinvestOn ? "grid" : "none";
+    [25, 50, 75, 100].forEach((pct) => {
+      const btn = getEl(`kid100WinsReinvestPct${pct}Jokerjoe`);
+      if (!btn) return;
+      const active = reinvestOn && getKid100WinsReinvestPctJokerjoe() === pct;
+      btn.style.background = active ? "#f59e0b" : "#1e293b";
+      btn.style.color = active ? "#1f1300" : "#f8fafc";
+      btn.style.borderColor = active ? "rgba(251,191,36,0.85)" : "rgba(148,163,184,0.28)";
+    });
+    if (preview) {
+      const base = getKid100WinsStakeJokerjoe("kid100WinsDiffersStakeJokerjoe", getManualStakeValueJokerjoe());
+      const next = getKid100WinsReinvestAdjustedStakeJokerjoe(base);
+      preview.innerText = reinvestOn
+        ? `Next stake: $${next.toFixed(2)}${state.kid100WinsReinvestLastProfit > 0 ? ` after last profit $${Number(state.kid100WinsReinvestLastProfit).toFixed(2)}` : ""}`
+        : "Next stake uses the fixed DIFFERS stake.";
+      preview.style.color = reinvestOn ? "#fde68a" : "#94a3b8";
+    }
+  }
+
+  function handleKid100WinsTradeResultJokerjoe(entry) {
+    if (!entry || String(entry.profile || "").toUpperCase() !== PROFILE) return;
+    if ((Number(state.kid100WinsReinvestPending) || 0) <= 0) return;
+    const type = String(entry.type || entry.contract_type || "").toUpperCase();
+    if (type && !type.includes("DIFF")) return;
+    const marker = String(entry.mode || entry.source || "").toLowerCase();
+    if (marker && !marker.includes("kid100")) return;
+    state.kid100WinsReinvestPending = Math.max(0, (Number(state.kid100WinsReinvestPending) || 0) - 1);
+    const profit = Number(entry.profit ?? entry.pnl ?? entry.net_profit ?? 0);
+    if (Number.isFinite(profit) && profit > 0) armKid100WinsReinvestProfitJokerjoe(profit);
+    else renderKid100WinsReinvestControlsJokerjoe();
+  }
+
   function parseKid100WinsPctValueJokerjoe(value) {
     if (typeof value === "number") return Number.isFinite(value) ? value : NaN;
     if (typeof value === "string") {
@@ -1119,7 +1219,7 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
   }
 
   function isKid100WinsAiDiffersActiveJokerjoe() {
-    return !!(state.kid100WinsAiDiffersOn && isLifetimeFeatureUserJokerjoe());
+    return !!(state.kid100WinsAiDiffersOn && isKid100WinsFeatureUserJokerjoe());
   }
 
   function getKid100WinsBestDigitJokerjoe(entries) {
@@ -1184,6 +1284,7 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
   function renderKid100WinsAutoTraderJokerjoe() {
     applyKid100WinsLifetimeGateJokerjoe();
     const aiDiffersAllowed = applyKid100WinsAiDiffersGateJokerjoe();
+    renderKid100WinsReinvestControlsJokerjoe();
     const btn = getEl("kid100WinsAutoTraderToggleJokerjoe");
     const lowBtn = getEl("kid100WinsLowPercentToggleJokerjoe");
     const dockQuickStopBtn = getEl("kid100WinsQuickStopDockBtnJokerjoe");
@@ -1238,7 +1339,7 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     }
     if (aiStatus) {
       if (!aiDiffersAllowed) {
-        aiStatus.innerText = "Lifetime only • blocks repeat-risk differs trades";
+        aiStatus.innerText = "Available to everyone • blocks repeat-risk differs trades";
         aiStatus.style.color = "#94a3b8";
       } else if (isKid100WinsAiDiffersActiveJokerjoe()) {
         aiStatus.innerText = "ON • Martha blocks DIFFERS when repeat risk is too high";
@@ -1310,13 +1411,14 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     }
     if (barrierNode) barrierNode.value = String(barrier);
     const fallbackStake = getManualStakeValueJokerjoe();
-    const differsStake = getKid100WinsStakeJokerjoe("kid100WinsDiffersStakeJokerjoe", fallbackStake);
+    const baseDiffersStake = getKid100WinsStakeJokerjoe("kid100WinsDiffersStakeJokerjoe", fallbackStake);
+    const differsStake = getKid100WinsReinvestAdjustedStakeJokerjoe(baseDiffersStake);
     const duration = getDurationTicksJokerjoe();
     const symbol = (typeof window.getConfirmedMarketSymbol === "function")
       ? window.getConfirmedMarketSymbol()
       : ((document.getElementById("symbol") || {}).value || "R_25");
     if (!(differsStake > 0)) throw new Error("Set DIFFERS stake above $0.");
-    return [{ type: "DIFFERS", barrier, stake: differsStake, amount: differsStake, duration, duration_unit: "t", symbol }];
+    return [{ type: "DIFFERS", barrier, stake: differsStake, amount: differsStake, duration, duration_unit: "t", symbol, mode: "JOKERJOE_KID100WINS", source: "jokerjoe_kid100wins", label: "kid100%wins" }];
   }
 
   function publishKid100WinsAiDiffersDecisionJokerjoe(decision) {
@@ -1355,7 +1457,7 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     const opts = options || {};
     const autoRun = !!opts.auto;
     if (!applyKid100WinsLifetimeGateJokerjoe()) {
-      const msg = "kid100%wins is available for monthly and lifetime users.";
+      const msg = "kid100%wins is available to all users.";
       if (!autoRun) safeToast(msg, "error");
       setKid100WinsStatusJokerjoe(msg, "#fca5a5");
       return { placed: 0, status: "forbidden" };
@@ -1430,6 +1532,7 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
       if (result && (result.status === "blocked" || (result.data && result.data.status === "blocked"))) return result;
       const placed = Number(result && result.placed);
       if (placed === 1) {
+        markKid100WinsReinvestTradePlacedJokerjoe(totalStake);
         const msg = `DIFFERS ${barrier} sent instantly after the trigger digit.`;
         setKid100WinsStatusJokerjoe(autoRun ? `${getKid100WinsModeLabelJokerjoe()}: ${msg}` : msg, "#86efac");
         if (!autoRun) {
@@ -2383,6 +2486,7 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
       bind("trade_result", (entry) => {
         if (!isActive()) return;
         handleBlackcardTradeResultJokerjoe(entry || {});
+        handleKid100WinsTradeResultJokerjoe(entry || {});
         onJokerjoeTradeResultForLowestAI(entry || {});
       });
 
@@ -2733,7 +2837,7 @@ window.hideBlackcardPopupJokerjoe = function () {
 
 window.openKid100WinsPopupJokerjoe = function () {
   if (!applyKid100WinsLifetimeGateJokerjoe()) {
-    safeToast("kid100%wins is available for monthly and lifetime users.", "error");
+    safeToast("kid100%wins is available to all users.", "error");
     return;
   }
   applyKid100WinsAiDiffersGateJokerjoe();
@@ -2756,6 +2860,7 @@ window.openKid100WinsPopupJokerjoe = function () {
     ? `${getKid100WinsModeLabelJokerjoe()} is ON. It waits for the ${pickLabel} digit trigger after turn on, then sends DIFFERS instantly.`
     : "Manual START sends a fast DIFFERS trade on the selected barrier. Auto modes wait for the watched digit to print first.", "#94a3b8");
   renderKid100WinsButtonJokerjoe();
+  renderKid100WinsReinvestControlsJokerjoe();
   popup.style.display = "flex";
 };
 
@@ -2766,7 +2871,7 @@ window.closeKid100WinsPopupJokerjoe = function () {
 
 window.toggleKid100WinsLowPercentJokerjoe = function () {
   if (!applyKid100WinsLifetimeGateJokerjoe()) {
-    safeToast("kid100%wins is available for monthly and lifetime users.", "error");
+    safeToast("kid100%wins is available to all users.", "error");
     return;
   }
   const nextOn = !state.kid100WinsLowPercentOn;
@@ -2800,7 +2905,7 @@ window.toggleKid100WinsLowPercentJokerjoe = function () {
 
 window.toggleKid100WinsAiDiffersJokerjoe = function () {
   if (!applyKid100WinsAiDiffersGateJokerjoe()) {
-    safeToast("AI DIFFERS is for lifetime users only.", "error");
+    safeToast("AI DIFFERS is available to all users.", "error");
     return;
   }
   state.kid100WinsAiDiffersOn = !state.kid100WinsAiDiffersOn;
@@ -2809,6 +2914,34 @@ window.toggleKid100WinsAiDiffersJokerjoe = function () {
     : "AI DIFFERS OFF. DIFFERS trades will not use Martha repeat-risk veto.", state.kid100WinsAiDiffersOn ? "#d8b4fe" : "#94a3b8");
   safeToast(`AI DIFFERS: ${state.kid100WinsAiDiffersOn ? "ON" : "OFF"}`, state.kid100WinsAiDiffersOn ? "success" : "error");
   renderKid100WinsAutoTraderJokerjoe();
+};
+
+window.toggleKid100WinsReinvestProfitsJokerjoe = function () {
+  if (!applyKid100WinsLifetimeGateJokerjoe()) {
+    safeToast("kid100%wins is available to all users.", "error");
+    return;
+  }
+  state.kid100WinsReinvestProfitsOn = !state.kid100WinsReinvestProfitsOn;
+  state.kid100WinsReinvestBaseStake = null;
+  state.kid100WinsReinvestCycleStake = null;
+  state.kid100WinsReinvestLastProfit = 0;
+  state.kid100WinsReinvestPending = 0;
+  setKid100WinsStatusJokerjoe(state.kid100WinsReinvestProfitsOn
+    ? `Reinvest Profits ON. Next wins add ${getKid100WinsReinvestPctJokerjoe()}% of profit to the following kid100%wins stake.`
+    : "Reinvest Profits OFF. kid100%wins will use the fixed DIFFERS stake.", state.kid100WinsReinvestProfitsOn ? "#fcd34d" : "#94a3b8");
+  safeToast(`kid100%wins Reinvest Profits: ${state.kid100WinsReinvestProfitsOn ? "ON" : "OFF"}`, state.kid100WinsReinvestProfitsOn ? "success" : "error");
+  renderKid100WinsReinvestControlsJokerjoe();
+};
+
+window.setKid100WinsReinvestPctJokerjoe = function (pct) {
+  const value = Number(pct);
+  if (![25, 50, 75, 100].includes(value)) return;
+  state.kid100WinsReinvestPct = value;
+  state.kid100WinsReinvestBaseStake = null;
+  state.kid100WinsReinvestCycleStake = null;
+  state.kid100WinsReinvestLastProfit = 0;
+  setKid100WinsStatusJokerjoe(`Reinvest Profits set to ${value}%. Future wins will build the next kid100%wins stake from that share.`, "#fcd34d");
+  renderKid100WinsReinvestControlsJokerjoe();
 };
 
 window.stopKid100WinsAutosJokerjoe = function () {
@@ -2831,7 +2964,7 @@ window.stopKid100WinsAutosJokerjoe = function () {
 
 window.toggleKid100WinsAutoTraderJokerjoe = function () {
   if (!applyKid100WinsLifetimeGateJokerjoe()) {
-    safeToast("kid100%wins is available for monthly and lifetime users.", "error");
+    safeToast("kid100%wins is available to all users.", "error");
     return;
   }
   const nextOn = !state.kid100WinsAutoOn;
@@ -2868,7 +3001,7 @@ window.toggleKid100WinsAutoTraderJokerjoe = function () {
 
 window.startKid100WinsJokerjoe = async function () {
   if (!applyKid100WinsLifetimeGateJokerjoe()) {
-    safeToast("kid100%wins is available for monthly and lifetime users.", "error");
+    safeToast("kid100%wins is available to all users.", "error");
     return { placed: 0, status: "forbidden" };
   }
   if (typeof apiConnected !== "undefined" && !apiConnected) {

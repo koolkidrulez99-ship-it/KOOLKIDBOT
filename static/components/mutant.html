@@ -1117,13 +1117,16 @@
         </div>
         <div class="ntt-field-grid-2">
           <div class="ntt-field">
-            <label class="ntt-label" for="nttTp">TP</label>
+            <label class="ntt-label" for="nttTp">TP (Stops All Mutant Trading)</label>
             <input id="nttTp" type="number" min="0" step="0.01" value="0">
           </div>
           <div class="ntt-field">
-            <label class="ntt-label" for="nttSl">SL</label>
+            <label class="ntt-label" for="nttSl">SL (Stops All Mutant Trading)</label>
             <input id="nttSl" type="number" min="0" step="0.01" value="0">
           </div>
+        </div>
+        <div style="margin-top:8px;color:#94a3b8;font-size:12px;line-height:1.35;">
+          Mutant TP/SL is enforced across manual Touch/No Touch, Both, Mutant AUTO, and KOOLKID Mutant modes. Once hit, all Mutant trading is stopped.
         </div>
         <div class="ntt-field" style="margin-top:10px;">
             <label class="ntt-label" for="nttBudget">Budget</label>
@@ -1330,7 +1333,7 @@
             <label for="nttAutoMartingaleToggle"><input id="nttAutoMartingaleToggle" type="checkbox"> Martingale <span id="nttAutoMartingaleState">OFF</span></label>
             <label for="nttAutoStep50Toggle"><input id="nttAutoStep50Toggle" type="checkbox"> 50 Cents Martingale <span id="nttAutoStep50State">OFF</span></label>
           </div>
-          <div class="ntt-koolkid-note" style="margin-top:10px;">Base mode uses the full budget every trade until the first loss. Martingale and 50 Cents Martingale both start at $0.35, scale after losses, and stop after the first win.</div>
+          <div class="ntt-koolkid-note" style="margin-top:10px;">Base mode uses the full budget every trade until the first loss. Martingale starts at $0.35 and doubles after each loss. 50 Cents Martingale starts at $0.35 and adds $0.50 after each loss. Both stop after the first win.</div>
         </div>
         <div class="ntt-koolkid-section">
           <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;">
