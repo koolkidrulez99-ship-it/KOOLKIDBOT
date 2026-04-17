@@ -218,8 +218,8 @@ HEARTBEAT_TIMEOUT_SEC = 10**12
 DERIV_WS_STALE_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_STALE_TIMEOUT_SEC", "18"))
 DERIV_WS_PING_INTERVAL_SEC = float(os.environ.get("DERIV_WS_PING_INTERVAL_SEC", "20"))
 DERIV_WS_PING_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_PING_TIMEOUT_SEC", "10"))
-DERIV_WS_CONNECT_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_CONNECT_TIMEOUT_SEC", "12"))
-DERIV_WS_AUTHORIZE_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_AUTHORIZE_TIMEOUT_SEC", "8"))
+DERIV_WS_CONNECT_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_CONNECT_TIMEOUT_SEC", "30"))
+DERIV_WS_AUTHORIZE_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_AUTHORIZE_TIMEOUT_SEC", "20"))
 MUTANT_DEPLOY_GATE_ENABLED = str(os.environ.get("MUTANT_DEPLOY_GATE_ENABLED", "1")).strip().lower() not in {"0", "false", "no", "off"}
 MUTANT_ALLOWED_ACCOUNT = str(
     os.environ.get(
@@ -1536,6 +1536,7 @@ def _build_default_client_state():
         "_proposal_waiters": {}, # req_id -> {"event","proposal","error"}
         "contract_meta": {},     # contract_id -> meta
         "bot_auto_close_timers": {}, # contract_id -> Timer for bot-requested close
+        "human_pending_contracts": {}, # contract_id -> HUMAN pending settlement guard
         "last_seen": time.time(),  # heartbeat (page open)
         "strategies": {
             "KOOLKID": KoolKidStrategy(),
@@ -3699,6 +3700,15 @@ def _mark_ws_unhealthy_and_reconnect(client_id, state, message, *, emit_error=Tr
     if not state:
         return
     now_ts = time.time()
+    has_token = bool(str(state.get("api_token", "") or "").strip())
+    reconnecting = bool(has_token)
+    logger.info(
+        "[%s] TEMP reconnect_state_entered message=%s emit_error=%s has_token=%s",
+        client_id,
+        message,
+        emit_error,
+        has_token,
+    )
     state["ws_connected"] = False
     state["ws_transport_connected"] = False
     state["ws_connect_started_at"] = 0.0
@@ -3706,7 +3716,13 @@ def _mark_ws_unhealthy_and_reconnect(client_id, state, message, *, emit_error=Tr
     state["loginid"] = "UNKNOWN"
     socketio.emit(
         "connection_status",
-        {"connected": False, "loginid": "UNKNOWN", **_build_balance_payload(state)},
+        {
+            "connected": False,
+            "reconnecting": reconnecting,
+            "has_token": has_token,
+            "loginid": "UNKNOWN",
+            **_build_balance_payload(state),
+        },
         room=client_id,
     )
     if emit_error:
@@ -3773,6 +3789,13 @@ def _check_ws_connect_timeout(client_id, state, now_ts=None):
         authorize_deadline_at = 0.0
     transport_connected = bool(state.get("ws_transport_connected"))
     if transport_connected and authorize_deadline_at and now_ts >= authorize_deadline_at:
+        logger.warning(
+            "[%s] TEMP websocket_authorize_timeout_triggered timeout_sec=%s deadline_at=%s now=%s",
+            client_id,
+            DERIV_WS_AUTHORIZE_TIMEOUT_SEC,
+            authorize_deadline_at,
+            now_ts,
+        )
         _mark_ws_unhealthy_and_reconnect(
             client_id,
             state,
@@ -3781,6 +3804,12 @@ def _check_ws_connect_timeout(client_id, state, now_ts=None):
         )
         return True
     if (not transport_connected) and connect_started_at and (now_ts - connect_started_at) >= float(DERIV_WS_CONNECT_TIMEOUT_SEC):
+        logger.warning(
+            "[%s] TEMP websocket_connect_timeout_triggered elapsed=%.2f timeout_sec=%s",
+            client_id,
+            now_ts - connect_started_at,
+            DERIV_WS_CONNECT_TIMEOUT_SEC,
+        )
         _mark_ws_unhealthy_and_reconnect(
             client_id,
             state,
@@ -11911,7 +11940,7 @@ def _contract_needs_bot_auto_close(meta):
     if not isinstance(meta, dict):
         return False
     profile = str(meta.get("profile") or "").upper().strip()
-    return profile in ("HUMAN", "NTT")
+    return profile in ("NTT",)
 
 
 def _clear_bot_auto_close_timer(state, contract_id):
@@ -14710,12 +14739,20 @@ def handle_on_close(client_id, ws, code, msg, expected_nonce):
     state["ws_authorize_deadline_at"] = 0.0
     state["loginid"] = "UNKNOWN"
     logger.warning(f"[{client_id}] 🔌 WebSocket Disconnected")
+    should_reconnect = bool(
+        str(state.get("api_token", "") or "").strip()
+        and (not state.get("ws_stop_event") or not state["ws_stop_event"].is_set())
+    )
+    if should_reconnect:
+        logger.info("[%s] TEMP reconnect_state_entered source=websocket_close code=%s message=%s", client_id, code, msg)
     socketio.emit("connection_status", {
         "connected": False,
+        "reconnecting": should_reconnect,
+        "has_token": bool(str(state.get("api_token", "") or "").strip()),
         "loginid": "UNKNOWN",
         **_build_balance_payload(state),
     }, room=client_id)
-    if not state.get("ws_stop_event") or not state["ws_stop_event"].is_set():
+    if should_reconnect:
         _schedule_ws_reconnect(client_id, expected_nonce, delay_sec=2.0)
 
 
@@ -14899,10 +14936,21 @@ def api_connection_status():
     connected = bool(state.get("ws_connected")) and not _is_ws_stale(state)
     if not connected and state.get("ws_connected"):
         _mark_ws_unhealthy_and_reconnect(_cid, state, "Deriv connection went stale. Reconnecting now...", emit_error=False)
+    has_token = bool(str(state.get("api_token", "") or "").strip())
+    reconnecting = bool(
+        has_token
+        and not connected
+        and (
+            state.get("ws_reconnect_pending")
+            or state.get("ws_connect_started_at")
+            or state.get("ws_transport_connected")
+        )
+    )
     payload = {
         "connected": connected,
+        "reconnecting": reconnecting,
         "loginid": state.get("loginid", "UNKNOWN"),
-        "has_token": bool(str(state.get("api_token", "") or "").strip()),
+        "has_token": has_token,
         "license_context": get_user_license_context(),
         **_build_balance_payload(state),
     }

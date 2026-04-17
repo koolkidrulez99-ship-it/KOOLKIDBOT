@@ -1552,6 +1552,7 @@ function initSocket(){
             socket.io.on("reconnect_attempt", (attempt)=>{
                 frontendReconnectCount += 1;
                 console.info("frontend_socket_reconnect_attempt", { attempt, reconnect_count: frontendReconnectCount });
+                console.info("TEMP reconnect_state_entered", { source: "socket_reconnect_attempt", attempt, reconnect_count: frontendReconnectCount });
                 logRuntimeCounters("socket_reconnect_attempt", true);
             });
             socket.io.on("reconnect", (attempt)=>{
@@ -1599,7 +1600,7 @@ function bindSocketHandlers(){
     bind("api_error", (data)=>{
         const message = String((data && data.message) || "").trim();
         if(isAuthApiErrorMessage(message)){
-            apiConnectPendingUntil = 0;
+            clearApiConnectPending("auth_api_error");
             stopApiConnectPolling();
             apiConnected = false;
             updateApiConnectionUi("disconnected");
@@ -1919,7 +1920,8 @@ let apiConnectSubmitting = false;
 let apiConnectRequestSeq = 0;
 let globalObservedTickCount = 0;
 const API_CONNECT_POLL_INTERVAL_MS = 2000;
-const API_CONNECT_POLL_MAX_ATTEMPTS = 8;
+const API_CONNECT_POLL_MAX_ATTEMPTS = 30;
+const API_CONNECT_PENDING_TIMEOUT_MS = 65000;
 const TICK_UI_THROTTLE_MS = 300;
 const DIGIT_ANALYSIS_UI_THROTTLE_MS = 350;
 let sessionStartBalanceForMilestone = null;
@@ -2636,13 +2638,37 @@ function stopApiConnectPolling(){
     }
 }
 
+function setApiConnectPending(reason, timeoutMs){
+    const waitMs = Math.max(1000, Number(timeoutMs || API_CONNECT_PENDING_TIMEOUT_MS) || API_CONNECT_PENDING_TIMEOUT_MS);
+    apiConnectPendingUntil = Date.now() + waitMs;
+    console.info("TEMP frontend_connect_pending_start", { reason, pending_ms: waitMs, pending_until: apiConnectPendingUntil });
+}
+
+function clearApiConnectPending(reason){
+    if(apiConnectPendingUntil){
+        console.info("TEMP frontend_connect_pending_end", { reason, pending_until: apiConnectPendingUntil, now: Date.now() });
+    }
+    apiConnectPendingUntil = 0;
+}
+
+function clearApiTokenInputAfterConnect(reason){
+    const input = tokenInputEl || document.getElementById("token");
+    if(input && input.value){
+        input.value = "";
+        console.info("TEMP token_input_cleared", { reason });
+    }
+}
+
 function applyApiConnectionState(data){
     const connected = !!(data && data.connected);
+    const reconnecting = !!(data && data.reconnecting);
     apiConnected = connected;
 
     if(connected){
-        apiConnectPendingUntil = 0;
+        console.info("TEMP connected_state_success", { loginid: (data && data.loginid) || "UNKNOWN" });
+        clearApiConnectPending("connected_state_success");
         stopApiConnectPolling();
+        clearApiTokenInputAfterConnect("connected_state_success");
         apiStatus.innerText = "Connected";
         apiStatus.className = "green";
         updateApiConnectionUi("connected", "API CONNECTED SUCCESSFULLY");
@@ -2651,15 +2677,20 @@ function applyApiConnectionState(data){
         return true;
     }
 
+    if(reconnecting && !apiConnectPendingUntil){
+        console.info("TEMP reconnect_state_entered", { source: "api_connection_state", has_token: !!(data && data.has_token) });
+        setApiConnectPending("backend_reconnecting", API_CONNECT_PENDING_TIMEOUT_MS);
+    }
+
     if(apiConnectPendingUntil && Date.now() < apiConnectPendingUntil){
-        apiStatus.innerText = "Connecting...";
+        apiStatus.innerText = reconnecting ? "Reconnecting..." : "Connecting...";
         apiStatus.className = "blue";
-        updateApiConnectionUi("pending", "CONNECTING API...");
+        updateApiConnectionUi("pending", reconnecting ? "RECONNECTING API..." : "CONNECTING API...");
         accountDashboard.style.display = "none";
         return false;
     }
 
-    apiConnectPendingUntil = 0;
+    clearApiConnectPending("disconnected_state_applied");
     stopApiConnectPolling();
     apiStatus.innerText = "Not Connected";
     apiStatus.className = "red";
@@ -2688,6 +2719,7 @@ function startApiConnectPolling(){
         logActiveIntervalCount("api_connection_status_skipped_socket_healthy");
         return;
     }
+    console.info("TEMP frontend_connect_polling_started", { interval_ms: API_CONNECT_POLL_INTERVAL_MS, max_attempts: API_CONNECT_POLL_MAX_ATTEMPTS });
     let attempts = 0;
     apiConnectPollTimer = setInterval(async ()=>{
         attempts += 1;
@@ -2698,7 +2730,10 @@ function startApiConnectPolling(){
         const connected = await refreshApiConnectionState(true);
         if(connected || attempts >= API_CONNECT_POLL_MAX_ATTEMPTS){
             if(!connected && attempts >= API_CONNECT_POLL_MAX_ATTEMPTS){
-                apiConnectPendingUntil = 0;
+                if(apiConnectPendingUntil && Date.now() < apiConnectPendingUntil){
+                    return;
+                }
+                clearApiConnectPending("poll_attempts_exhausted");
                 applyApiConnectionState({connected:false});
             }
             stopApiConnectPolling();
@@ -5857,7 +5892,7 @@ async function connect(){
     const connectRequestId = ++apiConnectRequestSeq;
     apiConnectSubmitting = true;
     console.info("TEMP connect_clicked", { request_id: connectRequestId, token_present: !!token.trim() });
-    apiConnectPendingUntil = Date.now() + 15000;
+    setApiConnectPending("connect_clicked", API_CONNECT_PENDING_TIMEOUT_MS);
     updateApiConnectionUi("pending", "CONNECTING API...");
     apiStatus.innerText = "Connecting...";
     apiStatus.className = "blue";
@@ -5865,9 +5900,8 @@ async function connect(){
         console.info("TEMP api_connect_requested", { request_id: connectRequestId });
         const res = await fetch("/set_token", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token})});
         const data = await res.json().catch(()=>({}));
-        if(tokenInput) tokenInput.value = "";
         if(!res.ok){
-            apiConnectPendingUntil = 0;
+            clearApiConnectPending("set_token_failed");
             updateApiConnectionUi("disconnected");
             apiStatus.innerText = "Not Connected";
             apiStatus.className = "red";
@@ -5878,7 +5912,7 @@ async function connect(){
         startApiConnectPolling();
         setTimeout(() => { refreshApiConnectionState(true).catch(() => {}); }, 150);
     }catch(err){
-        apiConnectPendingUntil = 0;
+        clearApiConnectPending("set_token_request_failed");
         updateApiConnectionUi("disconnected");
         apiStatus.innerText = "Not Connected";
         apiStatus.className = "red";
@@ -5890,7 +5924,7 @@ async function connect(){
 }
 
 async function disconnect(){
-    apiConnectPendingUntil = 0;
+    clearApiConnectPending("manual_disconnect");
     stopApiConnectPolling();
     await fetch("/disconnect", {method:"POST"});
     clearBotTransientState();
