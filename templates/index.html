@@ -3608,7 +3608,12 @@ function decrementPendingTickCountdowns(symbol){
             const remaining = Number(trade.countdown_remaining);
             if(!Number.isFinite(remaining) || remaining <= 0) return;
             const tradeSymbol = String(trade.symbol || "").toUpperCase().trim();
-            if(market && tradeSymbol && tradeSymbol !== market) return;
+            const isHumanTickContract = profile === "HUMAN" && (
+                String(trade.mode || "").toLowerCase() === "human_manual_contract"
+                || ["HIGH TICK", "LOW TICK", "ONLY UPS", "ONLY DOWNS"].includes(String(trade.type || "").toUpperCase())
+            );
+            const isBlackcardTickContract = profile === "JOKERJOE" && String(trade.mode || trade.source || "").toLowerCase().includes("blackcard");
+            if(market && tradeSymbol && tradeSymbol !== market && !isHumanTickContract && !isBlackcardTickContract) return;
             const nextRemaining = Math.max(0, Math.floor(remaining) - 1);
             if(nextRemaining === Math.floor(remaining)) return;
             trade.countdown_remaining = nextRemaining;
@@ -6319,6 +6324,10 @@ async function setKidPairsTrades(n){
 }
 
 async function toggleSludgeXAuto(){
+    if(isMonthlyLicenseUser()){
+        showToast("Admin is working on sludgeX for monthly users.", "warn");
+        return;
+    }
     const res = await fetch("/toggle_sludgex_auto", {method:"POST"});
     const data = await res.json();
     if(data.status === "success"){
@@ -6360,6 +6369,10 @@ async function toggleKidXAuto(){
 }
 
 async function toggleMultiGAuto(){
+    if(isMonthlyLicenseUser()){
+        showToast("Admin is working on MultiG for monthly users.", "warn");
+        return;
+    }
     const res = await fetch("/toggle_multig_auto", {method:"POST"});
     const data = await res.json();
     if(data.status === "success"){

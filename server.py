@@ -2306,6 +2306,7 @@ def handle_jokerjoe_blackcard_trade(data=None):
         digit,
         duration=duration,
         duration_unit="t",
+        mode="blackcard",
         emit_balance_after_send=False,
     )
     return {
@@ -16385,6 +16386,8 @@ def set_edgebrain_settings():
 def toggle_sludgex_auto_route():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
+    if is_monthly_license_user():
+        return jsonify({"status": "error", "message": "Admin is working on them."}), 403
 
     cid, state = get_client_state()
     strat = state["strategies"].get("JOKERJOE")
@@ -16442,6 +16445,8 @@ def toggle_kidx_auto_route():
 def toggle_multig_auto_route():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
+    if is_monthly_license_user():
+        return jsonify({"status": "error", "message": "Admin is working on them."}), 403
 
     cid, state = get_client_state()
     strat = state["strategies"].get("JOKERJOE")
@@ -16713,7 +16718,16 @@ def manual_trade():
     duration = _sanitize_digit_trade_duration(data.get("duration", 1))
     duration_unit = "t"
 
-    ok, msg = send_buy(cid, contract_type, stake, symbol, barrier, duration=duration, duration_unit=duration_unit)
+    ok, msg = send_buy(
+        cid,
+        contract_type,
+        stake,
+        symbol,
+        barrier,
+        duration=duration,
+        duration_unit=duration_unit,
+        mode=data.get("mode") or data.get("source"),
+    )
     return jsonify({"status": "success" if ok else "error", "message": msg})
 
 
