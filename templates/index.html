@@ -2888,6 +2888,9 @@ function applyMonthlyLicenseGate(profile){
             "nttKoolkidBtn",
         ].forEach((id)=>hideMonthlyElement(id));
     }
+    if(p === "HUMAN"){
+        hideMonthlyElement("humanLegacyGraphCard");
+    }
 }
 
 window.BotApp.applyMonthlyLicenseGate = applyMonthlyLicenseGate;
@@ -6665,6 +6668,13 @@ function _clamp(v, min, max){
 function initHumanChartIfPresent(){
     const el = document.getElementById("humanChart");
     if(!el) return;
+    if(isMonthlyLicenseUser()){
+        try{ if(humanChart) humanChart.remove(); }catch(e){}
+        humanChart = null;
+        humanCandleSeries = null;
+        humanChartContainer = null;
+        return;
+    }
     if(typeof LightweightCharts === "undefined") return;
 
     // Already initialized on same element

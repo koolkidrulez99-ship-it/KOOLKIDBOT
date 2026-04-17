@@ -2907,8 +2907,10 @@ def place_risefall_order(client_id, signal):
     ws = state.get("ws")
 
     direction = str(signal.get("direction") or "").upper()
+    allow_equals = bool(signal.get("allow_equals", False))
     contract_map = {"RISE": "CALL", "FALL": "PUT"}
-    deriv_contract = contract_map.get(direction)
+    equal_contract_map = {"RISE": "CALLE", "FALL": "PUTE"}
+    deriv_contract = (equal_contract_map if allow_equals else contract_map).get(direction)
     if not deriv_contract:
         return False, "Invalid rise/fall direction"
 
@@ -2917,7 +2919,6 @@ def place_risefall_order(client_id, signal):
     duration = max(1, min(20, duration))
     duration_unit = signal.get("duration_unit", "t") or "t"
     symbol_to_use = signal.get("symbol") or state.get("human_symbol") or state.get("current_symbol")
-    allow_equals = bool(signal.get("allow_equals", False))
 
     budget_ok, budget_msg, budget_reservation = _reserve_profile_budget(state, "HUMAN", stake)
     if not budget_ok:
@@ -2938,6 +2939,7 @@ def place_risefall_order(client_id, signal):
         "mode": signal.get("mode") or "human_rf",
         "duration": duration,
         "allow_equals": allow_equals,
+        "contract_type": deriv_contract,
         "budget_reservation": budget_reservation,
     }
 
@@ -2955,8 +2957,6 @@ def place_risefall_order(client_id, signal):
             "symbol": symbol_to_use,
         }
     }
-    if allow_equals:
-        payload["parameters"]["allow_equals"] = 1
 
     try:
         ws.send(json.dumps(payload))
@@ -18307,6 +18307,7 @@ def human_rf_trade():
 
     data = request.json or {}
     direction = (data.get("direction") or "AUTO").upper().strip()
+    ignore_cooldown = bool(data.get("ignore_cooldown") or data.get("bypass_cooldown"))
 
     # sync stake from request if provided (optional)
     try:
@@ -18323,7 +18324,11 @@ def human_rf_trade():
     if direction == "AUTO":
         sig = strat.build_human_rf_trade_signal(force_direction=None, require_threshold=True)
     elif direction in ("RISE", "FALL"):
-        sig = strat.build_human_rf_trade_signal(force_direction=direction, require_threshold=False)
+        sig = strat.build_human_rf_trade_signal(
+            force_direction=direction,
+            require_threshold=False,
+            ignore_cooldown=ignore_cooldown,
+        )
     else:
         return jsonify({"error": "Invalid direction"}), 400
 

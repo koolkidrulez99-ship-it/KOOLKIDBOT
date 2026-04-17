@@ -9,6 +9,8 @@
   let statusRenderTimer = null;
   let lastStatusRenderAt = 0;
   const fxState = { active: false, firing: false, lastToast: 0 };
+  let humanRFAllowEqualsOn = false;
+  let humanHistoryTallScroll = false;
   let humanManualContracts = null;
   let humanManualContractsSymbol = "";
   let humanManualLoading = false;
@@ -58,6 +60,22 @@
     }
   }
 
+  function syncHumanHistoryScrollBox(){
+    const panel = byId("humanProfilePanel");
+    const btn = byId("humanHistoryScrollToggle");
+    if(panel) panel.classList.toggle("human-history-tall", !!humanHistoryTallScroll);
+    if(btn){
+      btn.textContent = humanHistoryTallScroll ? "Scroll Box: TALL" : "Scroll Box: NORMAL";
+      btn.style.background = humanHistoryTallScroll ? "#0ea5e9" : "#334155";
+      btn.style.color = humanHistoryTallScroll ? "#0b1220" : "#e5e7eb";
+    }
+  }
+
+  function toggleHumanHistoryScrollBox(){
+    humanHistoryTallScroll = !humanHistoryTallScroll;
+    syncHumanHistoryScrollBox();
+  }
+
   const HUMAN_MANUAL_BUTTONS = {
     HIGH_TICK: "humanHighTickBtn",
     LOW_TICK: "humanLowTickBtn",
@@ -92,6 +110,21 @@
     step: 1,
     inProgress: false,
     pendingAction: "",
+    pendingContractId: "",
+    pendingMartingale: false,
+    pendingStake: 0,
+    running: false,
+    stopRequested: false,
+    restartTimer: null,
+    lastResult: "none",
+    status: "Ready",
+  };
+  const HUMAN_RF_MARTINGALE_STATE = {
+    direction: "RISE",
+    enabled: false,
+    step: 1,
+    inProgress: false,
+    pendingDirection: "",
     pendingContractId: "",
     pendingMartingale: false,
     pendingStake: 0,
@@ -209,10 +242,145 @@
     }
   }
 
+  function formatHumanChartPrice(value){
+    const num = Number(value);
+    if(!Number.isFinite(num)) return "--";
+    const abs = Math.abs(num);
+    if(abs >= 1000) return num.toFixed(2);
+    if(abs >= 100) return num.toFixed(3);
+    if(abs >= 1) return num.toFixed(4);
+    return num.toFixed(5);
+  }
+
+  function drawHumanLiteDirectionChart(data){
+    const chart = data && data.chart ? data.chart : {};
+    const prices = Array.isArray(chart.prices)
+      ? chart.prices.map((v) => Number(v)).filter((v) => Number.isFinite(v))
+      : [];
+    const canvas = byId("humanLiteDirectionChart");
+    const badge = byId("humanLiteChartBadge");
+    const subtitle = byId("humanLiteChartSubtitle");
+    const priceEl = byId("humanLiteChartPrice");
+    const moveEl = byId("humanLiteChartMove");
+    const ticksEl = byId("humanLiteChartTicks");
+    if(!canvas) return;
+
+    const latest = prices.length ? prices[prices.length - 1] : Number(chart.last_price);
+    const previous = prices.length > 1 ? prices[prices.length - 2] : latest;
+    const first = prices.length > 1 ? prices[0] : previous;
+    const tickCount = Number(chart.tick_count || data.tick_count || prices.length || 0);
+    const lastMove = Number(latest) - Number(previous);
+    const windowMove = Number(latest) - Number(first);
+    const direction = lastMove > 0 ? "up" : (lastMove < 0 ? "down" : "flat");
+    const color = direction === "up" ? "#22c55e" : (direction === "down" ? "#ef4444" : "#38bdf8");
+    const label = direction === "up" ? "MOVING UP" : (direction === "down" ? "MOVING DOWN" : "FLAT");
+
+    if(badge){
+      badge.textContent = prices.length >= 2 ? label : "WAITING";
+      badge.style.background = prices.length >= 2 ? `${color}22` : "#1e293b";
+      badge.style.color = prices.length >= 2 ? color : "#cbd5e1";
+      badge.style.border = prices.length >= 2 ? `1px solid ${color}55` : "1px solid #334155";
+    }
+    if(subtitle){
+      subtitle.textContent = prices.length >= 2
+        ? `Last ${Math.min(prices.length, 80)} ticks from the selected Human market.`
+        : "Waiting for Human market ticks...";
+    }
+    if(priceEl) priceEl.textContent = formatHumanChartPrice(latest);
+    if(moveEl){
+      const sign = windowMove > 0 ? "+" : "";
+      moveEl.textContent = prices.length >= 2 ? `${sign}${formatHumanChartPrice(windowMove)}` : "--";
+      moveEl.style.color = windowMove > 0 ? "#22c55e" : (windowMove < 0 ? "#ef4444" : "#cbd5e1");
+    }
+    if(ticksEl) ticksEl.textContent = String(Number.isFinite(tickCount) ? Math.floor(tickCount) : prices.length);
+
+    const rect = canvas.getBoundingClientRect();
+    const width = Math.max(260, Math.floor(rect.width || canvas.clientWidth || 600));
+    const height = Math.max(140, Math.floor(rect.height || canvas.clientHeight || 170));
+    const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    if(canvas.width !== Math.floor(width * dpr) || canvas.height !== Math.floor(height * dpr)){
+      canvas.width = Math.floor(width * dpr);
+      canvas.height = Math.floor(height * dpr);
+    }
+    const ctx = canvas.getContext("2d");
+    if(!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+
+    const gradient = ctx.createLinearGradient(0, 0, width, height);
+    gradient.addColorStop(0, "rgba(15, 23, 42, 0.95)");
+    gradient.addColorStop(1, "rgba(2, 6, 23, 0.95)");
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, width, height);
+
+    ctx.strokeStyle = "rgba(148, 163, 184, 0.12)";
+    ctx.lineWidth = 1;
+    for(let i = 1; i <= 3; i += 1){
+      const y = (height / 4) * i;
+      ctx.beginPath();
+      ctx.moveTo(12, y);
+      ctx.lineTo(width - 12, y);
+      ctx.stroke();
+    }
+
+    if(prices.length < 2){
+      ctx.fillStyle = "#64748b";
+      ctx.font = "700 13px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("Collecting Human market ticks...", width / 2, height / 2);
+      return;
+    }
+
+    const min = Math.min(...prices);
+    const max = Math.max(...prices);
+    const span = Math.max(max - min, Math.abs(max) * 0.000001, 0.000001);
+    const padX = 14;
+    const padY = 18;
+    const chartW = width - (padX * 2);
+    const chartH = height - (padY * 2);
+    const points = prices.map((price, idx) => {
+      const x = padX + ((prices.length === 1 ? 0 : idx / (prices.length - 1)) * chartW);
+      const y = padY + ((max - price) / span) * chartH;
+      return { x, y };
+    });
+
+    ctx.beginPath();
+    points.forEach((point, idx) => {
+      if(idx === 0) ctx.moveTo(point.x, point.y);
+      else ctx.lineTo(point.x, point.y);
+    });
+    ctx.lineTo(points[points.length - 1].x, height - padY);
+    ctx.lineTo(points[0].x, height - padY);
+    ctx.closePath();
+    const fill = ctx.createLinearGradient(0, padY, 0, height - padY);
+    fill.addColorStop(0, `${color}30`);
+    fill.addColorStop(1, "rgba(2, 6, 23, 0)");
+    ctx.fillStyle = fill;
+    ctx.fill();
+
+    ctx.beginPath();
+    points.forEach((point, idx) => {
+      if(idx === 0) ctx.moveTo(point.x, point.y);
+      else ctx.lineTo(point.x, point.y);
+    });
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2.5;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    ctx.stroke();
+
+    const last = points[points.length - 1];
+    ctx.beginPath();
+    ctx.arc(last.x, last.y, 4, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+  }
+
   function renderHumanRFStatus(data){
     lastStatusRenderAt = Date.now();
     if(!data || !rootExists()) return;
     cachedStatus = data;
+    drawHumanLiteDirectionChart(data);
 
     const bias = (data.bias || "NEUTRAL").toUpperCase();
     const signal = (data.signal || "WAIT").toUpperCase();
@@ -411,9 +579,23 @@
     }
   }
 
+  function syncHumanRFAllowEqualsToggle(){
+    const btn = byId("humanRfAllowEqualsToggle");
+    if(!btn) return;
+    btn.textContent = humanRFAllowEqualsOn ? "Allow Equals: ON" : "Allow Equals: OFF";
+    btn.setAttribute("aria-pressed", humanRFAllowEqualsOn ? "true" : "false");
+    btn.style.background = humanRFAllowEqualsOn ? "#22c55e" : "#1e293b";
+    btn.style.color = humanRFAllowEqualsOn ? "#052e16" : "#e5e7eb";
+    btn.style.borderColor = humanRFAllowEqualsOn ? "#86efac" : "#334155";
+  }
+
+  function toggleHumanRFAllowEquals(){
+    humanRFAllowEqualsOn = !humanRFAllowEqualsOn;
+    syncHumanRFAllowEqualsToggle();
+  }
+
   function readHumanRFAllowEquals(){
-    const node = byId("humanRfAllowEquals");
-    return !!(node && node.checked);
+    return !!humanRFAllowEqualsOn;
   }
 
   async function humanAutoRiseFall(){
@@ -714,6 +896,159 @@
     }
   }
 
+  function readHumanRfMartingaleNumber(id, fallback, min, max){
+    const el = byId(id);
+    let value = Number(el && el.value);
+    if(!Number.isFinite(value)) value = fallback;
+    if(Number.isFinite(min)) value = Math.max(min, value);
+    if(Number.isFinite(max)) value = Math.min(max, value);
+    return value;
+  }
+
+  function readHumanRfMartingaleSettings(){
+    const directionEl = byId("humanRfMartingaleDirection");
+    const direction = String((directionEl && directionEl.value) || HUMAN_RF_MARTINGALE_STATE.direction || "RISE").toUpperCase() === "FALL" ? "FALL" : "RISE";
+    const duration = Math.round(readHumanRfMartingaleNumber("humanRfMartingaleDuration", 5, 1, 10));
+    const startStake = Number(readHumanRfMartingaleNumber("humanRfMartingaleStartStake", 0.35, 0.35, 1000000).toFixed(2));
+    const multiplier = Math.max(1, readHumanRfMartingaleNumber("humanRfMartingaleMultiplier", 2, 1, 100));
+    const maxSteps = Math.max(1, Math.floor(readHumanRfMartingaleNumber("humanRfMartingaleMaxSteps", 8, 1, 1000)));
+    const capRaw = byId("humanRfMartingaleMaxStake");
+    const maxStakeValue = capRaw && String(capRaw.value || "").trim() !== ""
+      ? Math.max(0.35, Number(capRaw.value))
+      : null;
+    const maxStake = Number.isFinite(maxStakeValue) ? Number(maxStakeValue.toFixed(2)) : null;
+    if(directionEl) directionEl.value = direction;
+    const durationEl = byId("humanRfMartingaleDuration");
+    if(durationEl) durationEl.value = String(duration);
+    return { direction, duration, startStake, multiplier, maxSteps, maxStake };
+  }
+
+  function humanRfMartingaleStakeForStep(stepValue){
+    const settings = readHumanRfMartingaleSettings();
+    const step = Math.max(1, Math.min(settings.maxSteps, Math.floor(Number(stepValue || HUMAN_RF_MARTINGALE_STATE.step) || 1)));
+    let stake = settings.startStake * Math.pow(settings.multiplier, step - 1);
+    if(settings.maxStake !== null) stake = Math.min(stake, settings.maxStake);
+    return Number(Math.max(0.35, stake).toFixed(2));
+  }
+
+  function updateHumanRfMartingalePanel(){
+    const settings = readHumanRfMartingaleSettings();
+    HUMAN_RF_MARTINGALE_STATE.direction = settings.direction;
+    const toggleBtn = byId("humanRfMartingaleToggleBtn");
+    if(toggleBtn){
+      toggleBtn.textContent = `MARTINGALE: ${HUMAN_RF_MARTINGALE_STATE.enabled ? "ON" : "OFF"}`;
+      toggleBtn.style.background = HUMAN_RF_MARTINGALE_STATE.enabled ? "#f59e0b" : "#334155";
+      toggleBtn.style.color = HUMAN_RF_MARTINGALE_STATE.enabled ? "#111827" : "#f8fafc";
+    }
+    const placeBtn = byId("humanRfMartingalePlaceBtn");
+    if(placeBtn){
+      placeBtn.disabled = HUMAN_RF_MARTINGALE_STATE.inProgress || HUMAN_RF_MARTINGALE_STATE.running;
+      placeBtn.style.opacity = placeBtn.disabled ? "0.55" : "1";
+      placeBtn.style.cursor = placeBtn.disabled ? "not-allowed" : "pointer";
+    }
+    const stopBtn = byId("humanRfMartingaleQuickStopBtn");
+    if(stopBtn){
+      const canStop = HUMAN_RF_MARTINGALE_STATE.running || HUMAN_RF_MARTINGALE_STATE.inProgress;
+      stopBtn.disabled = !canStop;
+      stopBtn.style.opacity = canStop ? "1" : "0.55";
+      stopBtn.style.cursor = canStop ? "pointer" : "not-allowed";
+    }
+    const status = byId("humanRfMartingaleStatus");
+    if(status){
+      const currentStake = humanRfMartingaleStakeForStep();
+      const nextStep = Math.min(settings.maxSteps, HUMAN_RF_MARTINGALE_STATE.step + 1);
+      const nextStake = HUMAN_RF_MARTINGALE_STATE.enabled ? humanRfMartingaleStakeForStep(nextStep) : settings.startStake;
+      status.textContent = `${HUMAN_RF_MARTINGALE_STATE.status}. ${settings.direction} • Step ${HUMAN_RF_MARTINGALE_STATE.step} • Current stake $${currentStake.toFixed(2)} • Next stake $${nextStake.toFixed(2)} • Last result: ${HUMAN_RF_MARTINGALE_STATE.lastResult}`;
+      status.style.color = HUMAN_RF_MARTINGALE_STATE.inProgress ? "#fbbf24" : "#94a3b8";
+    }
+  }
+
+  function setHumanRfMartingaleDirection(direction){
+    HUMAN_RF_MARTINGALE_STATE.direction = String(direction || "RISE").toUpperCase() === "FALL" ? "FALL" : "RISE";
+    HUMAN_RF_MARTINGALE_STATE.status = "Ready";
+    updateHumanRfMartingalePanel();
+  }
+
+  function toggleHumanRfMartingale(){
+    HUMAN_RF_MARTINGALE_STATE.enabled = !HUMAN_RF_MARTINGALE_STATE.enabled;
+    if(HUMAN_RF_MARTINGALE_STATE.enabled){
+      HUMAN_RF_MARTINGALE_STATE.step = 1;
+      HUMAN_RF_MARTINGALE_STATE.status = "Ready";
+      HUMAN_RF_MARTINGALE_STATE.lastResult = "none";
+    }else{
+      quickStopHumanRfMartingale("Martingale stopped.");
+      return;
+    }
+    updateHumanRfMartingalePanel();
+  }
+
+  function clearHumanRfMartingalePending(){
+    HUMAN_RF_MARTINGALE_STATE.inProgress = false;
+    HUMAN_RF_MARTINGALE_STATE.pendingDirection = "";
+    HUMAN_RF_MARTINGALE_STATE.pendingContractId = "";
+    HUMAN_RF_MARTINGALE_STATE.pendingMartingale = false;
+    HUMAN_RF_MARTINGALE_STATE.pendingStake = 0;
+  }
+
+  function quickStopHumanRfMartingale(reason){
+    if(HUMAN_RF_MARTINGALE_STATE.restartTimer){
+      clearTimeout(HUMAN_RF_MARTINGALE_STATE.restartTimer);
+      HUMAN_RF_MARTINGALE_STATE.restartTimer = null;
+    }
+    HUMAN_RF_MARTINGALE_STATE.running = false;
+    HUMAN_RF_MARTINGALE_STATE.stopRequested = true;
+    HUMAN_RF_MARTINGALE_STATE.enabled = false;
+    clearHumanRfMartingalePending();
+    HUMAN_RF_MARTINGALE_STATE.status = reason || "Stopped";
+    updateHumanRfMartingalePanel();
+  }
+
+  async function placeHumanRfMartingaleTrade(options){
+    const opts = options || {};
+    if(HUMAN_RF_MARTINGALE_STATE.inProgress) return;
+    const settings = readHumanRfMartingaleSettings();
+    const stake = HUMAN_RF_MARTINGALE_STATE.enabled ? humanRfMartingaleStakeForStep() : settings.startStake;
+    if(HUMAN_RF_MARTINGALE_STATE.enabled && !opts.continuation){
+      HUMAN_RF_MARTINGALE_STATE.running = true;
+      HUMAN_RF_MARTINGALE_STATE.stopRequested = false;
+    }
+    HUMAN_RF_MARTINGALE_STATE.inProgress = true;
+    HUMAN_RF_MARTINGALE_STATE.pendingDirection = settings.direction;
+    HUMAN_RF_MARTINGALE_STATE.pendingContractId = "";
+    HUMAN_RF_MARTINGALE_STATE.pendingMartingale = !!HUMAN_RF_MARTINGALE_STATE.enabled;
+    HUMAN_RF_MARTINGALE_STATE.pendingStake = stake;
+    HUMAN_RF_MARTINGALE_STATE.status = "Running";
+    updateHumanRfMartingalePanel();
+    try{
+      const payload = {
+        direction: settings.direction,
+        stake,
+        duration_ticks: settings.duration,
+        ignore_cooldown: true,
+      };
+      const data = await guardMartha({
+        profile: PROFILE,
+        source: "human_rf_martingale",
+        type: settings.direction,
+        label: `HUMAN ${settings.direction} Martingale`,
+        stake,
+        duration: settings.duration,
+        duration_unit: "t",
+        batch_count: 1,
+      }, () => postJSON("/human_rf_trade", payload));
+      if(isMarthaBlocked(data)) throw new Error("Trade blocked");
+      if(typeof showToast === "function") showToast(`HUMAN ${settings.direction} martingale sent at $${stake.toFixed(2)}`, "success");
+    }catch(e){
+      HUMAN_RF_MARTINGALE_STATE.running = false;
+      HUMAN_RF_MARTINGALE_STATE.stopRequested = true;
+      clearHumanRfMartingalePending();
+      HUMAN_RF_MARTINGALE_STATE.status = "Stopped";
+      if(typeof showToast === "function") showToast(e.message || "HUMAN Rise/Fall martingale trade failed", "error");
+    }finally{
+      updateHumanRfMartingalePanel();
+    }
+  }
+
   function humanSpecialPairActions(pair){
     return String(pair || HUMAN_SPECIAL_AUTO_STATE.pair).toUpperCase() === "RUNS"
       ? ["ONLY_UPS", "ONLY_DOWNS"]
@@ -947,6 +1282,14 @@
     return "";
   }
 
+  function normalizeHumanRfDirection(value){
+    const text = String(value || "").toUpperCase();
+    const compact = text.replace(/[^A-Z]/g, "");
+    if(text.includes("RISE") || text.includes("CALL") || compact.includes("RISE")) return "RISE";
+    if(text.includes("FALL") || text.includes("PUT") || compact.includes("FALL")) return "FALL";
+    return "";
+  }
+
   function rememberHumanSpecialTrade(payload){
     if(!payload || String(payload.profile || "").toUpperCase() !== PROFILE) return;
     const activeCycle = HUMAN_SPECIAL_AUTO_STATE.running || HUMAN_SPECIAL_AUTO_STATE.firing || HUMAN_SPECIAL_AUTO_STATE.pendingCount > 0 || HUMAN_SPECIAL_AUTO_STATE.expectedCount > 0;
@@ -973,6 +1316,18 @@
       HUMAN_SINGLE_MARTINGALE_STATE.pendingContractId = String(contractId);
       HUMAN_SINGLE_MARTINGALE_STATE.status = "Running";
       updateHumanSingleMartingalePanel();
+    }
+    const rfDirection = normalizeHumanRfDirection([payload.type, payload.contract_type, payload.label, payload.action].filter(Boolean).join(" "));
+    if(
+      rfDirection
+      && contractId
+      && HUMAN_RF_MARTINGALE_STATE.inProgress
+      && !HUMAN_RF_MARTINGALE_STATE.pendingContractId
+      && rfDirection === HUMAN_RF_MARTINGALE_STATE.pendingDirection
+    ){
+      HUMAN_RF_MARTINGALE_STATE.pendingContractId = String(contractId);
+      HUMAN_RF_MARTINGALE_STATE.status = "Running";
+      updateHumanRfMartingalePanel();
     }
   }
 
@@ -1049,6 +1404,50 @@
       }
     }
     updateHumanSingleMartingalePanel();
+  }
+
+  function updateHumanRfMartingaleFromResult(payload){
+    if(!payload || String(payload.profile || "").toUpperCase() !== PROFILE) return;
+    if(!HUMAN_RF_MARTINGALE_STATE.inProgress && !HUMAN_RF_MARTINGALE_STATE.pendingContractId) return;
+    const contractId = payload.contract_id || payload.buy_contract_id || payload.id;
+    const direction = normalizeHumanRfDirection([payload.type, payload.contract_type, payload.label, payload.action].filter(Boolean).join(" "));
+    const pendingId = HUMAN_RF_MARTINGALE_STATE.pendingContractId;
+    if(pendingId && String(contractId || "") !== pendingId) return;
+    if(!pendingId && direction && direction !== HUMAN_RF_MARTINGALE_STATE.pendingDirection) return;
+    const outcome = resolveHumanTradeOutcome(payload);
+    const won = outcome === "WIN";
+    const lost = outcome === "LOSS";
+    if(!outcome) return;
+
+    const wasMartingaleTrade = !!HUMAN_RF_MARTINGALE_STATE.pendingMartingale;
+    clearHumanRfMartingalePending();
+    if(won){
+      HUMAN_RF_MARTINGALE_STATE.step = 1;
+      HUMAN_RF_MARTINGALE_STATE.running = false;
+      HUMAN_RF_MARTINGALE_STATE.stopRequested = false;
+      HUMAN_RF_MARTINGALE_STATE.enabled = false;
+      HUMAN_RF_MARTINGALE_STATE.lastResult = "WIN";
+      HUMAN_RF_MARTINGALE_STATE.status = wasMartingaleTrade ? "Reset" : "Ready";
+    }else if(lost){
+      HUMAN_RF_MARTINGALE_STATE.lastResult = "LOSS";
+      if(wasMartingaleTrade && HUMAN_RF_MARTINGALE_STATE.enabled){
+        const settings = readHumanRfMartingaleSettings();
+        HUMAN_RF_MARTINGALE_STATE.step = Math.min(settings.maxSteps, HUMAN_RF_MARTINGALE_STATE.step + 1);
+        HUMAN_RF_MARTINGALE_STATE.status = "Running";
+        if(HUMAN_RF_MARTINGALE_STATE.running && !HUMAN_RF_MARTINGALE_STATE.stopRequested){
+          if(HUMAN_RF_MARTINGALE_STATE.restartTimer) clearTimeout(HUMAN_RF_MARTINGALE_STATE.restartTimer);
+          HUMAN_RF_MARTINGALE_STATE.restartTimer = setTimeout(() => {
+            HUMAN_RF_MARTINGALE_STATE.restartTimer = null;
+            if(HUMAN_RF_MARTINGALE_STATE.running && HUMAN_RF_MARTINGALE_STATE.enabled && !HUMAN_RF_MARTINGALE_STATE.stopRequested){
+              placeHumanRfMartingaleTrade({ continuation: true });
+            }
+          }, 350);
+        }
+      }else{
+        HUMAN_RF_MARTINGALE_STATE.status = "Ready";
+      }
+    }
+    updateHumanRfMartingalePanel();
   }
 
   function updateHumanSpecialMartingaleFromResult(payload){
@@ -1219,6 +1618,7 @@
         bind("trade_placed", rememberHumanSpecialTrade);
         bind("trade_result", updateHumanSpecialMartingaleFromResult);
         bind("trade_result", updateHumanSingleMartingaleFromResult);
+        bind("trade_result", updateHumanRfMartingaleFromResult);
         socketHooked = true;
         if(App && typeof App.logSocketListenerCounts === "function") App.logSocketListenerCounts("human_profile_init");
       }
@@ -1239,6 +1639,7 @@
         previous.socket.off("trade_placed", previous.handlers.placed);
         previous.socket.off("trade_result", previous.handlers.specialResult);
         previous.socket.off("trade_result", previous.handlers.singleResult);
+        if(previous.handlers.rfResult) previous.socket.off("trade_result", previous.handlers.rfResult);
       }
       const placed = (payload) => {
         if(payload && String(payload.profile || "").toUpperCase() === PROFILE) rememberHumanSpecialTrade(payload);
@@ -1249,10 +1650,14 @@
       const singleResult = (payload) => {
         if(payload && String(payload.profile || "").toUpperCase() === PROFILE) updateHumanSingleMartingaleFromResult(payload);
       };
+      const rfResult = (payload) => {
+        if(payload && String(payload.profile || "").toUpperCase() === PROFILE) updateHumanRfMartingaleFromResult(payload);
+      };
       liveSocket.on("trade_placed", placed);
       liveSocket.on("trade_result", specialResult);
       liveSocket.on("trade_result", singleResult);
-      window.__humanSpecialSocketFallback = { socket: liveSocket, handlers: { placed, specialResult, singleResult } };
+      liveSocket.on("trade_result", rfResult);
+      window.__humanSpecialSocketFallback = { socket: liveSocket, handlers: { placed, specialResult, singleResult, rfResult } };
       return true;
     }catch(e){
       return false;
@@ -1387,6 +1792,8 @@
     // expose globals for inline onclick in human.html
     window.humanRFTrade = humanRFTrade;
     window.humanAutoRiseFall = humanAutoRiseFall;
+    window.toggleHumanRFAllowEquals = toggleHumanRFAllowEquals;
+    window.toggleHumanHistoryScrollBox = toggleHumanHistoryScrollBox;
     window.saveHumanRFSettings = saveHumanRFSettings;
     window.toggleHumanRFSetting = toggleHumanRFSetting;
     window.humanRFSetStake = humanRFSetStake;
@@ -1406,11 +1813,19 @@
     window.updateHumanSingleMartingalePanel = updateHumanSingleMartingalePanel;
     window.placeHumanSingleMartingaleTrade = placeHumanSingleMartingaleTrade;
     window.quickStopHumanSingleMartingale = quickStopHumanSingleMartingale;
+    window.setHumanRfMartingaleDirection = setHumanRfMartingaleDirection;
+    window.toggleHumanRfMartingale = toggleHumanRfMartingale;
+    window.updateHumanRfMartingalePanel = updateHumanRfMartingalePanel;
+    window.placeHumanRfMartingaleTrade = placeHumanRfMartingaleTrade;
+    window.quickStopHumanRfMartingale = quickStopHumanRfMartingale;
 
     // initial render/poll
     startPolling();
     refreshHumanManualContracts(false);
+    syncHumanRFAllowEqualsToggle();
+    syncHumanHistoryScrollBox();
     updateHumanSingleMartingalePanel();
+    updateHumanRfMartingalePanel();
     maybeAutoFormulaX();
   }
 
@@ -1418,7 +1833,10 @@
     bindSocketIfPossible();
     startPolling();
     refreshHumanManualContracts(false);
+    syncHumanRFAllowEqualsToggle();
+    syncHumanHistoryScrollBox();
     updateHumanSingleMartingalePanel();
+    updateHumanRfMartingalePanel();
     maybeAutoFormulaX();
   }
 
@@ -1428,7 +1846,10 @@
       if(typeof refreshHumanKeepAliveUI === "function") await refreshHumanKeepAliveUI();
     }catch(e){}
     refreshHumanManualContracts(false);
+    syncHumanRFAllowEqualsToggle();
+    syncHumanHistoryScrollBox();
     updateHumanSingleMartingalePanel();
+    updateHumanRfMartingalePanel();
     maybeAutoFormulaX();
   }
 

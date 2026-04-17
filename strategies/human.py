@@ -507,6 +507,7 @@ class HumanStrategy:
         if not self.rf_signal:
             self._rf_compute_signal()
         payload = dict(self.rf_signal or {})
+        recent_prices = list(self.rf_prices)[-80:]
         payload.setdefault("settings", {})
         payload["settings"] = {
             **payload.get("settings", {}),
@@ -517,6 +518,11 @@ class HumanStrategy:
             "adaptive_cooldown": bool(self.rf_adaptive_cooldown),
             "duration_ticks": int(self.rf_duration_ticks),
             "conf_threshold": float(self.rf_conf_threshold),
+        }
+        payload["chart"] = {
+            "prices": recent_prices,
+            "last_price": self.last_price,
+            "tick_count": int(self.tick_count or 0),
         }
         return payload
 
@@ -554,7 +560,7 @@ class HumanStrategy:
         self.rf_cooldown_until = max(self.rf_cooldown_until, time.time() + cooldown)
         self._rf_compute_signal()
 
-    def build_human_rf_trade_signal(self, force_direction=None, require_threshold=True):
+    def build_human_rf_trade_signal(self, force_direction=None, require_threshold=True, ignore_cooldown=False):
         sig = self._rf_compute_signal()
         if not sig:
             return None
@@ -591,7 +597,7 @@ class HumanStrategy:
                     return None
 
         # manual forced trades still respect cooldown only when adaptive cooldown is enabled strongly
-        if force_direction and self.rf_adaptive_cooldown:
+        if force_direction and self.rf_adaptive_cooldown and not ignore_cooldown:
             if time.time() < float(self.rf_cooldown_until or 0.0):
                 return None
 
