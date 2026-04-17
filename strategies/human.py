@@ -826,6 +826,9 @@ class HumanStrategy:
             "balance": round(float(balance), 2),
             "symbol": contract.get("underlying", self.symbol or ""),
         }
+        contract_id = contract.get("contract_id") or contract.get("id")
+        if contract_id not in (None, ""):
+            entry["contract_id"] = str(contract_id)
 
         self.trade_history.append(entry)
         if len(self.trade_history) > 200:

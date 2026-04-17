@@ -1508,6 +1508,52 @@ window.BotApp.clearFrontendTimeout = clearFrontendTimeout;
 window.BotApp.completeFrontendTimeout = completeFrontendTimeout;
 window.BotApp.logActiveTimeoutCount = logActiveTimeoutCount;
 
+const CLIENT_HEARTBEAT_INTERVAL_LABEL = "client_heartbeat";
+const CLIENT_HEARTBEAT_INTERVAL_MS = 25000;
+let clientHeartbeatTimer = null;
+
+function sendClientHeartbeat(reason){
+    try{
+        if(socket && socket.connected && typeof socket.emit === "function"){
+            socket.emit("client_heartbeat");
+            return true;
+        }
+    }catch(e){}
+    try{
+        fetch("/heartbeat", {
+            method: "POST",
+            cache: "no-store",
+            keepalive: reason === "pagehide" || reason === "beforeunload",
+        }).catch(()=>{});
+        return true;
+    }catch(e){}
+    return false;
+}
+
+function startClientHeartbeat(){
+    stopClientHeartbeat();
+    sendClientHeartbeat("start");
+    clientHeartbeatTimer = setInterval(() => {
+        sendClientHeartbeat("interval");
+    }, CLIENT_HEARTBEAT_INTERVAL_MS);
+    registerFrontendInterval(CLIENT_HEARTBEAT_INTERVAL_LABEL, clientHeartbeatTimer);
+}
+
+function stopClientHeartbeat(){
+    const clearedTracked = clearFrontendInterval(CLIENT_HEARTBEAT_INTERVAL_LABEL);
+    if(clientHeartbeatTimer && !clearedTracked){
+        clearInterval(clientHeartbeatTimer);
+    }
+    clientHeartbeatTimer = null;
+}
+
+window.addEventListener("visibilitychange", () => {
+    if(!document.hidden) sendClientHeartbeat("visible");
+});
+window.addEventListener("pagehide", () => {
+    sendClientHeartbeat("pagehide");
+});
+
 function initSocket(){
     if (socket) return;
 
@@ -1531,6 +1577,7 @@ function initSocket(){
     console.info("frontend_socket_created", { already_existing: false });
     logSocketListenerCounts("socket_created");
     logRuntimeCounters("socket_created", true);
+    startClientHeartbeat();
 
     // ==================== PATCH D: beforeunload with humanKeepAlive check ====================
     window.addEventListener("beforeunload", () => {
@@ -5710,6 +5757,11 @@ function loadMarketList(){
         {value:"JD50", label:"Jump 50"},
         {value:"JD75", label:"Jump 75"},
         {value:"JD100", label:"Jump 100"},
+        {value:"stpRNG", label:"Step Index 100"},
+        {value:"stpRNG2", label:"Step Index 200"},
+        {value:"stpRNG3", label:"Step Index 300"},
+        {value:"stpRNG4", label:"Step Index 400"},
+        {value:"stpRNG5", label:"Step Index 500"},
         {value:"RDBULL", label:"Bull Market"},
         {value:"RDBEAR", label:"Bear Market"},
     ];

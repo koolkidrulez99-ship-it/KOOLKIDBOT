@@ -1055,10 +1055,12 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
 
   function getGoldenCardAutoCandidateKoolkid(data) {
     const d = data || state.goldenCard || {};
+    if (String(d.ready_state || "").toLowerCase() !== "ready") return null;
     const results = Array.isArray(d.results) ? d.results : [];
     return results.find((row) => {
       if (!row) return false;
-      if (!(row.ready_confirmed || row.entry_ready)) return false;
+      if (!(row.ready_confirmed && row.entry_ready)) return false;
+      if (String(row.ready_state || "").toLowerCase() !== "ready") return false;
       if (row.loss_guard_blocked || row.conflict_blocked || row.market_quality_ok === false) return false;
       return Number(row.confidence_pct || 0) >= 85;
     }) || null;
@@ -1807,6 +1809,10 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
       window.openGoldenCardPopupKoolkid();
       return;
     }
+    state.goldenCardAutoOn = false;
+    state.goldenCardAutoLastSignalKey = "";
+    state.goldenCardAutoWaitingReset = false;
+    syncGoldenCardAutoUiKoolkid();
     const options = readGoldenCardOptionsKoolkid();
     renderGoldenCardKoolkid(Object.assign({}, current, {
       running: true,

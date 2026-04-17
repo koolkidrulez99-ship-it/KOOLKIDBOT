@@ -213,8 +213,10 @@ if DB_BACKEND == "postgres" and psycopg2 is None:
 # ==========================
 clients = {}
 
-# heartbeat timeout (effectively disabled to avoid disconnects)
-HEARTBEAT_TIMEOUT_SEC = 10**12
+# Browser sessions send a lightweight heartbeat; stale sessions are cleaned up so
+# Render does not keep abandoned websocket/strategy state forever.
+HEARTBEAT_TIMEOUT_SEC = float(os.environ.get("HEARTBEAT_TIMEOUT_SEC", "900"))
+HEARTBEAT_SWEEPER_INTERVAL_SEC = float(os.environ.get("HEARTBEAT_SWEEPER_INTERVAL_SEC", "60"))
 DERIV_WS_STALE_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_STALE_TIMEOUT_SEC", "18"))
 DERIV_WS_PING_INTERVAL_SEC = float(os.environ.get("DERIV_WS_PING_INTERVAL_SEC", "20"))
 DERIV_WS_PING_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_PING_TIMEOUT_SEC", "10"))
@@ -1145,6 +1147,124 @@ def _touch_client(client_id):
         st["last_seen"] = time.time()
 
 
+def _get_ws_lifecycle_lock(state):
+    lock = None
+    try:
+        lock = state.get("ws_lifecycle_lock")
+    except Exception:
+        lock = None
+    if lock is None:
+        lock = threading.RLock()
+        try:
+            state["ws_lifecycle_lock"] = lock
+        except Exception:
+            pass
+    return lock
+
+
+def _cleanup_client_runtime(client_id, state, reason="cleanup"):
+    if not state:
+        return
+    logger.info(
+        "[%s] client_runtime_cleanup_start reason=%s active_clients=%s active_threads=%s",
+        client_id,
+        reason,
+        len(clients),
+        threading.active_count(),
+    )
+    try:
+        state["ws_stop_event"].set()
+    except Exception:
+        pass
+    try:
+        ws = state.get("ws")
+        if ws:
+            ws.close()
+    except Exception:
+        logger.exception("[%s] client_runtime_cleanup_ws_close_failed reason=%s", client_id, reason)
+    try:
+        _stop_unchain_scanner_worker(state)
+    except Exception:
+        pass
+    try:
+        _cleanup_koolkid_golden_card_subscriptions(state)
+    except Exception:
+        pass
+    try:
+        for timer in list((state.get("bot_auto_close_timers") or {}).values()):
+            try:
+                timer.cancel()
+            except Exception:
+                pass
+        state["bot_auto_close_timers"] = {}
+    except Exception:
+        pass
+    for key in (
+        "tick_subs",
+        "open_contract_subs",
+        "req_meta",
+        "_proposal_waiters",
+        "contract_meta",
+        "human_pending_contracts",
+    ):
+        try:
+            value = state.get(key)
+            if isinstance(value, dict):
+                value.clear()
+            else:
+                state[key] = {}
+        except Exception:
+            pass
+    try:
+        state["ws"] = None
+        state["ws_connected"] = False
+        state["ws_transport_connected"] = False
+        state["ws_connect_started_at"] = 0.0
+        state["ws_authorize_deadline_at"] = 0.0
+        state["ws_reconnect_pending"] = False
+    except Exception:
+        pass
+    logger.info(
+        "[%s] client_runtime_cleanup_done reason=%s active_clients=%s active_threads=%s",
+        client_id,
+        reason,
+        len(clients),
+        threading.active_count(),
+    )
+
+
+def _start_ws_worker_thread(client_id, state, reason="start"):
+    if not state:
+        return None
+    lock = _get_ws_lifecycle_lock(state)
+    with lock:
+        existing = state.get("ws_thread")
+        if existing and existing.is_alive():
+            logger.info("[%s] websocket_existing_worker_stopping reason=%s", client_id, reason)
+            try:
+                state["ws_stop_event"].set()
+            except Exception:
+                pass
+            try:
+                ws = state.get("ws")
+                if ws:
+                    ws.close()
+            except Exception:
+                pass
+        thread_name = f"deriv_ws_{client_id}_{str(reason or 'start')[:32]}"
+        t = threading.Thread(target=start_ws_for_client, args=(client_id,), daemon=True, name=thread_name)
+        state["ws_thread"] = t
+        t.start()
+        logger.info(
+            "[%s] websocket_worker_spawned reason=%s active_clients=%s active_threads=%s",
+            client_id,
+            reason,
+            len(clients),
+            threading.active_count(),
+        )
+        return t
+
+
 def _hard_stop_all_strategies(state):
     """
     Your rule: when API disconnected -> everything stops (auto + memory).
@@ -1407,6 +1527,7 @@ def _build_default_client_state():
         "ws": None,
         "ws_thread": None,
         "ws_stop_event": threading.Event(),
+        "ws_lifecycle_lock": threading.RLock(),
         "ws_nonce": 0,  # prevents stale WS callbacks = "2 instances" bug
         "ws_reconnect_pending": False,
         "ws_reconnect_attempts": 0,
@@ -1557,32 +1678,7 @@ def disconnect_client(client_id, reason="manual", emit=True):
 
     logger.info(f"[{client_id}] 🔻 disconnect_client: reason={reason}")
 
-    try:
-        state["ws_stop_event"].set()
-    except Exception:
-        pass
-
-    ws = state.get("ws")
-    if ws:
-        try:
-            ws.close()
-        except Exception:
-            pass
-
-    try:
-        _stop_unchain_scanner_worker(state)
-    except Exception:
-        pass
-    try:
-        for timer in list((state.get("bot_auto_close_timers") or {}).values()):
-            try:
-                timer.cancel()
-            except Exception:
-                pass
-        state["bot_auto_close_timers"] = {}
-    except Exception:
-        pass
-
+    _cleanup_client_runtime(client_id, state, reason=reason)
     _hard_stop_all_strategies(state)
 
     clients[client_id] = _build_default_client_state()
@@ -2821,6 +2917,7 @@ def place_risefall_order(client_id, signal):
     duration = max(1, min(20, duration))
     duration_unit = signal.get("duration_unit", "t") or "t"
     symbol_to_use = signal.get("symbol") or state.get("human_symbol") or state.get("current_symbol")
+    allow_equals = bool(signal.get("allow_equals", False))
 
     budget_ok, budget_msg, budget_reservation = _reserve_profile_budget(state, "HUMAN", stake)
     if not budget_ok:
@@ -2840,6 +2937,7 @@ def place_risefall_order(client_id, signal):
         "time": now_time(),
         "mode": signal.get("mode") or "human_rf",
         "duration": duration,
+        "allow_equals": allow_equals,
         "budget_reservation": budget_reservation,
     }
 
@@ -2857,6 +2955,8 @@ def place_risefall_order(client_id, signal):
             "symbol": symbol_to_use,
         }
     }
+    if allow_equals:
+        payload["parameters"]["allow_equals"] = 1
 
     try:
         ws.send(json.dumps(payload))
@@ -4923,6 +5023,232 @@ def _maybe_force_ntt_close_on_countdown(client_id, state):
         ntt["last_action"] = (
             f"Countdown finished • refreshing live P/L for {len(refreshed)} Mutant trade(s)"
         )
+
+    return settled
+
+
+HUMAN_PENDING_SETTLE_BUFFER_TICKS = 3
+
+
+def _get_human_pending_contracts(state):
+    active = state.setdefault("human_pending_contracts", {})
+    if not isinstance(active, dict):
+        active = {}
+        state["human_pending_contracts"] = active
+    return active
+
+
+def _get_human_pending_entry(state, contract_id):
+    active = _get_human_pending_contracts(state)
+    norm = _normalize_contract_id(contract_id)
+    for key in (norm, str(contract_id) if contract_id is not None else None, contract_id):
+        if key is None:
+            continue
+        key = str(key)
+        if key in active:
+            return active.get(key)
+    return None
+
+
+def _remove_human_pending_contract(state, contract_id):
+    if not state or contract_id in (None, ""):
+        return
+    active = _get_human_pending_contracts(state)
+    norm = _normalize_contract_id(contract_id)
+    for key in (norm, str(contract_id), contract_id):
+        if key is None:
+            continue
+        try:
+            active.pop(str(key), None)
+        except Exception:
+            pass
+
+
+def _is_human_profile_meta(meta):
+    return isinstance(meta, dict) and str(meta.get("profile") or "").upper().strip() == "HUMAN"
+
+
+def _get_human_tick_counter(state):
+    try:
+        strat = ((state or {}).get("strategies") or {}).get("HUMAN")
+        return max(0, int(getattr(strat, "tick_count", 0) or 0))
+    except Exception:
+        return 0
+
+
+def _upsert_human_pending_contract(state, contract_id, meta=None, contract=None, status="OPEN"):
+    if not state or contract_id in (None, ""):
+        return None
+    meta = meta or _peek_contract_meta(state, contract_id) or {}
+    if not _is_human_profile_meta(meta):
+        return None
+    duration_unit = _clean_unchain_duration_unit(meta.get("duration_unit", "t"))
+    if duration_unit != "t":
+        return None
+    try:
+        duration = max(1, int(float(meta.get("duration", 0) or 0)))
+    except Exception:
+        duration = 0
+    if duration <= 0:
+        return None
+
+    active = _get_human_pending_contracts(state)
+    norm = _normalize_contract_id(contract_id) or str(contract_id)
+    existing = active.get(norm) if isinstance(active.get(norm), dict) else {}
+    now_tick_seq = _get_human_tick_counter(state)
+    entry = dict(existing)
+    entry.update({
+        "contract_id": norm,
+        "profile": "HUMAN",
+        "type": meta.get("type") or meta.get("contract_type") or "TRADE",
+        "contract_type": meta.get("contract_type") or meta.get("type"),
+        "symbol": meta.get("symbol") or state.get("human_symbol") or state.get("current_symbol"),
+        "stake": meta.get("stake"),
+        "duration": duration,
+        "duration_unit": duration_unit,
+        "selected_tick": meta.get("selected_tick"),
+        "status": status or entry.get("status") or "OPEN",
+        "updated_at": now_time(),
+    })
+    entry.setdefault("open_tick_seq", now_tick_seq)
+
+    if isinstance(contract, dict):
+        if _is_contract_settled_fast(contract):
+            _remove_human_pending_contract(state, contract_id)
+            return None
+        for source_key, target_key in (
+            ("profit", "open_profit"),
+            ("profit_value", "open_profit"),
+            ("buy_price", "buy_price"),
+            ("sell_price", "sell_price"),
+            ("current_spot", "current_spot"),
+            ("current_spot_display_value", "current_spot_display_value"),
+            ("tick_count", "contract_tick_count"),
+        ):
+            value = contract.get(source_key)
+            if value not in (None, ""):
+                entry[target_key] = value
+
+    active[norm] = entry
+    return entry
+
+
+def _request_human_open_contract_refresh(state, entry, now_ts):
+    ws = state.get("ws")
+    if not ws:
+        return False
+    try:
+        last_refresh = float(entry.get("_auto_refresh_requested_at", 0.0) or 0.0)
+    except Exception:
+        last_refresh = 0.0
+    if last_refresh and (now_ts - last_refresh) < 1.4:
+        return False
+    contract_id = entry.get("contract_id")
+    if contract_id in (None, ""):
+        return False
+    try:
+        ws.send(json.dumps({
+            "proposal_open_contract": 1,
+            "contract_id": int(float(contract_id)),
+            "subscribe": 1,
+        }))
+    except Exception:
+        try:
+            ws.send(json.dumps({
+                "proposal_open_contract": 1,
+                "contract_id": contract_id,
+                "subscribe": 1,
+            }))
+        except Exception:
+            return False
+    entry["_auto_refresh_requested_at"] = now_ts
+    return True
+
+
+def _maybe_force_human_pending_close(client_id, state):
+    active = _get_human_pending_contracts(state)
+    if not active:
+        return []
+
+    now_ts = time.time()
+    now_tick_seq = _get_human_tick_counter(state)
+    settled = []
+    for cid_key, entry in list(active.items()):
+        if not isinstance(entry, dict):
+            active.pop(cid_key, None)
+            continue
+
+        contract_id = entry.get("contract_id") or cid_key
+        if _is_regular_contract_processed(state, contract_id):
+            _remove_human_pending_contract(state, contract_id)
+            continue
+
+        try:
+            open_tick_seq = int(float(entry.get("open_tick_seq", now_tick_seq) or now_tick_seq))
+        except Exception:
+            open_tick_seq = now_tick_seq
+            entry["open_tick_seq"] = open_tick_seq
+        try:
+            duration = max(1, int(float(entry.get("duration", 0) or 0)))
+        except Exception:
+            duration = 0
+        if duration <= 0:
+            _remove_human_pending_contract(state, contract_id)
+            continue
+
+        expiry_tick = open_tick_seq + duration
+        settle_after_tick = expiry_tick + HUMAN_PENDING_SETTLE_BUFFER_TICKS
+        if now_tick_seq < expiry_tick:
+            continue
+
+        _request_human_open_contract_refresh(state, entry, now_ts)
+        if now_tick_seq < settle_after_tick:
+            continue
+
+        local_profit = None
+        for key in ("open_profit", "profit", "profit_value"):
+            try:
+                raw_value = entry.get(key)
+                if raw_value in (None, ""):
+                    continue
+                value = float(raw_value)
+                if math.isfinite(value):
+                    local_profit = value
+                    break
+            except Exception:
+                continue
+        if local_profit is None:
+            local_profit = 0.0
+
+        try:
+            buy_price = float(entry.get("buy_price") or entry.get("stake") or 0.0)
+        except Exception:
+            buy_price = 0.0
+        if not math.isfinite(buy_price):
+            buy_price = 0.0
+
+        logger.info(
+            "[%s] TEMP human_pending_bot_settle contract_id=%s duration=%s open_tick=%s now_tick=%s profit=%s",
+            client_id,
+            contract_id,
+            duration,
+            open_tick_seq,
+            now_tick_seq,
+            local_profit,
+        )
+        process_contract(client_id, {
+            "contract_id": contract_id,
+            "status": "BOT_SETTLED",
+            "is_sold": True,
+            "is_settled": True,
+            "profit": float(local_profit),
+            "buy_price": float(buy_price),
+            "sell_price": float(buy_price + local_profit),
+            "contract_type": entry.get("contract_type") or entry.get("type") or "TRADE",
+            "underlying": entry.get("symbol") or state.get("human_symbol") or state.get("current_symbol"),
+        })
+        _remove_human_pending_contract(state, contract_id)
+        settled.append(str(contract_id))
 
     return settled
 
@@ -14026,6 +14352,8 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                                 auto.get("active_stake"),
                             )
                             ntt["auto_both_enabled"] = bool(auto.get("enabled"))
+                    elif (meta.get("profile") or "").upper() == "HUMAN":
+                        _upsert_human_pending_contract(state, contract_id, meta=meta, status="OPEN")
                 except Exception:
                     pass
                 _schedule_bot_auto_close(client_id, state, contract_id, meta)
@@ -14248,8 +14576,10 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 meta_for_contract = _peek_contract_meta(state, cid_val)
                 unchain_known = _is_unchain_contract_known(state, cid_val, meta=meta_for_contract)
                 ntt_known = _is_ntt_contract_known(state, cid_val, meta=meta_for_contract)
+                human_known = _is_human_profile_meta(meta_for_contract) or _get_human_pending_entry(state, cid_val) is not None
                 is_processed = _is_unchain_contract_processed(state, cid_val)
                 is_ntt_processed = _is_ntt_contract_processed(state, cid_val)
+                is_human_processed = _is_regular_contract_processed(state, cid_val)
                 is_settled_fast = _is_contract_settled_fast(contract)
                 if unchain_known and sub_id not in (None, ""):
                     _remember_unchain_open_contract_subscription(state, cid_val, sub_id)
@@ -14269,6 +14599,10 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 elif ntt_known and is_ntt_processed:
                     _remove_ntt_active_contract(state, cid_val)
                     _forget_unchain_open_contract_subscription(state, cid_val, subscription_id=sub_id)
+                if human_known and (not is_human_processed) and (not is_settled_fast):
+                    _upsert_human_pending_contract(state, cid_val, meta=meta_for_contract, contract=contract, status="OPEN")
+                elif human_known and (is_human_processed or is_settled_fast):
+                    _remove_human_pending_contract(state, cid_val)
                 un = (state.get("strategies") or {}).get("UNCHAIN")
                 if un and hasattr(un, "on_open_contract") and (not is_processed):
                     if ((meta_for_contract and (meta_for_contract.get("profile") or "").upper() == "UNCHAIN" and str(meta_for_contract.get("type") or "").upper() == "ACCU")
@@ -14361,6 +14695,8 @@ def process_tick(client_id, tick):
             # - only sends sell when Deriv marks contract as sellable
             _maybe_force_unchain_close_on_countdown(client_id, state)
             _maybe_force_ntt_close_on_countdown(client_id, state)
+        if is_human:
+            _maybe_force_human_pending_close(client_id, state)
 
         # Active strategy for UI only
         active_profile = state.get("active_profile", "KOOLKID")
@@ -14459,6 +14795,7 @@ def process_contract(client_id, contract):
         contract_id = contract.get("contract_id")
         _clear_bot_auto_close_timer(state, contract_id)
         if _is_regular_contract_processed(state, contract_id):
+            _remove_human_pending_contract(state, contract_id)
             return
         if _is_unchain_contract_processed(state, contract_id):
             _remove_unchain_active_contract(state, contract_id)
@@ -14476,6 +14813,8 @@ def process_contract(client_id, contract):
             _settle_profile_budget_reservation(state, (meta or {}).get("budget_reservation"), profit)
         except Exception:
             pass
+        if _is_human_profile_meta(meta):
+            _remove_human_pending_contract(state, contract_id)
         is_auto_session_contract = str((meta or {}).get("mode") or "").startswith("AUTO_SESSION|")
         if _is_unchain_contract_known(state, contract_id, meta=meta):
             profile_for_contract = "UNCHAIN"
@@ -14684,11 +15023,20 @@ def _schedule_ws_reconnect(client_id, expected_nonce, delay_sec=2.0):
     state = clients.get(client_id)
     if not state:
         return False
-    if state.get("ws_reconnect_pending"):
-        return False
-    if not str(state.get("api_token", "") or "").strip():
-        return False
-    state["ws_reconnect_pending"] = True
+    lock = _get_ws_lifecycle_lock(state)
+    with lock:
+        if state.get("ws_reconnect_pending"):
+            return False
+        if not str(state.get("api_token", "") or "").strip():
+            return False
+        state["ws_reconnect_pending"] = True
+        logger.info(
+            "[%s] websocket_reconnect_scheduled delay_sec=%s active_clients=%s active_threads=%s",
+            client_id,
+            delay_sec,
+            len(clients),
+            threading.active_count(),
+        )
 
     def _worker():
         try:
@@ -14712,9 +15060,7 @@ def _schedule_ws_reconnect(client_id, expected_nonce, delay_sec=2.0):
                 live_state.get("ws_reconnect_attempts"),
             )
             _log_runtime_subscription_counts(client_id, live_state, "before_ws_reconnect", force=True)
-            t = threading.Thread(target=start_ws_for_client, args=(client_id,), daemon=True)
-            live_state["ws_thread"] = t
-            t.start()
+            _start_ws_worker_thread(client_id, live_state, reason="scheduled_reconnect")
         finally:
             latest = clients.get(client_id)
             if latest is not None:
@@ -14763,34 +15109,51 @@ def start_ws_for_client(client_id):
     if not _guard_client_license_for_runtime(client_id, state):
         return
 
-    # bump nonce -> invalidates older WS callbacks
-    state["ws_nonce"] = state.get("ws_nonce", 0) + 1
-    expected_nonce = state["ws_nonce"]
-    logger.info("[%s] TEMP deriv_websocket_thread_starting nonce=%s", client_id, expected_nonce)
+    current_thread = threading.current_thread()
+    lock = _get_ws_lifecycle_lock(state)
+    with lock:
+        previous_thread = state.get("ws_thread")
+        if previous_thread and previous_thread is not current_thread and previous_thread.is_alive():
+            logger.info("[%s] websocket_previous_worker_closing before_new_start active_clients=%s", client_id, len(clients))
+            try:
+                state["ws_stop_event"].set()
+            except Exception:
+                pass
+            try:
+                old_ws = state.get("ws")
+                if old_ws:
+                    old_ws.close()
+            except Exception:
+                pass
 
-    # stop old ws/thread
-    try:
-        state["ws_stop_event"].set()
-    except Exception:
-        pass
+        # bump nonce -> invalidates older WS callbacks
+        state["ws_nonce"] = state.get("ws_nonce", 0) + 1
+        expected_nonce = state["ws_nonce"]
+        logger.info("[%s] TEMP deriv_websocket_thread_starting nonce=%s", client_id, expected_nonce)
 
-    old_ws = state.get("ws")
-    if old_ws:
+        # stop old ws/thread
         try:
-            old_ws.close()
+            state["ws_stop_event"].set()
         except Exception:
             pass
 
-    # new stop event for this run
-    state["ws_stop_event"] = threading.Event()
-    state["ws_connected"] = False
-    state["ws_transport_connected"] = False
-    state["ws_last_message_at"] = 0.0
-    state["ws_last_authorized_at"] = 0.0
-    state["ws_connect_started_at"] = time.time()
-    state["ws_authorize_deadline_at"] = 0.0
-    state["ws_reconnect_pending"] = False
-    _clear_stale_ws_subscription_tracking(client_id, state, f"ws_start_nonce_{expected_nonce}")
+        old_ws = state.get("ws")
+        if old_ws:
+            try:
+                old_ws.close()
+            except Exception:
+                pass
+
+        # new stop event for this run
+        state["ws_stop_event"] = threading.Event()
+        state["ws_connected"] = False
+        state["ws_transport_connected"] = False
+        state["ws_last_message_at"] = 0.0
+        state["ws_last_authorized_at"] = 0.0
+        state["ws_connect_started_at"] = time.time()
+        state["ws_authorize_deadline_at"] = 0.0
+        state["ws_reconnect_pending"] = False
+        _clear_stale_ws_subscription_tracking(client_id, state, f"ws_start_nonce_{expected_nonce}")
 
     def _on_message(ws, message, cid=client_id, nonce=expected_nonce):
         if state["ws_stop_event"].is_set():
@@ -14829,6 +15192,24 @@ def start_ws_for_client(client_id):
         )
     except Exception as exc:
         logger.exception("[%s] TEMP deriv_websocket_run_exception nonce=%s error=%s", client_id, expected_nonce, exc)
+    finally:
+        live_state = clients.get(client_id)
+        if live_state is not None and live_state.get("ws_nonce") == expected_nonce:
+            live_state["ws_connected"] = False
+            live_state["ws_transport_connected"] = False
+            live_state["ws_connect_started_at"] = 0.0
+            live_state["ws_authorize_deadline_at"] = 0.0
+            if live_state.get("ws") is ws_app:
+                live_state["ws"] = None
+            if live_state.get("ws_thread") is current_thread:
+                live_state["ws_thread"] = None
+            logger.info(
+                "[%s] websocket_worker_finished nonce=%s active_clients=%s active_threads=%s",
+                client_id,
+                expected_nonce,
+                len(clients),
+                threading.active_count(),
+            )
 
 
 # ---------------- BOT API ROUTES ---------------- #
@@ -14865,9 +15246,7 @@ def _restart_deriv_websocket_preserve_session(client_id, state, reason="manual_r
     except Exception:
         logger.exception("[%s] Martha AI emergency close failed", client_id)
 
-    t = threading.Thread(target=start_ws_for_client, args=(client_id,), daemon=True)
-    state["ws_thread"] = t
-    t.start()
+    _start_ws_worker_thread(client_id, state, reason=reason)
     socketio.emit("connection_status", {
         "connected": False,
         "loginid": "UNKNOWN",
@@ -14918,9 +15297,7 @@ def set_token():
     else:
         logger.info("[%s] TEMP old_session_socket_cleared alive_thread=False", cid)
 
-    t = threading.Thread(target=start_ws_for_client, args=(cid,), daemon=True)
-    state["ws_thread"] = t
-    t.start()
+    _start_ws_worker_thread(cid, state, reason="set_token")
     logger.info("[%s] TEMP deriv_websocket_thread_started_from_connect", cid)
 
     return jsonify({"status": "connecting"})
@@ -17960,6 +18337,7 @@ def human_rf_trade():
     return jsonify({"error": msg}), 500
 
 
+@app.route("/human_auto_rise_fall", methods=["POST"])
 @app.route("/human_formula_x", methods=["POST"])
 def human_formula_x_route():
     if not login_required():
@@ -17974,11 +18352,26 @@ def human_formula_x_route():
     rise_stake = max(0.35, float(data.get("rise_stake") or 0))
     fall_stake = max(0.35, float(data.get("fall_stake") or 0))
     duration_ticks = int(data.get("duration_ticks") or getattr(strat, "rf_duration_ticks", 5) or 5)
+    allow_equals = bool(data.get("allow_equals", False))
 
     symbol = state.get("human_symbol") or state.get("current_symbol")
     signals = [
-        {"direction": "RISE", "stake": rise_stake, "duration": duration_ticks, "symbol": symbol},
-        {"direction": "FALL", "stake": fall_stake, "duration": duration_ticks, "symbol": symbol},
+        {
+            "direction": "RISE",
+            "stake": rise_stake,
+            "duration": duration_ticks,
+            "symbol": symbol,
+            "allow_equals": allow_equals,
+            "mode": "human_auto_rise_fall" if request.path.endswith("human_auto_rise_fall") else "human_formula_x",
+        },
+        {
+            "direction": "FALL",
+            "stake": fall_stake,
+            "duration": duration_ticks,
+            "symbol": symbol,
+            "allow_equals": allow_equals,
+            "mode": "human_auto_rise_fall" if request.path.endswith("human_auto_rise_fall") else "human_formula_x",
+        },
     ]
 
     results = []
@@ -17993,7 +18386,8 @@ def human_formula_x_route():
     rise_ok, rise_msg = results[0]
     fall_ok, fall_msg = results[1]
     status = "success" if (rise_ok and fall_ok) else ("partial" if (rise_ok or fall_ok) else "error")
-    message = "FormulaX sent both trades" if status == "success" else (rise_msg or fall_msg or "FormulaX failed")
+    pair_label = "AUTO RISE & FALL" if request.path.endswith("human_auto_rise_fall") else "FormulaX"
+    message = f"{pair_label} sent both trades" if status == "success" else (rise_msg or fall_msg or f"{pair_label} failed")
     return jsonify({
         "status": status,
         "message": message,
@@ -18097,9 +18491,42 @@ def toggle_human_keep_alive():
 # ---------------- HEARTBEAT SWEEPER ---------------- #
 def heartbeat_sweeper():
     while True:
-        time.sleep(30)
-        # Heartbeat checks disabled to prevent unintended disconnects.
-        continue
+        time.sleep(max(5.0, float(HEARTBEAT_SWEEPER_INTERVAL_SEC)))
+        now_ts = time.time()
+        stale = []
+        for client_id, state in list(clients.items()):
+            try:
+                last_seen = float((state or {}).get("last_seen", 0.0) or 0.0)
+            except Exception:
+                last_seen = 0.0
+            if not last_seen:
+                continue
+            age = now_ts - last_seen
+            if age >= float(HEARTBEAT_TIMEOUT_SEC):
+                stale.append((client_id, state, age))
+
+        if stale:
+            logger.info(
+                "heartbeat_sweeper_stale_clients count=%s active_clients_before=%s timeout_sec=%s active_threads=%s",
+                len(stale),
+                len(clients),
+                HEARTBEAT_TIMEOUT_SEC,
+                threading.active_count(),
+            )
+        for client_id, state, age in stale:
+            live_state = clients.get(client_id)
+            if live_state is not state:
+                continue
+            try:
+                _cleanup_client_runtime(client_id, state, reason=f"heartbeat_stale_{int(age)}s")
+            except Exception:
+                logger.exception("[%s] heartbeat_sweeper_cleanup_failed", client_id)
+            try:
+                clients.pop(client_id, None)
+            except Exception:
+                pass
+        if stale:
+            logger.info("heartbeat_sweeper_done active_clients_after=%s active_threads=%s", len(clients), threading.active_count())
 
 
 @app.route("/toggle_named_ai_mode", methods=["POST"])

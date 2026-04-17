@@ -18,7 +18,9 @@ from server import (
     _is_contract_settled_fast,
     _serialize_profile_trade_history_entry,
     _send_unchain_hl_trade,
+    _upsert_human_pending_contract,
     _upsert_unchain_active_contract,
+    _maybe_force_human_pending_close,
     process_contract,
 )
 
@@ -126,6 +128,45 @@ def test_upsert_unchain_active_contract_dedupes_duplicate_spot_times():
     assert first_elapsed == 0
     assert second_elapsed == 0
     assert third.get("_elapsed_contract_ticks") == 1
+
+
+def test_human_pending_guard_bot_settles_after_duration_plus_three_ticks(monkeypatch):
+    captured = []
+    state = {
+        "strategies": {"HUMAN": SimpleNamespace(tick_count=100)},
+        "human_pending_contracts": {},
+        "contract_meta": {},
+        "human_symbol": "R_100",
+        "current_symbol": "R_100",
+    }
+    meta = {
+        "profile": "HUMAN",
+        "type": "HIGH_TICK",
+        "contract_type": "TICKHIGH",
+        "symbol": "R_100",
+        "stake": 0.35,
+        "duration": 5,
+        "duration_unit": "t",
+    }
+
+    entry = _upsert_human_pending_contract(state, "98765", meta=meta, status="OPEN")
+    assert entry["open_tick_seq"] == 100
+
+    monkeypatch.setattr(server, "process_contract", lambda cid, contract: captured.append((cid, contract)))
+
+    state["strategies"]["HUMAN"].tick_count = 107
+    assert _maybe_force_human_pending_close("human-test", state) == []
+    assert captured == []
+
+    state["strategies"]["HUMAN"].tick_count = 108
+    settled = _maybe_force_human_pending_close("human-test", state)
+
+    assert settled == ["98765"]
+    assert captured[0][0] == "human-test"
+    assert captured[0][1]["contract_id"] == "98765"
+    assert captured[0][1]["status"] == "BOT_SETTLED"
+    assert captured[0][1]["is_sold"] is True
+    assert state["human_pending_contracts"] == {}
 
 
 def test_format_unchain_barrier_keeps_user_typed_plus_sign():

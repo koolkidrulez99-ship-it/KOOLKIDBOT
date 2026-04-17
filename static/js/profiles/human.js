@@ -411,6 +411,47 @@
     }
   }
 
+  function readHumanRFAllowEquals(){
+    const node = byId("humanRfAllowEquals");
+    return !!(node && node.checked);
+  }
+
+  async function humanAutoRiseFall(){
+    try{
+      const stakeEl = byId("stake");
+      const durEl = byId("humanRfDuration");
+      const stakeVal = stakeEl ? clampNum(stakeEl.value || 1, 0.35, 1000000, 1) : 1;
+      const durationTicks = durEl ? clampNum(durEl.value || 5, 1, 10, 5) : 5;
+      if(stakeEl) stakeEl.value = String(stakeVal);
+      if(durEl) durEl.value = String(durationTicks);
+      const allowEquals = readHumanRFAllowEquals();
+      const payload = {
+        rise_stake: stakeVal,
+        fall_stake: stakeVal,
+        duration_ticks: durationTicks
+      };
+      if(allowEquals) payload.allow_equals = true;
+      const data = await guardMartha({
+        profile: PROFILE,
+        source: "human_auto_rise_fall",
+        type: "AUTO_RISE_FALL",
+        label: "HUMAN AUTO RISE & FALL",
+        stake: stakeVal,
+        duration: durationTicks,
+        duration_unit: "t",
+        batch_count: 2,
+      }, ()=>postJSON("/human_auto_rise_fall", payload));
+      if(isMarthaBlocked(data)) return;
+      if(typeof showToast === "function"){
+        const ok = data && data.status === "success";
+        showToast(`AUTO RISE & FALL sent RISE ${money(stakeVal)} + FALL ${money(stakeVal)}${allowEquals ? " with Allow Equals" : ""}`, ok ? "success" : "warn");
+      }
+      await fetchHumanRFStatus();
+    }catch(e){
+      if(typeof showToast === "function") showToast(e.message || "AUTO RISE & FALL failed", "error");
+    }
+  }
+
   function readHumanManualPayload(action, options){
     const opts = options || {};
     const key = String(action || "").toUpperCase();
@@ -1345,6 +1386,7 @@
 
     // expose globals for inline onclick in human.html
     window.humanRFTrade = humanRFTrade;
+    window.humanAutoRiseFall = humanAutoRiseFall;
     window.saveHumanRFSettings = saveHumanRFSettings;
     window.toggleHumanRFSetting = toggleHumanRFSetting;
     window.humanRFSetStake = humanRFSetStake;
