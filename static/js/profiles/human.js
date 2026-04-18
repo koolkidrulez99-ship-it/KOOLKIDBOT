@@ -10,7 +10,6 @@
   let lastStatusRenderAt = 0;
   const fxState = { active: false, firing: false, lastToast: 0 };
   let humanRFAllowEqualsOn = false;
-  let humanHistoryTallScroll = false;
   let humanManualContracts = null;
   let humanManualContractsSymbol = "";
   let humanManualLoading = false;
@@ -58,22 +57,6 @@
     if(App && typeof App.setAutoScanningToast === "function"){
       App.setAutoScanningToast(PROFILE, modeKey, !!enabled, label);
     }
-  }
-
-  function syncHumanHistoryScrollBox(){
-    const panel = byId("humanProfilePanel");
-    const btn = byId("humanHistoryScrollToggle");
-    if(panel) panel.classList.toggle("human-history-tall", !!humanHistoryTallScroll);
-    if(btn){
-      btn.textContent = humanHistoryTallScroll ? "Scroll Box: TALL" : "Scroll Box: NORMAL";
-      btn.style.background = humanHistoryTallScroll ? "#0ea5e9" : "#334155";
-      btn.style.color = humanHistoryTallScroll ? "#0b1220" : "#e5e7eb";
-    }
-  }
-
-  function toggleHumanHistoryScrollBox(){
-    humanHistoryTallScroll = !humanHistoryTallScroll;
-    syncHumanHistoryScrollBox();
   }
 
   const HUMAN_MANUAL_BUTTONS = {
@@ -704,7 +687,8 @@
 
   function readHumanSingleMartingaleNumber(id, fallback, min, max){
     const el = byId(id);
-    let value = Number(el && el.value);
+    const raw = el ? String(el.value || "").trim() : "";
+    let value = raw === "" ? fallback : Number(raw);
     if(!Number.isFinite(value)) value = fallback;
     if(Number.isFinite(min)) value = Math.max(min, value);
     if(Number.isFinite(max)) value = Math.min(max, value);
@@ -715,8 +699,11 @@
     const actionEl = byId("humanMartingaleAction");
     const action = normalizeHumanSpecialAction(actionEl ? actionEl.value : HUMAN_SINGLE_MARTINGALE_STATE.action) || "ONLY_UPS";
     const startStake = Number(readHumanSingleMartingaleNumber("humanMartingaleStartStake", 0.35, 0.35, 1000000).toFixed(2));
+    const modeEl = byId("humanMartingaleMode");
+    const mode = String((modeEl && modeEl.value) || "STEP_005").toUpperCase() === "MULTIPLIER" ? "MULTIPLIER" : "STEP_005";
+    const stepAmount = Number(readHumanSingleMartingaleNumber("humanMartingaleStepAmount", 0.05, 0.01, 1000000).toFixed(2));
     const multiplier = Math.max(1, readHumanSingleMartingaleNumber("humanMartingaleMultiplier", 2, 1, 100));
-    const maxSteps = Math.max(1, Math.floor(readHumanSingleMartingaleNumber("humanMartingaleMaxSteps", 8, 1, 1000)));
+    const maxSteps = Math.max(1, Math.floor(readHumanSingleMartingaleNumber("humanMartingaleMaxSteps", 1000, 1, 1000000)));
     const capRaw = byId("humanMartingaleMaxStake");
     const maxStakeValue = capRaw && String(capRaw.value || "").trim() !== ""
       ? Math.max(0.35, Number(capRaw.value))
@@ -736,14 +723,17 @@
       option.duration_ticks = durationTicks;
       if(durationEl) durationEl.value = String(durationTicks);
     }
-    return { action, startStake, multiplier, maxSteps, maxStake, option };
+    if(modeEl) modeEl.value = mode;
+    return { action, startStake, mode, stepAmount, multiplier, maxSteps, maxStake, option };
   }
 
   function humanSingleMartingaleStakeForStep(stepValue){
     const settings = readHumanSingleMartingaleSettings();
     const maxSteps = settings.maxSteps;
     const step = Math.max(1, Math.min(maxSteps, Math.floor(Number(stepValue || HUMAN_SINGLE_MARTINGALE_STATE.step) || 1)));
-    let stake = settings.startStake * Math.pow(settings.multiplier, step - 1);
+    let stake = settings.mode === "STEP_005"
+      ? settings.startStake + ((step - 1) * settings.stepAmount)
+      : settings.startStake * Math.pow(settings.multiplier, step - 1);
     if(settings.maxStake !== null) stake = Math.min(stake, settings.maxStake);
     return Number(Math.max(0.35, stake).toFixed(2));
   }
@@ -812,7 +802,8 @@
       const currentStake = humanSingleMartingaleStakeForStep();
       const nextStep = Math.min(settings.maxSteps, HUMAN_SINGLE_MARTINGALE_STATE.step + 1);
       const nextStake = HUMAN_SINGLE_MARTINGALE_STATE.enabled ? humanSingleMartingaleStakeForStep(nextStep) : settings.startStake;
-      status.textContent = `${HUMAN_SINGLE_MARTINGALE_STATE.status}. Step ${HUMAN_SINGLE_MARTINGALE_STATE.step} • Current stake $${currentStake.toFixed(2)} • Next stake $${nextStake.toFixed(2)} • Last result: ${HUMAN_SINGLE_MARTINGALE_STATE.lastResult}`;
+      const modeLabel = settings.mode === "STEP_005" ? `$${settings.stepAmount.toFixed(2)} step` : `${settings.multiplier}x`;
+      status.textContent = `${HUMAN_SINGLE_MARTINGALE_STATE.status}. ${modeLabel} • Step ${HUMAN_SINGLE_MARTINGALE_STATE.step} • Current stake $${currentStake.toFixed(2)} • Next stake $${nextStake.toFixed(2)} • Last result: ${HUMAN_SINGLE_MARTINGALE_STATE.lastResult}`;
       status.style.color = HUMAN_SINGLE_MARTINGALE_STATE.inProgress ? "#fbbf24" : (available ? "#94a3b8" : "#fca5a5");
     }
   }
@@ -1821,7 +1812,6 @@
     window.humanRFTrade = humanRFTrade;
     window.humanAutoRiseFall = humanAutoRiseFall;
     window.toggleHumanRFAllowEquals = toggleHumanRFAllowEquals;
-    window.toggleHumanHistoryScrollBox = toggleHumanHistoryScrollBox;
     window.saveHumanRFSettings = saveHumanRFSettings;
     window.toggleHumanRFSetting = toggleHumanRFSetting;
     window.humanRFSetStake = humanRFSetStake;
@@ -1851,7 +1841,6 @@
     startPolling();
     refreshHumanManualContracts(false);
     syncHumanRFAllowEqualsToggle();
-    syncHumanHistoryScrollBox();
     updateHumanSingleMartingalePanel();
     updateHumanRfMartingalePanel();
     maybeAutoFormulaX();
@@ -1863,7 +1852,6 @@
     startPolling();
     refreshHumanManualContracts(false);
     syncHumanRFAllowEqualsToggle();
-    syncHumanHistoryScrollBox();
     updateHumanSingleMartingalePanel();
     updateHumanRfMartingalePanel();
     maybeAutoFormulaX();
@@ -1877,7 +1865,6 @@
     }catch(e){}
     refreshHumanManualContracts(false);
     syncHumanRFAllowEqualsToggle();
-    syncHumanHistoryScrollBox();
     updateHumanSingleMartingalePanel();
     updateHumanRfMartingalePanel();
     maybeAutoFormulaX();

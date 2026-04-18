@@ -579,6 +579,22 @@ input, select{
 .trade-profit.pending{ color:#facc15; }
 .trade-profit.closing{ color:#facc15; }
 .trade-detail{ display:flex; gap:15px; color:#94a3b8; font-size:13px; }
+.trade-history-total-stake{
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    gap:12px;
+    margin:10px 0 8px;
+    padding:10px 12px;
+    border:1px solid rgba(250,204,21,0.28);
+    border-radius:12px;
+    background:linear-gradient(135deg,rgba(15,23,42,0.95),rgba(30,41,59,0.88));
+    color:#f8fafc;
+    font-size:13px;
+    font-weight:800;
+}
+.trade-history-total-stake span:first-child{ color:#facc15; letter-spacing:.02em; }
+.trade-history-total-stake span:last-child{ color:#ffffff; font-size:15px; }
 .trade-meta{
     display:flex;
     flex-direction:column;
@@ -1509,7 +1525,7 @@ window.BotApp.completeFrontendTimeout = completeFrontendTimeout;
 window.BotApp.logActiveTimeoutCount = logActiveTimeoutCount;
 
 const CLIENT_HEARTBEAT_INTERVAL_LABEL = "client_heartbeat";
-const CLIENT_HEARTBEAT_INTERVAL_MS = 25000;
+const CLIENT_HEARTBEAT_INTERVAL_MS = 8000;
 let clientHeartbeatTimer = null;
 
 function sendClientHeartbeat(reason){
@@ -2709,16 +2725,26 @@ function clearApiTokenInputAfterConnect(reason){
 function applyApiConnectionState(data){
     const connected = !!(data && data.connected);
     const reconnecting = !!(data && data.reconnecting);
+    const tickHealthKnown = data && Object.prototype.hasOwnProperty.call(data, "tick_stream_healthy");
+    const tickRecovering = !!(data && data.tick_stream_recovering);
+    const tickUnhealthy = connected && tickHealthKnown && data.tick_stream_healthy === false;
     apiConnected = connected;
 
     if(connected){
-        console.info("TEMP connected_state_success", { loginid: (data && data.loginid) || "UNKNOWN" });
+        console.info("TEMP connected_state_success", {
+            loginid: (data && data.loginid) || "UNKNOWN",
+            tick_stream_healthy: tickHealthKnown ? !!data.tick_stream_healthy : null,
+            tick_stream_recovering: tickRecovering
+        });
         clearApiConnectPending("connected_state_success");
         stopApiConnectPolling();
         clearApiTokenInputAfterConnect("connected_state_success");
-        apiStatus.innerText = "Connected";
-        apiStatus.className = "green";
-        updateApiConnectionUi("connected", "API CONNECTED SUCCESSFULLY");
+        apiStatus.innerText = tickUnhealthy || tickRecovering ? "Connected - Restoring Ticks" : "Connected";
+        apiStatus.className = tickUnhealthy || tickRecovering ? "blue" : "green";
+        updateApiConnectionUi(
+            tickUnhealthy || tickRecovering ? "pending" : "connected",
+            tickUnhealthy || tickRecovering ? "API CONNECTED - RESTORING LIVE TICKS..." : "API CONNECTED SUCCESSFULLY"
+        );
         accountDashboard.style.display = "block";
         applyKnownApiBalance(data || {}, true);
         return true;
@@ -4037,6 +4063,99 @@ function bindProfileDraftAutosave(){
 loadProfileDraftsFromStorage();
 window.addEventListener("beforeunload", ()=> captureProfileDraft(activeProfile));
 
+function getTradeStakeValue(trade){
+    if(!trade || typeof trade !== "object") return 0;
+    const raw = trade.total_stake ?? trade.stake ?? trade.buy_price ?? trade.price ?? 0;
+    const value = Number(raw);
+    return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function calculateTradeHistoryTotalStake(trades){
+    const arr = Array.isArray(trades) ? trades : [];
+    return arr.reduce((total, trade)=> total + getTradeStakeValue(trade), 0);
+}
+
+function isMartingaleControlActiveForHistory(node){
+    if(!node) return false;
+    const haystack = [
+        node.id,
+        node.name,
+        node.className,
+        node.getAttribute && node.getAttribute("data-martingale"),
+        node.getAttribute && node.getAttribute("aria-label"),
+        node.textContent,
+    ].join(" ").toLowerCase();
+    if(!haystack.includes("martingale")) return false;
+
+    const tag = String(node.tagName || "").toLowerCase();
+    const type = String(node.type || "").toLowerCase();
+    if((tag === "input" && (type === "checkbox" || type === "radio")) || tag === "select"){
+        return !!node.checked || String(node.value || "").toLowerCase() === "on";
+    }
+    if(node.getAttribute && node.getAttribute("aria-pressed") === "true") return true;
+    if(node.classList && (node.classList.contains("active") || node.classList.contains("is-active"))) return true;
+    return /\b(on|running|active)\b/i.test(String(node.textContent || ""));
+}
+
+function isAnyMartingaleEnabledForHistory(profile){
+    try{
+        if(typeof window.isAnyMartingaleActiveForTradeHistory === "function"){
+            return !!window.isAnyMartingaleActiveForTradeHistory(profile || activeProfile);
+        }
+    }catch(e){}
+
+    const root = getProfileContainerRoot() || document;
+    const nodes = root.querySelectorAll([
+        "[id*='Martingale']",
+        "[id*='martingale']",
+        "[name*='Martingale']",
+        "[name*='martingale']",
+        "[class*='Martingale']",
+        "[class*='martingale']",
+        "[data-martingale]",
+    ].join(","));
+    return Array.from(nodes || []).some(isMartingaleControlActiveForHistory);
+}
+
+function renderTradeHistoryTotalStake(profile, trades){
+    const list = getProfileScopedElement("profileTradeList");
+    if(!list || !list.parentNode) return;
+    const key = normalizeProfileName(profile || activeProfile);
+    const id = "tradeHistoryTotalStake";
+    let box = getProfileScopedElement(id);
+    const shouldShow = isAnyMartingaleEnabledForHistory(key);
+    if(!shouldShow){
+        if(box) box.remove();
+        return;
+    }
+    if(!box){
+        box = document.createElement("div");
+        box.id = id;
+        box.className = "trade-history-total-stake";
+        list.parentNode.insertBefore(box, list);
+    }
+    const totalStake = calculateTradeHistoryTotalStake(trades);
+    const moneyPayload = Array.isArray(trades) && trades.length ? trades[0] : {};
+    const html = `
+        <span>Total Stake</span>
+        <span>${formatCurrencyAmount(totalStake, moneyPayload)}</span>
+    `;
+    setNodeHtmlIfChanged(box, html);
+}
+
+function maybeRefreshTradeHistoryTotalStakeFromEvent(event){
+    const target = event && event.target;
+    if(!target) return;
+    const source = target.closest ? target.closest("[id*='Martingale'],[id*='martingale'],[name*='Martingale'],[name*='martingale'],[class*='Martingale'],[class*='martingale'],[data-martingale]") : null;
+    if(!source) return;
+    setTimeout(()=> {
+        try{ renderTradeList(activeProfile); }catch(e){}
+    }, 0);
+}
+
+document.addEventListener("click", maybeRefreshTradeHistoryTotalStakeFromEvent, true);
+document.addEventListener("change", maybeRefreshTradeHistoryTotalStakeFromEvent, true);
+
 function renderTradeList(profile){
     const list = getProfileScopedElement("profileTradeList");
     if(!list) return;
@@ -4052,6 +4171,7 @@ function renderTradeList(profile){
     const emptyLabel = filter === "WIN" ? "No wins yet" : (filter === "LOSS" ? "No losses yet" : "No trades yet");
 
     renderTradeHistoryFilterState(key);
+    renderTradeHistoryTotalStake(key, arr);
 
     if(filtered.length === 0){
         const emptyHtml = `<div style="text-align:center; color:#64748b; padding:20px;">${emptyLabel}</div>`;

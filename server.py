@@ -222,6 +222,9 @@ DERIV_WS_PING_INTERVAL_SEC = float(os.environ.get("DERIV_WS_PING_INTERVAL_SEC", 
 DERIV_WS_PING_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_PING_TIMEOUT_SEC", "10"))
 DERIV_WS_CONNECT_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_CONNECT_TIMEOUT_SEC", "30"))
 DERIV_WS_AUTHORIZE_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_AUTHORIZE_TIMEOUT_SEC", "20"))
+TICK_STREAM_STALE_SEC = float(os.environ.get("TICK_STREAM_STALE_SEC", "8"))
+TICK_STREAM_RESUBSCRIBE_COOLDOWN_SEC = float(os.environ.get("TICK_STREAM_RESUBSCRIBE_COOLDOWN_SEC", "3"))
+TICK_STREAM_RECONNECT_AFTER_SEC = float(os.environ.get("TICK_STREAM_RECONNECT_AFTER_SEC", "30"))
 MUTANT_DEPLOY_GATE_ENABLED = str(os.environ.get("MUTANT_DEPLOY_GATE_ENABLED", "1")).strip().lower() not in {"0", "false", "no", "off"}
 MUTANT_ALLOWED_ACCOUNT = str(
     os.environ.get(
@@ -1543,6 +1546,11 @@ def _build_default_client_state():
         "current_symbol": "R_10",
         "human_symbol": "R_10",
         "tick_subs": {},
+        "tick_subscribe_sent_at": {},
+        "tick_last_seen_at": {},
+        "tick_resubscribe_attempted_at": {},
+        "tick_stream_recovering_symbols": {},
+        "tick_stream_unhealthy_since": {},
         # Track UNCHAIN open-contract subscription ids so we can forget them
         # once a trade settles instead of letting old subscriptions pile up.
         "open_contract_subs": {},
@@ -2200,8 +2208,20 @@ def handle_connect(auth=None):
 def client_heartbeat():
     if not login_required():
         return
-    cid, _state = get_client_state()
+    cid, state = get_client_state()
     # get_client_state already touches last_seen
+    if state.get("ws_connected"):
+        health = _get_tick_stream_health(cid, state, self_heal=True)
+        healthy = bool(health.get("tick_stream_healthy"))
+        last_emitted_healthy = state.get("tick_stream_last_emitted_healthy")
+        if health.get("tick_stream_recovering") or last_emitted_healthy is None or bool(last_emitted_healthy) != healthy:
+            state["tick_stream_last_emitted_healthy"] = healthy
+            socketio.emit("connection_status", {
+                "connected": True,
+                "loginid": state.get("loginid", "UNKNOWN"),
+                **health,
+                **_build_balance_payload(state),
+            }, room=cid)
     return
 
 
@@ -2509,7 +2529,9 @@ def auto_session_clear_history():
 def heartbeat():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
-    cid, _state = get_client_state()
+    cid, state = get_client_state()
+    if state.get("ws_connected"):
+        _get_tick_stream_health(cid, state, self_heal=True)
     return jsonify({"status": "ok", "client_id": cid})
 
 
@@ -6729,6 +6751,11 @@ def _clear_stale_ws_subscription_tracking(client_id, state, reason):
     try:
         before = _runtime_subscription_counts(state)
         state["tick_subs"] = {}
+        state["tick_subscribe_sent_at"] = {}
+        state["tick_resubscribe_attempted_at"] = {}
+        state["tick_stream_recovering_symbols"] = {}
+        state["tick_stream_unhealthy_since"] = {}
+        state["tick_stream_last_emitted_healthy"] = None
         state["open_contract_subs"] = {}
         logger.info(
             "[%s] stale_ws_subscription_tracking_cleared reason=%s previous_active=%s previous_ticks=%s previous_open_contracts=%s",
@@ -13370,24 +13397,168 @@ def _stop_unchain_scanner_worker(state):
     state["_unchain_scanner_worker_thread"] = None
 
 
-def _ensure_tick_subscription(state, symbol):
+def _normalize_tick_symbol(symbol):
+    return str(symbol or "").strip().upper()
+
+
+def _active_tick_symbols_for_state(state):
+    symbols = []
+    if not isinstance(state, dict):
+        return symbols
+    for raw in (state.get("current_symbol"), state.get("human_symbol") or state.get("current_symbol")):
+        sym = _normalize_tick_symbol(raw)
+        if sym and sym not in symbols:
+            symbols.append(sym)
+    return symbols
+
+
+def _record_tick_stream_seen(state, symbol):
+    sym = _normalize_tick_symbol(symbol)
+    if not sym or not isinstance(state, dict):
+        return
+    now_ts = time.time()
+    state.setdefault("tick_last_seen_at", {})[sym] = now_ts
+    state.setdefault("tick_stream_recovering_symbols", {}).pop(sym, None)
+    state.setdefault("tick_stream_unhealthy_since", {}).pop(sym, None)
+
+
+def _ensure_tick_subscription(state, symbol, *, force=False, reason="", client_id=None):
     """
     Best-effort self-heal for tick streams. Some UI flows can leave a symbol
     unsubscribed; this re-requests ticks if no active subscription id is known.
     """
-    sym = str(symbol or "").strip().upper()
+    sym = _normalize_tick_symbol(symbol)
     if not sym:
-        return
+        return False
     ws = state.get("ws")
     if not state.get("ws_connected") or not ws:
-        return
+        return False
     tick_subs = state.setdefault("tick_subs", {})
-    if tick_subs.get(sym):
-        return
+    existing_sub_id = tick_subs.get(sym)
+    if existing_sub_id and not force:
+        return True
+    if existing_sub_id and force:
+        # For health recovery, avoid sending a forget for a possibly stale Deriv
+        # subscription id. A fresh ticks subscribe is safer and keeps trade logic untouched.
+        if reason != "tick_stream_health":
+            try:
+                ws.send(json.dumps({"forget": existing_sub_id}))
+            except Exception:
+                pass
+        tick_subs.pop(sym, None)
     try:
         ws.send(json.dumps({"ticks": sym, "subscribe": 1}))
+        now_ts = time.time()
+        state.setdefault("tick_subscribe_sent_at", {})[sym] = now_ts
+        state.setdefault("tick_stream_recovering_symbols", {})[sym] = now_ts
+        state.setdefault("tick_resubscribe_attempted_at", {})[sym] = now_ts
+        if client_id:
+            logger.info(
+                "[%s] tick_stream_subscribe_sent symbol=%s force=%s reason=%s",
+                client_id,
+                sym,
+                bool(force),
+                reason or "ensure",
+            )
+        return True
     except Exception:
-        pass
+        tick_subs.pop(sym, None)
+        if client_id:
+            logger.warning(
+                "[%s] tick_stream_subscribe_failed symbol=%s force=%s reason=%s",
+                client_id,
+                sym,
+                bool(force),
+                reason or "ensure",
+            )
+        return False
+
+
+def _restore_required_tick_subscriptions(client_id, state, reason):
+    restored = []
+    for sym in _active_tick_symbols_for_state(state):
+        if _ensure_tick_subscription(state, sym, force=True, reason=reason, client_id=client_id):
+            restored.append(sym)
+    if restored:
+        logger.info("[%s] tick_stream_restore_requested reason=%s symbols=%s", client_id, reason, ",".join(restored))
+    return restored
+
+
+def _get_tick_stream_health(client_id, state, *, self_heal=False):
+    now_ts = time.time()
+    symbols = _active_tick_symbols_for_state(state)
+    connected = bool(state.get("ws_connected")) and bool(state.get("ws"))
+    if not connected:
+        return {
+            "tick_stream_healthy": False,
+            "tick_stream_recovering": bool(str(state.get("api_token", "") or "").strip()),
+            "tick_stream_symbols": symbols,
+            "tick_stream_stale_symbols": symbols,
+            "last_tick_age_sec": None,
+        }
+
+    tick_subs = state.setdefault("tick_subs", {})
+    last_seen = state.setdefault("tick_last_seen_at", {})
+    sent_at = state.setdefault("tick_subscribe_sent_at", {})
+    last_resub = state.setdefault("tick_resubscribe_attempted_at", {})
+    unhealthy_since = state.setdefault("tick_stream_unhealthy_since", {})
+    recovering = state.setdefault("tick_stream_recovering_symbols", {})
+    stale_symbols = []
+    age_values = []
+
+    for sym in symbols:
+        sub_id = tick_subs.get(sym)
+        seen_ts = float(last_seen.get(sym, 0.0) or 0.0)
+        sent_ts = float(sent_at.get(sym, 0.0) or 0.0)
+        auth_ts = float(state.get("ws_last_authorized_at", 0.0) or 0.0)
+        baseline_ts = max(seen_ts, sent_ts, auth_ts)
+        age = (now_ts - seen_ts) if seen_ts > 0 else None
+        if age is not None:
+            age_values.append(age)
+
+        if not sub_id and (now_ts - max(sent_ts, auth_ts, 0.0)) >= 1.0:
+            stale_symbols.append(sym)
+        elif seen_ts <= 0 and baseline_ts > 0 and (now_ts - baseline_ts) >= TICK_STREAM_STALE_SEC:
+            stale_symbols.append(sym)
+        elif seen_ts > 0 and (now_ts - seen_ts) >= TICK_STREAM_STALE_SEC:
+            stale_symbols.append(sym)
+
+        if sym in stale_symbols:
+            unhealthy_since.setdefault(sym, now_ts)
+            recovering.setdefault(sym, now_ts)
+            cooldown_ok = (now_ts - float(last_resub.get(sym, 0.0) or 0.0)) >= TICK_STREAM_RESUBSCRIBE_COOLDOWN_SEC
+            if self_heal and cooldown_ok:
+                logger.warning(
+                    "[%s] tick_stream_stale_resubscribe symbol=%s has_sub=%s last_tick_age=%s",
+                    client_id,
+                    sym,
+                    bool(sub_id),
+                    None if age is None else round(age, 2),
+                )
+                _ensure_tick_subscription(state, sym, force=True, reason="tick_stream_health", client_id=client_id)
+
+            stale_for = now_ts - float(unhealthy_since.get(sym, now_ts) or now_ts)
+            if self_heal and stale_for >= TICK_STREAM_RECONNECT_AFTER_SEC:
+                logger.warning("[%s] tick_stream_stale_reconnect symbol=%s stale_for=%s", client_id, sym, round(stale_for, 2))
+                _mark_ws_unhealthy_and_reconnect(
+                    client_id,
+                    state,
+                    f"Live tick stream stalled for {sym}. Reconnecting now...",
+                    emit_error=False,
+                )
+                break
+        else:
+            unhealthy_since.pop(sym, None)
+            recovering.pop(sym, None)
+
+    healthy = bool(symbols) and not stale_symbols and not recovering
+    return {
+        "tick_stream_healthy": healthy,
+        "tick_stream_recovering": bool(recovering) or bool(stale_symbols),
+        "tick_stream_symbols": symbols,
+        "tick_stream_stale_symbols": stale_symbols,
+        "last_tick_age_sec": None if not age_values else round(min(age_values), 2),
+    }
 
 
 def _ensure_koolkid_golden_card_state(state):
@@ -14183,22 +14354,19 @@ def handle_on_message(client_id, ws, message, expected_nonce):
             logger.info(f"[{client_id}] ✅ Authorized: {loginid} Balance={balance}")
             logger.info("[%s] TEMP authorize_success loginid=%s live_account_balance=%s", client_id, loginid, balance)
 
+            _restore_required_tick_subscriptions(client_id, state, "authorize_restore")
+            tick_health = _get_tick_stream_health(client_id, state, self_heal=False)
+            state["tick_stream_last_emitted_healthy"] = bool(tick_health.get("tick_stream_healthy"))
             socketio.emit("connection_status", {
                 "connected": True,
                 "loginid": loginid,
+                **tick_health,
                 **_build_balance_payload(state),
             }, room=client_id)
             logger.info("[%s] TEMP connected_state_emitted", client_id)
 
             _emit_balance_payload(client_id, state)
             emit_profile_snapshot(client_id)
-
-            ws.send(json.dumps({"ticks": state["current_symbol"], "subscribe": 1}))
-
-            # ✅ HUMAN runs its own market stream (independent)
-            human_sym = state.get("human_symbol") or state["current_symbol"]
-            if human_sym != state["current_symbol"]:
-                ws.send(json.dumps({"ticks": human_sym, "subscribe": 1}))
 
             ws.send(json.dumps({"balance": 1, "subscribe": 1}))
             _log_runtime_subscription_counts(client_id, state, "authorize_subscriptions_sent", force=True)
@@ -14271,6 +14439,10 @@ def handle_on_message(client_id, ws, message, expected_nonce):
 
         if "tick" in data:
             tick = data["tick"]
+            try:
+                _record_tick_stream_seen(state, tick.get("symbol"))
+            except Exception:
+                pass
             try:
                 sub = data.get("subscription") or {}
                 sub_id = sub.get("id")
@@ -15318,6 +15490,7 @@ def api_connection_status():
     connected = bool(state.get("ws_connected")) and not _is_ws_stale(state)
     if not connected and state.get("ws_connected"):
         _mark_ws_unhealthy_and_reconnect(_cid, state, "Deriv connection went stale. Reconnecting now...", emit_error=False)
+    tick_health = _get_tick_stream_health(_cid, state, self_heal=connected)
     has_token = bool(str(state.get("api_token", "") or "").strip())
     reconnecting = bool(
         has_token
@@ -15334,6 +15507,7 @@ def api_connection_status():
         "loginid": state.get("loginid", "UNKNOWN"),
         "has_token": has_token,
         "license_context": get_user_license_context(),
+        **tick_health,
         **_build_balance_payload(state),
     }
     budget = payload.get("active_profile_budget") or {}
