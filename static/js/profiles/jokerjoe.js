@@ -2657,7 +2657,7 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     if (!btn || btn.dataset.kid100WinsTriggerBound === "1") return;
     btn.dataset.kid100WinsTriggerBound = "1";
     btn.addEventListener("pointerup", (event) => {
-      event.preventDefault();
+      if (event && event.pointerType === "mouse") return;
       if (typeof window.openKid100WinsPopupJokerjoe === "function") window.openKid100WinsPopupJokerjoe();
     });
   }
@@ -2960,28 +2960,33 @@ window.openKid100WinsPopupJokerjoe = function () {
     safeToast("kid100%wins is available to all users.", "error");
     return;
   }
-  applyKid100WinsAiDiffersGateJokerjoe();
   const popup = getEl("kid100WinsPopupJokerjoe");
   if (!popup) return;
-  const barrierNode = getEl("kid100WinsBarrierJokerjoe");
-  const differsStakeNode = getEl("kid100WinsDiffersStakeJokerjoe");
-  const stake = getManualStakeValueJokerjoe();
-  if (barrierNode) {
-    const popupBarrier = state.kid100WinsManualArmed && Number.isInteger(state.kid100WinsManualBarrier)
-      ? state.kid100WinsManualBarrier
-      : currentBarrier();
-    barrierNode.value = String(popupBarrier);
-  }
-  if (differsStakeNode && String(differsStakeNode.value ?? "").trim() === "") differsStakeNode.value = String(stake);
-  const best = getKid100WinsLatestBestJokerjoe();
-  if (isKid100WinsAutoActiveJokerjoe() && best) syncKid100WinsBarrierToBestJokerjoe(best);
-  const pickLabel = getKid100WinsPickLabelJokerjoe();
-  setKid100WinsStatusJokerjoe(isKid100WinsWatcherActiveJokerjoe()
-    ? `${getKid100WinsModeLabelJokerjoe()} is ON. It waits for the ${pickLabel} digit trigger after turn on, then sends DIFFERS instantly.`
-    : "Manual START sends a fast DIFFERS trade on the selected barrier. Auto modes wait for the watched digit to print first.", "#94a3b8");
-  renderKid100WinsButtonJokerjoe();
-  renderKid100WinsReinvestControlsJokerjoe();
   popup.style.display = "flex";
+  try {
+    applyKid100WinsAiDiffersGateJokerjoe();
+    const barrierNode = getEl("kid100WinsBarrierJokerjoe");
+    const differsStakeNode = getEl("kid100WinsDiffersStakeJokerjoe");
+    const stake = getManualStakeValueJokerjoe();
+    if (barrierNode) {
+      const popupBarrier = state.kid100WinsManualArmed && Number.isInteger(state.kid100WinsManualBarrier)
+        ? state.kid100WinsManualBarrier
+        : currentBarrier();
+      barrierNode.value = String(popupBarrier);
+    }
+    if (differsStakeNode && String(differsStakeNode.value ?? "").trim() === "") differsStakeNode.value = String(stake);
+    const best = getKid100WinsLatestBestJokerjoe();
+    if (isKid100WinsAutoActiveJokerjoe() && best) syncKid100WinsBarrierToBestJokerjoe(best);
+    const pickLabel = getKid100WinsPickLabelJokerjoe();
+    setKid100WinsStatusJokerjoe(isKid100WinsWatcherActiveJokerjoe()
+      ? `${getKid100WinsModeLabelJokerjoe()} is ON. It waits for the ${pickLabel} digit trigger after turn on, then sends DIFFERS instantly.`
+      : "Manual START sends a fast DIFFERS trade on the selected barrier. Auto modes wait for the watched digit to print first.", "#94a3b8");
+    renderKid100WinsButtonJokerjoe();
+    renderKid100WinsReinvestControlsJokerjoe();
+  } catch (err) {
+    console.warn("kid100wins_popup_setup_failed", err);
+    setKid100WinsStatusJokerjoe("kid100%wins popup opened. Some live status controls are still loading.", "#fbbf24");
+  }
 };
 
 window.closeKid100WinsPopupJokerjoe = function () {
