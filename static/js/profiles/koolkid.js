@@ -1509,7 +1509,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
   };
 
   function getDual2xCustomConfigKoolkid() {
-    const mode = String((document.getElementById("dual2xCustomModeKoolkid") || {}).value || "OVER8_UNDER8").toUpperCase();
+    const mode = String((document.getElementById("dual2xCustomModeKoolkid") || {}).value || "UNDER8_OVER8").toUpperCase();
     if (mode === "OVER1_UNDER1" || mode === "UNDER1_OVER1") {
       return {
         mode: "OVER1_UNDER1",
@@ -1520,10 +1520,10 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
       };
     }
     return {
-      mode: "OVER8_UNDER8",
+      mode: "UNDER8_OVER8",
       legs: [
-        { type: "OVER", barrier: 8, label: "OVER 8" },
         { type: "UNDER", barrier: 8, label: "UNDER 8" },
+        { type: "OVER", barrier: 8, label: "OVER 8" },
       ],
     };
   }

@@ -624,22 +624,22 @@
 <div id="dual2xCustomPopupKoolkid" class="digit-popup" style="display:none; min-width:320px; max-width:min(380px, calc(100vw - 20px)); z-index:10001;">
   <h4>DUAL 2x CUSTOM</h4>
   <div style="font-size:12px; color:#94a3b8; margin-bottom:8px;">
-    Set the stake for both same-tick trades. Choose either `OVER 8 + UNDER 8` or `OVER 1 + UNDER 1`.
+    Set the stake for both same-tick trades. Choose either `UNDER 8 + OVER 8` or `OVER 1 + UNDER 1`.
   </div>
   <div style="margin-bottom:10px;">
     <div style="color:#94a3b8; font-size:12px; margin-bottom:4px;">Combo</div>
     <select id="dual2xCustomModeKoolkid" onchange="syncDual2xCustomPopupKoolkid()" style="width:100%;">
-      <option value="OVER8_UNDER8">OVER 8 + UNDER 8</option>
+      <option value="UNDER8_OVER8">UNDER 8 + OVER 8</option>
       <option value="OVER1_UNDER1">OVER 1 + UNDER 1</option>
     </select>
   </div>
   <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
     <div>
-      <div id="dual2xCustomStakeLabelAKoolkid" style="color:#94a3b8; font-size:12px; margin-bottom:4px;">OVER 8</div>
+      <div id="dual2xCustomStakeLabelAKoolkid" style="color:#94a3b8; font-size:12px; margin-bottom:4px;">UNDER 8</div>
       <input id="dual2xCustomStakeAKoolkid" type="number" min="0.35" step="0.01" value="1.00" style="width:100%;">
     </div>
     <div>
-      <div id="dual2xCustomStakeLabelBKoolkid" style="color:#94a3b8; font-size:12px; margin-bottom:4px;">UNDER 8</div>
+      <div id="dual2xCustomStakeLabelBKoolkid" style="color:#94a3b8; font-size:12px; margin-bottom:4px;">OVER 8</div>
       <input id="dual2xCustomStakeBKoolkid" type="number" min="0.35" step="0.01" value="1.00" style="width:100%;">
     </div>
   </div>

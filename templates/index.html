@@ -2857,20 +2857,6 @@ function hideMonthlyElement(id, options){
     target.setAttribute("data-monthly-hidden", "1");
 }
 
-function applyMonthlyKoolkidPredictionSummaryMode(){
-    const block = document.getElementById("koolkidConfidenceBarsBlock");
-    if(!block) return;
-    block.style.display = "";
-    block.removeAttribute("data-monthly-hidden");
-    block.classList.add("monthly-prediction-summary-mode");
-    ["koolkidConfidenceBarsTitle", "koolkidConfidenceBarsWrap"].forEach((id)=>hideMonthlyElement(id));
-    const summary = document.getElementById("predictionSummaryCardKoolkid");
-    if(summary){
-        summary.style.display = "";
-        summary.removeAttribute("data-monthly-hidden");
-    }
-}
-
 function applyMonthlyLicenseGate(profile){
     if(!isMonthlyLicenseUser()) return;
     const p = normalizeProfileName(profile || activeProfile);
@@ -2889,8 +2875,8 @@ function applyMonthlyLicenseGate(profile){
             "kidracksAiBtnKoolkid",
             "testtrialBtnKoolkid",
             "metaBrainInfoKoolkid",
+            "predictionSummaryCardKoolkid",
         ].forEach((id)=>hideMonthlyElement(id));
-        applyMonthlyKoolkidPredictionSummaryMode();
     }
     if(p === "JOKERJOE"){
         [
