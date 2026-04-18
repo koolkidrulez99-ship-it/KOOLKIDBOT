@@ -854,6 +854,11 @@ class KoolKidStrategy(BaseStrategy):
             confidence_pct = float(chosen_trade.get("confidence_pct", 0.0) or 0.0)
             warmed = int(len(ticks)) >= history_target
             trade_ready = bool(warmed and confidence_pct >= 55.0 and not chosen_trade.get("blocked"))
+            raw_recommended_barrier = chosen_trade.get("barrier", 1)
+            try:
+                recommended_barrier = int(raw_recommended_barrier)
+            except Exception:
+                recommended_barrier = 1
             rows.append({
                 "symbol": sym,
                 "market_label": self._golden_card_market_label(sym),
@@ -865,7 +870,7 @@ class KoolKidStrategy(BaseStrategy):
                 "entry_ready": trade_ready,
                 "recommended_key": str(chosen_trade.get("key") or "over1"),
                 "recommended_type": str(chosen_trade.get("type") or "OVER"),
-                "recommended_barrier": int(chosen_trade.get("barrier", 1) or 1),
+                "recommended_barrier": max(0, min(9, recommended_barrier)),
                 "recommended_label": str(chosen_trade.get("label") or "OVER 1"),
                 "recommended_candidates": list(chosen_trade.get("candidates") or []),
                 "loss_guard_blocked": bool(chosen_trade.get("blocked")),

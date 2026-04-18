@@ -13524,11 +13524,12 @@ def _enrich_koolkid_golden_card_payload(state, payload, *, advance_confirmation=
         loss_blocked = bool(row.get("loss_guard_blocked"))
         market_quality_ok = confidence >= confidence_threshold
         conflict_blocked = _koolkid_has_conflicting_digit_trade(state, symbol) if symbol else active_conflict_any
+        recommended_barrier_value = row.get("recommended_barrier")
         signal_key = "|".join([
             symbol,
             str(row.get("recommended_key") or ""),
             str(row.get("recommended_type") or ""),
-            str(row.get("recommended_barrier") or ""),
+            "" if recommended_barrier_value is None else str(recommended_barrier_value),
         ])
         valid_now = bool(
             running

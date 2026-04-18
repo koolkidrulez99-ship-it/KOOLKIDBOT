@@ -26,7 +26,6 @@
     goldenCardReinvestCycleStake: null,
     goldenCardReinvestLastProfit: 0,
     goldenCardReinvestContracts: {},
-    goldenCardPcScrollOn: false,
     g1AutoOn: false,
     g1AutoBusy: false,
     g1AutoLastTick: null,
@@ -113,12 +112,10 @@
     const modeNode = document.getElementById("goldenCardTradeModeKoolkid");
     const jumpNode = document.getElementById("goldenCardAddJumpPairsKoolkid");
     const autoNode = document.getElementById("goldenCardAutoTraderKoolkid");
-    const pcScrollNode = document.getElementById("goldenCardPcScrollKoolkid");
     const filterMode = normalizeGoldenCardFilterModeKoolkid(safe.filter_mode || "BOTH");
     if (modeNode) modeNode.value = filterMode;
     if (jumpNode) jumpNode.checked = !!safe.add_jump_pairs;
     if (autoNode) autoNode.checked = !!state.goldenCardAutoOn;
-    if (pcScrollNode) pcScrollNode.checked = !!state.goldenCardPcScrollOn;
     applyGoldenCardPcScrollKoolkid();
     renderGoldenCardReinvestControlsKoolkid();
   }
@@ -240,7 +237,7 @@
   function applyGoldenCardPcScrollKoolkid() {
     const popup = document.getElementById("goldenCardPopupKoolkid");
     if (!popup) return;
-    popup.classList.toggle("is-pc-scroll-enabled", !!state.goldenCardPcScrollOn);
+    popup.classList.add("is-pc-scroll-enabled");
   }
 
   function delayFastBuyMsKoolkid(ms) {
@@ -2033,11 +2030,8 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
   };
 
   window.toggleGoldenCardPcScrollKoolkid = function () {
-    state.goldenCardPcScrollOn = !state.goldenCardPcScrollOn;
     applyGoldenCardPcScrollKoolkid();
-    const node = document.getElementById("goldenCardPcScrollKoolkid");
-    if (node) node.checked = !!state.goldenCardPcScrollOn;
-    safeToast(`Golden Card PC Scroll: ${state.goldenCardPcScrollOn ? "ON" : "OFF"}`, state.goldenCardPcScrollOn ? "success" : "info");
+    safeToast("Golden Card scroll is always ON.", "info");
   };
 
   window.setGoldenCardReinvestPctKoolkid = function (pct) {
@@ -2087,7 +2081,9 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
       const stake = getGoldenCardReinvestAdjustedStakeKoolkid(getStakeValueKoolkid());
       const duration = Number(document.getElementById("durationTicks")?.value || 1) || 1;
       const tradeType = String((row && row.recommended_type) || "OVER").toUpperCase();
-      const tradeBarrier = Number((row && row.recommended_barrier) || 1) || 1;
+      const rawBarrier = row && row.recommended_barrier;
+      const parsedBarrier = rawBarrier === undefined || rawBarrier === null || rawBarrier === "" ? 1 : Number(rawBarrier);
+      const tradeBarrier = Number.isFinite(parsedBarrier) ? Math.max(0, Math.min(9, parsedBarrier)) : 1;
       const tradeLabel = String((row && row.recommended_label) || `${tradeType} ${tradeBarrier}`);
       const payload = {
         stake,

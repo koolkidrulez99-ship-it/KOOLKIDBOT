@@ -65,10 +65,10 @@
 .golden-card-toggle-knob{position:absolute;top:2px;left:2px;width:20px;height:20px;background:#fff;border-radius:999px;transition:transform .2s}
 .golden-card-toggle-input:checked + .golden-card-toggle-btn{background:rgba(250,204,21,0.72);border-color:rgba(250,204,21,0.68)}
 .golden-card-toggle-input:checked + .golden-card-toggle-btn .golden-card-toggle-knob{transform:translateX(24px)}
-#goldenCardPopupKoolkid.is-pc-scroll-enabled{max-height:calc(100vh - 38px);overflow-y:auto;overscroll-behavior:contain;touch-action:pan-y;scrollbar-gutter:stable}
-#goldenCardPopupKoolkid.is-pc-scroll-enabled::-webkit-scrollbar{width:9px}
-#goldenCardPopupKoolkid.is-pc-scroll-enabled::-webkit-scrollbar-thumb{background:rgba(250,204,21,0.48);border-radius:999px}
-#goldenCardPopupKoolkid.is-pc-scroll-enabled::-webkit-scrollbar-track{background:rgba(15,23,42,0.65);border-radius:999px}
+#goldenCardPopupKoolkid{max-height:calc(100vh - 38px);overflow-y:auto;overscroll-behavior:contain;touch-action:pan-y;scrollbar-gutter:stable}
+#goldenCardPopupKoolkid::-webkit-scrollbar{width:9px}
+#goldenCardPopupKoolkid::-webkit-scrollbar-thumb{background:rgba(250,204,21,0.48);border-radius:999px}
+#goldenCardPopupKoolkid::-webkit-scrollbar-track{background:rgba(15,23,42,0.65);border-radius:999px}
 .prediction-summary-card{margin-top:14px;background:linear-gradient(180deg,rgba(14,23,39,0.98),rgba(7,12,24,0.96));border:1px solid rgba(71,85,105,0.6);border-radius:18px;padding:18px;box-shadow:0 14px 34px rgba(2,6,23,0.28)}
 .prediction-summary-title{display:flex;align-items:center;gap:10px;font-size:14px;font-weight:900;color:#eef7ff}
 .prediction-summary-bolt{color:#27f0ff;font-size:18px;line-height:1;filter:drop-shadow(0 0 10px rgba(39,240,255,0.28))}
@@ -711,15 +711,6 @@
       <span>Reinvest Profits</span>
       <span class="golden-card-toggle-wrap">
         <input id="goldenCardReinvestProfitsKoolkid" class="golden-card-toggle-input" type="checkbox" onchange="toggleGoldenCardReinvestProfitsKoolkid()">
-        <span class="golden-card-toggle-btn">
-          <span class="golden-card-toggle-knob"></span>
-        </span>
-      </span>
-    </label>
-    <label class="golden-card-toggle-row" for="goldenCardPcScrollKoolkid">
-      <span>PC Scroll</span>
-      <span class="golden-card-toggle-wrap">
-        <input id="goldenCardPcScrollKoolkid" class="golden-card-toggle-input" type="checkbox" onchange="toggleGoldenCardPcScrollKoolkid()">
         <span class="golden-card-toggle-btn">
           <span class="golden-card-toggle-knob"></span>
         </span>

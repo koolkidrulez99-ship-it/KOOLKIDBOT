@@ -2656,10 +2656,29 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     const btn = getEl("kid100WinsBtnJokerjoe");
     if (!btn || btn.dataset.kid100WinsTriggerBound === "1") return;
     btn.dataset.kid100WinsTriggerBound = "1";
-    btn.addEventListener("pointerup", (event) => {
-      if (event && event.pointerType === "mouse") return;
+    const openFromTap = (event) => {
+      if (event && typeof event.preventDefault === "function" && event.type === "touchend") event.preventDefault();
       if (typeof window.openKid100WinsPopupJokerjoe === "function") window.openKid100WinsPopupJokerjoe();
-    });
+    };
+    btn.addEventListener("click", openFromTap);
+    btn.addEventListener("touchend", openFromTap, { passive: false });
+  }
+
+  function prepareKid100WinsPopupForViewportJokerjoe(popup) {
+    if (!popup) return;
+    try {
+      if (popup.parentElement !== document.body) document.body.appendChild(popup);
+    } catch (e) {}
+    popup.style.setProperty("position", "fixed", "important");
+    popup.style.setProperty("inset", "0", "important");
+    popup.style.setProperty("z-index", "10050", "important");
+    popup.style.setProperty("display", "flex", "important");
+    popup.style.setProperty("align-items", "flex-start", "important");
+    popup.style.setProperty("justify-content", "center", "important");
+    popup.style.setProperty("overflow-y", "auto", "important");
+    popup.style.setProperty("-webkit-overflow-scrolling", "touch");
+    popup.style.setProperty("touch-action", "pan-y", "important");
+    popup.style.setProperty("pointer-events", "auto", "important");
   }
 
   function patchKidgambleConfirm() {
@@ -2962,7 +2981,7 @@ window.openKid100WinsPopupJokerjoe = function () {
   }
   const popup = getEl("kid100WinsPopupJokerjoe");
   if (!popup) return;
-  popup.style.display = "flex";
+  prepareKid100WinsPopupForViewportJokerjoe(popup);
   try {
     applyKid100WinsAiDiffersGateJokerjoe();
     const barrierNode = getEl("kid100WinsBarrierJokerjoe");
