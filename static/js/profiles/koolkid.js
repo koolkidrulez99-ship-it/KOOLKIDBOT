@@ -20,6 +20,13 @@
     goldenCardAutoOn: false,
     goldenCardAutoLastSignalKey: "",
     goldenCardAutoWaitingReset: false,
+    goldenCardReinvestProfitsOn: false,
+    goldenCardReinvestProfitPct: 25,
+    goldenCardReinvestBaseStake: null,
+    goldenCardReinvestCycleStake: null,
+    goldenCardReinvestLastProfit: 0,
+    goldenCardReinvestContracts: {},
+    goldenCardPcScrollOn: false,
     g1AutoOn: false,
     g1AutoBusy: false,
     g1AutoLastTick: null,
@@ -93,8 +100,11 @@
 
   function normalizeGoldenCardFilterModeKoolkid(value) {
     const raw = String(value || "BOTH").toUpperCase().replace(/\s+/g, "");
+    if (raw === "OVER0" || raw === "OVER_0") return "OVER0";
     if (raw === "OVER1" || raw === "OVER_1") return "OVER1";
     if (raw === "UNDER8" || raw === "UNDER_8") return "UNDER8";
+    if (raw === "UNDER9" || raw === "UNDER_9") return "UNDER9";
+    if (raw === "ALL" || raw === "ALL4" || raw === "ALL_4") return "ALL4";
     return "BOTH";
   }
 
@@ -103,10 +113,14 @@
     const modeNode = document.getElementById("goldenCardTradeModeKoolkid");
     const jumpNode = document.getElementById("goldenCardAddJumpPairsKoolkid");
     const autoNode = document.getElementById("goldenCardAutoTraderKoolkid");
+    const pcScrollNode = document.getElementById("goldenCardPcScrollKoolkid");
     const filterMode = normalizeGoldenCardFilterModeKoolkid(safe.filter_mode || "BOTH");
     if (modeNode) modeNode.value = filterMode;
     if (jumpNode) jumpNode.checked = !!safe.add_jump_pairs;
     if (autoNode) autoNode.checked = !!state.goldenCardAutoOn;
+    if (pcScrollNode) pcScrollNode.checked = !!state.goldenCardPcScrollOn;
+    applyGoldenCardPcScrollKoolkid();
+    renderGoldenCardReinvestControlsKoolkid();
   }
 
   function readGoldenCardOptionsKoolkid() {
@@ -116,6 +130,117 @@
       filter_mode: normalizeGoldenCardFilterModeKoolkid(modeNode ? modeNode.value : "BOTH"),
       add_jump_pairs: !!(jumpNode && jumpNode.checked),
     };
+  }
+
+  function getGoldenCardReinvestPctKoolkid() {
+    const pct = Number(state.goldenCardReinvestProfitPct);
+    return [25, 50, 75, 100].includes(pct) ? pct : 25;
+  }
+
+  function resetGoldenCardReinvestCycleKoolkid() {
+    state.goldenCardReinvestBaseStake = null;
+    state.goldenCardReinvestCycleStake = null;
+    state.goldenCardReinvestLastProfit = 0;
+    state.goldenCardReinvestContracts = {};
+  }
+
+  function getGoldenCardReinvestAdjustedStakeKoolkid(baseStake) {
+    const base = Number(baseStake);
+    if (!Number.isFinite(base) || base <= 0) return 0;
+    if (!state.goldenCardReinvestProfitsOn) {
+      state.goldenCardReinvestBaseStake = Number(base.toFixed(2));
+      state.goldenCardReinvestCycleStake = null;
+      return Number(base.toFixed(2));
+    }
+    const knownBase = Number(state.goldenCardReinvestBaseStake);
+    if (!Number.isFinite(knownBase) || knownBase <= 0 || Math.abs(knownBase - base) >= 0.01) {
+      state.goldenCardReinvestBaseStake = Number(base.toFixed(2));
+      state.goldenCardReinvestCycleStake = Number(base.toFixed(2));
+    }
+    const cycle = Number(state.goldenCardReinvestCycleStake);
+    return Number((Number.isFinite(cycle) && cycle > 0 ? cycle : base).toFixed(2));
+  }
+
+  function setGoldenCardReinvestCycleStakeFromTradeKoolkid(stake) {
+    const value = Number(stake);
+    if (!Number.isFinite(value) || value <= 0) return;
+    state.goldenCardReinvestCycleStake = Number(value.toFixed(2));
+    if (!Number.isFinite(Number(state.goldenCardReinvestBaseStake))) {
+      state.goldenCardReinvestBaseStake = Number(value.toFixed(2));
+    }
+  }
+
+  function isGoldenCardTradeEventKoolkid(trade) {
+    if (!trade || typeof trade !== "object") return false;
+    const profile = String(trade.profile || "").toUpperCase();
+    const mode = String(trade.mode || "").toLowerCase();
+    const id = String(trade.contract_id || trade.id || "").trim();
+    return profile === PROFILE && (mode === "golden_card" || (id && !!state.goldenCardReinvestContracts[id]));
+  }
+
+  function trackGoldenCardReinvestPlacementKoolkid(trade) {
+    if (!state.goldenCardReinvestProfitsOn || !isGoldenCardTradeEventKoolkid(trade)) return;
+    const id = String(trade.contract_id || trade.id || "").trim();
+    if (id) state.goldenCardReinvestContracts[id] = true;
+    setGoldenCardReinvestCycleStakeFromTradeKoolkid(Number(trade.stake || trade.amount || state.goldenCardReinvestCycleStake));
+    renderGoldenCardReinvestControlsKoolkid();
+  }
+
+  function armGoldenCardReinvestProfitKoolkid(profit) {
+    if (!state.goldenCardReinvestProfitsOn) return;
+    const amount = Number(profit) || 0;
+    if (!Number.isFinite(amount) || amount <= 0) return;
+    state.goldenCardReinvestLastProfit = amount;
+    const currentStake = Number(state.goldenCardReinvestCycleStake);
+    const fallbackStake = Number(state.goldenCardReinvestBaseStake || getStakeValueKoolkid());
+    const baseStake = Number.isFinite(currentStake) && currentStake > 0 ? currentStake : fallbackStake;
+    if (!Number.isFinite(baseStake) || baseStake <= 0) return;
+    const add = amount * (getGoldenCardReinvestPctKoolkid() / 100);
+    state.goldenCardReinvestCycleStake = Number((baseStake + add).toFixed(2));
+    renderGoldenCardReinvestControlsKoolkid();
+  }
+
+  function handleGoldenCardReinvestResultKoolkid(trade) {
+    if (!state.goldenCardReinvestProfitsOn || !isGoldenCardTradeEventKoolkid(trade)) return;
+    const id = String(trade.contract_id || trade.id || "").trim();
+    if (id && state.goldenCardReinvestContracts[id]) delete state.goldenCardReinvestContracts[id];
+    const profit = Number(
+      trade.profit != null ? trade.profit
+        : (trade.profit_loss != null ? trade.profit_loss : trade.pnl)
+    ) || 0;
+    const result = String(trade.result || trade.status || "").toUpperCase();
+    if (profit > 0 || result === "WIN" || result === "WON") armGoldenCardReinvestProfitKoolkid(Math.max(profit, 0));
+    else renderGoldenCardReinvestControlsKoolkid();
+  }
+
+  function renderGoldenCardReinvestControlsKoolkid() {
+    const toggle = document.getElementById("goldenCardReinvestProfitsKoolkid");
+    const panel = document.getElementById("goldenCardReinvestPanelKoolkid");
+    const preview = document.getElementById("goldenCardReinvestPreviewKoolkid");
+    const on = !!state.goldenCardReinvestProfitsOn;
+    const pct = getGoldenCardReinvestPctKoolkid();
+    if (toggle) toggle.checked = on;
+    if (panel) panel.style.display = on ? "block" : "none";
+    document.querySelectorAll("[data-golden-card-reinvest-pct]").forEach((btn) => {
+      const active = Number(btn.getAttribute("data-golden-card-reinvest-pct")) === pct;
+      btn.style.background = active ? "#facc15" : "#334155";
+      btn.style.color = active ? "#111827" : "#e2e8f0";
+      btn.style.fontWeight = active ? "900" : "700";
+    });
+    if (preview) {
+      const manual = getStakeValueKoolkid();
+      const next = getGoldenCardReinvestAdjustedStakeKoolkid(manual);
+      const profit = Math.max(0, Number(state.goldenCardReinvestLastProfit) || 0);
+      preview.innerText = on
+        ? `Next stake: ${money(next)} • using ${pct}% of profit${profit > 0 ? ` (${money(profit)} last win)` : ""}`
+        : "Next Golden Card stake uses the selected share of confirmed profit.";
+    }
+  }
+
+  function applyGoldenCardPcScrollKoolkid() {
+    const popup = document.getElementById("goldenCardPopupKoolkid");
+    if (!popup) return;
+    popup.classList.toggle("is-pc-scroll-enabled", !!state.goldenCardPcScrollOn);
   }
 
   function delayFastBuyMsKoolkid(ms) {
@@ -1387,21 +1512,21 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
   };
 
   function getDual2xCustomConfigKoolkid() {
-    const mode = String((document.getElementById("dual2xCustomModeKoolkid") || {}).value || "UNDER8_OVER8").toUpperCase();
-    if (mode === "UNDER1_OVER1") {
+    const mode = String((document.getElementById("dual2xCustomModeKoolkid") || {}).value || "OVER8_UNDER8").toUpperCase();
+    if (mode === "OVER1_UNDER1" || mode === "UNDER1_OVER1") {
       return {
-        mode,
+        mode: "OVER1_UNDER1",
         legs: [
-          { type: "UNDER", barrier: 1, label: "UNDER 1" },
           { type: "OVER", barrier: 1, label: "OVER 1" },
+          { type: "UNDER", barrier: 1, label: "UNDER 1" },
         ],
       };
     }
     return {
-      mode: "UNDER8_OVER8",
+      mode: "OVER8_UNDER8",
       legs: [
-        { type: "UNDER", barrier: 8, label: "UNDER 8" },
         { type: "OVER", barrier: 8, label: "OVER 8" },
+        { type: "UNDER", barrier: 8, label: "UNDER 8" },
       ],
     };
   }
@@ -1588,6 +1713,16 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
         updateModeButtonsFromPayload(modes || {});
       });
 
+      bind("trade_placed", (trade) => {
+        if (!isActive()) return;
+        trackGoldenCardReinvestPlacementKoolkid(trade || {});
+      });
+
+      bind("trade_result", (trade) => {
+        if (!isActive()) return;
+        handleGoldenCardReinvestResultKoolkid(trade || {});
+      });
+
       if (app && typeof app.logSocketListenerCounts === "function") app.logSocketListenerCounts("koolkid_profile_init");
     } catch (e) {}
   }
@@ -1605,6 +1740,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
       const target = event && event.target;
       if (target && target.id === "stake") {
         renderKid2vixKoolkid();
+        renderGoldenCardReinvestControlsKoolkid();
       }
       if (target && target.id === "barrier") {
         renderPredictionSummaryKoolkid();
@@ -1797,6 +1933,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
 
   window.openGoldenCardPopupKoolkid = function () {
     showCenteredPopupKoolkid("goldenCardPopupKoolkid");
+    applyGoldenCardPcScrollKoolkid();
   };
 
   window.hideGoldenCardPopupKoolkid = function () {
@@ -1881,6 +2018,43 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
     safeToast(`Golden Card Auto Trader: ${state.goldenCardAutoOn ? "ON" : "OFF"}`, state.goldenCardAutoOn ? "success" : "error");
   };
 
+  window.toggleGoldenCardReinvestProfitsKoolkid = function () {
+    state.goldenCardReinvestProfitsOn = !state.goldenCardReinvestProfitsOn;
+    resetGoldenCardReinvestCycleKoolkid();
+    if (state.goldenCardReinvestProfitsOn) {
+      const base = Number(getStakeValueKoolkid());
+      if (Number.isFinite(base) && base > 0) {
+        state.goldenCardReinvestBaseStake = Number(base.toFixed(2));
+        state.goldenCardReinvestCycleStake = Number(base.toFixed(2));
+      }
+    }
+    renderGoldenCardReinvestControlsKoolkid();
+    safeToast(`Golden Card Reinvest Profits: ${state.goldenCardReinvestProfitsOn ? "ON" : "OFF"}`, state.goldenCardReinvestProfitsOn ? "success" : "info");
+  };
+
+  window.toggleGoldenCardPcScrollKoolkid = function () {
+    state.goldenCardPcScrollOn = !state.goldenCardPcScrollOn;
+    applyGoldenCardPcScrollKoolkid();
+    const node = document.getElementById("goldenCardPcScrollKoolkid");
+    if (node) node.checked = !!state.goldenCardPcScrollOn;
+    safeToast(`Golden Card PC Scroll: ${state.goldenCardPcScrollOn ? "ON" : "OFF"}`, state.goldenCardPcScrollOn ? "success" : "info");
+  };
+
+  window.setGoldenCardReinvestPctKoolkid = function (pct) {
+    const value = Number(pct);
+    if (![25, 50, 75, 100].includes(value)) return;
+    state.goldenCardReinvestProfitPct = value;
+    resetGoldenCardReinvestCycleKoolkid();
+    if (state.goldenCardReinvestProfitsOn) {
+      const base = Number(getStakeValueKoolkid());
+      if (Number.isFinite(base) && base > 0) {
+        state.goldenCardReinvestBaseStake = Number(base.toFixed(2));
+        state.goldenCardReinvestCycleStake = Number(base.toFixed(2));
+      }
+    }
+    renderGoldenCardReinvestControlsKoolkid();
+  };
+
   window.placeGoldenCardTradeKoolkid = async function (symbol) {
     if (state.goldenCardTradeBusy) return false;
     const market = String(symbol || "").toUpperCase().trim();
@@ -1910,7 +2084,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
     }
     state.goldenCardTradeBusy = true;
     try {
-      const stake = getStakeValueKoolkid();
+      const stake = getGoldenCardReinvestAdjustedStakeKoolkid(getStakeValueKoolkid());
       const duration = Number(document.getElementById("durationTicks")?.value || 1) || 1;
       const tradeType = String((row && row.recommended_type) || "OVER").toUpperCase();
       const tradeBarrier = Number((row && row.recommended_barrier) || 1) || 1;
@@ -1922,6 +2096,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
         barrier: tradeBarrier,
         symbol: market,
         duration,
+        mode: "golden_card",
       };
       const r = await sendFastManualTradeKoolkid(payload, {
         turbo: true,
@@ -1930,7 +2105,11 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
         fireAndForget: true,
       });
       const ok = !!(r && r.data && r.data.status === "success");
-      if (ok) safeToast(`Golden Card sent ${tradeLabel} on ${market}`, "success");
+      if (ok) {
+        setGoldenCardReinvestCycleStakeFromTradeKoolkid(stake);
+        renderGoldenCardReinvestControlsKoolkid();
+        safeToast(`Golden Card sent ${tradeLabel} on ${market}`, "success");
+      }
       else safeToast((r && r.data && r.data.message) || `Golden Card trade failed on ${market}`, "error");
       return ok;
     } catch (e) {

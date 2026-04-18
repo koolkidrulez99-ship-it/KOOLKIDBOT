@@ -662,7 +662,7 @@ class KoolKidStrategy(BaseStrategy):
             "history_target": int(GOLDEN_CARD_HISTORY_TARGET),
             "ticks_by_symbol": {},
             "results": [],
-            "status": "Press GOLDEN CARD to start a live 20-tick scan for OVER 1 / UNDER 8 using Over 3 analysis.",
+            "status": "Press GOLDEN CARD to start a live 20-tick scan for OVER 0 / OVER 1 / UNDER 8 / UNDER 9 using Over 3 analysis.",
             "completed_markets": 0,
             "rotation_cursor": int(min(GOLDEN_CARD_ACTIVE_MARKETS, len(base_pool))),
             "rotation_count": 0,
@@ -698,10 +698,16 @@ class KoolKidStrategy(BaseStrategy):
 
     def _normalize_golden_card_filter_mode(self, value):
         mode = str(value or "BOTH").strip().upper().replace(" ", "_")
+        if mode in ("OVER0", "OVER_0"):
+            return "OVER0"
         if mode in ("OVER1", "OVER_1"):
             return "OVER1"
         if mode in ("UNDER8", "UNDER_8"):
             return "UNDER8"
+        if mode in ("UNDER9", "UNDER_9"):
+            return "UNDER9"
+        if mode in ("ALL", "ALL4", "ALL_4"):
+            return "ALL4"
         return "BOTH"
 
     def _build_golden_card_market_pool(self, add_jump_pairs=False, symbols=None):
@@ -771,8 +777,10 @@ class KoolKidStrategy(BaseStrategy):
         confidence_map = compute_koolkid_confidence_bars(ticks)
         candidates = []
         for key, trade_type, barrier, label in (
+            ("over0", "OVER", 0, "OVER 0"),
             ("over1", "OVER", 1, "OVER 1"),
             ("under8", "UNDER", 8, "UNDER 8"),
+            ("under9", "UNDER", 9, "UNDER 9"),
         ):
             confidence = float((confidence_map.get(key) or {}).get("confidence_pct", 0.0) or 0.0)
             loss_guard = assess_contract_loss_guard(ticks, key)
@@ -787,10 +795,16 @@ class KoolKidStrategy(BaseStrategy):
                 "block_digits_label": str(loss_guard.get("losing_digits_label") or ""),
             })
         allowed_keys = None
-        if filter_mode == "OVER1":
+        if filter_mode == "OVER0":
+            allowed_keys = {"over0"}
+        elif filter_mode == "OVER1":
             allowed_keys = {"over1"}
         elif filter_mode == "UNDER8":
             allowed_keys = {"under8"}
+        elif filter_mode == "UNDER9":
+            allowed_keys = {"under9"}
+        elif filter_mode == "BOTH":
+            allowed_keys = {"over1", "under8"}
         filtered_candidates = [row for row in candidates if not allowed_keys or row.get("key") in allowed_keys]
         if not filtered_candidates:
             filtered_candidates = list(candidates)
@@ -879,8 +893,11 @@ class KoolKidStrategy(BaseStrategy):
             rotation_count = int(scan.get("rotation_count", 0) or 0)
             scan["completed"] = False
             mode_text = {
+                "OVER0": "OVER 0 only",
                 "OVER1": "OVER 1 only",
                 "UNDER8": "UNDER 8 only",
+                "UNDER9": "UNDER 9 only",
+                "ALL4": "OVER 0 / OVER 1 / UNDER 8 / UNDER 9",
                 "BOTH": "OVER 1 / UNDER 8",
             }.get(filter_mode, "OVER 1 / UNDER 8")
             scan["status"] = (

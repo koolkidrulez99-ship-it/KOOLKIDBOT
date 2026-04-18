@@ -1784,9 +1784,37 @@
     maybeAutoFormulaX();
   }
 
+  function bindHumanDropdownPanels(root) {
+    const scope = root && typeof root.querySelectorAll === "function" ? root : document;
+    scope.querySelectorAll("#humanProfilePanel details.human-dropdown-panel > summary").forEach((summary) => {
+      if (!summary || summary.dataset.humanDropdownBound === "1") return;
+      summary.dataset.humanDropdownBound = "1";
+      const syncExpanded = () => {
+        const details = summary.closest("details.human-dropdown-panel");
+        if (details) summary.setAttribute("aria-expanded", details.open ? "true" : "false");
+      };
+      const togglePanel = (event) => {
+        if (event && typeof event.preventDefault === "function") event.preventDefault();
+        const details = summary.closest("details.human-dropdown-panel");
+        if (!details) return;
+        details.open = !details.open;
+        syncExpanded();
+      };
+      summary.setAttribute("role", "button");
+      summary.setAttribute("tabindex", "0");
+      summary.addEventListener("click", togglePanel);
+      summary.addEventListener("keydown", (event) => {
+        if (!event || (event.key !== "Enter" && event.key !== " ")) return;
+        togglePanel(event);
+      });
+      syncExpanded();
+    });
+  }
+
   async function onMount(payload) {
     const root = payload && payload.root ? payload.root : byId("profileContainer");
     bindUI(root);
+    bindHumanDropdownPanels(root);
     bindSocketIfPossible();
 
     // expose globals for inline onclick in human.html
@@ -1830,6 +1858,7 @@
   }
 
   async function afterLoadProfileUI() {
+    bindHumanDropdownPanels(byId("profileContainer"));
     bindSocketIfPossible();
     startPolling();
     refreshHumanManualContracts(false);
@@ -1841,6 +1870,7 @@
   }
 
   async function onActivate() {
+    bindHumanDropdownPanels(byId("profileContainer"));
     startPolling();
     try{
       if(typeof refreshHumanKeepAliveUI === "function") await refreshHumanKeepAliveUI();

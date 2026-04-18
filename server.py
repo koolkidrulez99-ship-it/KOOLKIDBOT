@@ -2251,6 +2251,7 @@ def handle_fast_profile_trade(data=None):
     duration_unit = str(payload.get("duration_unit") or "t").strip().lower() or "t"
     if duration_unit not in ("t", "s", "m", "h"):
         duration_unit = "t"
+    mode = str(payload.get("mode") or "").strip() or None
 
     ok, message = send_buy_with_profile(
         cid,
@@ -2261,6 +2262,7 @@ def handle_fast_profile_trade(data=None):
         barrier,
         duration=duration,
         duration_unit=duration_unit,
+        mode=mode,
         emit_balance_after_send=False,
     )
     return {
@@ -14885,6 +14887,7 @@ def process_contract(client_id, contract):
                 entry.setdefault("selected_tick", meta.get("selected_tick"))
             else:
                 entry.setdefault("profile", profile_for_contract)
+            entry.setdefault("profit", round(float(profit), 2))
             # Always emit the same contract id used at placement so frontend can
             # merge pending -> settled instead of showing a duplicate row.
             if contract_id not in (None, ""):

@@ -2652,6 +2652,16 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     });
   }
 
+  function bindKid100WinsPopupTriggerJokerjoe() {
+    const btn = getEl("kid100WinsBtnJokerjoe");
+    if (!btn || btn.dataset.kid100WinsTriggerBound === "1") return;
+    btn.dataset.kid100WinsTriggerBound = "1";
+    btn.addEventListener("pointerup", (event) => {
+      event.preventDefault();
+      if (typeof window.openKid100WinsPopupJokerjoe === "function") window.openKid100WinsPopupJokerjoe();
+    });
+  }
+
   function patchKidgambleConfirm() {
     if (window.__kidgambleXConfirmPatched) return;
     if (typeof window.kidgambleX !== "function") return;
@@ -2671,6 +2681,7 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     bindSocketListeners();
     bindBarrierSync();
     bindBlackcardWindowEventsJokerjoe();
+    bindKid100WinsPopupTriggerJokerjoe();
     bindMatchesAnalysisObserverJokerjoe();
     updateButtons();
     updateMatchesAnalysisButtonJokerjoe();
@@ -2695,6 +2706,7 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     bindSocketListeners();
     bindBarrierSync();
     bindBlackcardWindowEventsJokerjoe();
+    bindKid100WinsPopupTriggerJokerjoe();
     bindMatchesAnalysisObserverJokerjoe();
     updateButtons();
     updateMatchesAnalysisButtonJokerjoe();
@@ -2719,6 +2731,7 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     bindSocketListeners();
     bindBarrierSync();
     bindBlackcardWindowEventsJokerjoe();
+    bindKid100WinsPopupTriggerJokerjoe();
     bindMatchesAnalysisObserverJokerjoe();
     state.kidgxBarrier = currentBarrier();
     updateButtons();

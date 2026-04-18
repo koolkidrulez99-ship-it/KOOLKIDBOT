@@ -65,6 +65,10 @@
 .golden-card-toggle-knob{position:absolute;top:2px;left:2px;width:20px;height:20px;background:#fff;border-radius:999px;transition:transform .2s}
 .golden-card-toggle-input:checked + .golden-card-toggle-btn{background:rgba(250,204,21,0.72);border-color:rgba(250,204,21,0.68)}
 .golden-card-toggle-input:checked + .golden-card-toggle-btn .golden-card-toggle-knob{transform:translateX(24px)}
+#goldenCardPopupKoolkid.is-pc-scroll-enabled{max-height:calc(100vh - 38px);overflow-y:auto;overscroll-behavior:contain;touch-action:pan-y;scrollbar-gutter:stable}
+#goldenCardPopupKoolkid.is-pc-scroll-enabled::-webkit-scrollbar{width:9px}
+#goldenCardPopupKoolkid.is-pc-scroll-enabled::-webkit-scrollbar-thumb{background:rgba(250,204,21,0.48);border-radius:999px}
+#goldenCardPopupKoolkid.is-pc-scroll-enabled::-webkit-scrollbar-track{background:rgba(15,23,42,0.65);border-radius:999px}
 .prediction-summary-card{margin-top:14px;background:linear-gradient(180deg,rgba(14,23,39,0.98),rgba(7,12,24,0.96));border:1px solid rgba(71,85,105,0.6);border-radius:18px;padding:18px;box-shadow:0 14px 34px rgba(2,6,23,0.28)}
 .prediction-summary-title{display:flex;align-items:center;gap:10px;font-size:14px;font-weight:900;color:#eef7ff}
 .prediction-summary-bolt{color:#27f0ff;font-size:18px;line-height:1;filter:drop-shadow(0 0 10px rgba(39,240,255,0.28))}
@@ -160,7 +164,7 @@
       <div style="min-width:220px; flex:1;">
         <div style="font-size:11px; color:#fde68a; font-weight:900; letter-spacing:.12em; text-transform:uppercase;">Best Button On The Bot</div>
         <div style="font-size:22px; line-height:1.1; font-weight:900; color:#fef3c7; margin-top:4px;">🂠 GOLDEN CARD</div>
-        <div style="font-size:12px; color:#e2e8f0; margin-top:6px;">Golden Card scans multiple markets for the cleanest OVER 1 or UNDER 8 setup, then waits for the premium confirmation before entry.</div>
+        <div style="font-size:12px; color:#e2e8f0; margin-top:6px;">Golden Card scans multiple markets for the cleanest OVER 0, OVER 1, UNDER 8, or UNDER 9 setup, then waits for the premium confirmation before entry.</div>
       </div>
       <button type="button" onclick="handleGoldenCardBtnKoolkid()" style="min-width:170px; min-height:48px; background:linear-gradient(135deg,#92400e,#facc15); color:#201300; border:1px solid rgba(250,204,21,0.62); border-radius:14px; box-shadow:0 10px 26px rgba(202,138,4,0.30); font-weight:900;">
         OPEN GOLDEN CARD
@@ -382,7 +386,7 @@
               <button id="dual2xOver5Under4BtnKoolkid" onclick="runDual2xKoolkid('OVER5_UNDER4')" style="width:100%; height:42px; background:#0f172a; border:1px solid #334155;">OVER 5 &amp; UNDER 4</button>
               <button id="dual2xOver2Under1BtnKoolkid" onclick="runDual2xKoolkid('OVER2_UNDER1')" style="width:100%; height:42px; background:#0f172a; border:1px solid #334155;">OVER 2 &amp; UNDER 1 (5:1 split)</button>
               <button id="dual2xOver8Under7BtnKoolkid" onclick="runDual2xKoolkid('OVER8_UNDER7')" style="width:100%; height:42px; background:#0f172a; border:1px solid #334155;">OVER 8 &amp; UNDER 7 (5:1 split)</button>
-              <button id="dual2xCustomComboBtnKoolkid" onclick="openDual2xCustomPopupKoolkid()" style="width:100%; height:42px; background:#0f172a; border:1px solid #334155; grid-column:1 / -1;">UNDER 8 &amp; OVER 8 / UNDER 1 &amp; OVER 1</button>
+              <button id="dual2xCustomComboBtnKoolkid" onclick="openDual2xCustomPopupKoolkid()" style="width:100%; height:42px; background:#0f172a; border:1px solid #334155; grid-column:1 / -1;">OVER 8 &amp; UNDER 8 / OVER 1 &amp; UNDER 1</button>
             </div>
             <div id="dual2xAnalysisPanelKoolkid" style="margin-top:8px; background:#0b1220; border:1px solid #334155; border-radius:12px; padding:10px;">
               <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
@@ -518,7 +522,7 @@
   </div>
   <div id="metaBrainInfoKoolkid" style="margin-top:8px; font-size:12px; color:#94a3b8;">Meta: waiting for tick data...</div>
   <div id="over3AnalysisInfoKoolkid" style="margin-top:6px; font-size:12px; color:#94a3b8;">Over Analysis: waiting for market ticks...</div>
-  <div id="goldenCardInfoKoolkid" style="margin-top:6px; font-size:12px; color:#94a3b8;">Golden Card live-scans 10 markets on a rolling 20-tick window and can focus on OVER 1, UNDER 8, or both.</div>
+  <div id="goldenCardInfoKoolkid" style="margin-top:6px; font-size:12px; color:#94a3b8;">Golden Card live-scans 10 markets on a rolling 20-tick window and can focus on OVER 1 / UNDER 8, OVER 0, UNDER 9, or all four.</div>
 </div>
           </div>
         </details>
@@ -620,22 +624,22 @@
 <div id="dual2xCustomPopupKoolkid" class="digit-popup" style="display:none; min-width:320px; max-width:min(380px, calc(100vw - 20px)); z-index:10001;">
   <h4>DUAL 2x CUSTOM</h4>
   <div style="font-size:12px; color:#94a3b8; margin-bottom:8px;">
-    Set the stake for both same-tick trades. Choose either `UNDER 8 + OVER 8` or `UNDER 1 + OVER 1`.
+    Set the stake for both same-tick trades. Choose either `OVER 8 + UNDER 8` or `OVER 1 + UNDER 1`.
   </div>
   <div style="margin-bottom:10px;">
     <div style="color:#94a3b8; font-size:12px; margin-bottom:4px;">Combo</div>
     <select id="dual2xCustomModeKoolkid" onchange="syncDual2xCustomPopupKoolkid()" style="width:100%;">
-      <option value="UNDER8_OVER8">UNDER 8 + OVER 8</option>
-      <option value="UNDER1_OVER1">UNDER 1 + OVER 1</option>
+      <option value="OVER8_UNDER8">OVER 8 + UNDER 8</option>
+      <option value="OVER1_UNDER1">OVER 1 + UNDER 1</option>
     </select>
   </div>
   <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
     <div>
-      <div id="dual2xCustomStakeLabelAKoolkid" style="color:#94a3b8; font-size:12px; margin-bottom:4px;">UNDER 8</div>
+      <div id="dual2xCustomStakeLabelAKoolkid" style="color:#94a3b8; font-size:12px; margin-bottom:4px;">OVER 8</div>
       <input id="dual2xCustomStakeAKoolkid" type="number" min="0.35" step="0.01" value="1.00" style="width:100%;">
     </div>
     <div>
-      <div id="dual2xCustomStakeLabelBKoolkid" style="color:#94a3b8; font-size:12px; margin-bottom:4px;">OVER 8</div>
+      <div id="dual2xCustomStakeLabelBKoolkid" style="color:#94a3b8; font-size:12px; margin-bottom:4px;">UNDER 8</div>
       <input id="dual2xCustomStakeBKoolkid" type="number" min="0.35" step="0.01" value="1.00" style="width:100%;">
     </div>
   </div>
@@ -678,8 +682,11 @@
       <label for="goldenCardTradeModeKoolkid" style="display:block; font-size:11px; color:#94a3b8; text-transform:uppercase; letter-spacing:.04em; margin-bottom:4px;">Show Setups</label>
       <select id="goldenCardTradeModeKoolkid" onchange="updateGoldenCardSettingsKoolkid()" style="min-height:38px; width:100%;">
         <option value="BOTH">Both</option>
+        <option value="ALL4">All 4</option>
+        <option value="OVER0">Over 0</option>
         <option value="OVER1">Over 1</option>
         <option value="UNDER8">Under 8</option>
+        <option value="UNDER9">Under 9</option>
       </select>
     </div>
     <label class="golden-card-toggle-row" for="goldenCardAddJumpPairsKoolkid">
@@ -700,6 +707,36 @@
         </span>
       </span>
     </label>
+    <label class="golden-card-toggle-row" for="goldenCardReinvestProfitsKoolkid">
+      <span>Reinvest Profits</span>
+      <span class="golden-card-toggle-wrap">
+        <input id="goldenCardReinvestProfitsKoolkid" class="golden-card-toggle-input" type="checkbox" onchange="toggleGoldenCardReinvestProfitsKoolkid()">
+        <span class="golden-card-toggle-btn">
+          <span class="golden-card-toggle-knob"></span>
+        </span>
+      </span>
+    </label>
+    <label class="golden-card-toggle-row" for="goldenCardPcScrollKoolkid">
+      <span>PC Scroll</span>
+      <span class="golden-card-toggle-wrap">
+        <input id="goldenCardPcScrollKoolkid" class="golden-card-toggle-input" type="checkbox" onchange="toggleGoldenCardPcScrollKoolkid()">
+        <span class="golden-card-toggle-btn">
+          <span class="golden-card-toggle-knob"></span>
+        </span>
+      </span>
+    </label>
+  </div>
+  <div id="goldenCardReinvestPanelKoolkid" style="display:none; margin:0 0 8px; padding:10px 12px; background:#111827; border:1px solid rgba(250,204,21,.28); border-radius:14px;">
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
+      <div style="font-size:11px; color:#facc15; font-weight:800; text-transform:uppercase; letter-spacing:.04em;">Profit Reinvest</div>
+      <div id="goldenCardReinvestPctRowKoolkid" style="display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:6px; min-width:min(260px,100%);">
+        <button type="button" data-golden-card-reinvest-pct="25" onclick="setGoldenCardReinvestPctKoolkid(25)" style="min-height:28px; width:100%; padding:5px 6px; font-size:11px; border-radius:999px; background:#334155;">25%</button>
+        <button type="button" data-golden-card-reinvest-pct="50" onclick="setGoldenCardReinvestPctKoolkid(50)" style="min-height:28px; width:100%; padding:5px 6px; font-size:11px; border-radius:999px; background:#334155;">50%</button>
+        <button type="button" data-golden-card-reinvest-pct="75" onclick="setGoldenCardReinvestPctKoolkid(75)" style="min-height:28px; width:100%; padding:5px 6px; font-size:11px; border-radius:999px; background:#334155;">75%</button>
+        <button type="button" data-golden-card-reinvest-pct="100" onclick="setGoldenCardReinvestPctKoolkid(100)" style="min-height:28px; width:100%; padding:5px 6px; font-size:11px; border-radius:999px; background:#334155;">100%</button>
+      </div>
+    </div>
+    <div id="goldenCardReinvestPreviewKoolkid" style="margin-top:8px; font-size:12px; color:#cbd5e1;">Next Golden Card stake uses the selected share of confirmed profit.</div>
   </div>
   <div id="goldenCardAutoStatusKoolkid" style="margin:0 0 8px; font-size:12px; color:#94a3b8;">Auto Trader OFF.</div>
   <div id="goldenCardPopupStatusRowKoolkid" style="display:grid; grid-template-columns:1fr auto; align-items:center; gap:12px; margin-bottom:8px; padding:10px 12px; background:#0b1220; border:1px solid #334155; border-radius:14px;">

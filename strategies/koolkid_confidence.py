@@ -2,6 +2,13 @@ from collections import Counter
 
 
 KOOLKID_CONFIDENCE_CONTRACTS = {
+    "over0": {
+        "win_digits": {1, 2, 3, 4, 5, 6, 7, 8, 9},
+        "lose_digits": {0},
+        "hot_multiplier": 1.5,
+        "recent_hot_threshold": 2,
+        "window_hot_threshold": 3,
+    },
     "over2": {
         "win_digits": {3, 4, 5, 6, 7, 8, 9},
         "lose_digits": {0, 1, 2},
@@ -167,7 +174,7 @@ def compute_contract_confidence(ticks, contract_key):
 def compute_koolkid_confidence_bars(ticks):
     return {
         key: compute_contract_confidence(ticks, key)
-        for key in ("over2", "over1", "under9", "under8")
+        for key in ("over0", "over2", "over1", "under9", "under8")
     }
 
 

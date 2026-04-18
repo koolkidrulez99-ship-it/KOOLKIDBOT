@@ -32,7 +32,7 @@
 .turbo-toggle-knob{position:absolute;top:2px;left:2px;width:20px;height:20px;background:#fff;border-radius:999px;transition:transform .2s}
 .turbo-toggle-btn.is-on .turbo-toggle-knob{transform:translateX(24px)}
 #kid100WinsBtnJokerjoe,#kid100WinsQuickStopDockBtnJokerjoe,#kid100WinsPopupJokerjoe button{touch-action:manipulation;-webkit-tap-highlight-color:transparent}
-#kid100WinsPopupJokerjoe{overflow-y:auto;overscroll-behavior:auto;-webkit-overflow-scrolling:touch;touch-action:pan-y}
+#kid100WinsPopupJokerjoe{overflow-y:auto;overscroll-behavior:auto;-webkit-overflow-scrolling:touch;touch-action:pan-y;pointer-events:auto}
 #kid100WinsPopupJokerjoe .kid100-wins-popup-card{max-height:calc(100vh - 36px);max-height:calc(100dvh - 36px);overflow-y:auto;overscroll-behavior:auto;-webkit-overflow-scrolling:touch;touch-action:pan-y;pointer-events:auto}
 #jokerjoeProfileUi.blackcard-lifetime-ui #jokerjoeBlackcardPromo{position:relative;overflow:hidden;border-color:rgba(226,232,240,.38)!important;background:radial-gradient(circle at 18% 0%,rgba(226,232,240,.18),transparent 30%),linear-gradient(145deg,#020617 0%,#09090b 42%,#111827 100%)!important;box-shadow:0 0 0 1px rgba(255,255,255,.04),0 24px 58px rgba(0,0,0,.55),0 0 34px rgba(148,163,184,.18)!important;animation:blackcardEliteBreath 4.8s ease-in-out infinite}
 #jokerjoeProfileUi.blackcard-lifetime-ui #jokerjoeBlackcardPromo:before{content:"";position:absolute;inset:-1px;background:linear-gradient(115deg,transparent 0%,rgba(248,250,252,.18) 42%,transparent 58%);transform:translateX(-130%);animation:blackcardSilverSweep 5.4s ease-in-out infinite;pointer-events:none}
@@ -70,7 +70,7 @@
   .turbo-toggle-btn{width:42px;min-width:42px;height:22px}
   .turbo-toggle-knob{top:2px;left:2px;width:18px;height:18px}
   .turbo-toggle-btn.is-on .turbo-toggle-knob{transform:translateX(20px)}
-  #kid100WinsPopupJokerjoe{align-items:flex-start !important;padding:12px !important;pointer-events:none}
+  #kid100WinsPopupJokerjoe{align-items:flex-start !important;padding:12px !important;pointer-events:auto}
   #kid100WinsPopupJokerjoe .kid100-wins-popup-card{max-height:calc(100vh - 24px);max-height:calc(100dvh - 24px)}
 }
 
@@ -282,7 +282,7 @@
               <button id="blackcardBtnJokerjoe" onclick="showBlackcardPopupJokerjoe()" style="width:100%; height:46px; background:linear-gradient(135deg,#020617,#111827); color:#f8fafc; border:1px solid #334155; box-shadow:0 8px 22px rgba(2,6,23,0.45);">
                 🂡 BLACKCARD
               </button>
-              <button id="kid100WinsBtnJokerjoe" type="button" onclick="openKid100WinsPopupJokerjoe()" style="width:100%; height:46px; background:linear-gradient(135deg,#7f1d1d,#dc2626); color:#fff7ed; border:1px solid rgba(251,146,60,0.45); box-shadow:0 10px 24px rgba(127,29,29,0.32);">
+              <button id="kid100WinsBtnJokerjoe" type="button" onclick="openKid100WinsPopupJokerjoe()" style="width:100%; height:46px; background:linear-gradient(135deg,#7f1d1d,#dc2626); color:#fff7ed; border:1px solid rgba(251,146,60,0.45); box-shadow:0 10px 24px rgba(127,29,29,0.32); touch-action:manipulation;">
                 😈 kid100%wins 😈
               </button>
               <button id="kid100WinsQuickStopDockBtnJokerjoe" type="button" onclick="stopKid100WinsAutosJokerjoe()" style="display:none; width:100%; height:42px; margin-top:8px; background:#ef4444; color:#fff7ed; border:1px solid rgba(248,113,113,0.5); box-shadow:0 8px 18px rgba(127,29,29,0.22);">
@@ -361,7 +361,7 @@
     </div>
   </div>
 
-  <div id="kid100WinsPopupJokerjoe" onclick="if(event.target===this) closeKid100WinsPopupJokerjoe()" style="display:none; position:fixed; inset:0; z-index:78; padding:18px; align-items:center; justify-content:center; background:rgba(2,6,23,0.78);">
+  <div id="kid100WinsPopupJokerjoe" onclick="if(event.target===this) closeKid100WinsPopupJokerjoe()" style="display:none; position:fixed; inset:0; z-index:10002; padding:18px; align-items:center; justify-content:center; background:rgba(2,6,23,0.78);">
     <div class="kid100-wins-popup-card" style="width:min(430px,100%); background:linear-gradient(180deg,#111827,#020617); border:1px solid rgba(251,146,60,0.32); border-radius:18px; padding:14px; box-shadow:0 24px 54px rgba(0,0,0,.48),0 0 30px rgba(220,38,38,.14);">
       <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:8px;">
         <div>
