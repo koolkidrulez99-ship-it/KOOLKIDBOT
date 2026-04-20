@@ -6,7 +6,7 @@ const FAST_INTERVAL_MS_NORMAL = 400; // 0.4s as requested
 const FAST_INTERVAL_MS_TURBO = 120;  // faster Turbo lane for JOKERJOE
 const FAST_MAX_BUY_QUEUE = 12;       // safety limit
 const BLACKCARD_RENDER_THROTTLE_MS = 300;
-  const state = { lastSocket: null, socketBound: false, autoModes: {}, turboMode: loadTurboModeJokerjoe(), kidgxBarrier: 5, matchesAnalysisOn: false, matchesLastKey: "", matchesObserverBound: false, matchSniperOn: false, matchSniperCooldownUntil: 0, matchSniperActiveDigit: null, matchSniperConsumed: false, matchSniperBusy: false, matchesSnapshot: null, matchesSorted: [], matchSniper5xOn: false, matchSniper5xCooldownUntil: 0, matchSniper5xBusy: false, matchSniper5xLastTopKey: "", matchSniper5xRotationSets: null, matchSniper5xRotationIndex: 0, matchSniper5xCurrentDigits: [], aiAutoModeChoice: "golden_digits", aiAutoLowestTradeCountChoice: 5, aiAutoLowestLocalOn: false, aiAutoModalOpen: false, aiLowestLastTickCount: 0, aiLowestTouches: {}, aiLowestArmed: null, aiLowestBatchActive: false, aiLowestBatchPending: 0, aiLowestBatchBarrier: null, aiLowestBatchProfit: 0, aiLowestCooldownUntil: 0, aiLowestSubmitting: false, aiLowestRecoveryDeficit: 0, aiLowestRecoveryOnly: false, randomMatchesDiffersOn: false, randomMatchesDiffersMode: "DIFFERS", randomMatchesDiffersModalOpen: false, randomMatchesDiffersBusy: false, randomMatchesDiffersCooldownUntil: 0, randomMatchesDiffersLastSignalKey: "", randomMatchesDiffersTickHistory: [], randomMatchesDiffersLastTickCount: 0, randomMatchesDiffersSnapshot: null, blackcard: { lastDigit: null, recentDigits: [], percentages: {}, busy: false, winMarkerDigit: null, winMarkerUntil: 0, praiseShownForTenWins: false, lastWinCount: null, reinvestProfitsOn: false, reinvestProfitPct: 25, lastProfit: 0, reinvestBaseStake: null, reinvestProfitBank: 0, reinvestCycleStake: null, reinvestPending: 0, pendingContracts: {}, pendingUnmarked: 0 }, insta2Busy: false, kid100WinsBusy: false, kid100WinsAutoOn: false, kid100WinsAutoBusy: false, kid100WinsAutoLastTick: null, kid100WinsAutoEnabledAtGlobalTick: null, kid100WinsAutoEnabledAtAnalysisTick: null, kid100WinsAutoLastSignalTick: null, kid100WinsLatestTick: null, kid100WinsLatestBest: null, kid100WinsLowPercentOn: false, kid100WinsAiDiffersOn: false, kid100WinsStopRequested: false, kid100WinsLastSeenDigit: null, kid100WinsManualArmed: false, kid100WinsManualBarrier: null, kid100WinsManualEnabledAtGlobalTick: null, kid100WinsManualEnabledAtAnalysisTick: null, kid100WinsManualLastSignalTick: null, kid100WinsReinvestProfitsOn: false, kid100WinsReinvestPct: 25, kid100WinsReinvestBaseStake: null, kid100WinsReinvestCycleStake: null, kid100WinsReinvestLastProfit: 0, kid100WinsReinvestPending: 0 };
+  const state = { lastSocket: null, socketBound: false, autoModes: {}, turboMode: loadTurboModeJokerjoe(), profileReinvestOn: false, profileReinvestPct: 25, profileReinvestBaseStake: null, profileReinvestProfitBank: 0, kidgxBarrier: 5, matchesAnalysisOn: false, matchesLastKey: "", matchesObserverBound: false, matchSniperOn: false, matchSniperCooldownUntil: 0, matchSniperActiveDigit: null, matchSniperConsumed: false, matchSniperBusy: false, matchesSnapshot: null, matchesSorted: [], matchSniper5xOn: false, matchSniper5xCooldownUntil: 0, matchSniper5xBusy: false, matchSniper5xLastTopKey: "", matchSniper5xRotationSets: null, matchSniper5xRotationIndex: 0, matchSniper5xCurrentDigits: [], aiAutoModeChoice: "golden_digits", aiAutoLowestTradeCountChoice: 5, aiAutoLowestLocalOn: false, aiAutoModalOpen: false, aiLowestLastTickCount: 0, aiLowestTouches: {}, aiLowestArmed: null, aiLowestBatchActive: false, aiLowestBatchPending: 0, aiLowestBatchBarrier: null, aiLowestBatchProfit: 0, aiLowestCooldownUntil: 0, aiLowestSubmitting: false, aiLowestRecoveryDeficit: 0, aiLowestRecoveryOnly: false, randomMatchesDiffersOn: false, randomMatchesDiffersMode: "DIFFERS", randomMatchesDiffersModalOpen: false, randomMatchesDiffersBusy: false, randomMatchesDiffersCooldownUntil: 0, randomMatchesDiffersLastSignalKey: "", randomMatchesDiffersTickHistory: [], randomMatchesDiffersLastTickCount: 0, randomMatchesDiffersSnapshot: null, blackcard: { lastDigit: null, recentDigits: [], percentages: {}, busy: false, winMarkerDigit: null, winMarkerUntil: 0, praiseShownForTenWins: false, lastWinCount: null, reinvestProfitsOn: false, reinvestProfitPct: 25, lastProfit: 0, reinvestBaseStake: null, reinvestProfitBank: 0, reinvestCycleStake: null, reinvestPending: 0, pendingContracts: {}, pendingUnmarked: 0 }, insta2Busy: false, kid100WinsBusy: false, kid100WinsAutoOn: false, kid100WinsAutoBusy: false, kid100WinsAutoLastTick: null, kid100WinsAutoEnabledAtGlobalTick: null, kid100WinsAutoEnabledAtAnalysisTick: null, kid100WinsAutoLastSignalTick: null, kid100WinsLatestTick: null, kid100WinsLatestBest: null, kid100WinsLowPercentOn: false, kid100WinsAiDiffersOn: false, kid100WinsStopRequested: false, kid100WinsLastSeenDigit: null, kid100WinsManualArmed: false, kid100WinsManualBarrier: null, kid100WinsManualEnabledAtGlobalTick: null, kid100WinsManualEnabledAtAnalysisTick: null, kid100WinsManualLastSignalTick: null, kid100WinsReinvestProfitsOn: false, kid100WinsReinvestPct: 25, kid100WinsReinvestBaseStake: null, kid100WinsReinvestCycleStake: null, kid100WinsReinvestLastProfit: 0, kid100WinsReinvestPending: 0 };
   const fastBuyQueueJokerjoe = { items: [], running: false, lastRunAt: 0 };
   let activityPollTimerJokerjoe = null;
   let blackcardRenderTimerJokerjoe = null;
@@ -1120,11 +1120,93 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     return { placed, failed };
   }
 
-  function getManualStakeValueJokerjoe() {
+  function getRawManualStakeValueJokerjoe() {
     const stakeEl = document.getElementById("stake");
     let stake = Number(stakeEl && stakeEl.value);
     if (!Number.isFinite(stake) || stake <= 0) stake = 1;
     return stake;
+  }
+
+  function getProfileReinvestPctJokerjoe() {
+    const pct = Number(state.profileReinvestPct);
+    return [25, 50, 75, 100].includes(pct) ? pct : 25;
+  }
+
+  function getProfileReinvestStakeJokerjoe(baseStake) {
+    const base = Number(baseStake);
+    if (!Number.isFinite(base) || base <= 0) return 1;
+    if (!state.profileReinvestOn) return Number(base.toFixed(2));
+    if (!Number.isFinite(Number(state.profileReinvestBaseStake)) || state.profileReinvestBaseStake <= 0) {
+      state.profileReinvestBaseStake = Number(base.toFixed(2));
+      state.profileReinvestProfitBank = 0;
+    }
+    const bank = Math.max(0, Number(state.profileReinvestProfitBank) || 0);
+    const add = bank * (getProfileReinvestPctJokerjoe() / 100);
+    return Number((Number(state.profileReinvestBaseStake) + add).toFixed(2));
+  }
+
+  function getManualStakeValueJokerjoe() {
+    return getProfileReinvestStakeJokerjoe(getRawManualStakeValueJokerjoe());
+  }
+
+  function syncProfileReinvestAutoStakeJokerjoe() {
+    try {
+      fetch("/set_auto_stake", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stake: getManualStakeValueJokerjoe() })
+      }).catch(() => {});
+    } catch (e) {}
+  }
+
+  function resetProfileReinvestJokerjoe() {
+    state.profileReinvestBaseStake = null;
+    state.profileReinvestProfitBank = 0;
+  }
+
+  function renderProfileReinvestControlsJokerjoe() {
+    const toggle = document.getElementById("profileReinvestToggleJokerjoe");
+    const row = document.getElementById("profileReinvestPctRowJokerjoe");
+    const preview = document.getElementById("profileReinvestPreviewJokerjoe");
+    const on = !!state.profileReinvestOn;
+    const pct = getProfileReinvestPctJokerjoe();
+    if (toggle) {
+      toggle.innerText = on ? "ON" : "OFF";
+      toggle.style.background = on ? "#22c55e" : "#334155";
+      toggle.setAttribute("aria-pressed", on ? "true" : "false");
+    }
+    if (row) {
+      row.style.display = on ? "flex" : "none";
+      row.querySelectorAll("[data-profile-reinvest-pct]").forEach((btn) => {
+        const active = Number(btn.dataset.profileReinvestPct) === pct;
+        btn.style.background = active ? "#f59e0b" : "#1e293b";
+        btn.style.color = active ? "#111827" : "#e5e7eb";
+      });
+    }
+    if (preview) {
+      const base = Number(state.profileReinvestBaseStake || getRawManualStakeValueJokerjoe());
+      const bank = Math.max(0, Number(state.profileReinvestProfitBank) || 0);
+      const next = getProfileReinvestStakeJokerjoe(base);
+      preview.innerText = on
+        ? `ON - ${pct}% profit - next stake ${money(next)}${bank > 0 ? ` - profit bank ${money(bank)}` : ""}`
+        : "OFF - fixed stake";
+    }
+  }
+
+  function handleProfileReinvestResultJokerjoe(trade) {
+    if (!state.profileReinvestOn || !trade || typeof trade !== "object") return;
+    const profile = String(trade.profile || "").toUpperCase();
+    if (profile && profile !== PROFILE) return;
+    const result = String(trade.result || trade.status || "").toUpperCase();
+    const profit = Number(trade.profit ?? trade.pnl ?? trade.net_profit ?? 0);
+    if ((result === "WIN" || result === "WON" || profit > 0) && Number.isFinite(profit) && profit > 0) {
+      if (!Number.isFinite(Number(state.profileReinvestBaseStake))) {
+        state.profileReinvestBaseStake = Number(getRawManualStakeValueJokerjoe().toFixed(2));
+      }
+      state.profileReinvestProfitBank = Number((Math.max(0, Number(state.profileReinvestProfitBank) || 0) + profit).toFixed(2));
+      renderProfileReinvestControlsJokerjoe();
+      syncProfileReinvestAutoStakeJokerjoe();
+    }
   }
 
   function getKid100WinsStakeJokerjoe(id, fallback) {
@@ -2592,6 +2674,7 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
 
       bind("trade_result", (entry) => {
         if (!isActive()) return;
+        handleProfileReinvestResultJokerjoe(entry || {});
         handleBlackcardTradeResultJokerjoe(entry || {});
         handleKid100WinsTradeResultJokerjoe(entry || {});
         onJokerjoeTradeResultForLowestAI(entry || {});
@@ -2646,6 +2729,13 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     if (window.__blackcardJokerjoeBound) return;
     window.__blackcardJokerjoeBound = true;
     bindBlackcardDigitHandlersJokerjoe();
+    document.addEventListener("input", (evt) => {
+      const target = evt && evt.target;
+      if (target && target.id === "stake") {
+        renderProfileReinvestControlsJokerjoe();
+        syncProfileReinvestAutoStakeJokerjoe();
+      }
+    });
     window.addEventListener("resize", () => {
       const popup = getBlackcardPopupJokerjoe();
       if (popup && popup.style.display === "block") positionBlackcardPopupJokerjoe();
@@ -2716,6 +2806,7 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     applyKid100WinsLifetimeGateJokerjoe();
     currentTurboModeJokerjoe();
     renderTurboToggleJokerjoe();
+    renderProfileReinvestControlsJokerjoe();
     refreshActivityPollJokerjoe();
   }
 
@@ -2741,6 +2832,7 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     applyKid100WinsLifetimeGateJokerjoe();
     currentTurboModeJokerjoe();
     renderTurboToggleJokerjoe();
+    renderProfileReinvestControlsJokerjoe();
     refreshActivityPollJokerjoe();
   }
 
@@ -2767,6 +2859,7 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     applyKid100WinsLifetimeGateJokerjoe();
     currentTurboModeJokerjoe();
     renderTurboToggleJokerjoe();
+    renderProfileReinvestControlsJokerjoe();
     refreshMatchesAnalysisJokerjoe();
     refreshActivityPollJokerjoe();
   }
@@ -2796,6 +2889,32 @@ window.toggleTurboJokerjoe = function () {
   state.turboMode = next;
   persistTurboModeJokerjoe(next);
   renderTurboToggleJokerjoe();
+};
+
+window.toggleProfileReinvestJokerjoe = function () {
+  state.profileReinvestOn = !state.profileReinvestOn;
+  resetProfileReinvestJokerjoe();
+  if (state.profileReinvestOn) state.profileReinvestBaseStake = Number(getRawManualStakeValueJokerjoe().toFixed(2));
+  renderProfileReinvestControlsJokerjoe();
+  syncProfileReinvestAutoStakeJokerjoe();
+  safeToast(`JokerJoe Reinvest Profits: ${state.profileReinvestOn ? "ON" : "OFF"}`, state.profileReinvestOn ? "success" : "error");
+};
+
+window.setProfileReinvestPctJokerjoe = function (pct) {
+  const value = Number(pct);
+  if (![25, 50, 75, 100].includes(value)) return;
+  state.profileReinvestPct = value;
+  resetProfileReinvestJokerjoe();
+  if (state.profileReinvestOn) state.profileReinvestBaseStake = Number(getRawManualStakeValueJokerjoe().toFixed(2));
+  renderProfileReinvestControlsJokerjoe();
+  syncProfileReinvestAutoStakeJokerjoe();
+};
+
+const previousProfileReinvestStakeHookJokerjoe = window.getProfileReinvestStake;
+window.getProfileReinvestStake = function (profile, stake) {
+  if (String(profile || "").toUpperCase() === PROFILE) return getProfileReinvestStakeJokerjoe(stake);
+  if (typeof previousProfileReinvestStakeHookJokerjoe === "function") return previousProfileReinvestStakeHookJokerjoe(profile, stake);
+  return stake;
 };
 
 if (!window.__jokerjoeTurboSyncBound) {

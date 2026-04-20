@@ -2505,6 +2505,10 @@ function applyKnownApiBalance(data, syncMilestoneAnchor){
         : (budgetSnapshot && Number.isFinite(Number(budgetSnapshot.display_balance))
             ? Number(budgetSnapshot.display_balance)
             : balance);
+    const hasDisplayableAccountData = Number.isFinite(shownBalance) || Number.isFinite(balance) || Number.isFinite(totalBalance);
+    if(accountDashboard){
+        accountDashboard.style.display = (apiConnected && hasDisplayableAccountData) ? "block" : "none";
+    }
     console.info("TEMP displayed_total_balance_computed", {
         live_account_balance: Number.isFinite(balance) ? balance : null,
         displayed_balance: Number.isFinite(shownBalance) ? shownBalance : null,
@@ -2745,7 +2749,6 @@ function applyApiConnectionState(data){
             tickUnhealthy || tickRecovering ? "pending" : "connected",
             tickUnhealthy || tickRecovering ? "API CONNECTED - RESTORING LIVE TICKS..." : "API CONNECTED SUCCESSFULLY"
         );
-        accountDashboard.style.display = "block";
         applyKnownApiBalance(data || {}, true);
         return true;
     }
@@ -5542,7 +5545,7 @@ function positionHalfAutoPopupKoolkid(){
 function showHalfAutoPopupKoolkid(){
     const popup = getHalfAutoPopupKoolkid();
     if(!popup) return;
-    const baseStake = parseFloat((stakeInput && stakeInput.value) || "1");
+    const baseStake = parseFloat(getEffectiveStakeForProfile("KOOLKID", (stakeInput && stakeInput.value) || "1"));
     const fallback = (Number.isFinite(baseStake) && baseStake >= 0.35 ? baseStake : 1).toFixed(2);
     const saved = readHalfAutoStakeDraftKoolkid();
     const values = {
@@ -6186,11 +6189,24 @@ async function toggleAuto(){
 
 async function syncAutoStake(){
     if(!stakeInput) return;
-    const stake = parseFloat(stakeInput.value || "1");
+    const stake = parseFloat(getEffectiveStakeForProfile(activeProfile, stakeInput.value || "1"));
     if(isNaN(stake) || stake <= 0) return;
 
     await fetch("/set_auto_stake", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({stake})});
 }
+
+function getEffectiveStakeForProfile(profile, stake){
+    const raw = Number(stake);
+    const fallback = Number.isFinite(raw) && raw > 0 ? raw : 1;
+    try{
+        if(typeof window.getProfileReinvestStake === "function"){
+            const adjusted = Number(window.getProfileReinvestStake(profile || activeProfile, fallback));
+            if(Number.isFinite(adjusted) && adjusted > 0) return adjusted.toFixed(2);
+        }
+    }catch(e){}
+    return fallback.toFixed(2);
+}
+window.getEffectiveStakeForProfile = getEffectiveStakeForProfile;
 
 function scheduleAutoStakeSync(){
     if(autoStakeSyncTimer){
@@ -6497,7 +6513,7 @@ async function toggleMultiGAuto(){
 
 async function insta5(){
     if(!stakeInput || !barrierInput) return;
-    const stake = stakeInput.value;
+    const stake = getEffectiveStakeForProfile(activeProfile, stakeInput.value);
     const symbol = document.getElementById("symbol").value;
     const barrier = parseInt(barrierInput.value || "5", 10);
     const duration = getManualDurationTicks();
@@ -6523,7 +6539,7 @@ async function insta5(){
 
 async function kidgambleX(){
     if(!stakeInput) return;
-    const stake = stakeInput.value;
+    const stake = getEffectiveStakeForProfile(activeProfile, stakeInput.value);
     const symbol = document.getElementById("symbol").value;
     const duration = getManualDurationTicks();
     const turbo = isTurboEnabledForFastBuys(activeProfile);
@@ -6549,7 +6565,7 @@ async function kidgambleX(){
 async function trade(type, barrierOverride=null){
     if(!stakeInput || !barrierInput) return;
 
-    const stake = stakeInput.value;
+    const stake = getEffectiveStakeForProfile(activeProfile, stakeInput.value);
     const symbol = document.getElementById("symbol").value;
     const barrier = barrierOverride !== null ? barrierOverride : barrierInput.value;
     const duration = getManualDurationTicks();
@@ -6574,7 +6590,7 @@ async function trade(type, barrierOverride=null){
 
 async function take3(type){
     if(!stakeInput || !barrierInput) return;
-    const stake = stakeInput.value;
+    const stake = getEffectiveStakeForProfile(activeProfile, stakeInput.value);
     const symbol = document.getElementById("symbol").value;
     const barrier = barrierInput.value;
     const duration = getManualDurationTicks();
@@ -6589,7 +6605,7 @@ async function take3(type){
 
 async function burst4(type){
     if(!stakeInput || !barrierInput) return;
-    const stake = stakeInput.value;
+    const stake = getEffectiveStakeForProfile(activeProfile, stakeInput.value);
     const symbol = document.getElementById("symbol").value;
     const barrier = barrierInput.value;
     const duration = getManualDurationTicks();
@@ -6622,7 +6638,7 @@ async function confirmHalfAutoKoolkid(){
         duration: getManualDurationTicks(),
         duration_unit: "t",
         turbo: isTurboEnabledForFastBuys("KOOLKID"),
-        fallback_stake: (stakeInput && stakeInput.value) || "1",
+        fallback_stake: getEffectiveStakeForProfile("KOOLKID", (stakeInput && stakeInput.value) || "1"),
         under1_stake: stakeDraft.under1,
         over2_stake: stakeDraft.over2,
         over8_stake: stakeDraft.over8,

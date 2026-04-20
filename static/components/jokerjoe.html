@@ -143,6 +143,22 @@
           </button>
         </div>
 
+        <div id="profileReinvestPanelJokerjoe" style="margin-top:10px; border:1px solid #334155; border-radius:12px; padding:10px; background:#111827;">
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
+            <div>
+              <div style="font-weight:800; color:#f8fafc; font-size:13px;">Reinvest Profits</div>
+              <div id="profileReinvestPreviewJokerjoe" style="color:#94a3b8; font-size:12px; margin-top:2px;">OFF - fixed stake</div>
+            </div>
+            <button id="profileReinvestToggleJokerjoe" type="button" onclick="toggleProfileReinvestJokerjoe()" style="min-width:70px; background:#334155;">OFF</button>
+          </div>
+          <div id="profileReinvestPctRowJokerjoe" style="display:none; grid-template-columns:repeat(4,1fr); gap:6px; margin-top:8px;">
+            <button type="button" onclick="setProfileReinvestPctJokerjoe(25)" data-profile-reinvest-pct="25" style="background:#334155;">25%</button>
+            <button type="button" onclick="setProfileReinvestPctJokerjoe(50)" data-profile-reinvest-pct="50" style="background:#334155;">50%</button>
+            <button type="button" onclick="setProfileReinvestPctJokerjoe(75)" data-profile-reinvest-pct="75" style="background:#334155;">75%</button>
+            <button type="button" onclick="setProfileReinvestPctJokerjoe(100)" data-profile-reinvest-pct="100" style="background:#334155;">100%</button>
+          </div>
+        </div>
+
         <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-top:10px;">
           <div>
             <div style="color:#94a3b8; font-size:12px;">Take Profit (TP)</div>

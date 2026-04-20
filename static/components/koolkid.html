@@ -152,8 +152,16 @@
 #profileTradeList::-webkit-scrollbar{width:8px}
 #profileTradeList::-webkit-scrollbar-track{background:transparent}
 #profileTradeList::-webkit-scrollbar-thumb{background:#334155;border-radius:999px}
+#koolkidTradeHistoryCard.koolkid-history-dock{margin-top:12px}
+#koolkidTradeHistoryCard.koolkid-history-dock h3{font-size:15px}
+#koolkidTradeHistoryCard.koolkid-history-dock .koolkid-history-stats{grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:8px!important}
+#koolkidTradeHistoryCard.koolkid-history-dock .koolkid-history-stats [data-history-filter-card],
+#koolkidTradeHistoryCard.koolkid-history-dock .koolkid-history-stats > div{padding:9px!important}
+#koolkidTradeHistoryCard.koolkid-history-dock .koolkid-history-stats [id^="profile"]{font-size:17px!important}
+#koolkidTradeHistoryCard.koolkid-history-dock #profileTradeList{height:330px;margin-top:10px!important}
 @media (max-width: 900px){
   #profileTradeList{height:300px}
+  #koolkidTradeHistoryCard.koolkid-history-dock #profileTradeList{height:300px}
 }
 </style>
 <div id="koolkidProfileUi">
@@ -217,6 +225,112 @@
             <span class="turbo-toggle-knob"></span>
           </button>
         </div>
+
+        <div id="profileReinvestPanelKoolkid" style="margin-top:10px; border:1px solid #334155; border-radius:12px; padding:10px; background:#111827;">
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
+            <div>
+              <div style="font-weight:800; color:#f8fafc; font-size:13px;">Reinvest Profits</div>
+              <div id="profileReinvestPreviewKoolkid" style="color:#94a3b8; font-size:12px; margin-top:2px;">OFF - fixed stake</div>
+            </div>
+            <button id="profileReinvestToggleKoolkid" type="button" onclick="toggleProfileReinvestKoolkid()" style="min-width:70px; background:#334155;">OFF</button>
+          </div>
+          <div id="profileReinvestPctRowKoolkid" style="display:none; grid-template-columns:repeat(4,1fr); gap:6px; margin-top:8px;">
+            <button type="button" onclick="setProfileReinvestPctKoolkid(25)" data-profile-reinvest-pct="25" style="background:#334155;">25%</button>
+            <button type="button" onclick="setProfileReinvestPctKoolkid(50)" data-profile-reinvest-pct="50" style="background:#334155;">50%</button>
+            <button type="button" onclick="setProfileReinvestPctKoolkid(75)" data-profile-reinvest-pct="75" style="background:#334155;">75%</button>
+            <button type="button" onclick="setProfileReinvestPctKoolkid(100)" data-profile-reinvest-pct="100" style="background:#334155;">100%</button>
+          </div>
+        </div>
+
+        <details id="koolkidSingleMartingalePanel" class="ui-group" style="display:none; margin-top:10px; border-color:rgba(245,158,11,0.32);">
+          <summary>
+            <span>Single Contract Martingale</span>
+            <span style="font-size:11px; color:#facc15; font-weight:900;">LIFETIME</span>
+          </summary>
+          <div style="padding:10px 12px; background:rgba(15,23,42,0.82);">
+            <div style="display:flex; justify-content:flex-end; align-items:center; gap:10px; flex-wrap:wrap;">
+              <button id="koolkidMartingaleToggleBtn" type="button" onclick="toggleKoolkidSingleMartingale()" style="background:#334155; min-width:120px;">MARTINGALE: OFF</button>
+            </div>
+            <div style="margin-top:10px; display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:8px;">
+              <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                Contract
+                <select id="koolkidMartingaleAction" onchange="setKoolkidSingleMartingaleAction(this.value)" style="width:100%; min-height:38px;">
+                  <option value="UNDER_3">UNDER 3</option>
+                  <option value="UNDER_4">UNDER 4</option>
+                  <option value="OVER_5">OVER 5</option>
+                  <option value="OVER_6">OVER 6</option>
+                  <option value="OVER_7">OVER 7</option>
+                  <option value="OVER_8">OVER 8</option>
+                </select>
+              </label>
+              <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                Duration
+                <select id="koolkidMartingaleDuration" onchange="updateKoolkidSingleMartingalePanel()" style="width:100%; min-height:38px;">
+                  <option value="1" selected>1 Tick</option>
+                  <option value="2">2 Ticks</option>
+                  <option value="3">3 Ticks</option>
+                  <option value="4">4 Ticks</option>
+                  <option value="5">5 Ticks</option>
+                  <option value="6">6 Ticks</option>
+                  <option value="7">7 Ticks</option>
+                  <option value="8">8 Ticks</option>
+                  <option value="9">9 Ticks</option>
+                  <option value="10">10 Ticks</option>
+                </select>
+              </label>
+              <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                Start Stake
+                <input id="koolkidMartingaleStartStake" type="number" min="0.35" step="0.01" value="0.35" oninput="updateKoolkidSingleMartingalePanel()" style="width:100%; min-height:38px;">
+              </label>
+              <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                Tick Spacing
+                <select id="koolkidMartingaleTickSpacing" onchange="updateKoolkidSingleMartingalePanel()" style="width:100%; min-height:38px;">
+                  <option value="1" selected>1 Tick</option>
+                  <option value="2">2 Ticks</option>
+                  <option value="3">3 Ticks</option>
+                  <option value="4">4 Ticks</option>
+                  <option value="5">5 Ticks</option>
+                  <option value="6">6 Ticks</option>
+                  <option value="7">7 Ticks</option>
+                  <option value="8">8 Ticks</option>
+                  <option value="9">9 Ticks</option>
+                  <option value="10">10 Ticks</option>
+                </select>
+              </label>
+            </div>
+            <div style="margin-top:8px; display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:8px;">
+              <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                Martingale Type
+                <select id="koolkidMartingaleMode" onchange="updateKoolkidSingleMartingalePanel()" style="width:100%; min-height:38px;">
+                  <option value="STEP_005" selected>$0.05 Step</option>
+                  <option value="MULTIPLIER">Multiplier</option>
+                </select>
+              </label>
+              <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                Step Amount
+                <input id="koolkidMartingaleStepAmount" type="number" min="0.01" step="0.01" value="0.05" oninput="updateKoolkidSingleMartingalePanel()" style="width:100%; min-height:38px;">
+              </label>
+              <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                Multiplier
+                <input id="koolkidMartingaleMultiplier" type="number" min="1" step="0.05" value="2" oninput="updateKoolkidSingleMartingalePanel()" style="width:100%; min-height:38px;">
+              </label>
+              <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                Max Steps
+                <input id="koolkidMartingaleMaxSteps" type="number" min="1" step="1" value="1000" oninput="updateKoolkidSingleMartingalePanel()" style="width:100%; min-height:38px;">
+              </label>
+              <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                Max Stake
+                <input id="koolkidMartingaleMaxStake" type="number" min="0" step="0.01" placeholder="optional" oninput="updateKoolkidSingleMartingalePanel()" style="width:100%; min-height:38px;">
+              </label>
+            </div>
+            <div id="koolkidMartingaleStatus" style="margin-top:8px; color:#94a3b8; font-size:12px;">Ready. $0.05 step - Step 1 - Current stake $0.35 - Next stake $0.40 - Last result: none</div>
+            <div style="margin-top:8px; display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+              <button id="koolkidMartingalePlaceBtn" type="button" onclick="placeKoolkidSingleMartingaleTrade()" style="background:#22c55e; color:#052e16; font-weight:900;">PLACE SELECTED CONTRACT</button>
+              <button id="koolkidMartingaleQuickStopBtn" type="button" onclick="quickStopKoolkidSingleMartingale()" style="background:#ef4444; color:#fff7ed; font-weight:900;">QUICK STOP</button>
+            </div>
+            <div id="koolkidMartingaleLifetimeNote" style="margin-top:8px; color:#facc15; font-size:11px;">Lifetime users only.</div>
+          </div>
+        </details>
 
         <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-top:10px;">
           <div>
@@ -552,12 +666,14 @@
             </div>
           </div>
         </details>
+        <div id="koolkidLifetimeHistorySlot"></div>
       </div>
     </div>
   </div>
 </div>
 
-<div class="card">
+<div id="koolkidTradeHistoryOriginalSlot"></div>
+<div id="koolkidTradeHistoryCard" class="card">
   <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
     <h3 style="margin:0;">📚 TRADE HISTORY</h3>
     <button onclick="clearProfileHistory()" style="background:#fb7185;">Clear History</button>
