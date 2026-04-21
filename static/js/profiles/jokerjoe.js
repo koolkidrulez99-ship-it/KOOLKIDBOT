@@ -6,7 +6,7 @@ const FAST_INTERVAL_MS_NORMAL = 400; // 0.4s as requested
 const FAST_INTERVAL_MS_TURBO = 120;  // faster Turbo lane for JOKERJOE
 const FAST_MAX_BUY_QUEUE = 12;       // safety limit
 const BLACKCARD_RENDER_THROTTLE_MS = 300;
-  const state = { lastSocket: null, socketBound: false, autoModes: {}, turboMode: loadTurboModeJokerjoe(), profileReinvestOn: false, profileReinvestPct: 25, profileReinvestBaseStake: null, profileReinvestProfitBank: 0, kidgxBarrier: 5, matchesAnalysisOn: false, matchesLastKey: "", matchesObserverBound: false, matchSniperOn: false, matchSniperCooldownUntil: 0, matchSniperActiveDigit: null, matchSniperConsumed: false, matchSniperBusy: false, matchesSnapshot: null, matchesSorted: [], matchSniper5xOn: false, matchSniper5xCooldownUntil: 0, matchSniper5xBusy: false, matchSniper5xLastTopKey: "", matchSniper5xRotationSets: null, matchSniper5xRotationIndex: 0, matchSniper5xCurrentDigits: [], aiAutoModeChoice: "golden_digits", aiAutoLowestTradeCountChoice: 5, aiAutoLowestLocalOn: false, aiAutoModalOpen: false, aiLowestLastTickCount: 0, aiLowestTouches: {}, aiLowestArmed: null, aiLowestBatchActive: false, aiLowestBatchPending: 0, aiLowestBatchBarrier: null, aiLowestBatchProfit: 0, aiLowestCooldownUntil: 0, aiLowestSubmitting: false, aiLowestRecoveryDeficit: 0, aiLowestRecoveryOnly: false, randomMatchesDiffersOn: false, randomMatchesDiffersMode: "DIFFERS", randomMatchesDiffersModalOpen: false, randomMatchesDiffersBusy: false, randomMatchesDiffersCooldownUntil: 0, randomMatchesDiffersLastSignalKey: "", randomMatchesDiffersTickHistory: [], randomMatchesDiffersLastTickCount: 0, randomMatchesDiffersSnapshot: null, blackcard: { lastDigit: null, recentDigits: [], percentages: {}, busy: false, winMarkerDigit: null, winMarkerUntil: 0, praiseShownForTenWins: false, lastWinCount: null, reinvestProfitsOn: false, reinvestProfitPct: 25, lastProfit: 0, reinvestBaseStake: null, reinvestProfitBank: 0, reinvestCycleStake: null, reinvestPending: 0, pendingContracts: {}, pendingUnmarked: 0 }, insta2Busy: false, kid100WinsBusy: false, kid100WinsAutoOn: false, kid100WinsAutoBusy: false, kid100WinsAutoLastTick: null, kid100WinsAutoEnabledAtGlobalTick: null, kid100WinsAutoEnabledAtAnalysisTick: null, kid100WinsAutoLastSignalTick: null, kid100WinsLatestTick: null, kid100WinsLatestBest: null, kid100WinsLowPercentOn: false, kid100WinsAiDiffersOn: false, kid100WinsStopRequested: false, kid100WinsLastSeenDigit: null, kid100WinsManualArmed: false, kid100WinsManualBarrier: null, kid100WinsManualEnabledAtGlobalTick: null, kid100WinsManualEnabledAtAnalysisTick: null, kid100WinsManualLastSignalTick: null, kid100WinsReinvestProfitsOn: false, kid100WinsReinvestPct: 25, kid100WinsReinvestBaseStake: null, kid100WinsReinvestCycleStake: null, kid100WinsReinvestLastProfit: 0, kid100WinsReinvestPending: 0 };
+const state = { lastSocket: null, socketBound: false, autoModes: {}, turboMode: loadTurboModeJokerjoe(), profileReinvestOn: false, profileReinvestPct: 25, profileReinvestBaseStake: null, profileReinvestProfitBank: 0, kidgxBarrier: 5, matchesAnalysisOn: false, matchesLastKey: "", matchesObserverBound: false, matchSniperOn: false, matchSniperCooldownUntil: 0, matchSniperActiveDigit: null, matchSniperConsumed: false, matchSniperBusy: false, matchesSnapshot: null, matchesSorted: [], matchSniper5xOn: false, matchSniper5xCooldownUntil: 0, matchSniper5xBusy: false, matchSniper5xLastTopKey: "", matchSniper5xRotationSets: null, matchSniper5xRotationIndex: 0, matchSniper5xCurrentDigits: [], matchSniper5xSelectedDigits: [0, 1, 2, 3, 4], aiAutoModeChoice: "golden_digits", aiAutoLowestTradeCountChoice: 5, aiAutoLowestLocalOn: false, aiAutoModalOpen: false, aiLowestLastTickCount: 0, aiLowestTouches: {}, aiLowestArmed: null, aiLowestBatchActive: false, aiLowestBatchPending: 0, aiLowestBatchBarrier: null, aiLowestBatchProfit: 0, aiLowestCooldownUntil: 0, aiLowestSubmitting: false, aiLowestRecoveryDeficit: 0, aiLowestRecoveryOnly: false, randomMatchesDiffersOn: false, randomMatchesDiffersMode: "DIFFERS", randomMatchesDiffersModalOpen: false, randomMatchesDiffersBusy: false, randomMatchesDiffersCooldownUntil: 0, randomMatchesDiffersLastSignalKey: "", randomMatchesDiffersTickHistory: [], randomMatchesDiffersLastTickCount: 0, randomMatchesDiffersSnapshot: null, blackcard: { lastDigit: null, recentDigits: [], percentages: {}, busy: false, winMarkerDigit: null, winMarkerUntil: 0, praiseShownForTenWins: false, lastWinCount: null, reinvestProfitsOn: false, reinvestProfitPct: 25, lastProfit: 0, reinvestBaseStake: null, reinvestProfitBank: 0, reinvestCycleStake: null, reinvestPending: 0, pendingContracts: {}, pendingUnmarked: 0 }, insta2Busy: false, kid100WinsBusy: false, kid100WinsAutoOn: false, kid100WinsAutoBusy: false, kid100WinsAutoLastTick: null, kid100WinsAutoEnabledAtGlobalTick: null, kid100WinsAutoEnabledAtAnalysisTick: null, kid100WinsAutoLastSignalTick: null, kid100WinsLatestTick: null, kid100WinsLatestBest: null, kid100WinsLowPercentOn: false, kid100WinsAiDiffersOn: false, kid100WinsStopRequested: false, kid100WinsLastSeenDigit: null, kid100WinsManualArmed: false, kid100WinsManualBarrier: null, kid100WinsManualEnabledAtGlobalTick: null, kid100WinsManualEnabledAtAnalysisTick: null, kid100WinsManualLastSignalTick: null, kid100WinsReinvestProfitsOn: false, kid100WinsReinvestPct: 25, kid100WinsReinvestBaseStake: null, kid100WinsReinvestCycleStake: null, kid100WinsReinvestLastProfit: 0, kid100WinsReinvestPending: 0 };
   const fastBuyQueueJokerjoe = { items: [], running: false, lastRunAt: 0 };
   let activityPollTimerJokerjoe = null;
   let blackcardRenderTimerJokerjoe = null;
@@ -729,21 +729,46 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
   }
 
   function activateNextMatchSniper5xDigitsJokerjoe(opts) {
-    ensureMatchSniper5xRotationJokerjoe(!!(opts && opts.reset));
-    const sets = Array.isArray(state.matchSniper5xRotationSets) ? state.matchSniper5xRotationSets : [];
-    if (sets.length !== 2) return [];
-    const idx = Number(state.matchSniper5xRotationIndex) === 1 ? 1 : 0;
-    const nextDigits = Array.isArray(sets[idx]) ? sets[idx].slice() : [];
-    state.matchSniper5xCurrentDigits = nextDigits;
-    state.matchSniper5xRotationIndex = idx === 0 ? 1 : 0;
-    return nextDigits.slice();
+    const selected = getMatchSniper5xSelectedDigitsJokerjoe();
+    state.matchSniper5xCurrentDigits = selected.slice();
+    return selected.slice();
   }
 
   function getActiveMatchSniper5xDigitsJokerjoe() {
-    if (!Array.isArray(state.matchSniper5xCurrentDigits) || state.matchSniper5xCurrentDigits.length !== 5) {
-      return activateNextMatchSniper5xDigitsJokerjoe();
+    const selected = getMatchSniper5xSelectedDigitsJokerjoe();
+    state.matchSniper5xCurrentDigits = selected.slice();
+    return selected.slice();
+  }
+
+  function getMatchSniper5xSelectedDigitsJokerjoe() {
+    const seen = new Set();
+    const out = [];
+    (Array.isArray(state.matchSniper5xSelectedDigits) ? state.matchSniper5xSelectedDigits : []).forEach((digit) => {
+      const d = Number(digit);
+      if (Number.isInteger(d) && d >= 0 && d <= 9 && !seen.has(d)) {
+        seen.add(d);
+        out.push(d);
+      }
+    });
+    return out.slice(0, 5).sort((a, b) => a - b);
+  }
+
+  function updateMatchSniper5xDigitPickerJokerjoe() {
+    const selected = getMatchSniper5xSelectedDigitsJokerjoe();
+    const selectedSet = new Set(selected);
+    for (let digit = 0; digit <= 9; digit += 1) {
+      const btn = getEl(`matchSniper5xDigit${digit}Jokerjoe`);
+      if (!btn) continue;
+      const on = selectedSet.has(digit);
+      btn.style.background = on ? "#22c55e" : "#1e293b";
+      btn.style.color = on ? "#02130a" : "";
+      btn.style.fontWeight = on ? "900" : "";
     }
-    return state.matchSniper5xCurrentDigits.slice();
+    const count = getEl("matchSniper5xSelectedCountJokerjoe");
+    if (count) {
+      count.innerText = `${selected.length}/5 selected`;
+      count.style.color = selected.length === 5 ? "#38bdf8" : "#facc15";
+    }
   }
 
 
@@ -2053,6 +2078,7 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     if (!btn) return;
     btn.innerText = `🎯 MatchSniper 5x: ${state.matchSniper5xOn ? "ON" : "OFF"}`;
     btn.style.background = state.matchSniper5xOn ? "#22c55e" : "#1e293b";
+    updateMatchSniper5xDigitPickerJokerjoe();
   }
 
   function updateMatchSniper5xStatusJokerjoe(sorted) {
@@ -2060,13 +2086,19 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     if (!el) return;
     const now = Date.now();
     const cdMs = Math.max(0, (state.matchSniper5xCooldownUntil || 0) - now);
+    updateMatchSniper5xDigitPickerJokerjoe();
     if (!state.matchSniper5xOn) {
       el.style.color = "#94a3b8";
-      el.innerText = "OFF • 5 random MATCHES digits • same-tick batch • 10s cooldown";
+      el.innerText = "OFF • Selected 5 MATCHES digits • same-tick batch • 10s cooldown";
       return;
     }
     const digits = getActiveMatchSniper5xDigitsJokerjoe();
     const digitText = digits.length ? digits.join(", ") : "building set";
+    if (digits.length !== 5) {
+      el.style.color = "#facc15";
+      el.innerText = "Pick exactly 5 MATCHES digits before turning on 5x.";
+      return;
+    }
     if (state.matchSniper5xBusy) {
       el.style.color = "#38bdf8";
       el.innerText = `Placing 5 MATCHES trades (${digitText})…`;
@@ -2078,7 +2110,7 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
       return;
     }
     el.style.color = "#22c55e";
-    el.innerText = `ARMED • Random 5 = ${digitText}`;
+    el.innerText = `ARMED • Selected 5 = ${digitText}`;
   }
 
   async function tryMatchSniper5xTradeJokerjoe(sorted) {
@@ -2090,7 +2122,7 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     if (currentSet.length !== 5) return;
     const uniq = Array.from(new Set(currentSet));
     if (uniq.length < 5) return;
-    const key = currentSet.join("|");
+    const key = `${currentSet.join("|")}::${state.matchesLastKey || ""}`;
     if (state.matchSniper5xLastTopKey === key) return;
 
     state.matchSniper5xBusy = true;
@@ -2101,7 +2133,6 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
         state.matchSniper5xLastTopKey = key;
         state.matchSniper5xCooldownUntil = Date.now() + 10000;
         safeToast(`🎯 MatchSniper 5x: MATCHES ${currentSet.join(', ')} (same-tick request)`, "success");
-        activateNextMatchSniper5xDigitsJokerjoe();
       } else {
         safeToast(`🎯 MatchSniper 5x partial (${r.placed}/5)`, "error");
       }
@@ -2500,13 +2531,20 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
   };
 
   window.toggleMatchSniper5xJokerjoe = function () {
+    const selected = getMatchSniper5xSelectedDigitsJokerjoe();
+    if (!state.matchSniper5xOn && selected.length !== 5) {
+      updateMatchSniper5xStatusJokerjoe();
+      safeToast("Pick exactly 5 MATCHES digits first", "error");
+      return;
+    }
     state.matchSniper5xOn = !state.matchSniper5xOn;
     if (state.matchSniper5xOn && !state.matchesAnalysisOn) {
       state.matchesAnalysisOn = true;
       updateMatchesAnalysisButtonJokerjoe();
     }
     if (state.matchSniper5xOn) {
-      activateNextMatchSniper5xDigitsJokerjoe();
+      state.matchSniper5xCurrentDigits = selected.slice();
+      state.matchSniper5xLastTopKey = "";
     }
     if (!state.matchSniper5xOn) {
       state.matchSniper5xBusy = false;
@@ -2517,6 +2555,30 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     updateMatchSniper5xStatusJokerjoe();
     refreshActivityPollJokerjoe();
     safeToast(`🎯 MatchSniper 5x: ${state.matchSniper5xOn ? "ON" : "OFF"}`, state.matchSniper5xOn ? "success" : "error");
+  };
+
+  window.toggleMatchSniper5xDigitJokerjoe = function (digit) {
+    const d = Number(digit);
+    if (!Number.isInteger(d) || d < 0 || d > 9) return;
+    const selected = getMatchSniper5xSelectedDigitsJokerjoe();
+    const hasDigit = selected.includes(d);
+    if (hasDigit) {
+      if (selected.length <= 1) {
+        safeToast("Keep at least 1 digit selected", "error");
+        return;
+      }
+      state.matchSniper5xSelectedDigits = selected.filter((item) => item !== d);
+    } else {
+      if (selected.length >= 5) {
+        safeToast("MatchSniper 5x uses exactly 5 digits. Remove one first.", "error");
+        return;
+      }
+      state.matchSniper5xSelectedDigits = selected.concat(d).sort((a, b) => a - b);
+    }
+    state.matchSniper5xCurrentDigits = getMatchSniper5xSelectedDigitsJokerjoe();
+    state.matchSniper5xLastTopKey = "";
+    updateMatchSniper5xButtonJokerjoe();
+    updateMatchSniper5xStatusJokerjoe();
   };
 
 

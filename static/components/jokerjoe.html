@@ -231,8 +231,26 @@
             <button id="matchSniper5xBtnJokerjoe" onclick="toggleMatchSniper5xJokerjoe()" style="width:100%; height:44px; margin-top:8px; background:#1e293b; border-radius:12px;">
               🎯 MatchSniper 5x: OFF
             </button>
+            <div style="margin-top:8px; background:#0f172a; border:1px solid #334155; border-radius:10px; padding:10px;">
+              <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px;">
+                <div style="font-size:11px; color:#94a3b8;">Choose 5 MATCHES digits</div>
+                <div id="matchSniper5xSelectedCountJokerjoe" style="font-size:11px; color:#38bdf8;">5/5 selected</div>
+              </div>
+              <div id="matchSniper5xDigitPickerJokerjoe" style="display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:6px;">
+                <button type="button" id="matchSniper5xDigit0Jokerjoe" onclick="toggleMatchSniper5xDigitJokerjoe(0)" style="height:34px; border-radius:10px; background:#1e293b;">0</button>
+                <button type="button" id="matchSniper5xDigit1Jokerjoe" onclick="toggleMatchSniper5xDigitJokerjoe(1)" style="height:34px; border-radius:10px; background:#1e293b;">1</button>
+                <button type="button" id="matchSniper5xDigit2Jokerjoe" onclick="toggleMatchSniper5xDigitJokerjoe(2)" style="height:34px; border-radius:10px; background:#1e293b;">2</button>
+                <button type="button" id="matchSniper5xDigit3Jokerjoe" onclick="toggleMatchSniper5xDigitJokerjoe(3)" style="height:34px; border-radius:10px; background:#1e293b;">3</button>
+                <button type="button" id="matchSniper5xDigit4Jokerjoe" onclick="toggleMatchSniper5xDigitJokerjoe(4)" style="height:34px; border-radius:10px; background:#1e293b;">4</button>
+                <button type="button" id="matchSniper5xDigit5Jokerjoe" onclick="toggleMatchSniper5xDigitJokerjoe(5)" style="height:34px; border-radius:10px; background:#1e293b;">5</button>
+                <button type="button" id="matchSniper5xDigit6Jokerjoe" onclick="toggleMatchSniper5xDigitJokerjoe(6)" style="height:34px; border-radius:10px; background:#1e293b;">6</button>
+                <button type="button" id="matchSniper5xDigit7Jokerjoe" onclick="toggleMatchSniper5xDigitJokerjoe(7)" style="height:34px; border-radius:10px; background:#1e293b;">7</button>
+                <button type="button" id="matchSniper5xDigit8Jokerjoe" onclick="toggleMatchSniper5xDigitJokerjoe(8)" style="height:34px; border-radius:10px; background:#1e293b;">8</button>
+                <button type="button" id="matchSniper5xDigit9Jokerjoe" onclick="toggleMatchSniper5xDigitJokerjoe(9)" style="height:34px; border-radius:10px; background:#1e293b;">9</button>
+              </div>
+            </div>
             <div id="matchSniper5xStatusJokerjoe" style="margin-top:8px; font-size:12px; color:#94a3b8;">
-              OFF • Top 5 MATCHES digits • same-tick batch • 10s cooldown
+              OFF • Selected 5 MATCHES digits • same-tick batch • 10s cooldown
             </div>
           </div>
         </div>

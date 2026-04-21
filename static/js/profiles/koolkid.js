@@ -13,6 +13,11 @@
     goldenCard: null,
     predictionRecentDigits: [],
     predictionLastTickCount: null,
+    over6Analyzer: {
+      useForEntry: false,
+      lastReadyAt: 0,
+      lastSignature: "",
+    },
     goldenCardSettingsBusy: false,
     testtrial: null,
     kid2vix: null,
@@ -1394,6 +1399,87 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
     };
   }
 
+  function isLowDigitForOver6Koolkid(digit) {
+    return Number.isInteger(digit) && digit >= 0 && digit <= 6;
+  }
+
+  function getLowDigitStreakOver6Koolkid(buffer) {
+    const digits = Array.isArray(buffer) ? buffer : [];
+    let streak = 0;
+    for (let i = digits.length - 1; i >= 0; i -= 1) {
+      if (!isLowDigitForOver6Koolkid(Number(digits[i]))) break;
+      streak += 1;
+    }
+    return streak;
+  }
+
+  function countLowDigitsLastFiveOver6Koolkid(buffer) {
+    return (Array.isArray(buffer) ? buffer.slice(-5) : []).filter((digit) => isLowDigitForOver6Koolkid(Number(digit))).length;
+  }
+
+  function getTicksSinceHighDigitOver6Koolkid(buffer) {
+    const digits = Array.isArray(buffer) ? buffer : [];
+    for (let i = digits.length - 1, ticks = 0; i >= 0; i -= 1, ticks += 1) {
+      const digit = Number(digits[i]);
+      if (Number.isInteger(digit) && digit >= 7 && digit <= 9) return ticks;
+    }
+    return digits.length;
+  }
+
+  function formatOver6DigitsStripKoolkid(digits) {
+    if (!Array.isArray(digits) || !digits.length) return `<span style="color:#8fb1c9;">Waiting for live digits...</span>`;
+    return digits.map((digit) => {
+      const value = Number(digit);
+      const tone = isLowDigitForOver6Koolkid(value) ? "low" : "high";
+      return `<span class="over6-analyzer-digit ${tone}">${value}</span>`;
+    }).join("");
+  }
+
+  function buildOver6AnalyzerSignalKoolkid() {
+    const digits = Array.isArray(state.predictionRecentDigits) ? state.predictionRecentDigits.slice(-10) : [];
+    const last5 = digits.slice(-5);
+    const lowCountLast5 = countLowDigitsLastFiveOver6Koolkid(digits);
+    const lowStreak = getLowDigitStreakOver6Koolkid(digits);
+    const filterA = digits.length >= 3 && lowStreak >= 3;
+    const filterB = last5.length >= 5 && lowCountLast5 >= 4;
+    const total = digits.length;
+    const lowCountLast10 = digits.filter((digit) => isLowDigitForOver6Koolkid(Number(digit))).length;
+    const highCountLast10 = total - lowCountLast10;
+    const lowPct = total ? Math.round((lowCountLast10 / total) * 100) : 0;
+    const highPct = total ? Math.round((highCountLast10 / total) * 100) : 0;
+    const status = total < 5
+      ? "COLLECTING"
+      : (filterA && filterB)
+        ? "STRONG READY"
+        : (filterA || filterB)
+          ? "READY"
+          : "WAITING";
+    const suggestedAction = total < 5
+      ? "Collecting data..."
+      : (filterA && filterB)
+        ? "Strong Over 6 Watch"
+        : (filterA || filterB)
+          ? "Watch Over 6"
+          : "No Setup";
+    const confidence = total < 5 ? null : (filterA && filterB ? 78 : (filterA || filterB ? 64 : 28));
+
+    return {
+      name: "OVER 6 ANALYZER",
+      last_digits: digits,
+      last_5: last5,
+      low_count_last_5: lowCountLast5,
+      low_streak: lowStreak,
+      filter_a_triggered: filterA,
+      filter_b_triggered: filterB,
+      status,
+      suggested_action: suggestedAction,
+      confidence,
+      low_pct_last_10: lowPct,
+      high_pct_last_10: highPct,
+      ticks_since_last_high: getTicksSinceHighDigitOver6Koolkid(digits),
+    };
+  }
+
   function renderPredictionSummaryKoolkid(data) {
     if (data) syncPredictionRecentDigitsKoolkid(data);
     const card = document.getElementById("predictionSummaryCardKoolkid");
@@ -1410,6 +1496,56 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
     streamNode.innerHTML = summary.stream.length
       ? summary.stream.map((digit) => `<span class="prediction-summary-digit-chip">${digit}</span>`).join("")
       : `<span style="color:#8fb1c9;">Waiting for live digits...</span>`;
+  }
+
+  function renderOver6AnalyzerKoolkid(data) {
+    if (data) syncPredictionRecentDigitsKoolkid(data);
+    const cardNode = document.getElementById("over6AnalyzerCardKoolkid");
+    if (cardNode) cardNode.style.display = isLifetimeUserKoolkid() ? "block" : "none";
+    if (!isLifetimeUserKoolkid()) return;
+    const badgeNode = document.getElementById("over6AnalyzerBadgeKoolkid");
+    const statusNode = document.getElementById("over6AnalyzerStatusKoolkid");
+    const actionNode = document.getElementById("over6AnalyzerActionKoolkid");
+    const confidenceNode = document.getElementById("over6AnalyzerConfidenceKoolkid");
+    const lastReadyNode = document.getElementById("over6AnalyzerLastReadyKoolkid");
+    const last10Node = document.getElementById("over6AnalyzerLast10Koolkid");
+    const last5Node = document.getElementById("over6AnalyzerLast5Koolkid");
+    const lowCountNode = document.getElementById("over6AnalyzerLowCountKoolkid");
+    const lowStreakNode = document.getElementById("over6AnalyzerLowStreakKoolkid");
+    const splitNode = document.getElementById("over6AnalyzerSplitKoolkid");
+    const ticksSinceHighNode = document.getElementById("over6AnalyzerTicksSinceHighKoolkid");
+    const toggleNode = document.getElementById("over6AnalyzerUseForEntryKoolkid");
+    if (!badgeNode || !statusNode || !actionNode || !confidenceNode || !lastReadyNode || !last10Node || !last5Node || !lowCountNode || !lowStreakNode || !splitNode || !ticksSinceHighNode) return;
+
+    const signal = buildOver6AnalyzerSignalKoolkid();
+    if (signal.status === "READY" || signal.status === "STRONG READY") state.over6Analyzer.lastReadyAt = Date.now();
+    const readyAt = Number(state.over6Analyzer.lastReadyAt || 0);
+    const lastReadyLabel = readyAt ? new Date(readyAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" }) : "Waiting for setup...";
+    const signature = JSON.stringify({
+      status: signal.status,
+      action: signal.suggested_action,
+      confidence: signal.confidence,
+      last: signal.last_digits,
+      useForEntry: !!state.over6Analyzer.useForEntry,
+      lastReadyLabel,
+    });
+    if (signature === state.over6Analyzer.lastSignature) return;
+    state.over6Analyzer.lastSignature = signature;
+
+    const badgeClass = signal.status === "STRONG READY" ? "strong" : (signal.status === "READY" ? "ready" : "waiting");
+    badgeNode.className = `over6-analyzer-badge ${badgeClass}`;
+    badgeNode.innerText = signal.status === "COLLECTING" ? "WAITING" : signal.status;
+    statusNode.innerText = signal.status === "COLLECTING" ? "Collecting data..." : signal.status;
+    actionNode.innerText = signal.suggested_action;
+    confidenceNode.innerText = signal.confidence === null ? "-" : `${signal.confidence}%`;
+    lastReadyNode.innerText = lastReadyLabel;
+    last10Node.innerHTML = formatOver6DigitsStripKoolkid(signal.last_digits);
+    last5Node.innerHTML = signal.last_5.length ? formatOver6DigitsStripKoolkid(signal.last_5) : `<span style="color:#8fb1c9;">Collecting data...</span>`;
+    lowCountNode.innerText = String(signal.low_count_last_5 || 0);
+    lowStreakNode.innerText = String(signal.low_streak || 0);
+    splitNode.innerText = `${signal.low_pct_last_10}% low / ${signal.high_pct_last_10}% high`;
+    ticksSinceHighNode.innerText = String(signal.ticks_since_last_high || 0);
+    if (toggleNode) toggleNode.checked = !!state.over6Analyzer.useForEntry;
   }
 
   async function syncSelectedDigitsToServer() {
@@ -2033,6 +2169,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
   function paintDigitAnalysisKoolkid(data) {
     lastDigitAnalysisRenderAt = Date.now();
     renderPredictionSummaryKoolkid(data || {});
+    renderOver6AnalyzerKoolkid(data || {});
     renderDual2xAnalysisKoolkid(data || {});
     if (data && data.barrier_analysis) renderBarrierAnalysis(data.barrier_analysis);
     if (data && data.over3_analysis_data) renderOver3AnalysisKoolkid(data.over3_analysis_data);
@@ -2189,6 +2326,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
     renderOver3AnalysisKoolkid();
     renderGoldenCardKoolkid();
     renderPredictionSummaryKoolkid();
+    renderOver6AnalyzerKoolkid();
     renderKid2vixKoolkid();
     currentTurboModeKoolkid();
     renderTurboToggleKoolkid();
@@ -2207,6 +2345,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
     renderOver3AnalysisKoolkid();
     renderGoldenCardKoolkid();
     renderPredictionSummaryKoolkid();
+    renderOver6AnalyzerKoolkid();
     renderKid2vixKoolkid();
     currentTurboModeKoolkid();
     renderTurboToggleKoolkid();
@@ -2225,6 +2364,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
     renderOver3AnalysisKoolkid();
     renderGoldenCardKoolkid();
     renderPredictionSummaryKoolkid();
+    renderOver6AnalyzerKoolkid();
     renderKid2vixKoolkid();
     currentTurboModeKoolkid();
     renderTurboToggleKoolkid();
@@ -2284,6 +2424,13 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
     if (state.profileReinvestOn) state.profileReinvestBaseStake = Number(getRawStakeValueKoolkid().toFixed(2));
     renderProfileReinvestControlsKoolkid();
     syncProfileReinvestAutoStakeKoolkid();
+  };
+
+  window.toggleOver6AnalyzerEntryKoolkid = function (enabled) {
+    state.over6Analyzer.useForEntry = !!enabled;
+    state.over6Analyzer.lastSignature = "";
+    renderOver6AnalyzerKoolkid();
+    safeToast(`Over 6 Analyzer entry toggle: ${state.over6Analyzer.useForEntry ? "ON" : "OFF"}`, state.over6Analyzer.useForEntry ? "success" : "error");
   };
 
   const previousProfileReinvestStakeHookKoolkid = window.getProfileReinvestStake;

@@ -220,8 +220,8 @@ HEARTBEAT_SWEEPER_INTERVAL_SEC = float(os.environ.get("HEARTBEAT_SWEEPER_INTERVA
 DERIV_WS_STALE_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_STALE_TIMEOUT_SEC", "18"))
 DERIV_WS_PING_INTERVAL_SEC = float(os.environ.get("DERIV_WS_PING_INTERVAL_SEC", "20"))
 DERIV_WS_PING_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_PING_TIMEOUT_SEC", "10"))
-DERIV_WS_CONNECT_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_CONNECT_TIMEOUT_SEC", "30"))
-DERIV_WS_AUTHORIZE_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_AUTHORIZE_TIMEOUT_SEC", "20"))
+DERIV_WS_CONNECT_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_CONNECT_TIMEOUT_SEC", "45"))
+DERIV_WS_AUTHORIZE_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_AUTHORIZE_TIMEOUT_SEC", "35"))
 TICK_STREAM_STALE_SEC = float(os.environ.get("TICK_STREAM_STALE_SEC", "8"))
 TICK_STREAM_RESUBSCRIBE_COOLDOWN_SEC = float(os.environ.get("TICK_STREAM_RESUBSCRIBE_COOLDOWN_SEC", "3"))
 TICK_STREAM_RECONNECT_AFTER_SEC = float(os.environ.get("TICK_STREAM_RECONNECT_AFTER_SEC", "30"))
@@ -3838,6 +3838,7 @@ def _mark_ws_unhealthy_and_reconnect(client_id, state, message, *, emit_error=Tr
     state["ws_transport_connected"] = False
     state["ws_connect_started_at"] = 0.0
     state["ws_authorize_deadline_at"] = 0.0
+    state["ws_reconnect_pending"] = has_token
     state["loginid"] = "UNKNOWN"
     socketio.emit(
         "connection_status",

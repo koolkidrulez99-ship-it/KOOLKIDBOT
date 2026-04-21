@@ -86,6 +86,34 @@
 .prediction-summary-analysis-body{margin-top:6px;font-size:13px;line-height:1.4;color:#effbff}
 .prediction-summary-stream{margin-top:12px;display:flex;flex-wrap:wrap;gap:6px}
 .prediction-summary-digit-chip{min-width:30px;height:30px;padding:0 10px;border-radius:999px;display:inline-flex;align-items:center;justify-content:center;background:rgba(15,23,42,0.7);border:1px solid rgba(191,219,254,0.22);color:#e2e8f0;font-size:12px;font-weight:800}
+.over6-analyzer-card{margin-top:14px;background:linear-gradient(180deg,rgba(14,23,39,0.98),rgba(7,12,24,0.96));border:1px solid rgba(71,85,105,0.6);border-radius:18px;padding:16px;box-shadow:0 14px 34px rgba(2,6,23,0.24)}
+.over6-analyzer-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.over6-analyzer-title{display:flex;flex-direction:column;gap:4px}
+.over6-analyzer-title-main{font-size:14px;font-weight:900;color:#eef7ff;letter-spacing:.02em}
+.over6-analyzer-title-sub{font-size:12px;color:#8fb1c9;line-height:1.35}
+.over6-analyzer-badge{display:inline-flex;align-items:center;justify-content:center;min-width:96px;padding:7px 12px;border-radius:999px;font-size:11px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;border:1px solid transparent}
+.over6-analyzer-badge.waiting{background:rgba(127,29,29,0.22);border-color:rgba(248,113,113,0.30);color:#fecaca}
+.over6-analyzer-badge.ready{background:rgba(120,53,15,0.24);border-color:rgba(251,191,36,0.34);color:#fde68a}
+.over6-analyzer-badge.strong{background:rgba(20,83,45,0.24);border-color:rgba(74,222,128,0.34);color:#bbf7d0}
+.over6-analyzer-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:12px}
+.over6-analyzer-stat{padding:10px 12px;border-radius:14px;background:rgba(15,23,42,0.82);border:1px solid rgba(71,85,105,0.42)}
+.over6-analyzer-stat-label{font-size:11px;font-weight:800;color:#8fb1c9;text-transform:uppercase;letter-spacing:.06em}
+.over6-analyzer-stat-value{margin-top:5px;font-size:14px;font-weight:900;color:#f8fafc;line-height:1.35;word-break:break-word}
+.over6-analyzer-strip{display:flex;flex-wrap:wrap;gap:6px}
+.over6-analyzer-digit{min-width:28px;height:28px;padding:0 8px;border-radius:999px;display:inline-flex;align-items:center;justify-content:center;background:rgba(15,23,42,0.7);border:1px solid rgba(191,219,254,0.18);color:#e2e8f0;font-size:12px;font-weight:800}
+.over6-analyzer-digit.low{border-color:rgba(251,191,36,0.30);background:rgba(120,53,15,0.26);color:#fde68a}
+.over6-analyzer-digit.high{border-color:rgba(34,197,94,0.30);background:rgba(20,83,45,0.24);color:#bbf7d0}
+.over6-analyzer-note{margin-top:12px;font-size:12px;line-height:1.45;color:#cbd5e1}
+.over6-analyzer-toggle{margin-top:12px;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;border-radius:14px;background:rgba(15,23,42,0.72);border:1px solid rgba(71,85,105,0.42)}
+.over6-analyzer-toggle-copy{display:flex;flex-direction:column;gap:3px}
+.over6-analyzer-toggle-title{font-size:12px;font-weight:900;color:#eef7ff}
+.over6-analyzer-toggle-sub{font-size:11px;color:#8fb1c9;line-height:1.35}
+.over6-analyzer-toggle-wrap{display:flex;align-items:center}
+.over6-analyzer-toggle-input{position:absolute;opacity:0;pointer-events:none}
+.over6-analyzer-toggle-btn{width:46px;min-width:46px;height:24px;border-radius:999px;position:relative;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.10);transition:background .2s,border-color .2s}
+.over6-analyzer-toggle-knob{position:absolute;top:2px;left:2px;width:20px;height:20px;background:#fff;border-radius:999px;transition:transform .2s}
+.over6-analyzer-toggle-input:checked + .over6-analyzer-toggle-btn{background:rgba(34,197,94,0.62);border-color:rgba(74,222,128,0.52)}
+.over6-analyzer-toggle-input:checked + .over6-analyzer-toggle-btn .over6-analyzer-toggle-knob{transform:translateX(22px)}
 #koolkidConfidenceBarsBlock.monthly-prediction-summary-mode{display:flex;flex-direction:column}
 #koolkidConfidenceBarsBlock.monthly-prediction-summary-mode #koolkidConfidenceBarsTitle,
 #koolkidConfidenceBarsBlock.monthly-prediction-summary-mode #koolkidConfidenceBarsWrap{display:none!important}
@@ -125,6 +153,10 @@
     gap:8px !important;
     padding:10px !important;
   }
+  .over6-analyzer-grid{grid-template-columns:1fr}
+  .over6-analyzer-head{flex-direction:column}
+  .over6-analyzer-badge{min-width:0;width:100%}
+  .over6-analyzer-toggle{align-items:flex-start;flex-direction:column}
   #goldenCardPopupKoolkid .golden-card-market{
     min-height:78px;
     padding:10px;
@@ -422,6 +454,72 @@
             <div id="predictionSummaryStreamKoolkid" class="prediction-summary-stream">
               <span style="color:#8fb1c9;">Waiting for live digits...</span>
             </div>
+          </div>
+        </div>
+        <div id="over6AnalyzerCardKoolkid" class="over6-analyzer-card" style="display:none;">
+          <div class="over6-analyzer-head">
+            <div class="over6-analyzer-title">
+              <div class="over6-analyzer-title-main">OVER 6 ANALYZER</div>
+              <div class="over6-analyzer-title-sub">Tracks live low-digit runs so you can spot when OVER 6 may be worth watching.</div>
+            </div>
+            <div id="over6AnalyzerBadgeKoolkid" class="over6-analyzer-badge waiting">WAITING</div>
+          </div>
+          <div class="over6-analyzer-grid">
+            <div class="over6-analyzer-stat">
+              <div class="over6-analyzer-stat-label">Status</div>
+              <div id="over6AnalyzerStatusKoolkid" class="over6-analyzer-stat-value">Collecting data...</div>
+            </div>
+            <div class="over6-analyzer-stat">
+              <div class="over6-analyzer-stat-label">Suggested Action</div>
+              <div id="over6AnalyzerActionKoolkid" class="over6-analyzer-stat-value">No Setup</div>
+            </div>
+            <div class="over6-analyzer-stat">
+              <div class="over6-analyzer-stat-label">Confidence</div>
+              <div id="over6AnalyzerConfidenceKoolkid" class="over6-analyzer-stat-value">-</div>
+            </div>
+            <div class="over6-analyzer-stat">
+              <div class="over6-analyzer-stat-label">Last Ready Signal</div>
+              <div id="over6AnalyzerLastReadyKoolkid" class="over6-analyzer-stat-value">Waiting for setup...</div>
+            </div>
+            <div class="over6-analyzer-stat">
+              <div class="over6-analyzer-stat-label">Last 10 Digits</div>
+              <div id="over6AnalyzerLast10Koolkid" class="over6-analyzer-stat-value over6-analyzer-strip">
+                <span style="color:#8fb1c9;">Waiting for live digits...</span>
+              </div>
+            </div>
+            <div class="over6-analyzer-stat">
+              <div class="over6-analyzer-stat-label">Last 5 Digits</div>
+              <div id="over6AnalyzerLast5Koolkid" class="over6-analyzer-stat-value over6-analyzer-strip">
+                <span style="color:#8fb1c9;">Waiting for live digits...</span>
+              </div>
+            </div>
+            <div class="over6-analyzer-stat">
+              <div class="over6-analyzer-stat-label">Low Digits In Last 5</div>
+              <div id="over6AnalyzerLowCountKoolkid" class="over6-analyzer-stat-value">0</div>
+            </div>
+            <div class="over6-analyzer-stat">
+              <div class="over6-analyzer-stat-label">Current Low Streak</div>
+              <div id="over6AnalyzerLowStreakKoolkid" class="over6-analyzer-stat-value">0</div>
+            </div>
+            <div class="over6-analyzer-stat">
+              <div class="over6-analyzer-stat-label">Low / High Split (10)</div>
+              <div id="over6AnalyzerSplitKoolkid" class="over6-analyzer-stat-value">0% low / 0% high</div>
+            </div>
+            <div class="over6-analyzer-stat">
+              <div class="over6-analyzer-stat-label">Ticks Since High 7/8/9</div>
+              <div id="over6AnalyzerTicksSinceHighKoolkid" class="over6-analyzer-stat-value">0</div>
+            </div>
+          </div>
+          <div class="over6-analyzer-note">Filter A: 3 straight low digits. Filter B: 4 of the last 5 digits are low. This panel is analysis only and does not place trades by itself.</div>
+          <div class="over6-analyzer-toggle">
+            <div class="over6-analyzer-toggle-copy">
+              <div class="over6-analyzer-toggle-title">Use Over 6 Analyzer for entry</div>
+              <div class="over6-analyzer-toggle-sub">Optional guidance toggle only. It stays off by default and does not auto trade by itself.</div>
+            </div>
+            <label class="over6-analyzer-toggle-wrap">
+              <input id="over6AnalyzerUseForEntryKoolkid" class="over6-analyzer-toggle-input" type="checkbox" onchange="toggleOver6AnalyzerEntryKoolkid(this.checked)">
+              <span class="over6-analyzer-toggle-btn" aria-hidden="true"><span class="over6-analyzer-toggle-knob"></span></span>
+            </label>
           </div>
         </div>
 <script>
