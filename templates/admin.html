@@ -159,13 +159,14 @@
             <select id="licenseType">
                 <option value="monthly">1-Month License</option>
                 <option value="lifetime">Lifetime License</option>
+                <option value="beta_testers">Beta Testers License</option>
             </select>
             <button class="btn-green" onclick="createLicense()">Create License Key</button>
             <button class="btn-gray" onclick="copyGeneratedKey()">Copy Key</button>
         </div>
         <div id="generatedKey" class="generated-key">No key generated yet.</div>
         <div class="muted" style="margin-top:8px;">
-            Monthly keys expire 30 days after first registration use. Lifetime keys never expire unless revoked.
+            Monthly keys expire 30 days after first registration use. Beta tester keys expire 7 days after first use and have lifetime privileges while active. Lifetime keys never expire unless revoked.
         </div>
 
         <h2 style="margin-top:16px;">📋 Licenses</h2>
@@ -183,6 +184,7 @@
                 <option value="all">All Types</option>
                 <option value="monthly">Monthly</option>
                 <option value="lifetime">Lifetime</option>
+                <option value="beta_testers">Beta Testers</option>
             </select>
             <button class="btn-blue" onclick="copyUnusedKeys()">Copy Unused Keys</button>
         </div>
@@ -329,7 +331,8 @@ async function createLicense(){
     try{
         const data = await postJSON("/admin/license/create", {license_type:type});
         document.getElementById("generatedKey").textContent = data.license_key || "No key returned";
-        alert((type === "monthly" ? "1-month" : "Lifetime") + " key created");
+        const label = type === "monthly" ? "1-month" : (type === "beta_testers" ? "Beta testers" : "Lifetime");
+        alert(label + " key created");
         setTimeout(() => location.reload(), 350);
     }catch(err){
         alert("Error: " + (err.message || err));

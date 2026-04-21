@@ -583,17 +583,37 @@ def _get_license_row(license_key):
     return out
 
 
+def _normalize_license_type(license_type):
+    raw = str(license_type or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if raw in ("month", "monthly", "1_month", "one_month"):
+        return "monthly"
+    if raw in ("life", "lifetime"):
+        return "lifetime"
+    if raw in ("beta", "beta_tester", "beta_testers"):
+        return "beta_testers"
+    return raw
+
+
+def _license_expiry_for_activation(license_type):
+    ltype = _normalize_license_type(license_type)
+    if ltype == "monthly":
+        return (datetime.utcnow() + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+    if ltype == "beta_testers":
+        return (datetime.utcnow() + timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
+    return None
+
+
 def _license_is_expired(license_row):
     if not license_row:
         return True
-    license_type = str(license_row.get("license_type") or "").strip().lower()
+    license_type = _normalize_license_type(license_row.get("license_type"))
     if license_type == "lifetime":
         return False
     exp = _parse_dt(license_row.get("expires_at"))
     if exp is None:
-        # A linked/activated monthly key without an expiry is unsafe. Treat it
+        # A linked/activated expiring key without an expiry is unsafe. Treat it
         # as blocked so admin must explicitly reassign/renew the account.
-        if license_type == "monthly" and (license_row.get("used_by") or license_row.get("activated_at")):
+        if license_type in ("monthly", "beta_testers") and (license_row.get("used_by") or license_row.get("activated_at")):
             return True
         return False
     return datetime.utcnow() > exp
@@ -663,11 +683,11 @@ def get_user_license_context(username=None):
 
     linked_key = normalize_license_key(user_row.get("license_key"))
     lic = _get_license_row(linked_key) if linked_key else None
-    ltype = str((lic or {}).get("license_type") or "").lower().strip()
+    ltype = _normalize_license_type((lic or {}).get("license_type"))
     status = str((lic or {}).get("status") or "").lower().strip()
     active = bool(lic and status != "revoked" and not _license_is_expired(lic))
     is_monthly = bool(active and ltype == "monthly")
-    is_lifetime = bool(active and ltype == "lifetime")
+    is_lifetime = bool(active and ltype in ("lifetime", "beta_testers"))
     return {
         **context,
         "license_type": ltype or "unknown",
@@ -705,8 +725,8 @@ def _validate_license_for_registration(conn, license_key):
         return False, "This license key has been revoked"
     if str(rowd.get("used_by") or "").strip():
         return False, "This license key has already been used"
-    ltype = str(rowd.get("license_type") or "").lower()
-    if ltype not in ("monthly", "lifetime"):
+    ltype = _normalize_license_type(rowd.get("license_type"))
+    if ltype not in ("monthly", "lifetime", "beta_testers"):
         return False, "Unsupported license key type"
     return True, rowd
 
@@ -717,9 +737,7 @@ def _consume_license_for_new_user(conn, license_key, username):
         return False, row_or_msg
     rowd = row_or_msg
     now_s = _utc_now_str()
-    expires_at = None
-    if str(rowd.get("license_type") or "").lower() == "monthly":
-        expires_at = (datetime.utcnow() + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+    expires_at = _license_expiry_for_activation(rowd.get("license_type"))
     c = conn.cursor()
     _db_execute(
         c,
@@ -900,14 +918,20 @@ def _validate_reset_license_for_user(user_row, provided_license_key):
 
 
 def _generate_license_key(license_type):
-    prefix = "KK-MTH" if str(license_type).lower() == "monthly" else "KK-LIFE"
+    ltype = _normalize_license_type(license_type)
+    if ltype == "monthly":
+        prefix = "KK-MTH"
+    elif ltype == "beta_testers":
+        prefix = "KK-BETA"
+    else:
+        prefix = "KK-LIFE"
     chunk = lambda: uuid.uuid4().hex[:4].upper()
     return f"{prefix}-{chunk()}-{chunk()}-{chunk()}"
 
 
 def create_license_record(license_type):
-    ltype = str(license_type or "").strip().lower()
-    if ltype not in ("monthly", "lifetime"):
+    ltype = _normalize_license_type(license_type)
+    if ltype not in ("monthly", "lifetime", "beta_testers"):
         return False, "Invalid license type", None
     conn = _db_connect()
     c = conn.cursor()
@@ -951,7 +975,7 @@ def revoke_license_record(license_key):
 
 def _reset_license_binding_for_user(conn, username):
     c = conn.cursor()
-    _db_execute(c, "UPDATE licenses SET used_by=NULL, activated_at=NULL, expires_at=CASE WHEN lower(license_type)='monthly' THEN NULL ELSE expires_at END WHERE used_by=?", (username,))
+    _db_execute(c, "UPDATE licenses SET used_by=NULL, activated_at=NULL, expires_at=CASE WHEN lower(replace(replace(license_type, '-', '_'), ' ', '_')) IN ('monthly','beta_testers','beta_tester','beta') THEN NULL ELSE expires_at END WHERE used_by=?", (username,))
 
 
 def admin_reset_user_license(username):
@@ -1011,9 +1035,9 @@ def admin_reassign_user_license(username, license_key):
         _reset_license_binding_for_user(conn, username)
 
         now_s = _utc_now_str()
-        expires_at = lic_row.get("expires_at")
-        if str(lic_row.get("license_type") or "").lower() == "monthly":
-            expires_at = (datetime.utcnow() + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+        expires_at = _license_expiry_for_activation(lic_row.get("license_type"))
+        if expires_at is None:
+            expires_at = lic_row.get("expires_at")
 
         _db_execute(c, "UPDATE licenses SET used_by=?, activated_at=?, expires_at=? WHERE license_key=?", (username, now_s, expires_at, key))
         _db_execute(c, "UPDATE users SET license_key=?, grandfathered=0, license_exempt=0 WHERE username=?", (key, username))
@@ -2140,7 +2164,7 @@ def admin_create_license():
     ok, msg, key = create_license_record(license_type)
     if not ok:
         return jsonify({"status": "error", "error": msg}), 400
-    return jsonify({"status": "ok", "license_key": key, "license_type": license_type})
+    return jsonify({"status": "ok", "license_key": key, "license_type": _normalize_license_type(license_type)})
 
 
 @app.route("/admin/license/revoke", methods=["POST"])
