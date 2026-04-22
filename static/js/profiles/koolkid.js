@@ -34,6 +34,7 @@
     g1AutoOn: false,
     g1AutoBusy: false,
     g1AutoLastTick: null,
+    g1LastDigit: null,
     profileReinvestOn: false,
     profileReinvestPct: 25,
     profileReinvestBaseStake: null,
@@ -1954,6 +1955,11 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
   }
 }
 
+  function rememberG1LastDigitKoolkid(data) {
+    const digit = Number(data && (data.last_digit ?? data.digit));
+    if (Number.isInteger(digit) && digit >= 0 && digit <= 9) state.g1LastDigit = digit;
+  }
+
   function renderG1AutoUiKoolkid() {
     const mainBtn = document.getElementById("g1AutoBtnKoolkid");
     const statusEl = document.getElementById("g1AutoStatusKoolkid");
@@ -1991,22 +1997,28 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
         hottestDigit = digit;
       }
     }
-    const hotThreshold = 15;
-    const dangerHot = [0, 1].filter((digit) => Number(pct[digit]) >= hotThreshold);
+    const dangerThreshold = 10;
+    const greenThreshold = 15;
+    const liveDigit = Number(state.g1LastDigit);
+    const hasLiveDigit = Number.isInteger(liveDigit) && liveDigit >= 0 && liveDigit <= 9;
+    const dangerHot = [0, 1, 2].filter((digit) => Number(pct[digit]) > dangerThreshold);
+    const dangerGroupActive = dangerHot.length > 0;
     const greenHot = [];
-    for (let digit = 2; digit <= 9; digit += 1) {
+    for (let digit = 3; digit <= 9; digit += 1) {
       const value = Number(pct[digit]);
-      if (Number.isFinite(value) && value >= hotThreshold) greenHot.push(digit);
+      if (Number.isFinite(value) && value >= greenThreshold) greenHot.push(digit);
     }
+    const greenGroupActive = greenHot.length > 0;
 
     for (let digit = 0; digit <= 9; digit += 1) {
       const value = Number(pct[digit]);
       const safePct = Number.isFinite(value) ? value : 0;
-      const danger = (digit === 0 || digit === 1) && safePct >= hotThreshold;
-      const safe = digit >= 2 && safePct >= hotThreshold;
-      const label = danger ? "Danger Hot" : (safe ? "Hot" : (digit === hottestDigit ? "Top" : "Normal"));
+      const danger = digit <= 2 && dangerGroupActive;
+      const safe = digit >= 3 && greenGroupActive && !dangerGroupActive;
+      const live = hasLiveDigit && digit === liveDigit;
+      const label = danger ? "Danger Hot" : (safe ? "Green Hot" : "Blue");
       rows.push(`
-        <div class="g1-analyzer-digit ${danger ? "is-danger" : ""} ${safe ? "is-safe" : ""}">
+        <div class="g1-analyzer-digit ${danger ? "is-danger" : ""} ${safe ? "is-safe" : ""} ${live ? "is-live" : ""}">
           <div class="g1-analyzer-number">${digit}</div>
           <div class="g1-analyzer-pct">${fmtPct(safePct)}</div>
           <div class="g1-analyzer-label">${label}</div>
@@ -2016,19 +2028,20 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
     if (gridEl) gridEl.innerHTML = rows.join("");
     if (statusEl) {
       if (dangerHot.length) {
-        statusEl.innerText = `RED ALERT: ${dangerHot.join(" and ")} ${dangerHot.length === 1 ? "is" : "are"} playing too much. Watch 0/1 pressure before entering.`;
+        statusEl.innerText = `RED ALERT: ${dangerHot.join(", ")} ${dangerHot.length === 1 ? "is" : "are"} over ${dangerThreshold}%. 0-2 group is danger.`;
         statusEl.style.color = "#fecaca";
       } else if (greenHot.length) {
-        statusEl.innerText = `GREEN WATCH: ${greenHot.join(", ")} ${greenHot.length === 1 ? "is" : "are"} hot while 0/1 are not overplayed.`;
+        statusEl.innerText = `GREEN WATCH: ${greenHot.join(", ")} ${greenHot.length === 1 ? "is" : "are"} hot while 0-2 stay under ${dangerThreshold}%. 3-9 group is green.`;
         statusEl.style.color = "#bbf7d0";
       } else {
-        statusEl.innerText = `Neutral: hottest digit is ${hottestDigit} at ${fmtPct(hottestPct)}. Waiting for a stronger frequency edge.`;
-        statusEl.style.color = "#cbd5e1";
+        statusEl.innerText = `BLUE / WAIT: 0-2 are under ${dangerThreshold}% and 3-9 are not hot yet. Hottest digit is ${hottestDigit} at ${fmtPct(hottestPct)}.`;
+        statusEl.style.color = "#bfdbfe";
       }
     }
   }
 
   async function maybeRunG1AutoKoolkid(data) {
+    rememberG1LastDigitKoolkid(data || {});
     renderG1AutoUiKoolkid();
   }
 
@@ -2201,6 +2214,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
 
   function paintDigitAnalysisKoolkid(data) {
     lastDigitAnalysisRenderAt = Date.now();
+    rememberG1LastDigitKoolkid(data || {});
     renderPredictionSummaryKoolkid(data || {});
     renderOver6AnalyzerKoolkid(data || {});
     renderDual2xAnalysisKoolkid(data || {});

@@ -57,15 +57,17 @@
 .golden-card-market.ready{border-color:rgba(250,204,21,0.78);box-shadow:0 0 18px rgba(250,204,21,0.22)}
 .golden-card-market.pending-confirm{border-color:rgba(250,204,21,0.48)}
 .golden-card-digit{min-width:54px;height:54px;border-radius:16px;display:flex;align-items:center;justify-content:center;font-size:28px;font-weight:900;background:rgba(2,6,23,0.55);border:1px solid rgba(255,255,255,0.08);color:#f8fafc;box-shadow:0 12px 28px rgba(2,6,23,0.28)}
+#g1AutoPopupKoolkid{overflow:hidden;border:1px solid rgba(226,232,240,.36)!important;background:radial-gradient(circle at 16% 0%,rgba(226,232,240,.16),transparent 32%),linear-gradient(180deg,#020617 0%,#070a12 48%,#0f172a 100%)!important;box-shadow:0 28px 70px rgba(0,0,0,.64),0 0 0 1px rgba(255,255,255,.04),0 0 42px rgba(148,163,184,.22)!important}
+#g1AutoPopupKoolkid h4{color:#f8fafc!important;letter-spacing:.16em;text-transform:uppercase;text-shadow:0 0 20px rgba(226,232,240,.32);font-weight:950!important}
 .g1-analyzer-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin-top:10px}
-.g1-analyzer-digit{min-height:74px;border-radius:14px;padding:9px;border:1px solid rgba(148,163,184,0.20);background:linear-gradient(145deg,#020617,#111827);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;box-shadow:inset 0 1px 0 rgba(255,255,255,0.06),0 12px 24px rgba(2,6,23,0.28)}
-.g1-analyzer-digit.is-danger{background:linear-gradient(145deg,rgba(127,29,29,0.90),rgba(239,68,68,0.34));border-color:rgba(248,113,113,0.74);box-shadow:0 0 24px rgba(239,68,68,0.22)}
-.g1-analyzer-digit.is-safe{background:linear-gradient(145deg,rgba(20,83,45,0.88),rgba(34,197,94,0.28));border-color:rgba(74,222,128,0.66);box-shadow:0 0 24px rgba(34,197,94,0.18)}
-.g1-analyzer-number{font-size:24px;line-height:1;font-weight:950;color:#f8fafc;text-shadow:0 0 14px rgba(248,250,252,0.16)}
-.g1-analyzer-pct{font-size:12px;font-weight:900;color:#cbd5e1}
-.g1-analyzer-label{font-size:10px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;color:#94a3b8}
-.g1-analyzer-digit.is-danger .g1-analyzer-label,.g1-analyzer-digit.is-safe .g1-analyzer-label{color:#f8fafc}
-.g1-analyzer-summary{margin-top:10px;border-radius:14px;padding:10px 12px;background:#0f172a;border:1px solid #334155;color:#cbd5e1;font-size:12px;line-height:1.45}
+.g1-analyzer-digit{height:60px;border-radius:12px;padding:5px;border:1px solid rgba(51,65,85,.95);background:linear-gradient(135deg,#0f172a,#0e7490);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;color:#f8fafc;font-weight:800;box-shadow:inset 0 1px 0 rgba(255,255,255,.10),0 12px 22px rgba(0,0,0,.34);transition:transform .18s ease,border-color .18s ease,box-shadow .18s ease}
+.g1-analyzer-digit.is-danger{background:linear-gradient(135deg,#7f1d1d,#ef4444)!important;border-color:rgba(248,113,113,.82)!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.16),0 0 28px rgba(239,68,68,.26),0 14px 26px rgba(0,0,0,.42)!important}
+.g1-analyzer-digit.is-safe{background:linear-gradient(135deg,#14532d,#22c55e)!important;border-color:rgba(74,222,128,.76)!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.16),0 0 26px rgba(34,197,94,.22),0 14px 26px rgba(0,0,0,.38)!important}
+.g1-analyzer-digit.is-live{outline:2px solid rgba(103,232,249,.82);outline-offset:-3px;filter:brightness(1.12);transform:translateY(-1px)}
+.g1-analyzer-number{font-size:22px;line-height:1;font-weight:950;color:#f8fafc;text-shadow:0 0 16px rgba(226,232,240,.28);letter-spacing:.04em}
+.g1-analyzer-pct{font-size:11px;font-weight:900;color:#cbd5e1!important}
+.g1-analyzer-label{display:none}
+.g1-analyzer-summary{margin-top:10px;border-radius:12px;padding:10px;background:#0b1220;border:1px solid #334155;color:#cbd5e1;font-size:12px;line-height:1.45}
 .golden-card-controls{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;margin-bottom:8px;padding:10px;background:#0b1220;border:1px solid #334155;border-radius:14px;align-items:center}
 .golden-card-toggle-row{display:flex;align-items:center;justify-content:space-between;gap:10px;border:1px solid rgba(255,255,255,0.10);background:rgba(0,0,0,0.20);border-radius:14px;padding:10px 12px;color:rgba(255,255,255,0.78);font-size:12px;font-weight:700;white-space:nowrap}
 .golden-card-toggle-wrap{display:flex;align-items:center}
@@ -162,7 +164,6 @@
     gap:8px !important;
     padding:10px !important;
   }
-  .g1-analyzer-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .over6-analyzer-grid{grid-template-columns:1fr}
   .over6-analyzer-head{flex-direction:column}
   .over6-analyzer-badge{min-width:0;width:100%}
@@ -874,7 +875,7 @@
 <div id="g1AutoPopupKoolkid" class="digit-popup" style="display:none; width:min(520px, calc(100vw - 20px)); min-width:min(420px, calc(100vw - 20px)); max-width:min(520px, calc(100vw - 20px)); z-index:10001;">
   <h4>G1🤖 DIGIT FREQUENCY</h4>
   <div style="font-size:12px; color:#94a3b8; margin-bottom:8px;">
-    G1 now watches digit frequency only. The main danger focus is digits 0 and 1. If 0 or 1 are hot, they turn red. If another digit is hot, it turns green.
+    G1 watches digit groups. If any digit from 0-2 goes over 10%, the whole 0-2 group turns red. If 3-9 are hot while 0-2 stay calm, the whole 3-9 group turns green.
   </div>
   <div id="g1AnalyzerGridKoolkid" class="g1-analyzer-grid">
     <div style="grid-column:1/-1; color:#8fb1c9; font-size:12px;">Waiting for live digit percentages...</div>
