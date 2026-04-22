@@ -48,6 +48,10 @@
 #blackcardPopupJokerjoe.blackcard-lifetime-ui [data-blackcard-digit-jokerjoe].blackcard-winning-digit{border-color:rgba(248,250,252,.92)!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.22),0 0 0 1px rgba(255,255,255,.20),0 0 38px rgba(226,232,240,.34),0 18px 38px rgba(0,0,0,.54)!important;animation:blackcardWinningPulse 1.15s ease-in-out 4}
 #blackcardPopupJokerjoe.blackcard-lifetime-ui [data-blackcard-digit-jokerjoe].blackcard-winning-digit:before{content:"";position:absolute;inset:3px;border-radius:10px;border:1px solid rgba(248,250,252,.58);box-shadow:0 0 18px rgba(248,250,252,.28),inset 0 0 18px rgba(148,163,184,.12);pointer-events:none;z-index:0}
 #blackcardPopupJokerjoe.blackcard-lifetime-ui [data-blackcard-digit-jokerjoe].blackcard-winning-digit:after{content:"";position:absolute;inset:-40%;background:conic-gradient(from 120deg,transparent,rgba(248,250,252,.24),transparent 35%);animation:blackcardWinningSweep 1.8s linear 3;pointer-events:none;z-index:0}
+#blackcardPopupJokerjoe [data-blackcard-digit-jokerjoe]{position:relative;overflow:hidden}
+#blackcardPopupJokerjoe [data-blackcard-digit-jokerjoe].blackcard-result-win{background:linear-gradient(135deg,#14532d,#22c55e)!important;border-color:rgba(134,239,172,.88)!important;box-shadow:0 0 0 1px rgba(34,197,94,.28),0 0 24px rgba(34,197,94,.34)!important;animation:jokerjoeTradeResultSpin .92s ease-in-out 2}
+#blackcardPopupJokerjoe [data-blackcard-digit-jokerjoe].blackcard-result-loss{background:linear-gradient(135deg,#7f1d1d,#ef4444)!important;border-color:rgba(252,165,165,.88)!important;box-shadow:0 0 0 1px rgba(239,68,68,.28),0 0 24px rgba(239,68,68,.30)!important;animation:jokerjoeTradeResultPop .72s ease-in-out 2}
+#blackcardPopupJokerjoe .blackcard-result-emoji{position:absolute;right:6px;top:5px;font-size:14px;line-height:1;z-index:2;filter:drop-shadow(0 2px 3px rgba(0,0,0,.38));animation:jokerjoeTradeEmojiSpin 1s linear 2}
 #blackcardPopupJokerjoe.blackcard-lifetime-ui .blackcard-digit-number,#blackcardPopupJokerjoe.blackcard-lifetime-ui .blackcard-digit-percent{position:relative;z-index:1}
 #blackcardPopupJokerjoe.blackcard-lifetime-ui .blackcard-digit-number{color:#f8fafc;text-shadow:0 0 16px rgba(226,232,240,.28);letter-spacing:.04em}
 #blackcardPopupJokerjoe.blackcard-lifetime-ui .blackcard-digit-percent{color:#cbd5e1!important}
@@ -62,6 +66,9 @@
 @keyframes blackcardWinningPulse{0%,100%{transform:translateY(0) scale(1)}50%{transform:translateY(-1px) scale(1.035)}}
 @keyframes blackcardWinningSweep{to{transform:rotate(360deg)}}
 @keyframes blackcardPraiseFade{0%{opacity:0;transform:scale(.96)}12%,78%{opacity:1;transform:scale(1)}100%{opacity:0;transform:scale(1.03)}}
+@keyframes jokerjoeTradeResultSpin{0%{transform:scale(1) rotate(0deg)}45%{transform:scale(1.12) rotate(12deg)}100%{transform:scale(1) rotate(360deg)}}
+@keyframes jokerjoeTradeResultPop{0%{transform:scale(1)}45%{transform:scale(1.12) translateY(-2px)}100%{transform:scale(1)}}
+@keyframes jokerjoeTradeEmojiSpin{from{transform:rotate(0deg) scale(1)}to{transform:rotate(360deg) scale(1.04)}}
 @media (max-width: 900px){
   .ui-btn-grid-2,.ui-btn-grid-3{grid-template-columns:1fr}
 }

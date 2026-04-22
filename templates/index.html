@@ -275,12 +275,14 @@ input, select{
 .digit-cell{
     background:#1f2937;
     padding:10px;
-    border-radius:10px;
+    border-radius:999px;
     text-align:center;
     border:2px solid #374151;
     transition:0.2s;
     cursor:pointer;
     user-select:none;
+    position:relative;
+    overflow:hidden;
 }
 .digit-cell.flash{
     background:#b91c1c;
@@ -294,6 +296,46 @@ input, select{
 .digit-cell.flash > div:last-child{
     color:#fecaca !important;
 }
+.digit-cell.trade-result-win{
+    background:linear-gradient(135deg,#14532d,#22c55e) !important;
+    border-color:#86efac !important;
+    box-shadow:0 0 0 1px rgba(34,197,94,0.35) inset,0 0 22px rgba(34,197,94,0.34) !important;
+    animation:digitResultSpin .92s ease-in-out 2;
+}
+.digit-cell.trade-result-loss{
+    background:linear-gradient(135deg,#7f1d1d,#ef4444) !important;
+    border-color:#fca5a5 !important;
+    box-shadow:0 0 0 1px rgba(239,68,68,0.35) inset,0 0 22px rgba(239,68,68,0.30) !important;
+    animation:digitResultPop .72s ease-in-out 2;
+}
+.digit-cell.trade-result-win > div:first-child,
+.digit-cell.trade-result-loss > div:first-child{
+    color:#f8fafc !important;
+}
+.digit-cell.trade-result-win > div:last-child,
+.digit-cell.trade-result-loss > div:last-child{
+    color:#f8fafc !important;
+}
+.digit-result-emoji{
+    position:absolute;
+    right:8px;
+    top:50%;
+    width:20px;
+    height:20px;
+    margin-top:-10px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    border-radius:999px;
+    background:rgba(15,23,42,0.34);
+    font-size:12px;
+    line-height:1;
+    filter:drop-shadow(0 2px 3px rgba(0,0,0,0.38));
+    animation:digitResultEmojiSpin 1s linear 2;
+}
+@keyframes digitResultSpin{0%{transform:scale(1) rotate(0deg)}45%{transform:scale(1.12) rotate(12deg)}100%{transform:scale(1) rotate(360deg)}}
+@keyframes digitResultPop{0%{transform:scale(1)}45%{transform:scale(1.12) translateY(-2px)}100%{transform:scale(1)}}
+@keyframes digitResultEmojiSpin{from{transform:rotate(0deg) scale(1)}to{transform:rotate(360deg) scale(1.04)}}
 
 .digit-popup{
     position:fixed;
@@ -2632,6 +2674,7 @@ function paintDigitAnalysisUi(data){
             const p = document.getElementById(`percent-${i}`);
             if(p) setNodeTextIfChanged(p, (data.percentages[i] ?? 0) + "%");
         }
+        applyDigitAnalysisResultMarker();
     }
 
     if(activeProfile === "JOKERJOE" && data.differs_analysis){
@@ -4410,6 +4453,8 @@ let durationTicksInput;
 let tpInput;
 let slInput;
 let digitGrid;
+let digitAnalysisResultMarker = { digit:null, type:"", until:0 };
+let digitAnalysisResultMarkerTimer = null;
 let autoStakeSyncTimer = null;
 
 let differsAnalysisBox;
@@ -5403,6 +5448,58 @@ function showToast(message, type="info"){
     }, 3500);
 }
 
+function getDigitAnalysisResultMarkerType(digit){
+    const marker = digitAnalysisResultMarker || {};
+    const markerDigit = Number(marker.digit);
+    const currentDigit = Number(digit);
+    if(!Number.isInteger(markerDigit) || !Number.isInteger(currentDigit)) return "";
+    if(markerDigit !== currentDigit || Date.now() >= Number(marker.until || 0)) return "";
+    return marker.type === "win" || marker.type === "loss" ? marker.type : "";
+}
+
+function applyDigitAnalysisResultMarker(){
+    for(let i=0;i<10;i++){
+        const cell = document.getElementById(`digit-${i}`);
+        if(!cell) continue;
+        const markerType = getDigitAnalysisResultMarkerType(i);
+        cell.classList.toggle("trade-result-win", markerType === "win");
+        cell.classList.toggle("trade-result-loss", markerType === "loss");
+        const existing = cell.querySelector(".digit-result-emoji");
+        if(!markerType){
+            if(existing) existing.remove();
+            continue;
+        }
+        const emoji = markerType === "win" ? "💲" : "😞";
+        if(existing){
+            if(existing.textContent !== emoji) existing.textContent = emoji;
+        }else{
+            const badge = document.createElement("span");
+            badge.className = "digit-result-emoji";
+            badge.textContent = emoji;
+            cell.appendChild(badge);
+        }
+    }
+}
+
+function markDigitAnalysisTradeResult(digit, resultType){
+    const d = Number(digit);
+    const type = String(resultType || "").toLowerCase();
+    if(!Number.isInteger(d) || d < 0 || d > 9) return;
+    if(type !== "win" && type !== "loss") return;
+    const markerMs = 6500;
+    digitAnalysisResultMarker = { digit:d, type, until:Date.now() + markerMs };
+    applyDigitAnalysisResultMarker();
+    if(digitAnalysisResultMarkerTimer) clearTimeout(digitAnalysisResultMarkerTimer);
+    digitAnalysisResultMarkerTimer = setTimeout(()=>{
+        digitAnalysisResultMarkerTimer = null;
+        if(Date.now() >= Number((digitAnalysisResultMarker || {}).until || 0)){
+            digitAnalysisResultMarker = { digit:null, type:"", until:0 };
+            applyDigitAnalysisResultMarker();
+        }
+    }, markerMs + 150);
+}
+window.markDigitAnalysisTradeResult = markDigitAnalysisTradeResult;
+
 function initDigitGrid(){
     if(!digitGrid) return;
 
@@ -5418,6 +5515,7 @@ function initDigitGrid(){
         div.addEventListener("click", (ev) => onDigitClicked(i, ev));
         digitGrid.appendChild(div);
     }
+    applyDigitAnalysisResultMarker();
 }
 
 function updateInsta5Label(){

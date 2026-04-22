@@ -6,12 +6,13 @@ const FAST_INTERVAL_MS_NORMAL = 400; // 0.4s as requested
 const FAST_INTERVAL_MS_TURBO = 120;  // faster Turbo lane for JOKERJOE
 const FAST_MAX_BUY_QUEUE = 12;       // safety limit
 const BLACKCARD_RENDER_THROTTLE_MS = 300;
-const state = { lastSocket: null, socketBound: false, autoModes: {}, turboMode: loadTurboModeJokerjoe(), profileReinvestOn: false, profileReinvestPct: 25, profileReinvestBaseStake: null, profileReinvestProfitBank: 0, kidgxBarrier: 5, matchesAnalysisOn: false, matchesLastKey: "", matchesObserverBound: false, matchSniperOn: false, matchSniperCooldownUntil: 0, matchSniperActiveDigit: null, matchSniperConsumed: false, matchSniperBusy: false, matchesSnapshot: null, matchesSorted: [], matchSniper5xOn: false, matchSniper5xCooldownUntil: 0, matchSniper5xBusy: false, matchSniper5xLastTopKey: "", matchSniper5xRotationSets: null, matchSniper5xRotationIndex: 0, matchSniper5xCurrentDigits: [], matchSniper5xSelectedDigits: [0, 1, 2, 3, 4], batchMartingale: { group: "MATCH_789", enabled: false, running: false, inProgress: false, step: 1, batchId: "", pendingContracts: {}, expected: 0, settled: 0, batchStake: 1.05, perStake: 0.35, totalProfit: 0, hasWin: false, lastResult: "none", status: "Ready", restartTimer: null, stopRequested: false }, aiAutoModeChoice: "golden_digits", aiAutoLowestTradeCountChoice: 5, aiAutoLowestLocalOn: false, aiAutoModalOpen: false, aiLowestLastTickCount: 0, aiLowestTouches: {}, aiLowestArmed: null, aiLowestBatchActive: false, aiLowestBatchPending: 0, aiLowestBatchBarrier: null, aiLowestBatchProfit: 0, aiLowestCooldownUntil: 0, aiLowestSubmitting: false, aiLowestRecoveryDeficit: 0, aiLowestRecoveryOnly: false, randomMatchesDiffersOn: false, randomMatchesDiffersMode: "DIFFERS", randomMatchesDiffersModalOpen: false, randomMatchesDiffersBusy: false, randomMatchesDiffersCooldownUntil: 0, randomMatchesDiffersLastSignalKey: "", randomMatchesDiffersTickHistory: [], randomMatchesDiffersLastTickCount: 0, randomMatchesDiffersSnapshot: null, blackcard: { lastDigit: null, recentDigits: [], percentages: {}, busy: false, winMarkerDigit: null, winMarkerUntil: 0, praiseShownForTenWins: false, lastWinCount: null, reinvestProfitsOn: false, reinvestProfitPct: 25, lastProfit: 0, reinvestBaseStake: null, reinvestProfitBank: 0, reinvestCycleStake: null, reinvestPending: 0, pendingContracts: {}, pendingUnmarked: 0 }, insta2Busy: false, kid100WinsBusy: false, kid100WinsAutoOn: false, kid100WinsAutoBusy: false, kid100WinsAutoLastTick: null, kid100WinsAutoEnabledAtGlobalTick: null, kid100WinsAutoEnabledAtAnalysisTick: null, kid100WinsAutoLastSignalTick: null, kid100WinsLatestTick: null, kid100WinsLatestBest: null, kid100WinsLowPercentOn: false, kid100WinsAiDiffersOn: false, kid100WinsStopRequested: false, kid100WinsLastSeenDigit: null, kid100WinsManualArmed: false, kid100WinsManualBarrier: null, kid100WinsManualEnabledAtGlobalTick: null, kid100WinsManualEnabledAtAnalysisTick: null, kid100WinsManualLastSignalTick: null, kid100WinsReinvestProfitsOn: false, kid100WinsReinvestPct: 25, kid100WinsReinvestBaseStake: null, kid100WinsReinvestCycleStake: null, kid100WinsReinvestLastProfit: 0, kid100WinsReinvestPending: 0 };
+const state = { lastSocket: null, socketBound: false, autoModes: {}, turboMode: loadTurboModeJokerjoe(), profileReinvestOn: false, profileReinvestPct: 25, profileReinvestBaseStake: null, profileReinvestProfitBank: 0, kidgxBarrier: 5, matchesAnalysisOn: false, matchesLastKey: "", matchesObserverBound: false, matchSniperOn: false, matchSniperCooldownUntil: 0, matchSniperActiveDigit: null, matchSniperConsumed: false, matchSniperBusy: false, matchesSnapshot: null, matchesSorted: [], matchSniper5xOn: false, matchSniper5xCooldownUntil: 0, matchSniper5xBusy: false, matchSniper5xLastTopKey: "", matchSniper5xRotationSets: null, matchSniper5xRotationIndex: 0, matchSniper5xCurrentDigits: [], matchSniper5xSelectedDigits: [0, 1, 2, 3, 4], batchMartingale: { group: "MATCH_789", enabled: false, running: false, inProgress: false, step: 1, batchId: "", pendingContracts: {}, expected: 0, settled: 0, batchStake: 1.05, perStake: 0.35, totalProfit: 0, hasWin: false, lastResult: "none", status: "Ready", restartTimer: null, stopRequested: false }, aiAutoModeChoice: "golden_digits", aiAutoLowestTradeCountChoice: 5, aiAutoLowestLocalOn: false, aiAutoModalOpen: false, aiLowestLastTickCount: 0, aiLowestTouches: {}, aiLowestArmed: null, aiLowestBatchActive: false, aiLowestBatchPending: 0, aiLowestBatchBarrier: null, aiLowestBatchProfit: 0, aiLowestCooldownUntil: 0, aiLowestSubmitting: false, aiLowestRecoveryDeficit: 0, aiLowestRecoveryOnly: false, randomMatchesDiffersOn: false, randomMatchesDiffersMode: "DIFFERS", randomMatchesDiffersModalOpen: false, randomMatchesDiffersBusy: false, randomMatchesDiffersCooldownUntil: 0, randomMatchesDiffersLastSignalKey: "", randomMatchesDiffersTickHistory: [], randomMatchesDiffersLastTickCount: 0, randomMatchesDiffersSnapshot: null, blackcard: { lastDigit: null, recentDigits: [], percentages: {}, busy: false, winMarkerDigit: null, winMarkerUntil: 0, resultMarkerDigit: null, resultMarkerType: "", resultMarkerUntil: 0, praiseShownForTenWins: false, lastWinCount: null, reinvestProfitsOn: false, reinvestProfitPct: 25, lastProfit: 0, reinvestBaseStake: null, reinvestProfitBank: 0, reinvestCycleStake: null, reinvestPending: 0, pendingContracts: {}, pendingUnmarked: 0 }, insta2Busy: false, kid100WinsBusy: false, kid100WinsAutoOn: false, kid100WinsAutoBusy: false, kid100WinsAutoLastTick: null, kid100WinsAutoEnabledAtGlobalTick: null, kid100WinsAutoEnabledAtAnalysisTick: null, kid100WinsAutoLastSignalTick: null, kid100WinsLatestTick: null, kid100WinsLatestBest: null, kid100WinsLowPercentOn: false, kid100WinsAiDiffersOn: false, kid100WinsStopRequested: false, kid100WinsLastSeenDigit: null, kid100WinsManualArmed: false, kid100WinsManualBarrier: null, kid100WinsManualEnabledAtGlobalTick: null, kid100WinsManualEnabledAtAnalysisTick: null, kid100WinsManualLastSignalTick: null, kid100WinsReinvestProfitsOn: false, kid100WinsReinvestPct: 25, kid100WinsReinvestBaseStake: null, kid100WinsReinvestCycleStake: null, kid100WinsReinvestLastProfit: 0, kid100WinsReinvestPending: 0 };
   const fastBuyQueueJokerjoe = { items: [], running: false, lastRunAt: 0 };
   let activityPollTimerJokerjoe = null;
   let blackcardRenderTimerJokerjoe = null;
   let lastBlackcardRenderAtJokerjoe = 0;
   let blackcardWinMarkerTimerJokerjoe = null;
+  let blackcardResultMarkerTimerJokerjoe = null;
   let blackcardPraiseTimerJokerjoe = null;
 
   function App() { return window.BotApp || {}; }
@@ -423,19 +424,32 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
       const isWinningMarker = lifetimeBlackcard
         && Number(state.blackcard.winMarkerDigit) === digit
         && nowMs < Number(state.blackcard.winMarkerUntil || 0);
+      const resultMarkerType = Number(state.blackcard.resultMarkerDigit) === digit
+        && nowMs < Number(state.blackcard.resultMarkerUntil || 0)
+        ? String(state.blackcard.resultMarkerType || "")
+        : "";
+      const isResultWin = resultMarkerType === "win";
+      const isResultLoss = resultMarkerType === "loss";
       const pct = Number((percentages || {})[digit]);
       btn.disabled = busy;
       btn.classList.toggle("blackcard-premium-digit", lifetimeBlackcard);
       btn.classList.toggle("blackcard-live-digit", lifetimeBlackcard && isLast);
       btn.classList.toggle("blackcard-winning-digit", isWinningMarker);
+      btn.classList.toggle("blackcard-result-win", isResultWin);
+      btn.classList.toggle("blackcard-result-loss", isResultLoss);
       setStyleIfChanged(btn, "cursor", busy ? "wait" : "pointer");
       setStyleIfChanged(btn, "opacity", busy ? "0.75" : "1");
       setStyleIfChanged(btn, "height", "60px");
       setStyleIfChanged(btn, "touchAction", "manipulation");
-      setStyleIfChanged(btn, "background", isLast ? "linear-gradient(135deg,#0f766e,#06b6d4)" : "#111827");
-      setStyleIfChanged(btn, "borderColor", isLast ? "#67e8f9" : "#334155");
-      setStyleIfChanged(btn, "boxShadow", isLast ? "0 0 0 1px rgba(103,232,249,0.4), 0 10px 18px rgba(6,182,212,0.18)" : "none");
-      setHtmlIfChanged(btn, `<span class="blackcard-digit-number" style="display:block; font-size:18px; line-height:1; font-weight:800;">${digit}</span><span class="blackcard-digit-percent" style="display:block; font-size:11px; line-height:1.2; margin-top:4px; color:${isLast ? "#e0fbff" : "#94a3b8"};">${Number.isFinite(pct) ? pct.toFixed(1) : "0.0"}%</span>`);
+      const bg = isResultWin ? "linear-gradient(135deg,#14532d,#22c55e)" : isResultLoss ? "linear-gradient(135deg,#7f1d1d,#ef4444)" : isLast ? "linear-gradient(135deg,#0f766e,#06b6d4)" : "#111827";
+      const border = isResultWin ? "#86efac" : isResultLoss ? "#fca5a5" : isLast ? "#67e8f9" : "#334155";
+      const shadow = isResultWin ? "0 0 0 1px rgba(34,197,94,0.35), 0 10px 18px rgba(34,197,94,0.20)" : isResultLoss ? "0 0 0 1px rgba(239,68,68,0.35), 0 10px 18px rgba(239,68,68,0.18)" : isLast ? "0 0 0 1px rgba(103,232,249,0.4), 0 10px 18px rgba(6,182,212,0.18)" : "none";
+      const pctColor = (isResultWin || isResultLoss || isLast) ? "#f8fafc" : "#94a3b8";
+      const resultEmoji = isResultWin ? `<span class="blackcard-result-emoji">💲</span>` : isResultLoss ? `<span class="blackcard-result-emoji">😞</span>` : "";
+      setStyleIfChanged(btn, "background", bg);
+      setStyleIfChanged(btn, "borderColor", border);
+      setStyleIfChanged(btn, "boxShadow", shadow);
+      setHtmlIfChanged(btn, `<span class="blackcard-digit-number" style="display:block; font-size:18px; line-height:1; font-weight:800;">${digit}</span><span class="blackcard-digit-percent" style="display:block; font-size:11px; line-height:1.2; margin-top:4px; color:${pctColor};">${Number.isFinite(pct) ? pct.toFixed(1) : "0.0"}%</span>${resultEmoji}`);
     });
     if (popup && popup.style.display === "block") positionBlackcardPopupJokerjoe();
   }
@@ -600,6 +614,15 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     blackcardWinMarkerTimerJokerjoe = null;
   }
 
+  function clearBlackcardResultMarkerTimerJokerjoe() {
+    if (!blackcardResultMarkerTimerJokerjoe) return;
+    const app = App();
+    if (!(app && typeof app.clearFrontendTimeout === "function" && app.clearFrontendTimeout("jokerjoe_blackcard_result_marker"))) {
+      clearTimeout(blackcardResultMarkerTimerJokerjoe);
+    }
+    blackcardResultMarkerTimerJokerjoe = null;
+  }
+
   function triggerBlackcardWinningDigitJokerjoe(digit) {
     if (!isLifetimeBlackcardUserJokerjoe()) return;
     if (!Number.isInteger(digit) || digit < 0 || digit > 9) return;
@@ -620,6 +643,41 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     const app = App();
     if (app && typeof app.registerFrontendTimeout === "function") app.registerFrontendTimeout("jokerjoe_blackcard_win_marker", blackcardWinMarkerTimerJokerjoe);
     renderBlackcardJokerjoe();
+  }
+
+  function triggerBlackcardResultDigitJokerjoe(digit, type) {
+    const resultType = type === "win" || type === "loss" ? type : "";
+    if (!Number.isInteger(digit) || digit < 0 || digit > 9 || !resultType) return;
+    const markerMs = 6500;
+    state.blackcard.resultMarkerDigit = digit;
+    state.blackcard.resultMarkerType = resultType;
+    state.blackcard.resultMarkerUntil = Date.now() + markerMs;
+    clearBlackcardResultMarkerTimerJokerjoe();
+    blackcardResultMarkerTimerJokerjoe = setTimeout(() => {
+      const app = App();
+      if (app && typeof app.completeFrontendTimeout === "function") app.completeFrontendTimeout("jokerjoe_blackcard_result_marker");
+      blackcardResultMarkerTimerJokerjoe = null;
+      if (Date.now() >= Number(state.blackcard.resultMarkerUntil || 0)) {
+        state.blackcard.resultMarkerDigit = null;
+        state.blackcard.resultMarkerType = "";
+        state.blackcard.resultMarkerUntil = 0;
+      }
+      renderBlackcardJokerjoe();
+    }, markerMs + 150);
+    const app = App();
+    if (app && typeof app.registerFrontendTimeout === "function") app.registerFrontendTimeout("jokerjoe_blackcard_result_marker", blackcardResultMarkerTimerJokerjoe);
+    renderBlackcardJokerjoe();
+  }
+
+  function handleJokerjoeLiveDigitTradeResult(entry) {
+    if (!entry || String(entry.profile || "").toUpperCase() !== PROFILE) return;
+    const result = normalizeBlackcardResultJokerjoe(entry);
+    const type = result === "WIN" ? "win" : result === "LOSS" ? "loss" : "";
+    const digit = extractBlackcardExitDigitJokerjoe(entry || {});
+    if (digit === null || !type) return;
+    if (typeof window.markDigitAnalysisTradeResult === "function") {
+      window.markDigitAnalysisTradeResult(digit, type);
+    }
   }
 
   function handleBlackcardTradeResultJokerjoe(entry) {
@@ -3038,6 +3096,7 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
       bind("trade_result", (entry) => {
         const isBatchMartingale = !!getJokerjoeBatchIdFromMode((entry || {}).mode);
         if (!isActive() && !isBatchMartingale) return;
+        handleJokerjoeLiveDigitTradeResult(entry || {});
         handleProfileReinvestResultJokerjoe(entry || {});
         handleBlackcardTradeResultJokerjoe(entry || {});
         handleKid100WinsTradeResultJokerjoe(entry || {});
@@ -3242,6 +3301,7 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
       blackcardRenderTimerJokerjoe = null;
     }
     clearBlackcardWinMarkerTimerJokerjoe();
+    clearBlackcardResultMarkerTimerJokerjoe();
     if (blackcardPraiseTimerJokerjoe) {
       clearTimeout(blackcardPraiseTimerJokerjoe);
       blackcardPraiseTimerJokerjoe = null;

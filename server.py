@@ -2296,6 +2296,7 @@ def handle_fast_profile_trade(data=None):
     if duration_unit not in ("t", "s", "m", "h"):
         duration_unit = "t"
     mode = str(payload.get("mode") or "").strip() or None
+    leg_action = str(payload.get("leg_action") or "").strip() or None
 
     ok, message = send_buy_with_profile(
         cid,
@@ -2308,6 +2309,7 @@ def handle_fast_profile_trade(data=None):
         duration_unit=duration_unit,
         mode=mode,
         emit_balance_after_send=False,
+        extra_meta={"leg_action": leg_action} if leg_action else None,
     )
     return {
         "status": "success" if ok else "error",
@@ -2315,6 +2317,7 @@ def handle_fast_profile_trade(data=None):
         "profile": profile,
         "type": contract_type,
         "barrier": barrier,
+        "leg_action": leg_action,
     }
 
 
@@ -2713,7 +2716,7 @@ def _resolve_post_contract_balance(state, profit):
 
 
 # ---------------- DERIV BUY FUNCTION (PER CLIENT) ---------------- #
-def send_buy(client_id, contract_type, stake, symbol, barrier, duration=1, duration_unit="t", mode=None):
+def send_buy(client_id, contract_type, stake, symbol, barrier, duration=1, duration_unit="t", mode=None, extra_meta=None):
     state = clients.get(client_id)
     ready, ready_msg = _ensure_trade_socket_ready(client_id, state)
     if not ready:
@@ -2784,6 +2787,8 @@ def send_buy(client_id, contract_type, stake, symbol, barrier, duration=1, durat
         "duration_unit": duration_unit,
         "budget_reservation": budget_reservation,
     }
+    if isinstance(extra_meta, dict):
+        state["req_meta"][req_id].update(extra_meta)
 
     payload = {
         "req_id": req_id,
@@ -2826,6 +2831,7 @@ def send_buy_with_profile(
     mode=None,
     skip_local_balance_check=False,
     emit_balance_after_send=True,
+    extra_meta=None,
 ):
     state = clients.get(client_id)
     ready, ready_msg = _ensure_trade_socket_ready(client_id, state)
@@ -2901,6 +2907,8 @@ def send_buy_with_profile(
         "duration_unit": duration_unit,
         "budget_reservation": budget_reservation,
     }
+    if isinstance(extra_meta, dict):
+        state["req_meta"][req_id].update(extra_meta)
 
     payload = {
         "req_id": req_id,
@@ -14584,6 +14592,7 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                         "duration": duration_val,
                         "duration_unit": duration_unit_val if duration_val is not None else None,
                         "mode": meta.get("mode"),
+                        "leg_action": meta.get("leg_action"),
                         "contract_type": meta.get("contract_type"),
                         "selected_tick": meta.get("selected_tick"),
                         "countdown_remaining": duration_val,
@@ -15081,6 +15090,7 @@ def process_contract(client_id, contract):
                 entry.setdefault("duration", meta.get("duration"))
                 entry.setdefault("duration_unit", meta.get("duration_unit"))
                 entry.setdefault("mode", meta.get("mode"))
+                entry.setdefault("leg_action", meta.get("leg_action"))
                 entry.setdefault("contract_type", meta.get("contract_type"))
                 entry.setdefault("selected_tick", meta.get("selected_tick"))
             else:
@@ -16930,6 +16940,7 @@ def manual_trade():
         duration=duration,
         duration_unit=duration_unit,
         mode=data.get("mode") or data.get("source"),
+        extra_meta={"leg_action": str(data.get("leg_action") or "").strip()} if data.get("leg_action") else None,
     )
     return jsonify({"status": "success" if ok else "error", "message": msg})
 
