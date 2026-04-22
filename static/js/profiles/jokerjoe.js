@@ -6,7 +6,7 @@ const FAST_INTERVAL_MS_NORMAL = 400; // 0.4s as requested
 const FAST_INTERVAL_MS_TURBO = 120;  // faster Turbo lane for JOKERJOE
 const FAST_MAX_BUY_QUEUE = 12;       // safety limit
 const BLACKCARD_RENDER_THROTTLE_MS = 300;
-const state = { lastSocket: null, socketBound: false, autoModes: {}, turboMode: loadTurboModeJokerjoe(), profileReinvestOn: false, profileReinvestPct: 25, profileReinvestBaseStake: null, profileReinvestProfitBank: 0, kidgxBarrier: 5, matchesAnalysisOn: false, matchesLastKey: "", matchesObserverBound: false, matchSniperOn: false, matchSniperCooldownUntil: 0, matchSniperActiveDigit: null, matchSniperConsumed: false, matchSniperBusy: false, matchesSnapshot: null, matchesSorted: [], matchSniper5xOn: false, matchSniper5xCooldownUntil: 0, matchSniper5xBusy: false, matchSniper5xLastTopKey: "", matchSniper5xRotationSets: null, matchSniper5xRotationIndex: 0, matchSniper5xCurrentDigits: [], matchSniper5xSelectedDigits: [0, 1, 2, 3, 4], aiAutoModeChoice: "golden_digits", aiAutoLowestTradeCountChoice: 5, aiAutoLowestLocalOn: false, aiAutoModalOpen: false, aiLowestLastTickCount: 0, aiLowestTouches: {}, aiLowestArmed: null, aiLowestBatchActive: false, aiLowestBatchPending: 0, aiLowestBatchBarrier: null, aiLowestBatchProfit: 0, aiLowestCooldownUntil: 0, aiLowestSubmitting: false, aiLowestRecoveryDeficit: 0, aiLowestRecoveryOnly: false, randomMatchesDiffersOn: false, randomMatchesDiffersMode: "DIFFERS", randomMatchesDiffersModalOpen: false, randomMatchesDiffersBusy: false, randomMatchesDiffersCooldownUntil: 0, randomMatchesDiffersLastSignalKey: "", randomMatchesDiffersTickHistory: [], randomMatchesDiffersLastTickCount: 0, randomMatchesDiffersSnapshot: null, blackcard: { lastDigit: null, recentDigits: [], percentages: {}, busy: false, winMarkerDigit: null, winMarkerUntil: 0, praiseShownForTenWins: false, lastWinCount: null, reinvestProfitsOn: false, reinvestProfitPct: 25, lastProfit: 0, reinvestBaseStake: null, reinvestProfitBank: 0, reinvestCycleStake: null, reinvestPending: 0, pendingContracts: {}, pendingUnmarked: 0 }, insta2Busy: false, kid100WinsBusy: false, kid100WinsAutoOn: false, kid100WinsAutoBusy: false, kid100WinsAutoLastTick: null, kid100WinsAutoEnabledAtGlobalTick: null, kid100WinsAutoEnabledAtAnalysisTick: null, kid100WinsAutoLastSignalTick: null, kid100WinsLatestTick: null, kid100WinsLatestBest: null, kid100WinsLowPercentOn: false, kid100WinsAiDiffersOn: false, kid100WinsStopRequested: false, kid100WinsLastSeenDigit: null, kid100WinsManualArmed: false, kid100WinsManualBarrier: null, kid100WinsManualEnabledAtGlobalTick: null, kid100WinsManualEnabledAtAnalysisTick: null, kid100WinsManualLastSignalTick: null, kid100WinsReinvestProfitsOn: false, kid100WinsReinvestPct: 25, kid100WinsReinvestBaseStake: null, kid100WinsReinvestCycleStake: null, kid100WinsReinvestLastProfit: 0, kid100WinsReinvestPending: 0 };
+const state = { lastSocket: null, socketBound: false, autoModes: {}, turboMode: loadTurboModeJokerjoe(), profileReinvestOn: false, profileReinvestPct: 25, profileReinvestBaseStake: null, profileReinvestProfitBank: 0, kidgxBarrier: 5, matchesAnalysisOn: false, matchesLastKey: "", matchesObserverBound: false, matchSniperOn: false, matchSniperCooldownUntil: 0, matchSniperActiveDigit: null, matchSniperConsumed: false, matchSniperBusy: false, matchesSnapshot: null, matchesSorted: [], matchSniper5xOn: false, matchSniper5xCooldownUntil: 0, matchSniper5xBusy: false, matchSniper5xLastTopKey: "", matchSniper5xRotationSets: null, matchSniper5xRotationIndex: 0, matchSniper5xCurrentDigits: [], matchSniper5xSelectedDigits: [0, 1, 2, 3, 4], batchMartingale: { group: "MATCH_789", enabled: false, running: false, inProgress: false, step: 1, batchId: "", pendingContracts: {}, expected: 0, settled: 0, batchStake: 1.05, perStake: 0.35, totalProfit: 0, hasWin: false, lastResult: "none", status: "Ready", restartTimer: null, stopRequested: false }, aiAutoModeChoice: "golden_digits", aiAutoLowestTradeCountChoice: 5, aiAutoLowestLocalOn: false, aiAutoModalOpen: false, aiLowestLastTickCount: 0, aiLowestTouches: {}, aiLowestArmed: null, aiLowestBatchActive: false, aiLowestBatchPending: 0, aiLowestBatchBarrier: null, aiLowestBatchProfit: 0, aiLowestCooldownUntil: 0, aiLowestSubmitting: false, aiLowestRecoveryDeficit: 0, aiLowestRecoveryOnly: false, randomMatchesDiffersOn: false, randomMatchesDiffersMode: "DIFFERS", randomMatchesDiffersModalOpen: false, randomMatchesDiffersBusy: false, randomMatchesDiffersCooldownUntil: 0, randomMatchesDiffersLastSignalKey: "", randomMatchesDiffersTickHistory: [], randomMatchesDiffersLastTickCount: 0, randomMatchesDiffersSnapshot: null, blackcard: { lastDigit: null, recentDigits: [], percentages: {}, busy: false, winMarkerDigit: null, winMarkerUntil: 0, praiseShownForTenWins: false, lastWinCount: null, reinvestProfitsOn: false, reinvestProfitPct: 25, lastProfit: 0, reinvestBaseStake: null, reinvestProfitBank: 0, reinvestCycleStake: null, reinvestPending: 0, pendingContracts: {}, pendingUnmarked: 0 }, insta2Busy: false, kid100WinsBusy: false, kid100WinsAutoOn: false, kid100WinsAutoBusy: false, kid100WinsAutoLastTick: null, kid100WinsAutoEnabledAtGlobalTick: null, kid100WinsAutoEnabledAtAnalysisTick: null, kid100WinsAutoLastSignalTick: null, kid100WinsLatestTick: null, kid100WinsLatestBest: null, kid100WinsLowPercentOn: false, kid100WinsAiDiffersOn: false, kid100WinsStopRequested: false, kid100WinsLastSeenDigit: null, kid100WinsManualArmed: false, kid100WinsManualBarrier: null, kid100WinsManualEnabledAtGlobalTick: null, kid100WinsManualEnabledAtAnalysisTick: null, kid100WinsManualLastSignalTick: null, kid100WinsReinvestProfitsOn: false, kid100WinsReinvestPct: 25, kid100WinsReinvestBaseStake: null, kid100WinsReinvestCycleStake: null, kid100WinsReinvestLastProfit: 0, kid100WinsReinvestPending: 0 };
   const fastBuyQueueJokerjoe = { items: [], running: false, lastRunAt: 0 };
   let activityPollTimerJokerjoe = null;
   let blackcardRenderTimerJokerjoe = null;
@@ -740,6 +740,299 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     return selected.slice();
   }
 
+  function normalizeJokerjoeBatchMartingaleGroup(value) {
+    const key = String(value || "").toUpperCase().replace(/\s+/g, "_");
+    const map = {
+      MATCH_789: { key: "MATCH_789", digits: [7, 8, 9], label: "Match Batch 7,8,9" },
+      MATCH_456: { key: "MATCH_456", digits: [4, 5, 6], label: "Match Batch 4,5,6" },
+      MATCH_123: { key: "MATCH_123", digits: [1, 2, 3], label: "Match Batch 1,2,3" },
+    };
+    return map[key] || map.MATCH_789;
+  }
+
+  function readJokerjoeBatchMartingaleNumber(id, fallback, min, max) {
+    const el = getEl(id);
+    const raw = el ? Number(el.value) : Number(fallback);
+    let value = Number.isFinite(raw) ? raw : Number(fallback);
+    if (Number.isFinite(Number(min))) value = Math.max(Number(min), value);
+    if (Number.isFinite(Number(max))) value = Math.min(Number(max), value);
+    return value;
+  }
+
+  function readJokerjoeBatchMartingaleSettings() {
+    const st = state.batchMartingale;
+    const groupEl = getEl("jokerjoeBatchMartingaleGroup");
+    const group = normalizeJokerjoeBatchMartingaleGroup(groupEl ? groupEl.value : st.group);
+    const startBatchStake = Number(readJokerjoeBatchMartingaleNumber("jokerjoeBatchMartingaleStartStake", 1.05, 1.05, 1000000).toFixed(2));
+    const maxSteps = Math.max(1, Math.floor(readJokerjoeBatchMartingaleNumber("jokerjoeBatchMartingaleMaxSteps", 100, 1, 100000)));
+    return { group, startBatchStake, maxSteps, multiplier: 2 };
+  }
+
+  function jokerjoeBatchStakeForStep(stepValue) {
+    const settings = readJokerjoeBatchMartingaleSettings();
+    const step = Math.max(1, Math.min(settings.maxSteps, Math.floor(Number(stepValue || state.batchMartingale.step) || 1)));
+    const rawBatch = settings.startBatchStake * Math.pow(settings.multiplier, step - 1);
+    const perStake = Number(Math.max(0.35, rawBatch / 3).toFixed(2));
+    return Number((perStake * 3).toFixed(2));
+  }
+
+  function jokerjoePerMatchStakeForBatch(batchStake) {
+    const value = Number(batchStake);
+    return Number(Math.max(0.35, (Number.isFinite(value) ? value : 1.05) / 3).toFixed(2));
+  }
+
+  function getJokerjoeBatchIdFromMode(mode) {
+    const text = String(mode || "");
+    return text.toLowerCase().startsWith("jokerjoe_match_batch_martingale|") ? text.split("|")[1] || "" : "";
+  }
+
+  function resolveJokerjoeTradeOutcome(payload) {
+    const result = String(payload && (payload.result || payload.status || payload.outcome) || "").toUpperCase();
+    if (["WIN", "WON", "PROFIT"].includes(result)) return "WIN";
+    if (["LOSS", "LOST"].includes(result)) return "LOSS";
+    const profit = Number(payload && (payload.profit ?? payload.pnl ?? payload.net_profit));
+    if (Number.isFinite(profit) && profit > 0) return "WIN";
+    if (Number.isFinite(profit) && profit < 0) return "LOSS";
+    return "";
+  }
+
+  function renderJokerjoeBatchMartingaleHistory(batch, pending) {
+    if (!batch || !batch.id) return;
+    try {
+      if (typeof upsertTradeInStore !== "function" || typeof renderTradeList !== "function") return;
+      const profit = Number(batch.totalProfit || 0);
+      const result = pending ? "PENDING" : (profit > 0 ? "WIN" : "LOSS");
+      upsertTradeInStore({
+        profile: PROFILE,
+        type: batch.label,
+        barrier: batch.digits.join(","),
+        stake: Number(batch.batchStake || 0).toFixed(2),
+        symbol: batch.symbol,
+        time: batch.time || new Date().toLocaleTimeString(),
+        contract_id: batch.id,
+        duration: batch.duration,
+        duration_unit: "t",
+        status: result,
+        result,
+        pending: !!pending,
+        profit: pending ? 0 : Number(profit.toFixed(2)),
+        mode: "jokerjoe_match_batch_martingale_visible",
+      });
+      if (typeof activeProfile !== "undefined" && String(activeProfile || "").toUpperCase() === PROFILE) renderTradeList(PROFILE);
+    } catch (e) {}
+  }
+
+  function updateJokerjoeBatchMartingalePanel() {
+    const lifetime = isLifetimeBlackcardUserJokerjoe();
+    const panel = getEl("jokerjoeBatchMartingalePanel");
+    if (panel) panel.style.display = lifetime ? "" : "none";
+    if (!lifetime) return;
+    const st = state.batchMartingale;
+    const settings = readJokerjoeBatchMartingaleSettings();
+    st.group = settings.group.key;
+    const batchStake = jokerjoeBatchStakeForStep();
+    const perStake = jokerjoePerMatchStakeForBatch(batchStake);
+    const nextBatch = jokerjoeBatchStakeForStep(Math.min(settings.maxSteps, st.step + 1));
+    const toggleBtn = getEl("jokerjoeBatchMartingaleToggleBtn");
+    if (toggleBtn) {
+      toggleBtn.textContent = `MARTINGALE: ${st.enabled ? "ON" : "OFF"}`;
+      toggleBtn.style.background = st.enabled ? "#f59e0b" : "#334155";
+      toggleBtn.style.color = st.enabled ? "#111827" : "#f8fafc";
+    }
+    const placeBtn = getEl("jokerjoeBatchMartingalePlaceBtn");
+    if (placeBtn) {
+      placeBtn.disabled = !!(st.inProgress || st.running);
+      placeBtn.style.opacity = placeBtn.disabled ? "0.55" : "1";
+      placeBtn.style.cursor = placeBtn.disabled ? "not-allowed" : "pointer";
+    }
+    const stopBtn = getEl("jokerjoeBatchMartingaleQuickStopBtn");
+    if (stopBtn) {
+      const canStop = !!(st.running || st.inProgress);
+      stopBtn.disabled = !canStop;
+      stopBtn.style.opacity = canStop ? "1" : "0.55";
+      stopBtn.style.cursor = canStop ? "pointer" : "not-allowed";
+    }
+    const status = getEl("jokerjoeBatchMartingaleStatus");
+    if (status) {
+      status.textContent = `${st.status}. ${settings.group.label} - Step ${st.step} - Batch stake $${batchStake.toFixed(2)} - Per match $${perStake.toFixed(2)} - Next batch $${nextBatch.toFixed(2)} - Last result: ${st.lastResult}`;
+      status.style.color = st.inProgress ? "#fbbf24" : "#94a3b8";
+    }
+  }
+
+  function quickStopJokerjoeBatchMartingale(reason) {
+    const st = state.batchMartingale;
+    if (st.restartTimer) {
+      clearTimeout(st.restartTimer);
+      st.restartTimer = null;
+    }
+    st.running = false;
+    st.enabled = false;
+    st.stopRequested = true;
+    st.inProgress = false;
+    st.status = reason || "Stopped";
+    updateJokerjoeBatchMartingalePanel();
+  }
+
+  function toggleJokerjoeBatchMartingale() {
+    if (!isLifetimeBlackcardUserJokerjoe()) {
+      safeToast("JokerJoe Match Batch Martingale is for lifetime users only.", "error");
+      return;
+    }
+    const st = state.batchMartingale;
+    st.enabled = !st.enabled;
+    if (st.enabled) {
+      st.step = 1;
+      st.running = false;
+      st.inProgress = false;
+      st.stopRequested = false;
+      st.lastResult = "none";
+      st.status = "Ready";
+    } else {
+      quickStopJokerjoeBatchMartingale("Martingale stopped.");
+      return;
+    }
+    updateJokerjoeBatchMartingalePanel();
+  }
+
+  async function placeJokerjoeBatchMartingaleTrade(options) {
+    if (!isLifetimeBlackcardUserJokerjoe()) {
+      safeToast("JokerJoe Match Batch Martingale is for lifetime users only.", "error");
+      return;
+    }
+    const st = state.batchMartingale;
+    const opts = options || {};
+    if (st.inProgress) return;
+    const settings = readJokerjoeBatchMartingaleSettings();
+    const batchStake = jokerjoeBatchStakeForStep();
+    const perStake = jokerjoePerMatchStakeForBatch(batchStake);
+    const batchId = `JJ-MATCH-BATCH-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+    const mode = `jokerjoe_match_batch_martingale|${batchId}`;
+    if (st.enabled && !opts.continuation) {
+      st.running = true;
+      st.stopRequested = false;
+    }
+    Object.assign(st, {
+      inProgress: true,
+      batchId,
+      pendingContracts: {},
+      expected: 3,
+      settled: 0,
+      batchStake,
+      perStake,
+      totalProfit: 0,
+      hasWin: false,
+      status: "Running",
+    });
+    const batch = {
+      id: batchId,
+      label: settings.group.label,
+      digits: settings.group.digits.slice(),
+      batchStake,
+      perStake,
+      totalProfit: 0,
+      duration: getDurationTicksJokerjoe(),
+      symbol: document.getElementById("symbol")?.value || "",
+      time: new Date().toLocaleTimeString(),
+    };
+    st.currentBatch = batch;
+    renderJokerjoeBatchMartingaleHistory(batch, true);
+    updateJokerjoeBatchMartingalePanel();
+    try {
+      const result = await placeBatchManualTradesJokerjoe("MATCHES", settings.group.digits, {
+        sameTick: true,
+        turbo: false,
+        fireAndForget: false,
+        skipMartha: true,
+        stakeOverride: perStake,
+        extraPayload: {
+          mode,
+          action: settings.group.key,
+          label: settings.group.label,
+          hide_from_history: true,
+          batch_id: batchId,
+          batch_label: settings.group.label,
+          batch_stake: batchStake,
+        },
+      });
+      if (!result || result.placed !== 3) {
+        throw new Error(`Only ${result ? result.placed : 0}/3 batch trades were sent`);
+      }
+      safeToast(`${settings.group.label} sent: batch $${batchStake.toFixed(2)} ($${perStake.toFixed(2)} each)`, "success");
+    } catch (e) {
+      st.running = false;
+      st.stopRequested = true;
+      st.inProgress = false;
+      st.status = "Stopped";
+      if (st.currentBatch) {
+        st.currentBatch.totalProfit = 0;
+        renderJokerjoeBatchMartingaleHistory(st.currentBatch, false);
+      }
+      safeToast((e && e.message) || "JokerJoe batch martingale failed", "error");
+    } finally {
+      updateJokerjoeBatchMartingalePanel();
+    }
+  }
+
+  function rememberJokerjoeBatchMartingaleTrade(entry) {
+    if (!entry || String(entry.profile || "").toUpperCase() !== PROFILE) return;
+    const batchId = getJokerjoeBatchIdFromMode(entry.mode);
+    const st = state.batchMartingale;
+    if (!batchId || batchId !== st.batchId) return;
+    const cid = entry.contract_id || entry.contractId || entry.buy_contract_id || entry.id;
+    if (cid) st.pendingContracts[String(cid)] = true;
+    st.status = "Running";
+    updateJokerjoeBatchMartingalePanel();
+  }
+
+  function updateJokerjoeBatchMartingaleFromResult(entry) {
+    if (!entry || String(entry.profile || "").toUpperCase() !== PROFILE) return;
+    const st = state.batchMartingale;
+    const batchId = getJokerjoeBatchIdFromMode(entry.mode);
+    if (!batchId || batchId !== st.batchId || !st.inProgress) return;
+    const cid = String(entry.contract_id || entry.contractId || entry.buy_contract_id || entry.id || "");
+    if (cid && st.pendingContracts[cid] === "settled") return;
+    const outcome = resolveJokerjoeTradeOutcome(entry);
+    if (!outcome) return;
+    if (cid) st.pendingContracts[cid] = "settled";
+    st.settled = Math.min(3, Number(st.settled || 0) + 1);
+    const profit = Number(entry.profit ?? entry.profit_value ?? 0) || 0;
+    st.totalProfit = Number((Number(st.totalProfit || 0) + profit).toFixed(2));
+    if (outcome === "WIN" || profit > 0) st.hasWin = true;
+    if (st.currentBatch) {
+      st.currentBatch.totalProfit = st.totalProfit;
+      renderJokerjoeBatchMartingaleHistory(st.currentBatch, st.settled < 3);
+    }
+    if (st.settled < 3) {
+      st.status = st.hasWin ? "Win found - waiting for batch close" : `Waiting for batch close ${st.settled}/3`;
+      updateJokerjoeBatchMartingalePanel();
+      return;
+    }
+    const batchWon = !!st.hasWin || st.totalProfit > 0;
+    if (st.currentBatch) renderJokerjoeBatchMartingaleHistory(st.currentBatch, false);
+    st.inProgress = false;
+    st.lastResult = batchWon ? "WIN" : "LOSS";
+    if (batchWon) {
+      st.step = 1;
+      st.running = false;
+      st.enabled = false;
+      st.stopRequested = false;
+      st.status = "Reset";
+      safeToast(`${st.currentBatch ? st.currentBatch.label : "Match Batch"} won ${signedMoney(st.totalProfit)}`, "success");
+    } else if (st.enabled && st.running && !st.stopRequested) {
+      st.step = Math.min(readJokerjoeBatchMartingaleSettings().maxSteps, st.step + 1);
+      st.status = "Running next batch";
+      safeToast(`Match Batch loss ${signedMoney(st.totalProfit)} - next batch $${jokerjoeBatchStakeForStep().toFixed(2)}`, "error");
+      if (st.restartTimer) clearTimeout(st.restartTimer);
+      st.restartTimer = setTimeout(() => {
+        st.restartTimer = null;
+        if (st.enabled && st.running && !st.stopRequested && !st.inProgress) placeJokerjoeBatchMartingaleTrade({ continuation: true });
+      }, 700);
+    } else {
+      st.status = "Ready";
+    }
+    updateJokerjoeBatchMartingalePanel();
+  }
+
   function getMatchSniper5xSelectedDigitsJokerjoe() {
     const seen = new Set();
     const out = [];
@@ -1118,31 +1411,36 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
 
   async function placeBatchManualTradesJokerjoe(contractType, digits, options) {
     const stakeEl = document.getElementById("stake");
-    let stake = Number(stakeEl && stakeEl.value);
+    let stake = Number(options && options.stakeOverride);
+    if (!Number.isFinite(stake) || stake <= 0) stake = Number(stakeEl && stakeEl.value);
     if (!Number.isFinite(stake) || stake <= 0) stake = 1;
     const duration = getDurationTicksJokerjoe();
     const sameTick = !!(options && options.sameTick);
-    const turboOn = sameTick ? true : currentTurboModeJokerjoe();
+    const turboOn = options && Object.prototype.hasOwnProperty.call(options, "turbo") ? !!options.turbo : (sameTick ? true : currentTurboModeJokerjoe());
 
     // Send stake with each manual trade so batch actions (MatchSniper 5x) respect the UI stake.
     // Include both `stake` and `amount` for compatibility with different backend parsers.
-    const base = { type: contractType, stake, amount: stake, duration, duration_unit: "t" };
+    const base = Object.assign({ type: contractType, stake, amount: stake, duration, duration_unit: "t" }, (options && options.extraPayload) || {});
 
     const jobs = (digits || []).map((d) => sendFastManualTradeJokerjoe(Object.assign({}, base, { barrier: Number(d) }), {
       turbo: turboOn,
       queue: sameTick ? false : !turboOn,
       useSocket: turboOn,
-      fireAndForget: sameTick,
+      fireAndForget: options && Object.prototype.hasOwnProperty.call(options, "fireAndForget") ? !!options.fireAndForget : sameTick,
+      skipMartha: !!(options && options.skipMartha),
     }));
     const results = await Promise.allSettled(jobs);
     let placed = 0;
     const failed = [];
+    const responses = [];
     for (let i = 0; i < results.length; i++) {
       const r = results[i];
-      if (r.status === "fulfilled" && r.value && r.value.data && r.value.data.status === "success") placed += 1;
-      else failed.push(Number(digits[i]));
+      if (r.status === "fulfilled" && r.value && r.value.data && r.value.data.status === "success") {
+        placed += 1;
+        responses.push(r.value.data);
+      } else failed.push(Number(digits[i]));
     }
-    return { placed, failed };
+    return { placed, failed, responses };
   }
 
   function getRawManualStakeValueJokerjoe() {
@@ -2662,6 +2960,7 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     }
     updateRandomMatchesDiffersButtonJokerjoe();
     updateAdvancedAIModeButtonsJokerjoe();
+    updateJokerjoeBatchMartingalePanel();
   }
 
 
@@ -2730,16 +3029,20 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
       });
 
       bind("trade_placed", (entry) => {
-        if (!isActive()) return;
+        const isBatchMartingale = !!getJokerjoeBatchIdFromMode((entry || {}).mode);
+        if (!isActive() && !isBatchMartingale) return;
         rememberBlackcardTradeJokerjoe(entry || {});
+        rememberJokerjoeBatchMartingaleTrade(entry || {});
       });
 
       bind("trade_result", (entry) => {
-        if (!isActive()) return;
+        const isBatchMartingale = !!getJokerjoeBatchIdFromMode((entry || {}).mode);
+        if (!isActive() && !isBatchMartingale) return;
         handleProfileReinvestResultJokerjoe(entry || {});
         handleBlackcardTradeResultJokerjoe(entry || {});
         handleKid100WinsTradeResultJokerjoe(entry || {});
         onJokerjoeTradeResultForLowestAI(entry || {});
+        updateJokerjoeBatchMartingaleFromResult(entry || {});
       });
 
       bind("stats_update", (data) => {
@@ -2869,6 +3172,7 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     currentTurboModeJokerjoe();
     renderTurboToggleJokerjoe();
     renderProfileReinvestControlsJokerjoe();
+    updateJokerjoeBatchMartingalePanel();
     refreshActivityPollJokerjoe();
   }
 
@@ -2895,6 +3199,7 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     currentTurboModeJokerjoe();
     renderTurboToggleJokerjoe();
     renderProfileReinvestControlsJokerjoe();
+    updateJokerjoeBatchMartingalePanel();
     refreshActivityPollJokerjoe();
   }
 
@@ -2922,6 +3227,7 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     currentTurboModeJokerjoe();
     renderTurboToggleJokerjoe();
     renderProfileReinvestControlsJokerjoe();
+    updateJokerjoeBatchMartingalePanel();
     refreshMatchesAnalysisJokerjoe();
     refreshActivityPollJokerjoe();
   }
@@ -2941,6 +3247,10 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
       blackcardPraiseTimerJokerjoe = null;
     }
     hideBlackcardPraiseFoolJokerjoe();
+    if (state.batchMartingale && state.batchMartingale.restartTimer) {
+      clearTimeout(state.batchMartingale.restartTimer);
+      state.batchMartingale.restartTimer = null;
+    }
     stopFallbackBootstrapJokerjoe();
     state.lastSocket = null;
     state.socketBound = false;
@@ -2971,6 +3281,11 @@ window.setProfileReinvestPctJokerjoe = function (pct) {
   renderProfileReinvestControlsJokerjoe();
   syncProfileReinvestAutoStakeJokerjoe();
 };
+
+window.updateJokerjoeBatchMartingalePanel = updateJokerjoeBatchMartingalePanel;
+window.toggleJokerjoeBatchMartingale = toggleJokerjoeBatchMartingale;
+window.placeJokerjoeBatchMartingaleTrade = placeJokerjoeBatchMartingaleTrade;
+window.quickStopJokerjoeBatchMartingale = quickStopJokerjoeBatchMartingale;
 
 const previousProfileReinvestStakeHookJokerjoe = window.getProfileReinvestStake;
 window.getProfileReinvestStake = function (profile, stake) {

@@ -392,6 +392,36 @@
           </details>
         </div>
       </div>
+      <details id="jokerjoeBatchMartingalePanel" class="ui-group" style="margin-top:10px; display:none;">
+        <summary>🎯 Match Batch Martingale</summary>
+        <div class="ui-group-body">
+          <div class="ui-note">Lifetime only. Places one 3-digit MATCHES batch and shows one combined history row.</div>
+          <div>
+            <div style="color:#94a3b8; font-size:12px;">Trade Group</div>
+            <select id="jokerjoeBatchMartingaleGroup" onchange="updateJokerjoeBatchMartingalePanel()" style="width:100%; min-height:40px;">
+              <option value="MATCH_789">Match 7, 8, 9</option>
+              <option value="MATCH_456">Match 4, 5, 6</option>
+              <option value="MATCH_123">Match 1, 2, 3</option>
+            </select>
+          </div>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+            <div>
+              <div style="color:#94a3b8; font-size:12px;">Starting Batch Stake</div>
+              <input id="jokerjoeBatchMartingaleStartStake" type="number" min="1.05" step="0.03" value="1.05" oninput="updateJokerjoeBatchMartingalePanel()" style="width:100%;">
+            </div>
+            <div>
+              <div style="color:#94a3b8; font-size:12px;">Max Steps</div>
+              <input id="jokerjoeBatchMartingaleMaxSteps" type="number" min="1" step="1" value="100" oninput="updateJokerjoeBatchMartingalePanel()" style="width:100%;">
+            </div>
+          </div>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+            <button id="jokerjoeBatchMartingaleToggleBtn" type="button" onclick="toggleJokerjoeBatchMartingale()" style="background:#334155;">MARTINGALE: OFF</button>
+            <button id="jokerjoeBatchMartingalePlaceBtn" type="button" onclick="placeJokerjoeBatchMartingaleTrade()" style="background:#22c55e; color:#04130a;">PLACE BATCH</button>
+          </div>
+          <button id="jokerjoeBatchMartingaleQuickStopBtn" type="button" onclick="quickStopJokerjoeBatchMartingale()" style="background:#ef4444;">QUICK STOP</button>
+          <div id="jokerjoeBatchMartingaleStatus" style="font-size:12px; color:#94a3b8; line-height:1.45;">Ready. Batch stake $1.05 - Per match $0.35 - Next batch $2.10 - Last result: none</div>
+        </div>
+      </details>
     </div>
   </div>
 

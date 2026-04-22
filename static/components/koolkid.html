@@ -57,6 +57,15 @@
 .golden-card-market.ready{border-color:rgba(250,204,21,0.78);box-shadow:0 0 18px rgba(250,204,21,0.22)}
 .golden-card-market.pending-confirm{border-color:rgba(250,204,21,0.48)}
 .golden-card-digit{min-width:54px;height:54px;border-radius:16px;display:flex;align-items:center;justify-content:center;font-size:28px;font-weight:900;background:rgba(2,6,23,0.55);border:1px solid rgba(255,255,255,0.08);color:#f8fafc;box-shadow:0 12px 28px rgba(2,6,23,0.28)}
+.g1-analyzer-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin-top:10px}
+.g1-analyzer-digit{min-height:74px;border-radius:14px;padding:9px;border:1px solid rgba(148,163,184,0.20);background:linear-gradient(145deg,#020617,#111827);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;box-shadow:inset 0 1px 0 rgba(255,255,255,0.06),0 12px 24px rgba(2,6,23,0.28)}
+.g1-analyzer-digit.is-danger{background:linear-gradient(145deg,rgba(127,29,29,0.90),rgba(239,68,68,0.34));border-color:rgba(248,113,113,0.74);box-shadow:0 0 24px rgba(239,68,68,0.22)}
+.g1-analyzer-digit.is-safe{background:linear-gradient(145deg,rgba(20,83,45,0.88),rgba(34,197,94,0.28));border-color:rgba(74,222,128,0.66);box-shadow:0 0 24px rgba(34,197,94,0.18)}
+.g1-analyzer-number{font-size:24px;line-height:1;font-weight:950;color:#f8fafc;text-shadow:0 0 14px rgba(248,250,252,0.16)}
+.g1-analyzer-pct{font-size:12px;font-weight:900;color:#cbd5e1}
+.g1-analyzer-label{font-size:10px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;color:#94a3b8}
+.g1-analyzer-digit.is-danger .g1-analyzer-label,.g1-analyzer-digit.is-safe .g1-analyzer-label{color:#f8fafc}
+.g1-analyzer-summary{margin-top:10px;border-radius:14px;padding:10px 12px;background:#0f172a;border:1px solid #334155;color:#cbd5e1;font-size:12px;line-height:1.45}
 .golden-card-controls{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;margin-bottom:8px;padding:10px;background:#0b1220;border:1px solid #334155;border-radius:14px;align-items:center}
 .golden-card-toggle-row{display:flex;align-items:center;justify-content:space-between;gap:10px;border:1px solid rgba(255,255,255,0.10);background:rgba(0,0,0,0.20);border-radius:14px;padding:10px 12px;color:rgba(255,255,255,0.78);font-size:12px;font-weight:700;white-space:nowrap}
 .golden-card-toggle-wrap{display:flex;align-items:center}
@@ -153,6 +162,7 @@
     gap:8px !important;
     padding:10px !important;
   }
+  .g1-analyzer-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .over6-analyzer-grid{grid-template-columns:1fr}
   .over6-analyzer-head{flex-direction:column}
   .over6-analyzer-badge{min-width:0;width:100%}
@@ -861,32 +871,18 @@
   <button onclick="hideDual2xCustomPopupKoolkid()" style="background:#ef4444; width:100%; margin-top:6px;">CANCEL</button>
 </div>
 
-<div id="g1AutoPopupKoolkid" class="digit-popup" style="display:none; min-width:320px; max-width:min(390px, calc(100vw - 20px)); z-index:10001;">
-  <h4>G1🤖 AUTO</h4>
+<div id="g1AutoPopupKoolkid" class="digit-popup" style="display:none; width:min(520px, calc(100vw - 20px)); min-width:min(420px, calc(100vw - 20px)); max-width:min(520px, calc(100vw - 20px)); z-index:10001;">
+  <h4>G1🤖 DIGIT FREQUENCY</h4>
   <div style="font-size:12px; color:#94a3b8; margin-bottom:8px;">
-    Set the stake for all 4 same-tick trades. G1🤖 keeps sending `OVER 1`, `UNDER 1`, `UNDER 8`, and `OVER 8` until you turn it off.
+    G1 now watches digit frequency only. The main danger focus is digits 0 and 1. If 0 or 1 are hot, they turn red. If another digit is hot, it turns green.
   </div>
-  <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
-    <div>
-      <div style="color:#94a3b8; font-size:12px; margin-bottom:4px;">OVER 1</div>
-      <input id="g1AutoStakeOver1Koolkid" type="number" min="0.35" step="0.01" value="1.00" style="width:100%;">
-    </div>
-    <div>
-      <div style="color:#94a3b8; font-size:12px; margin-bottom:4px;">UNDER 1</div>
-      <input id="g1AutoStakeUnder1Koolkid" type="number" min="0.35" step="0.01" value="1.00" style="width:100%;">
-    </div>
-    <div>
-      <div style="color:#94a3b8; font-size:12px; margin-bottom:4px;">UNDER 8</div>
-      <input id="g1AutoStakeUnder8Koolkid" type="number" min="0.35" step="0.01" value="1.00" style="width:100%;">
-    </div>
-    <div>
-      <div style="color:#94a3b8; font-size:12px; margin-bottom:4px;">OVER 8</div>
-      <input id="g1AutoStakeOver8Koolkid" type="number" min="0.35" step="0.01" value="1.00" style="width:100%;">
-    </div>
+  <div id="g1AnalyzerGridKoolkid" class="g1-analyzer-grid">
+    <div style="grid-column:1/-1; color:#8fb1c9; font-size:12px;">Waiting for live digit percentages...</div>
   </div>
-  <div id="g1AutoStatusKoolkid" style="font-size:12px; color:#94a3b8; margin-top:10px;">OFF • waiting for start</div>
-  <button id="g1AutoToggleBtnKoolkid" onclick="toggleG1AutoKoolkid()" style="background:#22c55e; width:100%; margin-top:10px;">START G1🤖</button>
-  <button onclick="hideG1AutoPopupKoolkid()" style="background:#ef4444; width:100%; margin-top:6px;">CLOSE</button>
+  <div id="g1AutoStatusKoolkid" class="g1-analyzer-summary">Waiting for live digit percentages...</div>
+  <button id="g1InstantOver1BtnKoolkid" onclick="placeG1InstantOver1Koolkid()" style="background:#22c55e; color:#04130a; width:100%; margin-top:10px;">PLACE OVER 1 INSTANTLY</button>
+  <button id="g1InstantOver2BtnKoolkid" onclick="placeG1InstantOver2Koolkid()" style="background:#38bdf8; color:#04111f; width:100%; margin-top:6px;">PLACE OVER 2 INSTANTLY</button>
+  <button onclick="hideG1AutoPopupKoolkid()" style="background:#ef4444; width:100%; margin-top:10px;">CLOSE</button>
 </div>
 
 <div id="goldenCardPopupKoolkid" class="digit-popup" style="display:none; width:min(760px, calc(100vw - 28px)); min-width:min(620px, calc(100vw - 28px)); max-width:min(760px, calc(100vw - 28px)); padding:14px; border-radius:18px; z-index:10001;">

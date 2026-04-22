@@ -1751,11 +1751,14 @@ function bindSocketHandlers(){
         const placed = Object.assign({}, data || {});
         placed.profile = resolveTradeProfile(placed, activeProfile);
         try{ if(window.MarthaAI && typeof window.MarthaAI.observeTradeEvent === "function") window.MarthaAI.observeTradeEvent(placed); }catch(e){}
-        onTradePlacedForToast(placed);
-        upsertTradeInStore(buildPendingTradeFromPlacement(placed));
-        schedulePendingTradeRescue(placed.profile, placed.contract_id ?? placed.contractId, 1);
-        if(normalizeProfileName(activeProfile) === placed.profile){
-            renderTradeList(activeProfile);
+        const hiddenBatchTrade = !!placed.hide_from_history || String(placed.mode || "").toLowerCase().startsWith("jokerjoe_match_batch_martingale");
+        if(!hiddenBatchTrade){
+            onTradePlacedForToast(placed);
+            upsertTradeInStore(buildPendingTradeFromPlacement(placed));
+            schedulePendingTradeRescue(placed.profile, placed.contract_id ?? placed.contractId, 1);
+            if(normalizeProfileName(activeProfile) === placed.profile){
+                renderTradeList(activeProfile);
+            }
         }
     });
 
@@ -1770,19 +1773,22 @@ function bindSocketHandlers(){
         }
         settled.result = normalizeTradeResultLabel(settled.result, settled.status);
         settled.pending = isTradeResultPending(settled.result);
-        upsertTradeInStore(settled);
-        if(settled.pending){
-            schedulePendingTradeRescue(settled.profile, settled.contract_id ?? settled.contractId, 1);
-        }else{
-            clearPendingTradeRescue(settled.profile, settled.contract_id ?? settled.contractId);
-        }
+        const hiddenBatchTrade = !!settled.hide_from_history || String(settled.mode || "").toLowerCase().startsWith("jokerjoe_match_batch_martingale");
+        if(!hiddenBatchTrade){
+            upsertTradeInStore(settled);
+            if(settled.pending){
+                schedulePendingTradeRescue(settled.profile, settled.contract_id ?? settled.contractId, 1);
+            }else{
+                clearPendingTradeRescue(settled.profile, settled.contract_id ?? settled.contractId);
+            }
 
-        if(normalizeProfileName(settled.profile) === normalizeProfileName(activeProfile)){
-            renderTradeList(activeProfile);
+            if(normalizeProfileName(settled.profile) === normalizeProfileName(activeProfile)){
+                renderTradeList(activeProfile);
+            }
         }
 
         const suppressIndividualToast = onTradeResultForToast(settled);
-        if(suppressIndividualToast) return;
+        if(suppressIndividualToast || hiddenBatchTrade) return;
 
         const result = normalizeTradeResultLabel(settled.result, settled.status);
         const profit = typeof settled.profit === "number" ? settled.profit : (settled.profit_value || 0);

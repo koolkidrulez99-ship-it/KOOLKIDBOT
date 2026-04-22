@@ -1954,83 +1954,82 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
   }
 }
 
-  function parseG1AutoStakeKoolkid(inputId) {
-    const node = document.getElementById(inputId);
-    const value = Number(node && node.value);
-    if (!Number.isFinite(value) || value < 0.35) return NaN;
-    return Number(value.toFixed(2));
-  }
-
-  function getG1AutoLegsKoolkid() {
-    const over1 = parseG1AutoStakeKoolkid("g1AutoStakeOver1Koolkid");
-    const under1 = parseG1AutoStakeKoolkid("g1AutoStakeUnder1Koolkid");
-    const under8 = parseG1AutoStakeKoolkid("g1AutoStakeUnder8Koolkid");
-    const over8 = parseG1AutoStakeKoolkid("g1AutoStakeOver8Koolkid");
-    if (!(over1 >= 0.35) || !(under1 >= 0.35) || !(under8 >= 0.35) || !(over8 >= 0.35)) {
-      return null;
-    }
-    return [
-      { type: "OVER", barrier: 1, fixedStake: over1, label: "OVER 1" },
-      { type: "UNDER", barrier: 1, fixedStake: under1, label: "UNDER 1" },
-      { type: "UNDER", barrier: 8, fixedStake: under8, label: "UNDER 8" },
-      { type: "OVER", barrier: 8, fixedStake: over8, label: "OVER 8" },
-    ];
-  }
-
   function renderG1AutoUiKoolkid() {
     const mainBtn = document.getElementById("g1AutoBtnKoolkid");
-    const popupBtn = document.getElementById("g1AutoToggleBtnKoolkid");
     const statusEl = document.getElementById("g1AutoStatusKoolkid");
+    const gridEl = document.getElementById("g1AnalyzerGridKoolkid");
+    if (state.g1AutoOn || state.g1AutoBusy) {
+      state.g1AutoOn = false;
+      state.g1AutoBusy = false;
+    }
     if (mainBtn) {
-      mainBtn.innerText = state.g1AutoOn ? "G1🤖 ON" : "G1🤖";
-      mainBtn.style.background = state.g1AutoOn ? "#22c55e" : "#0f172a";
-      mainBtn.style.border = state.g1AutoOn ? "1px solid #22c55e" : "1px solid #334155";
-      mainBtn.style.color = state.g1AutoOn ? "#04130a" : "#f8fafc";
+      mainBtn.innerText = "G1🤖 ANALYZER";
+      mainBtn.style.background = "#0f172a";
+      mainBtn.style.border = "1px solid #334155";
+      mainBtn.style.color = "#f8fafc";
     }
-    if (popupBtn) {
-      popupBtn.innerText = state.g1AutoOn ? "STOP G1🤖" : "START G1🤖";
-      popupBtn.style.background = state.g1AutoOn ? "#ef4444" : "#22c55e";
-    }
-    if (statusEl) {
-      if (!state.g1AutoOn) {
-        statusEl.innerText = "OFF • waiting for start";
+
+    const pct = (state.dual2xAnalysis && state.dual2xAnalysis.pctByDigit) || null;
+    const ready = !!(state.dual2xAnalysis && state.dual2xAnalysis.ready && pct);
+    if (!ready) {
+      if (gridEl) gridEl.innerHTML = `<div style="grid-column:1/-1; color:#8fb1c9; font-size:12px;">Waiting for live digit percentages...</div>`;
+      if (statusEl) {
+        statusEl.innerText = "Waiting for live digit percentages...";
         statusEl.style.color = "#94a3b8";
-      } else if (state.g1AutoBusy) {
-        statusEl.innerText = "ON • sending OVER 1 / UNDER 1 / UNDER 8 / OVER 8 on this tick";
-        statusEl.style.color = "#38bdf8";
+      }
+      return;
+    }
+
+    const rows = [];
+    let hottestDigit = null;
+    let hottestPct = -1;
+    for (let digit = 0; digit <= 9; digit += 1) {
+      const value = Number(pct[digit]);
+      const safePct = Number.isFinite(value) ? value : 0;
+      if (safePct > hottestPct) {
+        hottestPct = safePct;
+        hottestDigit = digit;
+      }
+    }
+    const hotThreshold = 15;
+    const dangerHot = [0, 1].filter((digit) => Number(pct[digit]) >= hotThreshold);
+    const greenHot = [];
+    for (let digit = 2; digit <= 9; digit += 1) {
+      const value = Number(pct[digit]);
+      if (Number.isFinite(value) && value >= hotThreshold) greenHot.push(digit);
+    }
+
+    for (let digit = 0; digit <= 9; digit += 1) {
+      const value = Number(pct[digit]);
+      const safePct = Number.isFinite(value) ? value : 0;
+      const danger = (digit === 0 || digit === 1) && safePct >= hotThreshold;
+      const safe = digit >= 2 && safePct >= hotThreshold;
+      const label = danger ? "Danger Hot" : (safe ? "Hot" : (digit === hottestDigit ? "Top" : "Normal"));
+      rows.push(`
+        <div class="g1-analyzer-digit ${danger ? "is-danger" : ""} ${safe ? "is-safe" : ""}">
+          <div class="g1-analyzer-number">${digit}</div>
+          <div class="g1-analyzer-pct">${fmtPct(safePct)}</div>
+          <div class="g1-analyzer-label">${label}</div>
+        </div>
+      `);
+    }
+    if (gridEl) gridEl.innerHTML = rows.join("");
+    if (statusEl) {
+      if (dangerHot.length) {
+        statusEl.innerText = `RED ALERT: ${dangerHot.join(" and ")} ${dangerHot.length === 1 ? "is" : "are"} playing too much. Watch 0/1 pressure before entering.`;
+        statusEl.style.color = "#fecaca";
+      } else if (greenHot.length) {
+        statusEl.innerText = `GREEN WATCH: ${greenHot.join(", ")} ${greenHot.length === 1 ? "is" : "are"} hot while 0/1 are not overplayed.`;
+        statusEl.style.color = "#bbf7d0";
       } else {
-        statusEl.innerText = "ON • armed for the next live tick";
-        statusEl.style.color = "#86efac";
+        statusEl.innerText = `Neutral: hottest digit is ${hottestDigit} at ${fmtPct(hottestPct)}. Waiting for a stronger frequency edge.`;
+        statusEl.style.color = "#cbd5e1";
       }
     }
   }
 
   async function maybeRunG1AutoKoolkid(data) {
-    if (!state.g1AutoOn || state.g1AutoBusy || state.dual2xBusy || !isActive()) return;
-    const tick = Number(data && data.tick_count);
-    if (!Number.isFinite(tick)) return;
-    if (Number(state.g1AutoLastTick) === tick) return;
-    const legs = getG1AutoLegsKoolkid();
-    if (!legs) {
-      safeToast("Set all G1🤖 stakes to at least $0.35.", "error");
-      state.g1AutoOn = false;
-      renderG1AutoUiKoolkid();
-      return;
-    }
-    state.g1AutoBusy = true;
-    state.g1AutoLastTick = tick;
     renderG1AutoUiKoolkid();
-    try {
-      const r = await placeDual2xLegsSameTickKoolkid(legs);
-      if (r.placed !== legs.length) {
-        safeToast(`G1🤖 partial (${r.placed}/${legs.length})`, "error");
-      }
-    } catch (e) {
-      safeToast("G1🤖 failed on this tick", "error");
-    } finally {
-      state.g1AutoBusy = false;
-      renderG1AutoUiKoolkid();
-    }
   }
 
   window.openG1AutoPopupKoolkid = function () {
@@ -2043,24 +2042,58 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
   };
 
   window.toggleG1AutoKoolkid = function () {
-    if (state.g1AutoOn) {
-      state.g1AutoOn = false;
-      state.g1AutoBusy = false;
-      safeToast("G1🤖 OFF", "error");
-    } else {
-      const legs = getG1AutoLegsKoolkid();
-      if (!legs) {
-        safeToast("Set all G1🤖 stakes to at least $0.35.", "error");
-        return;
-      }
-      state.g1AutoOn = true;
-      state.g1AutoBusy = false;
-      state.g1AutoLastTick = state.dual2xAnalysis && Number.isFinite(Number(state.dual2xAnalysis.tickCount))
-        ? Number(state.dual2xAnalysis.tickCount)
-        : null;
-      safeToast("G1🤖 ON", "success");
-    }
+    state.g1AutoOn = false;
+    state.g1AutoBusy = false;
     renderG1AutoUiKoolkid();
+  };
+
+  async function placeG1InstantOverKoolkid(barrier, buttonId) {
+    const safeBarrier = Number(barrier) === 2 ? 2 : 1;
+    const btn = document.getElementById(buttonId);
+    if (btn && btn.disabled) return;
+    try {
+      if (btn) {
+        btn.disabled = true;
+        btn.style.opacity = "0.65";
+        btn.style.cursor = "wait";
+      }
+      const stake = getStakeValueKoolkid();
+      const payload = {
+        stake,
+        amount: stake,
+        type: "OVER",
+        barrier: safeBarrier,
+        mode: `g1_instant_over${safeBarrier}`,
+        label: `G1 Instant OVER ${safeBarrier}`,
+      };
+      const result = await sendFastManualTradeKoolkid(payload, {
+        turbo: true,
+        queue: false,
+        useSocket: true,
+        fireAndForget: true,
+      });
+      if (result && result.data && result.data.status === "success") {
+        safeToast(`G1 sent OVER ${safeBarrier} instantly`, "success");
+      } else {
+        safeToast((result && result.data && result.data.message) || `G1 OVER ${safeBarrier} failed`, "error");
+      }
+    } catch (e) {
+      safeToast(`G1 OVER ${safeBarrier} failed`, "error");
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.style.opacity = "1";
+        btn.style.cursor = "pointer";
+      }
+    }
+  }
+
+  window.placeG1InstantOver1Koolkid = async function () {
+    return placeG1InstantOverKoolkid(1, "g1InstantOver1BtnKoolkid");
+  };
+
+  window.placeG1InstantOver2Koolkid = async function () {
+    return placeG1InstantOverKoolkid(2, "g1InstantOver2BtnKoolkid");
   };
 
   function getDual2xCustomConfigKoolkid() {
@@ -2171,6 +2204,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
     renderPredictionSummaryKoolkid(data || {});
     renderOver6AnalyzerKoolkid(data || {});
     renderDual2xAnalysisKoolkid(data || {});
+    renderG1AutoUiKoolkid();
     if (data && data.barrier_analysis) renderBarrierAnalysis(data.barrier_analysis);
     if (data && data.over3_analysis_data) renderOver3AnalysisKoolkid(data.over3_analysis_data);
     if (data && data.golden_card_data) scheduleGoldenCardRenderKoolkid(data.golden_card_data);
