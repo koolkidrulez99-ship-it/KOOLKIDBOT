@@ -169,6 +169,15 @@ _scanner_market_label = _unchain_module._scanner_market_label
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
+PROCESS_STARTED_AT = time.time()
+SERVER_HOSTNAME = (
+    os.environ.get("RENDER_INSTANCE_ID")
+    or os.environ.get("HOSTNAME")
+    or os.environ.get("COMPUTERNAME")
+    or "unknown-host"
+)
+SERVER_INSTANCE_ID = f"{SERVER_HOSTNAME}:{os.getpid()}:{int(PROCESS_STARTED_AT)}"
+
 app = Flask(__name__, template_folder="templates")
 
 # ===============================
@@ -1734,15 +1743,58 @@ def init_client(client_id):
         return
 
     clients[client_id] = _build_default_client_state()
+    clients[client_id]["runtime_created_at"] = time.time()
+    clients[client_id]["runtime_server_instance_id"] = SERVER_INSTANCE_ID
+    clients[client_id]["runtime_process_id"] = os.getpid()
+
+
+def _runtime_diag_payload(client_id, state, *, runtime_missing_before_init=False):
+    state = state or {}
+    ws_thread = state.get("ws_thread")
+    try:
+        ws_thread_alive = bool(ws_thread and ws_thread.is_alive())
+    except Exception:
+        ws_thread_alive = False
+    return {
+        "server_instance_id": SERVER_INSTANCE_ID,
+        "server_process_id": os.getpid(),
+        "server_started_at": int(PROCESS_STARTED_AT),
+        "client_id": client_id,
+        "client_runtime_present": not bool(runtime_missing_before_init),
+        "client_runtime_missing_before_init": bool(runtime_missing_before_init),
+        "client_runtime_created_at": int(float(state.get("runtime_created_at", 0.0) or 0.0)) if state else 0,
+        "client_runtime_server_instance_id": state.get("runtime_server_instance_id"),
+        "client_runtime_process_id": state.get("runtime_process_id"),
+        "ws_thread_alive": ws_thread_alive,
+        "ws_thread_name": getattr(ws_thread, "name", None) if ws_thread else None,
+        "ws_connected_runtime": bool(state.get("ws_connected")),
+        "ws_transport_connected_runtime": bool(state.get("ws_transport_connected")),
+        "ws_reconnect_pending_runtime": bool(state.get("ws_reconnect_pending")),
+        "ws_nonce_runtime": int(state.get("ws_nonce", 0) or 0),
+        "has_token_runtime": bool(str(state.get("api_token", "") or "").strip()),
+    }
 
 
 def get_client_state():
     cid = get_client_id()
-    if cid not in clients:
+    runtime_missing_before_init = cid not in clients
+    if runtime_missing_before_init:
+        logger.warning(
+            "[%s] TEMP client_runtime_missing_recreated server_instance_id=%s process_id=%s session_user=%s",
+            cid,
+            SERVER_INSTANCE_ID,
+            os.getpid(),
+            session.get("user"),
+        )
         init_client(cid)
     username = session.get("user")
     if username:
         clients[cid]["username"] = username
+    clients[cid]["last_runtime_diag"] = _runtime_diag_payload(
+        cid,
+        clients[cid],
+        runtime_missing_before_init=runtime_missing_before_init,
+    )
     _touch_client(cid)
     return cid, clients[cid]
 
@@ -2214,6 +2266,15 @@ def handle_connect(auth=None):
         return False
 
     cid, state = get_client_state()
+    logger.info(
+        "[%s] TEMP socket_connect_runtime server_instance_id=%s process_id=%s runtime_present=%s ws_connected=%s ws_thread_alive=%s",
+        cid,
+        SERVER_INSTANCE_ID,
+        os.getpid(),
+        not bool((state.get("last_runtime_diag") or {}).get("client_runtime_missing_before_init")),
+        bool(state.get("ws_connected")),
+        bool(state.get("ws_thread") and state["ws_thread"].is_alive()),
+    )
     join_room(cid)
     connected = bool(state["ws_connected"]) and not _is_ws_stale(state)
     if not connected and state.get("ws_connected"):
@@ -2222,6 +2283,7 @@ def handle_connect(auth=None):
     socketio.emit("connection_status", {
         "connected": connected,
         "loginid": state.get("loginid", "UNKNOWN"),
+        **_runtime_diag_payload(cid, state),
         **_build_balance_payload(state),
     }, room=cid)
 
@@ -15562,6 +15624,15 @@ def set_token():
     data = request.get_json(silent=True) or {}
     token = str(data.get("token", "") or "").strip()
     logger.info("[%s] TEMP connect_request_received token_present=%s", cid, bool(token))
+    logger.info(
+        "[%s] TEMP set_token_runtime server_instance_id=%s process_id=%s runtime_present=%s ws_connected=%s ws_thread_alive=%s",
+        cid,
+        SERVER_INSTANCE_ID,
+        os.getpid(),
+        not bool((state.get("last_runtime_diag") or {}).get("client_runtime_missing_before_init")),
+        bool(state.get("ws_connected")),
+        bool(state.get("ws_thread") and state["ws_thread"].is_alive()),
+    )
     if not token:
         logger.warning("[%s] TEMP connect_error_emitted message=missing_token", cid)
         return jsonify({"status": "error", "message": "API token is required"}), 400
@@ -15606,6 +15677,11 @@ def api_connection_status():
         return jsonify({"error": "Unauthorized"}), 403
 
     _cid, state = get_client_state()
+    runtime_diag = _runtime_diag_payload(
+        _cid,
+        state,
+        runtime_missing_before_init=bool((state.get("last_runtime_diag") or {}).get("client_runtime_missing_before_init")),
+    )
     _check_ws_connect_timeout(_cid, state)
     connected = bool(state.get("ws_connected")) and not _is_ws_stale(state)
     if not connected and state.get("ws_connected"):
@@ -15627,9 +15703,21 @@ def api_connection_status():
         "loginid": state.get("loginid", "UNKNOWN"),
         "has_token": has_token,
         "license_context": get_user_license_context(),
+        **runtime_diag,
         **tick_health,
         **_build_balance_payload(state),
     }
+    logger.info(
+        "[%s] TEMP api_connection_status_runtime server_instance_id=%s runtime_present=%s ws_connected=%s ws_thread_alive=%s reconnecting=%s tick_healthy=%s tick_recovering=%s",
+        _cid,
+        payload.get("server_instance_id"),
+        payload.get("client_runtime_present"),
+        payload.get("ws_connected_runtime"),
+        payload.get("ws_thread_alive"),
+        reconnecting,
+        payload.get("tick_stream_healthy"),
+        payload.get("tick_stream_recovering"),
+    )
     budget = payload.get("active_profile_budget") or {}
     logger.info(
         "[%s] TEMP reconnect_restore_values connected=%s live_account=%s display=%s budget_remaining=%s session_pnl=%s",

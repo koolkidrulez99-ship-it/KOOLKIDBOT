@@ -2781,6 +2781,23 @@ function applyApiConnectionState(data){
     const tickHealthKnown = data && Object.prototype.hasOwnProperty.call(data, "tick_stream_healthy");
     const tickRecovering = !!(data && data.tick_stream_recovering);
     const tickUnhealthy = connected && tickHealthKnown && data.tick_stream_healthy === false;
+    if(data && Object.prototype.hasOwnProperty.call(data, "server_instance_id")){
+        console.info("TEMP api_runtime_diag", {
+            server_instance_id: data.server_instance_id,
+            server_process_id: data.server_process_id,
+            client_id: data.client_id,
+            client_runtime_present: data.client_runtime_present,
+            client_runtime_missing_before_init: data.client_runtime_missing_before_init,
+            client_runtime_server_instance_id: data.client_runtime_server_instance_id,
+            client_runtime_process_id: data.client_runtime_process_id,
+            ws_thread_alive: data.ws_thread_alive,
+            ws_connected_runtime: data.ws_connected_runtime,
+            ws_transport_connected_runtime: data.ws_transport_connected_runtime,
+            ws_reconnect_pending_runtime: data.ws_reconnect_pending_runtime,
+            ws_nonce_runtime: data.ws_nonce_runtime,
+            has_token_runtime: data.has_token_runtime
+        });
+    }
     apiConnected = connected;
 
     if(connected){
@@ -2811,6 +2828,14 @@ function applyApiConnectionState(data){
         apiStatus.innerText = reconnecting ? "Reconnecting..." : ((data && data.has_token) ? "Restoring..." : "Connecting...");
         apiStatus.className = "blue";
         updateApiConnectionUi("pending", reconnecting ? "RECONNECTING API..." : ((data && data.has_token) ? "RESTORING API..." : "CONNECTING API..."));
+        accountDashboard.style.display = "none";
+        return false;
+    }
+
+    if(data && data.has_token && data.client_runtime_present === false){
+        apiStatus.innerText = "Runtime Reset";
+        apiStatus.className = "blue";
+        updateApiConnectionUi("pending", "BACKEND RUNTIME RESET - RESTORING SESSION...");
         accountDashboard.style.display = "none";
         return false;
     }
