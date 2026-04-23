@@ -140,6 +140,7 @@
     multiplier: 2,
     pending: {},
     settled: 0,
+    plusRecoveryPending: false,
     lastResult: "none",
     status: "Ready",
     restartTimer: null,
@@ -499,7 +500,17 @@
 
   function normalizeHumanParityMode(value){
     const mode = String(value || "EVEN").toUpperCase();
-    return mode === "ODD" || mode === "EVEN_ODD" ? mode : "EVEN";
+    return ["ODD", "EVEN_ODD", "EVEN_PLUS", "ODD_PLUS"].includes(mode) ? mode : "EVEN";
+  }
+
+  function humanParityExecutionSide(modeValue){
+    const mode = normalizeHumanParityMode(modeValue);
+    return mode === "ODD" || mode === "ODD_PLUS" ? "ODD" : "EVEN";
+  }
+
+  function isHumanParityPlusMode(modeValue){
+    const mode = normalizeHumanParityMode(modeValue);
+    return mode === "EVEN_PLUS" || mode === "ODD_PLUS";
   }
 
   function readHumanParityNumber(id, fallback, min, max){
@@ -670,9 +681,18 @@
     }
     const statusEl = byId("humanParityMartingaleStatus");
     if(statusEl){
-      const modeLabel = mode === "EVEN_ODD" ? "Even + Odd" : mode === "ODD" ? "Odd" : "Even";
+      const modeLabel = mode === "EVEN_ODD"
+        ? "Even + Odd"
+        : mode === "ODD"
+          ? "Odd"
+          : mode === "EVEN_PLUS"
+            ? "Even Plus"
+            : mode === "ODD_PLUS"
+              ? "Odd Plus"
+              : "Even";
+      const modeDetail = isHumanParityPlusMode(mode) ? "1-step 2x recovery" : `${settings.multiplier}x`;
       statusEl.innerHTML = [
-        `${HUMAN_PARITY_MARTINGALE_STATE.status || "Ready"} • ${modeLabel} • ${settings.multiplier}x`,
+        `${HUMAN_PARITY_MARTINGALE_STATE.status || "Ready"} • ${modeLabel} • ${modeDetail}`,
         `Even stake ${money(HUMAN_PARITY_MARTINGALE_STATE.evenStake || 1)} • Odd stake ${money(HUMAN_PARITY_MARTINGALE_STATE.oddStake || 1)}`,
         `Pending: ${Object.keys(HUMAN_PARITY_MARTINGALE_STATE.pending || {}).join(" + ") || "none"} • Last result: ${HUMAN_PARITY_MARTINGALE_STATE.lastResult || "none"}`,
       ].join("<br>");
@@ -691,6 +711,7 @@
     HUMAN_PARITY_MARTINGALE_STATE.multiplier = settings.multiplier;
     HUMAN_PARITY_MARTINGALE_STATE.pending = {};
     HUMAN_PARITY_MARTINGALE_STATE.settled = 0;
+    HUMAN_PARITY_MARTINGALE_STATE.plusRecoveryPending = false;
     HUMAN_PARITY_MARTINGALE_STATE.lastResult = "none";
     HUMAN_PARITY_MARTINGALE_STATE.status = "Ready";
   }
@@ -703,9 +724,14 @@
         { side: "ODD", stake: Math.max(0.35, Number(HUMAN_PARITY_MARTINGALE_STATE.oddStake || 1)) },
       ];
     }
-    const stake = mode === "ODD" ? HUMAN_PARITY_MARTINGALE_STATE.oddStake : HUMAN_PARITY_MARTINGALE_STATE.evenStake;
-    const baseStake = mode === "ODD" ? HUMAN_PARITY_MARTINGALE_STATE.oddBaseStake : HUMAN_PARITY_MARTINGALE_STATE.evenBaseStake;
-    return [{ side: mode, stake: Math.max(0.35, Number(stake || baseStake || 1)) }];
+    const side = humanParityExecutionSide(mode);
+    const isPlus = isHumanParityPlusMode(mode);
+    const liveStake = side === "ODD" ? HUMAN_PARITY_MARTINGALE_STATE.oddStake : HUMAN_PARITY_MARTINGALE_STATE.evenStake;
+    const baseStake = side === "ODD" ? HUMAN_PARITY_MARTINGALE_STATE.oddBaseStake : HUMAN_PARITY_MARTINGALE_STATE.evenBaseStake;
+    const stake = isPlus && HUMAN_PARITY_MARTINGALE_STATE.plusRecoveryPending
+      ? Number((Math.max(0.35, Number(baseStake || 1)) * 2).toFixed(2))
+      : Math.max(0.35, Number(liveStake || baseStake || 1));
+    return [{ side, stake: Math.max(0.35, Number(stake || baseStake || 1)), plusMode: isPlus, recoveryTrade: isPlus && HUMAN_PARITY_MARTINGALE_STATE.plusRecoveryPending }];
   }
 
   async function sendHumanParityMartingaleRound(){
@@ -723,7 +749,7 @@
     updateHumanParityMartingalePanel();
     try{
       const payload = {
-        side: st.mode,
+        side: normalizeHumanParityMode(st.mode) === "EVEN_ODD" ? "EVEN_ODD" : humanParityExecutionSide(st.mode),
         stake: plan[0].stake,
         even_stake: (plan.find((leg) => leg.side === "EVEN") || {}).stake,
         odd_stake: (plan.find((leg) => leg.side === "ODD") || {}).stake,
@@ -736,6 +762,7 @@
     }catch(e){
       st.running = false;
       st.runId = "";
+      st.plusRecoveryPending = false;
       st.status = (e && e.message) || "Even/Odd martingale trade failed";
       if(typeof showToast === "function") showToast(st.status, "error");
     }finally{
@@ -769,7 +796,9 @@
     if(outcome === "WIN"){
       if(side === "EVEN") st.evenStake = Number((st.evenBaseStake || 1).toFixed(2));
       if(side === "ODD") st.oddStake = Number((st.oddBaseStake || 1).toFixed(2));
-      if(st.mode !== "EVEN_ODD"){
+      if(isHumanParityPlusMode(st.mode)){
+        st.plusRecoveryPending = false;
+      }else if(st.mode !== "EVEN_ODD"){
         st.running = false;
         st.runId = "";
         st.pending = {};
@@ -781,9 +810,22 @@
         return;
       }
     }else{
-      const next = Number((stake * Math.max(1, Number(st.multiplier || 2))).toFixed(2));
-      if(side === "EVEN") st.evenStake = next;
-      if(side === "ODD") st.oddStake = next;
+      if(isHumanParityPlusMode(st.mode)){
+        if(st.plusRecoveryPending){
+          st.plusRecoveryPending = false;
+          if(side === "EVEN") st.evenStake = Number((st.evenBaseStake || 1).toFixed(2));
+          if(side === "ODD") st.oddStake = Number((st.oddBaseStake || 1).toFixed(2));
+        }else{
+          st.plusRecoveryPending = true;
+          const next = Number((Math.max(0.35, Number((side === "EVEN" ? st.evenBaseStake : st.oddBaseStake) || 1)) * 2).toFixed(2));
+          if(side === "EVEN") st.evenStake = next;
+          if(side === "ODD") st.oddStake = next;
+        }
+      }else{
+        const next = Number((stake * Math.max(1, Number(st.multiplier || 2))).toFixed(2));
+        if(side === "EVEN") st.evenStake = next;
+        if(side === "ODD") st.oddStake = next;
+      }
     }
     st.lastResult = `${side} ${outcome} at ${money(stake)}`;
     const expected = Object.keys(st.pending || {}).length;
@@ -814,6 +856,7 @@
     st.status = "Stopped";
     st.runId = "";
     st.spacingWait = 0;
+    st.plusRecoveryPending = false;
     st.pending = {};
     st.settled = 0;
     if(st.restartTimer){

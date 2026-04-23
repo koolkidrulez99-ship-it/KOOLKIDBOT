@@ -1989,8 +1989,8 @@ const profileBudgetState = {};
 const tradeHistoryFilterByProfile = {};
 const TRADE_TOAST_MULTI_JOIN_MS = 900;
 const TRADE_TOAST_BATCH_STALE_MS = 15 * 60 * 1000;
-const FAST_INTERVAL_MS_NORMAL = 400; // 0.4s as requested
-const FAST_INTERVAL_MS_TURBO = 250;  // recommended faster in Turbo
+const FAST_INTERVAL_MS_NORMAL = 120; // keep follow-up spacing tight for manual clicks
+const FAST_INTERVAL_MS_TURBO = 80;   // turbo follow-up spacing
 const FAST_MAX_BUY_QUEUE = 12;       // safety limit
 const tradeToastByProfile = {};
 const TRADE_STORE_MAX_ITEMS = 250;
@@ -3558,11 +3558,33 @@ function applyTradeHistorySnapshotProfiles(profiles){
         const pendingOnly = existing.filter((trade)=>{
             return isTradeResultPending(normalizeTradeResultLabel(trade && trade.result, trade && trade.status));
         });
+        const snapshotByContractId = new Map();
+        snapshotItems.forEach((trade)=>{
+            const cid = normalizeContractId(trade && (trade.contract_id ?? trade.contractId));
+            if(cid) snapshotByContractId.set(cid, trade);
+        });
         tradeStore[profile] = (snapshotItems.length === 0 && existingSettled.length > 0)
             ? existing.slice()
             : pendingOnly.slice();
         snapshotItems.forEach((trade)=>{
             upsertTradeInStore(Object.assign({}, trade, { profile }));
+        });
+        existingSettled.forEach((trade)=>{
+            if(!trade || typeof trade !== "object") return;
+            const cid = normalizeContractId(trade.contract_id ?? trade.contractId);
+            if(!cid){
+                upsertTradeInStore(Object.assign({}, trade, { profile }));
+                return;
+            }
+            const snapshotTrade = snapshotByContractId.get(cid);
+            if(!snapshotTrade){
+                upsertTradeInStore(Object.assign({}, trade, { profile }));
+                return;
+            }
+            const snapshotLabel = normalizeTradeResultLabel(snapshotTrade.result, snapshotTrade.status);
+            if(isTradeResultPending(snapshotLabel)){
+                upsertTradeInStore(Object.assign({}, trade, { profile }));
+            }
         });
         changedProfiles.add(profile);
     });
@@ -3581,6 +3603,11 @@ function countSettledTradesInStore(profile){
     return count;
 }
 
+function useTurboPendingTradeUi(profile){
+    const key = normalizeProfileName(profile || activeProfile);
+    return key === "KOOLKID" || key === "JOKERJOE" || key === "HUMAN" || isTurboEnabledForFastBuys(key);
+}
+
 function maybeSyncTradeHistoryFromStats(profile, expectedSettledCount){
     const key = normalizeProfileName(profile || activeProfile);
     const target = Number(expectedSettledCount || 0);
@@ -3588,7 +3615,8 @@ function maybeSyncTradeHistoryFromStats(profile, expectedSettledCount){
     if(countSettledTradesInStore(key) >= target) return;
     const nowTs = Date.now();
     const lastTs = Number(tradeHistorySnapshotSyncAt[key] || 0);
-    if((nowTs - lastTs) < 1500) return;
+    const minGapMs = useTurboPendingTradeUi(key) ? 220 : 1500;
+    if((nowTs - lastTs) < minGapMs) return;
     tradeHistorySnapshotSyncAt[key] = nowTs;
     syncTradeHistorySnapshot(key).catch(()=>{});
 }
@@ -3661,7 +3689,7 @@ function schedulePendingTradeRescue(profile, contractId, attempt){
     const tryNumber = Math.max(1, Number(attempt) || 1);
     if(!key || !cid) return;
     clearPendingTradeRescue(key, cid);
-    const turboOn = isTurboEnabledForFastBuys(key);
+    const turboOn = useTurboPendingTradeUi(key);
     const maxAttempts = turboOn ? 10 : 6;
     if(tryNumber > maxAttempts) return;
     const baseDelay = turboOn ? 180 : 700;
@@ -4922,8 +4950,6 @@ async function runFastBuyQueue(profile){
                 if(elapsedMs < intervalMs){
                     await delayFastBuyMs(intervalMs - elapsedMs);
                 }
-            }else if(intervalMs > 0){
-                await delayFastBuyMs(intervalMs);
             }
             try{
                 const result = await item.task();
@@ -6705,8 +6731,8 @@ async function trade(type, barrierOverride=null){
         if(normalizeFastBuyProfile(activeProfile)){
             await postFastProfileTrade(activeProfile, payload, {
                 turbo,
-                queue: !turbo,
-                useSocket: turbo,
+                queue: false,
+                useSocket: true,
             });
         }else{
             const action = buildMarthaTradeAction(activeProfile, payload, { source:"manual_trade" });
