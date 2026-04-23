@@ -217,14 +217,14 @@ clients = {}
 # Render does not keep abandoned websocket/strategy state forever.
 HEARTBEAT_TIMEOUT_SEC = float(os.environ.get("HEARTBEAT_TIMEOUT_SEC", "900"))
 HEARTBEAT_SWEEPER_INTERVAL_SEC = float(os.environ.get("HEARTBEAT_SWEEPER_INTERVAL_SEC", "60"))
-DERIV_WS_STALE_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_STALE_TIMEOUT_SEC", "18"))
+DERIV_WS_STALE_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_STALE_TIMEOUT_SEC", "75"))
 DERIV_WS_PING_INTERVAL_SEC = float(os.environ.get("DERIV_WS_PING_INTERVAL_SEC", "20"))
 DERIV_WS_PING_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_PING_TIMEOUT_SEC", "10"))
 DERIV_WS_CONNECT_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_CONNECT_TIMEOUT_SEC", "45"))
 DERIV_WS_AUTHORIZE_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_AUTHORIZE_TIMEOUT_SEC", "35"))
-TICK_STREAM_STALE_SEC = float(os.environ.get("TICK_STREAM_STALE_SEC", "8"))
-TICK_STREAM_RESUBSCRIBE_COOLDOWN_SEC = float(os.environ.get("TICK_STREAM_RESUBSCRIBE_COOLDOWN_SEC", "3"))
-TICK_STREAM_RECONNECT_AFTER_SEC = float(os.environ.get("TICK_STREAM_RECONNECT_AFTER_SEC", "30"))
+TICK_STREAM_STALE_SEC = float(os.environ.get("TICK_STREAM_STALE_SEC", "20"))
+TICK_STREAM_RESUBSCRIBE_COOLDOWN_SEC = float(os.environ.get("TICK_STREAM_RESUBSCRIBE_COOLDOWN_SEC", "8"))
+TICK_STREAM_RECONNECT_AFTER_SEC = float(os.environ.get("TICK_STREAM_RECONNECT_AFTER_SEC", "90"))
 MUTANT_DEPLOY_GATE_ENABLED = str(os.environ.get("MUTANT_DEPLOY_GATE_ENABLED", "1")).strip().lower() not in {"0", "false", "no", "off"}
 MUTANT_ALLOWED_ACCOUNT = str(
     os.environ.get(
@@ -12122,6 +12122,91 @@ def _send_unchain_hl_trade(
         return False, str(e)
 
 
+def _send_human_parity_trade(
+    client_id,
+    *,
+    side,
+    stake,
+    symbol,
+    duration,
+    duration_unit,
+    mode=None,
+):
+    state = clients.get(client_id)
+    if not state:
+        return False, "No client state"
+    ready, ready_msg = _ensure_trade_socket_ready(client_id, state)
+    if not ready:
+        return False, ready_msg
+    ws = state.get("ws")
+    side = str(side or "").upper().strip()
+    if side not in ("EVEN", "ODD"):
+        return False, "Invalid HUMAN parity side"
+    try:
+        stake = float(stake)
+    except Exception:
+        return False, "Invalid stake"
+    if stake <= 0:
+        return False, "Stake must be greater than 0"
+    duration_unit = str(duration_unit or "t").strip().lower()
+    if duration_unit not in ("t", "s", "m", "h"):
+        duration_unit = "t"
+    try:
+        duration = int(duration or 5)
+    except Exception:
+        duration = 5
+    duration = max(1, min(20, duration))
+
+    budget_ok, budget_msg, budget_reservation = _reserve_profile_budget(state, "HUMAN", stake)
+    if not budget_ok:
+        return False, budget_msg
+
+    req_id = _new_req_id()
+    deriv_contract = "DIGITEVEN" if side == "EVEN" else "DIGITODD"
+    req_meta = {
+        "profile": "HUMAN",
+        "type": side,
+        "stake": float(stake),
+        "symbol": symbol,
+        "time": now_time(),
+        "duration": int(duration),
+        "duration_unit": duration_unit,
+        "deriv_contract_type": deriv_contract,
+        "mode": mode,
+        "budget_reservation": budget_reservation,
+    }
+    state.setdefault("req_meta", {})[req_id] = req_meta
+    payload = {
+        "req_id": req_id,
+        "buy": 1,
+        "price": float(stake),
+        "parameters": {
+            "amount": float(stake),
+            "basis": "stake",
+            "contract_type": deriv_contract,
+            "currency": "USD",
+            "duration": int(duration),
+            "duration_unit": duration_unit,
+            "symbol": symbol,
+        }
+    }
+    try:
+        ws.send(json.dumps(payload))
+        _emit_balance_payload(client_id, state)
+        return True, f"{side} trade sent"
+    except Exception as e:
+        try:
+            state.get("req_meta", {}).pop(req_id, None)
+        except Exception:
+            pass
+        try:
+            _release_profile_budget_reservation(state, budget_reservation)
+            _emit_balance_payload(client_id, state)
+        except Exception:
+            pass
+        return False, str(e)
+
+
 def _apply_unchain_settings_update(state, data):
     u = _ensure_unchain_hl_state(state)
     if "higher_stake" in data:
@@ -13517,7 +13602,7 @@ def _restore_required_tick_subscriptions(client_id, state, reason):
     return restored
 
 
-def _get_tick_stream_health(client_id, state, *, self_heal=False):
+def _get_tick_stream_health(client_id, state, *, self_heal=False, allow_reconnect=True):
     now_ts = time.time()
     symbols = _active_tick_symbols_for_state(state)
     connected = bool(state.get("ws_connected")) and bool(state.get("ws"))
@@ -13571,7 +13656,7 @@ def _get_tick_stream_health(client_id, state, *, self_heal=False):
                 _ensure_tick_subscription(state, sym, force=True, reason="tick_stream_health", client_id=client_id)
 
             stale_for = now_ts - float(unhealthy_since.get(sym, now_ts) or now_ts)
-            if self_heal and stale_for >= TICK_STREAM_RECONNECT_AFTER_SEC:
+            if self_heal and allow_reconnect and stale_for >= TICK_STREAM_RECONNECT_AFTER_SEC:
                 logger.warning("[%s] tick_stream_stale_reconnect symbol=%s stale_for=%s", client_id, sym, round(stale_for, 2))
                 _mark_ws_unhealthy_and_reconnect(
                     client_id,
@@ -15525,7 +15610,7 @@ def api_connection_status():
     connected = bool(state.get("ws_connected")) and not _is_ws_stale(state)
     if not connected and state.get("ws_connected"):
         _mark_ws_unhealthy_and_reconnect(_cid, state, "Deriv connection went stale. Reconnecting now...", emit_error=False)
-    tick_health = _get_tick_stream_health(_cid, state, self_heal=connected)
+    tick_health = _get_tick_stream_health(_cid, state, self_heal=connected, allow_reconnect=False)
     has_token = bool(str(state.get("api_token", "") or "").strip())
     reconnecting = bool(
         has_token
@@ -18521,6 +18606,45 @@ def human_manual_trade_route():
     if ok:
         return jsonify({"status": "success", "message": msg, "trade": trade})
     return jsonify({"error": msg}), 400
+
+
+@app.route("/human_parity_trade", methods=["POST"])
+def human_parity_trade_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    data = request.json or {}
+    side = str(data.get("side") or "").upper().strip()
+    if side not in ("EVEN", "ODD", "EVEN_ODD"):
+        return jsonify({"error": "Invalid side. Use EVEN, ODD, or EVEN_ODD."}), 400
+
+    symbol = data.get("symbol") or state.get("human_symbol") or state.get("current_symbol") or "R_10"
+    duration = data.get("duration", data.get("parity_duration", 5))
+    duration_unit = data.get("duration_unit", data.get("parity_duration_unit", "t"))
+    mode = str(data.get("mode") or "").strip() or None
+    plan = []
+    if side in ("EVEN", "EVEN_ODD"):
+        plan.append(("EVEN", data.get("even_stake", data.get("stake", 1.0))))
+    if side in ("ODD", "EVEN_ODD"):
+        plan.append(("ODD", data.get("odd_stake", data.get("stake", 1.0))))
+
+    placed = []
+    for trade_side, stake in plan:
+        ok, msg = _send_human_parity_trade(
+            cid,
+            side=trade_side,
+            stake=stake,
+            symbol=symbol,
+            duration=duration,
+            duration_unit=duration_unit,
+            mode=mode,
+        )
+        if not ok:
+            return jsonify({"status": "error", "message": msg, "placed": placed}), 400
+        placed.append(trade_side)
+
+    return jsonify({"status": "success", "message": f"Sent {' + '.join(placed)}", "placed": placed})
 
 
 @app.route("/human_rf_trade", methods=["POST"])

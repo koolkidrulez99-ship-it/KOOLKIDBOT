@@ -2031,8 +2031,8 @@ let apiConnectSubmitting = false;
 let apiConnectRequestSeq = 0;
 let globalObservedTickCount = 0;
 const API_CONNECT_POLL_INTERVAL_MS = 2000;
-const API_CONNECT_POLL_MAX_ATTEMPTS = 60;
-const API_CONNECT_PENDING_TIMEOUT_MS = 120000;
+const API_CONNECT_POLL_MAX_ATTEMPTS = 120;
+const API_CONNECT_PENDING_TIMEOUT_MS = 240000;
 const TICK_UI_THROTTLE_MS = 300;
 const DIGIT_ANALYSIS_UI_THROTTLE_MS = 350;
 let sessionStartBalanceForMilestone = null;
@@ -2802,15 +2802,15 @@ function applyApiConnectionState(data){
         return true;
     }
 
-    if(reconnecting && (!apiConnectPendingUntil || Date.now() >= apiConnectPendingUntil)){
+    if((reconnecting || (!!(data && data.has_token) && tickRecovering)) && (!apiConnectPendingUntil || Date.now() >= apiConnectPendingUntil)){
         console.info("TEMP reconnect_state_entered", { source: "api_connection_state", has_token: !!(data && data.has_token) });
         setApiConnectPending("backend_reconnecting", API_CONNECT_PENDING_TIMEOUT_MS);
     }
 
     if(apiConnectPendingUntil && Date.now() < apiConnectPendingUntil){
-        apiStatus.innerText = reconnecting ? "Reconnecting..." : "Connecting...";
+        apiStatus.innerText = reconnecting ? "Reconnecting..." : ((data && data.has_token) ? "Restoring..." : "Connecting...");
         apiStatus.className = "blue";
-        updateApiConnectionUi("pending", reconnecting ? "RECONNECTING API..." : "CONNECTING API...");
+        updateApiConnectionUi("pending", reconnecting ? "RECONNECTING API..." : ((data && data.has_token) ? "RESTORING API..." : "CONNECTING API..."));
         accountDashboard.style.display = "none";
         return false;
     }

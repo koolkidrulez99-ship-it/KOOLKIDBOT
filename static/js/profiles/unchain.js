@@ -3209,7 +3209,7 @@
         if (!isActive() || !data) return;
         toast(data.message || "UNCHAIN notice", data.type || "info");
       });
-      bind("trade_result", () => {
+      bind("trade_result", (trade) => {
         if (!isActive()) return;
         const t = setTimeout(() => {
           const app = App();

@@ -13,6 +13,9 @@
   let humanManualContracts = null;
   let humanManualContractsSymbol = "";
   let humanManualLoading = false;
+  const HUMAN_PARITY_DIGIT_SEQUENCE = [];
+  let humanParityLastTickKey = "";
+  const HUMAN_PARITY_DIGIT_LIMIT = 24;
 
   function getApp() {
     return window.BotApp || {};
@@ -108,14 +111,39 @@
     step: 1,
     inProgress: false,
     pendingDirection: "",
+    pendingDirections: {},
+    settledCount: 0,
     pendingContractId: "",
     pendingMartingale: false,
     pendingStake: 0,
+    riseBaseStake: 0.35,
+    fallBaseStake: 0.35,
+    riseStake: 0.35,
+    fallStake: 0.35,
+    multiplier: 2,
     running: false,
     stopRequested: false,
     restartTimer: null,
+    spacingWait: 0,
     lastResult: "none",
     status: "Ready",
+  };
+  const HUMAN_PARITY_MARTINGALE_STATE = {
+    running: false,
+    inFlight: false,
+    mode: "EVEN",
+    runId: "",
+    evenBaseStake: 1,
+    oddBaseStake: 1,
+    evenStake: 1,
+    oddStake: 1,
+    multiplier: 2,
+    pending: {},
+    settled: 0,
+    lastResult: "none",
+    status: "Ready",
+    restartTimer: null,
+    spacingWait: 0,
   };
 
   function setHumanManualNote(text, color){
@@ -467,6 +495,332 @@
     if(!res.ok && data && data.message) throw new Error(data.message);
     if(!res.ok) throw new Error("Request failed");
     return data;
+  }
+
+  function normalizeHumanParityMode(value){
+    const mode = String(value || "EVEN").toUpperCase();
+    return mode === "ODD" || mode === "EVEN_ODD" ? mode : "EVEN";
+  }
+
+  function readHumanParityNumber(id, fallback, min, max){
+    const el = byId(id);
+    let value = Number(el && el.value);
+    if(!Number.isFinite(value)) value = fallback;
+    if(Number.isFinite(min)) value = Math.max(min, value);
+    if(Number.isFinite(max)) value = Math.min(max, value);
+    return value;
+  }
+
+  function readHumanParityInteger(id, fallback, min, max){
+    return Math.round(readHumanParityNumber(id, fallback, min, max));
+  }
+
+  function readHumanTickSpacing(id, fallback){
+    return readHumanParityInteger(id, fallback || 1, 1, 10);
+  }
+
+  function processHumanMartingaleTickSpacing(){
+    if(HUMAN_PARITY_MARTINGALE_STATE.running && HUMAN_PARITY_MARTINGALE_STATE.spacingWait > 0){
+      HUMAN_PARITY_MARTINGALE_STATE.spacingWait = Math.max(0, HUMAN_PARITY_MARTINGALE_STATE.spacingWait - 1);
+      if(HUMAN_PARITY_MARTINGALE_STATE.spacingWait > 0){
+        HUMAN_PARITY_MARTINGALE_STATE.status = `Waiting ${HUMAN_PARITY_MARTINGALE_STATE.spacingWait} tick(s) before next round`;
+        updateHumanParityMartingalePanel();
+      }else if(!HUMAN_PARITY_MARTINGALE_STATE.inFlight){
+        HUMAN_PARITY_MARTINGALE_STATE.status = "Next round starting";
+        updateHumanParityMartingalePanel();
+        sendHumanParityMartingaleRound();
+      }
+    }
+    if(HUMAN_RF_MARTINGALE_STATE.running && HUMAN_RF_MARTINGALE_STATE.spacingWait > 0){
+      HUMAN_RF_MARTINGALE_STATE.spacingWait = Math.max(0, HUMAN_RF_MARTINGALE_STATE.spacingWait - 1);
+      if(HUMAN_RF_MARTINGALE_STATE.spacingWait > 0){
+        HUMAN_RF_MARTINGALE_STATE.status = `Waiting ${HUMAN_RF_MARTINGALE_STATE.spacingWait} tick(s) before next round`;
+        updateHumanRfMartingalePanel();
+      }else if(!HUMAN_RF_MARTINGALE_STATE.inProgress){
+        HUMAN_RF_MARTINGALE_STATE.status = "Next round starting";
+        updateHumanRfMartingalePanel();
+        placeHumanRfMartingaleTrade({ continuation: true });
+      }
+    }
+  }
+
+  function extractHumanParityDigit(payload){
+    if(!payload) return null;
+    const directFields = ["digit", "last_digit", "lastDigit"];
+    for(const field of directFields){
+      const value = Number(payload[field]);
+      if(Number.isInteger(value) && value >= 0 && value <= 9) return value;
+    }
+    const nested = payload.tick || payload.data || payload.market || null;
+    if(nested && nested !== payload){
+      const nestedDigit = extractHumanParityDigit(nested);
+      if(nestedDigit !== null) return nestedDigit;
+    }
+    const quote = payload.quote ?? payload.price ?? payload.value ?? payload.last_price ?? payload.lastPrice;
+    if(quote === undefined || quote === null || quote === "") return null;
+    const text = String(quote).replace(/[^0-9]/g, "");
+    if(!text) return null;
+    const digit = Number(text.slice(-1));
+    return Number.isInteger(digit) && digit >= 0 && digit <= 9 ? digit : null;
+  }
+
+  function renderHumanParityDigitScreen(){
+    const wrap = byId("humanParityDigitScreen");
+    const lastEl = byId("humanParityDigitLast");
+    if(!wrap) return;
+    wrap.innerHTML = "";
+    if(lastEl){
+      const last = HUMAN_PARITY_DIGIT_SEQUENCE[HUMAN_PARITY_DIGIT_SEQUENCE.length - 1];
+      lastEl.textContent = last ? `${last.label} ${last.digit}` : "Waiting...";
+      lastEl.style.color = last ? (last.label === "E" ? "#86efac" : "#fecaca") : "#e5e7eb";
+    }
+    if(!HUMAN_PARITY_DIGIT_SEQUENCE.length){
+      const empty = document.createElement("span");
+      empty.textContent = "Collecting digits...";
+      empty.style.color = "#64748b";
+      empty.style.fontSize = "11px";
+      wrap.appendChild(empty);
+      return;
+    }
+    HUMAN_PARITY_DIGIT_SEQUENCE.forEach((item) => {
+      const box = document.createElement("span");
+      const even = item.label === "E";
+      box.textContent = item.label;
+      box.title = `${even ? "Even" : "Odd"} digit ${item.digit}`;
+      box.style.width = "22px";
+      box.style.height = "22px";
+      box.style.borderRadius = "6px";
+      box.style.display = "inline-flex";
+      box.style.alignItems = "center";
+      box.style.justifyContent = "center";
+      box.style.flex = "0 0 auto";
+      box.style.fontSize = "12px";
+      box.style.fontWeight = "950";
+      box.style.color = even ? "#052e16" : "#fff7ed";
+      box.style.background = even ? "#22c55e" : "#ef4444";
+      box.style.boxShadow = even ? "0 0 12px rgba(34,197,94,.42)" : "0 0 12px rgba(239,68,68,.42)";
+      wrap.appendChild(box);
+    });
+  }
+
+  function updateHumanParityDigitScreen(payload){
+    const digit = extractHumanParityDigit(payload);
+    if(digit === null) return;
+    const key = [
+      payload && (payload.tick_count ?? payload.tickCount ?? payload.epoch ?? payload.time),
+      payload && (payload.quote ?? payload.price ?? payload.value),
+      digit,
+    ].filter((part) => part !== undefined && part !== null && part !== "").join(":");
+    if(key && key === humanParityLastTickKey) return;
+    humanParityLastTickKey = key;
+    HUMAN_PARITY_DIGIT_SEQUENCE.push({ digit, label: digit % 2 === 0 ? "E" : "O" });
+    while(HUMAN_PARITY_DIGIT_SEQUENCE.length > HUMAN_PARITY_DIGIT_LIMIT){
+      HUMAN_PARITY_DIGIT_SEQUENCE.shift();
+    }
+    renderHumanParityDigitScreen();
+    processHumanMartingaleTickSpacing();
+  }
+
+  function resetHumanParityDigitScreen(){
+    HUMAN_PARITY_DIGIT_SEQUENCE.length = 0;
+    humanParityLastTickKey = "";
+    renderHumanParityDigitScreen();
+  }
+
+  function readHumanParitySettings(){
+    const modeEl = byId("humanParityMartingaleMode");
+    const mode = normalizeHumanParityMode((modeEl && modeEl.value) || HUMAN_PARITY_MARTINGALE_STATE.mode);
+    const startStake = Number(readHumanParityNumber("humanParityMartingaleStake", 1, 0.35, 1000000).toFixed(2));
+    const multiplier = Number(readHumanParityNumber("humanParityMartingaleMultiplier", 2, 1, 100).toFixed(2));
+    const duration = readHumanParityInteger("humanParityMartingaleDuration", 5, 1, 10);
+    const tickSpacing = readHumanTickSpacing("humanParityMartingaleTickSpacing", 1);
+    const stakeEl = byId("humanParityMartingaleStake");
+    const multEl = byId("humanParityMartingaleMultiplier");
+    const durationEl = byId("humanParityMartingaleDuration");
+    const spacingEl = byId("humanParityMartingaleTickSpacing");
+    if(modeEl) modeEl.value = mode;
+    if(stakeEl && String(stakeEl.value || "").trim() === "") stakeEl.value = startStake.toFixed(2);
+    if(multEl && String(multEl.value || "").trim() === "") multEl.value = String(multiplier);
+    if(durationEl) durationEl.value = String(duration);
+    if(spacingEl) spacingEl.value = String(tickSpacing);
+    return { mode, startStake, multiplier, duration, tickSpacing };
+  }
+
+  function updateHumanParityMartingalePanel(){
+    const settings = readHumanParitySettings();
+    const mode = settings.mode;
+    HUMAN_PARITY_MARTINGALE_STATE.mode = mode;
+    HUMAN_PARITY_MARTINGALE_STATE.multiplier = settings.multiplier;
+    if(!HUMAN_PARITY_MARTINGALE_STATE.running && !HUMAN_PARITY_MARTINGALE_STATE.inFlight && !HUMAN_PARITY_MARTINGALE_STATE.runId){
+      HUMAN_PARITY_MARTINGALE_STATE.evenBaseStake = settings.startStake;
+      HUMAN_PARITY_MARTINGALE_STATE.oddBaseStake = settings.startStake;
+      HUMAN_PARITY_MARTINGALE_STATE.evenStake = settings.startStake;
+      HUMAN_PARITY_MARTINGALE_STATE.oddStake = settings.startStake;
+    }
+    const startBtn = byId("humanParityMartingaleStartBtn");
+    const stopBtn = byId("humanParityMartingaleStopBtn");
+    if(startBtn){
+      startBtn.disabled = !!HUMAN_PARITY_MARTINGALE_STATE.running || !!HUMAN_PARITY_MARTINGALE_STATE.inFlight;
+      startBtn.style.opacity = startBtn.disabled ? "0.6" : "1";
+    }
+    if(stopBtn){
+      const canStop = !!HUMAN_PARITY_MARTINGALE_STATE.running || !!HUMAN_PARITY_MARTINGALE_STATE.inFlight;
+      stopBtn.disabled = !canStop;
+      stopBtn.style.opacity = canStop ? "1" : "0.6";
+    }
+    const statusEl = byId("humanParityMartingaleStatus");
+    if(statusEl){
+      const modeLabel = mode === "EVEN_ODD" ? "Even + Odd" : mode === "ODD" ? "Odd" : "Even";
+      statusEl.innerHTML = [
+        `${HUMAN_PARITY_MARTINGALE_STATE.status || "Ready"} • ${modeLabel} • ${settings.multiplier}x`,
+        `Even stake ${money(HUMAN_PARITY_MARTINGALE_STATE.evenStake || 1)} • Odd stake ${money(HUMAN_PARITY_MARTINGALE_STATE.oddStake || 1)}`,
+        `Pending: ${Object.keys(HUMAN_PARITY_MARTINGALE_STATE.pending || {}).join(" + ") || "none"} • Last result: ${HUMAN_PARITY_MARTINGALE_STATE.lastResult || "none"}`,
+      ].join("<br>");
+      statusEl.style.color = HUMAN_PARITY_MARTINGALE_STATE.inFlight ? "#fbbf24" : "#94a3b8";
+    }
+  }
+
+  function resetHumanParityMartingaleRun(){
+    const settings = readHumanParitySettings();
+    HUMAN_PARITY_MARTINGALE_STATE.mode = settings.mode;
+    HUMAN_PARITY_MARTINGALE_STATE.runId = `hpm_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
+    HUMAN_PARITY_MARTINGALE_STATE.evenBaseStake = settings.startStake;
+    HUMAN_PARITY_MARTINGALE_STATE.oddBaseStake = settings.startStake;
+    HUMAN_PARITY_MARTINGALE_STATE.evenStake = settings.startStake;
+    HUMAN_PARITY_MARTINGALE_STATE.oddStake = settings.startStake;
+    HUMAN_PARITY_MARTINGALE_STATE.multiplier = settings.multiplier;
+    HUMAN_PARITY_MARTINGALE_STATE.pending = {};
+    HUMAN_PARITY_MARTINGALE_STATE.settled = 0;
+    HUMAN_PARITY_MARTINGALE_STATE.lastResult = "none";
+    HUMAN_PARITY_MARTINGALE_STATE.status = "Ready";
+  }
+
+  function getHumanParityMartingalePlan(){
+    const mode = normalizeHumanParityMode(HUMAN_PARITY_MARTINGALE_STATE.mode);
+    if(mode === "EVEN_ODD"){
+      return [
+        { side: "EVEN", stake: Math.max(0.35, Number(HUMAN_PARITY_MARTINGALE_STATE.evenStake || 1)) },
+        { side: "ODD", stake: Math.max(0.35, Number(HUMAN_PARITY_MARTINGALE_STATE.oddStake || 1)) },
+      ];
+    }
+    const stake = mode === "ODD" ? HUMAN_PARITY_MARTINGALE_STATE.oddStake : HUMAN_PARITY_MARTINGALE_STATE.evenStake;
+    const baseStake = mode === "ODD" ? HUMAN_PARITY_MARTINGALE_STATE.oddBaseStake : HUMAN_PARITY_MARTINGALE_STATE.evenBaseStake;
+    return [{ side: mode, stake: Math.max(0.35, Number(stake || baseStake || 1)) }];
+  }
+
+  async function sendHumanParityMartingaleRound(){
+    const st = HUMAN_PARITY_MARTINGALE_STATE;
+    if(!st.running || st.inFlight) return;
+    const plan = getHumanParityMartingalePlan();
+    if(!plan.length) return;
+    const duration = readHumanParityInteger("humanParityMartingaleDuration", 5, 1, 10);
+    st.spacingWait = 0;
+    st.inFlight = true;
+    st.pending = {};
+    st.settled = 0;
+    plan.forEach((leg) => { st.pending[leg.side] = { stake: leg.stake, result: "" }; });
+    st.status = `Sending ${plan.map((leg) => `${leg.side} ${money(leg.stake)}`).join(" + ")}`;
+    updateHumanParityMartingalePanel();
+    try{
+      const payload = {
+        side: st.mode,
+        stake: plan[0].stake,
+        even_stake: (plan.find((leg) => leg.side === "EVEN") || {}).stake,
+        odd_stake: (plan.find((leg) => leg.side === "ODD") || {}).stake,
+        duration,
+        duration_unit: "t",
+        mode: `human_parity_martingale:${st.runId}`,
+      };
+      await postJSON("/human_parity_trade", payload);
+      st.status = `Running. Waiting for ${plan.length} result(s).`;
+    }catch(e){
+      st.running = false;
+      st.runId = "";
+      st.status = (e && e.message) || "Even/Odd martingale trade failed";
+      if(typeof showToast === "function") showToast(st.status, "error");
+    }finally{
+      st.inFlight = false;
+      updateHumanParityMartingalePanel();
+    }
+  }
+
+  function scheduleHumanParityMartingaleRound(delayMs){
+    const st = HUMAN_PARITY_MARTINGALE_STATE;
+    if(!st.running || st.inFlight || st.restartTimer) return;
+    const spacing = readHumanTickSpacing("humanParityMartingaleTickSpacing", 1);
+    st.spacingWait = spacing;
+    st.status = `Waiting ${spacing} tick(s) before next round`;
+    updateHumanParityMartingalePanel();
+  }
+
+  function updateHumanParityMartingaleFromResult(payload){
+    const st = HUMAN_PARITY_MARTINGALE_STATE;
+    if(!payload || String(payload.profile || "").toUpperCase() !== PROFILE || !st.runId) return;
+    if(String(payload.mode || "") !== `human_parity_martingale:${st.runId}`) return;
+    const side = String(payload.type || payload.action || "").toUpperCase();
+    if(side !== "EVEN" && side !== "ODD") return;
+    const pending = st.pending && st.pending[side];
+    if(!pending || pending.result) return;
+    const outcome = resolveHumanTradeOutcome(payload);
+    if(!outcome) return;
+    pending.result = outcome;
+    st.settled = Object.values(st.pending || {}).filter((item) => item && item.result).length;
+    const stake = Math.max(0.35, Number(pending.stake || (side === "EVEN" ? st.evenStake : st.oddStake) || 1));
+    if(outcome === "WIN"){
+      if(side === "EVEN") st.evenStake = Number((st.evenBaseStake || 1).toFixed(2));
+      if(side === "ODD") st.oddStake = Number((st.oddBaseStake || 1).toFixed(2));
+      if(st.mode !== "EVEN_ODD"){
+        st.running = false;
+        st.runId = "";
+        st.pending = {};
+        st.settled = 0;
+        st.status = `${side} won. Martingale stopped.`;
+        st.lastResult = `${side} WIN at ${money(stake)}`;
+        updateHumanParityMartingalePanel();
+        if(typeof showToast === "function") showToast(`HUMAN ${side} martingale won and stopped`, "success");
+        return;
+      }
+    }else{
+      const next = Number((stake * Math.max(1, Number(st.multiplier || 2))).toFixed(2));
+      if(side === "EVEN") st.evenStake = next;
+      if(side === "ODD") st.oddStake = next;
+    }
+    st.lastResult = `${side} ${outcome} at ${money(stake)}`;
+    const expected = Object.keys(st.pending || {}).length;
+    st.status = st.running ? `Running. Settled ${st.settled}/${expected}.` : "Stopped";
+    updateHumanParityMartingalePanel();
+    if(st.running && expected > 0 && st.settled >= expected){
+      st.pending = {};
+      st.settled = 0;
+      st.status = "Next round queued";
+      updateHumanParityMartingalePanel();
+      scheduleHumanParityMartingaleRound(450);
+    }
+  }
+
+  function startHumanParityMartingale(){
+    const st = HUMAN_PARITY_MARTINGALE_STATE;
+    if(st.running || st.inFlight) return;
+    resetHumanParityMartingaleRun();
+    st.running = true;
+    st.status = "Starting";
+    updateHumanParityMartingalePanel();
+    sendHumanParityMartingaleRound();
+  }
+
+  function stopHumanParityMartingale(){
+    const st = HUMAN_PARITY_MARTINGALE_STATE;
+    st.running = false;
+    st.status = "Stopped";
+    st.runId = "";
+    st.spacingWait = 0;
+    st.pending = {};
+    st.settled = 0;
+    if(st.restartTimer){
+      clearTimeout(st.restartTimer);
+      st.restartTimer = null;
+    }
+    updateHumanParityMartingalePanel();
   }
 
   async function saveHumanRFSettings(){
@@ -898,10 +1252,14 @@
 
   function readHumanRfMartingaleSettings(){
     const directionEl = byId("humanRfMartingaleDirection");
-    const direction = String((directionEl && directionEl.value) || HUMAN_RF_MARTINGALE_STATE.direction || "RISE").toUpperCase() === "FALL" ? "FALL" : "RISE";
+    const directionRaw = String((directionEl && directionEl.value) || HUMAN_RF_MARTINGALE_STATE.direction || "RISE").toUpperCase();
+    const direction = directionRaw === "FALL" || directionRaw === "BOTH" ? directionRaw : "RISE";
     const duration = Math.round(readHumanRfMartingaleNumber("humanRfMartingaleDuration", 5, 1, 10));
-    const startStake = Number(readHumanRfMartingaleNumber("humanRfMartingaleStartStake", 0.35, 0.35, 1000000).toFixed(2));
+    const riseStake = Number(readHumanRfMartingaleNumber("humanRfMartingaleRiseStake", 0.35, 0.35, 1000000).toFixed(2));
+    const fallStake = Number(readHumanRfMartingaleNumber("humanRfMartingaleFallStake", 0.35, 0.35, 1000000).toFixed(2));
+    const startStake = direction === "FALL" ? fallStake : riseStake;
     const multiplier = Math.max(1, readHumanRfMartingaleNumber("humanRfMartingaleMultiplier", 2, 1, 100));
+    const tickSpacing = readHumanTickSpacing("humanRfMartingaleTickSpacing", 1);
     const maxSteps = Math.max(1, Math.floor(readHumanRfMartingaleNumber("humanRfMartingaleMaxSteps", 8, 1, 1000)));
     const capRaw = byId("humanRfMartingaleMaxStake");
     const maxStakeValue = capRaw && String(capRaw.value || "").trim() !== ""
@@ -911,7 +1269,9 @@
     if(directionEl) directionEl.value = direction;
     const durationEl = byId("humanRfMartingaleDuration");
     if(durationEl) durationEl.value = String(duration);
-    return { direction, duration, startStake, multiplier, maxSteps, maxStake };
+    const spacingEl = byId("humanRfMartingaleTickSpacing");
+    if(spacingEl) spacingEl.value = String(tickSpacing);
+    return { direction, duration, startStake, riseStake, fallStake, multiplier, tickSpacing, maxSteps, maxStake };
   }
 
   function humanRfMartingaleStakeForStep(stepValue){
@@ -920,6 +1280,13 @@
     let stake = settings.startStake * Math.pow(settings.multiplier, step - 1);
     if(settings.maxStake !== null) stake = Math.min(stake, settings.maxStake);
     return Number(Math.max(0.35, stake).toFixed(2));
+  }
+
+  function humanRfPairStakeForDirection(direction){
+    const side = normalizeHumanRfDirection(direction);
+    const stake = side === "FALL" ? HUMAN_RF_MARTINGALE_STATE.fallStake : HUMAN_RF_MARTINGALE_STATE.riseStake;
+    const base = side === "FALL" ? HUMAN_RF_MARTINGALE_STATE.fallBaseStake : HUMAN_RF_MARTINGALE_STATE.riseBaseStake;
+    return Number(Math.max(0.35, Number(stake || base || 0.35)).toFixed(2));
   }
 
   function updateHumanRfMartingalePanel(){
@@ -946,16 +1313,28 @@
     }
     const status = byId("humanRfMartingaleStatus");
     if(status){
-      const currentStake = humanRfMartingaleStakeForStep();
-      const nextStep = Math.min(settings.maxSteps, HUMAN_RF_MARTINGALE_STATE.step + 1);
-      const nextStake = HUMAN_RF_MARTINGALE_STATE.enabled ? humanRfMartingaleStakeForStep(nextStep) : settings.startStake;
-      status.textContent = `${HUMAN_RF_MARTINGALE_STATE.status}. ${settings.direction} • Step ${HUMAN_RF_MARTINGALE_STATE.step} • Current stake $${currentStake.toFixed(2)} • Next stake $${nextStake.toFixed(2)} • Last result: ${HUMAN_RF_MARTINGALE_STATE.lastResult}`;
+      if(settings.direction === "BOTH"){
+        if(!HUMAN_RF_MARTINGALE_STATE.running && !HUMAN_RF_MARTINGALE_STATE.inProgress){
+          HUMAN_RF_MARTINGALE_STATE.riseBaseStake = settings.riseStake;
+          HUMAN_RF_MARTINGALE_STATE.fallBaseStake = settings.fallStake;
+          HUMAN_RF_MARTINGALE_STATE.riseStake = settings.riseStake;
+          HUMAN_RF_MARTINGALE_STATE.fallStake = settings.fallStake;
+          HUMAN_RF_MARTINGALE_STATE.multiplier = settings.multiplier;
+        }
+        status.textContent = `${HUMAN_RF_MARTINGALE_STATE.status}. Rise + Fall • ${settings.multiplier}x • Rise stake $${humanRfPairStakeForDirection("RISE").toFixed(2)} • Fall stake $${humanRfPairStakeForDirection("FALL").toFixed(2)} • Last result: ${HUMAN_RF_MARTINGALE_STATE.lastResult}`;
+      }else{
+        const currentStake = humanRfMartingaleStakeForStep();
+        const nextStep = Math.min(settings.maxSteps, HUMAN_RF_MARTINGALE_STATE.step + 1);
+        const nextStake = HUMAN_RF_MARTINGALE_STATE.enabled ? humanRfMartingaleStakeForStep(nextStep) : settings.startStake;
+        status.textContent = `${HUMAN_RF_MARTINGALE_STATE.status}. ${settings.direction} • Step ${HUMAN_RF_MARTINGALE_STATE.step} • Current stake $${currentStake.toFixed(2)} • Next stake $${nextStake.toFixed(2)} • Last result: ${HUMAN_RF_MARTINGALE_STATE.lastResult}`;
+      }
       status.style.color = HUMAN_RF_MARTINGALE_STATE.inProgress ? "#fbbf24" : "#94a3b8";
     }
   }
 
   function setHumanRfMartingaleDirection(direction){
-    HUMAN_RF_MARTINGALE_STATE.direction = String(direction || "RISE").toUpperCase() === "FALL" ? "FALL" : "RISE";
+    const raw = String(direction || "RISE").toUpperCase();
+    HUMAN_RF_MARTINGALE_STATE.direction = raw === "FALL" || raw === "BOTH" ? raw : "RISE";
     HUMAN_RF_MARTINGALE_STATE.status = "Ready";
     updateHumanRfMartingalePanel();
   }
@@ -976,6 +1355,8 @@
   function clearHumanRfMartingalePending(){
     HUMAN_RF_MARTINGALE_STATE.inProgress = false;
     HUMAN_RF_MARTINGALE_STATE.pendingDirection = "";
+    HUMAN_RF_MARTINGALE_STATE.pendingDirections = {};
+    HUMAN_RF_MARTINGALE_STATE.settledCount = 0;
     HUMAN_RF_MARTINGALE_STATE.pendingContractId = "";
     HUMAN_RF_MARTINGALE_STATE.pendingMartingale = false;
     HUMAN_RF_MARTINGALE_STATE.pendingStake = 0;
@@ -989,6 +1370,7 @@
     HUMAN_RF_MARTINGALE_STATE.running = false;
     HUMAN_RF_MARTINGALE_STATE.stopRequested = true;
     HUMAN_RF_MARTINGALE_STATE.enabled = false;
+    HUMAN_RF_MARTINGALE_STATE.spacingWait = 0;
     clearHumanRfMartingalePending();
     HUMAN_RF_MARTINGALE_STATE.status = reason || "Stopped";
     updateHumanRfMartingalePanel();
@@ -998,37 +1380,80 @@
     const opts = options || {};
     if(HUMAN_RF_MARTINGALE_STATE.inProgress) return;
     const settings = readHumanRfMartingaleSettings();
+    if(settings.direction === "BOTH" && HUMAN_RF_MARTINGALE_STATE.enabled && !opts.continuation){
+      HUMAN_RF_MARTINGALE_STATE.riseBaseStake = settings.riseStake;
+      HUMAN_RF_MARTINGALE_STATE.fallBaseStake = settings.fallStake;
+      HUMAN_RF_MARTINGALE_STATE.riseStake = settings.riseStake;
+      HUMAN_RF_MARTINGALE_STATE.fallStake = settings.fallStake;
+      HUMAN_RF_MARTINGALE_STATE.multiplier = settings.multiplier;
+    }
+    const pairPlan = settings.direction === "BOTH"
+      ? [
+        { direction: "RISE", stake: humanRfPairStakeForDirection("RISE") },
+        { direction: "FALL", stake: humanRfPairStakeForDirection("FALL") },
+      ]
+      : [];
     const stake = HUMAN_RF_MARTINGALE_STATE.enabled ? humanRfMartingaleStakeForStep() : settings.startStake;
     if(HUMAN_RF_MARTINGALE_STATE.enabled && !opts.continuation){
       HUMAN_RF_MARTINGALE_STATE.running = true;
       HUMAN_RF_MARTINGALE_STATE.stopRequested = false;
     }
     HUMAN_RF_MARTINGALE_STATE.inProgress = true;
+    HUMAN_RF_MARTINGALE_STATE.spacingWait = 0;
     HUMAN_RF_MARTINGALE_STATE.pendingDirection = settings.direction;
+    HUMAN_RF_MARTINGALE_STATE.pendingDirections = {};
+    HUMAN_RF_MARTINGALE_STATE.settledCount = 0;
+    pairPlan.forEach((leg) => { HUMAN_RF_MARTINGALE_STATE.pendingDirections[leg.direction] = { stake: leg.stake, result: "" }; });
     HUMAN_RF_MARTINGALE_STATE.pendingContractId = "";
     HUMAN_RF_MARTINGALE_STATE.pendingMartingale = !!HUMAN_RF_MARTINGALE_STATE.enabled;
-    HUMAN_RF_MARTINGALE_STATE.pendingStake = stake;
+    HUMAN_RF_MARTINGALE_STATE.pendingStake = settings.direction === "BOTH" ? pairPlan.reduce((sum, leg) => sum + leg.stake, 0) : stake;
     HUMAN_RF_MARTINGALE_STATE.status = "Running";
     updateHumanRfMartingalePanel();
     try{
-      const payload = {
-        direction: settings.direction,
-        stake,
-        duration_ticks: settings.duration,
-        ignore_cooldown: true,
-      };
-      const data = await guardMartha({
-        profile: PROFILE,
-        source: "human_rf_martingale",
-        type: settings.direction,
-        label: `HUMAN ${settings.direction} Martingale`,
-        stake,
-        duration: settings.duration,
-        duration_unit: "t",
-        batch_count: 1,
-      }, () => postJSON("/human_rf_trade", payload));
-      if(isMarthaBlocked(data)) throw new Error("Trade blocked");
-      if(typeof showToast === "function") showToast(`HUMAN ${settings.direction} martingale sent at $${stake.toFixed(2)}`, "success");
+      if(settings.direction === "BOTH"){
+        const totalStake = pairPlan.reduce((sum, leg) => sum + leg.stake, 0);
+        const data = await guardMartha({
+          profile: PROFILE,
+          source: "human_rf_pair_martingale",
+          type: "RISE_FALL",
+          label: "HUMAN Rise + Fall Martingale",
+          stake: totalStake,
+          duration: settings.duration,
+          duration_unit: "t",
+          batch_count: 2,
+        }, async () => {
+          for(const leg of pairPlan){
+            await postJSON("/human_rf_trade", {
+              direction: leg.direction,
+              stake: leg.stake,
+              duration_ticks: settings.duration,
+              ignore_cooldown: true,
+            });
+          }
+          return { status: "success" };
+        });
+        if(isMarthaBlocked(data)) throw new Error("Trade blocked");
+        if(typeof showToast === "function") showToast(`HUMAN Rise + Fall martingale sent: RISE $${pairPlan[0].stake.toFixed(2)} + FALL $${pairPlan[1].stake.toFixed(2)}`, "success");
+      }else{
+        const payload = {
+          direction: settings.direction,
+          stake,
+          duration_ticks: settings.duration,
+          ignore_cooldown: true,
+        };
+        const data = await guardMartha({
+          profile: PROFILE,
+          source: "human_rf_martingale",
+          type: settings.direction,
+          label: `HUMAN ${settings.direction} Martingale`,
+          stake,
+          duration: settings.duration,
+          duration_unit: "t",
+          batch_count: 1,
+        }, () => postJSON("/human_rf_trade", payload));
+        if(isMarthaBlocked(data)) throw new Error("Trade blocked");
+        if(typeof showToast === "function") showToast(`HUMAN ${settings.direction} martingale sent at $${stake.toFixed(2)}`, "success");
+      }
     }catch(e){
       HUMAN_RF_MARTINGALE_STATE.running = false;
       HUMAN_RF_MARTINGALE_STATE.stopRequested = true;
@@ -1314,9 +1739,16 @@
       && contractId
       && HUMAN_RF_MARTINGALE_STATE.inProgress
       && !HUMAN_RF_MARTINGALE_STATE.pendingContractId
-      && rfDirection === HUMAN_RF_MARTINGALE_STATE.pendingDirection
+      && (
+        rfDirection === HUMAN_RF_MARTINGALE_STATE.pendingDirection
+        || (HUMAN_RF_MARTINGALE_STATE.pendingDirection === "BOTH" && HUMAN_RF_MARTINGALE_STATE.pendingDirections && HUMAN_RF_MARTINGALE_STATE.pendingDirections[rfDirection])
+      )
     ){
-      HUMAN_RF_MARTINGALE_STATE.pendingContractId = String(contractId);
+      if(HUMAN_RF_MARTINGALE_STATE.pendingDirection === "BOTH"){
+        HUMAN_RF_MARTINGALE_STATE.pendingDirections[rfDirection].contractId = String(contractId);
+      }else{
+        HUMAN_RF_MARTINGALE_STATE.pendingContractId = String(contractId);
+      }
       HUMAN_RF_MARTINGALE_STATE.status = "Running";
       updateHumanRfMartingalePanel();
     }
@@ -1402,6 +1834,45 @@
     if(!HUMAN_RF_MARTINGALE_STATE.inProgress && !HUMAN_RF_MARTINGALE_STATE.pendingContractId) return;
     const contractId = payload.contract_id || payload.buy_contract_id || payload.id;
     const direction = normalizeHumanRfDirection([payload.type, payload.contract_type, payload.label, payload.action].filter(Boolean).join(" "));
+    if(HUMAN_RF_MARTINGALE_STATE.pendingDirection === "BOTH"){
+      if(!direction || !HUMAN_RF_MARTINGALE_STATE.pendingDirections || !HUMAN_RF_MARTINGALE_STATE.pendingDirections[direction]) return;
+      const pendingLeg = HUMAN_RF_MARTINGALE_STATE.pendingDirections[direction];
+      if(pendingLeg.result) return;
+      if(pendingLeg.contractId && String(contractId || "") !== pendingLeg.contractId) return;
+      const outcome = resolveHumanTradeOutcome(payload);
+      if(!outcome) return;
+      pendingLeg.result = outcome;
+      HUMAN_RF_MARTINGALE_STATE.settledCount = Object.values(HUMAN_RF_MARTINGALE_STATE.pendingDirections || {}).filter((item) => item && item.result).length;
+      const stake = Math.max(0.35, Number(pendingLeg.stake || humanRfPairStakeForDirection(direction)));
+      if(outcome === "WIN"){
+        if(direction === "RISE") HUMAN_RF_MARTINGALE_STATE.riseStake = Number((HUMAN_RF_MARTINGALE_STATE.riseBaseStake || 0.35).toFixed(2));
+        if(direction === "FALL") HUMAN_RF_MARTINGALE_STATE.fallStake = Number((HUMAN_RF_MARTINGALE_STATE.fallBaseStake || 0.35).toFixed(2));
+      }else{
+        const settings = readHumanRfMartingaleSettings();
+        let next = Number((stake * Math.max(1, Number(settings.multiplier || HUMAN_RF_MARTINGALE_STATE.multiplier || 2))).toFixed(2));
+        if(settings.maxStake !== null) next = Math.min(next, settings.maxStake);
+        if(direction === "RISE") HUMAN_RF_MARTINGALE_STATE.riseStake = Number(Math.max(0.35, next).toFixed(2));
+        if(direction === "FALL") HUMAN_RF_MARTINGALE_STATE.fallStake = Number(Math.max(0.35, next).toFixed(2));
+      }
+      HUMAN_RF_MARTINGALE_STATE.lastResult = `${direction} ${outcome} at ${money(stake)}`;
+      const expected = Object.keys(HUMAN_RF_MARTINGALE_STATE.pendingDirections || {}).length;
+      HUMAN_RF_MARTINGALE_STATE.status = HUMAN_RF_MARTINGALE_STATE.running ? `Running. Settled ${HUMAN_RF_MARTINGALE_STATE.settledCount}/${expected}.` : "Stopped";
+      updateHumanRfMartingalePanel();
+      if(expected > 0 && HUMAN_RF_MARTINGALE_STATE.settledCount >= expected){
+        HUMAN_RF_MARTINGALE_STATE.inProgress = false;
+        HUMAN_RF_MARTINGALE_STATE.pendingDirections = {};
+        HUMAN_RF_MARTINGALE_STATE.settledCount = 0;
+        HUMAN_RF_MARTINGALE_STATE.status = HUMAN_RF_MARTINGALE_STATE.running ? "Next round queued" : "Ready";
+        updateHumanRfMartingalePanel();
+        if(HUMAN_RF_MARTINGALE_STATE.running && !HUMAN_RF_MARTINGALE_STATE.stopRequested){
+          const spacing = readHumanTickSpacing("humanRfMartingaleTickSpacing", 1);
+          HUMAN_RF_MARTINGALE_STATE.spacingWait = spacing;
+          HUMAN_RF_MARTINGALE_STATE.status = `Waiting ${spacing} tick(s) before next round`;
+          updateHumanRfMartingalePanel();
+        }
+      }
+      return;
+    }
     const pendingId = HUMAN_RF_MARTINGALE_STATE.pendingContractId;
     if(pendingId && String(contractId || "") !== pendingId) return;
     if(!pendingId && direction && direction !== HUMAN_RF_MARTINGALE_STATE.pendingDirection) return;
@@ -1427,12 +1898,9 @@
         HUMAN_RF_MARTINGALE_STATE.status = "Running";
         if(HUMAN_RF_MARTINGALE_STATE.running && !HUMAN_RF_MARTINGALE_STATE.stopRequested){
           if(HUMAN_RF_MARTINGALE_STATE.restartTimer) clearTimeout(HUMAN_RF_MARTINGALE_STATE.restartTimer);
-          HUMAN_RF_MARTINGALE_STATE.restartTimer = setTimeout(() => {
-            HUMAN_RF_MARTINGALE_STATE.restartTimer = null;
-            if(HUMAN_RF_MARTINGALE_STATE.running && HUMAN_RF_MARTINGALE_STATE.enabled && !HUMAN_RF_MARTINGALE_STATE.stopRequested){
-              placeHumanRfMartingaleTrade({ continuation: true });
-            }
-          }, 350);
+          const spacing = readHumanTickSpacing("humanRfMartingaleTickSpacing", 1);
+          HUMAN_RF_MARTINGALE_STATE.spacingWait = spacing;
+          HUMAN_RF_MARTINGALE_STATE.status = `Waiting ${spacing} tick(s) before next round`;
         }
       }else{
         HUMAN_RF_MARTINGALE_STATE.status = "Ready";
@@ -1599,17 +2067,21 @@
           if(rootExists()) scheduleHumanRFStatusRender(payload);
         });
         bind("human_market_change", () => {
+          resetHumanParityDigitScreen();
           fetchHumanRFStatus();
           refreshHumanManualContracts(true);
         });
         bind("market_change", () => {
+          resetHumanParityDigitScreen();
           fetchHumanRFStatus();
           refreshHumanManualContracts(true);
         });
+        bind("tick", updateHumanParityDigitScreen);
         bind("trade_placed", rememberHumanSpecialTrade);
         bind("trade_result", updateHumanSpecialMartingaleFromResult);
         bind("trade_result", updateHumanSingleMartingaleFromResult);
         bind("trade_result", updateHumanRfMartingaleFromResult);
+        bind("trade_result", updateHumanParityMartingaleFromResult);
         socketHooked = true;
         if(App && typeof App.logSocketListenerCounts === "function") App.logSocketListenerCounts("human_profile_init");
       }
@@ -1631,7 +2103,12 @@
         previous.socket.off("trade_result", previous.handlers.specialResult);
         previous.socket.off("trade_result", previous.handlers.singleResult);
         if(previous.handlers.rfResult) previous.socket.off("trade_result", previous.handlers.rfResult);
+        if(previous.handlers.parityResult) previous.socket.off("trade_result", previous.handlers.parityResult);
+        if(previous.handlers.tickResult) previous.socket.off("tick", previous.handlers.tickResult);
       }
+      const tickResult = (payload) => {
+        updateHumanParityDigitScreen(payload);
+      };
       const placed = (payload) => {
         if(payload && String(payload.profile || "").toUpperCase() === PROFILE) rememberHumanSpecialTrade(payload);
       };
@@ -1644,11 +2121,16 @@
       const rfResult = (payload) => {
         if(payload && String(payload.profile || "").toUpperCase() === PROFILE) updateHumanRfMartingaleFromResult(payload);
       };
+      const parityResult = (payload) => {
+        if(payload && String(payload.profile || "").toUpperCase() === PROFILE) updateHumanParityMartingaleFromResult(payload);
+      };
+      liveSocket.on("tick", tickResult);
       liveSocket.on("trade_placed", placed);
       liveSocket.on("trade_result", specialResult);
       liveSocket.on("trade_result", singleResult);
       liveSocket.on("trade_result", rfResult);
-      window.__humanSpecialSocketFallback = { socket: liveSocket, handlers: { placed, specialResult, singleResult, rfResult } };
+      liveSocket.on("trade_result", parityResult);
+      window.__humanSpecialSocketFallback = { socket: liveSocket, handlers: { tickResult, placed, specialResult, singleResult, rfResult, parityResult } };
       return true;
     }catch(e){
       return false;
@@ -1766,6 +2248,12 @@
 
     App.bindActionButtons(root, async ({ action }) => {
       switch (action) {
+        case "human-parity-martingale-start":
+          startHumanParityMartingale();
+          break;
+        case "human-parity-martingale-stop":
+          stopHumanParityMartingale();
+          break;
         default:
           break;
       }
@@ -1836,6 +2324,9 @@
     window.updateHumanRfMartingalePanel = updateHumanRfMartingalePanel;
     window.placeHumanRfMartingaleTrade = placeHumanRfMartingaleTrade;
     window.quickStopHumanRfMartingale = quickStopHumanRfMartingale;
+    window.updateHumanParityMartingalePanel = updateHumanParityMartingalePanel;
+    window.startHumanParityMartingale = startHumanParityMartingale;
+    window.stopHumanParityMartingale = stopHumanParityMartingale;
 
     // initial render/poll
     startPolling();
@@ -1843,6 +2334,8 @@
     syncHumanRFAllowEqualsToggle();
     updateHumanSingleMartingalePanel();
     updateHumanRfMartingalePanel();
+    updateHumanParityMartingalePanel();
+    renderHumanParityDigitScreen();
     maybeAutoFormulaX();
   }
 
@@ -1854,6 +2347,8 @@
     syncHumanRFAllowEqualsToggle();
     updateHumanSingleMartingalePanel();
     updateHumanRfMartingalePanel();
+    updateHumanParityMartingalePanel();
+    renderHumanParityDigitScreen();
     maybeAutoFormulaX();
   }
 
@@ -1867,12 +2362,15 @@
     syncHumanRFAllowEqualsToggle();
     updateHumanSingleMartingalePanel();
     updateHumanRfMartingalePanel();
+    updateHumanParityMartingalePanel();
+    renderHumanParityDigitScreen();
     maybeAutoFormulaX();
   }
 
   async function onDeactivate() {
     stopPolling();
     clearStatusRenderTimer();
+    stopHumanParityMartingale();
     socketHooked = false;
   }
 
