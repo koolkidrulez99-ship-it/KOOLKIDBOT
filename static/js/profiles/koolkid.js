@@ -45,6 +45,7 @@
       enabled: false,
       step: 1,
       over3Step: 1,
+      pairSteps: {},
       running: false,
       inProgress: false,
       pendingAction: "",
@@ -582,6 +583,20 @@
         ],
       };
     }
+    if (compact === "OVER_4_UNDER_5") {
+      return {
+        action: "OVER_4_UNDER_5",
+        type: "PAIR",
+        barrier: null,
+        label: "OVER 4 + UNDER 5",
+        isPair: true,
+        independentPair: true,
+        legs: [
+          { action: "OVER_4", type: "OVER", barrier: 4, label: "OVER 4" },
+          { action: "UNDER_5", type: "UNDER", barrier: 5, label: "UNDER 5" },
+        ],
+      };
+    }
     if (compact === "OVER_3_OVER_6" || compact === "UNDER_3_OVER_3_OVER_6") {
       return {
         action: "OVER_3_OVER_6",
@@ -601,6 +616,8 @@
     const map = {
       UNDER_3: { action: "UNDER_3", type: "UNDER", barrier: 3, label: "UNDER 3" },
       UNDER_4: { action: "UNDER_4", type: "UNDER", barrier: 4, label: "UNDER 4" },
+      UNDER_5: { action: "UNDER_5", type: "UNDER", barrier: 5, label: "UNDER 5" },
+      OVER_4: { action: "OVER_4", type: "OVER", barrier: 4, label: "OVER 4" },
       OVER_5: { action: "OVER_5", type: "OVER", barrier: 5, label: "OVER 5" },
       OVER_6: { action: "OVER_6", type: "OVER", barrier: 6, label: "OVER 6" },
       OVER_7: { action: "OVER_7", type: "OVER", barrier: 7, label: "OVER 7" },
@@ -634,12 +651,37 @@
     const maxStake = capEl && String(capEl.value || "").trim() !== ""
       ? Number(readKoolkidMartingaleNumber("koolkidMartingaleMaxStake", 0, 0, 1000000).toFixed(2))
       : null;
-    return { action: action.action, type: action.type, barrier: action.barrier, label: action.label, isPair: !!action.isPair, isTriple: !!action.isTriple, legs: action.legs || null, duration, startStake, tickSpacing, mode, stepAmount, multiplier, maxSteps, maxStake };
+    return {
+      action: action.action,
+      type: action.type,
+      barrier: action.barrier,
+      label: action.label,
+      isPair: !!action.isPair,
+      isTriple: !!action.isTriple,
+      independentPair: !!action.independentPair,
+      legs: action.legs || null,
+      duration,
+      startStake,
+      tickSpacing,
+      mode,
+      stepAmount,
+      multiplier,
+      maxSteps,
+      maxStake
+    };
   }
 
   function koolkidSingleMartingaleStakeForLeg(leg, stepValue) {
     const settings = readKoolkidSingleMartingaleSettings();
     const step = Math.max(1, Math.min(settings.maxSteps, Math.floor(Number(stepValue || getKoolkidSingleMartingaleState().step) || 1)));
+    if (settings.independentPair && leg && leg.action) {
+      const st = getKoolkidSingleMartingaleState();
+      const pairSteps = st.pairSteps || {};
+      const legStep = Math.max(1, Math.min(settings.maxSteps, Math.floor(Number(pairSteps[leg.action] || 1) || 1)));
+      let stake = settings.startStake * Math.pow(settings.multiplier, legStep - 1);
+      if (settings.maxStake !== null) stake = Math.min(stake, settings.maxStake);
+      return Number(Math.max(0.35, stake).toFixed(2));
+    }
     if (leg && leg.fixedCycle) {
       const st = getKoolkidSingleMartingaleState();
       const fixedStep = Math.max(1, Math.min(3, Math.floor(Number(st.over3Step || 1) || 1)));
@@ -723,8 +765,18 @@
         : `Tick spacing ${settings.tickSpacing}`;
       const over3Current = settings.isTriple ? koolkidSingleMartingaleStakeForLeg({ fixedCycle: true }, st.step) : null;
       const over3Next = settings.isTriple ? koolkidSingleMartingaleNextOver3StakeAfterLoss() : null;
+      const over4Current = settings.independentPair ? koolkidSingleMartingaleStakeForLeg({ action: "OVER_4" }, st.step) : null;
+      const under5Current = settings.independentPair ? koolkidSingleMartingaleStakeForLeg({ action: "UNDER_5" }, st.step) : null;
+      const over4Next = settings.independentPair
+        ? Number(Math.max(0.35, Math.min(settings.maxStake ?? Number.POSITIVE_INFINITY, settings.startStake * Math.pow(settings.multiplier, Math.max(0, ((st.pairSteps && st.pairSteps.OVER_4) || 1))))).toFixed(2))
+        : null;
+      const under5Next = settings.independentPair
+        ? Number(Math.max(0.35, Math.min(settings.maxStake ?? Number.POSITIVE_INFINITY, settings.startStake * Math.pow(settings.multiplier, Math.max(0, ((st.pairSteps && st.pairSteps.UNDER_5) || 1))))).toFixed(2))
+        : null;
       const stakeLabel = settings.isTriple
         ? `Main stakes $${currentStake.toFixed(2)} each / OVER 3 $${over3Current.toFixed(2)} - Next main $${nextStake.toFixed(2)} each / OVER 3 if loss $${over3Next.toFixed(2)}`
+        : settings.independentPair
+        ? `OVER 4 $${over4Current.toFixed(2)} / UNDER 5 $${under5Current.toFixed(2)} - Next OVER 4 if loss $${over4Next.toFixed(2)} / UNDER 5 if loss $${under5Next.toFixed(2)}`
         : settings.isPair
         ? `Current stakes $${currentStake.toFixed(2)} each - Next stakes $${nextStake.toFixed(2)} each`
         : `Current stake $${currentStake.toFixed(2)} - Next stake $${nextStake.toFixed(2)}`;
@@ -736,6 +788,7 @@
   function setKoolkidSingleMartingaleAction(action) {
     const st = getKoolkidSingleMartingaleState();
     st.action = normalizeKoolkidMartingaleAction(action).action;
+    st.pairSteps = {};
     st.status = "Ready";
     updateKoolkidSingleMartingalePanel();
   }
@@ -750,6 +803,7 @@
     st.stopRequested = true;
     st.enabled = false;
     st.over3Step = 1;
+    st.pairSteps = {};
     st.waitingForTicks = false;
     st.waitTicksRemaining = 0;
     clearKoolkidSingleMartingalePending();
@@ -767,6 +821,7 @@
     if (st.enabled) {
       st.step = 1;
       st.over3Step = 1;
+      st.pairSteps = {};
       st.status = "Ready";
       st.lastResult = "none";
       st.stopRequested = false;
@@ -947,6 +1002,7 @@
       item.outcome = outcome;
       st.pendingSettled = Object.keys(st.pendingContracts || {}).filter((id) => st.pendingContracts[id] && st.pendingContracts[id].outcome).length;
       const wasMartingaleTrade = !!st.pendingMartingale;
+      const settings = readKoolkidSingleMartingaleSettings();
       if (item.action === "OVER_3") {
         if (outcome === "LOSS") {
           const over3Step = Math.max(1, Math.min(3, Math.floor(Number(st.over3Step || 1) || 1)));
@@ -954,6 +1010,45 @@
         } else if (outcome === "WIN") {
           st.over3Step = 1;
         }
+      }
+      if (settings.independentPair) {
+        if (st.pendingSettled < Math.max(2, Number(st.pendingExpected) || 2)) {
+          st.lastResult = outcome;
+          st.status = `Running: waiting for ${Math.max(0, (Number(st.pendingExpected) || 2) - st.pendingSettled)} result(s)`;
+          updateKoolkidSingleMartingalePanel();
+          return;
+        }
+        const pendingItems = Object.keys(st.pendingContracts || {})
+          .map((id) => st.pendingContracts[id])
+          .filter(Boolean);
+        pendingItems.forEach((pending) => {
+          const legAction = String(pending.action || "").toUpperCase();
+          if (!legAction) return;
+          if (pending.outcome === "LOSS") {
+            const currentStep = Math.max(1, Math.min(settings.maxSteps, Math.floor(Number((st.pairSteps || {})[legAction] || 1) || 1)));
+            st.pairSteps[legAction] = Math.min(settings.maxSteps, currentStep + 1);
+          } else if (pending.outcome === "WIN") {
+            st.pairSteps[legAction] = 1;
+          }
+        });
+        clearKoolkidSingleMartingalePending();
+        st.step = 1;
+        st.lastResult = pendingItems.some((pending) => pending.outcome === "WIN") ? "WIN" : "LOSS";
+        if (wasMartingaleTrade && st.enabled && st.running && !st.stopRequested) {
+          if (st.restartTimer) clearTimeout(st.restartTimer);
+          st.restartTimer = null;
+          st.tickSpacing = settings.tickSpacing;
+          st.waitTicksRemaining = settings.tickSpacing;
+          st.waitingForTicks = true;
+          st.status = `Waiting ${settings.tickSpacing} tick${settings.tickSpacing === 1 ? "" : "s"}`;
+        } else {
+          st.running = false;
+          st.waitingForTicks = false;
+          st.waitTicksRemaining = 0;
+          st.status = "Ready";
+        }
+        updateKoolkidSingleMartingalePanel();
+        return;
       }
       if (outcome === "WIN" && koolkidSingleMartingaleResultStops(item, payload)) {
         clearKoolkidSingleMartingalePending();
