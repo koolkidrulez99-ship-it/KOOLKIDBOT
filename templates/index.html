@@ -4247,7 +4247,27 @@ function maybeRefreshTradeHistoryTotalStakeFromEvent(event){
 document.addEventListener("click", maybeRefreshTradeHistoryTotalStakeFromEvent, true);
 document.addEventListener("change", maybeRefreshTradeHistoryTotalStakeFromEvent, true);
 
+let pendingTradeListRenderProfile = "";
+let tradeListRenderQueued = false;
+
 function renderTradeList(profile){
+    pendingTradeListRenderProfile = normalizeProfileName(profile || activeProfile);
+    if(tradeListRenderQueued) return;
+    tradeListRenderQueued = true;
+    const flushRender = () => {
+        tradeListRenderQueued = false;
+        const requestedProfile = normalizeProfileName(pendingTradeListRenderProfile || activeProfile);
+        pendingTradeListRenderProfile = "";
+        renderTradeListNow(requestedProfile);
+    };
+    try{
+        requestAnimationFrame(flushRender);
+    }catch(e){
+        setTimeout(flushRender, 16);
+    }
+}
+
+function renderTradeListNow(profile){
     const list = getProfileScopedElement("profileTradeList");
     if(!list) return;
 
