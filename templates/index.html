@@ -1955,6 +1955,7 @@ function bindSocketHandlers(){
 
 /* ===================== YOUR ORIGINAL CODE BELOW (UNCHANGED LOGIC) ===================== */
 let activeProfile = "KOOLKID";
+let suppressProfileSwitchToastsUntil = 0;
 let digitBuffer = [];
 let lastClickedDigit = null;
 let apiConnected = false;
@@ -4247,27 +4248,7 @@ function maybeRefreshTradeHistoryTotalStakeFromEvent(event){
 document.addEventListener("click", maybeRefreshTradeHistoryTotalStakeFromEvent, true);
 document.addEventListener("change", maybeRefreshTradeHistoryTotalStakeFromEvent, true);
 
-let pendingTradeListRenderProfile = "";
-let tradeListRenderQueued = false;
-
 function renderTradeList(profile){
-    pendingTradeListRenderProfile = normalizeProfileName(profile || activeProfile);
-    if(tradeListRenderQueued) return;
-    tradeListRenderQueued = true;
-    const flushRender = () => {
-        tradeListRenderQueued = false;
-        const requestedProfile = normalizeProfileName(pendingTradeListRenderProfile || activeProfile);
-        pendingTradeListRenderProfile = "";
-        renderTradeListNow(requestedProfile);
-    };
-    try{
-        requestAnimationFrame(flushRender);
-    }catch(e){
-        setTimeout(flushRender, 16);
-    }
-}
-
-function renderTradeListNow(profile){
     const list = getProfileScopedElement("profileTradeList");
     if(!list) return;
 
@@ -5507,10 +5488,19 @@ document.addEventListener("keydown", (ev)=>{
 });
 
 function showToast(message, type="info"){
+    const text = String(message || "");
+    const toastType = String(type || "info").toLowerCase();
+    if(
+        Date.now() < Number(suppressProfileSwitchToastsUntil || 0)
+        && !text.includes("Profile Changed:")
+        && toastType !== "error"
+    ){
+        return;
+    }
     const container = document.getElementById("toastContainer");
     const toast = document.createElement("div");
     toast.className = `toast ${type}`;
-    toast.innerText = message;
+    toast.innerText = text;
     container.appendChild(toast);
     setTimeout(()=>toast.classList.add("show"), 50);
     setTimeout(()=>{
@@ -5822,6 +5812,7 @@ function closeTransientUiOverlays(){
   try{ hideAutoBarrierPopup(); }catch(_err){}
   try{ hideSeqVixPopups(); }catch(_err){}
   try{ hideHalfAutoPopupKoolkid(); }catch(_err){}
+  try{ hideGoldenCardPopupKoolkid(); }catch(_err){}
   try{ hideBlackcardPopupJokerjoe(); }catch(_err){}
   try{ closeHowToModal(); }catch(_err){}
 
@@ -5831,8 +5822,10 @@ function closeTransientUiOverlays(){
     "seqVixJokerPopup",
     "seqVixKoolkidPopup",
     "halfAutoPopupKoolkid",
+    "goldenCardPopupKoolkid",
     "blackcardPopupJokerjoe",
     "overAnalysisModalKoolkid",
+    "over6AnalyzerCardKoolkid",
   ].forEach((id)=>{
     const el = document.getElementById(id);
     if(el) el.style.display = "none";
@@ -6133,6 +6126,7 @@ async function setProfile(profile){
     const previousProfile = activeProfile;
     captureProfileDraft(previousProfile);
     closeTransientUiOverlays();
+    suppressProfileSwitchToastsUntil = Date.now() + 1800;
     let profileData = {};
     try{
         const res = await fetch("/set_profile", {
@@ -6218,6 +6212,7 @@ async function setProfile(profile){
     await syncTradeHistorySnapshot(profile);
 
     refreshHowTo();
+    suppressProfileSwitchToastsUntil = 0;
     showToast("🎮 Profile Changed: " + getProfileDisplayName(profile), "info");
 }
 

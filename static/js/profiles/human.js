@@ -2264,6 +2264,7 @@
   }
 
   function bindSocketIfPossible(){
+    bindHumanSpecialGlobalSocketFallback();
     if(socketHooked) return;
     try{
       const App = getApp();
@@ -2293,24 +2294,7 @@
         bind("trade_result", updateHumanParityMartingaleFromResult);
         socketHooked = true;
         if(App && typeof App.logSocketListenerCounts === "function") App.logSocketListenerCounts("human_profile_init");
-        return;
       }
-      bindHumanSpecialGlobalSocketFallback();
-    }catch(e){}
-  }
-
-  function unbindHumanSpecialGlobalSocketFallback(){
-    try{
-      const previous = window.__humanSpecialSocketFallback || {};
-      if(previous.socket && previous.handlers && typeof previous.socket.off === "function"){
-        previous.socket.off("trade_placed", previous.handlers.placed);
-        previous.socket.off("trade_result", previous.handlers.specialResult);
-        previous.socket.off("trade_result", previous.handlers.singleResult);
-        if(previous.handlers.rfResult) previous.socket.off("trade_result", previous.handlers.rfResult);
-        if(previous.handlers.parityResult) previous.socket.off("trade_result", previous.handlers.parityResult);
-        if(previous.handlers.tickResult) previous.socket.off("tick", previous.handlers.tickResult);
-      }
-      window.__humanSpecialSocketFallback = null;
     }catch(e){}
   }
 
@@ -2323,7 +2307,15 @@
     }
     if(!liveSocket || typeof liveSocket.on !== "function") return false;
     try{
-      unbindHumanSpecialGlobalSocketFallback();
+      const previous = window.__humanSpecialSocketFallback || {};
+      if(previous.socket && previous.handlers && typeof previous.socket.off === "function"){
+        previous.socket.off("trade_placed", previous.handlers.placed);
+        previous.socket.off("trade_result", previous.handlers.specialResult);
+        previous.socket.off("trade_result", previous.handlers.singleResult);
+        if(previous.handlers.rfResult) previous.socket.off("trade_result", previous.handlers.rfResult);
+        if(previous.handlers.parityResult) previous.socket.off("trade_result", previous.handlers.parityResult);
+        if(previous.handlers.tickResult) previous.socket.off("tick", previous.handlers.tickResult);
+      }
       const tickResult = (payload) => {
         updateHumanParityDigitScreen(payload);
       };
@@ -2589,7 +2581,6 @@
     stopPolling();
     clearStatusRenderTimer();
     stopHumanParityMartingale();
-    unbindHumanSpecialGlobalSocketFallback();
     socketHooked = false;
   }
 
