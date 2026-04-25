@@ -2199,8 +2199,10 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
   function renderOver6AnalyzerKoolkid(data) {
     if (data) syncPredictionRecentDigitsKoolkid(data);
     const cardNode = document.getElementById("over6AnalyzerCardKoolkid");
-    if (cardNode) cardNode.style.display = isLifetimeUserKoolkid() ? "block" : "none";
-    if (!isLifetimeUserKoolkid()) return;
+    const profileIsActive = String(window.activeProfile || "").toUpperCase() === PROFILE;
+    const shouldShowCard = profileIsActive && isLifetimeUserKoolkid();
+    if (cardNode) cardNode.style.display = shouldShowCard ? "block" : "none";
+    if (!shouldShowCard) return;
     const badgeNode = document.getElementById("over6AnalyzerBadgeKoolkid");
     const statusNode = document.getElementById("over6AnalyzerStatusKoolkid");
     const actionNode = document.getElementById("over6AnalyzerActionKoolkid");

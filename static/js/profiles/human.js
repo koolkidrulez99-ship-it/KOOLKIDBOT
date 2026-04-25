@@ -73,11 +73,17 @@
     LOW_TICK: "Low Tick",
     ONLY_UPS: "Only Ups",
     ONLY_DOWNS: "Only Downs",
+    ASIANS_UP: "Asians Up",
+    ASIANS_DOWN: "Asians Down",
   };
   const HUMAN_SINGLE_MARTINGALE_PAIR_CONFIGS = {
     ONLY_UPS_DOWNS: {
       label: "Only Ups + Only Downs",
       actions: ["ONLY_UPS", "ONLY_DOWNS"],
+    },
+    ASIANS_UP_DOWNS: {
+      label: "Asians Up + Asians Down",
+      actions: ["ASIANS_UP", "ASIANS_DOWN"],
     },
     HIGH_LOW_TICKS: {
       label: "High Tick + Low Tick",
@@ -184,6 +190,17 @@
       btn.style.opacity = available ? "1" : "0.45";
       btn.title = available ? `${item.contract_type || item.contract_display || "Available"}` : "This contract is not available for the selected market.";
     });
+    const asiansPairBtn = byId("humanAsiansPairBtn");
+    if(asiansPairBtn){
+      const asianUp = actions.ASIANS_UP || {};
+      const asianDown = actions.ASIANS_DOWN || {};
+      const asiansPairAvailable = !!asianUp.available && !!asianDown.available;
+      asiansPairBtn.disabled = humanManualLoading || !asiansPairAvailable;
+      asiansPairBtn.style.opacity = asiansPairAvailable ? "1" : "0.45";
+      asiansPairBtn.title = asiansPairAvailable
+        ? `${asianUp.contract_type || asianUp.contract_display || "Asians Up"} + ${asianDown.contract_type || asianDown.contract_display || "Asians Down"}`
+        : "Asians Up + Asians Down is not available for the selected market.";
+    }
 
     const onlyUps = actions.ONLY_UPS || actions.ONLY_DOWNS || {};
     const durEl = byId("humanOnlyDuration");
@@ -1084,11 +1101,72 @@
     return data;
   }
 
+  async function placeHumanManualPairAction(actions, optionsByAction, metaOptions){
+    const keys = Array.isArray(actions) ? actions.map((item) => String(item || "").toUpperCase()).filter(Boolean) : [];
+    if(!keys.length) throw new Error("No HUMAN pair actions provided.");
+    if(!humanManualContracts){
+      await refreshHumanManualContracts(false);
+    }
+    keys.forEach((key) => {
+      const actionInfo = (humanManualContracts || {})[key] || {};
+      if(!actionInfo.available){
+        throw new Error("This contract is not available for the selected market.");
+      }
+    });
+    const payloadActions = keys.map((key) => readHumanManualPayload(key, (optionsByAction || {})[key] || {}));
+    const meta = metaOptions || {};
+    const totalStake = payloadActions.reduce((sum, item) => sum + Number(item.stake || 0), 0);
+    const maxDuration = payloadActions.reduce((maxVal, item) => Math.max(maxVal, Number(item.duration_ticks || 0)), 0);
+    const data = await guardMartha({
+      profile: PROFILE,
+      source: "human_manual_pair_contract",
+      type: meta.type || "PAIR",
+      label: meta.label || "HUMAN pair contract",
+      stake: totalStake,
+      duration: maxDuration || 2,
+      duration_unit: "t",
+      batch_count: payloadActions.length,
+    }, ()=>postJSON("/human_manual_pair_trade", { actions: payloadActions }));
+    if(isMarthaBlocked(data)) return data;
+    if(!data || String(data.status || "").toLowerCase() !== "success"){
+      throw new Error((data && (data.error || data.message)) || "HUMAN pair trade failed");
+    }
+    await fetchHumanRFStatus();
+    return data;
+  }
+
   async function humanManualTrade(action){
     try{
       await placeHumanManualAction(action);
     }catch(e){
       if(typeof showToast === "function") showToast(e.message || "HUMAN trade failed", "error");
+    }
+  }
+
+  async function humanManualAsiansPairTrade(){
+    try{
+      const durationEl = byId("humanOnlyDuration");
+      const minDur = durationEl ? Number(durationEl.min || 2) : 2;
+      const maxDur = durationEl && durationEl.max ? Number(durationEl.max) : 1000000;
+      const durationTicks = Math.round(clampNum(durationEl ? durationEl.value : 2, minDur, maxDur, Math.max(2, minDur)));
+      if(durationEl) durationEl.value = String(durationTicks);
+      const stakeEl = byId("stake");
+      const baseStake = clampNum(stakeEl ? stakeEl.value : 1, 0.35, 1000000, 1);
+      if(stakeEl) stakeEl.value = String(baseStake);
+      await placeHumanManualPairAction(
+        ["ASIANS_UP", "ASIANS_DOWN"],
+        {
+          ASIANS_UP: { stake: baseStake, duration_ticks: durationTicks, quiet: true },
+          ASIANS_DOWN: { stake: baseStake, duration_ticks: durationTicks, quiet: true },
+        },
+        {
+          type: "ASIANS_UP_DOWNS",
+          label: "HUMAN Asians Up + Asians Down",
+        }
+      );
+      if(typeof showToast === "function") showToast(`HUMAN Asians Up + Asians Down sent at $${Number(baseStake).toFixed(2)} each`, "success");
+    }catch(e){
+      if(typeof showToast === "function") showToast(e.message || "HUMAN Asians pair trade failed", "error");
     }
   }
 
@@ -1356,12 +1434,20 @@
     try{
       if(settings.isPair){
         const actions = settings.pairConfig.actions || [];
-        await Promise.all(actions.map((key) => (
-          placeHumanManualAction(
-            key,
-            Object.assign({ stake: humanSingleMartingaleStakeForPairAction(key), quiet: true }, settings.option)
-          )
-        )));
+        const pairOptions = {};
+        actions.forEach((key) => {
+          pairOptions[key] = Object.assign({ stake: humanSingleMartingaleStakeForPairAction(key), quiet: true }, settings.option);
+        });
+        if(String(settings.action || "").toUpperCase() === "ASIANS_UP_DOWNS"){
+          await placeHumanManualPairAction(actions, pairOptions, {
+            type: "ASIANS_UP_DOWNS",
+            label: "HUMAN Asians Up + Asians Down",
+          });
+        }else{
+          await Promise.all(actions.map((key) => (
+            placeHumanManualAction(key, pairOptions[key])
+          )));
+        }
         if(typeof showToast === "function") {
           const sentText = actions
             .map((key) => `${humanSingleMartingaleLabel(key)} $${humanSingleMartingaleStakeForPairAction(key).toFixed(2)}`)
@@ -1395,7 +1481,7 @@
   function readHumanRfMartingaleSettings(){
     const directionEl = byId("humanRfMartingaleDirection");
     const directionRaw = String((directionEl && directionEl.value) || HUMAN_RF_MARTINGALE_STATE.direction || "RISE").toUpperCase();
-    const direction = directionRaw === "FALL" || directionRaw === "BOTH" ? directionRaw : "RISE";
+    const direction = directionRaw === "FALL" || directionRaw === "BOTH" || directionRaw === "BOTH_EQUALS" ? directionRaw : "RISE";
     const duration = Math.round(readHumanRfMartingaleNumber("humanRfMartingaleDuration", 5, 1, 10));
     const riseStake = Number(readHumanRfMartingaleNumber("humanRfMartingaleRiseStake", 0.35, 0.35, 1000000).toFixed(2));
     const fallStake = Number(readHumanRfMartingaleNumber("humanRfMartingaleFallStake", 0.35, 0.35, 1000000).toFixed(2));
@@ -1455,7 +1541,7 @@
     }
     const status = byId("humanRfMartingaleStatus");
     if(status){
-      if(settings.direction === "BOTH"){
+      if(settings.direction === "BOTH" || settings.direction === "BOTH_EQUALS"){
         if(!HUMAN_RF_MARTINGALE_STATE.running && !HUMAN_RF_MARTINGALE_STATE.inProgress){
           HUMAN_RF_MARTINGALE_STATE.riseBaseStake = settings.riseStake;
           HUMAN_RF_MARTINGALE_STATE.fallBaseStake = settings.fallStake;
@@ -1463,7 +1549,8 @@
           HUMAN_RF_MARTINGALE_STATE.fallStake = settings.fallStake;
           HUMAN_RF_MARTINGALE_STATE.multiplier = settings.multiplier;
         }
-        status.textContent = `${HUMAN_RF_MARTINGALE_STATE.status}. Rise + Fall • ${settings.multiplier}x • Rise stake $${humanRfPairStakeForDirection("RISE").toFixed(2)} • Fall stake $${humanRfPairStakeForDirection("FALL").toFixed(2)} • Last result: ${HUMAN_RF_MARTINGALE_STATE.lastResult}`;
+        const pairLabel = settings.direction === "BOTH_EQUALS" ? "Rise + Fall Equals" : "Rise + Fall";
+        status.textContent = `${HUMAN_RF_MARTINGALE_STATE.status}. ${pairLabel} • ${settings.multiplier}x • Rise stake $${humanRfPairStakeForDirection("RISE").toFixed(2)} • Fall stake $${humanRfPairStakeForDirection("FALL").toFixed(2)} • Last result: ${HUMAN_RF_MARTINGALE_STATE.lastResult}`;
       }else{
         const currentStake = humanRfMartingaleStakeForStep();
         const nextStep = Math.min(settings.maxSteps, HUMAN_RF_MARTINGALE_STATE.step + 1);
@@ -1476,7 +1563,7 @@
 
   function setHumanRfMartingaleDirection(direction){
     const raw = String(direction || "RISE").toUpperCase();
-    HUMAN_RF_MARTINGALE_STATE.direction = raw === "FALL" || raw === "BOTH" ? raw : "RISE";
+    HUMAN_RF_MARTINGALE_STATE.direction = raw === "FALL" || raw === "BOTH" || raw === "BOTH_EQUALS" ? raw : "RISE";
     HUMAN_RF_MARTINGALE_STATE.status = "Ready";
     updateHumanRfMartingalePanel();
   }
@@ -1522,14 +1609,16 @@
     const opts = options || {};
     if(HUMAN_RF_MARTINGALE_STATE.inProgress) return;
     const settings = readHumanRfMartingaleSettings();
-    if(settings.direction === "BOTH" && HUMAN_RF_MARTINGALE_STATE.enabled && !opts.continuation){
+    if((settings.direction === "BOTH" || settings.direction === "BOTH_EQUALS") && HUMAN_RF_MARTINGALE_STATE.enabled && !opts.continuation){
       HUMAN_RF_MARTINGALE_STATE.riseBaseStake = settings.riseStake;
       HUMAN_RF_MARTINGALE_STATE.fallBaseStake = settings.fallStake;
       HUMAN_RF_MARTINGALE_STATE.riseStake = settings.riseStake;
       HUMAN_RF_MARTINGALE_STATE.fallStake = settings.fallStake;
       HUMAN_RF_MARTINGALE_STATE.multiplier = settings.multiplier;
     }
-    const pairPlan = settings.direction === "BOTH"
+    const pairMode = settings.direction === "BOTH" || settings.direction === "BOTH_EQUALS";
+    const allowEquals = settings.direction === "BOTH_EQUALS";
+    const pairPlan = pairMode
       ? [
         { direction: "RISE", stake: humanRfPairStakeForDirection("RISE") },
         { direction: "FALL", stake: humanRfPairStakeForDirection("FALL") },
@@ -1548,17 +1637,17 @@
     pairPlan.forEach((leg) => { HUMAN_RF_MARTINGALE_STATE.pendingDirections[leg.direction] = { stake: leg.stake, result: "" }; });
     HUMAN_RF_MARTINGALE_STATE.pendingContractId = "";
     HUMAN_RF_MARTINGALE_STATE.pendingMartingale = !!HUMAN_RF_MARTINGALE_STATE.enabled;
-    HUMAN_RF_MARTINGALE_STATE.pendingStake = settings.direction === "BOTH" ? pairPlan.reduce((sum, leg) => sum + leg.stake, 0) : stake;
+    HUMAN_RF_MARTINGALE_STATE.pendingStake = pairMode ? pairPlan.reduce((sum, leg) => sum + leg.stake, 0) : stake;
     HUMAN_RF_MARTINGALE_STATE.status = "Running";
     updateHumanRfMartingalePanel();
     try{
-      if(settings.direction === "BOTH"){
+      if(pairMode){
         const totalStake = pairPlan.reduce((sum, leg) => sum + leg.stake, 0);
         const data = await guardMartha({
           profile: PROFILE,
           source: "human_rf_pair_martingale",
-          type: "RISE_FALL",
-          label: "HUMAN Rise + Fall Martingale",
+          type: allowEquals ? "RISE_FALL_EQUALS" : "RISE_FALL",
+          label: allowEquals ? "HUMAN Rise + Fall Equals Martingale" : "HUMAN Rise + Fall Martingale",
           stake: totalStake,
           duration: settings.duration,
           duration_unit: "t",
@@ -1569,13 +1658,14 @@
               direction: leg.direction,
               stake: leg.stake,
               duration_ticks: settings.duration,
+              allow_equals: allowEquals,
               ignore_cooldown: true,
             });
           }
           return { status: "success" };
         });
         if(isMarthaBlocked(data)) throw new Error("Trade blocked");
-        if(typeof showToast === "function") showToast(`HUMAN Rise + Fall martingale sent: RISE $${pairPlan[0].stake.toFixed(2)} + FALL $${pairPlan[1].stake.toFixed(2)}`, "success");
+        if(typeof showToast === "function") showToast(`HUMAN ${allowEquals ? "Rise + Fall Equals" : "Rise + Fall"} martingale sent: RISE $${pairPlan[0].stake.toFixed(2)} + FALL $${pairPlan[1].stake.toFixed(2)}`, "success");
       }else{
         const payload = {
           direction: settings.direction,
@@ -1834,7 +1924,10 @@
     const text = String(value || "").toUpperCase().replace(/[^A-Z0-9]+/g, "_");
     const compact = text.replace(/[^A-Z0-9]/g, "");
     if(compact === "ONLYUPSONLYDOWNS" || compact === "ONLYUPSDOWNS" || compact === "RUNSUPRUNSDOWN") return "ONLY_UPS_DOWNS";
+    if(compact === "ASIANSUPASIANSDOWN" || compact === "ASIANSUPASIANSDOWN" || compact === "ASIANUPASIANSDOWN" || compact === "ASIANSUPDOWN") return "ASIANS_UP_DOWNS";
     if(compact === "HIGHTICKLOWTICKS" || compact === "HIGHLOWTICKS" || compact === "HIGHTICKLOWTICK") return "HIGH_LOW_TICKS";
+    if(text.includes("ASIANS_UP") || text.includes("ASIAN_UP") || compact.includes("ASIANU") || compact.includes("ASIANSUP")) return "ASIANS_UP";
+    if(text.includes("ASIANS_DOWN") || text.includes("ASIAN_DOWN") || compact.includes("ASIAND") || compact.includes("ASIANSDOWN")) return "ASIANS_DOWN";
     if(text.includes("HIGH_TICK") || text.includes("HIGH_TICKS") || compact.includes("TICKHIGH") || compact.includes("HIGHTICK")) return "HIGH_TICK";
     if(text.includes("LOW_TICK") || text.includes("LOW_TICKS") || compact.includes("TICKLOW") || compact.includes("LOWTICK")) return "LOW_TICK";
     if(text.includes("ONLY_UP") || compact.includes("RUNHIGH") || compact.includes("ONLYUP") || compact.includes("RUNSUP")) return "ONLY_UPS";
@@ -1848,6 +1941,11 @@
     if(text.includes("RISE") || text.includes("CALL") || compact.includes("RISE")) return "RISE";
     if(text.includes("FALL") || text.includes("PUT") || compact.includes("FALL")) return "FALL";
     return "";
+  }
+
+  function isHumanRfPairDirection(direction){
+    const value = String(direction || "").toUpperCase();
+    return value === "BOTH" || value === "BOTH_EQUALS";
   }
 
   function rememberHumanSpecialTrade(payload){
@@ -1895,10 +1993,10 @@
       && !HUMAN_RF_MARTINGALE_STATE.pendingContractId
       && (
         rfDirection === HUMAN_RF_MARTINGALE_STATE.pendingDirection
-        || (HUMAN_RF_MARTINGALE_STATE.pendingDirection === "BOTH" && HUMAN_RF_MARTINGALE_STATE.pendingDirections && HUMAN_RF_MARTINGALE_STATE.pendingDirections[rfDirection])
+        || (isHumanRfPairDirection(HUMAN_RF_MARTINGALE_STATE.pendingDirection) && HUMAN_RF_MARTINGALE_STATE.pendingDirections && HUMAN_RF_MARTINGALE_STATE.pendingDirections[rfDirection])
       )
     ){
-      if(HUMAN_RF_MARTINGALE_STATE.pendingDirection === "BOTH"){
+      if(isHumanRfPairDirection(HUMAN_RF_MARTINGALE_STATE.pendingDirection)){
         HUMAN_RF_MARTINGALE_STATE.pendingDirections[rfDirection].contractId = String(contractId);
       }else{
         HUMAN_RF_MARTINGALE_STATE.pendingContractId = String(contractId);
@@ -2044,7 +2142,7 @@
     if(!HUMAN_RF_MARTINGALE_STATE.inProgress && !HUMAN_RF_MARTINGALE_STATE.pendingContractId) return;
     const contractId = payload.contract_id || payload.buy_contract_id || payload.id;
     const direction = normalizeHumanRfDirection([payload.type, payload.contract_type, payload.label, payload.action].filter(Boolean).join(" "));
-    if(HUMAN_RF_MARTINGALE_STATE.pendingDirection === "BOTH"){
+    if(isHumanRfPairDirection(HUMAN_RF_MARTINGALE_STATE.pendingDirection)){
       if(!direction || !HUMAN_RF_MARTINGALE_STATE.pendingDirections || !HUMAN_RF_MARTINGALE_STATE.pendingDirections[direction]) return;
       const pendingLeg = HUMAN_RF_MARTINGALE_STATE.pendingDirections[direction];
       if(pendingLeg.result) return;
@@ -2515,6 +2613,7 @@
     window.humanRFSetStake = humanRFSetStake;
     window.runFormulaX = toggleFormulaX;
     window.humanManualTrade = humanManualTrade;
+    window.humanManualAsiansPairTrade = humanManualAsiansPairTrade;
     window.refreshHumanManualContracts = refreshHumanManualContracts;
     window.openHumanSpecialAutoPopup = openHumanSpecialAutoPopup;
     window.closeHumanSpecialAutoPopup = closeHumanSpecialAutoPopup;

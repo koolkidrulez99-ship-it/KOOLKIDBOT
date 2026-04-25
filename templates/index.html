@@ -1742,7 +1742,15 @@ function bindSocketHandlers(){
     });
 
     bind("tick", (data)=>{
-        if(!apiConnected) return;
+        const changedProfiles = decrementPendingTickCountdowns(data && data.symbol);
+        const turboResolvedProfiles = resolveTurboDigitTradesFromTick(data);
+        turboResolvedProfiles.forEach((profile)=> changedProfiles.add(profile));
+        if(!apiConnected){
+            if(changedProfiles.has(normalizeProfileName(activeProfile))){
+                renderTradeList(activeProfile);
+            }
+            return;
+        }
         try{ if(window.MarthaAI && typeof window.MarthaAI.observeTick === "function") window.MarthaAI.observeTick(data || {}); }catch(e){}
         globalObservedTickCount = Math.max(
             Number(globalObservedTickCount || 0) + 1,
@@ -1753,10 +1761,6 @@ function bindSocketHandlers(){
         digitBuffer.push(data.digit);
         if(digitBuffer.length > 20) digitBuffer.shift();
         scheduleTickUiUpdate(data);
-
-        const changedProfiles = decrementPendingTickCountdowns(data && data.symbol);
-        const turboResolvedProfiles = resolveTurboDigitTradesFromTick(data);
-        turboResolvedProfiles.forEach((profile)=> changedProfiles.add(profile));
         if(changedProfiles.has(normalizeProfileName(activeProfile))){
             renderTradeList(activeProfile);
         }
@@ -1791,8 +1795,8 @@ function bindSocketHandlers(){
 
     bind("trade_placed", (data)=>{
         const placed = Object.assign({}, data || {});
+        try{ if(window.TRADE_LATENCY_DEBUG || localStorage.getItem("tradeLatencyDebug") === "1") console.debug("[trade-latency] frontend trade_placed", { contract_id: placed.contract_id ?? placed.contractId, transit_ms: placed._server_event_ms ? Date.now() - Number(placed._server_event_ms) : null }); }catch(e){}
         placed.profile = resolveTradeProfile(placed, activeProfile);
-        try{ if(window.MarthaAI && typeof window.MarthaAI.observeTradeEvent === "function") window.MarthaAI.observeTradeEvent(placed); }catch(e){}
         const hiddenBatchTrade = !!placed.hide_from_history || String(placed.mode || "").toLowerCase().startsWith("jokerjoe_match_batch_martingale");
         if(!hiddenBatchTrade){
             onTradePlacedForToast(placed);
@@ -1802,12 +1806,16 @@ function bindSocketHandlers(){
                 renderTradeList(activeProfile);
             }
         }
+        setTimeout(()=>{ try{ if(window.MarthaAI && typeof window.MarthaAI.observeTradeEvent === "function") window.MarthaAI.observeTradeEvent(placed); }catch(e){} }, 0);
     });
 
     bind("trade_result", (data)=>{
         const settled = Object.assign({}, data || {});
+        try{ if(window.TRADE_LATENCY_DEBUG || localStorage.getItem("tradeLatencyDebug") === "1") console.debug("[trade-latency] frontend trade_result", { contract_id: settled.contract_id ?? settled.contractId, transit_ms: settled._server_event_ms ? Date.now() - Number(settled._server_event_ms) : null }); }catch(e){}
         settled.profile = resolveTradeProfile(settled, activeProfile);
-        try{ if(window.MarthaAI && typeof window.MarthaAI.observeTradeEvent === "function") window.MarthaAI.observeTradeEvent(settled); }catch(e){}
+        const existingTurboToastTradeLoc = findStoredTradeLocationByContractId(settled.contract_id ?? settled.contractId);
+        const existingTurboToastTrade = existingTurboToastTradeLoc && existingTurboToastTradeLoc.record;
+        const suppressTurboDuplicateToast = !!(existingTurboToastTrade && existingTurboToastTrade.local_resolution_toast_shown);
         const settledProfile = normalizeProfileName(settled.profile);
         if(settledProfile === "KOOLKID" || settledProfile === "JOKERJOE" || settledProfile === "UNCHAIN" || settledProfile === "NTT" || settledProfile === "HUMAN"){
             const sortTs = resolveTradeSortTimestamp(settled, true);
@@ -1828,12 +1836,13 @@ function bindSocketHandlers(){
                 renderTradeList(activeProfile);
             }
         }
+        setTimeout(()=>{ try{ if(window.MarthaAI && typeof window.MarthaAI.observeTradeEvent === "function") window.MarthaAI.observeTradeEvent(settled); }catch(e){} }, 0);
 
-        const suppressIndividualToast = onTradeResultForToast(settled);
+        const suppressIndividualToast = suppressTurboDuplicateToast || onTradeResultForToast(settled);
         if(suppressIndividualToast || hiddenBatchTrade) return;
 
         const result = normalizeTradeResultLabel(settled.result, settled.status);
-        const profit = typeof settled.profit === "number" ? settled.profit : (settled.profit_value || 0);
+        const profit = getTradeProfitAmount(settled);
         if(result === "WIN"){
             showToast(`🏆 WIN ${formatSignedCurrencyAmount(profit, settled)}`, "success");
         }else if(result === "LOSS"){
@@ -3027,6 +3036,16 @@ function toProfitNumber(v){
     return Number.isFinite(n) ? n : 0;
 }
 
+function getTradeProfitAmount(trade){
+    if(!trade || typeof trade !== "object") return 0;
+    const candidates = [trade.profit, trade.profit_value, trade.profit_loss, trade.pnl];
+    for(const raw of candidates){
+        const n = Number(raw);
+        if(Number.isFinite(n)) return n;
+    }
+    return 0;
+}
+
 function resolveTradeSortTimestamp(data, fallbackNow){
     const source = (data && typeof data === "object") ? data : {};
     const candidates = [
@@ -3693,8 +3712,8 @@ function schedulePendingTradeRescue(profile, contractId, attempt){
     const turboOn = useTurboPendingTradeUi(key);
     const maxAttempts = turboOn ? 10 : 6;
     if(tryNumber > maxAttempts) return;
-    const baseDelay = turboOn ? 180 : 700;
-    const stepDelay = turboOn ? 160 : 420;
+    const baseDelay = turboOn ? 90 : 700;
+    const stepDelay = turboOn ? 140 : 420;
     const waitMs = baseDelay + ((tryNumber - 1) * stepDelay);
     const timerKey = pendingTradeRescueKey(key, cid);
     const timeoutLabel = `pending_trade_rescue:${timerKey}`;
@@ -3778,6 +3797,27 @@ function evaluateTurboDigitTradeOutcome(trade, digit){
     return null;
 }
 
+function estimateTurboResolvedProfit(trade, outcome){
+    const existingProfit = Number((trade && trade.profit !== undefined) ? trade.profit : (trade && trade.profit_value));
+    if(Number.isFinite(existingProfit)) return Number(existingProfit.toFixed(2));
+    const stake = Number((trade && (trade.stake ?? trade.buy_price ?? trade.price)) || 0);
+    const safeStake = Number.isFinite(stake) && stake > 0 ? stake : 0;
+    if(outcome === "LOSS") return Number((-safeStake).toFixed(2));
+    const payoutCandidates = [
+        trade && trade.payout,
+        trade && trade.sell_price,
+        trade && trade.bid_price,
+        trade && trade.ask_price,
+    ];
+    for(const raw of payoutCandidates){
+        const payout = Number(raw);
+        if(Number.isFinite(payout) && payout > safeStake){
+            return Number((payout - safeStake).toFixed(2));
+        }
+    }
+    return null;
+}
+
 function resolveTurboDigitTradesFromTick(data){
     const digit = Number((data && data.digit) ?? (data && data.last_digit));
     const market = String(data && data.symbol || "").toUpperCase().trim();
@@ -3803,20 +3843,38 @@ function resolveTurboDigitTradesFromTick(data){
 
             const outcome = evaluateTurboDigitTradeOutcome(trade, digit);
             if(!outcome) return;
+            const estimatedProfit = estimateTurboResolvedProfit(trade, outcome);
 
             trade.result = outcome;
             trade.status = outcome;
             trade.pending = false;
+            if(Number.isFinite(estimatedProfit)){
+                trade.profit = estimatedProfit;
+                trade.profit_value = estimatedProfit;
+            }
             trade.exitDigit = digit;
             trade.exit_digit = digit;
             trade.countdown_remaining = 0;
             trade.countdown_seconds = 0;
             trade.local_resolution_pending_confirmation = true;
             trade.local_resolution_source = "turbo_tick";
+            trade.local_resolution_estimated_profit = Number.isFinite(estimatedProfit);
+            trade.local_resolution_toast_shown = true;
+            if(
+                normalizeProfileName(activeProfile) === profile
+                && typeof window.markDigitAnalysisTradeResult === "function"
+            ){
+                window.markDigitAnalysisTradeResult(digit, outcome === "WIN" ? "win" : "loss");
+            }
             const contractId = normalizeContractId(trade.contract_id ?? trade.contractId);
             if(contractId){
                 clearPendingTradeRescue(profile, contractId);
             }
+            const hasReliableProfit = Number.isFinite(estimatedProfit);
+            const toastText = outcome === "WIN"
+                ? (hasReliableProfit ? `🏆 WIN ${formatSignedCurrencyAmount(estimatedProfit, trade)}` : "🏆 WIN")
+                : `❌ LOSS ${formatSignedCurrencyAmount(estimatedProfit, trade)}`;
+            showToast(toastText, outcome === "WIN" ? "success" : "error");
             changedProfiles.add(profile);
         });
     });
@@ -4439,7 +4497,7 @@ function buildTradeItem(trade){
     const resultClass = (result === "WIN")
         ? "win"
         : ((result === "LOSS") ? "loss" : (result === "CLOSING" ? "closing" : "pending"));
-    const profit = typeof trade.profit === 'number' ? trade.profit : toProfitNumber(trade.profit_value);
+    const profit = getTradeProfitAmount(trade);
     const hasOfficialProfit = (
         (trade.profit !== undefined && trade.profit !== null && Number.isFinite(Number(trade.profit)))
         || (trade.profit_value !== undefined && trade.profit_value !== null && Number.isFinite(Number(trade.profit_value)))

@@ -1835,7 +1835,7 @@
             const app = App();
             if (app && typeof app.completeFrontendTimeout === "function") app.completeFrontendTimeout("ntt_trade_result_refresh");
             refreshStatus(true);
-          }, 180);
+          }, 0);
           trackTimeout("ntt_trade_result_refresh", t);
         }
       });
@@ -1845,7 +1845,7 @@
             const app = App();
             if (app && typeof app.completeFrontendTimeout === "function") app.completeFrontendTimeout("ntt_trade_placed_refresh");
             refreshStatus(true);
-          }, 120);
+          }, 0);
           trackTimeout("ntt_trade_placed_refresh", t);
         }
       });

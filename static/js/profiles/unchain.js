@@ -3215,7 +3215,7 @@
           const app = App();
           if (app && typeof app.completeFrontendTimeout === "function") app.completeFrontendTimeout("unchain_trade_result_refresh");
           refreshStatus(true);
-        }, 200);
+        }, 0);
         trackTimeout("unchain_trade_result_refresh", t);
       });
       bind("trade_placed", (trade) => {
@@ -3225,7 +3225,7 @@
             const app = App();
             if (app && typeof app.completeFrontendTimeout === "function") app.completeFrontendTimeout("unchain_trade_placed_refresh");
             refreshStatus(true);
-          }, 120);
+          }, 0);
           trackTimeout("unchain_trade_placed_refresh", t);
         }
       });

@@ -234,6 +234,8 @@ DERIV_WS_AUTHORIZE_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_AUTHORIZE_TIMEOU
 TICK_STREAM_STALE_SEC = float(os.environ.get("TICK_STREAM_STALE_SEC", "20"))
 TICK_STREAM_RESUBSCRIBE_COOLDOWN_SEC = float(os.environ.get("TICK_STREAM_RESUBSCRIBE_COOLDOWN_SEC", "8"))
 TICK_STREAM_RECONNECT_AFTER_SEC = float(os.environ.get("TICK_STREAM_RECONNECT_AFTER_SEC", "90"))
+TICK_STREAM_WARMUP_SEC = float(os.environ.get("TICK_STREAM_WARMUP_SEC", "6"))
+HUMAN_PAIR_BATCH_SEND_DELAY_SEC = float(os.environ.get("HUMAN_PAIR_BATCH_SEND_DELAY_SEC", "0.04"))
 MUTANT_DEPLOY_GATE_ENABLED = str(os.environ.get("MUTANT_DEPLOY_GATE_ENABLED", "1")).strip().lower() not in {"0", "false", "no", "off"}
 MUTANT_ALLOWED_ACCOUNT = str(
     os.environ.get(
@@ -1177,6 +1179,93 @@ def _new_req_id():
     return int(uuid.uuid4().int % 1000000000)
 
 
+TRADE_LATENCY_LOG_ENABLED = str(os.getenv("TRADE_LATENCY_LOG_ENABLED", "0")).strip().lower() in ("1", "true", "yes", "on")
+FAST_CONTRACT_REFRESH_DELAYS = (0.03, 0.10, 0.22, 0.45, 0.9, 1.8, 3.2)
+DEFAULT_CONTRACT_REFRESH_DELAYS = (0.18, 0.55, 1.45, 3.2)
+UI_TICK_EMIT_MIN_SEC = 0.06
+UI_ANALYSIS_EMIT_MIN_SEC = 0.10
+UI_STATUS_EMIT_MIN_SEC = 0.12
+UI_HUMAN_CHART_EMIT_MIN_SEC = 0.12
+
+
+def _trade_latency_now():
+    try:
+        return time.monotonic()
+    except Exception:
+        return time.time()
+
+
+def _stamp_trade_latency(meta, stage):
+    if not isinstance(meta, dict):
+        return
+    timings = meta.setdefault("_latency", {})
+    try:
+        timings[stage] = _trade_latency_now()
+    except Exception:
+        pass
+
+
+def _log_trade_latency(client_id, meta, stage, **extra):
+    if not TRADE_LATENCY_LOG_ENABLED or not isinstance(meta, dict):
+        return
+    try:
+        timings = meta.get("_latency") or {}
+        sent_at = timings.get("buy_send")
+        elapsed_ms = None
+        if sent_at is not None:
+            elapsed_ms = round((_trade_latency_now() - float(sent_at)) * 1000.0, 1)
+        logger.info(
+            "[%s] trade_latency stage=%s profile=%s type=%s contract_id=%s elapsed_ms=%s extra=%s",
+            client_id,
+            stage,
+            meta.get("profile"),
+            meta.get("type") or meta.get("contract_type"),
+            extra.get("contract_id"),
+            elapsed_ms,
+            {k: v for k, v in extra.items() if k != "contract_id"},
+        )
+    except Exception:
+        pass
+
+
+def _is_fast_contract_meta(meta):
+    if not isinstance(meta, dict):
+        return False
+    try:
+        duration = int(float(meta.get("duration") or 0))
+    except Exception:
+        duration = 0
+    duration_unit = str(meta.get("duration_unit") or "t").strip().lower()
+    trade_type = str(meta.get("type") or meta.get("contract_type") or "").upper()
+    mode = str(meta.get("mode") or "").upper()
+    if "TURBO" in mode:
+        return True
+    if duration_unit == "t" and 0 < duration <= 3:
+        return True
+    if duration_unit == "s" and 0 < duration <= 3:
+        return True
+    return trade_type in ("OVER", "UNDER", "MATCHES", "DIFFERS", "DIGITOVER", "DIGITUNDER", "DIGITMATCH", "DIGITDIFF") and duration_unit == "t" and duration <= 5
+
+
+def _contract_refresh_delays_for_meta(meta):
+    return FAST_CONTRACT_REFRESH_DELAYS if _is_fast_contract_meta(meta) else DEFAULT_CONTRACT_REFRESH_DELAYS
+
+
+def _should_emit_ui_event(state, key, min_interval_sec):
+    if not isinstance(state, dict):
+        return True
+    now = _trade_latency_now()
+    emit_at = state.setdefault("_ui_emit_last_at", {})
+    try:
+        last = float(emit_at.get(key, 0.0) or 0.0)
+    except Exception:
+        last = 0.0
+    if last and (now - last) < max(0.0, float(min_interval_sec or 0.0)):
+        return False
+    emit_at[key] = now
+    return True
+
+
 def _touch_client(client_id):
     st = clients.get(client_id)
     if st:
@@ -1584,6 +1673,8 @@ def _build_default_client_state():
         "tick_resubscribe_attempted_at": {},
         "tick_stream_recovering_symbols": {},
         "tick_stream_unhealthy_since": {},
+        "tick_stream_warmup_until": {},
+        "tick_stream_warmup_reason": {},
         # Track UNCHAIN open-contract subscription ids so we can forget them
         # once a trade settles instead of letting old subscriptions pile up.
         "open_contract_subs": {},
@@ -2276,8 +2367,9 @@ def handle_connect(auth=None):
         bool(state.get("ws_thread") and state["ws_thread"].is_alive()),
     )
     join_room(cid)
-    connected = bool(state["ws_connected"]) and not _is_ws_stale(state)
-    if not connected and state.get("ws_connected"):
+    warmup_active = _has_active_tick_stream_warmup(state, now_ts=time.time(), client_id=cid)
+    connected = bool(state["ws_connected"]) and (warmup_active or not _is_ws_stale(state))
+    if not connected and state.get("ws_connected") and not warmup_active:
         _mark_ws_unhealthy_and_reconnect(cid, state, "Deriv connection went stale. Reconnecting now...", emit_error=False)
 
     socketio.emit("connection_status", {
@@ -2851,6 +2943,7 @@ def send_buy(client_id, contract_type, stake, symbol, barrier, duration=1, durat
     }
     if isinstance(extra_meta, dict):
         state["req_meta"][req_id].update(extra_meta)
+    _stamp_trade_latency(state["req_meta"][req_id], "buy_send")
 
     payload = {
         "req_id": req_id,
@@ -2971,6 +3064,7 @@ def send_buy_with_profile(
     }
     if isinstance(extra_meta, dict):
         state["req_meta"][req_id].update(extra_meta)
+    _stamp_trade_latency(state["req_meta"][req_id], "buy_send")
 
     payload = {
         "req_id": req_id,
@@ -3061,6 +3155,7 @@ def place_risefall_order(client_id, signal):
         "contract_type": deriv_contract,
         "budget_reservation": budget_reservation,
     }
+    _stamp_trade_latency(state["req_meta"][req_id], "buy_send")
 
     payload = {
         "req_id": req_id,
@@ -3174,7 +3269,7 @@ def _request_human_manual_proposal_quote(
     try:
         ws.send(json.dumps(payload))
     except Exception as e:
-        if client_id is not None:
+        if client_id is not None and _should_force_ws_reconnect_on_send_exception(state, e):
             _mark_ws_unhealthy_and_reconnect(client_id, state, "Deriv connection failed while requesting a quote. Reconnecting now...", emit_error=False)
         waiters.pop(req_id, None)
         waiters.pop(str(req_id), None)
@@ -3299,6 +3394,7 @@ def place_human_manual_contract(client_id, *, action, stake, selected_tick=None,
         "selected_tick": selected_tick_for_proposal,
         "budget_reservation": budget_reservation,
     }
+    _stamp_trade_latency(state["req_meta"][req_id], "buy_send")
 
     payload = {
         "req_id": req_id,
@@ -3326,6 +3422,277 @@ def place_human_manual_contract(client_id, *, action, stake, selected_tick=None,
         except Exception:
             pass
         return False, str(e), None
+
+
+def place_human_manual_contract_batch(client_id, *, actions):
+    state = clients.get(client_id)
+    ready, ready_msg = _ensure_trade_socket_ready(client_id, state)
+    if not ready:
+        return False, ready_msg, []
+    if not isinstance(actions, list) or len(actions) < 2:
+        return False, "At least two HUMAN manual actions are required.", []
+
+    strategy = state.get("strategies", {}).get("HUMAN")
+    if strategy and hasattr(strategy, "enforce_tp_sl"):
+        try:
+            strategy.enforce_tp_sl()
+            if getattr(strategy, "risk_block_reason", None):
+                return False, f"{strategy.risk_block_reason} (session limit reached)", []
+        except Exception:
+            pass
+
+    info, err, symbol = _fetch_human_manual_contracts_for_state(state)
+    if err:
+        return False, err, []
+
+    prepared = []
+    reservations = []
+    req_ids = []
+    pair_batch_id = _new_req_id()
+    send_phase = False
+    try:
+        for index, item in enumerate(actions):
+            item = item or {}
+            action_key = normalize_human_manual_action(item.get("action"))
+            if not action_key:
+                raise ValueError("Invalid HUMAN manual action")
+
+            try:
+                stake_value = max(0.35, float(item.get("stake")))
+            except Exception:
+                raise ValueError("Invalid stake")
+
+            action_info = (info or {}).get(action_key) or {}
+            if not action_info.get("available") or not action_info.get("contract_type"):
+                raise ValueError("This contract is not available for the selected market.")
+
+            duration_unit = str(action_info.get("duration_unit") or "t").lower()
+            min_duration = int(action_info.get("min_duration") or 1)
+            max_duration = action_info.get("max_duration")
+            if action_key in ("HIGH_TICK", "LOW_TICK"):
+                try:
+                    selected_tick_value = int(float(item.get("selected_tick")))
+                except Exception:
+                    raise ValueError("Selected Tick must be an integer from 1 to 5")
+                if selected_tick_value < 1 or selected_tick_value > 5:
+                    raise ValueError("Selected Tick must be an integer from 1 to 5")
+                duration_value = max(min_duration, int(action_info.get("default_duration") or 5), 5)
+                if max_duration is not None:
+                    duration_value = min(duration_value, int(max_duration))
+                selected_tick_for_proposal = selected_tick_value
+            else:
+                try:
+                    duration_value = int(float(item.get("duration_ticks")))
+                except Exception:
+                    raise ValueError("Tick duration must be a valid integer")
+                if duration_value < min_duration:
+                    raise ValueError(f"Tick duration must be at least {min_duration}")
+                if max_duration is not None and duration_value > int(max_duration):
+                    raise ValueError(f"Tick duration must be {int(max_duration)} or less")
+                selected_tick_for_proposal = None
+
+            quote, quote_err = _request_human_manual_proposal_quote(
+                state,
+                contract_type=action_info.get("contract_type"),
+                stake=stake_value,
+                symbol=symbol,
+                duration=duration_value,
+                duration_unit=duration_unit,
+                selected_tick=selected_tick_for_proposal,
+                timeout_sec=5.0,
+            )
+            if quote_err:
+                raise ValueError(str(quote_err))
+
+            budget_ok, budget_msg, budget_reservation = _reserve_profile_budget(state, "HUMAN", stake_value)
+            if not budget_ok:
+                try:
+                    socketio.emit("api_error", {"message": budget_msg}, room=client_id)
+                except Exception:
+                    pass
+                raise ValueError(str(budget_msg))
+
+            req_id = _new_req_id()
+            label = str(action_info.get("label") or action_key.replace("_", " ")).upper()
+            state.setdefault("req_meta", {})[req_id] = {
+                "profile": "HUMAN",
+                "type": label,
+                "barrier": selected_tick_for_proposal,
+                "stake": stake_value,
+                "symbol": symbol,
+                "time": now_time(),
+                "mode": "human_manual_contract",
+                "duration": int(duration_value),
+                "duration_unit": duration_unit,
+                "contract_type": action_info.get("contract_type"),
+                "selected_tick": selected_tick_for_proposal,
+                "budget_reservation": budget_reservation,
+                "pair_batch_id": pair_batch_id,
+                "pair_batch_size": len(actions),
+                "pair_leg_index": index,
+                "pair_action": action_key,
+                "pair_retry_count": 0,
+            }
+            _stamp_trade_latency(state["req_meta"][req_id], "buy_send")
+            req_ids.append(req_id)
+            reservations.append(budget_reservation)
+            prepared.append({
+                "req_id": req_id,
+                "price": float(quote.get("ask_price") or stake_value),
+                "buy": quote.get("id"),
+                "trade": {
+                    "action": action_key,
+                    "label": action_info.get("label"),
+                    "contract_type": action_info.get("contract_type"),
+                    "symbol": symbol,
+                    "duration": duration_value,
+                    "duration_unit": duration_unit,
+                    "selected_tick": selected_tick_for_proposal,
+                },
+            })
+
+        lock = _get_ws_lifecycle_lock(state)
+        with lock:
+            send_phase = True
+            ws = state.get("ws")
+            if not state.get("ws_connected") or not ws:
+                raise ValueError("Not connected")
+            for index, item in enumerate(prepared):
+                ws.send(json.dumps({
+                    "req_id": item["req_id"],
+                    "buy": item["buy"],
+                    "price": item["price"],
+                }))
+                logger.info(
+                    "[%s] human_manual_pair_send leg=%s/%s action=%s",
+                    client_id,
+                    index + 1,
+                    len(prepared),
+                    item["trade"].get("action"),
+                )
+                if index < (len(prepared) - 1):
+                    time.sleep(max(0.0, float(HUMAN_PAIR_BATCH_SEND_DELAY_SEC)))
+        _emit_balance_payload(client_id, state)
+        return True, f"Sent {len(prepared)} HUMAN manual trades", [item["trade"] for item in prepared]
+    except Exception as e:
+        if send_phase:
+            try:
+                should_reconnect = _should_force_ws_reconnect_on_send_exception(state, e)
+                logger.warning(
+                    "[%s] human_manual_pair_send_failed reconnect=%s error=%s",
+                    client_id,
+                    should_reconnect,
+                    e,
+                )
+                if state and should_reconnect:
+                    _mark_ws_unhealthy_and_reconnect(client_id, state, "Deriv connection failed while sending HUMAN pair trades. Reconnecting now...", emit_error=False)
+            except Exception:
+                pass
+        for req_id in req_ids:
+            try:
+                _pull_req_meta_by_req_id(state, req_id)
+            except Exception:
+                pass
+        for reservation in reservations:
+            try:
+                _release_profile_budget_reservation(state, reservation)
+            except Exception:
+                pass
+        try:
+            _emit_balance_payload(client_id, state)
+        except Exception:
+            pass
+        return False, str(e), [item.get("trade") for item in prepared if isinstance(item, dict)]
+
+
+def _retry_human_manual_pair_leg_after_error(client_id, state, meta, error_message):
+    if not isinstance(meta, dict) or not isinstance(state, dict):
+        return False, None
+    if str(meta.get("profile") or "").upper() != "HUMAN":
+        return False, None
+    pair_batch_id = meta.get("pair_batch_id")
+    if pair_batch_id in (None, ""):
+        return False, None
+    try:
+        pair_size = int(meta.get("pair_batch_size") or 0)
+    except Exception:
+        pair_size = 0
+    if pair_size < 2:
+        return False, None
+    try:
+        retry_count = int(meta.get("pair_retry_count") or 0)
+    except Exception:
+        retry_count = 0
+    if retry_count >= 1:
+        return False, None
+
+    ready, ready_msg = _ensure_trade_socket_ready(client_id, state, emit_error=False)
+    if not ready:
+        return False, ready_msg
+
+    stake = _safe_float(meta.get("stake"), None)
+    if stake is None or stake <= 0:
+        return False, "Invalid retry stake"
+
+    quote, quote_err = _request_human_manual_proposal_quote(
+        state,
+        contract_type=meta.get("contract_type"),
+        stake=stake,
+        symbol=meta.get("symbol"),
+        duration=meta.get("duration"),
+        duration_unit=meta.get("duration_unit") or "t",
+        selected_tick=meta.get("selected_tick"),
+        timeout_sec=5.0,
+    )
+    if quote_err:
+        return False, str(quote_err)
+
+    budget_ok, budget_msg, budget_reservation = _reserve_profile_budget(state, "HUMAN", stake)
+    if not budget_ok:
+        return False, str(budget_msg)
+
+    new_req_id = _new_req_id()
+    retry_meta = dict(meta)
+    retry_meta["time"] = now_time()
+    retry_meta["budget_reservation"] = budget_reservation
+    retry_meta["pair_retry_count"] = retry_count + 1
+    retry_meta["retry_of_req_id"] = meta.get("req_id")
+    retry_meta["last_buy_error"] = str(error_message or "")
+    state.setdefault("req_meta", {})[new_req_id] = retry_meta
+    _stamp_trade_latency(state["req_meta"][new_req_id], "buy_send")
+    try:
+        state["ws"].send(json.dumps({
+            "req_id": new_req_id,
+            "buy": quote.get("id"),
+            "price": float(quote.get("ask_price") or stake),
+        }))
+        logger.info(
+            "[%s] human_manual_pair_leg_retried batch_id=%s action=%s retry_count=%s",
+            client_id,
+            pair_batch_id,
+            meta.get("pair_action") or meta.get("type"),
+            retry_meta["pair_retry_count"],
+        )
+        _emit_balance_payload(client_id, state)
+        return True, None
+    except Exception as exc:
+        state.get("req_meta", {}).pop(new_req_id, None)
+        try:
+            _release_profile_budget_reservation(state, budget_reservation)
+        except Exception:
+            pass
+        try:
+            _emit_balance_payload(client_id, state)
+        except Exception:
+            pass
+        if _should_force_ws_reconnect_on_send_exception(state, exc):
+            _mark_ws_unhealthy_and_reconnect(
+                client_id,
+                state,
+                "Deriv connection failed while retrying a HUMAN pair trade. Reconnecting now...",
+                emit_error=False,
+            )
+        return False, str(exc)
 
 
 def _execute_auto_session_plan(client_id, state, plan):
@@ -3968,11 +4335,42 @@ def _mark_ws_unhealthy_and_reconnect(client_id, state, message, *, emit_error=Tr
         pass
 
 
+def _should_force_ws_reconnect_on_send_exception(state, exc):
+    if not isinstance(state, dict):
+        return True
+    if not state.get("ws") or not bool(state.get("ws_transport_connected")):
+        return True
+    text = str(exc or "").strip().lower()
+    fatal_markers = (
+        "closed",
+        "broken pipe",
+        "connection reset",
+        "connection aborted",
+        "already closed",
+        "not connected",
+        "socket is dead",
+        "bad file descriptor",
+    )
+    return any(marker in text for marker in fatal_markers)
+
+
 def _ensure_trade_socket_ready(client_id, state, *, emit_error=True):
     if not state:
         return False, "No client state"
     ws = state.get("ws")
     if state.get("ws_connected") and ws and _is_ws_stale(state):
+        warmup_active = False
+        try:
+            warmup_active = bool(state.get("ws_transport_connected")) and _has_active_tick_stream_warmup(
+                state,
+                now_ts=time.time(),
+                client_id=client_id,
+            )
+        except Exception:
+            warmup_active = False
+        if warmup_active:
+            logger.info("[%s] ws_stale_check_skipped reason=tick_warmup_active", client_id)
+            return True, None
         _mark_ws_unhealthy_and_reconnect(
             client_id,
             state,
@@ -6850,6 +7248,8 @@ def _clear_stale_ws_subscription_tracking(client_id, state, reason):
         state["tick_resubscribe_attempted_at"] = {}
         state["tick_stream_recovering_symbols"] = {}
         state["tick_stream_unhealthy_since"] = {}
+        state["tick_stream_warmup_until"] = {}
+        state["tick_stream_warmup_reason"] = {}
         state["tick_stream_last_emitted_healthy"] = None
         state["open_contract_subs"] = {}
         logger.info(
@@ -6871,9 +7271,13 @@ def _schedule_contract_open_refresh(client_id, expected_nonce, contract_id, dela
         return False
 
     def _worker():
+        started_at = _trade_latency_now()
         for raw_delay in tuple(delays or ()):
+            target_delay = max(0.0, float(raw_delay or 0.0))
             try:
-                time.sleep(max(0.0, float(raw_delay or 0.0)))
+                sleep_for = max(0.0, target_delay - (_trade_latency_now() - started_at))
+                if sleep_for > 0:
+                    time.sleep(sleep_for)
             except Exception:
                 continue
             state = clients.get(client_id)
@@ -6886,6 +7290,8 @@ def _schedule_contract_open_refresh(client_id, expected_nonce, contract_id, dela
                 return
             if _get_open_contract_sub_map(state).get(norm):
                 return
+            meta = _peek_contract_meta(state, norm)
+            _log_trade_latency(client_id, meta, "open_contract_refresh", contract_id=norm, target_delay=target_delay)
             try:
                 ws.send(json.dumps({
                     "proposal_open_contract": 1,
@@ -12150,6 +12556,7 @@ def _send_unchain_hl_trade(
         "budget_reservation": budget_reservation,
     }
     state.setdefault("req_meta", {})[req_id] = req_meta
+    _stamp_trade_latency(req_meta, "buy_send")
     deriv_contract = {"HIGHER": "CALL", "LOWER": "PUT"}[side]
     payload = {
         "req_id": req_id,
@@ -12238,6 +12645,7 @@ def _send_human_parity_trade(
         "budget_reservation": budget_reservation,
     }
     state.setdefault("req_meta", {})[req_id] = req_meta
+    _stamp_trade_latency(req_meta, "buy_send")
     payload = {
         "req_id": req_id,
         "buy": 1,
@@ -12430,6 +12838,7 @@ def _send_unchain_buy(client_id, *, stake, symbol, growth_rate, mode="AUTO", exi
         "growth_rate": float(growth_rate),
     }
     state.setdefault("req_meta", {})[req_id] = req_meta
+    _stamp_trade_latency(req_meta, "buy_send")
 
     # mark pending in strategy immediately to prevent duplicate entries before buy ack
     try:
@@ -13600,9 +14009,121 @@ def _record_tick_stream_seen(state, symbol):
     state.setdefault("tick_last_seen_at", {})[sym] = now_ts
     state.setdefault("tick_stream_recovering_symbols", {}).pop(sym, None)
     state.setdefault("tick_stream_unhealthy_since", {}).pop(sym, None)
+    warmup_until = state.setdefault("tick_stream_warmup_until", {})
+    warmup_reason = state.setdefault("tick_stream_warmup_reason", {})
+    if warmup_until.pop(sym, None):
+        logger.info("tick_stream_grace_end symbol=%s reason=%s end=first_tick", sym, warmup_reason.pop(sym, "warmup"))
 
 
-def _ensure_tick_subscription(state, symbol, *, force=False, reason="", client_id=None):
+def _start_tick_stream_warmup(state, symbol, *, client_id=None, reason="", warmup_sec=None):
+    sym = _normalize_tick_symbol(symbol)
+    if not sym or not isinstance(state, dict):
+        return 0.0
+    now_ts = time.time()
+    duration = max(0.0, float(TICK_STREAM_WARMUP_SEC if warmup_sec is None else warmup_sec))
+    until = now_ts + duration if duration > 0 else now_ts
+    state.setdefault("tick_stream_warmup_until", {})[sym] = until
+    state.setdefault("tick_stream_warmup_reason", {})[sym] = reason or "warmup"
+    state.setdefault("tick_stream_recovering_symbols", {})[sym] = now_ts
+    state.setdefault("tick_subscribe_sent_at", {})[sym] = now_ts
+    state.setdefault("tick_resubscribe_attempted_at", {})[sym] = now_ts
+    if client_id:
+        logger.info(
+            "[%s] tick_stream_grace_start symbol=%s reason=%s duration_sec=%s",
+            client_id,
+            sym,
+            reason or "warmup",
+            round(duration, 2),
+        )
+    return until
+
+
+def _is_tick_stream_warming(state, symbol, *, now_ts=None, client_id=None):
+    sym = _normalize_tick_symbol(symbol)
+    if not sym or not isinstance(state, dict):
+        return False
+    if now_ts is None:
+        now_ts = time.time()
+    warmup_until = state.setdefault("tick_stream_warmup_until", {})
+    warmup_reason = state.setdefault("tick_stream_warmup_reason", {})
+    until = float(warmup_until.get(sym, 0.0) or 0.0)
+    if until <= 0.0:
+        return False
+    if until > now_ts:
+        return True
+    warmup_until.pop(sym, None)
+    reason = warmup_reason.pop(sym, "warmup")
+    if client_id:
+        logger.info("[%s] tick_stream_grace_end symbol=%s reason=%s end=timeout", client_id, sym, reason)
+    return False
+
+
+def _has_active_tick_stream_warmup(state, *, now_ts=None, client_id=None):
+    if not isinstance(state, dict):
+        return False
+    if now_ts is None:
+        now_ts = time.time()
+    found = False
+    for sym in list((state.get("tick_stream_warmup_until") or {}).keys()):
+        if _is_tick_stream_warming(state, sym, now_ts=now_ts, client_id=client_id):
+            found = True
+    return found
+
+
+def _symbol_needed_by_aux_streams(state, symbol):
+    sym = _normalize_tick_symbol(symbol)
+    if not sym or not isinstance(state, dict):
+        return False
+    scan = _ensure_unchain_scanner(state)
+    if bool(scan.get("running")) and sym in set(scan.get("symbols") or []):
+        return True
+    if sym in set(scan.get("owned_syms") or set()):
+        return True
+    golden = _ensure_koolkid_golden_card_state(state)
+    if sym in set(golden.get("owned_syms") or set()) or sym in set(golden.get("symbols") or []):
+        return True
+    for profile in ("KOOLKID", "JOKERJOE"):
+        run = ((state.get("seqvix") or {}).get(profile) or {})
+        if sym in set(run.get("owned_syms") or set()) or sym in set(run.get("active_syms") or set()):
+            return True
+    return False
+
+
+def _forget_tick_subscription_if_unused(state, symbol, *, client_id=None, reason=""):
+    sym = _normalize_tick_symbol(symbol)
+    if not sym or not isinstance(state, dict):
+        return False
+    main_symbol = _normalize_tick_symbol(state.get("current_symbol"))
+    human_symbol = _normalize_tick_symbol(state.get("human_symbol") or state.get("current_symbol"))
+    if sym in {main_symbol, human_symbol}:
+        return False
+    if _symbol_needed_by_aux_streams(state, sym):
+        return False
+    ws = state.get("ws")
+    if not state.get("ws_connected") or not ws:
+        return False
+    tick_subs = state.setdefault("tick_subs", {})
+    sub_id = tick_subs.get(sym)
+    if not sub_id:
+        return False
+    try:
+        ws.send(json.dumps({"forget": sub_id}))
+    except Exception:
+        pass
+    tick_subs.pop(sym, None)
+    state.setdefault("tick_subscribe_sent_at", {}).pop(sym, None)
+    state.setdefault("tick_last_seen_at", {}).pop(sym, None)
+    state.setdefault("tick_resubscribe_attempted_at", {}).pop(sym, None)
+    state.setdefault("tick_stream_recovering_symbols", {}).pop(sym, None)
+    state.setdefault("tick_stream_unhealthy_since", {}).pop(sym, None)
+    state.setdefault("tick_stream_warmup_until", {}).pop(sym, None)
+    state.setdefault("tick_stream_warmup_reason", {}).pop(sym, None)
+    if client_id:
+        logger.info("[%s] tick_stream_forget symbol=%s reason=%s", client_id, sym, reason or "unused")
+    return True
+
+
+def _ensure_tick_subscription(state, symbol, *, force=False, reason="", client_id=None, warmup_sec=None):
     """
     Best-effort self-heal for tick streams. Some UI flows can leave a symbol
     unsubscribed; this re-requests ticks if no active subscription id is known.
@@ -13616,6 +14137,7 @@ def _ensure_tick_subscription(state, symbol, *, force=False, reason="", client_i
     tick_subs = state.setdefault("tick_subs", {})
     existing_sub_id = tick_subs.get(sym)
     if existing_sub_id and not force:
+        _start_tick_stream_warmup(state, sym, client_id=client_id, reason=reason or "existing_subscription", warmup_sec=warmup_sec)
         return True
     if existing_sub_id and force:
         # For health recovery, avoid sending a forget for a possibly stale Deriv
@@ -13632,6 +14154,7 @@ def _ensure_tick_subscription(state, symbol, *, force=False, reason="", client_i
         state.setdefault("tick_subscribe_sent_at", {})[sym] = now_ts
         state.setdefault("tick_stream_recovering_symbols", {})[sym] = now_ts
         state.setdefault("tick_resubscribe_attempted_at", {})[sym] = now_ts
+        _start_tick_stream_warmup(state, sym, client_id=client_id, reason=reason or "ensure", warmup_sec=warmup_sec)
         if client_id:
             logger.info(
                 "[%s] tick_stream_subscribe_sent symbol=%s force=%s reason=%s",
@@ -13657,7 +14180,7 @@ def _ensure_tick_subscription(state, symbol, *, force=False, reason="", client_i
 def _restore_required_tick_subscriptions(client_id, state, reason):
     restored = []
     for sym in _active_tick_symbols_for_state(state):
-        if _ensure_tick_subscription(state, sym, force=True, reason=reason, client_id=client_id):
+        if _ensure_tick_subscription(state, sym, force=True, reason=reason, client_id=client_id, warmup_sec=TICK_STREAM_WARMUP_SEC):
             restored.append(sym)
     if restored:
         logger.info("[%s] tick_stream_restore_requested reason=%s symbols=%s", client_id, reason, ",".join(restored))
@@ -13695,6 +14218,17 @@ def _get_tick_stream_health(client_id, state, *, self_heal=False, allow_reconnec
         age = (now_ts - seen_ts) if seen_ts > 0 else None
         if age is not None:
             age_values.append(age)
+        warming = _is_tick_stream_warming(state, sym, now_ts=now_ts, client_id=client_id)
+        if warming:
+            recovering.setdefault(sym, max(sent_ts, auth_ts, now_ts))
+            warmup_log_at = state.setdefault("_tick_stream_health_warmup_log_at", {})
+            last_log = float(warmup_log_at.get(sym, 0.0) or 0.0)
+            if (now_ts - last_log) >= 2.0:
+                warmup_log_at[sym] = now_ts
+                logger.info("[%s] tick_stream_health_warmup_skip symbol=%s", client_id, sym)
+                if self_heal and allow_reconnect:
+                    logger.info("[%s] tick_stream_reconnect_blocked symbol=%s reason=warmup_active", client_id, sym)
+            continue
 
         if not sub_id and (now_ts - max(sent_ts, auth_ts, 0.0)) >= 1.0:
             stale_symbols.append(sym)
@@ -13739,6 +14273,37 @@ def _get_tick_stream_health(client_id, state, *, self_heal=False, allow_reconnec
         "tick_stream_stale_symbols": stale_symbols,
         "last_tick_age_sec": None if not age_values else round(min(age_values), 2),
     }
+
+
+def _switch_market_tick_stream(client_id, state, *, new_symbol, old_symbol=None, owner="main"):
+    sym = _normalize_tick_symbol(new_symbol)
+    old_sym = _normalize_tick_symbol(old_symbol)
+    if not sym or not isinstance(state, dict):
+        return False
+    ws = state.get("ws")
+    if not state.get("ws_connected") or not ws:
+        return False
+    lock = _get_ws_lifecycle_lock(state)
+    with lock:
+        logger.info("[%s] market_switch_requested owner=%s old_symbol=%s new_symbol=%s", client_id, owner, old_sym, sym)
+        ok = _ensure_tick_subscription(
+            state,
+            sym,
+            force=False,
+            reason=f"{owner}_market_switch",
+            client_id=client_id,
+            warmup_sec=TICK_STREAM_WARMUP_SEC,
+        )
+        if old_sym and old_sym != sym:
+            forgotten = _forget_tick_subscription_if_unused(
+                state,
+                old_sym,
+                client_id=client_id,
+                reason=f"{owner}_market_switch_cleanup",
+            )
+            if not forgotten and _symbol_needed_by_aux_streams(state, old_sym):
+                logger.info("[%s] tick_stream_retained symbol=%s reason=aux_stream_owner", client_id, old_sym)
+        return ok
 
 
 def _ensure_koolkid_golden_card_state(state):
@@ -14398,21 +14963,11 @@ def _apply_scanner_recommendation(client_id, state, symbol, switch_symbol=True):
                     strat.reset_tick_analysis()
             except Exception:
                 pass
-        ws = state.get("ws")
-        if state.get("ws_connected") and ws:
-            try:
-                tick_subs = state.setdefault("tick_subs", {})
-                old_id = tick_subs.get(old_symbol)
-                if old_id and old_symbol != human_symbol:
-                    ws.send(json.dumps({"forget": old_id}))
-                    tick_subs.pop(old_symbol, None)
-                ws.send(json.dumps({"ticks": state["current_symbol"], "subscribe": 1}))
-                if scan.get("running") and old_symbol and old_symbol in (scan.get("symbols") or []) and old_symbol != sym:
-                    ws.send(json.dumps({"ticks": old_symbol, "subscribe": 1}))
-                    if old_symbol not in (state.get("current_symbol"), human_symbol):
-                        scan.setdefault("owned_syms", set()).add(old_symbol)
-            except Exception:
-                pass
+        if state.get("ws_connected") and state.get("ws"):
+            _switch_market_tick_stream(client_id, state, new_symbol=state["current_symbol"], old_symbol=old_symbol, owner="scanner_apply_switch")
+            if scan.get("running") and old_symbol and old_symbol in (scan.get("symbols") or []) and old_symbol not in (state.get("current_symbol"), human_symbol):
+                scan.setdefault("owned_syms", set()).add(old_symbol)
+                scan.setdefault("last_sub_attempt", {})[old_symbol] = time.time()
         socketio.emit("market_change", {"symbol": state["current_symbol"]}, room=client_id)
 
     payload = _unchain_payload_response(state)
@@ -14456,6 +15011,26 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 failed_buy_meta = _cleanup_failed_buy_request(state, req_id)
             except Exception:
                 pass
+            retry_human_pair = False
+            retry_human_pair_msg = None
+            try:
+                retry_human_pair, retry_human_pair_msg = _retry_human_manual_pair_leg_after_error(
+                    client_id,
+                    state,
+                    failed_buy_meta,
+                    msg,
+                )
+            except Exception:
+                retry_human_pair = False
+                retry_human_pair_msg = None
+            if retry_human_pair:
+                logger.info(
+                    "[%s] human_manual_pair_error_recovered req_id=%s action=%s",
+                    client_id,
+                    req_id,
+                    (failed_buy_meta or {}).get("pair_action") or (failed_buy_meta or {}).get("type"),
+                )
+                return
             try:
                 _emit_balance_payload(client_id, state)
             except Exception:
@@ -14507,6 +15082,8 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 except Exception:
                     pass
             logger.error(f"[{client_id}] API Error: {msg}")
+            if retry_human_pair_msg:
+                logger.warning("[%s] human_manual_pair_retry_failed reason=%s", client_id, retry_human_pair_msg)
             socketio.emit("api_error", {"message": msg}, room=client_id)
             return
 
@@ -14654,8 +15231,14 @@ def handle_on_message(client_id, ws, message, expected_nonce):
             buy = data["buy"]
             contract_id = buy.get("contract_id")
             req_id = data.get("req_id")
+            placed_emitted = False
+            open_contract_requested = False
+            open_contract_refresh_scheduled = False
 
             meta = _pull_req_meta_by_req_id(state, req_id)
+            if isinstance(meta, dict):
+                _stamp_trade_latency(meta, "buy_confirm")
+                _log_trade_latency(client_id, meta, "buy_confirm_received", contract_id=contract_id)
 
             if contract_id and meta:
                 state["contract_meta"][contract_id] = meta
@@ -14664,6 +15247,56 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 if norm_contract_id:
                     state["contract_meta"][norm_contract_id] = meta
                 is_auto_session_contract = str((meta or {}).get("mode") or "").startswith("AUTO_SESSION|")
+                duration_val = None
+                duration_unit_val = _clean_unchain_duration_unit(meta.get("duration_unit", "t"))
+                countdown_seconds = None
+                try:
+                    duration_val = int(float(meta.get("duration")))
+                except Exception:
+                    duration_val = None
+                if duration_val is not None:
+                    if duration_unit_val == "s":
+                        countdown_seconds = int(duration_val)
+                    elif duration_unit_val == "m":
+                        countdown_seconds = int(duration_val) * 60
+                    elif duration_unit_val == "h":
+                        countdown_seconds = int(duration_val) * 3600
+                if not is_auto_session_contract:
+                    _log_trade_latency(client_id, meta, "trade_placed_emit", contract_id=contract_id)
+                    socketio.emit("trade_placed", {
+                        "profile": meta.get("profile"),
+                        "type": meta.get("type"),
+                        "barrier": meta.get("barrier"),
+                        "stake": meta.get("stake"),
+                        "symbol": meta.get("symbol"),
+                        "time": meta.get("time"),
+                        "contract_id": contract_id,
+                        "duration": duration_val,
+                        "duration_unit": duration_unit_val if duration_val is not None else None,
+                        "mode": meta.get("mode"),
+                        "leg_action": meta.get("leg_action"),
+                        "contract_type": meta.get("contract_type"),
+                        "selected_tick": meta.get("selected_tick"),
+                        "countdown_remaining": duration_val,
+                        "countdown_unit": duration_unit_val if duration_val is not None else None,
+                        "countdown_seconds": countdown_seconds,
+                        "status": "PENDING",
+                        "result": "PENDING",
+                        "pending": True,
+                        "_server_event_ms": int(time.time() * 1000),
+                    }, room=client_id)
+                    placed_emitted = True
+                try:
+                    ws.send(json.dumps({
+                        "proposal_open_contract": 1,
+                        "contract_id": contract_id,
+                        "subscribe": 1
+                    }))
+                    open_contract_requested = True
+                except Exception:
+                    pass
+                _schedule_contract_open_refresh(client_id, expected_nonce, contract_id, delays=_contract_refresh_delays_for_meta(meta))
+                open_contract_refresh_scheduled = True
                 try:
                     _seqvix_jokerjoe_on_buy_confirmed(state, contract_id, meta)
                 except Exception:
@@ -14713,21 +15346,8 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 except Exception:
                     pass
                 _schedule_bot_auto_close(client_id, state, contract_id, meta)
-                duration_val = None
-                duration_unit_val = _clean_unchain_duration_unit(meta.get("duration_unit", "t"))
-                countdown_seconds = None
-                try:
-                    duration_val = int(float(meta.get("duration")))
-                except Exception:
-                    duration_val = None
-                if duration_val is not None:
-                    if duration_unit_val == "s":
-                        countdown_seconds = int(duration_val)
-                    elif duration_unit_val == "m":
-                        countdown_seconds = int(duration_val) * 60
-                    elif duration_unit_val == "h":
-                        countdown_seconds = int(duration_val) * 3600
-                if not is_auto_session_contract:
+                if not is_auto_session_contract and not placed_emitted:
+                    _log_trade_latency(client_id, meta, "trade_placed_emit", contract_id=contract_id)
                     socketio.emit("trade_placed", {
                         "profile": meta.get("profile"),
                         "type": meta.get("type"),
@@ -14748,6 +15368,7 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                         "status": "PENDING",
                         "result": "PENDING",
                         "pending": True,
+                        "_server_event_ms": int(time.time() * 1000),
                     }, room=client_id)
             else:
                 socketio.emit("trade_placed", {
@@ -14757,16 +15378,19 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                     "stake": None,
                     "symbol": state.get("current_symbol"),
                     "time": now_time(),
-                    "contract_id": contract_id
+                    "contract_id": contract_id,
+                    "_server_event_ms": int(time.time() * 1000),
                 }, room=client_id)
 
-            if contract_id:
+            if contract_id and not open_contract_requested:
                 ws.send(json.dumps({
                     "proposal_open_contract": 1,
                     "contract_id": contract_id,
                     "subscribe": 1
                 }))
-            _schedule_contract_open_refresh(client_id, expected_nonce, contract_id, delays=(0.18, 0.55, 1.45, 3.2))
+                open_contract_requested = True
+                if not open_contract_refresh_scheduled:
+                    _schedule_contract_open_refresh(client_id, expected_nonce, contract_id, delays=_contract_refresh_delays_for_meta(meta))
             profile_name = str((meta or {}).get("profile") or "").upper()
             if profile_name == "UNCHAIN" and state.get("active_profile") == "UNCHAIN":
                 socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
@@ -14944,6 +15568,9 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 if ntt_known and sub_id not in (None, ""):
                     _remember_unchain_open_contract_subscription(state, cid_val, sub_id)
                     _log_runtime_subscription_counts(client_id, state, "open_contract_subscription_updated")
+                if is_settled_fast:
+                    process_contract(client_id, contract)
+                    return
                 # If user manually cleared active trades, ignore non-settled stream updates
                 # so they do not pop back into the active list.
                 if unchain_known and (not is_processed) and (not is_settled_fast):
@@ -14965,9 +15592,9 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                     if ((meta_for_contract and (meta_for_contract.get("profile") or "").upper() == "UNCHAIN" and str(meta_for_contract.get("type") or "").upper() == "ACCU")
                         or (getattr(un, "active_contract_id", None) and cid_val and int(getattr(un, "active_contract_id")) == int(cid_val))):
                         un.on_open_contract(contract)
-                if state.get("active_profile") == "UNCHAIN":
+                if state.get("active_profile") == "UNCHAIN" and _should_emit_ui_event(state, "unchain_status:open_contract", UI_STATUS_EMIT_MIN_SEC):
                     socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
-                if state.get("active_profile") == "NTT":
+                if state.get("active_profile") == "NTT" and _should_emit_ui_event(state, "ntt_status:open_contract", UI_STATUS_EMIT_MIN_SEC):
                     socketio.emit("ntt_status", _ntt_payload_response(state), room=client_id)
             except Exception:
                 pass
@@ -15072,13 +15699,15 @@ def process_tick(client_id, tick):
         if symbol != want_symbol:
             return
 
-        socketio.emit("tick", {
-            "symbol": symbol,
-            "digit": digit if digit is not None else extract_last_decimal_digit(price, pip_size),
-            "price": price,
-            "tick_count": getattr(active_strategy, "tick_count", 0) if active_strategy else 0,
-            "timestamp": now_time()
-        }, room=client_id)
+        ui_digit = digit if digit is not None else extract_last_decimal_digit(price, pip_size)
+        if _should_emit_ui_event(state, f"tick:{active_profile}:{symbol}", UI_TICK_EMIT_MIN_SEC):
+            socketio.emit("tick", {
+                "symbol": symbol,
+                "digit": ui_digit,
+                "price": price,
+                "tick_count": getattr(active_strategy, "tick_count", 0) if active_strategy else 0,
+                "timestamp": now_time()
+            }, room=client_id)
 
         # Digit analysis only for KOOLKID/JOKERJOE style payloads
         if is_main:
@@ -15086,7 +15715,7 @@ def process_tick(client_id, tick):
                 _maybe_refresh_koolkid_testtrial_quotes(client_id, state)
             except Exception:
                 pass
-        if active_strategy and hasattr(active_strategy, "get_ui_payload"):
+        if active_strategy and hasattr(active_strategy, "get_ui_payload") and _should_emit_ui_event(state, f"digit_analysis:{active_profile}", UI_ANALYSIS_EMIT_MIN_SEC):
             socketio.emit("digit_analysis", active_strategy.get_ui_payload(), room=client_id)
 
         run_auto_trade(client_id, state)
@@ -15102,22 +15731,22 @@ def process_tick(client_id, tick):
             _run_ntt_koolkid_hl(client_id, state)
             _run_ntt_koolkid_both(client_id, state)
 
-        if active_profile == "UNCHAIN":
+        if active_profile == "UNCHAIN" and _should_emit_ui_event(state, "unchain_status:tick", UI_STATUS_EMIT_MIN_SEC):
             socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
 
-        if active_profile == "NTT":
+        if active_profile == "NTT" and _should_emit_ui_event(state, "ntt_status:tick", UI_STATUS_EMIT_MIN_SEC):
             socketio.emit("ntt_status", _ntt_payload_response(state), room=client_id)
 
-        if active_profile == "JOKERJOE":
+        if active_profile == "JOKERJOE" and _should_emit_ui_event(state, "jokerjoe_modes:tick", UI_STATUS_EMIT_MIN_SEC):
             jj = strategies.get("JOKERJOE")
             if jj:
                 emit_jokerjoe_modes(client_id, jj)
 
         if active_profile == "HUMAN":
             strat = strategies.get("HUMAN")
-            if strat and hasattr(strat, "get_chart_data"):
+            if strat and hasattr(strat, "get_chart_data") and _should_emit_ui_event(state, "human_chart:tick", UI_HUMAN_CHART_EMIT_MIN_SEC):
                 socketio.emit("human_chart_data", strat.get_chart_data(), room=client_id)
-            if strat and hasattr(strat, "get_human_rf_payload"):
+            if strat and hasattr(strat, "get_human_rf_payload") and _should_emit_ui_event(state, "human_rf_status:tick", UI_STATUS_EMIT_MIN_SEC):
                 socketio.emit("human_rf_status", strat.get_human_rf_payload(), room=client_id)
 
     except Exception as e:
@@ -15166,6 +15795,8 @@ def process_contract(client_id, contract):
         settled_balance = _resolve_post_contract_balance(state, profit)
 
         meta = _pull_contract_meta(state, contract_id) if contract_id is not None else None
+        if isinstance(meta, dict):
+            _stamp_trade_latency(meta, "contract_settled")
         try:
             _settle_profile_budget_reservation(state, (meta or {}).get("budget_reservation"), profit)
         except Exception:
@@ -15260,6 +15891,9 @@ def process_contract(client_id, contract):
                 entry["exit_digit"] = exit_digit
 
         if not is_auto_session_contract:
+            if isinstance(meta, dict):
+                _log_trade_latency(client_id, meta, "trade_result_emit", contract_id=contract_id, profit=profit)
+            entry["_server_event_ms"] = int(time.time() * 1000)
             socketio.emit("trade_result", entry, room=client_id)
         if profile_for_contract != "UNCHAIN" or is_auto_session_contract:
             _mark_regular_contract_processed(state, contract_id)
@@ -15683,8 +16317,9 @@ def api_connection_status():
         runtime_missing_before_init=bool((state.get("last_runtime_diag") or {}).get("client_runtime_missing_before_init")),
     )
     _check_ws_connect_timeout(_cid, state)
-    connected = bool(state.get("ws_connected")) and not _is_ws_stale(state)
-    if not connected and state.get("ws_connected"):
+    warmup_active = _has_active_tick_stream_warmup(state, now_ts=time.time(), client_id=_cid)
+    connected = bool(state.get("ws_connected")) and (warmup_active or not _is_ws_stale(state))
+    if not connected and state.get("ws_connected") and not warmup_active:
         _mark_ws_unhealthy_and_reconnect(_cid, state, "Deriv connection went stale. Reconnecting now...", emit_error=False)
     tick_health = _get_tick_stream_health(_cid, state, self_heal=connected, allow_reconnect=False)
     has_token = bool(str(state.get("api_token", "") or "").strip())
@@ -16038,27 +16673,15 @@ def change_market():
         except Exception:
             pass
 
-    ws = state.get("ws")
-    if state.get("ws_connected") and ws:
-        try:
-            # best-effort unsubscribe old MAIN ticks (do not touch HUMAN)
-            tick_subs = state.setdefault("tick_subs", {})
-            scan = _ensure_unchain_scanner(state)
-            old_id = tick_subs.get(old_symbol)
-            # Do not forget if HUMAN still streams the old symbol.
-            if old_id and old_symbol != human_symbol:
-                ws.send(json.dumps({"forget": old_id}))
-                tick_subs.pop(old_symbol, None)
-            ws.send(json.dumps({"ticks": state["current_symbol"], "subscribe": 1}))
-            if scan.get("running"):
-                scan.setdefault("owned_syms", set()).discard(state["current_symbol"])
-                scan.setdefault("last_sub_attempt", {})[state["current_symbol"]] = time.time()
-                if old_symbol and old_symbol in (scan.get("symbols") or []) and old_symbol != state["current_symbol"] and old_symbol != human_symbol:
-                    ws.send(json.dumps({"ticks": old_symbol, "subscribe": 1}))
-                    scan.setdefault("owned_syms", set()).add(old_symbol)
-                    scan.setdefault("last_sub_attempt", {})[old_symbol] = time.time()
-        except Exception:
-            pass
+    if state.get("ws_connected") and state.get("ws"):
+        scan = _ensure_unchain_scanner(state)
+        _switch_market_tick_stream(cid, state, new_symbol=state["current_symbol"], old_symbol=old_symbol, owner="main")
+        if scan.get("running"):
+            scan.setdefault("owned_syms", set()).discard(state["current_symbol"])
+            scan.setdefault("last_sub_attempt", {})[state["current_symbol"]] = time.time()
+            if old_symbol and old_symbol in (scan.get("symbols") or []) and old_symbol != state["current_symbol"] and old_symbol != human_symbol:
+                scan.setdefault("owned_syms", set()).add(old_symbol)
+                scan.setdefault("last_sub_attempt", {})[old_symbol] = time.time()
 
     socketio.emit("market_change", {"symbol": state["current_symbol"]}, room=cid)
     payload = _unchain_payload_response(state)
@@ -16102,18 +16725,8 @@ def change_human_market():
         except Exception:
             pass
 
-    ws = state.get("ws")
-    if state.get("ws_connected") and ws:
-        try:
-            tick_subs = state.setdefault("tick_subs", {})
-            old_id = tick_subs.get(old_symbol)
-            # If HUMAN previously shared MAIN symbol, keep that stream alive.
-            if old_id and old_symbol != main_symbol:
-                ws.send(json.dumps({"forget": old_id}))
-                tick_subs.pop(old_symbol, None)
-            ws.send(json.dumps({"ticks": symbol, "subscribe": 1}))
-        except Exception:
-            pass
+    if state.get("ws_connected") and state.get("ws"):
+        _switch_market_tick_stream(cid, state, new_symbol=symbol, old_symbol=old_symbol, owner="human")
 
     # refresh HUMAN chart candles on HUMAN market change
     request_human_seed(cid)
@@ -18696,6 +19309,31 @@ def human_manual_trade_route():
     return jsonify({"error": msg}), 400
 
 
+@app.route("/human_manual_pair_trade", methods=["POST"])
+def human_manual_pair_trade_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, _state = get_client_state()
+    data = request.json or {}
+    actions = data.get("actions")
+    if not isinstance(actions, list) or len(actions) < 2:
+        return jsonify({"error": "At least two HUMAN manual actions are required."}), 400
+
+    ok, msg, placed = place_human_manual_contract_batch(cid, actions=actions)
+    if ok:
+        return jsonify({
+            "status": "success",
+            "message": msg,
+            "placed": placed,
+        })
+    return jsonify({
+        "status": "error" if not placed else "partial",
+        "error": msg,
+        "placed": placed,
+    }), (400 if not placed else 200)
+
+
 @app.route("/human_parity_trade", methods=["POST"])
 def human_parity_trade_route():
     if not login_required():
@@ -18748,6 +19386,7 @@ def human_rf_trade():
     data = request.json or {}
     direction = (data.get("direction") or "AUTO").upper().strip()
     ignore_cooldown = bool(data.get("ignore_cooldown") or data.get("bypass_cooldown"))
+    allow_equals = bool(data.get("allow_equals", False))
 
     # sync stake from request if provided (optional)
     try:
@@ -18776,6 +19415,8 @@ def human_rf_trade():
         return jsonify({"error": "No valid setup / cooldown active"}), 400
 
     sig["symbol"] = state.get("human_symbol") or state.get("current_symbol")
+    if allow_equals:
+        sig["allow_equals"] = True
     ok, msg = place_risefall_order(cid, sig)
     if ok:
         return jsonify({"status": "success", "signal": sig})

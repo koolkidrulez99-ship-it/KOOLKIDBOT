@@ -539,6 +539,10 @@
             <button id="humanOnlyDownsBtn" type="button" onclick="humanManualTrade('ONLY_DOWNS')" style="background:#dc2626;">Only Downs</button>
         </div>
 
+        <div style="margin-top:8px;">
+            <button id="humanAsiansPairBtn" type="button" onclick="humanManualAsiansPairTrade()" style="background:#f59e0b; color:#111827; width:100%; font-weight:900;">ASIANS UP + ASIANS DOWN</button>
+        </div>
+
         <div style="margin-top:10px;">
             <button id="humanSpecialAutoBtn" type="button" onclick="openHumanSpecialAutoPopup()" style="background:#f59e0b; color:#111827; width:100%; font-weight:900;">AUTO / BOTH SPECIAL TICKS</button>
         </div>
@@ -579,6 +583,7 @@
                         <option value="ONLY_UPS">Only Ups</option>
                         <option value="ONLY_DOWNS">Only Downs</option>
                         <option value="ONLY_UPS_DOWNS">Only Ups + Only Downs</option>
+                        <option value="ASIANS_UP_DOWNS">Asians Up + Asians Down</option>
                         <option value="HIGH_TICK">High Tick</option>
                         <option value="LOW_TICK">Low Tick</option>
                         <option value="HIGH_LOW_TICKS">High Tick + Low Tick</option>
@@ -730,6 +735,7 @@
                             <option value="RISE">Rise</option>
                             <option value="FALL">Fall</option>
                             <option value="BOTH">Rise + Fall</option>
+                            <option value="BOTH_EQUALS">Rise + Fall Equals</option>
                         </select>
                     </label>
                     <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
