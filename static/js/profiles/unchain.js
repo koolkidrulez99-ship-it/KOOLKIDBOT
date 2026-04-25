@@ -51,6 +51,38 @@
     predictionTimer: null,
     predictionSignature: "",
     predictionLoading: false,
+    reinvest: {
+      enabled: false,
+      baseHigherStake: 1,
+      baseLowerStake: 1,
+      pendingSide: "",
+      pendingDirections: {},
+    },
+    singleMartingale: {
+      enabled: false,
+      running: false,
+      inProgress: false,
+      stopRequested: false,
+      action: "HIGHER",
+      step: 1,
+      higherStake: 1,
+      lowerStake: 1,
+      higherBaseStake: 1,
+      lowerBaseStake: 1,
+      pendingSide: "",
+      pendingContractId: "",
+      pendingDirections: {},
+      settledCount: 0,
+      pendingMartingale: false,
+      pendingStake: 0,
+      spacingWait: 0,
+      plusSetCount: 0,
+      fixedProfitsEnabled: false,
+      higherProfitCarryActive: false,
+      lowerProfitCarryActive: false,
+      lastResult: "none",
+      status: "Ready",
+    },
   };
 
   const FORM_FIELDS = [
@@ -256,6 +288,333 @@
     const node = el(id);
     const raw = node ? String(node.value || "").trim() : "";
     return raw || fallback;
+  }
+
+  function normalizeUnchainDirection(value) {
+    const raw = String(value || "").toUpperCase().trim();
+    if (raw === "LOWER" || raw === "BOTH" || raw === "BOTH_PLUS" || raw === "BOTH_WINS") return raw;
+    return "HIGHER";
+  }
+
+  function isUnchainSingleMartingalePairedAction(action) {
+    return action === "BOTH" || action === "BOTH_PLUS" || action === "BOTH_WINS";
+  }
+
+  function getUnchainSingleMartingaleActionLabel(action) {
+    if (action === "BOTH_WINS") return "HIGHER & LOWER WINS";
+    if (action === "BOTH_PLUS") return "HIGHER + LOWER PLUS";
+    if (action === "BOTH") return "HIGHER + LOWER BOTH";
+    return `${action} ONLY`;
+  }
+
+  function getUnchainSingleMartingaleWinsSide() {
+    return normalizeUnchainDirection(readText("unchainSingleMartingaleWinsSide", "HIGHER"));
+  }
+
+  function getUnchainSingleMartingaleBaseStake(direction, settings) {
+    const side = normalizeUnchainDirection(direction);
+    if (side === "LOWER") return Number(settings.lowerStartStake || settings.startStake || 1);
+    return Number(settings.higherStartStake || settings.startStake || 1);
+  }
+
+  function readUnchainSingleMartingaleSettings() {
+    const action = normalizeUnchainDirection(readText("unchainSingleMartingaleAction", state.singleMartingale.action || "HIGHER"));
+    const higherStartStake = Math.max(0.35, readNumber("unchainSingleMartingaleHigherStartStake", 1));
+    const lowerStartStake = Math.max(0.35, readNumber("unchainSingleMartingaleLowerStartStake", 1));
+    const multiplier = Math.max(1, readNumber("unchainSingleMartingaleMultiplier", 2));
+    const maxSteps = Math.max(1, Math.floor(readNumber("unchainSingleMartingaleMaxSteps", 1000)));
+    const maxStakeRaw = readText("unchainSingleMartingaleMaxStake", "");
+    const maxStake = maxStakeRaw === "" ? null : Math.max(0.35, Number(maxStakeRaw || 0));
+    const tickSpacing = Math.max(1, Math.min(10, readInteger("unchainSingleMartingaleTickSpacing", 1)));
+    const duration = Math.max(1, readInteger("unchainSingleMartingaleDuration", 5));
+    const durationUnit = String(readText("unchainSingleMartingaleDurationUnit", "t") || "t").toLowerCase();
+    const higherBarrier = String(readText("unchainSingleMartingaleHigherBarrier", "+0.12") || "+0.12").trim() || "+0.12";
+    const lowerBarrier = String(readText("unchainSingleMartingaleLowerBarrier", "-0.12") || "-0.12").trim() || "-0.12";
+    const fixedProfits = !!(el("unchainSingleMartingaleFixedProfits") && el("unchainSingleMartingaleFixedProfits").checked);
+    const winsSide = getUnchainSingleMartingaleWinsSide();
+    return {
+      action,
+      winsSide,
+      higherStartStake: Number(higherStartStake.toFixed(2)),
+      lowerStartStake: Number(lowerStartStake.toFixed(2)),
+      startStake: Number(higherStartStake.toFixed(2)),
+      multiplier,
+      maxSteps,
+      maxStake: Number.isFinite(maxStake) ? Number(maxStake.toFixed(2)) : null,
+      tickSpacing,
+      duration,
+      durationUnit,
+      higherBarrier,
+      lowerBarrier,
+      fixedProfits,
+    };
+  }
+
+  function clampUnchainSingleMartingaleStake(value, settings) {
+    let stake = Number(value || 0);
+    if (!Number.isFinite(stake)) stake = Number(settings.startStake || 1);
+    if (settings.maxStake !== null) stake = Math.min(stake, settings.maxStake);
+    return Number(Math.max(0.35, stake).toFixed(2));
+  }
+
+  function getUnchainTradeProfitAmount(trade) {
+    const keys = ["profit", "profit_value", "profit_loss", "pnl"];
+    for (const key of keys) {
+      const value = Number(trade && trade[key]);
+      if (Number.isFinite(value)) return value;
+    }
+    return 0;
+  }
+
+  function applyUnchainSingleMartingaleFixedProfitsToggle() {
+    const wrap = el("unchainSingleMartingaleFixedProfitsWrap");
+    const input = el("unchainSingleMartingaleFixedProfits");
+    const label = el("unchainSingleMartingaleFixedProfitsState");
+    const isOn = !!(input && input.checked);
+    if (wrap) wrap.classList.toggle("is-on", isOn);
+    if (label) label.innerText = isOn ? "ON" : "OFF";
+  }
+
+  function applyUnchainSingleMartingaleWinsSideVisibility(action) {
+    const wrap = el("unchainSingleMartingaleWinsSideWrap");
+    if (!wrap) return;
+    wrap.style.display = action === "BOTH_WINS" ? "" : "none";
+  }
+
+  function setUnchainSingleMartingaleSideStake(direction, stakeValue, settings) {
+    const nextStake = clampUnchainSingleMartingaleStake(stakeValue, settings);
+    if (normalizeUnchainDirection(direction) === "LOWER") {
+      state.singleMartingale.lowerStake = nextStake;
+    } else {
+      state.singleMartingale.higherStake = nextStake;
+    }
+    return nextStake;
+  }
+
+  function setUnchainSingleMartingaleProfitCarryState(direction, isActive) {
+    if (normalizeUnchainDirection(direction) === "LOWER") {
+      state.singleMartingale.lowerProfitCarryActive = !!isActive;
+    } else {
+      state.singleMartingale.higherProfitCarryActive = !!isActive;
+    }
+  }
+
+  function isUnchainSingleMartingaleProfitCarryActive(direction) {
+    return normalizeUnchainDirection(direction) === "LOWER"
+      ? !!state.singleMartingale.lowerProfitCarryActive
+      : !!state.singleMartingale.higherProfitCarryActive;
+  }
+
+  function applyUnchainSingleMartingaleProfitCarry(direction, stakeValue, profitValue, settings) {
+    if (!settings.fixedProfits) return false;
+    const profit = Number(profitValue || 0);
+    if (!Number.isFinite(profit) || profit <= 0) return false;
+    setUnchainSingleMartingaleSideStake(direction, Number(stakeValue || getUnchainSingleMartingaleBaseStake(direction, settings)) + profit, settings);
+    setUnchainSingleMartingaleProfitCarryState(direction, true);
+    return true;
+  }
+
+  function resetUnchainSingleMartingaleSideToBase(direction, settings) {
+    setUnchainSingleMartingaleSideStake(direction, getUnchainSingleMartingaleBaseStake(direction, settings), settings);
+    setUnchainSingleMartingaleProfitCarryState(direction, false);
+  }
+
+  function advanceUnchainSingleMartingaleLossSide(direction, stakeValue, settings) {
+    if (settings.fixedProfits && isUnchainSingleMartingaleProfitCarryActive(direction)) {
+      resetUnchainSingleMartingaleSideToBase(direction, settings);
+      return;
+    }
+    let nextStake = Number((Number(stakeValue || getUnchainSingleMartingaleBaseStake(direction, settings)) * settings.multiplier).toFixed(2));
+    if (settings.maxStake !== null) nextStake = Math.min(nextStake, settings.maxStake);
+    setUnchainSingleMartingaleSideStake(direction, nextStake, settings);
+    setUnchainSingleMartingaleProfitCarryState(direction, false);
+  }
+
+  function resolveUnchainSingleMartingaleWin(direction, stakeValue, profitValue, settings) {
+    const baseStake = getUnchainSingleMartingaleBaseStake(direction, settings);
+    const usedRecoveryStake = Number(stakeValue || baseStake) > Number(baseStake);
+    if (usedRecoveryStake) {
+      resetUnchainSingleMartingaleSideToBase(direction, settings);
+      return false;
+    }
+    if (applyUnchainSingleMartingaleProfitCarry(direction, stakeValue, profitValue, settings)) {
+      return true;
+    }
+    resetUnchainSingleMartingaleSideToBase(direction, settings);
+    return false;
+  }
+
+  function unchainSingleMartingaleStakeForStep(stepValue) {
+    const settings = readUnchainSingleMartingaleSettings();
+    const step = Math.max(1, Math.min(settings.maxSteps, Math.floor(Number(stepValue || state.singleMartingale.step) || 1)));
+    let stake = getUnchainSingleMartingaleBaseStake(settings.action, settings) * Math.pow(settings.multiplier, step - 1);
+    if (settings.maxStake !== null) stake = Math.min(stake, settings.maxStake);
+    return Number(Math.max(0.35, stake).toFixed(2));
+  }
+
+  function unchainSingleMartingalePairStakeForDirection(direction) {
+    const side = normalizeUnchainDirection(direction);
+    const current = side === "LOWER" ? state.singleMartingale.lowerStake : state.singleMartingale.higherStake;
+    const settings = readUnchainSingleMartingaleSettings();
+    return Number(Math.max(0.35, Number(current || getUnchainSingleMartingaleBaseStake(side, settings) || 1)).toFixed(2));
+  }
+
+  function clearUnchainSingleMartingalePending() {
+    state.singleMartingale.inProgress = false;
+    state.singleMartingale.pendingSide = "";
+    state.singleMartingale.pendingContractId = "";
+    state.singleMartingale.pendingDirections = {};
+    state.singleMartingale.settledCount = 0;
+    state.singleMartingale.pendingMartingale = false;
+    state.singleMartingale.pendingStake = 0;
+  }
+
+  function stopUnchainSingleMartingale(reason) {
+    state.singleMartingale.running = false;
+    state.singleMartingale.enabled = false;
+    state.singleMartingale.stopRequested = true;
+    state.singleMartingale.step = 1;
+    state.singleMartingale.spacingWait = 0;
+    state.singleMartingale.plusSetCount = 0;
+    state.singleMartingale.fixedProfitsEnabled = false;
+    state.singleMartingale.higherProfitCarryActive = false;
+    state.singleMartingale.lowerProfitCarryActive = false;
+    const settings = readUnchainSingleMartingaleSettings();
+    state.singleMartingale.higherStake = Number((state.singleMartingale.higherBaseStake || settings.higherStartStake || 1).toFixed(2));
+    state.singleMartingale.lowerStake = Number((state.singleMartingale.lowerBaseStake || settings.lowerStartStake || 1).toFixed(2));
+    clearUnchainSingleMartingalePending();
+    state.singleMartingale.status = reason || "Stopped";
+    updateUnchainSingleMartingalePanel();
+  }
+
+  function updateUnchainSingleMartingalePanel() {
+    const settings = readUnchainSingleMartingaleSettings();
+    state.singleMartingale.action = settings.action;
+    state.singleMartingale.fixedProfitsEnabled = settings.fixedProfits;
+    state.singleMartingale.higherBaseStake = settings.higherStartStake;
+    state.singleMartingale.lowerBaseStake = settings.lowerStartStake;
+    if (!state.singleMartingale.running && !state.singleMartingale.inProgress && (!settings.fixedProfits || state.singleMartingale.lastResult === "none")) {
+      state.singleMartingale.higherStake = settings.higherStartStake;
+      state.singleMartingale.lowerStake = settings.lowerStartStake;
+      state.singleMartingale.higherProfitCarryActive = false;
+      state.singleMartingale.lowerProfitCarryActive = false;
+    }
+    applyUnchainSingleMartingaleFixedProfitsToggle();
+    applyUnchainSingleMartingaleWinsSideVisibility(settings.action);
+    const toggleBtn = el("unchainSingleMartingaleToggleBtn");
+    if (toggleBtn) {
+      toggleBtn.textContent = `MARTINGALE: ${state.singleMartingale.enabled ? "ON" : "OFF"}`;
+      toggleBtn.style.background = state.singleMartingale.enabled ? "#f59e0b" : "#334155";
+      toggleBtn.style.color = state.singleMartingale.enabled ? "#111827" : "#f8fafc";
+    }
+    const summary = el("unchainSingleMartingaleSummary");
+    if (summary) {
+      summary.innerText = getUnchainSingleMartingaleActionLabel(settings.action);
+    }
+    const status = el("unchainSingleMartingaleStatus");
+    if (status) {
+      const currentStake = isUnchainSingleMartingalePairedAction(settings.action)
+        ? `Higher $${unchainSingleMartingalePairStakeForDirection("HIGHER").toFixed(2)} • Lower $${unchainSingleMartingalePairStakeForDirection("LOWER").toFixed(2)}`
+        : `$${unchainSingleMartingaleStakeForStep().toFixed(2)}`;
+      const nextStake = isUnchainSingleMartingalePairedAction(settings.action)
+        ? `Next Higher $${Math.max(0.35, (unchainSingleMartingalePairStakeForDirection("HIGHER") * settings.multiplier)).toFixed(2)} • Next Lower $${Math.max(0.35, (unchainSingleMartingalePairStakeForDirection("LOWER") * settings.multiplier)).toFixed(2)}`
+        : `$${unchainSingleMartingaleStakeForStep(Math.min(settings.maxSteps, state.singleMartingale.step + 1)).toFixed(2)}`;
+      const winsSideText = settings.action === "BOTH_WINS" ? ` • Martingale side: ${settings.winsSide}` : "";
+      status.innerText = `${state.singleMartingale.status}. Current ${currentStake} • ${nextStake}${winsSideText} • Last result: ${state.singleMartingale.lastResult}`;
+    }
+  }
+
+  async function sendUnchainSingleMartingaleTrade(opts) {
+    if (state.singleMartingale.inProgress || state.tradeRequestInFlight) return;
+    const settings = readUnchainSingleMartingaleSettings();
+    const side = normalizeUnchainDirection(opts && opts.side ? opts.side : settings.action);
+    const isPaired = isUnchainSingleMartingalePairedAction(side);
+    const higherStake = isPaired ? unchainSingleMartingalePairStakeForDirection("HIGHER") : (side === "HIGHER" ? unchainSingleMartingaleStakeForStep() : settings.higherStartStake);
+    const lowerStake = isPaired ? unchainSingleMartingalePairStakeForDirection("LOWER") : (side === "LOWER" ? unchainSingleMartingaleStakeForStep() : settings.lowerStartStake);
+    const body = {
+      side: isPaired ? "BOTH" : side,
+      higher_stake: Number(higherStake.toFixed(2)),
+      lower_stake: Number(lowerStake.toFixed(2)),
+      higher_barrier: settings.higherBarrier,
+      lower_barrier: settings.lowerBarrier,
+      use_shared_duration: true,
+      duration: settings.duration,
+      duration_unit: settings.durationUnit,
+      higher_duration: settings.duration,
+      higher_duration_unit: settings.durationUnit,
+      lower_duration: settings.duration,
+      lower_duration_unit: settings.durationUnit,
+    };
+    const marthaAction = buildMarthaTradeAction(side, body);
+    state.singleMartingale.inProgress = true;
+    state.singleMartingale.pendingSide = side;
+    state.singleMartingale.pendingContractId = "";
+    state.singleMartingale.pendingDirections = isPaired
+      ? {
+          HIGHER: { contractId: "", result: "", stake: body.higher_stake },
+          LOWER: { contractId: "", result: "", stake: body.lower_stake },
+        }
+      : {};
+    state.singleMartingale.pendingMartingale = !!state.singleMartingale.enabled;
+    state.singleMartingale.pendingStake = side === "LOWER" ? body.lower_stake : body.higher_stake;
+    state.singleMartingale.settledCount = 0;
+    state.singleMartingale.status = "Running";
+    updateUnchainSingleMartingalePanel();
+    try {
+      const r = await guardMartha(marthaAction, async () => {
+        state.tradeRequestInFlight = true;
+        state.tradeRequestSide = side;
+        try {
+          return await postJSON("/unchain_trade", body);
+        } finally {
+          state.tradeRequestInFlight = false;
+          state.tradeRequestSide = null;
+        }
+      });
+      if (isMarthaBlocked(r)) {
+        clearUnchainSingleMartingalePending();
+        updateUnchainSingleMartingalePanel();
+        return;
+      }
+      if (r.ok && r.data) {
+        if (r.data.payload) renderPayload(r.data.payload, { forceForm: true });
+        toast(r.data.message || `${side} sent`, "success");
+      } else {
+        clearUnchainSingleMartingalePending();
+        state.singleMartingale.running = false;
+        state.singleMartingale.status = "Stopped";
+        toast((r.data && (r.data.message || r.data.error)) || `${side} failed`, "error");
+        if (r.data && r.data.payload) renderPayload(r.data.payload);
+      }
+    } catch (e) {
+      clearUnchainSingleMartingalePending();
+      state.singleMartingale.running = false;
+      state.singleMartingale.status = "Stopped";
+      state.tradeRequestInFlight = false;
+      state.tradeRequestSide = null;
+      toast((e && e.message) || `${side} failed`, "error");
+    }
+    updateUnchainSingleMartingalePanel();
+  }
+
+  function toggleUnchainSingleMartingale() {
+    state.singleMartingale.enabled = !state.singleMartingale.enabled;
+    if (state.singleMartingale.enabled) {
+      const settings = readUnchainSingleMartingaleSettings();
+      state.singleMartingale.running = false;
+      state.singleMartingale.stopRequested = false;
+      state.singleMartingale.step = 1;
+      state.singleMartingale.plusSetCount = 0;
+      state.singleMartingale.fixedProfitsEnabled = settings.fixedProfits;
+      state.singleMartingale.lastResult = "none";
+      state.singleMartingale.higherStake = settings.higherStartStake;
+      state.singleMartingale.lowerStake = settings.lowerStartStake;
+      state.singleMartingale.status = "Ready";
+    } else {
+      stopUnchainSingleMartingale("Stopped");
+      return;
+    }
+    updateUnchainSingleMartingalePanel();
   }
 
   function formatBarrierInputValue(v, fallback) {
@@ -1066,6 +1425,12 @@
     const protectSharedDurationFields = !force && (isFieldDirty("unchainDuration") || isFieldDirty("unchainDurationUnit"));
     const protectHigherDurationFields = !force && (isFieldDirty("unchainHigherDuration") || isFieldDirty("unchainHigherDurationUnit"));
     const protectLowerDurationFields = !force && (isFieldDirty("unchainLowerDuration") || isFieldDirty("unchainLowerDurationUnit"));
+    const protectSingleMartingaleFields = !force && (
+      isFieldDirty("unchainSingleMartingaleHigherBarrier")
+      || isFieldDirty("unchainSingleMartingaleLowerBarrier")
+      || isFieldDirty("unchainSingleMartingaleDuration")
+      || isFieldDirty("unchainSingleMartingaleDurationUnit")
+    );
     const halfEnabled = !!un.half_barrier_enabled;
     state.auto_sl = !!un.auto_sl;
     state.half_barrier_enabled = halfEnabled;
@@ -1133,6 +1498,19 @@
     setFieldValue("unchainAutoMinMovement", formatInputNumber(un.auto_min_movement, 0.06), force);
     setFieldValue("unchainAutoMinTickSpeed", formatInputNumber(un.auto_min_tick_speed, 2.4), force);
     setFieldValue("unchainAutoMinRange", formatInputNumber(un.auto_min_range, 0.12), force);
+    if (!protectSingleMartingaleFields) {
+      setFieldValue("unchainSingleMartingaleHigherBarrier", String(un.higher_barrier || "+0.12"), force);
+      setFieldValue("unchainSingleMartingaleLowerBarrier", String(un.lower_barrier || "-0.12"), force);
+      setFieldValue("unchainSingleMartingaleDurationUnit", (un.duration_unit || "t").toLowerCase(), force);
+      applyDurationPresets("unchainSingleMartingaleDuration", "unchainSingleMartingaleDurationUnit", un.duration || 5);
+      setFieldValue("unchainSingleMartingaleDuration", String(un.duration || 5), force);
+    } else {
+      applyDurationPresets(
+        "unchainSingleMartingaleDuration",
+        "unchainSingleMartingaleDurationUnit",
+        readInteger("unchainSingleMartingaleDuration", un.duration || 5),
+      );
+    }
     applyAutoSlBtn();
     applyHalfBarrierToggle();
     applyKoolkidReversalToggle();
@@ -1389,6 +1767,116 @@
       box.style.display = "none";
       box.innerText = "";
     }
+  }
+
+  function bindUnchainReinvestProfitsToggle() {
+    const input = el("unchainReinvestProfitsToggle");
+    if (!input || input.dataset.unchainReinvestBound === "1") return;
+    input.dataset.unchainReinvestBound = "1";
+    input.addEventListener("change", () => {
+      toggleUnchainReinvestProfits();
+      updateUnchainSingleMartingalePanel();
+    });
+    applyUnchainReinvestToggleUI();
+  }
+
+  function normalizeUnchainTradeSide(value) {
+    return normalizeUnchainDirection(value);
+  }
+
+  function getUnchainNormalBaseStake(direction) {
+    const side = normalizeUnchainTradeSide(direction);
+    return side === "LOWER"
+      ? Number(state.reinvest.baseLowerStake || readNumber("unchainLowerStake", 1) || 1)
+      : Number(state.reinvest.baseHigherStake || readNumber("unchainHigherStake", 1) || 1);
+  }
+
+  function setUnchainNormalStakeInput(direction, stakeValue, options) {
+    const side = normalizeUnchainTradeSide(direction);
+    const id = side === "LOWER" ? "unchainLowerStake" : "unchainHigherStake";
+    const stake = Number(Math.max(0.35, Number(stakeValue || 0)).toFixed(2));
+    const node = el(id);
+    if (node) node.value = formatInputNumber(stake, 1);
+    markDirty(id);
+    if (!(options && options.skipBaseUpdate)) {
+      if (side === "LOWER") state.reinvest.baseLowerStake = stake;
+      else state.reinvest.baseHigherStake = stake;
+    }
+  }
+
+  function clearUnchainReinvestPending() {
+    state.reinvest.pendingSide = "";
+    state.reinvest.pendingDirections = {};
+  }
+
+  function applyUnchainReinvestToggleUI() {
+    const wrap = el("unchainReinvestProfitsWrap");
+    const input = el("unchainReinvestProfitsToggle");
+    const label = el("unchainReinvestProfitsState");
+    const isOn = !!(input && input.checked);
+    state.reinvest.enabled = isOn;
+    if (wrap) wrap.classList.toggle("is-on", isOn);
+    if (label) label.innerText = isOn ? "ON" : "OFF";
+  }
+
+  function toggleUnchainReinvestProfits() {
+    const input = el("unchainReinvestProfitsToggle");
+    if (!input) return;
+    const nextEnabled = !!input.checked;
+    if (nextEnabled) {
+      state.reinvest.baseHigherStake = Number(readNumber("unchainHigherStake", 1) || 1);
+      state.reinvest.baseLowerStake = Number(readNumber("unchainLowerStake", state.reinvest.baseHigherStake) || state.reinvest.baseHigherStake);
+      markDirty("unchainHigherStake");
+      markDirty("unchainLowerStake");
+    } else {
+      setUnchainNormalStakeInput("HIGHER", state.reinvest.baseHigherStake || 1, { skipBaseUpdate: true });
+      setUnchainNormalStakeInput("LOWER", state.reinvest.baseLowerStake || state.reinvest.baseHigherStake || 1, { skipBaseUpdate: true });
+      state.dirtyFields.delete("unchainHigherStake");
+      state.dirtyFields.delete("unchainLowerStake");
+      clearUnchainReinvestPending();
+    }
+    applyUnchainReinvestToggleUI();
+  }
+
+  function rememberUnchainNormalTradePlacement(trade) {
+    if (!trade || String(trade.profile || "").toUpperCase() !== PROFILE) return;
+    if (!state.reinvest.enabled) return;
+    const contractId = trade.contract_id || trade.buy_contract_id || trade.id;
+    if (!contractId) return;
+    const side = normalizeUnchainTradeSide(trade.type || trade.contract_type || "");
+    if (state.reinvest.pendingSide === "BOTH") {
+      if (side !== "HIGHER" && side !== "LOWER") return;
+      if (state.reinvest.pendingDirections[side] && !state.reinvest.pendingDirections[side].contractId) {
+        state.reinvest.pendingDirections[side].contractId = String(contractId);
+      }
+    } else if (state.reinvest.pendingSide && side === state.reinvest.pendingSide) {
+      state.reinvest.pendingDirections[side] = state.reinvest.pendingDirections[side] || {};
+      if (!state.reinvest.pendingDirections[side].contractId) {
+        state.reinvest.pendingDirections[side].contractId = String(contractId);
+      }
+    }
+  }
+
+  function handleUnchainReinvestTradeResult(trade) {
+    if (!trade || String(trade.profile || "").toUpperCase() !== PROFILE) return;
+    if (!state.reinvest.enabled) return;
+    const contractId = String(trade.contract_id || trade.buy_contract_id || trade.id || "");
+    if (!contractId) return;
+    const side = normalizeUnchainTradeSide(trade.type || trade.contract_type || "");
+    const outcome = String(trade.result || trade.status || "").toUpperCase();
+    if ((outcome !== "WIN" && outcome !== "LOSS") || (side !== "HIGHER" && side !== "LOWER")) return;
+    const pending = (state.reinvest.pendingDirections || {})[side];
+    if (!pending || (pending.contractId && String(pending.contractId) !== contractId)) return;
+    const baseStake = getUnchainNormalBaseStake(side);
+    const currentStake = Number(pending.stake || baseStake || 1);
+    const profit = getUnchainTradeProfitAmount(trade);
+    if (outcome === "WIN" && Number.isFinite(profit) && profit > 0) {
+      setUnchainNormalStakeInput(side, currentStake + profit, { skipBaseUpdate: true });
+    } else {
+      setUnchainNormalStakeInput(side, baseStake, { skipBaseUpdate: true });
+    }
+    delete state.reinvest.pendingDirections[side];
+    if (!Object.keys(state.reinvest.pendingDirections || {}).length) clearUnchainReinvestPending();
   }
 
   function syncAutoScanningToasts(un) {
@@ -2849,6 +3337,22 @@
     const form = readForm();
     try {
       const body = Object.assign({ side }, form);
+      if (state.reinvest.enabled) {
+        state.reinvest.pendingSide = normalizeUnchainTradeSide(side);
+        state.reinvest.pendingDirections = state.reinvest.pendingSide === "BOTH"
+          ? {
+              HIGHER: { contractId: "", stake: Number(form.higher_stake || 0) },
+              LOWER: { contractId: "", stake: Number(form.lower_stake || 0) },
+            }
+          : {
+              [state.reinvest.pendingSide]: {
+                contractId: "",
+                stake: Number(state.reinvest.pendingSide === "LOWER" ? form.lower_stake : form.higher_stake || 0),
+              },
+            };
+      } else {
+        clearUnchainReinvestPending();
+      }
       const r = await guardMartha(buildMarthaTradeAction(side, form), async () => {
         state.tradeRequestInFlight = true;
         state.tradeRequestSide = side;
@@ -2862,17 +3366,261 @@
       if (isMarthaBlocked(r)) return;
       if (r.ok && r.data) {
         clearDirtyFields();
+        if (state.reinvest.enabled) {
+          markDirty("unchainHigherStake");
+          markDirty("unchainLowerStake");
+        }
         if (r.data.payload) renderPayload(r.data.payload, { forceForm: true });
         toast(r.data.message || `${side} sent`, "success");
       } else {
+        clearUnchainReinvestPending();
         toast((r.data && (r.data.message || r.data.error)) || `${side} failed`, "error");
         if (r.data && r.data.payload) renderPayload(r.data.payload);
       }
     } catch (e) {
+      clearUnchainReinvestPending();
       state.tradeRequestInFlight = false;
       state.tradeRequestSide = null;
       toast((e && e.message) || `${side} failed`, "error");
     }
+  }
+
+  function handleUnchainSingleMartingaleTick() {
+    if (!state.singleMartingale.running) return;
+    if (state.singleMartingale.inProgress) return;
+    if (state.singleMartingale.stopRequested) return;
+    const wait = Math.max(0, Number(state.singleMartingale.spacingWait || 0));
+    if (wait <= 0) return;
+    state.singleMartingale.spacingWait = wait - 1;
+    if (state.singleMartingale.spacingWait > 0) {
+      state.singleMartingale.status = `Waiting ${state.singleMartingale.spacingWait} tick(s) before next round`;
+      updateUnchainSingleMartingalePanel();
+      return;
+    }
+    state.singleMartingale.status = "Running";
+    updateUnchainSingleMartingalePanel();
+    sendUnchainSingleMartingaleTrade({ continuation: true }).catch(() => {});
+  }
+
+  function rememberUnchainSingleMartingaleTrade(trade) {
+    if (!trade || String(trade.profile || "").toUpperCase() !== PROFILE) return;
+    if (!state.singleMartingale.inProgress) return;
+    const contractId = trade.contract_id || trade.buy_contract_id || trade.id;
+    if (!contractId) return;
+    const side = normalizeUnchainDirection(trade.type || trade.contract_type || "");
+    if (isUnchainSingleMartingalePairedAction(state.singleMartingale.pendingSide)) {
+      if (side !== "HIGHER" && side !== "LOWER") return;
+      if (state.singleMartingale.pendingDirections[side] && !state.singleMartingale.pendingDirections[side].contractId) {
+        state.singleMartingale.pendingDirections[side].contractId = String(contractId);
+      }
+    } else if (!state.singleMartingale.pendingContractId && side === state.singleMartingale.pendingSide) {
+      state.singleMartingale.pendingContractId = String(contractId);
+    }
+    updateUnchainSingleMartingalePanel();
+  }
+
+  function handleUnchainSingleMartingaleResult(trade) {
+    if (!trade || String(trade.profile || "").toUpperCase() !== PROFILE) return;
+    const outcome = String(trade.result || trade.status || "").toUpperCase();
+    if (outcome !== "WIN" && outcome !== "LOSS") return;
+    const contractId = trade.contract_id || trade.buy_contract_id || trade.id;
+    const side = normalizeUnchainDirection(trade.type || trade.contract_type || "");
+    const settings = readUnchainSingleMartingaleSettings();
+
+    if (isUnchainSingleMartingalePairedAction(state.singleMartingale.pendingSide)) {
+      if (!state.singleMartingale.inProgress) return;
+      if (side !== "HIGHER" && side !== "LOWER") return;
+      const pending = state.singleMartingale.pendingDirections[side];
+      if (!pending) return;
+      if (pending.contractId && String(contractId || "") !== pending.contractId) return;
+      if (pending.result) return;
+      pending.result = outcome;
+      pending.profit = getUnchainTradeProfitAmount(trade);
+      state.singleMartingale.settledCount = Object.values(state.singleMartingale.pendingDirections).filter((item) => item && item.result).length;
+      state.singleMartingale.lastResult = `${side} ${outcome}`;
+      if (state.singleMartingale.settledCount >= 2) {
+        const higherOutcome = String((state.singleMartingale.pendingDirections.HIGHER || {}).result || "").toUpperCase();
+        const lowerOutcome = String((state.singleMartingale.pendingDirections.LOWER || {}).result || "").toUpperCase();
+        if (state.singleMartingale.pendingSide === "BOTH_PLUS") {
+          const higherBaseStake = getUnchainSingleMartingaleBaseStake("HIGHER", settings);
+          const lowerBaseStake = getUnchainSingleMartingaleBaseStake("LOWER", settings);
+          const raisedStakeActive = Math.max(
+            Number((state.singleMartingale.pendingDirections.HIGHER || {}).stake || higherBaseStake),
+            Number((state.singleMartingale.pendingDirections.LOWER || {}).stake || lowerBaseStake),
+          ) > Math.max(Number(higherBaseStake), Number(lowerBaseStake));
+          if (higherOutcome === "LOSS" && lowerOutcome === "LOSS") {
+            let nextSharedStake = Number((Math.max(
+              Number((state.singleMartingale.pendingDirections.HIGHER || {}).stake || higherBaseStake),
+              Number((state.singleMartingale.pendingDirections.LOWER || {}).stake || lowerBaseStake),
+            ) * settings.multiplier).toFixed(2));
+            if (settings.maxStake !== null) nextSharedStake = Math.min(nextSharedStake, settings.maxStake);
+            nextSharedStake = Number(Math.max(0.35, nextSharedStake).toFixed(2));
+            state.singleMartingale.higherStake = nextSharedStake;
+            state.singleMartingale.lowerStake = nextSharedStake;
+            state.singleMartingale.plusSetCount = 0;
+            state.singleMartingale.higherProfitCarryActive = false;
+            state.singleMartingale.lowerProfitCarryActive = false;
+            state.singleMartingale.lastResult = "BOTH LOSS";
+          } else {
+            if (higherOutcome === "WIN") {
+              resolveUnchainSingleMartingaleWin(
+                "HIGHER",
+                (state.singleMartingale.pendingDirections.HIGHER || {}).stake,
+                (state.singleMartingale.pendingDirections.HIGHER || {}).profit,
+                settings,
+              );
+            } else if (higherOutcome === "LOSS" && settings.fixedProfits) {
+              resetUnchainSingleMartingaleSideToBase("HIGHER", settings);
+            }
+            if (lowerOutcome === "WIN") {
+              resolveUnchainSingleMartingaleWin(
+                "LOWER",
+                (state.singleMartingale.pendingDirections.LOWER || {}).stake,
+                (state.singleMartingale.pendingDirections.LOWER || {}).profit,
+                settings,
+              );
+            } else if (lowerOutcome === "LOSS" && settings.fixedProfits) {
+              resetUnchainSingleMartingaleSideToBase("LOWER", settings);
+            }
+            if (raisedStakeActive) {
+              state.singleMartingale.plusSetCount = Math.max(0, Number(state.singleMartingale.plusSetCount || 0)) + 1;
+            } else {
+              state.singleMartingale.plusSetCount = 0;
+            }
+            if (raisedStakeActive && state.singleMartingale.plusSetCount >= 2) {
+              state.singleMartingale.higherStake = Number(higherBaseStake.toFixed(2));
+              state.singleMartingale.lowerStake = Number(lowerBaseStake.toFixed(2));
+              state.singleMartingale.plusSetCount = 0;
+              state.singleMartingale.higherProfitCarryActive = false;
+              state.singleMartingale.lowerProfitCarryActive = false;
+              state.singleMartingale.lastResult = "RESET TO BASE";
+            } else if (higherOutcome === "WIN" && lowerOutcome === "WIN") {
+              state.singleMartingale.lastResult = raisedStakeActive
+                ? `BOTH WIN • SET ${state.singleMartingale.plusSetCount}/2`
+                : "BOTH WIN";
+            } else {
+              state.singleMartingale.lastResult = raisedStakeActive
+                ? `${higherOutcome} / ${lowerOutcome} • SET ${state.singleMartingale.plusSetCount}/2`
+                : `${higherOutcome} / ${lowerOutcome}`;
+            }
+          }
+        } else if (state.singleMartingale.pendingSide === "BOTH_WINS") {
+          const martingaleSide = settings.winsSide === "LOWER" ? "LOWER" : "HIGHER";
+          const fixedProfitSide = martingaleSide === "HIGHER" ? "LOWER" : "HIGHER";
+          const martingaleOutcome = String((state.singleMartingale.pendingDirections[martingaleSide] || {}).result || "").toUpperCase();
+          const fixedOutcome = String((state.singleMartingale.pendingDirections[fixedProfitSide] || {}).result || "").toUpperCase();
+          const martingaleStake = Number((state.singleMartingale.pendingDirections[martingaleSide] || {}).stake || getUnchainSingleMartingaleBaseStake(martingaleSide, settings));
+          const fixedStake = Number((state.singleMartingale.pendingDirections[fixedProfitSide] || {}).stake || getUnchainSingleMartingaleBaseStake(fixedProfitSide, settings));
+          const martingaleProfit = Number((state.singleMartingale.pendingDirections[martingaleSide] || {}).profit || 0);
+          const fixedProfit = Number((state.singleMartingale.pendingDirections[fixedProfitSide] || {}).profit || 0);
+
+          if (martingaleOutcome === "WIN") {
+            resetUnchainSingleMartingaleSideToBase(martingaleSide, settings);
+          } else if (martingaleOutcome === "LOSS") {
+            advanceUnchainSingleMartingaleLossSide(martingaleSide, martingaleStake, settings);
+          }
+
+          if (fixedOutcome === "WIN") {
+            if (!applyUnchainSingleMartingaleProfitCarry(fixedProfitSide, fixedStake, fixedProfit, settings)) {
+              resetUnchainSingleMartingaleSideToBase(fixedProfitSide, settings);
+            }
+          } else if (fixedOutcome === "LOSS") {
+            resetUnchainSingleMartingaleSideToBase(fixedProfitSide, settings);
+          }
+
+          state.singleMartingale.lastResult = `${martingaleSide} ${martingaleOutcome} • ${fixedProfitSide} ${fixedOutcome}`;
+        } else {
+          if (higherOutcome === "WIN") {
+            resolveUnchainSingleMartingaleWin(
+              "HIGHER",
+              (state.singleMartingale.pendingDirections.HIGHER || {}).stake,
+              (state.singleMartingale.pendingDirections.HIGHER || {}).profit,
+              settings,
+            );
+          } else if (higherOutcome === "LOSS") {
+            advanceUnchainSingleMartingaleLossSide(
+              "HIGHER",
+              (state.singleMartingale.pendingDirections.HIGHER || {}).stake,
+              settings,
+            );
+          }
+          if (lowerOutcome === "WIN") {
+            resolveUnchainSingleMartingaleWin(
+              "LOWER",
+              (state.singleMartingale.pendingDirections.LOWER || {}).stake,
+              (state.singleMartingale.pendingDirections.LOWER || {}).profit,
+              settings,
+            );
+          } else if (lowerOutcome === "LOSS") {
+            advanceUnchainSingleMartingaleLossSide(
+              "LOWER",
+              (state.singleMartingale.pendingDirections.LOWER || {}).stake,
+              settings,
+            );
+          }
+        }
+        clearUnchainSingleMartingalePending();
+        if (state.singleMartingale.running && !state.singleMartingale.stopRequested) {
+          state.singleMartingale.spacingWait = settings.tickSpacing;
+          state.singleMartingale.status = settings.tickSpacing > 0 ? `Waiting ${settings.tickSpacing} tick(s) before next round` : "Running";
+        } else {
+          state.singleMartingale.status = "Ready";
+        }
+      } else {
+        state.singleMartingale.status = `Running. Settled ${state.singleMartingale.settledCount}/2.`;
+      }
+      updateUnchainSingleMartingalePanel();
+      return;
+    }
+
+    if (!state.singleMartingale.inProgress) return;
+    if (state.singleMartingale.pendingContractId && String(contractId || "") !== state.singleMartingale.pendingContractId) return;
+    if (side && side !== state.singleMartingale.pendingSide) return;
+    const wasMartingaleTrade = !!state.singleMartingale.pendingMartingale;
+    const pendingStake = Number(state.singleMartingale.pendingStake || (side === "LOWER" ? state.singleMartingale.lowerStake : state.singleMartingale.higherStake) || getUnchainSingleMartingaleBaseStake(side, settings));
+    const profitAmount = getUnchainTradeProfitAmount(trade);
+    const shouldKeepRunningSingleFixedProfit = !!(
+      settings.fixedProfits
+      && !isUnchainSingleMartingalePairedAction(state.singleMartingale.pendingSide)
+      && (state.singleMartingale.pendingSide === "HIGHER" || state.singleMartingale.pendingSide === "LOWER")
+    );
+    clearUnchainSingleMartingalePending();
+    if (outcome === "WIN") {
+      if (side === "LOWER") {
+        resolveUnchainSingleMartingaleWin("LOWER", pendingStake, profitAmount, settings);
+      } else {
+        resolveUnchainSingleMartingaleWin("HIGHER", pendingStake, profitAmount, settings);
+      }
+      state.singleMartingale.step = 1;
+      state.singleMartingale.lastResult = "WIN";
+      if (shouldKeepRunningSingleFixedProfit) {
+        state.singleMartingale.running = true;
+        state.singleMartingale.stopRequested = false;
+        state.singleMartingale.enabled = true;
+        state.singleMartingale.spacingWait = settings.tickSpacing;
+        state.singleMartingale.status = settings.tickSpacing > 0 ? `Waiting ${settings.tickSpacing} tick(s) before next round` : "Running";
+      } else {
+        state.singleMartingale.running = false;
+        state.singleMartingale.stopRequested = false;
+        state.singleMartingale.enabled = false;
+        state.singleMartingale.status = wasMartingaleTrade ? "Reset" : "Ready";
+      }
+    } else {
+      state.singleMartingale.lastResult = "LOSS";
+      if (side === "LOWER") {
+        advanceUnchainSingleMartingaleLossSide("LOWER", pendingStake, settings);
+      } else {
+        advanceUnchainSingleMartingaleLossSide("HIGHER", pendingStake, settings);
+      }
+      if (wasMartingaleTrade && state.singleMartingale.enabled) {
+        state.singleMartingale.step = Math.min(settings.maxSteps, state.singleMartingale.step + 1);
+        state.singleMartingale.spacingWait = settings.tickSpacing;
+        state.singleMartingale.status = settings.tickSpacing > 0 ? `Waiting ${settings.tickSpacing} tick(s) before next round` : "Running";
+      } else {
+        state.singleMartingale.status = "Ready";
+      }
+    }
+    updateUnchainSingleMartingalePanel();
   }
 
   async function refreshMarketBarriers() {
@@ -3037,6 +3785,19 @@
       case "unchain-trade-both":
         await sendTrade("BOTH");
         break;
+      case "unchain-single-martingale-toggle":
+        toggleUnchainSingleMartingale();
+        break;
+      case "unchain-single-martingale-place":
+        if (state.singleMartingale.enabled) {
+          state.singleMartingale.running = true;
+          state.singleMartingale.stopRequested = false;
+        }
+        await sendUnchainSingleMartingaleTrade({});
+        break;
+      case "unchain-single-martingale-stop":
+        stopUnchainSingleMartingale("Stopped");
+        break;
       case "unchain-analysis-primary":
         await handleAutoAnalysisPrimary();
         break;
@@ -3191,6 +3952,7 @@
       state.socketBound = true;
       bind("tick", (data) => {
         if (!data) return;
+        handleUnchainSingleMartingaleTick();
         pushBarrierChartPrice(data.price != null ? data.price : data.quote, data.symbol);
         if (isActive()) {
           const un = state.lastPayload && (state.lastPayload.unchain || state.lastPayload);
@@ -3210,6 +3972,8 @@
         toast(data.message || "UNCHAIN notice", data.type || "info");
       });
       bind("trade_result", (trade) => {
+        handleUnchainReinvestTradeResult(trade);
+        handleUnchainSingleMartingaleResult(trade);
         if (!isActive()) return;
         const t = setTimeout(() => {
           const app = App();
@@ -3219,6 +3983,8 @@
         trackTimeout("unchain_trade_result_refresh", t);
       });
       bind("trade_placed", (trade) => {
+        rememberUnchainNormalTradePlacement(trade);
+        rememberUnchainSingleMartingaleTrade(trade);
         if (!isActive() || !trade) return;
         if ((trade.profile || "").toUpperCase() === "UNCHAIN") {
           const t = setTimeout(() => {
@@ -3242,6 +4008,13 @@
       node.addEventListener("input", () => {
         markDirty(id);
         if (id === "unchainHigherStake") mirrorHigherStakeToLower();
+        if (state.reinvest.enabled && id === "unchainHigherStake") {
+          state.reinvest.baseHigherStake = readNumber("unchainHigherStake", 1);
+          state.reinvest.baseLowerStake = readNumber("unchainLowerStake", state.reinvest.baseHigherStake);
+        }
+        if (state.reinvest.enabled && id === "unchainLowerStake") {
+          state.reinvest.baseLowerStake = readNumber("unchainLowerStake", readNumber("unchainHigherStake", 1));
+        }
         if (id === "unchainHigherBarrier" || id === "unchainLowerBarrier" || id === "unchainDirectionalAutoBarrier" || id === "unchainDirectionalAutoSide") {
           renderBarrierMarketChart(state.lastPayload && (state.lastPayload.unchain || state.lastPayload) || {}, state.lastPayload || {});
         }
@@ -3271,6 +4044,13 @@
       node.addEventListener("change", () => {
         markDirty(id);
         if (id === "unchainHigherStake") mirrorHigherStakeToLower();
+        if (state.reinvest.enabled && id === "unchainHigherStake") {
+          state.reinvest.baseHigherStake = readNumber("unchainHigherStake", 1);
+          state.reinvest.baseLowerStake = readNumber("unchainLowerStake", state.reinvest.baseHigherStake);
+        }
+        if (state.reinvest.enabled && id === "unchainLowerStake") {
+          state.reinvest.baseLowerStake = readNumber("unchainLowerStake", readNumber("unchainHigherStake", 1));
+        }
         if (id === "unchainHigherBarrier" || id === "unchainLowerBarrier" || id === "unchainDirectionalAutoBarrier" || id === "unchainDirectionalAutoSide") {
           renderBarrierMarketChart(state.lastPayload && (state.lastPayload.unchain || state.lastPayload) || {}, state.lastPayload || {});
         }
@@ -3334,6 +4114,49 @@
     }
   }
 
+  function bindUnchainSingleMartingaleInputs() {
+    const ids = [
+      "unchainSingleMartingaleAction",
+      "unchainSingleMartingaleHigherStartStake",
+      "unchainSingleMartingaleLowerStartStake",
+      "unchainSingleMartingaleMultiplier",
+      "unchainSingleMartingaleMaxSteps",
+      "unchainSingleMartingaleMaxStake",
+      "unchainSingleMartingaleTickSpacing",
+      "unchainSingleMartingaleHigherBarrier",
+      "unchainSingleMartingaleLowerBarrier",
+      "unchainSingleMartingaleDuration",
+      "unchainSingleMartingaleDurationUnit",
+      "unchainSingleMartingaleWinsSide",
+      "unchainSingleMartingaleFixedProfits",
+    ];
+    ids.forEach((id) => {
+      const node = el(id);
+      if (!node || node.dataset.unchainSingleMartingaleBound === "1") return;
+      node.dataset.unchainSingleMartingaleBound = "1";
+      node.addEventListener("input", () => {
+        markDirty(id);
+        if (id === "unchainSingleMartingaleFixedProfits") {
+          applyUnchainSingleMartingaleFixedProfitsToggle();
+        }
+        if (id === "unchainSingleMartingaleDurationUnit") {
+          applyDurationPresets("unchainSingleMartingaleDuration", "unchainSingleMartingaleDurationUnit", readInteger("unchainSingleMartingaleDuration", 5));
+        }
+        updateUnchainSingleMartingalePanel();
+      });
+      node.addEventListener("change", () => {
+        markDirty(id);
+        if (id === "unchainSingleMartingaleFixedProfits") {
+          applyUnchainSingleMartingaleFixedProfitsToggle();
+        }
+        if (id === "unchainSingleMartingaleDurationUnit") {
+          applyDurationPresets("unchainSingleMartingaleDuration", "unchainSingleMartingaleDurationUnit", readInteger("unchainSingleMartingaleDuration", 5));
+        }
+        updateUnchainSingleMartingalePanel();
+      });
+    });
+  }
+
   function bindUI(root) {
     const app = App();
     if (root && app.bindActionButtons) {
@@ -3348,15 +4171,29 @@
     applyDurationPresets(true);
     applyDurationPresets("unchainHigherDuration", "unchainHigherDurationUnit", readInteger("unchainHigherDuration", 5));
     applyDurationPresets("unchainLowerDuration", "unchainLowerDurationUnit", readInteger("unchainLowerDuration", 5));
+    applyDurationPresets("unchainSingleMartingaleDuration", "unchainSingleMartingaleDurationUnit", readInteger("unchainSingleMartingaleDuration", 5));
+    const spacingSelect = el("unchainSingleMartingaleTickSpacing");
+    if (spacingSelect && !spacingSelect.options.length) {
+      range(1, 10, 1).forEach((value) => {
+        const option = document.createElement("option");
+        option.value = String(value);
+        option.textContent = `${value} tick${value === 1 ? "" : "s"}`;
+        spacingSelect.appendChild(option);
+      });
+      spacingSelect.value = "1";
+    }
     updateDurationModeUI(true);
     bindFormInputs();
+    bindUnchainSingleMartingaleInputs();
     applyAutoSlBtn();
+    applyUnchainReinvestToggleUI();
     applyHalfBarrierToggle();
     applyKoolkidReversalToggle();
     applyKoolkidHalfBarrierToggle();
     applyDirectionalStableProfitsToggle();
     applyDirectionalBothTradesToggle();
     applyAutoConfidenceLabel();
+    bindUnchainReinvestProfitsToggle();
     bindHalfBarrierToggle();
     bindKoolkidReversalToggle();
     bindKoolkidHalfBarrierToggle();
@@ -3366,6 +4203,7 @@
     bindDirectionalAutoModal();
     bindMarketBarrierPersistence();
     bindPredictionCardActions();
+    updateUnchainSingleMartingalePanel();
   }
 
   function startPolling() {
@@ -3436,6 +4274,7 @@
   async function onDeactivate() {
     clearProfileTimers();
     removeTradeCountdownToast();
+    stopUnchainSingleMartingale("Stopped");
     state.socketBound = false;
     state.lastSocket = null;
   }

@@ -78,6 +78,13 @@
       previewBaseSymbol: null,
       wasActiveTrade: false,
     },
+    reinvest: {
+      enabled: false,
+      baseTouchStake: 1,
+      baseNoTouchStake: 1,
+      pendingSide: "",
+      pendingDirections: {},
+    },
   };
 
   function App() { return window.BotApp || {}; }
@@ -106,6 +113,11 @@
     } catch (_e) {}
   }
   function currencyPayload(payload) { return payload || state.lastPayload || {}; }
+  function normalizeNttTradeSide(value) {
+    const raw = String(value || "").toUpperCase().trim().replace(/[\s-]+/g, "_");
+    if (raw === "NO_TOUCH" || raw === "BOTH") return raw;
+    return "TOUCH";
+  }
   function money(value, payload) {
     try { if (typeof formatCurrencyAmount === "function") return formatCurrencyAmount(value, currencyPayload(payload)); } catch (_e) {}
     const parsed = Number(value);
@@ -1395,7 +1407,24 @@
   }
   async function sendTrade(side) {
     if (state.tradeRequestInFlight) return false;
-    const body = Object.assign(readForm(), { side: side });
+    const form = readForm();
+    const body = Object.assign(form, { side: side });
+    if (state.reinvest.enabled) {
+      state.reinvest.pendingSide = normalizeNttTradeSide(side);
+      state.reinvest.pendingDirections = state.reinvest.pendingSide === "BOTH"
+        ? {
+            TOUCH: { contractId: "", stake: Number(form.touch_stake || 0) },
+            NO_TOUCH: { contractId: "", stake: Number(form.no_touch_stake || 0) },
+          }
+        : {
+            [state.reinvest.pendingSide]: {
+              contractId: "",
+              stake: Number(state.reinvest.pendingSide === "NO_TOUCH" ? form.no_touch_stake : form.touch_stake || 0),
+            },
+          };
+    } else {
+      clearNttReinvestPending();
+    }
     const result = await guardMartha(buildMarthaTradeAction(side, body), async () => {
       state.tradeRequestInFlight = true;
       state.tradeRequestSide = side;
@@ -1410,8 +1439,13 @@
     const { ok, data } = result || {};
     renderPayload((data && data.payload) || state.lastPayload || {}, { forceForm: false });
     if (!ok) {
+      clearNttReinvestPending();
       toast((data && (data.message || data.error)) || `Failed to send ${side}`, "error");
       return false;
+    }
+    if (state.reinvest.enabled) {
+      markDirty("nttTouchStake");
+      markDirty("nttNoTouchStake");
     }
     toast(data && data.message ? data.message : `Sent ${side}`, "success");
     return true;
@@ -1618,6 +1652,101 @@
       state.expectedProfitTimer = null;
       refreshExpectedProfitPreview().catch(() => {});
     }, Math.max(60, Number(delay || 180))));
+  }
+  function applyNttReinvestToggleUI() {
+    const input = el("nttReinvestProfitsToggle");
+    const label = el("nttReinvestProfitsState");
+    const isOn = !!(input && input.checked);
+    state.reinvest.enabled = isOn;
+    if (label) label.innerText = isOn ? "ON" : "OFF";
+  }
+  function clearNttReinvestPending() {
+    state.reinvest.pendingSide = "";
+    state.reinvest.pendingDirections = {};
+  }
+  function getNttTradeProfitAmount(trade) {
+    for (const key of ["profit", "profit_value", "profit_loss", "pnl"]) {
+      const value = Number(trade && trade[key]);
+      if (Number.isFinite(value)) return value;
+    }
+    return 0;
+  }
+  function setNttStakeInput(side, stakeValue, options) {
+    const norm = normalizeNttTradeSide(side);
+    const id = norm === "NO_TOUCH" ? "nttNoTouchStake" : "nttTouchStake";
+    const stake = Number(Math.max(0.35, Number(stakeValue || 0)).toFixed(2));
+    const node = el(id);
+    if (node) node.value = formatStakeInputValue(stake, 1);
+    markDirty(id);
+    if (!(options && options.skipBaseUpdate)) {
+      if (norm === "NO_TOUCH") state.reinvest.baseNoTouchStake = stake;
+      else state.reinvest.baseTouchStake = stake;
+    }
+    updateNoTouchStakeCustomFlag();
+  }
+  function getNttNormalBaseStake(side) {
+    const norm = normalizeNttTradeSide(side);
+    return norm === "NO_TOUCH"
+      ? Number(state.reinvest.baseNoTouchStake || readNumber("nttNoTouchStake", readNumber("nttTouchStake", 1)) || 1)
+      : Number(state.reinvest.baseTouchStake || readNumber("nttTouchStake", 1) || 1);
+  }
+  function toggleNttReinvestProfits() {
+    const input = el("nttReinvestProfitsToggle");
+    if (!input) return;
+    const nextEnabled = !!input.checked;
+    if (nextEnabled) {
+      state.reinvest.baseTouchStake = Number(readNumber("nttTouchStake", 1) || 1);
+      state.reinvest.baseNoTouchStake = Number(readNumber("nttNoTouchStake", state.reinvest.baseTouchStake) || state.reinvest.baseTouchStake);
+      state.noTouchStakeCustom = true;
+      markDirty("nttTouchStake");
+      markDirty("nttNoTouchStake");
+    } else {
+      setNttStakeInput("TOUCH", state.reinvest.baseTouchStake || 1, { skipBaseUpdate: true });
+      setNttStakeInput("NO_TOUCH", state.reinvest.baseNoTouchStake || state.reinvest.baseTouchStake || 1, { skipBaseUpdate: true });
+      state.dirtyFields.delete("nttTouchStake");
+      state.dirtyFields.delete("nttNoTouchStake");
+      clearNttReinvestPending();
+    }
+    applyNttReinvestToggleUI();
+  }
+  function rememberNttNormalTradePlacement(trade) {
+    if (!trade || String(trade.profile || "").toUpperCase() !== PROFILE) return;
+    if (!state.reinvest.enabled) return;
+    const contractId = trade.contract_id || trade.buy_contract_id || trade.id;
+    if (!contractId) return;
+    const side = normalizeNttTradeSide(trade.type || trade.contract_type || "");
+    if (state.reinvest.pendingSide === "BOTH") {
+      if (side !== "TOUCH" && side !== "NO_TOUCH") return;
+      if (state.reinvest.pendingDirections[side] && !state.reinvest.pendingDirections[side].contractId) {
+        state.reinvest.pendingDirections[side].contractId = String(contractId);
+      }
+    } else if (state.reinvest.pendingSide && side === state.reinvest.pendingSide) {
+      state.reinvest.pendingDirections[side] = state.reinvest.pendingDirections[side] || {};
+      if (!state.reinvest.pendingDirections[side].contractId) {
+        state.reinvest.pendingDirections[side].contractId = String(contractId);
+      }
+    }
+  }
+  function handleNttReinvestTradeResult(trade) {
+    if (!trade || String(trade.profile || "").toUpperCase() !== PROFILE) return;
+    if (!state.reinvest.enabled) return;
+    const contractId = String(trade.contract_id || trade.buy_contract_id || trade.id || "");
+    if (!contractId) return;
+    const side = normalizeNttTradeSide(trade.type || trade.contract_type || "");
+    const outcome = String(trade.result || trade.status || "").toUpperCase();
+    if ((outcome !== "WIN" && outcome !== "LOSS") || (side !== "TOUCH" && side !== "NO_TOUCH")) return;
+    const pending = (state.reinvest.pendingDirections || {})[side];
+    if (!pending || (pending.contractId && String(pending.contractId) !== contractId)) return;
+    const baseStake = getNttNormalBaseStake(side);
+    const currentStake = Number(pending.stake || baseStake || 1);
+    const profit = getNttTradeProfitAmount(trade);
+    if (outcome === "WIN" && Number.isFinite(profit) && profit > 0) {
+      setNttStakeInput(side, currentStake + profit, { skipBaseUpdate: true });
+    } else {
+      setNttStakeInput(side, baseStake, { skipBaseUpdate: true });
+    }
+    delete state.reinvest.pendingDirections[side];
+    if (!Object.keys(state.reinvest.pendingDirections || {}).length) clearNttReinvestPending();
   }
   async function handleAction(action, btn) {
     const key = String(action || "");
@@ -1830,6 +1959,7 @@
         if (data && isActive()) scheduleStatusRender(data);
       });
       bind("trade_result", (trade) => {
+        handleNttReinvestTradeResult(trade);
         if (trade && String(trade.profile || "").toUpperCase() === PROFILE && isActive()) {
           const t = setTimeout(() => {
             const app = App();
@@ -1840,6 +1970,7 @@
         }
       });
       bind("trade_placed", (trade) => {
+        rememberNttNormalTradePlacement(trade);
         if (trade && String(trade.profile || "").toUpperCase() === PROFILE && isActive()) {
           const t = setTimeout(() => {
             const app = App();
@@ -1864,6 +1995,12 @@
           syncNoTouchStakeFromTouch(false);
         }
         if (id === "nttNoTouchStake") updateNoTouchStakeCustomFlag();
+        if (state.reinvest.enabled && id === "nttTouchStake") {
+          state.reinvest.baseTouchStake = readNumber("nttTouchStake", 1);
+        }
+        if (state.reinvest.enabled && id === "nttNoTouchStake") {
+          state.reinvest.baseNoTouchStake = readNumber("nttNoTouchStake", readNumber("nttTouchStake", 1));
+        }
         if (id === "nttDurationUnit") applyDurationPresets("nttDuration", "nttDurationUnit");
         if (id === "nttTouchDurationUnit") applyDurationPresets("nttTouchDuration", "nttTouchDurationUnit");
         if (id === "nttNoTouchDurationUnit") applyDurationPresets("nttNoTouchDuration", "nttNoTouchDurationUnit");
@@ -1900,6 +2037,12 @@
         if (id === "nttNoTouchStake") {
           node.value = formatStakeInputValue(node.value, readNumber("nttTouchStake", 1), { preserveBlank: true });
           updateNoTouchStakeCustomFlag();
+        }
+        if (state.reinvest.enabled && id === "nttTouchStake") {
+          state.reinvest.baseTouchStake = readNumber("nttTouchStake", 1);
+        }
+        if (state.reinvest.enabled && id === "nttNoTouchStake") {
+          state.reinvest.baseNoTouchStake = readNumber("nttNoTouchStake", readNumber("nttTouchStake", 1));
         }
         if (id === "nttDurationUnit") applyDurationPresets("nttDuration", "nttDurationUnit");
         if (id === "nttTouchDurationUnit") applyDurationPresets("nttTouchDuration", "nttTouchDurationUnit");
@@ -1975,6 +2118,15 @@
       }
     }, true);
   }
+  function bindNttReinvestProfitsToggle() {
+    const input = el("nttReinvestProfitsToggle");
+    if (!input || input.dataset.nttReinvestBound === "1") return;
+    input.dataset.nttReinvestBound = "1";
+    input.addEventListener("change", () => {
+      toggleNttReinvestProfits();
+    });
+    applyNttReinvestToggleUI();
+  }
   function bindUI(root) {
     if (!root || root.dataset.nttUiBound === "1") return;
     root.dataset.nttUiBound = "1";
@@ -2022,11 +2174,13 @@
         applyAutoBothModeToggles();
       });
     }
+    applyNttReinvestToggleUI();
     applyKoolkidReversalToggle();
     applyKoolkidHalfBarrierToggle();
     applyAutoBothModeToggles();
     bindFormInputs();
     bindSymbolPicker();
+    bindNttReinvestProfitsToggle();
   }
   function startPolling() {
     stopPolling();

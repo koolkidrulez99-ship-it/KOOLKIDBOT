@@ -1143,28 +1143,42 @@
     }
   }
 
+  function buildHumanAsiansPairOptions(stakeOverride, durationOverride){
+    const durationEl = byId("humanOnlyDuration");
+    const minDur = durationEl ? Number(durationEl.min || 2) : 2;
+    const maxDur = durationEl && durationEl.max ? Number(durationEl.max) : 1000000;
+    const durationTicks = Math.round(clampNum(durationOverride !== undefined ? durationOverride : (durationEl ? durationEl.value : 2), minDur, maxDur, Math.max(2, minDur)));
+    if(durationEl && durationOverride === undefined) durationEl.value = String(durationTicks);
+    const stakeEl = byId("stake");
+    const baseStake = clampNum(stakeOverride !== undefined ? stakeOverride : (stakeEl ? stakeEl.value : 1), 0.35, 1000000, 1);
+    if(stakeEl && stakeOverride === undefined) stakeEl.value = String(baseStake);
+    return {
+      durationTicks,
+      baseStake,
+      pairOptions: {
+        ASIANS_UP: { stake: baseStake, duration_ticks: durationTicks, quiet: true },
+        ASIANS_DOWN: { stake: baseStake, duration_ticks: durationTicks, quiet: true },
+      },
+    };
+  }
+
+  async function placeHumanManualAsiansPair(opts){
+    const settings = buildHumanAsiansPairOptions(opts && opts.stake, opts && opts.durationTicks);
+    const data = await placeHumanManualPairAction(
+      ["ASIANS_UP", "ASIANS_DOWN"],
+      settings.pairOptions,
+      {
+        type: "ASIANS_UP_DOWNS",
+        label: "HUMAN Asians Up + Asians Down",
+      }
+    );
+    return Object.assign({}, settings, { data });
+  }
+
   async function humanManualAsiansPairTrade(){
     try{
-      const durationEl = byId("humanOnlyDuration");
-      const minDur = durationEl ? Number(durationEl.min || 2) : 2;
-      const maxDur = durationEl && durationEl.max ? Number(durationEl.max) : 1000000;
-      const durationTicks = Math.round(clampNum(durationEl ? durationEl.value : 2, minDur, maxDur, Math.max(2, minDur)));
-      if(durationEl) durationEl.value = String(durationTicks);
-      const stakeEl = byId("stake");
-      const baseStake = clampNum(stakeEl ? stakeEl.value : 1, 0.35, 1000000, 1);
-      if(stakeEl) stakeEl.value = String(baseStake);
-      await placeHumanManualPairAction(
-        ["ASIANS_UP", "ASIANS_DOWN"],
-        {
-          ASIANS_UP: { stake: baseStake, duration_ticks: durationTicks, quiet: true },
-          ASIANS_DOWN: { stake: baseStake, duration_ticks: durationTicks, quiet: true },
-        },
-        {
-          type: "ASIANS_UP_DOWNS",
-          label: "HUMAN Asians Up + Asians Down",
-        }
-      );
-      if(typeof showToast === "function") showToast(`HUMAN Asians Up + Asians Down sent at $${Number(baseStake).toFixed(2)} each`, "success");
+      const settings = await placeHumanManualAsiansPair();
+      if(typeof showToast === "function") showToast(`HUMAN Asians Up + Asians Down sent at $${Number(settings.baseStake).toFixed(2)} each`, "success");
     }catch(e){
       if(typeof showToast === "function") showToast(e.message || "HUMAN Asians pair trade failed", "error");
     }
@@ -1439,9 +1453,9 @@
           pairOptions[key] = Object.assign({ stake: humanSingleMartingaleStakeForPairAction(key), quiet: true }, settings.option);
         });
         if(String(settings.action || "").toUpperCase() === "ASIANS_UP_DOWNS"){
-          await placeHumanManualPairAction(actions, pairOptions, {
-            type: "ASIANS_UP_DOWNS",
-            label: "HUMAN Asians Up + Asians Down",
+          await placeHumanManualAsiansPair({
+            stake: humanSingleMartingaleStakeForPairAction("ASIANS_UP"),
+            durationTicks: settings.option.duration_ticks,
           });
         }else{
           await Promise.all(actions.map((key) => (

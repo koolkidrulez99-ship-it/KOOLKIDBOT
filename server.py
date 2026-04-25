@@ -5000,8 +5000,7 @@ def _decorate_ntt_active_entry_countdown(entry, state, now_ts=None):
             open_tick_seq = out.get("open_tick_seq")
             if open_tick_seq not in (None, ""):
                 open_tick_seq = int(float(open_tick_seq))
-                strat = (state.get("strategies") or {}).get("NTT")
-                now_tick_seq = int(getattr(strat, "tick_count", 0) or 0)
+                now_tick_seq = _get_main_tick_counter(state, "NTT")
                 seq_elapsed = max(0, now_tick_seq - open_tick_seq)
                 elapsed_ticks = seq_elapsed if elapsed_ticks is None else min(max(elapsed_ticks, 0), seq_elapsed)
         except Exception:
@@ -5081,9 +5080,7 @@ def _upsert_ntt_active_contract(state, contract_id, *, meta=None, contract=None,
         "_elapsed_contract_ticks": contract.get("current_spot_time", entry.get("_elapsed_contract_ticks")),
         "updated_at": now_time(),
     })
-    strat = (state.get("strategies") or {}).get("NTT")
-    if strat is not None:
-        entry["open_tick_seq"] = entry.get("open_tick_seq") or int(getattr(strat, "tick_count", 0) or 0)
+    entry["open_tick_seq"] = entry.get("open_tick_seq") or _get_main_tick_counter(state, "NTT")
     active[norm] = entry
     return entry
 
@@ -5377,11 +5374,8 @@ def _maybe_force_ntt_close_on_countdown(client_id, state):
     refreshed = []
     waiting = []
     ws = state.get("ws")
-    ntt_strat = (state.get("strategies") or {}).get("NTT")
-    now_tick_seq = None
-    try:
-        now_tick_seq = int(getattr(ntt_strat, "tick_count", 0) or 0)
-    except Exception:
+    now_tick_seq = _get_main_tick_counter(state, "NTT")
+    if now_tick_seq <= 0:
         now_tick_seq = None
 
     for cid_key, entry in list(active_map.items()):
@@ -5586,12 +5580,41 @@ def _is_human_profile_meta(meta):
     return isinstance(meta, dict) and str(meta.get("profile") or "").upper().strip() == "HUMAN"
 
 
+def _get_main_tick_counter(state, strategy_name=None):
+    fallback = 0
+    try:
+        fallback = max(0, int(((state or {}).get("_main_tick_seq", 0) or 0)))
+    except Exception:
+        fallback = 0
+    try:
+        strategies = ((state or {}).get("strategies") or {})
+        if strategy_name:
+            strat = strategies.get(strategy_name)
+            return max(fallback, int(getattr(strat, "tick_count", 0) or 0))
+        counters = [fallback]
+        for name in ("UNCHAIN", "NTT", "KOOLKID", "JOKERJOE", "MUTANT"):
+            strat = strategies.get(name)
+            try:
+                counters.append(max(0, int(getattr(strat, "tick_count", 0) or 0)))
+            except Exception:
+                continue
+        return max(counters)
+    except Exception:
+        return fallback
+
+
 def _get_human_tick_counter(state):
+    strategy_tick_count = 0
     try:
         strat = ((state or {}).get("strategies") or {}).get("HUMAN")
-        return max(0, int(getattr(strat, "tick_count", 0) or 0))
+        strategy_tick_count = max(0, int(getattr(strat, "tick_count", 0) or 0))
     except Exception:
-        return 0
+        strategy_tick_count = 0
+    try:
+        fallback = max(0, int(((state or {}).get("_human_tick_seq", 0) or 0)))
+    except Exception:
+        fallback = 0
+    return max(strategy_tick_count, fallback)
 
 
 def _upsert_human_pending_contract(state, contract_id, meta=None, contract=None, status="OPEN"):
@@ -7141,11 +7164,17 @@ def _toggle_ntt_koolkid_both(cid, state, data):
 
 
 def _get_unchain_tick_counter(state):
+    strategy_tick_count = 0
     try:
         strat = ((state or {}).get("strategies") or {}).get("UNCHAIN")
-        return max(0, int(getattr(strat, "tick_count", 0) or 0))
+        strategy_tick_count = max(0, int(getattr(strat, "tick_count", 0) or 0))
     except Exception:
-        return 0
+        strategy_tick_count = 0
+    try:
+        fallback = _get_main_tick_counter(state, "UNCHAIN")
+    except Exception:
+        fallback = 0
+    return max(strategy_tick_count, fallback)
 
 
 def _normalize_contract_id(contract_id):
@@ -7521,8 +7550,7 @@ def _upsert_unchain_active_contract(state, contract_id, meta=None, contract=None
         entry["open_epoch"] = float(time.time())
     if entry.get("open_tick_seq") in (None, ""):
         try:
-            un_strat = (state.get("strategies") or {}).get("UNCHAIN")
-            entry["open_tick_seq"] = int(getattr(un_strat, "tick_count", 0) or 0)
+            entry["open_tick_seq"] = _get_unchain_tick_counter(state)
         except Exception:
             pass
     entry_status = status or contract.get("status") or entry.get("status") or "OPEN"
@@ -7682,8 +7710,7 @@ def _decorate_unchain_active_entry_countdown(entry, state, now_ts=None):
             open_tick_seq = out.get("open_tick_seq")
             if open_tick_seq not in (None, ""):
                 open_tick_seq = int(float(open_tick_seq))
-                un_strat = (state.get("strategies") or {}).get("UNCHAIN")
-                now_tick_seq = int(getattr(un_strat, "tick_count", 0) or 0)
+                now_tick_seq = _get_unchain_tick_counter(state)
                 seq_elapsed_ticks = max(0, now_tick_seq - open_tick_seq)
         except Exception:
             seq_elapsed_ticks = None
@@ -7782,11 +7809,8 @@ def _maybe_force_unchain_close_on_countdown(client_id, state):
     refreshed = []
     waiting = []
     ws = state.get("ws")
-    un_strat = (state.get("strategies") or {}).get("UNCHAIN")
-    now_tick_seq = None
-    try:
-        now_tick_seq = int(getattr(un_strat, "tick_count", 0) or 0)
-    except Exception:
+    now_tick_seq = _get_unchain_tick_counter(state)
+    if now_tick_seq <= 0:
         now_tick_seq = None
 
     for cid_key, entry in list(active_map.items()):
@@ -15624,6 +15648,17 @@ def process_tick(client_id, tick):
         # ignore ticks we don't care about
         if not (is_main or is_human):
             return
+
+        if is_main:
+            try:
+                state["_main_tick_seq"] = max(0, int(state.get("_main_tick_seq", 0) or 0)) + 1
+            except Exception:
+                state["_main_tick_seq"] = 1
+        if is_human:
+            try:
+                state["_human_tick_seq"] = max(0, int(state.get("_human_tick_seq", 0) or 0)) + 1
+            except Exception:
+                state["_human_tick_seq"] = 1
 
         pip_size = tick.get("pip_size", 2)
         digit = extract_last_decimal_digit(price, pip_size) if is_main else None

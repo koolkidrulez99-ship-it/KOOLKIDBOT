@@ -2196,16 +2196,28 @@
   <div class="card">
     <div class="unchain-header" style="margin-bottom:12px;">
       <h3 style="margin:0;">🎛️ UNCHAIN Controls</h3>
-      <label id="unchainHalfBarrierWrap" class="unchain-inline-toggle unchain-inline-toggle--compact" for="unchainHalfBarrierToggle">
-        <span class="unchain-inline-toggle__text">HALF BARRIER</span>
-        <span class="unchain-inline-toggle__control">
-          <input id="unchainHalfBarrierToggle" class="unchain-inline-toggle__input" type="checkbox" role="switch" aria-label="Half Barrier toggle">
-          <span class="unchain-inline-toggle__track" aria-hidden="true">
-            <span class="unchain-inline-toggle__thumb"></span>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+        <label id="unchainReinvestProfitsWrap" class="unchain-inline-toggle unchain-inline-toggle--compact" for="unchainReinvestProfitsToggle">
+          <span class="unchain-inline-toggle__text">REINVEST PROFITS</span>
+          <span class="unchain-inline-toggle__control">
+            <input id="unchainReinvestProfitsToggle" class="unchain-inline-toggle__input" type="checkbox" role="switch" aria-label="Unchain reinvest profits toggle">
+            <span class="unchain-inline-toggle__track" aria-hidden="true">
+              <span class="unchain-inline-toggle__thumb"></span>
+            </span>
+            <span id="unchainReinvestProfitsState" class="unchain-inline-toggle__state">OFF</span>
           </span>
-          <span id="unchainHalfBarrierState" class="unchain-inline-toggle__state">OFF</span>
-        </span>
-      </label>
+        </label>
+        <label id="unchainHalfBarrierWrap" class="unchain-inline-toggle unchain-inline-toggle--compact" for="unchainHalfBarrierToggle">
+          <span class="unchain-inline-toggle__text">HALF BARRIER</span>
+          <span class="unchain-inline-toggle__control">
+            <input id="unchainHalfBarrierToggle" class="unchain-inline-toggle__input" type="checkbox" role="switch" aria-label="Half Barrier toggle">
+            <span class="unchain-inline-toggle__track" aria-hidden="true">
+              <span class="unchain-inline-toggle__thumb"></span>
+            </span>
+            <span id="unchainHalfBarrierState" class="unchain-inline-toggle__state">OFF</span>
+          </span>
+        </label>
+      </div>
     </div>
     <div class="unchain-grid">
       <div class="unchain-side">
@@ -2427,6 +2439,109 @@
     <div id="unchainHybridMeta" style="margin-top:10px;color:#86efac;font-size:12px;">Hybrid is OFF.</div>
     <div id="unchainRiskBlock" style="display:none;margin-top:10px;padding:10px;border-radius:12px;background:#7f1d1d;color:#fecaca;border:1px solid #ef4444;"></div>
     <div style="margin-top:10px;color:#94a3b8;font-size:12px;">Both sends one Higher contract and one Lower contract using the current saved values.</div>
+  </div>
+
+  <div class="card">
+    <details class="unchain-collapse">
+      <summary>
+        <span>Single Contract Martingale</span>
+        <span id="unchainSingleMartingaleSummary" style="font-size:12px;font-weight:800;color:#38bdf8;">HIGHER ONLY</span>
+      </summary>
+      <div class="unchain-collapse-body">
+        <div class="unchain-field-grid-3">
+          <div class="unchain-field">
+            <label class="unchain-label" for="unchainSingleMartingaleAction">Contract</label>
+            <select id="unchainSingleMartingaleAction">
+              <option value="HIGHER">Higher Only</option>
+              <option value="LOWER">Lower Only</option>
+              <option value="BOTH">Higher + Lower Both</option>
+              <option value="BOTH_PLUS">Higher and Lower Plus</option>
+              <option value="BOTH_WINS">Higher&Lower Wins</option>
+            </select>
+          </div>
+          <div class="unchain-field">
+            <label class="unchain-label" for="unchainSingleMartingaleHigherStartStake">Higher Start Stake</label>
+            <input id="unchainSingleMartingaleHigherStartStake" type="number" min="0.35" step="0.01" value="1.00">
+          </div>
+          <div class="unchain-field">
+            <label class="unchain-label" for="unchainSingleMartingaleLowerStartStake">Lower Start Stake</label>
+            <input id="unchainSingleMartingaleLowerStartStake" type="number" min="0.35" step="0.01" value="1.00">
+          </div>
+        </div>
+        <div class="unchain-field-grid-3" style="margin-top:10px;">
+          <div class="unchain-field">
+            <label class="unchain-label" for="unchainSingleMartingaleMultiplier">Multiplier</label>
+            <input id="unchainSingleMartingaleMultiplier" type="number" min="1" step="0.05" value="2">
+          </div>
+          <div class="unchain-field">
+            <label class="unchain-label" for="unchainSingleMartingaleMaxSteps">Max Steps</label>
+            <input id="unchainSingleMartingaleMaxSteps" type="number" min="1" step="1" value="1000">
+          </div>
+          <div class="unchain-field">
+            <label class="unchain-label" for="unchainSingleMartingaleMaxStake">Max Stake</label>
+            <input id="unchainSingleMartingaleMaxStake" type="number" min="0" step="0.01" placeholder="optional">
+          </div>
+          <div class="unchain-field">
+            <label class="unchain-label" for="unchainSingleMartingaleTickSpacing">Tick Spacing</label>
+            <select id="unchainSingleMartingaleTickSpacing"></select>
+          </div>
+        </div>
+        <div class="unchain-field-grid-2" style="margin-top:10px;">
+          <div class="unchain-field is-barrier">
+            <label class="unchain-label" for="unchainSingleMartingaleHigherBarrier">Higher Barrier</label>
+            <input id="unchainSingleMartingaleHigherBarrier" type="text" value="+0.12">
+          </div>
+          <div class="unchain-field is-barrier">
+            <label class="unchain-label" for="unchainSingleMartingaleLowerBarrier">Lower Barrier</label>
+            <input id="unchainSingleMartingaleLowerBarrier" type="text" value="-0.12">
+          </div>
+        </div>
+        <div class="unchain-field-grid-2" style="margin-top:10px;">
+          <div class="unchain-field">
+            <label class="unchain-label" for="unchainSingleMartingaleDuration">Duration</label>
+            <select id="unchainSingleMartingaleDuration"></select>
+          </div>
+          <div class="unchain-field">
+            <label class="unchain-label" for="unchainSingleMartingaleDurationUnit">Unit</label>
+            <select id="unchainSingleMartingaleDurationUnit">
+              <option value="t">Ticks</option>
+              <option value="s">Seconds</option>
+              <option value="m">Minutes</option>
+            </select>
+          </div>
+        </div>
+        <div id="unchainSingleMartingaleWinsSideWrap" class="unchain-field-grid-2" style="margin-top:10px;display:none;">
+          <div class="unchain-field">
+            <label class="unchain-label" for="unchainSingleMartingaleWinsSide">Martingale Side</label>
+            <select id="unchainSingleMartingaleWinsSide">
+              <option value="HIGHER">Higher</option>
+              <option value="LOWER">Lower</option>
+            </select>
+          </div>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px;">
+          <label id="unchainSingleMartingaleFixedProfitsWrap" class="unchain-inline-toggle unchain-inline-toggle--compact" for="unchainSingleMartingaleFixedProfits">
+            <span class="unchain-inline-toggle__text">FIXED PROFITS</span>
+            <span class="unchain-inline-toggle__control">
+              <input id="unchainSingleMartingaleFixedProfits" class="unchain-inline-toggle__input" type="checkbox" role="switch" aria-label="Fixed profits toggle">
+              <span class="unchain-inline-toggle__track" aria-hidden="true">
+                <span class="unchain-inline-toggle__thumb"></span>
+              </span>
+              <span id="unchainSingleMartingaleFixedProfitsState" class="unchain-inline-toggle__state">OFF</span>
+            </span>
+          </label>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px;">
+          <button id="unchainSingleMartingaleToggleBtn" type="button" data-action="unchain-single-martingale-toggle" style="background:#334155;min-width:140px;">MARTINGALE: OFF</button>
+        </div>
+        <div id="unchainSingleMartingaleStatus" style="margin-top:10px;color:#94a3b8;font-size:12px;">Ready. Current stake $1.00 • Next stake $2.00 • Last result: none</div>
+        <div class="unchain-btn-row" style="margin-top:10px;">
+          <button type="button" data-action="unchain-single-martingale-place" style="background:#22c55e;">PLACE SELECTED CONTRACT</button>
+          <button type="button" data-action="unchain-single-martingale-stop" style="background:#ef4444;">QUICK STOP</button>
+        </div>
+        <div style="margin-top:10px;color:#94a3b8;font-size:12px;">Higher and Lower use the barriers and duration above. BOTH uses the same paired-style martingale flow as Rise + Fall: the winning side resets while the losing side steps up.</div>
+      </div>
+    </details>
   </div>
 
   <div class="card">
