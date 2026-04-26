@@ -1587,6 +1587,12 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
       state.profileReinvestProfitBank = Number((Math.max(0, Number(state.profileReinvestProfitBank) || 0) + profit).toFixed(2));
       renderProfileReinvestControlsJokerjoe();
       syncProfileReinvestAutoStakeJokerjoe();
+      return;
+    }
+    if (result === "LOSS" || result === "LOST" || (Number.isFinite(profit) && profit < 0)) {
+      resetProfileReinvestJokerjoe();
+      renderProfileReinvestControlsJokerjoe();
+      syncProfileReinvestAutoStakeJokerjoe();
     }
   }
 

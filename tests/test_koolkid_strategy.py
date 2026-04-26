@@ -335,6 +335,19 @@ def test_golden_card_filter_mode_can_force_over1_or_under8():
     assert under_row["recommended_barrier"] == 8
 
 
+def test_golden_card_filter_mode_can_force_over2():
+    strat = KoolKidStrategy()
+    digits = [0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7, 2, 3, 4, 5]
+
+    strat.start_golden_card_scan(symbols=["R_10"], history_target=20, filter_mode="OVER2")
+    _feed_golden_card_digits(strat, "R_10", digits)
+    row = strat.get_golden_card_state()["results"][0]
+
+    assert row["recommended_label"] == "OVER 2"
+    assert row["recommended_type"] == "OVER"
+    assert row["recommended_barrier"] == 2
+
+
 def test_golden_card_rotates_weak_markets_and_can_include_jump_pool():
     strat = KoolKidStrategy()
     data = strat.start_golden_card_scan(history_target=20, add_jump_pairs=True)

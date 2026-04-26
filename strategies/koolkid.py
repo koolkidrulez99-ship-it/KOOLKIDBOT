@@ -702,6 +702,8 @@ class KoolKidStrategy(BaseStrategy):
             return "OVER0"
         if mode in ("OVER1", "OVER_1"):
             return "OVER1"
+        if mode in ("OVER2", "OVER_2"):
+            return "OVER2"
         if mode in ("UNDER8", "UNDER_8"):
             return "UNDER8"
         if mode in ("UNDER9", "UNDER_9"):
@@ -779,6 +781,7 @@ class KoolKidStrategy(BaseStrategy):
         for key, trade_type, barrier, label in (
             ("over0", "OVER", 0, "OVER 0"),
             ("over1", "OVER", 1, "OVER 1"),
+            ("over2", "OVER", 2, "OVER 2"),
             ("under8", "UNDER", 8, "UNDER 8"),
             ("under9", "UNDER", 9, "UNDER 9"),
         ):
@@ -799,6 +802,8 @@ class KoolKidStrategy(BaseStrategy):
             allowed_keys = {"over0"}
         elif filter_mode == "OVER1":
             allowed_keys = {"over1"}
+        elif filter_mode == "OVER2":
+            allowed_keys = {"over2"}
         elif filter_mode == "UNDER8":
             allowed_keys = {"under8"}
         elif filter_mode == "UNDER9":
@@ -900,9 +905,10 @@ class KoolKidStrategy(BaseStrategy):
             mode_text = {
                 "OVER0": "OVER 0 only",
                 "OVER1": "OVER 1 only",
+                "OVER2": "OVER 2 only",
                 "UNDER8": "UNDER 8 only",
                 "UNDER9": "UNDER 9 only",
-                "ALL4": "OVER 0 / OVER 1 / UNDER 8 / UNDER 9",
+                "ALL4": "OVER 0 / OVER 1 / OVER 2 / UNDER 8 / UNDER 9",
                 "BOTH": "OVER 1 / UNDER 8",
             }.get(filter_mode, "OVER 1 / UNDER 8")
             scan["status"] = (

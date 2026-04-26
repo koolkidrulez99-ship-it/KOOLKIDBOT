@@ -26,6 +26,7 @@
     goldenCardAutoOn: false,
     goldenCardAutoLastSignalKey: "",
     goldenCardAutoWaitingReset: false,
+    goldenCardPopupDismissedAt: 0,
     goldenCardReinvestProfitsOn: false,
     goldenCardReinvestProfitPct: 25,
     goldenCardReinvestBaseStake: null,
@@ -139,8 +140,13 @@
     popup.style.visibility = "hidden";
     popup.style.display = "block";
     popup.style.left = "50%";
-    popup.style.top = "50%";
-    popup.style.transform = "translate(-50%, -50%)";
+    if (id === "goldenCardPopupKoolkid") {
+      popup.style.top = "18px";
+      popup.style.transform = "translateX(-50%)";
+    } else {
+      popup.style.top = "50%";
+      popup.style.transform = "translate(-50%, -50%)";
+    }
     popup.style.visibility = "visible";
     return popup;
   }
@@ -163,6 +169,7 @@
     const raw = String(value || "BOTH").toUpperCase().replace(/\s+/g, "");
     if (raw === "OVER0" || raw === "OVER_0") return "OVER0";
     if (raw === "OVER1" || raw === "OVER_1") return "OVER1";
+    if (raw === "OVER2" || raw === "OVER_2") return "OVER2";
     if (raw === "UNDER8" || raw === "UNDER_8") return "UNDER8";
     if (raw === "UNDER9" || raw === "UNDER_9") return "UNDER9";
     if (raw === "ALL" || raw === "ALL4" || raw === "ALL_4") return "ALL4";
@@ -558,6 +565,12 @@
         state.profileReinvestBaseStake = Number(getRawStakeValueKoolkid().toFixed(2));
       }
       state.profileReinvestProfitBank = Number((Math.max(0, Number(state.profileReinvestProfitBank) || 0) + profit).toFixed(2));
+      renderProfileReinvestControlsKoolkid();
+      syncProfileReinvestAutoStakeKoolkid();
+      return;
+    }
+    if (result === "LOSS" || result === "LOST" || (Number.isFinite(profit) && profit < 0)) {
+      resetProfileReinvestKoolkid();
       renderProfileReinvestControlsKoolkid();
       syncProfileReinvestAutoStakeKoolkid();
     }
@@ -2543,7 +2556,11 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
     syncGoldenCardAutoUiKoolkid();
     if (statusEl) statusEl.innerText = statusText;
     if (progressEl) {
-      const modeText = filterMode === "OVER1" ? "OVER 1 only" : (filterMode === "UNDER8" ? "UNDER 8 only" : "Both");
+      const modeText = filterMode === "OVER1"
+        ? "OVER 1 only"
+        : (filterMode === "OVER2"
+          ? "OVER 2 only"
+          : (filterMode === "UNDER8" ? "UNDER 8 only" : "Both"));
       progressEl.innerText = `${warmed} / ${symbols.length || 10} active warmed • pool ${poolSize} • ${modeText}${addJumpPairs ? " • Jump ON" : ""} • rolling ${historyTarget} ticks`;
     }
     if (!resultsEl) return;
@@ -2552,9 +2569,11 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
         ? "Scanning market ticks live..."
         : (filterMode === "OVER1"
           ? "Golden Card will show OVER 1 setups here after the scan starts."
+          : (filterMode === "OVER2"
+            ? "Golden Card will show OVER 2 setups here after the scan starts."
           : (filterMode === "UNDER8"
             ? "Golden Card will show UNDER 8 setups here after the scan starts."
-            : "Golden Card results will show here after the scan starts."));
+            : "Golden Card results will show here after the scan starts.")));
       resultsEl.innerHTML = `<div style="grid-column:1 / -1; text-align:center; color:#64748b; padding:20px;">${emptyText}</div>`;
       return;
     }
@@ -3318,6 +3337,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
   };
 
   window.hideGoldenCardPopupKoolkid = function () {
+    state.goldenCardPopupDismissedAt = Date.now();
     hideCenteredPopupKoolkid("goldenCardPopupKoolkid");
   };
 
@@ -3389,6 +3409,13 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
   };
 
   window.toggleGoldenCardAutoTraderKoolkid = function () {
+    const dismissedAt = Number(state.goldenCardPopupDismissedAt || 0);
+    if (dismissedAt > 0 && (Date.now() - dismissedAt) < 500) {
+      const autoNode = document.getElementById("goldenCardAutoTraderKoolkid");
+      if (autoNode) autoNode.checked = !!state.goldenCardAutoOn;
+      syncGoldenCardAutoUiKoolkid();
+      return;
+    }
     state.goldenCardAutoOn = !state.goldenCardAutoOn;
     if (!state.goldenCardAutoOn) {
       state.goldenCardAutoLastSignalKey = "";

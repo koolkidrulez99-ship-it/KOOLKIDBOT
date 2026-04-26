@@ -51,6 +51,8 @@
     predictionTimer: null,
     predictionSignature: "",
     predictionLoading: false,
+    statusRefreshQueued: false,
+    statusRefreshInFlight: false,
     reinvest: {
       enabled: false,
       baseHigherStake: 1,
@@ -1809,6 +1811,21 @@
     state.reinvest.pendingDirections = {};
   }
 
+  function isUnchainSingleMartingaleTrade(trade) {
+    if (!trade || String(trade.profile || "").toUpperCase() !== PROFILE) return false;
+    if (!state.singleMartingale.inProgress) return false;
+    const contractId = String(trade.contract_id || trade.buy_contract_id || trade.id || "");
+    const side = normalizeUnchainTradeSide(trade.type || trade.contract_type || "");
+    if (isUnchainSingleMartingalePairedAction(state.singleMartingale.pendingSide)) {
+      const pending = (state.singleMartingale.pendingDirections || {})[side];
+      if (!pending) return false;
+      return !pending.contractId || !contractId || String(pending.contractId) === contractId;
+    }
+    if (state.singleMartingale.pendingSide && side !== state.singleMartingale.pendingSide) return false;
+    if (!state.singleMartingale.pendingContractId || !contractId) return true;
+    return String(state.singleMartingale.pendingContractId) === contractId;
+  }
+
   function applyUnchainReinvestToggleUI() {
     const wrap = el("unchainReinvestProfitsWrap");
     const input = el("unchainReinvestProfitsToggle");
@@ -3385,6 +3402,26 @@
     }
   }
 
+  function queueUnchainStatusRefresh(reason) {
+    if (!isActive()) return;
+    if (state.statusRefreshInFlight || state.statusRefreshQueued) return;
+    state.statusRefreshQueued = true;
+    const t = setTimeout(async () => {
+      state.statusRefreshQueued = false;
+      state.statusRefreshInFlight = true;
+      try {
+        await refreshStatus(true);
+      } finally {
+        state.statusRefreshInFlight = false;
+        const app = App();
+        if (app && typeof app.completeFrontendTimeout === "function") {
+          app.completeFrontendTimeout(reason || "unchain_trade_status_refresh");
+        }
+      }
+    }, 0);
+    trackTimeout(reason || "unchain_trade_status_refresh", t);
+  }
+
   function handleUnchainSingleMartingaleTick() {
     if (!state.singleMartingale.running) return;
     if (state.singleMartingale.inProgress) return;
@@ -3972,28 +4009,21 @@
         toast(data.message || "UNCHAIN notice", data.type || "info");
       });
       bind("trade_result", (trade) => {
-        handleUnchainReinvestTradeResult(trade);
+        const isUnchainTrade = !!(trade && String(trade.profile || "").toUpperCase() === "UNCHAIN");
+        const isMartingaleTrade = isUnchainSingleMartingaleTrade(trade);
         handleUnchainSingleMartingaleResult(trade);
+        if (!isMartingaleTrade) handleUnchainReinvestTradeResult(trade);
         if (!isActive()) return;
-        const t = setTimeout(() => {
-          const app = App();
-          if (app && typeof app.completeFrontendTimeout === "function") app.completeFrontendTimeout("unchain_trade_result_refresh");
-          refreshStatus(true);
-        }, 0);
-        trackTimeout("unchain_trade_result_refresh", t);
+        if (!isUnchainTrade) return;
+        queueUnchainStatusRefresh("unchain_trade_result_refresh");
       });
       bind("trade_placed", (trade) => {
-        rememberUnchainNormalTradePlacement(trade);
+        const isUnchainTrade = !!(trade && String(trade.profile || "").toUpperCase() === "UNCHAIN");
+        const isMartingaleTrade = isUnchainSingleMartingaleTrade(trade);
+        if (!isMartingaleTrade) rememberUnchainNormalTradePlacement(trade);
         rememberUnchainSingleMartingaleTrade(trade);
-        if (!isActive() || !trade) return;
-        if ((trade.profile || "").toUpperCase() === "UNCHAIN") {
-          const t = setTimeout(() => {
-            const app = App();
-            if (app && typeof app.completeFrontendTimeout === "function") app.completeFrontendTimeout("unchain_trade_placed_refresh");
-            refreshStatus(true);
-          }, 0);
-          trackTimeout("unchain_trade_placed_refresh", t);
-        }
+        if (!isActive() || !isUnchainTrade) return;
+        queueUnchainStatusRefresh("unchain_trade_placed_refresh");
       });
       if (app && typeof app.logSocketListenerCounts === "function") app.logSocketListenerCounts("unchain_profile_init");
     } catch (e) {}
