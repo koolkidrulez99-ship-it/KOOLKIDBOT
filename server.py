@@ -2074,6 +2074,25 @@ def request_human_seed(client_id):
         state.setdefault("req_meta", {})
         symbol = state.get("human_symbol") or state.get("current_symbol")
 
+        if _is_step_market_symbol(symbol):
+            req_id_ticks = _new_req_id()
+            state["req_meta"][req_id_ticks] = {
+                "kind": "human_tick_seed",
+                "time": now_time(),
+                "symbol": symbol,
+            }
+            ws.send(json.dumps({
+                "ticks_history": symbol,
+                "style": "ticks",
+                "count": 2400,
+                "end": "latest",
+                "start": 1,
+                "adjust_start_time": 1,
+                "req_id": req_id_ticks,
+            }))
+            logger.info("[%s] human_chart_step_seed_requested symbol=%s count=%s", client_id, symbol, 2400)
+            return
+
         # 5M seed (2 hours)
         req_id_5m = _new_req_id()
         state["req_meta"][req_id_5m] = {
@@ -14014,6 +14033,45 @@ def _normalize_tick_symbol(symbol):
     return str(symbol or "").strip().upper()
 
 
+def _is_step_market_symbol(symbol):
+    return _normalize_tick_symbol(symbol) in {"STPRNG", "STPRNG2", "STPRNG3", "STPRNG4", "STPRNG5"}
+
+
+def _build_synthetic_candles_from_tick_history(prices, times, *, tf_sec, max_candles):
+    if not isinstance(prices, list) or not isinstance(times, list):
+        return []
+    if not prices or not times:
+        return []
+    size = min(len(prices), len(times))
+    buckets = {}
+    for idx in range(size):
+        try:
+            price = float(prices[idx])
+            ts = int(float(times[idx]))
+        except Exception:
+            continue
+        bucket_start = int(ts // tf_sec) * int(tf_sec)
+        candle = buckets.get(bucket_start)
+        if candle is None:
+            buckets[bucket_start] = {
+                "time": bucket_start,
+                "open": price,
+                "high": price,
+                "low": price,
+                "close": price,
+            }
+            continue
+        candle["close"] = price
+        if price > candle["high"]:
+            candle["high"] = price
+        if price < candle["low"]:
+            candle["low"] = price
+    candles = [buckets[key] for key in sorted(buckets.keys())]
+    if max_candles and len(candles) > max_candles:
+        candles = candles[-max_candles:]
+    return candles
+
+
 def _active_tick_symbols_for_state(state):
     symbols = []
     if not isinstance(state, dict):
@@ -15186,6 +15244,20 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                             prices,
                             lambda price: extract_last_decimal_digit(price, 2),
                         )
+                elif meta and meta.get("kind") == "human_tick_seed":
+                    history = data.get("history") or {}
+                    prices = list(history.get("prices") or [])
+                    times = list(history.get("times") or [])
+                    strat = state.get("strategies", {}).get("HUMAN")
+                    if strat and prices and times:
+                        candles_5m = _build_synthetic_candles_from_tick_history(prices, times, tf_sec=300, max_candles=24)
+                        candles_1h = _build_synthetic_candles_from_tick_history(prices, times, tf_sec=3600, max_candles=24)
+                        if hasattr(strat, "seed_5m_history"):
+                            strat.seed_5m_history(candles_5m)
+                        if hasattr(strat, "seed_1h_history"):
+                            strat.seed_1h_history(candles_1h)
+                        if state.get("active_profile") == "HUMAN" and hasattr(strat, "get_chart_data"):
+                            socketio.emit("human_chart_data", strat.get_chart_data(), room=client_id)
             except Exception:
                 pass
 

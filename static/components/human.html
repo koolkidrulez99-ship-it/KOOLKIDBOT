@@ -705,6 +705,10 @@
                         </select>
                     </label>
                 </div>
+                <label style="margin-top:10px; display:flex; align-items:center; gap:8px; color:#cbd5e1; font-size:12px; font-weight:700;">
+                    <input id="humanParityMartingaleCapToggle" type="checkbox" onchange="updateHumanParityMartingalePanel()" style="width:16px; height:16px;">
+                    Cap after 3 doubles and reset to base stake
+                </label>
                 <div id="humanParityMartingaleStatus" style="margin-top:8px; color:#94a3b8; font-size:12px;">Ready. Even stake $1.00 • Odd stake $1.00 • Last result: none</div>
                 <div style="margin-top:8px; color:#64748b; font-size:11px;">Both mode uses your Even and Odd start stakes. The winning side resets to its start stake, and the losing side multiplies by the martingale size until it wins.</div>
                 <div style="margin-top:8px; display:grid; grid-template-columns:1fr 1fr; gap:8px;">

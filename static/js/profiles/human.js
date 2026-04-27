@@ -162,6 +162,9 @@
     pending: {},
     settled: 0,
     plusRecoveryPending: false,
+    capAfterThreeDoubles: false,
+    evenDoubleCount: 0,
+    oddDoubleCount: 0,
     lastResult: "none",
     status: "Ready",
     restartTimer: null,
@@ -672,6 +675,7 @@
 
   function readHumanParitySettings(){
     const modeEl = byId("humanParityMartingaleMode");
+    const capToggleEl = byId("humanParityMartingaleCapToggle");
     const mode = normalizeHumanParityMode((modeEl && modeEl.value) || HUMAN_PARITY_MARTINGALE_STATE.mode);
     const startStake = Number(readHumanParityNumber("humanParityMartingaleStake", 1, 0.35, 1000000).toFixed(2));
     const multiplier = Number(readHumanParityNumber("humanParityMartingaleMultiplier", 2, 1, 100).toFixed(2));
@@ -681,12 +685,13 @@
     const multEl = byId("humanParityMartingaleMultiplier");
     const durationEl = byId("humanParityMartingaleDuration");
     const spacingEl = byId("humanParityMartingaleTickSpacing");
+    const capAfterThreeDoubles = !!(capToggleEl && capToggleEl.checked);
     if(modeEl) modeEl.value = mode;
     if(stakeEl && String(stakeEl.value || "").trim() === "") stakeEl.value = startStake.toFixed(2);
     if(multEl && String(multEl.value || "").trim() === "") multEl.value = String(multiplier);
     if(durationEl) durationEl.value = String(duration);
     if(spacingEl) spacingEl.value = String(tickSpacing);
-    return { mode, startStake, multiplier, duration, tickSpacing };
+    return { mode, startStake, multiplier, duration, tickSpacing, capAfterThreeDoubles };
   }
 
   function updateHumanParityMartingalePanel(){
@@ -694,6 +699,7 @@
     const mode = settings.mode;
     HUMAN_PARITY_MARTINGALE_STATE.mode = mode;
     HUMAN_PARITY_MARTINGALE_STATE.multiplier = settings.multiplier;
+    HUMAN_PARITY_MARTINGALE_STATE.capAfterThreeDoubles = !!settings.capAfterThreeDoubles;
     if(!HUMAN_PARITY_MARTINGALE_STATE.running && !HUMAN_PARITY_MARTINGALE_STATE.inFlight && !HUMAN_PARITY_MARTINGALE_STATE.runId){
       HUMAN_PARITY_MARTINGALE_STATE.evenBaseStake = settings.startStake;
       HUMAN_PARITY_MARTINGALE_STATE.oddBaseStake = settings.startStake;
@@ -722,11 +728,14 @@
             : mode === "ODD_PLUS"
               ? "Odd Plus"
               : "Even";
-      const modeDetail = isHumanParityPlusMode(mode) ? "1-step 2x recovery" : `${settings.multiplier}x`;
+      const modeDetail = isHumanParityPlusMode(mode)
+        ? "1-step 2x recovery"
+        : `${settings.multiplier}x${settings.capAfterThreeDoubles ? " • cap 3 doubles" : ""}`;
       statusEl.innerHTML = [
         `${HUMAN_PARITY_MARTINGALE_STATE.status || "Ready"} • ${modeLabel} • ${modeDetail}`,
         `Even stake ${money(HUMAN_PARITY_MARTINGALE_STATE.evenStake || 1)} • Odd stake ${money(HUMAN_PARITY_MARTINGALE_STATE.oddStake || 1)}`,
         `Pending: ${Object.keys(HUMAN_PARITY_MARTINGALE_STATE.pending || {}).join(" + ") || "none"} • Last result: ${HUMAN_PARITY_MARTINGALE_STATE.lastResult || "none"}`,
+        `Double count • Even ${Number(HUMAN_PARITY_MARTINGALE_STATE.evenDoubleCount || 0)} • Odd ${Number(HUMAN_PARITY_MARTINGALE_STATE.oddDoubleCount || 0)}`,
       ].join("<br>");
       statusEl.style.color = HUMAN_PARITY_MARTINGALE_STATE.inFlight ? "#fbbf24" : "#94a3b8";
     }
@@ -744,6 +753,9 @@
     HUMAN_PARITY_MARTINGALE_STATE.pending = {};
     HUMAN_PARITY_MARTINGALE_STATE.settled = 0;
     HUMAN_PARITY_MARTINGALE_STATE.plusRecoveryPending = false;
+    HUMAN_PARITY_MARTINGALE_STATE.capAfterThreeDoubles = !!settings.capAfterThreeDoubles;
+    HUMAN_PARITY_MARTINGALE_STATE.evenDoubleCount = 0;
+    HUMAN_PARITY_MARTINGALE_STATE.oddDoubleCount = 0;
     HUMAN_PARITY_MARTINGALE_STATE.lastResult = "none";
     HUMAN_PARITY_MARTINGALE_STATE.status = "Ready";
   }
@@ -825,9 +837,13 @@
     pending.result = outcome;
     st.settled = Object.values(st.pending || {}).filter((item) => item && item.result).length;
     const stake = Math.max(0.35, Number(pending.stake || (side === "EVEN" ? st.evenStake : st.oddStake) || 1));
+    const counterKey = side === "EVEN" ? "evenDoubleCount" : "oddDoubleCount";
+    const baseStake = Number(Math.max(0.35, Number(side === "EVEN" ? st.evenBaseStake : st.oddBaseStake) || 1).toFixed(2));
+    let capResetApplied = false;
     if(outcome === "WIN"){
       if(side === "EVEN") st.evenStake = Number((st.evenBaseStake || 1).toFixed(2));
       if(side === "ODD") st.oddStake = Number((st.oddBaseStake || 1).toFixed(2));
+      st[counterKey] = 0;
       if(isHumanParityPlusMode(st.mode)){
         st.plusRecoveryPending = false;
       }else if(st.mode !== "EVEN_ODD"){
@@ -849,17 +865,29 @@
           if(side === "ODD") st.oddStake = Number((st.oddBaseStake || 1).toFixed(2));
         }else{
           st.plusRecoveryPending = true;
-          const next = Number((Math.max(0.35, Number((side === "EVEN" ? st.evenBaseStake : st.oddBaseStake) || 1)) * 2).toFixed(2));
+          const next = Number((baseStake * 2).toFixed(2));
           if(side === "EVEN") st.evenStake = next;
           if(side === "ODD") st.oddStake = next;
         }
       }else{
-        const next = Number((stake * Math.max(1, Number(st.multiplier || 2))).toFixed(2));
-        if(side === "EVEN") st.evenStake = next;
-        if(side === "ODD") st.oddStake = next;
+        const currentDoubleCount = Math.max(0, Number(st[counterKey] || 0));
+        if(st.capAfterThreeDoubles && currentDoubleCount >= 3){
+          if(side === "EVEN") st.evenStake = baseStake;
+          if(side === "ODD") st.oddStake = baseStake;
+          st[counterKey] = 0;
+          st.lastResult = `${side} LOSS at ${money(stake)} • cap reached, reset to base`;
+          capResetApplied = true;
+        }else{
+          const next = Number((stake * Math.max(1, Number(st.multiplier || 2))).toFixed(2));
+          if(side === "EVEN") st.evenStake = next;
+          if(side === "ODD") st.oddStake = next;
+          st[counterKey] = currentDoubleCount + 1;
+        }
       }
     }
-    st.lastResult = `${side} ${outcome} at ${money(stake)}`;
+    if(!capResetApplied){
+      st.lastResult = `${side} ${outcome} at ${money(stake)}`;
+    }
     const expected = Object.keys(st.pending || {}).length;
     st.status = st.running ? `Running. Settled ${st.settled}/${expected}.` : "Stopped";
     updateHumanParityMartingalePanel();
@@ -889,6 +917,8 @@
     st.runId = "";
     st.spacingWait = 0;
     st.plusRecoveryPending = false;
+    st.evenDoubleCount = 0;
+    st.oddDoubleCount = 0;
     st.pending = {};
     st.settled = 0;
     if(st.restartTimer){
