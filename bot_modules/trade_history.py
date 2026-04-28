@@ -7,6 +7,13 @@ def serialize_profile_trade_history_entry(profile, entry, index):
     raw = dict(entry or {}) if isinstance(entry, dict) else {}
     if not raw:
         return None
+    if raw.get("hide_from_history"):
+        return None
+    mode_text = str(raw.get("mode") or "").lower().strip()
+    if mode_text.startswith("jokerjoe_match_batch_martingale|"):
+        return None
+    if profile and str(profile).upper().strip() == "JOKERJOE" and raw.get("batch_id"):
+        return None
 
     profile_name = str(profile or "").upper().strip() or "KOOLKID"
     try:

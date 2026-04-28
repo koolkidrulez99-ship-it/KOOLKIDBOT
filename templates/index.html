@@ -1568,9 +1568,67 @@ window.BotApp.logActiveTimeoutCount = logActiveTimeoutCount;
 
 const CLIENT_HEARTBEAT_INTERVAL_LABEL = "client_heartbeat";
 const CLIENT_HEARTBEAT_INTERVAL_MS = 8000;
+const CLIENT_INACTIVE_DISCONNECT_MS = 10 * 60 * 1000;
 let clientHeartbeatTimer = null;
+let clientLastActivityAt = Date.now();
+let clientExitDisconnectSent = false;
+let clientSkipExitDisconnect = false;
+
+function markClientActivity(){
+    clientLastActivityAt = Date.now();
+}
+
+["pointerdown", "keydown", "input", "wheel", "touchstart"].forEach((eventName)=>{
+    window.addEventListener(eventName, markClientActivity, { passive: true });
+});
+
+function sendApiDisconnectKeepalive(reason){
+    if(clientExitDisconnectSent) return false;
+    clientExitDisconnectSent = true;
+    stopClientHeartbeat();
+    console.info("frontend_api_disconnect_keepalive", { reason });
+    if(reason === "inactive_10_minutes"){
+        try{
+            clearApiConnectPending("inactive_disconnect");
+            stopApiConnectPolling();
+            apiConnected = false;
+            updateApiConnectionUi("disconnected");
+            if(apiStatus){
+                apiStatus.innerText = "Disconnected";
+                apiStatus.className = "red";
+            }
+        }catch(e){}
+    }
+    try{
+        const payload = new Blob([JSON.stringify({ reason: reason || "page_exit" })], { type: "application/json" });
+        if(navigator.sendBeacon && navigator.sendBeacon("/disconnect", payload)) return true;
+    }catch(e){}
+    try{
+        fetch("/disconnect", { method: "POST", keepalive: true }).catch(()=>{});
+        return true;
+    }catch(e){}
+    return false;
+}
+
+function shouldSkipExitDisconnectOnce(){
+    if(clientSkipExitDisconnect) return true;
+    try{
+        if(sessionStorage.getItem("skipDisconnectOnce") === "1"){
+            sessionStorage.removeItem("skipDisconnectOnce");
+            clientSkipExitDisconnect = true;
+            return true;
+        }
+    }catch(_err){}
+    return false;
+}
 
 function sendClientHeartbeat(reason){
+    const now = Date.now();
+    if(reason !== "start" && reason !== "visible" && document.hidden) return false;
+    if((now - Number(clientLastActivityAt || now)) >= CLIENT_INACTIVE_DISCONNECT_MS){
+        sendApiDisconnectKeepalive("inactive_10_minutes");
+        return false;
+    }
     try{
         if(socket && socket.connected && typeof socket.emit === "function"){
             socket.emit("client_heartbeat");
@@ -1606,10 +1664,16 @@ function stopClientHeartbeat(){
 }
 
 window.addEventListener("visibilitychange", () => {
-    if(!document.hidden) sendClientHeartbeat("visible");
+    if(!document.hidden){
+        markClientActivity();
+        clientExitDisconnectSent = false;
+        startClientHeartbeat();
+        sendClientHeartbeat("visible");
+    }
 });
 window.addEventListener("pagehide", () => {
-    sendClientHeartbeat("pagehide");
+    if(shouldSkipExitDisconnectOnce()) return;
+    sendApiDisconnectKeepalive("pagehide");
 });
 
 function initSocket(){
@@ -1628,25 +1692,19 @@ function initSocket(){
         reconnectionAttempts: 15,
         reconnectionDelay: 500,
         reconnectionDelayMax: 4000,
-        timeout: 3600000,
+        timeout: 600000,
         pingInterval: 25000,
-        pingTimeout: 3600000,
+        pingTimeout: 600000,
     });
     console.info("frontend_socket_created", { already_existing: false });
     logSocketListenerCounts("socket_created");
     logRuntimeCounters("socket_created", true);
     startClientHeartbeat();
 
-    // ==================== PATCH D: beforeunload with humanKeepAlive check ====================
+    // Disconnect the Deriv API session when the browser refreshes or leaves.
     window.addEventListener("beforeunload", () => {
-        if (humanKeepAlive) return;
-        try{
-            if(sessionStorage.getItem("skipDisconnectOnce") === "1"){
-                sessionStorage.removeItem("skipDisconnectOnce");
-                return;
-            }
-        }catch(_err){}
-        fetch("/disconnect", { method: "POST", keepalive: true });
+        if(shouldSkipExitDisconnectOnce()) return;
+        sendApiDisconnectKeepalive("beforeunload");
     });
     try{
         socket.on("disconnect", (reason)=>{
@@ -2041,8 +2099,8 @@ let apiConnectSubmitting = false;
 let apiConnectRequestSeq = 0;
 let globalObservedTickCount = 0;
 const API_CONNECT_POLL_INTERVAL_MS = 2000;
-const API_CONNECT_POLL_MAX_ATTEMPTS = 120;
-const API_CONNECT_PENDING_TIMEOUT_MS = 240000;
+const API_CONNECT_POLL_MAX_ATTEMPTS = 180;
+const API_CONNECT_PENDING_TIMEOUT_MS = 360000;
 const TICK_UI_THROTTLE_MS = 300;
 const DIGIT_ANALYSIS_UI_THROTTLE_MS = 350;
 let sessionStartBalanceForMilestone = null;
@@ -2819,12 +2877,9 @@ function applyApiConnectionState(data){
         clearApiConnectPending("connected_state_success");
         stopApiConnectPolling();
         clearApiTokenInputAfterConnect("connected_state_success");
-        apiStatus.innerText = tickUnhealthy || tickRecovering ? "Connected - Restoring Ticks" : "Connected";
-        apiStatus.className = tickUnhealthy || tickRecovering ? "blue" : "green";
-        updateApiConnectionUi(
-            tickUnhealthy || tickRecovering ? "pending" : "connected",
-            tickUnhealthy || tickRecovering ? "API CONNECTED - RESTORING LIVE TICKS..." : "API CONNECTED SUCCESSFULLY"
-        );
+        apiStatus.innerText = "Connected";
+        apiStatus.className = "green";
+        updateApiConnectionUi("connected", "API CONNECTED SUCCESSFULLY");
         applyKnownApiBalance(data || {}, true);
         return true;
     }
@@ -3745,12 +3800,16 @@ function decrementPendingTickCountdowns(symbol){
             const remaining = Number(trade.countdown_remaining);
             if(!Number.isFinite(remaining) || remaining <= 0) return;
             const tradeSymbol = String(trade.symbol || "").toUpperCase().trim();
+            const tradeMode = String(trade.mode || trade.source || "").toLowerCase();
+            const tradeType = String(trade.type || "").toUpperCase();
             const isHumanTickContract = profile === "HUMAN" && (
-                String(trade.mode || "").toLowerCase() === "human_manual_contract"
-                || ["HIGH TICK", "LOW TICK", "ONLY UPS", "ONLY DOWNS"].includes(String(trade.type || "").toUpperCase())
+                tradeMode === "human_manual_contract"
+                || tradeMode.includes("human_rf")
+                || ["HIGH TICK", "LOW TICK", "ONLY UPS", "ONLY DOWNS", "RISE", "FALL", "RISE + FALL", "RISE + FALL EQUALS"].includes(tradeType)
             );
-            const isBlackcardTickContract = profile === "JOKERJOE" && String(trade.mode || trade.source || "").toLowerCase().includes("blackcard");
-            if(market && tradeSymbol && tradeSymbol !== market && !isHumanTickContract && !isBlackcardTickContract) return;
+            const isBlackcardTickContract = profile === "JOKERJOE" && tradeMode.includes("blackcard");
+            const isJokerjoeBatchTickContract = profile === "JOKERJOE" && tradeMode.includes("match_batch_martingale");
+            if(market && tradeSymbol && tradeSymbol !== market && !isHumanTickContract && !isBlackcardTickContract && !isJokerjoeBatchTickContract) return;
             const nextRemaining = Math.max(0, Math.floor(remaining) - 1);
             if(nextRemaining === Math.floor(remaining)) return;
             trade.countdown_remaining = nextRemaining;
@@ -4518,7 +4577,7 @@ function buildTradeItem(trade){
     const countdownLabel = (pending || tradeProfile === "UNCHAIN") ? formatTradeCountdownLabel(trade) : "";
     const badgeLabel = countdownLabel
         ? `Countdown: ${countdownLabel}`
-        : (pending ? (trade.status || result) : (tradeProfile === "UNCHAIN" ? `Duration: ${durationLabel}` : `Exit: ${exitDigit}`));
+        : (pending ? (trade.status || result) : `Exit: ${exitDigit}`);
 
     const item = document.createElement('div');
     item.className = `trade-item ${resultClass}`;
@@ -4624,6 +4683,10 @@ window.registerProfileModule = window.registerProfileModule || registerProfileMo
 const __phase2ScriptLoaded = window.__phase2ScriptLoaded || (window.__phase2ScriptLoaded = {});
 let __phase2AppLoaded = !!window.__phase2AppLoaded;
 const __phase2AssetVersion = window.__phase2AssetVersion || (window.__phase2AssetVersion = String(Date.now()));
+const __profileComponentCache = window.__profileComponentCache || (window.__profileComponentCache = {});
+const __profileComponentInflight = window.__profileComponentInflight || (window.__profileComponentInflight = {});
+let __profileAssetsPrefetchStarted = false;
+let profileSwitchSeq = 0;
 
 function getPhase2ScriptUrl(src){
     const raw = String(src || "");
@@ -4632,6 +4695,85 @@ function getPhase2ScriptUrl(src){
     return `${raw}${joiner}v=${encodeURIComponent(__phase2AssetVersion)}`;
 }
 window.getPhase2ScriptUrl = window.getPhase2ScriptUrl || getPhase2ScriptUrl;
+
+function getProfileComponentFile(profile){
+    const p = String(profile || "").toUpperCase();
+    if(p === "JOKERJOE") return "jokerjoe.html";
+    if(p === "HUMAN") return "human.html";
+    if(p === "UNCHAIN") return "unchain.html";
+    if(p === "NTT") return "mutant.html";
+    return "koolkid.html";
+}
+
+function getProfileModuleScriptPath(profile){
+    const p = String(profile || "").toUpperCase();
+    if(p === "KOOLKID") return "/static/js/profiles/koolkid.js";
+    if(p === "JOKERJOE") return "/static/js/profiles/jokerjoe.js";
+    if(p === "HUMAN") return "/static/js/profiles/human.js";
+    if(p === "UNCHAIN") return "/static/js/profiles/unchain.js";
+    if(p === "NTT" && isMutantAvailable()) return "/static/js/profiles/mutant.js";
+    return "";
+}
+
+function prefetchPhase2Asset(src, asType){
+    try{
+        const raw = String(src || "");
+        if(!raw) return;
+        const href = getPhase2ScriptUrl(raw);
+        if(document.querySelector(`link[data-phase2-prefetch="${href}"]`)) return;
+        const link = document.createElement("link");
+        link.rel = "prefetch";
+        link.href = href;
+        link.as = asType || "fetch";
+        link.dataset.phase2Prefetch = href;
+        document.head.appendChild(link);
+    }catch(e){}
+}
+
+function warmProfileComponent(profile){
+    const file = getProfileComponentFile(profile);
+    const url = getPhase2ScriptUrl(`/static/components/${file}`);
+    if(__profileComponentCache[url]) return Promise.resolve(__profileComponentCache[url]);
+    if(__profileComponentInflight[url]) return __profileComponentInflight[url];
+    __profileComponentInflight[url] = fetch(url, {
+        cache: "no-store",
+        headers: { "Cache-Control": "no-cache" }
+    })
+        .then((res) => {
+            if(!res.ok) throw new Error(`Profile component request failed (${res.status}).`);
+            return res.text();
+        })
+        .then((html) => {
+            if(!String(html || "").trim()) throw new Error("Profile component returned an empty response.");
+            __profileComponentCache[url] = html;
+            return html;
+        })
+        .finally(() => {
+            delete __profileComponentInflight[url];
+        });
+    return __profileComponentInflight[url];
+}
+
+function scheduleProfileAssetPrefetch(){
+    if(__profileAssetsPrefetchStarted) return;
+    __profileAssetsPrefetchStarted = true;
+    const run = () => {
+        try{
+            ["KOOLKID", "JOKERJOE", "HUMAN", "UNCHAIN", "NTT"].forEach((profile) => {
+                const scriptPath = getProfileModuleScriptPath(profile);
+                if(scriptPath) prefetchPhase2Asset(scriptPath, "script");
+                const componentPath = `/static/components/${getProfileComponentFile(profile)}`;
+                prefetchPhase2Asset(componentPath, "fetch");
+                warmProfileComponent(profile).catch(()=>{});
+            });
+        }catch(e){}
+    };
+    if(typeof requestIdleCallback === "function"){
+        requestIdleCallback(run, { timeout: 2500 });
+    }else{
+        setTimeout(run, 1200);
+    }
+}
 
 function loadScriptOncePhase2(src){
     return new Promise((resolve) => {
@@ -4695,21 +4837,7 @@ async function ensureAppScript(){
 async function ensureProfileModuleScript(profile){
     const p = String(profile || "").toUpperCase();
     await ensureAppScript();
-    let profileScript = "";
-
-    if(p === "KOOLKID"){
-        profileScript = "/static/js/profiles/koolkid.js";
-    }else if(p === "JOKERJOE"){
-        profileScript = "/static/js/profiles/jokerjoe.js";
-    }else if(p === "HUMAN"){
-        profileScript = "/static/js/profiles/human.js";
-    }else if(p === "UNCHAIN"){
-        profileScript = "/static/js/profiles/unchain.js";
-    }else if(p === "NTT"){
-        if(isMutantAvailable()){
-            profileScript = "/static/js/profiles/mutant.js";
-        }
-    }
+    const profileScript = getProfileModuleScriptPath(p);
     if(!profileScript) return true;
     const loaded = await loadScriptOncePhase2(profileScript);
     if(!loaded) throw new Error(`${getProfileDisplayName(p)} script failed to load.`);
@@ -4778,13 +4906,6 @@ async function loadProfileUI(profile){
     try{
         await ensureProfileModuleScript(profile);
 
-        let file = "koolkid.html";
-        if(profile === "KOOLKID") file = "koolkid.html";
-        if(profile === "JOKERJOE") file = "jokerjoe.html";
-        if(profile === "HUMAN") file = "human.html";
-        if(profile === "UNCHAIN") file = "unchain.html";
-        if(profile === "NTT") file = "mutant.html";
-
         if(profile === "NTT" && !isMutantAvailable()){
             const blockedRoot = document.getElementById("profileContainer");
             if(blockedRoot){
@@ -4805,20 +4926,7 @@ async function loadProfileUI(profile){
             return;
         }
 
-        const componentUrl = getPhase2ScriptUrl(`/static/components/${file}`);
-        const res = await fetch(componentUrl, {
-            cache: "no-store",
-            headers: {
-                "Cache-Control": "no-cache"
-            }
-        });
-        if(!res.ok){
-            throw new Error(`Profile component request failed (${res.status}).`);
-        }
-        const html = await res.text();
-        if(!String(html || "").trim()){
-            throw new Error("Profile component returned an empty response.");
-        }
+        const html = await warmProfileComponent(profile);
 
         const root = document.getElementById("profileContainer");
         if(root){
@@ -6181,6 +6289,7 @@ function openKoolkidAutoTradePlaceholder(){
 
 async function setProfile(profile){
     profile = normalizeProfileName(profile);
+    const switchSeq = ++profileSwitchSeq;
     const previousProfile = activeProfile;
     captureProfileDraft(previousProfile);
     closeTransientUiOverlays();
@@ -6200,9 +6309,11 @@ async function setProfile(profile){
         showToast((e && e.message) ? e.message : "Failed to change profile", "error");
         return;
     }
+    if(switchSeq !== profileSwitchSeq) return;
     if(normalizeProfileName(previousProfile) !== normalizeProfileName(profile)){
         await deactivateProfileModule(previousProfile, { nextProfile: profile });
     }
+    if(switchSeq !== profileSwitchSeq) return;
     activeProfile = profile;
     try{ if(window.MarthaAI && typeof window.MarthaAI.setProfile === "function") window.MarthaAI.setProfile(profile); }catch(e){}
     rememberProfileBudgetPayload(profileData || {});
@@ -6252,26 +6363,28 @@ async function setProfile(profile){
     }catch(e){
         return;
     }
+    if(switchSeq !== profileSwitchSeq) return;
     hydrateProfileBudgetControl(profile);
     applyProfileDraft(profile);
     applyMonthlyLicenseGate(profile);
     setConfirmedMarketSymbol(profileData.symbol || (profile === "HUMAN" ? profileData.human_symbol : profileData.main_symbol) || getConfirmedMarketSymbol());
-    await syncAutoStake();
-    await sendRiskControls(profile);
+    syncAutoStake().catch(()=>{});
+    sendRiskControls(profile).catch(()=>{});
     scheduleProfileDraftSave(profile);
 
     // ==================== PATCH C: refresh keep-alive UI when switching to HUMAN ====================
     if(profile === "HUMAN"){
-        await refreshHumanKeepAliveUI();
+        refreshHumanKeepAliveUI().catch(()=>{});
     }
 
     // ==================== PATCH 2D: refresh SeqVIX status ====================
-    await refreshSeqVixStatus();
-    await syncTradeHistorySnapshot(profile);
+    refreshSeqVixStatus().catch(()=>{});
+    syncTradeHistorySnapshot(profile).catch(()=>{});
 
     refreshHowTo();
     suppressProfileSwitchToastsUntil = 0;
     showToast("🎮 Profile Changed: " + getProfileDisplayName(profile), "info");
+    scheduleProfileAssetPrefetch();
 }
 
 async function connect(){
@@ -6288,6 +6401,9 @@ async function connect(){
     }
     const connectRequestId = ++apiConnectRequestSeq;
     apiConnectSubmitting = true;
+    clientExitDisconnectSent = false;
+    markClientActivity();
+    startClientHeartbeat();
     console.info("TEMP connect_clicked", { request_id: connectRequestId, token_present: !!token.trim() });
     setApiConnectPending("connect_clicked", API_CONNECT_PENDING_TIMEOUT_MS);
     updateApiConnectionUi("pending", "CONNECTING API...");
@@ -6806,6 +6922,7 @@ async function trade(type, barrierOverride=null){
                 turbo,
                 queue: false,
                 useSocket: true,
+                fireAndForget: true,
             });
         }else{
             const action = buildMarthaTradeAction(activeProfile, payload, { source:"manual_trade" });

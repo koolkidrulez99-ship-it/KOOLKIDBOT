@@ -161,6 +161,11 @@
     multiplier: 2,
     pending: {},
     settled: 0,
+    currentBatch: null,
+    sessionPnl: 0,
+    takeProfit: 0,
+    stopLoss: 0,
+    limitHit: false,
     plusRecoveryPending: false,
     capAfterThreeDoubles: false,
     evenDoubleCount: 0,
@@ -168,6 +173,7 @@
     lastResult: "none",
     status: "Ready",
     restartTimer: null,
+    completionTimer: null,
     spacingWait: 0,
   };
 
@@ -610,6 +616,26 @@
     return Number.isInteger(digit) && digit >= 0 && digit <= 9 ? digit : null;
   }
 
+  function resolveHumanParityResultSide(payload){
+    if(!payload) return "";
+    const candidates = [
+      payload.leg_action,
+      payload.action,
+      payload.type,
+      payload.contract_type,
+      payload.deriv_contract_type,
+      payload.label,
+      payload.trade_type,
+    ];
+    for(const value of candidates){
+      const text = String(value || "").toUpperCase().replace(/[_-]+/g, " ").trim();
+      const compact = text.replace(/[^A-Z]/g, "");
+      if(compact === "EVEN" || compact === "DIGITEVEN" || /\bEVEN\b/.test(text)) return "EVEN";
+      if(compact === "ODD" || compact === "DIGITODD" || /\bODD\b/.test(text)) return "ODD";
+    }
+    return "";
+  }
+
   function renderHumanParityDigitScreen(){
     const wrap = byId("humanParityDigitScreen");
     const lastEl = byId("humanParityDigitLast");
@@ -681,17 +707,23 @@
     const multiplier = Number(readHumanParityNumber("humanParityMartingaleMultiplier", 2, 1, 100).toFixed(2));
     const duration = readHumanParityInteger("humanParityMartingaleDuration", 5, 1, 10);
     const tickSpacing = readHumanTickSpacing("humanParityMartingaleTickSpacing", 1);
+    const takeProfit = Number(readHumanParityNumber("humanParityMartingaleTp", 0, 0, 100000000).toFixed(2));
+    const stopLoss = Number(readHumanParityNumber("humanParityMartingaleSl", 0, 0, 100000000).toFixed(2));
     const stakeEl = byId("humanParityMartingaleStake");
     const multEl = byId("humanParityMartingaleMultiplier");
     const durationEl = byId("humanParityMartingaleDuration");
     const spacingEl = byId("humanParityMartingaleTickSpacing");
+    const tpEl = byId("humanParityMartingaleTp");
+    const slEl = byId("humanParityMartingaleSl");
     const capAfterThreeDoubles = !!(capToggleEl && capToggleEl.checked);
     if(modeEl) modeEl.value = mode;
     if(stakeEl && String(stakeEl.value || "").trim() === "") stakeEl.value = startStake.toFixed(2);
     if(multEl && String(multEl.value || "").trim() === "") multEl.value = String(multiplier);
     if(durationEl) durationEl.value = String(duration);
     if(spacingEl) spacingEl.value = String(tickSpacing);
-    return { mode, startStake, multiplier, duration, tickSpacing, capAfterThreeDoubles };
+    if(tpEl && String(tpEl.value || "").trim() === "") tpEl.value = "0";
+    if(slEl && String(slEl.value || "").trim() === "") slEl.value = "0";
+    return { mode, startStake, multiplier, duration, tickSpacing, capAfterThreeDoubles, takeProfit, stopLoss };
   }
 
   function updateHumanParityMartingalePanel(){
@@ -700,20 +732,23 @@
     HUMAN_PARITY_MARTINGALE_STATE.mode = mode;
     HUMAN_PARITY_MARTINGALE_STATE.multiplier = settings.multiplier;
     HUMAN_PARITY_MARTINGALE_STATE.capAfterThreeDoubles = !!settings.capAfterThreeDoubles;
+    HUMAN_PARITY_MARTINGALE_STATE.takeProfit = settings.takeProfit;
+    HUMAN_PARITY_MARTINGALE_STATE.stopLoss = settings.stopLoss;
     if(!HUMAN_PARITY_MARTINGALE_STATE.running && !HUMAN_PARITY_MARTINGALE_STATE.inFlight && !HUMAN_PARITY_MARTINGALE_STATE.runId){
       HUMAN_PARITY_MARTINGALE_STATE.evenBaseStake = settings.startStake;
       HUMAN_PARITY_MARTINGALE_STATE.oddBaseStake = settings.startStake;
       HUMAN_PARITY_MARTINGALE_STATE.evenStake = settings.startStake;
       HUMAN_PARITY_MARTINGALE_STATE.oddStake = settings.startStake;
     }
+    const pendingActive = Object.values(HUMAN_PARITY_MARTINGALE_STATE.pending || {}).some((item) => item && !item.result);
     const startBtn = byId("humanParityMartingaleStartBtn");
     const stopBtn = byId("humanParityMartingaleStopBtn");
     if(startBtn){
-      startBtn.disabled = !!HUMAN_PARITY_MARTINGALE_STATE.running || !!HUMAN_PARITY_MARTINGALE_STATE.inFlight;
+      startBtn.disabled = !!HUMAN_PARITY_MARTINGALE_STATE.running || !!HUMAN_PARITY_MARTINGALE_STATE.inFlight || pendingActive;
       startBtn.style.opacity = startBtn.disabled ? "0.6" : "1";
     }
     if(stopBtn){
-      const canStop = !!HUMAN_PARITY_MARTINGALE_STATE.running || !!HUMAN_PARITY_MARTINGALE_STATE.inFlight;
+      const canStop = !!HUMAN_PARITY_MARTINGALE_STATE.running || !!HUMAN_PARITY_MARTINGALE_STATE.inFlight || pendingActive;
       stopBtn.disabled = !canStop;
       stopBtn.style.opacity = canStop ? "1" : "0.6";
     }
@@ -731,13 +766,19 @@
       const modeDetail = isHumanParityPlusMode(mode)
         ? "1-step 2x recovery"
         : `${settings.multiplier}x${settings.capAfterThreeDoubles ? " • cap 3 doubles" : ""}`;
+      const limits = [
+        settings.takeProfit > 0 ? `TP ${money(settings.takeProfit)}` : "TP off",
+        settings.stopLoss > 0 ? `SL ${money(settings.stopLoss)}` : "SL off",
+        `Session P/L ${money(HUMAN_PARITY_MARTINGALE_STATE.sessionPnl || 0)}`,
+      ].join(" • ");
       statusEl.innerHTML = [
         `${HUMAN_PARITY_MARTINGALE_STATE.status || "Ready"} • ${modeLabel} • ${modeDetail}`,
         `Even stake ${money(HUMAN_PARITY_MARTINGALE_STATE.evenStake || 1)} • Odd stake ${money(HUMAN_PARITY_MARTINGALE_STATE.oddStake || 1)}`,
+        limits,
         `Pending: ${Object.keys(HUMAN_PARITY_MARTINGALE_STATE.pending || {}).join(" + ") || "none"} • Last result: ${HUMAN_PARITY_MARTINGALE_STATE.lastResult || "none"}`,
         `Double count • Even ${Number(HUMAN_PARITY_MARTINGALE_STATE.evenDoubleCount || 0)} • Odd ${Number(HUMAN_PARITY_MARTINGALE_STATE.oddDoubleCount || 0)}`,
       ].join("<br>");
-      statusEl.style.color = HUMAN_PARITY_MARTINGALE_STATE.inFlight ? "#fbbf24" : "#94a3b8";
+      statusEl.style.color = HUMAN_PARITY_MARTINGALE_STATE.limitHit ? "#fbbf24" : (HUMAN_PARITY_MARTINGALE_STATE.inFlight ? "#fbbf24" : "#94a3b8");
     }
   }
 
@@ -752,6 +793,11 @@
     HUMAN_PARITY_MARTINGALE_STATE.multiplier = settings.multiplier;
     HUMAN_PARITY_MARTINGALE_STATE.pending = {};
     HUMAN_PARITY_MARTINGALE_STATE.settled = 0;
+    HUMAN_PARITY_MARTINGALE_STATE.currentBatch = null;
+    HUMAN_PARITY_MARTINGALE_STATE.sessionPnl = 0;
+    HUMAN_PARITY_MARTINGALE_STATE.takeProfit = settings.takeProfit;
+    HUMAN_PARITY_MARTINGALE_STATE.stopLoss = settings.stopLoss;
+    HUMAN_PARITY_MARTINGALE_STATE.limitHit = false;
     HUMAN_PARITY_MARTINGALE_STATE.plusRecoveryPending = false;
     HUMAN_PARITY_MARTINGALE_STATE.capAfterThreeDoubles = !!settings.capAfterThreeDoubles;
     HUMAN_PARITY_MARTINGALE_STATE.evenDoubleCount = 0;
@@ -778,32 +824,157 @@
     return [{ side, stake: Math.max(0.35, Number(stake || baseStake || 1)), plusMode: isPlus, recoveryTrade: isPlus && HUMAN_PARITY_MARTINGALE_STATE.plusRecoveryPending }];
   }
 
+  function purgeHumanParityBatchLegRows(batch){
+    if(!batch || !batch.id) return;
+    try{
+      if(typeof tradeStore === "undefined" || !tradeStore || !Array.isArray(tradeStore[PROFILE])) return;
+      const visibleBatchId = String(batch.id);
+      tradeStore[PROFILE] = (tradeStore[PROFILE] || []).filter((item) => {
+        if(!item || typeof item !== "object") return true;
+        const cid = String(item.contract_id ?? item.contractId ?? "");
+        if(cid === visibleBatchId) return true;
+        const mode = String(item.mode || "");
+        if(mode === "human_parity_even_odd_visible") return true;
+        const batchId = String(item.batch_id || "");
+        if(batchId && batchId === visibleBatchId) return false;
+        if(mode === batch.mode && ["EVEN", "ODD"].includes(String(item.type || "").toUpperCase())) return false;
+        return true;
+      });
+    }catch(e){}
+  }
+
+  function renderHumanParityBatchHistory(batch, pending){
+    if(!batch || !batch.id) return;
+    try{
+      if(typeof upsertTradeInStore !== "function" || typeof renderTradeList !== "function") return;
+      purgeHumanParityBatchLegRows(batch);
+      const profit = Number(batch.totalProfit || 0);
+      const result = pending ? "PENDING" : (profit > 0 ? "WIN" : "LOSS");
+      upsertTradeInStore({
+        profile: PROFILE,
+        type: "Even+Odd",
+        barrier: "Even+Odd",
+        stake: Number(batch.totalStake || 0).toFixed(2),
+        symbol: batch.symbol,
+        time: batch.time || new Date().toLocaleTimeString(),
+        contract_id: batch.id,
+        duration: batch.duration,
+        duration_unit: "t",
+        countdown_remaining: pending ? Math.max(0, Math.floor(Number(batch.duration || 0))) : 0,
+        countdown_unit: "t",
+        status: result,
+        result,
+        pending: !!pending,
+        profit: pending ? 0 : Number(profit.toFixed(2)),
+        exit_digit: Array.isArray(batch.exitDigits) && batch.exitDigits.length ? batch.exitDigits.join(",") : undefined,
+        mode: "human_parity_even_odd_visible",
+      });
+      if(typeof activeProfile !== "undefined" && String(activeProfile || "").toUpperCase() === PROFILE) renderTradeList(PROFILE);
+    }catch(e){}
+  }
+
+  function clearHumanParityBatchCompletionTimer(){
+    const st = HUMAN_PARITY_MARTINGALE_STATE;
+    if(st.completionTimer){
+      clearTimeout(st.completionTimer);
+      st.completionTimer = null;
+    }
+  }
+
+  function finalizeHumanParityBatchByTimeout(batchId){
+    const st = HUMAN_PARITY_MARTINGALE_STATE;
+    if(!st.currentBatch || String(st.currentBatch.id || "") !== String(batchId || "")) return;
+    const expected = Object.keys(st.pending || {}).length || 2;
+    if(st.settled >= expected) return;
+    clearHumanParityBatchCompletionTimer();
+    const missing = Object.keys(st.pending || {}).filter((side) => {
+      const item = st.pending && st.pending[side];
+      return item && !item.result;
+    });
+    renderHumanParityBatchHistory(st.currentBatch, true);
+    st.status = `Waiting for delayed ${missing.join(" + ") || "Even+Odd"} result.`;
+    updateHumanParityMartingalePanel();
+    if(st.running && st.runId && !st.inFlight){
+      const retryMs = 5000;
+      st.completionTimer = setTimeout(() => {
+        st.completionTimer = null;
+        finalizeHumanParityBatchByTimeout(batchId);
+      }, retryMs);
+    }
+  }
+
+  function scheduleHumanParityBatchFallback(batch){
+    if(!batch || !batch.id) return;
+    clearHumanParityBatchCompletionTimer();
+    const st = HUMAN_PARITY_MARTINGALE_STATE;
+    const duration = Math.max(1, Math.floor(Number(batch.duration || 5)));
+    const waitMs = Math.max(7000, (duration * 1200) + 7000);
+    st.completionTimer = setTimeout(() => {
+      st.completionTimer = null;
+      finalizeHumanParityBatchByTimeout(batch.id);
+    }, waitMs);
+  }
+
+  function clearHumanParityVisibleBatch(){
+    clearHumanParityBatchCompletionTimer();
+    HUMAN_PARITY_MARTINGALE_STATE.currentBatch = null;
+  }
+
   async function sendHumanParityMartingaleRound(){
     const st = HUMAN_PARITY_MARTINGALE_STATE;
     if(!st.running || st.inFlight) return;
     const plan = getHumanParityMartingalePlan();
     if(!plan.length) return;
     const duration = readHumanParityInteger("humanParityMartingaleDuration", 5, 1, 10);
+    const pairMode = normalizeHumanParityMode(st.mode) === "EVEN_ODD";
+    const batchId = pairMode ? `HUMAN-EVENODD-${Date.now()}-${Math.floor(Math.random() * 10000)}` : "";
+    const batchStake = plan.reduce((sum, leg) => sum + Number(leg.stake || 0), 0);
     st.spacingWait = 0;
     st.inFlight = true;
     st.pending = {};
     st.settled = 0;
     plan.forEach((leg) => { st.pending[leg.side] = { stake: leg.stake, result: "" }; });
+    if(pairMode){
+      st.currentBatch = {
+        id: batchId,
+        mode: `human_parity_martingale:${st.runId}`,
+        totalStake: Number(batchStake.toFixed(2)),
+        totalProfit: 0,
+        exitDigits: [],
+        duration,
+        symbol: (typeof window.getConfirmedMarketSymbol === "function" ? window.getConfirmedMarketSymbol() : ((document.getElementById("symbol") || {}).value || "")),
+        time: new Date().toLocaleTimeString(),
+      };
+      renderHumanParityBatchHistory(st.currentBatch, true);
+      scheduleHumanParityBatchFallback(st.currentBatch);
+    }else{
+      clearHumanParityVisibleBatch();
+    }
     st.status = `Sending ${plan.map((leg) => `${leg.side} ${money(leg.stake)}`).join(" + ")}`;
     updateHumanParityMartingalePanel();
     try{
       const payload = {
-        side: normalizeHumanParityMode(st.mode) === "EVEN_ODD" ? "EVEN_ODD" : humanParityExecutionSide(st.mode),
+        side: pairMode ? "EVEN_ODD" : humanParityExecutionSide(st.mode),
         stake: plan[0].stake,
         even_stake: (plan.find((leg) => leg.side === "EVEN") || {}).stake,
         odd_stake: (plan.find((leg) => leg.side === "ODD") || {}).stake,
         duration,
         duration_unit: "t",
         mode: `human_parity_martingale:${st.runId}`,
+        batch_id: batchId,
+        batch_label: "Even+Odd",
+        batch_stake: Number(batchStake.toFixed(2)),
       };
       await postJSON("/human_parity_trade", payload);
       st.status = `Running. Waiting for ${plan.length} result(s).`;
     }catch(e){
+      if(pairMode && st.currentBatch && typeof removeTradeFromStoreByContractId === "function"){
+        try{
+          removeTradeFromStoreByContractId(PROFILE, st.currentBatch.id);
+          if(typeof renderTradeList === "function" && typeof activeProfile !== "undefined" && String(activeProfile || "").toUpperCase() === PROFILE) renderTradeList(PROFILE);
+        }catch(_err){}
+      }
+      clearHumanParityVisibleBatch();
       st.running = false;
       st.runId = "";
       st.plusRecoveryPending = false;
@@ -824,11 +995,48 @@
     updateHumanParityMartingalePanel();
   }
 
+  function applyHumanParityTpSlAfterResult(profitValue){
+    const st = HUMAN_PARITY_MARTINGALE_STATE;
+    const profit = Number(profitValue);
+    if(Number.isFinite(profit)){
+      st.sessionPnl = Number((Number(st.sessionPnl || 0) + profit).toFixed(2));
+    }
+    if(st.limitHit) return true;
+    const settings = readHumanParitySettings();
+    st.takeProfit = settings.takeProfit;
+    st.stopLoss = settings.stopLoss;
+    let reason = "";
+    if(settings.takeProfit > 0 && Number(st.sessionPnl || 0) >= settings.takeProfit){
+      reason = `TP reached at ${money(st.sessionPnl)}`;
+    }else if(settings.stopLoss > 0 && Number(st.sessionPnl || 0) <= -Math.abs(settings.stopLoss)){
+      reason = `SL reached at ${money(st.sessionPnl)}`;
+    }
+    if(!reason) return false;
+    st.running = false;
+    st.spacingWait = 0;
+    st.limitHit = true;
+    st.status = `${reason}. Martingale stopped.`;
+    if(st.restartTimer){
+      clearTimeout(st.restartTimer);
+      st.restartTimer = null;
+    }
+    if(typeof showToast === "function") showToast(`HUMAN Even/Odd ${reason}. Martingale stopped.`, settings.takeProfit > 0 && Number(st.sessionPnl || 0) >= settings.takeProfit ? "success" : "error");
+    return true;
+  }
+
   function updateHumanParityMartingaleFromResult(payload){
     const st = HUMAN_PARITY_MARTINGALE_STATE;
     if(!payload || String(payload.profile || "").toUpperCase() !== PROFILE || !st.runId) return;
     if(String(payload.mode || "") !== `human_parity_martingale:${st.runId}`) return;
-    const side = String(payload.type || payload.action || "").toUpperCase();
+    const contractId = payload.contract_id || payload.buy_contract_id || payload.id;
+    let side = resolveHumanParityResultSide(payload);
+    if(!side && contractId){
+      const contractKey = String(contractId);
+      side = Object.keys(st.pending || {}).find((key) => {
+        const item = st.pending && st.pending[key];
+        return item && String(item.contractId || "") === contractKey;
+      }) || "";
+    }
     if(side !== "EVEN" && side !== "ODD") return;
     const pending = st.pending && st.pending[side];
     if(!pending || pending.result) return;
@@ -837,6 +1045,21 @@
     pending.result = outcome;
     st.settled = Object.values(st.pending || {}).filter((item) => item && item.result).length;
     const stake = Math.max(0.35, Number(pending.stake || (side === "EVEN" ? st.evenStake : st.oddStake) || 1));
+    const resultProfit = humanTradeNumber(payload, ["profit", "profit_value", "pnl", "net_profit", "result_profit"]);
+    const limitReached = applyHumanParityTpSlAfterResult(resultProfit);
+    if(st.mode === "EVEN_ODD" && st.currentBatch){
+      if(Number.isFinite(resultProfit)){
+        st.currentBatch.totalProfit = Number((Number(st.currentBatch.totalProfit || 0) + resultProfit).toFixed(2));
+      }
+      const exitDigit = extractHumanParityDigit(payload);
+      if(exitDigit !== null){
+        st.currentBatch.exitDigits = Array.isArray(st.currentBatch.exitDigits) ? st.currentBatch.exitDigits : [];
+        st.currentBatch.exitDigits.push(exitDigit);
+      }
+      const expectedBatch = Object.keys(st.pending || {}).length || 2;
+      renderHumanParityBatchHistory(st.currentBatch, st.settled < expectedBatch);
+      if(st.settled < expectedBatch) scheduleHumanParityBatchFallback(st.currentBatch);
+    }
     const counterKey = side === "EVEN" ? "evenDoubleCount" : "oddDoubleCount";
     const baseStake = Number(Math.max(0.35, Number(side === "EVEN" ? st.evenBaseStake : st.oddBaseStake) || 1).toFixed(2));
     let capResetApplied = false;
@@ -851,7 +1074,7 @@
         st.runId = "";
         st.pending = {};
         st.settled = 0;
-        st.status = `${side} won. Martingale stopped.`;
+        if(!limitReached) st.status = `${side} won. Martingale stopped.`;
         st.lastResult = `${side} WIN at ${money(stake)}`;
         updateHumanParityMartingalePanel();
         if(typeof showToast === "function") showToast(`HUMAN ${side} martingale won and stopped`, "success");
@@ -889,9 +1112,26 @@
       st.lastResult = `${side} ${outcome} at ${money(stake)}`;
     }
     const expected = Object.keys(st.pending || {}).length;
-    st.status = st.running ? `Running. Settled ${st.settled}/${expected}.` : "Stopped";
+    if(!st.limitHit){
+      st.status = st.running ? `Running. Settled ${st.settled}/${expected}.` : "Stopped";
+    }
     updateHumanParityMartingalePanel();
+    if(!st.running && st.limitHit && expected > 0 && st.settled >= expected){
+      if(st.mode === "EVEN_ODD" && st.currentBatch){
+        clearHumanParityBatchCompletionTimer();
+        renderHumanParityBatchHistory(st.currentBatch, false);
+      }
+      st.pending = {};
+      st.settled = 0;
+      st.runId = "";
+      updateHumanParityMartingalePanel();
+      return;
+    }
     if(st.running && expected > 0 && st.settled >= expected){
+      if(st.mode === "EVEN_ODD" && st.currentBatch){
+        clearHumanParityBatchCompletionTimer();
+        renderHumanParityBatchHistory(st.currentBatch, false);
+      }
       st.pending = {};
       st.settled = 0;
       st.status = "Next round queued";
@@ -917,10 +1157,12 @@
     st.runId = "";
     st.spacingWait = 0;
     st.plusRecoveryPending = false;
+    st.limitHit = false;
     st.evenDoubleCount = 0;
     st.oddDoubleCount = 0;
     st.pending = {};
     st.settled = 0;
+    clearHumanParityBatchCompletionTimer();
     if(st.restartTimer){
       clearTimeout(st.restartTimer);
       st.restartTimer = null;
@@ -1987,6 +2229,18 @@
     return "";
   }
 
+  function resolveHumanRfPayloadDirection(payload){
+    if(!payload) return "";
+    const contractType = String(payload.contract_type || "").toUpperCase().replace(/[^A-Z]/g, "");
+    if(contractType === "CALL" || contractType === "CALLE") return "RISE";
+    if(contractType === "PUT" || contractType === "PUTE") return "FALL";
+    for(const key of ["type", "action", "leg_action"]){
+      const direction = normalizeHumanRfDirection(payload[key]);
+      if(direction) return direction;
+    }
+    return normalizeHumanRfDirection(payload.label);
+  }
+
   function isHumanRfPairDirection(direction){
     const value = String(direction || "").toUpperCase();
     return value === "BOTH" || value === "BOTH_EQUALS";
@@ -2007,6 +2261,17 @@
       ){
         HUMAN_SPECIAL_AUTO_STATE.cycleContractActions[contractKey] = action;
       }
+    }
+    const paritySide = resolveHumanParityResultSide(payload);
+    if(
+      paritySide
+      && contractId
+      && HUMAN_PARITY_MARTINGALE_STATE.runId
+      && String(payload.mode || "") === `human_parity_martingale:${HUMAN_PARITY_MARTINGALE_STATE.runId}`
+      && HUMAN_PARITY_MARTINGALE_STATE.pending
+      && HUMAN_PARITY_MARTINGALE_STATE.pending[paritySide]
+    ){
+      HUMAN_PARITY_MARTINGALE_STATE.pending[paritySide].contractId = String(contractId);
     }
     if(
       action
@@ -2029,7 +2294,7 @@
         updateHumanSingleMartingalePanel();
       }
     }
-    const rfDirection = normalizeHumanRfDirection([payload.type, payload.contract_type, payload.label, payload.action].filter(Boolean).join(" "));
+    const rfDirection = resolveHumanRfPayloadDirection(payload);
     if(
       rfDirection
       && contractId
@@ -2185,7 +2450,7 @@
     if(!payload || String(payload.profile || "").toUpperCase() !== PROFILE) return;
     if(!HUMAN_RF_MARTINGALE_STATE.inProgress && !HUMAN_RF_MARTINGALE_STATE.pendingContractId) return;
     const contractId = payload.contract_id || payload.buy_contract_id || payload.id;
-    const direction = normalizeHumanRfDirection([payload.type, payload.contract_type, payload.label, payload.action].filter(Boolean).join(" "));
+    const direction = resolveHumanRfPayloadDirection(payload);
     if(isHumanRfPairDirection(HUMAN_RF_MARTINGALE_STATE.pendingDirection)){
       if(!direction || !HUMAN_RF_MARTINGALE_STATE.pendingDirections || !HUMAN_RF_MARTINGALE_STATE.pendingDirections[direction]) return;
       const pendingLeg = HUMAN_RF_MARTINGALE_STATE.pendingDirections[direction];

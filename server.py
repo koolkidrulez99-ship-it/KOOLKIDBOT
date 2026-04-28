@@ -197,7 +197,7 @@ socketio = SocketIO(
     async_mode="threading",
     manage_session=False,
     ping_interval=25,
-    ping_timeout=3600,
+    ping_timeout=int(float(os.environ.get("SOCKETIO_PING_TIMEOUT_SEC", "600"))),
 )
 
 DERIV_WS = "wss://ws.derivws.com/websockets/v3?app_id=1089"
@@ -224,17 +224,18 @@ clients = {}
 
 # Browser sessions send a lightweight heartbeat; stale sessions are cleaned up so
 # Render does not keep abandoned websocket/strategy state forever.
-HEARTBEAT_TIMEOUT_SEC = float(os.environ.get("HEARTBEAT_TIMEOUT_SEC", "900"))
-HEARTBEAT_SWEEPER_INTERVAL_SEC = float(os.environ.get("HEARTBEAT_SWEEPER_INTERVAL_SEC", "60"))
-DERIV_WS_STALE_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_STALE_TIMEOUT_SEC", "75"))
+HEARTBEAT_TIMEOUT_SEC = float(os.environ.get("HEARTBEAT_TIMEOUT_SEC", os.environ.get("CLIENT_STALE_AFTER_SEC", "600")))
+HEARTBEAT_SWEEPER_INTERVAL_SEC = float(os.environ.get("HEARTBEAT_SWEEPER_INTERVAL_SEC", os.environ.get("CLIENT_SWEEP_INTERVAL_SEC", "60")))
+DERIV_WS_STALE_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_STALE_TIMEOUT_SEC", "180"))
 DERIV_WS_PING_INTERVAL_SEC = float(os.environ.get("DERIV_WS_PING_INTERVAL_SEC", "20"))
 DERIV_WS_PING_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_PING_TIMEOUT_SEC", "10"))
-DERIV_WS_CONNECT_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_CONNECT_TIMEOUT_SEC", "45"))
-DERIV_WS_AUTHORIZE_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_AUTHORIZE_TIMEOUT_SEC", "35"))
+DERIV_WS_CONNECT_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_CONNECT_TIMEOUT_SEC", "75"))
+DERIV_WS_AUTHORIZE_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_AUTHORIZE_TIMEOUT_SEC", "60"))
 TICK_STREAM_STALE_SEC = float(os.environ.get("TICK_STREAM_STALE_SEC", "20"))
 TICK_STREAM_RESUBSCRIBE_COOLDOWN_SEC = float(os.environ.get("TICK_STREAM_RESUBSCRIBE_COOLDOWN_SEC", "8"))
 TICK_STREAM_RECONNECT_AFTER_SEC = float(os.environ.get("TICK_STREAM_RECONNECT_AFTER_SEC", "90"))
 TICK_STREAM_WARMUP_SEC = float(os.environ.get("TICK_STREAM_WARMUP_SEC", "6"))
+STEP_TICK_STREAM_WARMUP_SEC = float(os.environ.get("STEP_TICK_STREAM_WARMUP_SEC", "10"))
 HUMAN_PAIR_BATCH_SEND_DELAY_SEC = float(os.environ.get("HUMAN_PAIR_BATCH_SEND_DELAY_SEC", "0.04"))
 MUTANT_DEPLOY_GATE_ENABLED = str(os.environ.get("MUTANT_DEPLOY_GATE_ENABLED", "1")).strip().lower() not in {"0", "false", "no", "off"}
 MUTANT_ALLOWED_ACCOUNT = str(
@@ -2075,22 +2076,31 @@ def request_human_seed(client_id):
         symbol = state.get("human_symbol") or state.get("current_symbol")
 
         if _is_step_market_symbol(symbol):
+            _ensure_tick_subscription(
+                state,
+                symbol,
+                force=False,
+                reason="human_step_chart_seed",
+                client_id=client_id,
+                warmup_sec=_tick_stream_warmup_for_symbol(symbol),
+            )
             req_id_ticks = _new_req_id()
             state["req_meta"][req_id_ticks] = {
                 "kind": "human_tick_seed",
                 "time": now_time(),
                 "symbol": symbol,
             }
+            seed_count = int(os.environ.get("STEP_MARKET_CHART_SEED_TICKS", "900"))
             ws.send(json.dumps({
                 "ticks_history": symbol,
                 "style": "ticks",
-                "count": 2400,
+                "count": seed_count,
                 "end": "latest",
                 "start": 1,
                 "adjust_start_time": 1,
                 "req_id": req_id_ticks,
             }))
-            logger.info("[%s] human_chart_step_seed_requested symbol=%s count=%s", client_id, symbol, 2400)
+            logger.info("[%s] human_chart_step_seed_requested symbol=%s count=%s", client_id, symbol, seed_count)
             return
 
         # 5M seed (2 hours)
@@ -2440,6 +2450,21 @@ def _batch_trade_sleep_seconds(payload, normal_default=0.04):
         return 0.08
 
 
+def _trade_extra_meta_from_payload(data, *, leg_action=None):
+    payload = data or {}
+    extra = {}
+    leg = leg_action if leg_action not in (None, "") else payload.get("leg_action")
+    if leg not in (None, ""):
+        extra["leg_action"] = str(leg).strip()
+    if payload.get("hide_from_history") is not None:
+        extra["hide_from_history"] = bool(payload.get("hide_from_history"))
+    for key in ("batch_id", "batch_label", "batch_stake"):
+        value = payload.get(key)
+        if value not in (None, ""):
+            extra[key] = value
+    return extra or None
+
+
 @socketio.on("fast_profile_trade")
 def handle_fast_profile_trade(data=None):
     if not login_required():
@@ -2471,6 +2496,15 @@ def handle_fast_profile_trade(data=None):
     mode = str(payload.get("mode") or "").strip() or None
     leg_action = str(payload.get("leg_action") or "").strip() or None
 
+    send_kwargs = {
+        "duration": duration,
+        "duration_unit": duration_unit,
+        "mode": mode,
+        "emit_balance_after_send": False,
+    }
+    extra_meta = _trade_extra_meta_from_payload(payload, leg_action=leg_action)
+    if extra_meta:
+        send_kwargs["extra_meta"] = extra_meta
     ok, message = send_buy_with_profile(
         cid,
         profile,
@@ -2478,11 +2512,7 @@ def handle_fast_profile_trade(data=None):
         stake,
         symbol,
         barrier,
-        duration=duration,
-        duration_unit=duration_unit,
-        mode=mode,
-        emit_balance_after_send=False,
-        extra_meta={"leg_action": leg_action} if leg_action else None,
+        **send_kwargs,
     )
     return {
         "status": "success" if ok else "error",
@@ -12643,6 +12673,8 @@ def _send_human_parity_trade(
     duration,
     duration_unit,
     mode=None,
+    extra_meta=None,
+    emit_balance_after_send=True,
 ):
     state = clients.get(client_id)
     if not state:
@@ -12651,15 +12683,58 @@ def _send_human_parity_trade(
     if not ready:
         return False, ready_msg
     ws = state.get("ws")
+
+    ok, prepared, msg = _prepare_human_parity_trade_request(
+        state,
+        side=side,
+        stake=stake,
+        symbol=symbol,
+        duration=duration,
+        duration_unit=duration_unit,
+        mode=mode,
+        extra_meta=extra_meta,
+    )
+    if not ok:
+        return False, msg
+
+    try:
+        ws.send(json.dumps(prepared["payload"]))
+        if emit_balance_after_send:
+            _emit_balance_payload(client_id, state)
+        return True, f"{prepared['side']} trade sent"
+    except Exception as e:
+        try:
+            state.get("req_meta", {}).pop(prepared.get("req_id"), None)
+        except Exception:
+            pass
+        try:
+            _release_profile_budget_reservation(state, prepared.get("budget_reservation"))
+            _emit_balance_payload(client_id, state)
+        except Exception:
+            pass
+        return False, str(e)
+
+
+def _prepare_human_parity_trade_request(
+    state,
+    *,
+    side,
+    stake,
+    symbol,
+    duration,
+    duration_unit,
+    mode=None,
+    extra_meta=None,
+):
     side = str(side or "").upper().strip()
     if side not in ("EVEN", "ODD"):
-        return False, "Invalid HUMAN parity side"
+        return False, None, "Invalid HUMAN parity side"
     try:
         stake = float(stake)
     except Exception:
-        return False, "Invalid stake"
+        return False, None, "Invalid stake"
     if stake <= 0:
-        return False, "Stake must be greater than 0"
+        return False, None, "Stake must be greater than 0"
     duration_unit = str(duration_unit or "t").strip().lower()
     if duration_unit not in ("t", "s", "m", "h"):
         duration_unit = "t"
@@ -12671,7 +12746,7 @@ def _send_human_parity_trade(
 
     budget_ok, budget_msg, budget_reservation = _reserve_profile_budget(state, "HUMAN", stake)
     if not budget_ok:
-        return False, budget_msg
+        return False, None, budget_msg
 
     req_id = _new_req_id()
     deriv_contract = "DIGITEVEN" if side == "EVEN" else "DIGITODD"
@@ -12684,9 +12759,12 @@ def _send_human_parity_trade(
         "duration": int(duration),
         "duration_unit": duration_unit,
         "deriv_contract_type": deriv_contract,
+        "contract_type": deriv_contract,
         "mode": mode,
         "budget_reservation": budget_reservation,
     }
+    if isinstance(extra_meta, dict):
+        req_meta.update(extra_meta)
     state.setdefault("req_meta", {})[req_id] = req_meta
     _stamp_trade_latency(req_meta, "buy_send")
     payload = {
@@ -12703,21 +12781,12 @@ def _send_human_parity_trade(
             "symbol": symbol,
         }
     }
-    try:
-        ws.send(json.dumps(payload))
-        _emit_balance_payload(client_id, state)
-        return True, f"{side} trade sent"
-    except Exception as e:
-        try:
-            state.get("req_meta", {}).pop(req_id, None)
-        except Exception:
-            pass
-        try:
-            _release_profile_budget_reservation(state, budget_reservation)
-            _emit_balance_payload(client_id, state)
-        except Exception:
-            pass
-        return False, str(e)
+    return True, {
+        "side": side,
+        "req_id": req_id,
+        "payload": payload,
+        "budget_reservation": budget_reservation,
+    }, None
 
 
 def _apply_unchain_settings_update(state, data):
@@ -14030,11 +14099,27 @@ def _stop_unchain_scanner_worker(state):
 
 
 def _normalize_tick_symbol(symbol):
-    return str(symbol or "").strip().upper()
+    raw = str(symbol or "").strip()
+    upper = raw.upper()
+    step_map = {
+        "STPRNG": "stpRNG",
+        "STPRNG2": "stpRNG2",
+        "STPRNG3": "stpRNG3",
+        "STPRNG4": "stpRNG4",
+        "STPRNG5": "stpRNG5",
+    }
+    return step_map.get(upper, upper)
 
 
 def _is_step_market_symbol(symbol):
-    return _normalize_tick_symbol(symbol) in {"STPRNG", "STPRNG2", "STPRNG3", "STPRNG4", "STPRNG5"}
+    return str(symbol or "").strip().upper() in {"STPRNG", "STPRNG2", "STPRNG3", "STPRNG4", "STPRNG5"}
+
+
+def _tick_stream_warmup_for_symbol(symbol, fallback=None):
+    base = TICK_STREAM_WARMUP_SEC if fallback is None else float(fallback)
+    if _is_step_market_symbol(symbol):
+        return max(float(base), float(STEP_TICK_STREAM_WARMUP_SEC))
+    return float(base)
 
 
 def _build_synthetic_candles_from_tick_history(prices, times, *, tf_sec, max_candles):
@@ -14102,7 +14187,7 @@ def _start_tick_stream_warmup(state, symbol, *, client_id=None, reason="", warmu
     if not sym or not isinstance(state, dict):
         return 0.0
     now_ts = time.time()
-    duration = max(0.0, float(TICK_STREAM_WARMUP_SEC if warmup_sec is None else warmup_sec))
+    duration = max(0.0, _tick_stream_warmup_for_symbol(sym, TICK_STREAM_WARMUP_SEC if warmup_sec is None else warmup_sec))
     until = now_ts + duration if duration > 0 else now_ts
     state.setdefault("tick_stream_warmup_until", {})[sym] = until
     state.setdefault("tick_stream_warmup_reason", {})[sym] = reason or "warmup"
@@ -14262,7 +14347,7 @@ def _ensure_tick_subscription(state, symbol, *, force=False, reason="", client_i
 def _restore_required_tick_subscriptions(client_id, state, reason):
     restored = []
     for sym in _active_tick_symbols_for_state(state):
-        if _ensure_tick_subscription(state, sym, force=True, reason=reason, client_id=client_id, warmup_sec=TICK_STREAM_WARMUP_SEC):
+        if _ensure_tick_subscription(state, sym, force=True, reason=reason, client_id=client_id, warmup_sec=_tick_stream_warmup_for_symbol(sym)):
             restored.append(sym)
     if restored:
         logger.info("[%s] tick_stream_restore_requested reason=%s symbols=%s", client_id, reason, ",".join(restored))
@@ -14374,7 +14459,7 @@ def _switch_market_tick_stream(client_id, state, *, new_symbol, old_symbol=None,
             force=False,
             reason=f"{owner}_market_switch",
             client_id=client_id,
-            warmup_sec=TICK_STREAM_WARMUP_SEC,
+            warmup_sec=_tick_stream_warmup_for_symbol(sym),
         )
         if old_sym and old_sym != sym:
             forgotten = _forget_tick_subscription_if_unused(
@@ -15373,6 +15458,10 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                         "leg_action": meta.get("leg_action"),
                         "contract_type": meta.get("contract_type"),
                         "selected_tick": meta.get("selected_tick"),
+                        "hide_from_history": meta.get("hide_from_history"),
+                        "batch_id": meta.get("batch_id"),
+                        "batch_label": meta.get("batch_label"),
+                        "batch_stake": meta.get("batch_stake"),
                         "countdown_remaining": duration_val,
                         "countdown_unit": duration_unit_val if duration_val is not None else None,
                         "countdown_seconds": countdown_seconds,
@@ -15458,6 +15547,10 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                         "leg_action": meta.get("leg_action"),
                         "contract_type": meta.get("contract_type"),
                         "selected_tick": meta.get("selected_tick"),
+                        "hide_from_history": meta.get("hide_from_history"),
+                        "batch_id": meta.get("batch_id"),
+                        "batch_label": meta.get("batch_label"),
+                        "batch_stake": meta.get("batch_stake"),
                         "countdown_remaining": duration_val,
                         "countdown_unit": duration_unit_val if duration_val is not None else None,
                         "countdown_seconds": countdown_seconds,
@@ -15713,9 +15806,12 @@ def process_tick(client_id, tick):
 
         main_symbol = state.get("current_symbol")
         human_symbol = state.get("human_symbol") or main_symbol
+        symbol_key = _normalize_tick_symbol(symbol)
+        main_symbol_key = _normalize_tick_symbol(main_symbol)
+        human_symbol_key = _normalize_tick_symbol(human_symbol)
 
-        is_main = (symbol == main_symbol)
-        is_human = (symbol == human_symbol)
+        is_main = (symbol_key == main_symbol_key)
+        is_human = (symbol_key == human_symbol_key)
 
         # ignore ticks we don't care about
         if not (is_main or is_human):
@@ -15802,8 +15898,8 @@ def process_tick(client_id, tick):
             except Exception:
                 pass
 
-        want_symbol = human_symbol if active_profile == "HUMAN" else main_symbol
-        if symbol != want_symbol:
+        want_symbol = human_symbol_key if active_profile == "HUMAN" else main_symbol_key
+        if symbol_key != want_symbol:
             return
 
         ui_digit = digit if digit is not None else extract_last_decimal_digit(price, pip_size)
@@ -15978,6 +16074,10 @@ def process_contract(client_id, contract):
                 entry.setdefault("leg_action", meta.get("leg_action"))
                 entry.setdefault("contract_type", meta.get("contract_type"))
                 entry.setdefault("selected_tick", meta.get("selected_tick"))
+                entry.setdefault("hide_from_history", meta.get("hide_from_history"))
+                entry.setdefault("batch_id", meta.get("batch_id"))
+                entry.setdefault("batch_label", meta.get("batch_label"))
+                entry.setdefault("batch_stake", meta.get("batch_stake"))
             else:
                 entry.setdefault("profile", profile_for_contract)
             entry.setdefault("profit", round(float(profit), 2))
@@ -16378,6 +16478,32 @@ def set_token():
         logger.warning("[%s] TEMP connect_error_emitted message=missing_token", cid)
         return jsonify({"status": "error", "message": "API token is required"}), 400
 
+    same_token = token == str(state.get("api_token", "") or "").strip()
+    ws_thread_alive = bool(state.get("ws_thread") and state["ws_thread"].is_alive())
+    same_token_authorized = bool(same_token and state.get("ws_connected") and not _is_ws_stale(state))
+    same_token_in_progress = bool(
+        same_token
+        and not state.get("ws_connected")
+        and (
+            state.get("ws_transport_connected")
+            or state.get("ws_connect_started_at")
+            or ws_thread_alive
+        )
+    )
+    connecting_or_authorized = same_token_authorized or same_token_in_progress
+    if connecting_or_authorized:
+        logger.info(
+            "[%s] TEMP set_token_reused_existing_connection ws_connected=%s transport=%s thread_alive=%s",
+            cid,
+            bool(state.get("ws_connected")),
+            bool(state.get("ws_transport_connected")),
+            ws_thread_alive,
+        )
+        return jsonify({
+            "status": "connected" if state.get("ws_connected") else "connecting",
+            "message": "Connection already in progress",
+        })
+
     state["api_token"] = token
     state["loginid"] = "UNKNOWN"
     state["session_start_balance"] = None
@@ -16559,7 +16685,9 @@ def disconnect():
         return jsonify({"error": "Unauthorized"}), 403
 
     cid, _state = get_client_state()
-    disconnect_client(cid, reason="client_disconnect", emit=True)
+    data = request.get_json(silent=True) or {}
+    reason = str(data.get("reason") or request.args.get("reason") or "client_disconnect").strip() or "client_disconnect"
+    disconnect_client(cid, reason=reason[:80], emit=True)
     return jsonify({"status": "disconnected"})
 
 
@@ -16693,9 +16821,18 @@ def set_profile():
     else:
         _ensure_tick_subscription(state, state.get("current_symbol"))
     socketio.emit("profile_update", {"profile": profile, "symbol": (state.get("human_symbol") if profile == "HUMAN" else state.get("current_symbol"))}, room=cid)
-    if profile == "HUMAN":
-        request_human_seed(cid)
-    emit_profile_snapshot(cid)
+    def _finish_profile_switch_snapshot():
+        try:
+            if profile == "HUMAN":
+                request_human_seed(cid)
+            emit_profile_snapshot(cid)
+        except Exception:
+            logger.exception("[%s] profile switch snapshot failed for %s", cid, profile)
+
+    try:
+        socketio.start_background_task(_finish_profile_switch_snapshot)
+    except Exception:
+        _finish_profile_switch_snapshot()
 
     return jsonify({
         "status": "success",
@@ -16746,7 +16883,7 @@ def change_market():
         return jsonify({"error": "Unauthorized"}), 403
 
     cid, state = get_client_state()
-    symbol = (request.json or {}).get("symbol")
+    symbol = _normalize_tick_symbol((request.json or {}).get("symbol"))
 
     if not symbol:
         return jsonify({"error": "No symbol provided"}), 400
@@ -16812,7 +16949,7 @@ def change_human_market():
         return jsonify({"error": "Unauthorized"}), 403
 
     cid, state = get_client_state()
-    symbol = (request.json or {}).get("symbol")
+    symbol = _normalize_tick_symbol((request.json or {}).get("symbol"))
 
     if not symbol:
         return jsonify({"error": "No symbol provided"}), 400
@@ -17833,7 +17970,7 @@ def manual_trade():
         duration=duration,
         duration_unit=duration_unit,
         mode=data.get("mode") or data.get("source"),
-        extra_meta={"leg_action": str(data.get("leg_action") or "").strip()} if data.get("leg_action") else None,
+        extra_meta=_trade_extra_meta_from_payload(data),
     )
     return jsonify({"status": "success" if ok else "error", "message": msg})
 
@@ -19462,6 +19599,73 @@ def human_parity_trade_route():
     if side in ("ODD", "EVEN_ODD"):
         plan.append(("ODD", data.get("odd_stake", data.get("stake", 1.0))))
 
+    extra_base = _trade_extra_meta_from_payload(data) or {}
+    if side == "EVEN_ODD":
+        batch_id = str(data.get("batch_id") or _new_req_id())
+        extra_base.update({
+            "hide_from_history": True,
+            "batch_id": batch_id,
+            "batch_label": data.get("batch_label") or "Even+Odd",
+            "batch_stake": data.get(
+                "batch_stake",
+                sum(_safe_money(stake) for _trade_side, stake in plan),
+            ),
+        })
+        ready, ready_msg = _ensure_trade_socket_ready(cid, state)
+        if not ready:
+            return jsonify({"status": "error", "message": ready_msg, "placed": [], "batch_id": batch_id}), 400
+        ws = state.get("ws")
+        prepared = []
+        for trade_side, stake in plan:
+            leg_extra = dict(extra_base)
+            leg_extra["leg_action"] = trade_side
+            ok, item, msg = _prepare_human_parity_trade_request(
+                state,
+                side=trade_side,
+                stake=stake,
+                symbol=symbol,
+                duration=duration,
+                duration_unit=duration_unit,
+                mode=mode,
+                extra_meta=leg_extra,
+            )
+            if not ok:
+                for prepared_item in prepared:
+                    try:
+                        state.get("req_meta", {}).pop(prepared_item.get("req_id"), None)
+                        _release_profile_budget_reservation(state, prepared_item.get("budget_reservation"))
+                    except Exception:
+                        pass
+                _emit_balance_payload(cid, state)
+                return jsonify({"status": "error", "message": msg, "placed": [], "batch_id": batch_id}), 400
+            prepared.append(item)
+        placed = []
+        for item in prepared:
+            try:
+                ws.send(json.dumps(item["payload"]))
+                placed.append(item["side"])
+            except Exception as exc:
+                for unsent in prepared[len(placed):]:
+                    try:
+                        state.get("req_meta", {}).pop(unsent.get("req_id"), None)
+                        _release_profile_budget_reservation(state, unsent.get("budget_reservation"))
+                    except Exception:
+                        pass
+                _emit_balance_payload(cid, state)
+                return jsonify({
+                    "status": "error",
+                    "message": str(exc),
+                    "placed": placed,
+                    "batch_id": batch_id,
+                }), 400
+        _emit_balance_payload(cid, state)
+        return jsonify({
+            "status": "success",
+            "message": f"Sent {' + '.join(placed)}",
+            "placed": placed,
+            "batch_id": batch_id,
+        })
+
     placed = []
     for trade_side, stake in plan:
         ok, msg = _send_human_parity_trade(
@@ -19472,6 +19676,7 @@ def human_parity_trade_route():
             duration=duration,
             duration_unit=duration_unit,
             mode=mode,
+            extra_meta=extra_base or None,
         )
         if not ok:
             return jsonify({"status": "error", "message": msg, "placed": placed}), 400

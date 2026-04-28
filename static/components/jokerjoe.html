@@ -329,6 +329,9 @@
               <button id="kid100WinsQuickStopDockBtnJokerjoe" type="button" onclick="stopKid100WinsAutosJokerjoe()" style="display:none; width:100%; height:42px; margin-top:8px; background:#ef4444; color:#fff7ed; border:1px solid rgba(248,113,113,0.5); box-shadow:0 8px 18px rgba(127,29,29,0.22);">
                 QUICK STOP KID100
               </button>
+              <button id="jokerjoeKoolkidBtn" type="button" onclick="openJokerjoeKoolkidPopup()" style="width:100%; height:46px; background:linear-gradient(135deg,#065f46,#22c55e); color:#ecfdf5; border:1px solid rgba(134,239,172,0.45); box-shadow:0 10px 22px rgba(6,95,70,0.24); font-weight:900;">
+                💲KOOLKID💲
+              </button>
             </div>
           </details>
 
@@ -409,7 +412,26 @@
               <option value="MATCH_789">Match 7, 8, 9</option>
               <option value="MATCH_456">Match 4, 5, 6</option>
               <option value="MATCH_123">Match 1, 2, 3</option>
+              <option value="CUSTOM">Custom 3 digits</option>
             </select>
+          </div>
+          <div id="jokerjoeBatchMartingaleCustomWrap" style="display:none;">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:6px;">
+              <div style="color:#94a3b8; font-size:12px;">Pick exactly 3 MATCH digits</div>
+              <div id="jokerjoeBatchMartingaleCustomHint" style="color:#fbbf24; font-size:11px;">3 selected</div>
+            </div>
+            <div id="jokerjoeBatchMartingaleCustomDigits" style="display:grid; grid-template-columns:repeat(5,1fr); gap:6px;">
+              <button type="button" data-jj-batch-digit="0" onclick="toggleJokerjoeBatchMartingaleDigit(0)" style="padding:8px 0; border-radius:999px; background:#1e293b;">0</button>
+              <button type="button" data-jj-batch-digit="1" onclick="toggleJokerjoeBatchMartingaleDigit(1)" style="padding:8px 0; border-radius:999px; background:#1e293b;">1</button>
+              <button type="button" data-jj-batch-digit="2" onclick="toggleJokerjoeBatchMartingaleDigit(2)" style="padding:8px 0; border-radius:999px; background:#1e293b;">2</button>
+              <button type="button" data-jj-batch-digit="3" onclick="toggleJokerjoeBatchMartingaleDigit(3)" style="padding:8px 0; border-radius:999px; background:#1e293b;">3</button>
+              <button type="button" data-jj-batch-digit="4" onclick="toggleJokerjoeBatchMartingaleDigit(4)" style="padding:8px 0; border-radius:999px; background:#1e293b;">4</button>
+              <button type="button" data-jj-batch-digit="5" onclick="toggleJokerjoeBatchMartingaleDigit(5)" style="padding:8px 0; border-radius:999px; background:#1e293b;">5</button>
+              <button type="button" data-jj-batch-digit="6" onclick="toggleJokerjoeBatchMartingaleDigit(6)" style="padding:8px 0; border-radius:999px; background:#1e293b;">6</button>
+              <button type="button" data-jj-batch-digit="7" onclick="toggleJokerjoeBatchMartingaleDigit(7)" style="padding:8px 0; border-radius:999px; background:#f59e0b; color:#111827;">7</button>
+              <button type="button" data-jj-batch-digit="8" onclick="toggleJokerjoeBatchMartingaleDigit(8)" style="padding:8px 0; border-radius:999px; background:#f59e0b; color:#111827;">8</button>
+              <button type="button" data-jj-batch-digit="9" onclick="toggleJokerjoeBatchMartingaleDigit(9)" style="padding:8px 0; border-radius:999px; background:#f59e0b; color:#111827;">9</button>
+            </div>
           </div>
           <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
             <div>
@@ -420,6 +442,21 @@
               <div style="color:#94a3b8; font-size:12px;">Max Steps</div>
               <input id="jokerjoeBatchMartingaleMaxSteps" type="number" min="1" step="1" value="100" oninput="updateJokerjoeBatchMartingalePanel()" style="width:100%;">
             </div>
+            <div>
+              <div style="color:#94a3b8; font-size:12px;">Tick Spacing</div>
+              <select id="jokerjoeBatchMartingaleTickSpacing" onchange="updateJokerjoeBatchMartingalePanel()" style="width:100%; min-height:38px;">
+                <option value="1" selected>1 tick</option>
+                <option value="2">2 ticks</option>
+                <option value="3">3 ticks</option>
+                <option value="4">4 ticks</option>
+                <option value="5">5 ticks</option>
+                <option value="6">6 ticks</option>
+                <option value="7">7 ticks</option>
+                <option value="8">8 ticks</option>
+                <option value="9">9 ticks</option>
+                <option value="10">10 ticks</option>
+              </select>
+            </div>
           </div>
           <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
             <button id="jokerjoeBatchMartingaleToggleBtn" type="button" onclick="toggleJokerjoeBatchMartingale()" style="background:#334155;">MARTINGALE: OFF</button>
@@ -429,6 +466,55 @@
           <div id="jokerjoeBatchMartingaleStatus" style="font-size:12px; color:#94a3b8; line-height:1.45;">Ready. Batch stake $1.05 - Per match $0.35 - Next batch $2.10 - Last result: none</div>
         </div>
       </details>
+    </div>
+  </div>
+
+  <div id="jokerjoeKoolkidPopup" onclick="if(event.target===this) closeJokerjoeKoolkidPopup()" style="display:none; position:fixed; inset:0; z-index:10003; padding:18px; align-items:center; justify-content:center; background:rgba(2,6,23,0.78); overflow-y:auto; -webkit-overflow-scrolling:touch;">
+    <div style="width:min(430px,100%); max-height:calc(100vh - 36px); max-height:calc(100dvh - 36px); overflow-y:auto; background:linear-gradient(180deg,#064e3b,#020617); border:1px solid rgba(134,239,172,0.36); border-radius:18px; padding:14px; box-shadow:0 24px 54px rgba(0,0,0,.48),0 0 30px rgba(34,197,94,.14);">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:8px;">
+        <div>
+          <div style="font-size:11px; color:#86efac; font-weight:900; letter-spacing:.12em; text-transform:uppercase;">Same-tick combo</div>
+          <div style="font-size:20px; font-weight:900; color:#ecfdf5;">💲KOOLKID💲</div>
+        </div>
+        <button type="button" onclick="closeJokerjoeKoolkidPopup()" style="height:34px; min-width:34px; border-radius:10px; background:#1e293b;">✕</button>
+      </div>
+      <div id="jokerjoeKoolkidSummary" style="font-size:12px; color:#d1fae5; line-height:1.45; margin-bottom:10px;">
+        Places OVER 3 and a Match 0,1,2 batch together. The Match digits show as one combined batch row in trade history.
+      </div>
+      <div style="display:grid; gap:9px;">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; border:1px solid rgba(134,239,172,0.18); border-radius:14px; padding:9px 12px; background:rgba(15,23,42,0.42);">
+          <div>
+            <div style="font-size:12px; color:#ecfdf5; font-weight:900;">Lower Profits For Better Wins</div>
+            <div id="jokerjoeKoolkidLowerProfitPreview" style="font-size:11px; color:#94a3b8; margin-top:3px;">OFF - Match 0,1,2 only</div>
+          </div>
+          <button id="jokerjoeKoolkidLowerProfitToggle" type="button" onclick="toggleJokerjoeKoolkidLowerProfits()" style="min-width:82px; height:36px; border-radius:999px; background:#334155; color:#f8fafc; font-weight:900;">OFF</button>
+        </div>
+        <label style="display:grid; gap:4px; font-size:12px; color:#bbf7d0; font-weight:800;">
+          <span id="jokerjoeKoolkidMatchStakeLabel">Match 0,1,2 batch stake</span>
+          <input id="jokerjoeKoolkidMatchStake" type="number" min="1.05" step="0.03" value="1.05" oninput="unlockJokerjoeKoolkidStatusAndRender()" style="width:100%; min-height:40px;">
+        </label>
+        <div id="jokerjoeKoolkidMatchPreview" style="font-size:11px; color:#94a3b8;">$0.35 per MATCH digit</div>
+        <label style="display:grid; gap:4px; font-size:12px; color:#bbf7d0; font-weight:800;">
+          OVER 3 stake
+          <input id="jokerjoeKoolkidOver3Stake" type="number" min="0.35" step="0.01" value="1" oninput="unlockJokerjoeKoolkidStatusAndRender()" style="width:100%; min-height:40px;">
+        </label>
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; border:1px solid rgba(134,239,172,0.26); border-radius:14px; padding:10px 12px; background:rgba(6,78,59,0.35);">
+          <div>
+            <div style="font-size:12px; color:#ecfdf5; font-weight:900;">OVER 3 Reinvest Profits</div>
+            <div id="jokerjoeKoolkidReinvestPreview" style="font-size:11px; color:#94a3b8; margin-top:3px;">OFF - fixed OVER 3 stake</div>
+          </div>
+          <button id="jokerjoeKoolkidReinvestToggle" type="button" onclick="toggleJokerjoeKoolkidReinvest()" style="min-width:82px; height:38px; border-radius:999px; background:#334155; color:#f8fafc; font-weight:900;">OFF</button>
+        </div>
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; border:1px solid rgba(134,239,172,0.18); border-radius:14px; padding:9px 12px; background:rgba(15,23,42,0.42);">
+          <div>
+            <div style="font-size:12px; color:#ecfdf5; font-weight:900;">Reset Reinvest After 2 Wins</div>
+            <div id="jokerjoeKoolkidReset2Preview" style="font-size:11px; color:#94a3b8; margin-top:3px;">OFF - keep profit bank running</div>
+          </div>
+          <button id="jokerjoeKoolkidReset2Toggle" type="button" onclick="toggleJokerjoeKoolkidResetAfter2Wins()" style="min-width:82px; height:36px; border-radius:999px; background:#334155; color:#f8fafc; font-weight:900;">OFF</button>
+        </div>
+        <button id="jokerjoeKoolkidPlaceBtn" type="button" onclick="placeJokerjoeKoolkidComboTrade()" style="width:100%; height:46px; background:#22c55e; color:#04130a; border-radius:12px; font-weight:950;">PLACE OVER 3 + MATCH 0,1,2</button>
+        <div id="jokerjoeKoolkidStatus" style="font-size:12px; color:#94a3b8; line-height:1.45;">Ready.</div>
+      </div>
     </div>
   </div>
 

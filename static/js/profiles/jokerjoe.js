@@ -6,7 +6,7 @@ const FAST_INTERVAL_MS_NORMAL = 400; // 0.4s as requested
 const FAST_INTERVAL_MS_TURBO = 120;  // faster Turbo lane for JOKERJOE
 const FAST_MAX_BUY_QUEUE = 12;       // safety limit
 const BLACKCARD_RENDER_THROTTLE_MS = 300;
-const state = { lastSocket: null, socketBound: false, autoModes: {}, turboMode: loadTurboModeJokerjoe(), profileReinvestOn: false, profileReinvestPct: 25, profileReinvestBaseStake: null, profileReinvestProfitBank: 0, kidgxBarrier: 5, matchesAnalysisOn: false, matchesLastKey: "", matchesObserverBound: false, matchSniperOn: false, matchSniperCooldownUntil: 0, matchSniperActiveDigit: null, matchSniperConsumed: false, matchSniperBusy: false, matchesSnapshot: null, matchesSorted: [], matchSniper5xOn: false, matchSniper5xCooldownUntil: 0, matchSniper5xBusy: false, matchSniper5xLastTopKey: "", matchSniper5xRotationSets: null, matchSniper5xRotationIndex: 0, matchSniper5xCurrentDigits: [], matchSniper5xSelectedDigits: [0, 1, 2, 3, 4], batchMartingale: { group: "MATCH_789", enabled: false, running: false, inProgress: false, step: 1, batchId: "", pendingContracts: {}, expected: 0, settled: 0, batchStake: 1.05, perStake: 0.35, totalProfit: 0, hasWin: false, lastResult: "none", status: "Ready", restartTimer: null, stopRequested: false }, aiAutoModeChoice: "golden_digits", aiAutoLowestTradeCountChoice: 5, aiAutoLowestLocalOn: false, aiAutoModalOpen: false, aiLowestLastTickCount: 0, aiLowestTouches: {}, aiLowestArmed: null, aiLowestBatchActive: false, aiLowestBatchPending: 0, aiLowestBatchBarrier: null, aiLowestBatchProfit: 0, aiLowestCooldownUntil: 0, aiLowestSubmitting: false, aiLowestRecoveryDeficit: 0, aiLowestRecoveryOnly: false, randomMatchesDiffersOn: false, randomMatchesDiffersMode: "DIFFERS", randomMatchesDiffersModalOpen: false, randomMatchesDiffersBusy: false, randomMatchesDiffersCooldownUntil: 0, randomMatchesDiffersLastSignalKey: "", randomMatchesDiffersTickHistory: [], randomMatchesDiffersLastTickCount: 0, randomMatchesDiffersSnapshot: null, blackcard: { lastDigit: null, recentDigits: [], percentages: {}, busy: false, winMarkerDigit: null, winMarkerUntil: 0, resultMarkerDigit: null, resultMarkerType: "", resultMarkerUntil: 0, praiseShownForTenWins: false, lastWinCount: null, reinvestProfitsOn: false, reinvestProfitPct: 25, lastProfit: 0, reinvestBaseStake: null, reinvestProfitBank: 0, reinvestCycleStake: null, reinvestPending: 0, pendingContracts: {}, pendingUnmarked: 0 }, insta2Busy: false, kid100WinsBusy: false, kid100WinsAutoOn: false, kid100WinsAutoBusy: false, kid100WinsAutoLastTick: null, kid100WinsAutoEnabledAtGlobalTick: null, kid100WinsAutoEnabledAtAnalysisTick: null, kid100WinsAutoLastSignalTick: null, kid100WinsLatestTick: null, kid100WinsLatestBest: null, kid100WinsLowPercentOn: false, kid100WinsAiDiffersOn: false, kid100WinsStopRequested: false, kid100WinsLastSeenDigit: null, kid100WinsManualArmed: false, kid100WinsManualBarrier: null, kid100WinsManualEnabledAtGlobalTick: null, kid100WinsManualEnabledAtAnalysisTick: null, kid100WinsManualLastSignalTick: null, kid100WinsReinvestProfitsOn: false, kid100WinsReinvestPct: 25, kid100WinsReinvestBaseStake: null, kid100WinsReinvestCycleStake: null, kid100WinsReinvestLastProfit: 0, kid100WinsReinvestPending: 0 };
+const state = { lastSocket: null, socketBound: false, autoModes: {}, turboMode: loadTurboModeJokerjoe(), profileReinvestOn: false, profileReinvestPct: 25, profileReinvestBaseStake: null, profileReinvestProfitBank: 0, kidgxBarrier: 5, matchesAnalysisOn: false, matchesLastKey: "", matchesObserverBound: false, matchSniperOn: false, matchSniperCooldownUntil: 0, matchSniperActiveDigit: null, matchSniperConsumed: false, matchSniperBusy: false, matchesSnapshot: null, matchesSorted: [], matchSniper5xOn: false, matchSniper5xCooldownUntil: 0, matchSniper5xBusy: false, matchSniper5xLastTopKey: "", matchSniper5xRotationSets: null, matchSniper5xRotationIndex: 0, matchSniper5xCurrentDigits: [], matchSniper5xSelectedDigits: [0, 1, 2, 3, 4], batchMartingale: { group: "MATCH_789", enabled: false, running: false, inProgress: false, step: 1, batchId: "", pendingContracts: {}, expected: 0, settled: 0, batchStake: 1.05, perStake: 0.35, totalProfit: 0, hasWin: false, lastResult: "none", status: "Ready", restartTimer: null, completionTimer: null, tickSpacing: 1, spacingWait: 0, stopRequested: false }, aiAutoModeChoice: "golden_digits", aiAutoLowestTradeCountChoice: 5, aiAutoLowestLocalOn: false, aiAutoModalOpen: false, aiLowestLastTickCount: 0, aiLowestTouches: {}, aiLowestArmed: null, aiLowestBatchActive: false, aiLowestBatchPending: 0, aiLowestBatchBarrier: null, aiLowestBatchProfit: 0, aiLowestCooldownUntil: 0, aiLowestSubmitting: false, aiLowestRecoveryDeficit: 0, aiLowestRecoveryOnly: false, randomMatchesDiffersOn: false, randomMatchesDiffersMode: "DIFFERS", randomMatchesDiffersModalOpen: false, randomMatchesDiffersBusy: false, randomMatchesDiffersCooldownUntil: 0, randomMatchesDiffersLastSignalKey: "", randomMatchesDiffersTickHistory: [], randomMatchesDiffersLastTickCount: 0, randomMatchesDiffersSnapshot: null, blackcard: { lastDigit: null, recentDigits: [], percentages: {}, busy: false, winMarkerDigit: null, winMarkerUntil: 0, resultMarkerDigit: null, resultMarkerType: "", resultMarkerUntil: 0, praiseShownForTenWins: false, lastWinCount: null, reinvestProfitsOn: false, reinvestProfitPct: 25, lastProfit: 0, reinvestBaseStake: null, reinvestProfitBank: 0, reinvestCycleStake: null, reinvestPending: 0, pendingContracts: {}, pendingUnmarked: 0 }, insta2Busy: false, kid100WinsBusy: false, kid100WinsAutoOn: false, kid100WinsAutoBusy: false, kid100WinsAutoLastTick: null, kid100WinsAutoEnabledAtGlobalTick: null, kid100WinsAutoEnabledAtAnalysisTick: null, kid100WinsAutoLastSignalTick: null, kid100WinsLatestTick: null, kid100WinsLatestBest: null, kid100WinsLowPercentOn: false, kid100WinsAiDiffersOn: false, kid100WinsStopRequested: false, kid100WinsLastSeenDigit: null, kid100WinsManualArmed: false, kid100WinsManualBarrier: null, kid100WinsManualEnabledAtGlobalTick: null, kid100WinsManualEnabledAtAnalysisTick: null, kid100WinsManualLastSignalTick: null, kid100WinsReinvestProfitsOn: false, kid100WinsReinvestPct: 25, kid100WinsReinvestBaseStake: null, kid100WinsReinvestCycleStake: null, kid100WinsReinvestLastProfit: 0, kid100WinsReinvestPending: 0 };
   const fastBuyQueueJokerjoe = { items: [], running: false, lastRunAt: 0 };
   let activityPollTimerJokerjoe = null;
   let blackcardRenderTimerJokerjoe = null;
@@ -14,6 +14,26 @@ const state = { lastSocket: null, socketBound: false, autoModes: {}, turboMode: 
   let blackcardWinMarkerTimerJokerjoe = null;
   let blackcardResultMarkerTimerJokerjoe = null;
   let blackcardPraiseTimerJokerjoe = null;
+  state.koolkidCombo = {
+    busy: false,
+    modalOpen: false,
+    over3ReinvestOn: false,
+    over3BaseStake: null,
+    over3ProfitBank: 0,
+    over3ResetAfter2Wins: false,
+    over3WinCount: 0,
+    over3HandledResults: {},
+    lowerProfitsBetterWins: false,
+    matchBatch: {
+      batchId: "",
+      pendingContracts: {},
+      expected: 0,
+      settled: 0,
+      totalProfit: 0,
+      currentBatch: null,
+      completionTimer: null,
+    },
+  };
 
   function App() { return window.BotApp || {}; }
   function isActive() { try { return typeof activeProfile !== "undefined" && activeProfile === PROFILE; } catch (e) { return false; } }
@@ -798,8 +818,88 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     return selected.slice();
   }
 
+  function getJokerjoeBatchMartingaleCustomDigits() {
+    const st = state.batchMartingale || {};
+    const source = Array.isArray(st.customDigits) ? st.customDigits : [7, 8, 9];
+    const seen = new Set();
+    const out = [];
+    source.forEach((value) => {
+      const digit = Math.floor(Number(value));
+      if (!Number.isInteger(digit) || digit < 0 || digit > 9 || seen.has(digit)) return;
+      seen.add(digit);
+      out.push(digit);
+    });
+    st.customDigits = out.slice(0, 3).sort((a, b) => a - b);
+    return st.customDigits.slice();
+  }
+
+  function setJokerjoeBatchMartingaleCustomDigits(digits) {
+    const st = state.batchMartingale || {};
+    const seen = new Set();
+    const out = [];
+    (Array.isArray(digits) ? digits : []).forEach((value) => {
+      const digit = Math.floor(Number(value));
+      if (!Number.isInteger(digit) || digit < 0 || digit > 9 || seen.has(digit) || out.length >= 3) return;
+      seen.add(digit);
+      out.push(digit);
+    });
+    st.customDigits = out.sort((a, b) => a - b);
+    return st.customDigits.slice();
+  }
+
+  function renderJokerjoeBatchMartingaleCustomDigits() {
+    const groupEl = getEl("jokerjoeBatchMartingaleGroup");
+    const wrap = getEl("jokerjoeBatchMartingaleCustomWrap");
+    const hint = getEl("jokerjoeBatchMartingaleCustomHint");
+    const isCustom = !!(groupEl && String(groupEl.value || "").toUpperCase() === "CUSTOM");
+    if (wrap) wrap.style.display = isCustom ? "" : "none";
+    const digits = getJokerjoeBatchMartingaleCustomDigits();
+    const selected = new Set(digits.map(String));
+    const buttons = document.querySelectorAll("[data-jj-batch-digit]");
+    buttons.forEach((btn) => {
+      const active = selected.has(String(btn.getAttribute("data-jj-batch-digit")));
+      btn.style.background = active ? "#f59e0b" : "#1e293b";
+      btn.style.color = active ? "#111827" : "#e5e7eb";
+      btn.style.border = active ? "1px solid rgba(251,191,36,.9)" : "1px solid rgba(148,163,184,.22)";
+      btn.style.fontWeight = active ? "900" : "800";
+    });
+    if (hint) {
+      const count = digits.length;
+      hint.textContent = count === 3 ? `Selected: ${digits.join(", ")}` : `${count}/3 selected`;
+      hint.style.color = count === 3 ? "#22c55e" : "#fbbf24";
+    }
+  }
+
+  function toggleJokerjoeBatchMartingaleDigit(value) {
+    const digit = Math.floor(Number(value));
+    if (!Number.isInteger(digit) || digit < 0 || digit > 9) return;
+    const digits = getJokerjoeBatchMartingaleCustomDigits();
+    const existing = digits.indexOf(digit);
+    if (existing >= 0) {
+      digits.splice(existing, 1);
+    } else if (digits.length >= 3) {
+      safeToast("Pick only 3 digits for the Match Batch.", "error");
+      renderJokerjoeBatchMartingaleCustomDigits();
+      return;
+    } else {
+      digits.push(digit);
+    }
+    setJokerjoeBatchMartingaleCustomDigits(digits);
+    renderJokerjoeBatchMartingaleCustomDigits();
+    updateJokerjoeBatchMartingalePanel();
+  }
+
   function normalizeJokerjoeBatchMartingaleGroup(value) {
     const key = String(value || "").toUpperCase().replace(/\s+/g, "_");
+    if (key === "CUSTOM") {
+      const digits = getJokerjoeBatchMartingaleCustomDigits();
+      return {
+        key: `MATCH_CUSTOM_${digits.join("") || "NONE"}`,
+        digits,
+        label: digits.length === 3 ? `Match Batch ${digits.join(",")}` : "Match Batch Custom",
+        custom: true,
+      };
+    }
     const map = {
       MATCH_789: { key: "MATCH_789", digits: [7, 8, 9], label: "Match Batch 7,8,9" },
       MATCH_456: { key: "MATCH_456", digits: [4, 5, 6], label: "Match Batch 4,5,6" },
@@ -821,9 +921,13 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     const st = state.batchMartingale;
     const groupEl = getEl("jokerjoeBatchMartingaleGroup");
     const group = normalizeJokerjoeBatchMartingaleGroup(groupEl ? groupEl.value : st.group);
+    renderJokerjoeBatchMartingaleCustomDigits();
     const startBatchStake = Number(readJokerjoeBatchMartingaleNumber("jokerjoeBatchMartingaleStartStake", 1.05, 1.05, 1000000).toFixed(2));
     const maxSteps = Math.max(1, Math.floor(readJokerjoeBatchMartingaleNumber("jokerjoeBatchMartingaleMaxSteps", 100, 1, 100000)));
-    return { group, startBatchStake, maxSteps, multiplier: 2 };
+    const tickSpacing = Math.max(1, Math.min(10, Math.floor(readJokerjoeBatchMartingaleNumber("jokerjoeBatchMartingaleTickSpacing", 1, 1, 10))));
+    const spacingEl = getEl("jokerjoeBatchMartingaleTickSpacing");
+    if (spacingEl) spacingEl.value = String(tickSpacing);
+    return { group, startBatchStake, maxSteps, multiplier: 2, tickSpacing };
   }
 
   function jokerjoeBatchStakeForStep(stepValue) {
@@ -858,8 +962,10 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     if (!batch || !batch.id) return;
     try {
       if (typeof upsertTradeInStore !== "function" || typeof renderTradeList !== "function") return;
+      purgeJokerjoeBatchLegRows(batch);
       const profit = Number(batch.totalProfit || 0);
       const result = pending ? "PENDING" : (profit > 0 ? "WIN" : "LOSS");
+      const exitDigits = Array.isArray(batch.exitDigits) ? batch.exitDigits.filter((digit) => digit !== null && digit !== undefined && digit !== "") : [];
       upsertTradeInStore({
         profile: PROFILE,
         type: batch.label,
@@ -870,14 +976,133 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
         contract_id: batch.id,
         duration: batch.duration,
         duration_unit: "t",
+        countdown_remaining: pending ? Math.max(0, Math.floor(Number(batch.duration || 0))) : 0,
+        countdown_unit: "t",
         status: result,
         result,
         pending: !!pending,
         profit: pending ? 0 : Number(profit.toFixed(2)),
+        exit_digit: exitDigits.length ? exitDigits.join(",") : undefined,
         mode: "jokerjoe_match_batch_martingale_visible",
       });
       if (typeof activeProfile !== "undefined" && String(activeProfile || "").toUpperCase() === PROFILE) renderTradeList(PROFILE);
     } catch (e) {}
+  }
+
+  function purgeJokerjoeBatchLegRows(batch) {
+    if (!batch || !batch.id) return;
+    try {
+      if (typeof tradeStore === "undefined" || !tradeStore || !Array.isArray(tradeStore[PROFILE])) return;
+      const visibleBatchId = String(batch.id);
+      const batchModePrefix = `jokerjoe_match_batch_martingale|${visibleBatchId}`;
+      const batchDigits = new Set((Array.isArray(batch.digits) ? batch.digits : []).map((digit) => String(Number(digit))));
+      tradeStore[PROFILE] = (tradeStore[PROFILE] || []).filter((item) => {
+        if (!item || typeof item !== "object") return true;
+        const cid = String(item.contract_id ?? item.contractId ?? "");
+        if (cid === visibleBatchId) return true;
+        const mode = String(item.mode || "");
+        if (mode === "jokerjoe_match_batch_martingale_visible") return true;
+        if (mode.startsWith(batchModePrefix)) return false;
+        const batchId = String(item.batch_id || "");
+        if (batchId && batchId === visibleBatchId) return false;
+        const type = String(item.type || "").toUpperCase().trim();
+        const barrier = String(item.barrier ?? "").trim();
+        if ((type === "MATCHES" || type.startsWith("MATCH ")) && batchDigits.has(barrier) && item.symbol === batch.symbol) {
+          return false;
+        }
+        return true;
+      });
+    } catch (e) {}
+  }
+
+  function clearJokerjoeBatchCompletionTimer() {
+    const st = state.batchMartingale;
+    if (st && st.completionTimer) {
+      clearTimeout(st.completionTimer);
+      st.completionTimer = null;
+    }
+  }
+
+  function jokerjoeBatchKnownCount() {
+    const st = state.batchMartingale;
+    return Object.keys((st && st.pendingContracts) || {}).length;
+  }
+
+  function jokerjoeBatchSettledCount() {
+    const st = state.batchMartingale;
+    return Object.values((st && st.pendingContracts) || {}).filter((item) => item === "settled" || (item && item.state === "settled")).length;
+  }
+
+  function finalizeJokerjoeBatchMartingale(opts) {
+    const options = opts || {};
+    const st = state.batchMartingale;
+    if (!st.currentBatch) return;
+    clearJokerjoeBatchCompletionTimer();
+    const batchWon = !!st.hasWin || Number(st.totalProfit || 0) > 0;
+    st.currentBatch.totalProfit = Number(st.totalProfit || 0);
+    renderJokerjoeBatchMartingaleHistory(st.currentBatch, false);
+    st.inProgress = false;
+    st.settled = Math.max(Number(st.settled || 0), jokerjoeBatchSettledCount());
+    st.lastResult = batchWon ? "WIN" : "LOSS";
+    if (batchWon) {
+      st.step = 1;
+      st.running = false;
+      st.enabled = false;
+      st.stopRequested = false;
+      st.status = options.forced ? "Reset (batch finalized)" : "Reset";
+      safeToast(`${st.currentBatch ? st.currentBatch.label : "Match Batch"} won ${signedMoney(st.totalProfit)}`, "success");
+    } else if (st.enabled && st.running && !st.stopRequested) {
+      st.step = Math.min(readJokerjoeBatchMartingaleSettings().maxSteps, st.step + 1);
+      st.status = options.forced ? "Batch finalized - waiting for next batch" : "Waiting for next batch";
+      safeToast(`Match Batch loss ${signedMoney(st.totalProfit)} - next batch $${jokerjoeBatchStakeForStep().toFixed(2)}`, "error");
+      scheduleJokerjoeBatchMartingaleNextRound();
+    } else {
+      st.status = options.forced ? "Ready (batch finalized)" : "Ready";
+    }
+    updateJokerjoeBatchMartingalePanel();
+  }
+
+  function scheduleJokerjoeBatchMartingaleNextRound() {
+    const st = state.batchMartingale;
+    const settings = readJokerjoeBatchMartingaleSettings();
+    st.tickSpacing = settings.tickSpacing;
+    st.spacingWait = settings.tickSpacing;
+    st.status = `Waiting ${st.spacingWait} tick(s) before next batch`;
+    updateJokerjoeBatchMartingalePanel();
+  }
+
+  function processJokerjoeBatchMartingaleTickSpacing() {
+    const st = state.batchMartingale;
+    if (!st || !st.enabled || !st.running || st.inProgress || st.stopRequested || Number(st.spacingWait || 0) <= 0) return;
+    st.spacingWait = Math.max(0, Number(st.spacingWait || 0) - 1);
+    if (st.spacingWait > 0) {
+      st.status = `Waiting ${st.spacingWait} tick(s) before next batch`;
+      updateJokerjoeBatchMartingalePanel();
+      return;
+    }
+    st.status = "Sending next batch";
+    updateJokerjoeBatchMartingalePanel();
+    placeJokerjoeBatchMartingaleTrade({ continuation: true });
+  }
+
+  function scheduleJokerjoeBatchCompletionFallback(delayMs) {
+    const st = state.batchMartingale;
+    clearJokerjoeBatchCompletionTimer();
+    if (!st || !st.inProgress) return;
+    st.completionTimer = setTimeout(() => {
+      st.completionTimer = null;
+      if (!st.inProgress) return;
+      const known = jokerjoeBatchKnownCount();
+      const settled = jokerjoeBatchSettledCount();
+      const expected = Math.max(1, Number(st.expected || 0), known);
+      if (settled >= expected || (settled >= Math.max(1, expected - 1) && known >= Math.max(1, expected - 1))) {
+        finalizeJokerjoeBatchMartingale({ forced: true });
+        return;
+      }
+      if (settled > 0) {
+        finalizeJokerjoeBatchMartingale({ forced: true });
+      }
+    }, Math.max(4000, Number(delayMs || 9000)));
   }
 
   function updateJokerjoeBatchMartingalePanel() {
@@ -888,6 +1113,7 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     const st = state.batchMartingale;
     const settings = readJokerjoeBatchMartingaleSettings();
     st.group = settings.group.key;
+    const groupReady = Array.isArray(settings.group.digits) && settings.group.digits.length === 3;
     const batchStake = jokerjoeBatchStakeForStep();
     const perStake = jokerjoePerMatchStakeForBatch(batchStake);
     const nextBatch = jokerjoeBatchStakeForStep(Math.min(settings.maxSteps, st.step + 1));
@@ -899,7 +1125,7 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     }
     const placeBtn = getEl("jokerjoeBatchMartingalePlaceBtn");
     if (placeBtn) {
-      placeBtn.disabled = !!(st.inProgress || st.running);
+      placeBtn.disabled = !!(st.inProgress || st.running || !groupReady);
       placeBtn.style.opacity = placeBtn.disabled ? "0.55" : "1";
       placeBtn.style.cursor = placeBtn.disabled ? "not-allowed" : "pointer";
     }
@@ -912,13 +1138,16 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     }
     const status = getEl("jokerjoeBatchMartingaleStatus");
     if (status) {
-      status.textContent = `${st.status}. ${settings.group.label} - Step ${st.step} - Batch stake $${batchStake.toFixed(2)} - Per match $${perStake.toFixed(2)} - Next batch $${nextBatch.toFixed(2)} - Last result: ${st.lastResult}`;
-      status.style.color = st.inProgress ? "#fbbf24" : "#94a3b8";
+      status.textContent = groupReady
+        ? `${st.status}. ${settings.group.label} - Step ${st.step} - Batch stake $${batchStake.toFixed(2)} - Per match $${perStake.toFixed(2)} - Next batch $${nextBatch.toFixed(2)} - Spacing ${settings.tickSpacing} tick(s) - Last result: ${st.lastResult}`
+        : "Pick exactly 3 custom MATCH digits before placing this batch.";
+      status.style.color = !groupReady || st.inProgress ? "#fbbf24" : "#94a3b8";
     }
   }
 
   function quickStopJokerjoeBatchMartingale(reason) {
     const st = state.batchMartingale;
+    clearJokerjoeBatchCompletionTimer();
     if (st.restartTimer) {
       clearTimeout(st.restartTimer);
       st.restartTimer = null;
@@ -927,6 +1156,7 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     st.enabled = false;
     st.stopRequested = true;
     st.inProgress = false;
+    st.spacingWait = 0;
     st.status = reason || "Stopped";
     updateJokerjoeBatchMartingalePanel();
   }
@@ -943,6 +1173,7 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
       st.running = false;
       st.inProgress = false;
       st.stopRequested = false;
+      st.spacingWait = 0;
       st.lastResult = "none";
       st.status = "Ready";
     } else {
@@ -961,6 +1192,12 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     const opts = options || {};
     if (st.inProgress) return;
     const settings = readJokerjoeBatchMartingaleSettings();
+    if (!Array.isArray(settings.group.digits) || settings.group.digits.length !== 3) {
+      st.status = "Pick exactly 3 custom MATCH digits";
+      safeToast("Pick exactly 3 MATCH digits for the batch.", "error");
+      updateJokerjoeBatchMartingalePanel();
+      return;
+    }
     const batchStake = jokerjoeBatchStakeForStep();
     const perStake = jokerjoePerMatchStakeForBatch(batchStake);
     const batchId = `JJ-MATCH-BATCH-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
@@ -973,12 +1210,13 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
       inProgress: true,
       batchId,
       pendingContracts: {},
-      expected: 3,
+      expected: settings.group.digits.length,
       settled: 0,
       batchStake,
       perStake,
       totalProfit: 0,
       hasWin: false,
+      spacingWait: 0,
       status: "Running",
     });
     const batch = {
@@ -988,6 +1226,7 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
       batchStake,
       perStake,
       totalProfit: 0,
+      exitDigits: [],
       duration: getDurationTicksJokerjoe(),
       symbol: document.getElementById("symbol")?.value || "",
       time: new Date().toLocaleTimeString(),
@@ -1012,9 +1251,15 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
           batch_stake: batchStake,
         },
       });
-      if (!result || result.placed !== 3) {
-        throw new Error(`Only ${result ? result.placed : 0}/3 batch trades were sent`);
+      if (!result || result.placed !== settings.group.digits.length) {
+        throw new Error(`Only ${result ? result.placed : 0}/${settings.group.digits.length} batch trades were sent`);
       }
+      st.expected = Math.max(1, Number(result.placed || settings.group.digits.length || 3));
+      (Array.isArray(result.responses) ? result.responses : []).forEach((resp) => {
+        const placedId = resp && (resp.contract_id || resp.contractId || resp.buy_contract_id || resp.id);
+        if (placedId) st.pendingContracts[String(placedId)] = st.pendingContracts[String(placedId)] || "placed";
+      });
+      scheduleJokerjoeBatchCompletionFallback((Number(batch.duration || 1) * 1200) + 7000);
       safeToast(`${settings.group.label} sent: batch $${batchStake.toFixed(2)} ($${perStake.toFixed(2)} each)`, "success");
     } catch (e) {
       st.running = false;
@@ -1037,7 +1282,8 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     const st = state.batchMartingale;
     if (!batchId || batchId !== st.batchId) return;
     const cid = entry.contract_id || entry.contractId || entry.buy_contract_id || entry.id;
-    if (cid) st.pendingContracts[String(cid)] = true;
+    if (cid && !st.pendingContracts[String(cid)]) st.pendingContracts[String(cid)] = "placed";
+    st.expected = Math.max(Number(st.expected || 0), jokerjoeBatchKnownCount(), 1);
     st.status = "Running";
     updateJokerjoeBatchMartingalePanel();
   }
@@ -1046,49 +1292,505 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     if (!entry || String(entry.profile || "").toUpperCase() !== PROFILE) return;
     const st = state.batchMartingale;
     const batchId = getJokerjoeBatchIdFromMode(entry.mode);
-    if (!batchId || batchId !== st.batchId || !st.inProgress) return;
+    if (!batchId || batchId !== st.batchId || !st.currentBatch) return;
     const cid = String(entry.contract_id || entry.contractId || entry.buy_contract_id || entry.id || "");
     if (cid && st.pendingContracts[cid] === "settled") return;
     const outcome = resolveJokerjoeTradeOutcome(entry);
     if (!outcome) return;
     if (cid) st.pendingContracts[cid] = "settled";
-    st.settled = Math.min(3, Number(st.settled || 0) + 1);
+    else st.pendingContracts[`unknown_${Date.now()}_${Math.floor(Math.random() * 1000)}`] = "settled";
+    st.settled = jokerjoeBatchSettledCount();
     const profit = Number(entry.profit ?? entry.profit_value ?? 0) || 0;
     st.totalProfit = Number((Number(st.totalProfit || 0) + profit).toFixed(2));
     if (outcome === "WIN" || profit > 0) st.hasWin = true;
     if (st.currentBatch) {
+      const exitDigit = extractBlackcardExitDigitJokerjoe(entry || {});
+      if (exitDigit !== null && exitDigit !== undefined && exitDigit !== "") {
+        st.currentBatch.exitDigits = Array.isArray(st.currentBatch.exitDigits) ? st.currentBatch.exitDigits : [];
+        const exitText = String(exitDigit);
+        if (!st.currentBatch.exitDigits.map(String).includes(exitText)) st.currentBatch.exitDigits.push(exitDigit);
+      }
       st.currentBatch.totalProfit = st.totalProfit;
-      renderJokerjoeBatchMartingaleHistory(st.currentBatch, st.settled < 3);
+      const expected = Math.max(1, Number(st.expected || 0), jokerjoeBatchKnownCount());
+      renderJokerjoeBatchMartingaleHistory(st.currentBatch, st.settled < expected);
     }
-    if (st.settled < 3) {
-      st.status = st.hasWin ? "Win found - waiting for batch close" : `Waiting for batch close ${st.settled}/3`;
+    const expected = Math.max(1, Number(st.expected || 0), jokerjoeBatchKnownCount());
+    if (st.settled < expected) {
+      st.status = st.hasWin ? "Win found - waiting for batch close" : `Waiting for batch close ${st.settled}/${expected}`;
+      scheduleJokerjoeBatchCompletionFallback((Number(st.currentBatch.duration || 1) * 1200) + 7000);
       updateJokerjoeBatchMartingalePanel();
       return;
     }
-    const batchWon = !!st.hasWin || st.totalProfit > 0;
-    if (st.currentBatch) renderJokerjoeBatchMartingaleHistory(st.currentBatch, false);
-    st.inProgress = false;
-    st.lastResult = batchWon ? "WIN" : "LOSS";
-    if (batchWon) {
-      st.step = 1;
-      st.running = false;
-      st.enabled = false;
-      st.stopRequested = false;
-      st.status = "Reset";
-      safeToast(`${st.currentBatch ? st.currentBatch.label : "Match Batch"} won ${signedMoney(st.totalProfit)}`, "success");
-    } else if (st.enabled && st.running && !st.stopRequested) {
-      st.step = Math.min(readJokerjoeBatchMartingaleSettings().maxSteps, st.step + 1);
-      st.status = "Running next batch";
-      safeToast(`Match Batch loss ${signedMoney(st.totalProfit)} - next batch $${jokerjoeBatchStakeForStep().toFixed(2)}`, "error");
-      if (st.restartTimer) clearTimeout(st.restartTimer);
-      st.restartTimer = setTimeout(() => {
-        st.restartTimer = null;
-        if (st.enabled && st.running && !st.stopRequested && !st.inProgress) placeJokerjoeBatchMartingaleTrade({ continuation: true });
-      }, 700);
-    } else {
-      st.status = "Ready";
+    finalizeJokerjoeBatchMartingale();
+  }
+
+  function getJokerjoeKoolkidMatchBatchIdFromMode(mode) {
+    const text = String(mode || "");
+    return text.toLowerCase().startsWith("jokerjoe_koolkid_match012|") ? text.split("|")[1] || "" : "";
+  }
+
+  function getJokerjoeKoolkidOver3IdFromMode(mode) {
+    const text = String(mode || "");
+    return text.toLowerCase().startsWith("jokerjoe_koolkid_over3|") ? text.split("|")[1] || "" : "";
+  }
+
+  function readJokerjoeKoolkidNumber(id, fallback, min, max) {
+    const el = getEl(id);
+    const raw = el ? Number(el.value) : Number(fallback);
+    let value = Number.isFinite(raw) ? raw : Number(fallback);
+    if (Number.isFinite(Number(min))) value = Math.max(Number(min), value);
+    if (Number.isFinite(Number(max))) value = Math.min(Number(max), value);
+    return Number(value.toFixed(2));
+  }
+
+  function getJokerjoeKoolkidOver3Stake(baseStake) {
+    const kk = state.koolkidCombo;
+    const base = Number(baseStake);
+    if (!Number.isFinite(base) || base <= 0) return 1;
+    if (!kk.over3ReinvestOn) {
+      kk.over3BaseStake = Number(base.toFixed(2));
+      kk.over3ProfitBank = 0;
+      return Number(base.toFixed(2));
     }
-    updateJokerjoeBatchMartingalePanel();
+    if (!Number.isFinite(Number(kk.over3BaseStake)) || Math.abs(Number(kk.over3BaseStake) - base) > 0.009) {
+      kk.over3BaseStake = Number(base.toFixed(2));
+      kk.over3ProfitBank = 0;
+    }
+    return Number((Number(kk.over3BaseStake) + Math.max(0, Number(kk.over3ProfitBank) || 0)).toFixed(2));
+  }
+
+  function getJokerjoeKoolkidMatchDigits() {
+    return state.koolkidCombo && state.koolkidCombo.lowerProfitsBetterWins ? [0, 1, 2, 3] : [0, 1, 2];
+  }
+
+  function readJokerjoeKoolkidSettings() {
+    const matchDigits = getJokerjoeKoolkidMatchDigits();
+    const matchDigitsText = matchDigits.join(",");
+    const matchLabel = `KOOLKID Match Batch ${matchDigitsText}`;
+    const minBatchStake = Number((matchDigits.length * 0.35).toFixed(2));
+    const rawBatch = readJokerjoeKoolkidNumber("jokerjoeKoolkidMatchStake", minBatchStake, minBatchStake, 1000000);
+    const perMatchStake = Number(Math.max(0.35, rawBatch / Math.max(1, matchDigits.length)).toFixed(2));
+    const matchBatchStake = Number((perMatchStake * Math.max(1, matchDigits.length)).toFixed(2));
+    const over3BaseStake = readJokerjoeKoolkidNumber("jokerjoeKoolkidOver3Stake", 1, 0.35, 1000000);
+    const over3Stake = getJokerjoeKoolkidOver3Stake(over3BaseStake);
+    return { matchBatchStake, perMatchStake, over3BaseStake, over3Stake, matchDigits, matchDigitsText, matchLabel, minBatchStake };
+  }
+
+  function renderJokerjoeKoolkidPopup() {
+    const kk = state.koolkidCombo;
+    const settings = readJokerjoeKoolkidSettings();
+    const btn = getEl("jokerjoeKoolkidBtn");
+    if (btn) {
+      btn.disabled = !!kk.busy;
+      btn.style.opacity = kk.busy ? "0.68" : "1";
+      btn.style.cursor = kk.busy ? "wait" : "pointer";
+      btn.innerText = kk.busy ? "💲KOOLKID RUNNING..." : "💲KOOLKID💲";
+    }
+    const summary = getEl("jokerjoeKoolkidSummary");
+    if (summary) {
+      summary.innerText = `Places OVER 3 and a Match ${settings.matchDigitsText} batch together. The Match digits show as one combined batch row in trade history.`;
+    }
+    const lowerToggle = getEl("jokerjoeKoolkidLowerProfitToggle");
+    if (lowerToggle) {
+      lowerToggle.innerText = kk.lowerProfitsBetterWins ? "ON" : "OFF";
+      lowerToggle.style.background = kk.lowerProfitsBetterWins ? "#22c55e" : "#334155";
+      lowerToggle.style.color = kk.lowerProfitsBetterWins ? "#04130a" : "#f8fafc";
+      lowerToggle.setAttribute("aria-pressed", kk.lowerProfitsBetterWins ? "true" : "false");
+    }
+    const lowerPreview = getEl("jokerjoeKoolkidLowerProfitPreview");
+    if (lowerPreview) {
+      lowerPreview.innerText = kk.lowerProfitsBetterWins
+        ? "ON - Match 0,1,2,3 same tick"
+        : "OFF - Match 0,1,2 only";
+      lowerPreview.style.color = kk.lowerProfitsBetterWins ? "#86efac" : "#94a3b8";
+    }
+    const stakeLabel = getEl("jokerjoeKoolkidMatchStakeLabel");
+    if (stakeLabel) stakeLabel.innerText = `Match ${settings.matchDigitsText} batch stake`;
+    const matchStakeInput = getEl("jokerjoeKoolkidMatchStake");
+    if (matchStakeInput) {
+      matchStakeInput.min = settings.minBatchStake.toFixed(2);
+      const currentValue = Number(matchStakeInput.value);
+      if (!Number.isFinite(currentValue) || currentValue < settings.minBatchStake) {
+        matchStakeInput.value = settings.minBatchStake.toFixed(2);
+      }
+    }
+    const matchPreview = getEl("jokerjoeKoolkidMatchPreview");
+    if (matchPreview) matchPreview.innerText = `${money(settings.perMatchStake)} per MATCH digit • ${money(settings.matchBatchStake)} batch • digits ${settings.matchDigitsText}`;
+    const toggle = getEl("jokerjoeKoolkidReinvestToggle");
+    if (toggle) {
+      toggle.innerText = kk.over3ReinvestOn ? "ON" : "OFF";
+      toggle.style.background = kk.over3ReinvestOn ? "#22c55e" : "#334155";
+      toggle.style.color = kk.over3ReinvestOn ? "#04130a" : "#f8fafc";
+      toggle.setAttribute("aria-pressed", kk.over3ReinvestOn ? "true" : "false");
+    }
+    const preview = getEl("jokerjoeKoolkidReinvestPreview");
+    if (preview) {
+      preview.innerText = kk.over3ReinvestOn
+        ? `ON - next OVER 3 stake ${money(settings.over3Stake)} (bank ${money(kk.over3ProfitBank || 0)})${kk.over3ResetAfter2Wins ? ` - wins ${Number(kk.over3WinCount || 0)}/2` : ""}`
+        : `OFF - fixed OVER 3 stake ${money(settings.over3BaseStake)}`;
+      preview.style.color = kk.over3ReinvestOn ? "#86efac" : "#94a3b8";
+    }
+    const resetToggle = getEl("jokerjoeKoolkidReset2Toggle");
+    if (resetToggle) {
+      resetToggle.innerText = kk.over3ResetAfter2Wins ? "ON" : "OFF";
+      resetToggle.style.background = kk.over3ResetAfter2Wins ? "#22c55e" : "#334155";
+      resetToggle.style.color = kk.over3ResetAfter2Wins ? "#04130a" : "#f8fafc";
+      resetToggle.setAttribute("aria-pressed", kk.over3ResetAfter2Wins ? "true" : "false");
+      resetToggle.disabled = !kk.over3ReinvestOn;
+      resetToggle.style.opacity = kk.over3ReinvestOn ? "1" : "0.58";
+    }
+    const resetPreview = getEl("jokerjoeKoolkidReset2Preview");
+    if (resetPreview) {
+      resetPreview.innerText = kk.over3ResetAfter2Wins
+        ? `ON - resets OVER 3 profit bank after 2 wins (${Number(kk.over3WinCount || 0)}/2)`
+        : "OFF - keep profit bank running";
+      resetPreview.style.color = kk.over3ResetAfter2Wins ? "#86efac" : "#94a3b8";
+    }
+    const placeBtn = getEl("jokerjoeKoolkidPlaceBtn");
+    if (placeBtn) {
+      placeBtn.disabled = !!kk.busy;
+      placeBtn.style.opacity = kk.busy ? "0.6" : "1";
+      placeBtn.style.cursor = kk.busy ? "wait" : "pointer";
+      placeBtn.innerText = `PLACE OVER 3 + MATCH ${settings.matchDigitsText}`;
+    }
+    const status = getEl("jokerjoeKoolkidStatus");
+    if (status && !kk.busy && !String(status.dataset.locked || "")) {
+      status.innerText = `Ready. MATCH ${settings.matchDigitsText} batch ${money(settings.matchBatchStake)} + OVER 3 ${money(settings.over3Stake)}.`;
+      status.style.color = "#94a3b8";
+    }
+  }
+
+  function setJokerjoeKoolkidStatus(text, color) {
+    const status = getEl("jokerjoeKoolkidStatus");
+    if (!status) return;
+    status.dataset.locked = "1";
+    status.innerText = text;
+    status.style.color = color || "#94a3b8";
+  }
+
+  function renderJokerjoeKoolkidMatchBatchHistory(batch, pending) {
+    if (!batch || !batch.id) return;
+    try {
+      if (typeof upsertTradeInStore !== "function" || typeof renderTradeList !== "function") return;
+      purgeJokerjoeKoolkidMatchBatchLegRows(batch);
+      const profit = Number(batch.totalProfit || 0);
+      const result = pending ? "PENDING" : (profit > 0 ? "WIN" : "LOSS");
+      const exitDigits = Array.isArray(batch.exitDigits) ? batch.exitDigits.filter((digit) => digit !== null && digit !== undefined && digit !== "") : [];
+      upsertTradeInStore({
+        profile: PROFILE,
+        type: batch.label,
+        barrier: batch.digits.join(","),
+        stake: Number(batch.batchStake || 0).toFixed(2),
+        symbol: batch.symbol,
+        time: batch.time || new Date().toLocaleTimeString(),
+        contract_id: batch.id,
+        duration: batch.duration,
+        duration_unit: "t",
+        status: result,
+        result,
+        pending: !!pending,
+        profit: pending ? 0 : Number(profit.toFixed(2)),
+        exit_digit: exitDigits.length ? exitDigits.join(",") : undefined,
+        mode: "jokerjoe_koolkid_match012_visible",
+      });
+      if (typeof activeProfile !== "undefined" && String(activeProfile || "").toUpperCase() === PROFILE) renderTradeList(PROFILE);
+    } catch (e) {}
+  }
+
+  function purgeJokerjoeKoolkidMatchBatchLegRows(batch) {
+    if (!batch || !batch.id) return;
+    try {
+      if (typeof tradeStore === "undefined" || !tradeStore || !Array.isArray(tradeStore[PROFILE])) return;
+      const visibleBatchId = String(batch.id);
+      const batchModePrefix = `jokerjoe_koolkid_match012|${visibleBatchId}`;
+      const batchDigits = new Set((Array.isArray(batch.digits) ? batch.digits : []).map((digit) => String(Number(digit))));
+      tradeStore[PROFILE] = (tradeStore[PROFILE] || []).filter((item) => {
+        if (!item || typeof item !== "object") return true;
+        const cid = String(item.contract_id ?? item.contractId ?? "");
+        if (cid === visibleBatchId) return true;
+        const mode = String(item.mode || "");
+        if (mode === "jokerjoe_koolkid_match012_visible") return true;
+        if (mode.startsWith(batchModePrefix)) return false;
+        const batchId = String(item.batch_id || "");
+        if (batchId && batchId === visibleBatchId) return false;
+        const type = String(item.type || "").toUpperCase().trim();
+        const barrier = String(item.barrier ?? "").trim();
+        if ((type === "MATCHES" || type.startsWith("MATCH ")) && batchDigits.has(barrier) && item.symbol === batch.symbol) {
+          return false;
+        }
+        return true;
+      });
+    } catch (e) {}
+  }
+
+  function clearJokerjoeKoolkidMatchBatchTimer() {
+    const mb = state.koolkidCombo && state.koolkidCombo.matchBatch;
+    if (mb && mb.completionTimer) {
+      clearTimeout(mb.completionTimer);
+      mb.completionTimer = null;
+    }
+  }
+
+  function jokerjoeKoolkidMatchBatchKnownCount() {
+    const mb = state.koolkidCombo && state.koolkidCombo.matchBatch;
+    return Object.keys((mb && mb.pendingContracts) || {}).length;
+  }
+
+  function jokerjoeKoolkidMatchBatchSettledCount() {
+    const mb = state.koolkidCombo && state.koolkidCombo.matchBatch;
+    return Object.values((mb && mb.pendingContracts) || {}).filter((item) => item === "settled").length;
+  }
+
+  function finalizeJokerjoeKoolkidMatchBatch() {
+    const mb = state.koolkidCombo && state.koolkidCombo.matchBatch;
+    if (!mb || !mb.currentBatch) return;
+    clearJokerjoeKoolkidMatchBatchTimer();
+    mb.currentBatch.totalProfit = Number(mb.totalProfit || 0);
+    renderJokerjoeKoolkidMatchBatchHistory(mb.currentBatch, false);
+    mb.settled = Math.max(Number(mb.settled || 0), jokerjoeKoolkidMatchBatchSettledCount());
+  }
+
+  function scheduleJokerjoeKoolkidMatchBatchFallback(delayMs) {
+    const mb = state.koolkidCombo && state.koolkidCombo.matchBatch;
+    clearJokerjoeKoolkidMatchBatchTimer();
+    if (!mb || !mb.currentBatch) return;
+    mb.completionTimer = setTimeout(() => {
+      mb.completionTimer = null;
+      if (!mb.currentBatch) return;
+      const settled = jokerjoeKoolkidMatchBatchSettledCount();
+      const expected = Math.max(1, Number(mb.expected || 0), jokerjoeKoolkidMatchBatchKnownCount());
+      if (settled > 0 || settled >= expected) finalizeJokerjoeKoolkidMatchBatch();
+    }, Math.max(4000, Number(delayMs || 9000)));
+  }
+
+  function rememberJokerjoeKoolkidMatchBatchTrade(entry) {
+    if (!entry || String(entry.profile || "").toUpperCase() !== PROFILE) return;
+    const batchId = getJokerjoeKoolkidMatchBatchIdFromMode(entry.mode);
+    const mb = state.koolkidCombo && state.koolkidCombo.matchBatch;
+    if (!batchId || !mb || batchId !== mb.batchId) return;
+    const cid = entry.contract_id || entry.contractId || entry.buy_contract_id || entry.id;
+    if (cid && !mb.pendingContracts[String(cid)]) mb.pendingContracts[String(cid)] = "placed";
+    mb.expected = Math.max(Number(mb.expected || 0), jokerjoeKoolkidMatchBatchKnownCount(), 1);
+    if (mb.currentBatch) renderJokerjoeKoolkidMatchBatchHistory(mb.currentBatch, true);
+  }
+
+  function updateJokerjoeKoolkidMatchBatchFromResult(entry) {
+    if (!entry || String(entry.profile || "").toUpperCase() !== PROFILE) return;
+    const batchId = getJokerjoeKoolkidMatchBatchIdFromMode(entry.mode);
+    const mb = state.koolkidCombo && state.koolkidCombo.matchBatch;
+    if (!batchId || !mb || batchId !== mb.batchId || !mb.currentBatch) return;
+    const cid = String(entry.contract_id || entry.contractId || entry.buy_contract_id || entry.id || "");
+    if (cid && mb.pendingContracts[cid] === "settled") return;
+    const outcome = resolveJokerjoeTradeOutcome(entry);
+    if (!outcome) return;
+    if (cid) mb.pendingContracts[cid] = "settled";
+    else mb.pendingContracts[`unknown_${Date.now()}_${Math.floor(Math.random() * 1000)}`] = "settled";
+    mb.settled = jokerjoeKoolkidMatchBatchSettledCount();
+    const profit = Number(entry.profit ?? entry.profit_value ?? 0) || 0;
+    mb.totalProfit = Number((Number(mb.totalProfit || 0) + profit).toFixed(2));
+    const exitDigit = extractBlackcardExitDigitJokerjoe(entry || {});
+    if (exitDigit !== null && exitDigit !== undefined && exitDigit !== "") {
+      mb.currentBatch.exitDigits = Array.isArray(mb.currentBatch.exitDigits) ? mb.currentBatch.exitDigits : [];
+      const exitText = String(exitDigit);
+      if (!mb.currentBatch.exitDigits.map(String).includes(exitText)) mb.currentBatch.exitDigits.push(exitDigit);
+    }
+    mb.currentBatch.totalProfit = mb.totalProfit;
+    const expected = Math.max(1, Number(mb.expected || 0), jokerjoeKoolkidMatchBatchKnownCount());
+    renderJokerjoeKoolkidMatchBatchHistory(mb.currentBatch, mb.settled < expected);
+    if (mb.settled < expected) {
+      scheduleJokerjoeKoolkidMatchBatchFallback((Number(mb.currentBatch.duration || 1) * 1200) + 7000);
+      return;
+    }
+    finalizeJokerjoeKoolkidMatchBatch();
+  }
+
+  function handleJokerjoeKoolkidOver3Result(entry) {
+    if (!entry || String(entry.profile || "").toUpperCase() !== PROFILE) return;
+    const comboId = getJokerjoeKoolkidOver3IdFromMode(entry.mode);
+    if (!comboId) return;
+    const kk = state.koolkidCombo;
+    const cid = String(entry.contract_id || entry.contractId || entry.buy_contract_id || entry.id || comboId);
+    if (kk.over3HandledResults[cid]) return;
+    const outcome = resolveJokerjoeTradeOutcome(entry);
+    if (!outcome) return;
+    kk.over3HandledResults[cid] = true;
+    const profit = getBlackcardTradeProfitJokerjoe(entry);
+    if (kk.over3ReinvestOn && outcome === "WIN" && Number.isFinite(profit) && profit > 0) {
+      kk.over3ProfitBank = Number((Math.max(0, Number(kk.over3ProfitBank) || 0) + profit).toFixed(2));
+      kk.over3WinCount = Number(kk.over3WinCount || 0) + 1;
+      if (kk.over3ResetAfter2Wins && kk.over3WinCount >= 2) {
+        kk.over3ProfitBank = 0;
+        kk.over3WinCount = 0;
+        setJokerjoeKoolkidStatus("OVER 3 reinvest reset after 2 wins. Next OVER 3 stake is back to base.", "#86efac");
+      }
+    } else if (outcome === "LOSS" || (Number.isFinite(profit) && profit < 0)) {
+      kk.over3ProfitBank = 0;
+      kk.over3WinCount = 0;
+    }
+    renderJokerjoeKoolkidPopup();
+  }
+
+  async function placeJokerjoeKoolkidComboTrade() {
+    const kk = state.koolkidCombo;
+    if (kk.busy) return;
+    if (typeof apiConnected !== "undefined" && !apiConnected) {
+      safeToast("Connect your API first.", "error");
+      return;
+    }
+    const settings = readJokerjoeKoolkidSettings();
+    const symbol = typeof window.getConfirmedMarketSymbol === "function"
+      ? window.getConfirmedMarketSymbol()
+      : ((document.getElementById("symbol") || {}).value || "R_25");
+    const duration = getDurationTicksJokerjoe();
+    const comboId = `JJ-KOOLKID-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+    const matchMode = `jokerjoe_koolkid_match012|${comboId}`;
+    const over3Mode = `jokerjoe_koolkid_over3|${comboId}`;
+    const mb = kk.matchBatch;
+    clearJokerjoeKoolkidMatchBatchTimer();
+    Object.assign(mb, {
+      batchId: comboId,
+      pendingContracts: {},
+      expected: settings.matchDigits.length,
+      settled: 0,
+      totalProfit: 0,
+      currentBatch: {
+        id: comboId,
+        label: settings.matchLabel,
+        digits: settings.matchDigits.slice(),
+        batchStake: settings.matchBatchStake,
+        perStake: settings.perMatchStake,
+        totalProfit: 0,
+        exitDigits: [],
+        duration,
+        symbol,
+        time: new Date().toLocaleTimeString(),
+      },
+    });
+    kk.busy = true;
+    const status = getEl("jokerjoeKoolkidStatus");
+    if (status) status.dataset.locked = "1";
+    renderJokerjoeKoolkidPopup();
+    setJokerjoeKoolkidStatus(`Sending same-tick combo: MATCH ${settings.matchDigitsText} batch ${money(settings.matchBatchStake)} + OVER 3 ${money(settings.over3Stake)}...`, "#38bdf8");
+    renderJokerjoeKoolkidMatchBatchHistory(mb.currentBatch, true);
+    try {
+      const matchJob = placeBatchManualTradesJokerjoe("MATCHES", settings.matchDigits, {
+        sameTick: true,
+        turbo: false,
+        fireAndForget: false,
+        skipMartha: true,
+        stakeOverride: settings.perMatchStake,
+        extraPayload: {
+          mode: matchMode,
+          action: settings.matchDigits.length === 4 ? "JOKERJOE_KOOLKID_MATCH_0123" : "JOKERJOE_KOOLKID_MATCH_012",
+          label: settings.matchLabel,
+          hide_from_history: true,
+          batch_id: comboId,
+          batch_label: settings.matchLabel,
+          batch_stake: settings.matchBatchStake,
+        },
+      });
+      const over3Job = sendFastManualTradeJokerjoe({
+        type: "OVER",
+        barrier: 3,
+        stake: settings.over3Stake,
+        amount: settings.over3Stake,
+        duration,
+        duration_unit: "t",
+        symbol,
+        mode: over3Mode,
+        source: "jokerjoe_koolkid",
+      }, {
+        turbo: false,
+        queue: false,
+        useSocket: false,
+        fireAndForget: false,
+        skipMartha: true,
+      });
+      const results = await Promise.allSettled([matchJob, over3Job]);
+      const matchResult = results[0].status === "fulfilled" ? results[0].value : null;
+      const over3Result = results[1].status === "fulfilled" ? results[1].value : null;
+      const matchPlaced = Number(matchResult && matchResult.placed) || 0;
+      const over3Placed = !!(over3Result && over3Result.data && over3Result.data.status === "success");
+      mb.expected = Math.max(1, matchPlaced || settings.matchDigits.length);
+      (Array.isArray(matchResult && matchResult.responses) ? matchResult.responses : []).forEach((resp) => {
+        const placedId = resp && (resp.contract_id || resp.contractId || resp.buy_contract_id || resp.id);
+        if (placedId) mb.pendingContracts[String(placedId)] = mb.pendingContracts[String(placedId)] || "placed";
+      });
+      if (matchPlaced <= 0) renderJokerjoeKoolkidMatchBatchHistory(mb.currentBatch, false);
+      else scheduleJokerjoeKoolkidMatchBatchFallback((Number(duration || 1) * 1200) + 7000);
+      if (matchPlaced === settings.matchDigits.length && over3Placed) {
+        safeToast("💲KOOLKID💲 combo sent.", "success");
+        setJokerjoeKoolkidStatus(`Combo sent: MATCH ${settings.matchDigitsText} batch ${money(settings.matchBatchStake)} + OVER 3 ${money(settings.over3Stake)}.`, "#86efac");
+      } else {
+        safeToast(`💲KOOLKID💲 partial: MATCH ${matchPlaced}/${settings.matchDigits.length}, OVER 3 ${over3Placed ? "sent" : "failed"}.`, "error");
+        setJokerjoeKoolkidStatus(`Partial send: MATCH ${matchPlaced}/${settings.matchDigits.length}, OVER 3 ${over3Placed ? "sent" : "failed"}.`, "#fca5a5");
+      }
+    } catch (err) {
+      renderJokerjoeKoolkidMatchBatchHistory(mb.currentBatch, false);
+      safeToast((err && err.message) || "💲KOOLKID💲 combo failed", "error");
+      setJokerjoeKoolkidStatus("Combo failed. Try again.", "#fca5a5");
+    } finally {
+      kk.busy = false;
+      renderJokerjoeKoolkidPopup();
+    }
+  }
+
+  function openJokerjoeKoolkidPopup() {
+    const popup = getEl("jokerjoeKoolkidPopup");
+    if (!popup) return;
+    state.koolkidCombo.modalOpen = true;
+    const status = getEl("jokerjoeKoolkidStatus");
+    if (status) status.dataset.locked = "";
+    popup.style.display = "flex";
+    renderJokerjoeKoolkidPopup();
+  }
+
+  function closeJokerjoeKoolkidPopup() {
+    const popup = getEl("jokerjoeKoolkidPopup");
+    if (popup) popup.style.display = "none";
+    state.koolkidCombo.modalOpen = false;
+  }
+
+  function toggleJokerjoeKoolkidReinvest() {
+    const kk = state.koolkidCombo;
+    kk.over3ReinvestOn = !kk.over3ReinvestOn;
+    if (!kk.over3ReinvestOn) {
+      kk.over3ProfitBank = 0;
+      kk.over3BaseStake = null;
+      kk.over3WinCount = 0;
+      kk.over3ResetAfter2Wins = false;
+    } else {
+      kk.over3BaseStake = readJokerjoeKoolkidNumber("jokerjoeKoolkidOver3Stake", 1, 0.35, 1000000);
+      kk.over3ProfitBank = 0;
+      kk.over3WinCount = 0;
+    }
+    const status = getEl("jokerjoeKoolkidStatus");
+    if (status) status.dataset.locked = "";
+    renderJokerjoeKoolkidPopup();
+  }
+
+  function toggleJokerjoeKoolkidResetAfter2Wins() {
+    const kk = state.koolkidCombo;
+    if (!kk.over3ReinvestOn) return;
+    kk.over3ResetAfter2Wins = !kk.over3ResetAfter2Wins;
+    kk.over3WinCount = 0;
+    const status = getEl("jokerjoeKoolkidStatus");
+    if (status) status.dataset.locked = "";
+    renderJokerjoeKoolkidPopup();
+  }
+
+  function toggleJokerjoeKoolkidLowerProfits() {
+    const kk = state.koolkidCombo;
+    kk.lowerProfitsBetterWins = !kk.lowerProfitsBetterWins;
+    const status = getEl("jokerjoeKoolkidStatus");
+    if (status) status.dataset.locked = "";
+    renderJokerjoeKoolkidPopup();
+  }
+
+  function unlockJokerjoeKoolkidStatusAndRender() {
+    const status = getEl("jokerjoeKoolkidStatus");
+    if (status) status.dataset.locked = "";
+    renderJokerjoeKoolkidPopup();
   }
 
   function getMatchSniper5xSelectedDigitsJokerjoe() {
@@ -3025,6 +3727,7 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     updateRandomMatchesDiffersButtonJokerjoe();
     updateAdvancedAIModeButtonsJokerjoe();
     updateJokerjoeBatchMartingalePanel();
+    renderJokerjoeKoolkidPopup();
   }
 
 
@@ -3094,20 +3797,27 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
 
       bind("trade_placed", (entry) => {
         const isBatchMartingale = !!getJokerjoeBatchIdFromMode((entry || {}).mode);
-        if (!isActive() && !isBatchMartingale) return;
+        const isKoolkidMatchBatch = !!getJokerjoeKoolkidMatchBatchIdFromMode((entry || {}).mode);
+        const isKoolkidOver3 = !!getJokerjoeKoolkidOver3IdFromMode((entry || {}).mode);
+        if (!isActive() && !isBatchMartingale && !isKoolkidMatchBatch && !isKoolkidOver3) return;
         rememberBlackcardTradeJokerjoe(entry || {});
         rememberJokerjoeBatchMartingaleTrade(entry || {});
+        rememberJokerjoeKoolkidMatchBatchTrade(entry || {});
       });
 
       bind("trade_result", (entry) => {
         const isBatchMartingale = !!getJokerjoeBatchIdFromMode((entry || {}).mode);
-        if (!isActive() && !isBatchMartingale) return;
+        const isKoolkidMatchBatch = !!getJokerjoeKoolkidMatchBatchIdFromMode((entry || {}).mode);
+        const isKoolkidOver3 = !!getJokerjoeKoolkidOver3IdFromMode((entry || {}).mode);
+        if (!isActive() && !isBatchMartingale && !isKoolkidMatchBatch && !isKoolkidOver3) return;
         handleJokerjoeLiveDigitTradeResult(entry || {});
         handleProfileReinvestResultJokerjoe(entry || {});
         handleBlackcardTradeResultJokerjoe(entry || {});
         handleKid100WinsTradeResultJokerjoe(entry || {});
         onJokerjoeTradeResultForLowestAI(entry || {});
         updateJokerjoeBatchMartingaleFromResult(entry || {});
+        updateJokerjoeKoolkidMatchBatchFromResult(entry || {});
+        handleJokerjoeKoolkidOver3Result(entry || {});
       });
 
       bind("stats_update", (data) => {
@@ -3116,6 +3826,9 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
       });
 
       bind("tick", (data) => {
+        const batchSpacingActive = !!(state.batchMartingale && Number(state.batchMartingale.spacingWait || 0) > 0);
+        if (!isActive() && !batchSpacingActive) return;
+        processJokerjoeBatchMartingaleTickSpacing();
         if (!isActive()) return;
         trackBlackcardTickJokerjoe(data || {});
         if (isKid100WinsAutoActiveJokerjoe() && data && data.tick_count !== undefined) {
@@ -3352,6 +4065,15 @@ window.updateJokerjoeBatchMartingalePanel = updateJokerjoeBatchMartingalePanel;
 window.toggleJokerjoeBatchMartingale = toggleJokerjoeBatchMartingale;
 window.placeJokerjoeBatchMartingaleTrade = placeJokerjoeBatchMartingaleTrade;
 window.quickStopJokerjoeBatchMartingale = quickStopJokerjoeBatchMartingale;
+window.toggleJokerjoeBatchMartingaleDigit = toggleJokerjoeBatchMartingaleDigit;
+window.openJokerjoeKoolkidPopup = openJokerjoeKoolkidPopup;
+window.closeJokerjoeKoolkidPopup = closeJokerjoeKoolkidPopup;
+window.renderJokerjoeKoolkidPopup = renderJokerjoeKoolkidPopup;
+window.unlockJokerjoeKoolkidStatusAndRender = unlockJokerjoeKoolkidStatusAndRender;
+window.toggleJokerjoeKoolkidReinvest = toggleJokerjoeKoolkidReinvest;
+window.toggleJokerjoeKoolkidResetAfter2Wins = toggleJokerjoeKoolkidResetAfter2Wins;
+window.toggleJokerjoeKoolkidLowerProfits = toggleJokerjoeKoolkidLowerProfits;
+window.placeJokerjoeKoolkidComboTrade = placeJokerjoeKoolkidComboTrade;
 
 const previousProfileReinvestStakeHookJokerjoe = window.getProfileReinvestStake;
 window.getProfileReinvestStake = function (profile, stake) {
@@ -3500,6 +4222,7 @@ if (!window.__jokerjoeTurboSyncBound) {
     if (evt.key !== "Escape") return;
     if (state.aiAutoModalOpen) closeAIAutoModeModalJokerjoe();
     if (state.randomMatchesDiffersModalOpen) closeRandomMatchesDiffersModalJokerjoe();
+    if (state.koolkidCombo && state.koolkidCombo.modalOpen) closeJokerjoeKoolkidPopup();
   });
 
 

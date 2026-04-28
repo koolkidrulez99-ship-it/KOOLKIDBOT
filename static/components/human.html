@@ -704,6 +704,14 @@
                             <option value="10">10 ticks</option>
                         </select>
                     </label>
+                    <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                        Take Profit
+                        <input id="humanParityMartingaleTp" type="number" min="0" step="0.01" value="0" placeholder="0 = off" oninput="updateHumanParityMartingalePanel()" style="width:100%; min-height:38px;">
+                    </label>
+                    <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                        Stop Loss
+                        <input id="humanParityMartingaleSl" type="number" min="0" step="0.01" value="0" placeholder="0 = off" oninput="updateHumanParityMartingalePanel()" style="width:100%; min-height:38px;">
+                    </label>
                 </div>
                 <label style="margin-top:10px; display:flex; align-items:center; gap:8px; color:#cbd5e1; font-size:12px; font-weight:700;">
                     <input id="humanParityMartingaleCapToggle" type="checkbox" onchange="updateHumanParityMartingalePanel()" style="width:16px; height:16px;">
