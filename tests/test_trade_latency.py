@@ -96,7 +96,7 @@ def test_normal_contract_refresh_delays_keep_default_fallback():
     assert delays == server.DEFAULT_CONTRACT_REFRESH_DELAYS
 
 
-def test_schedule_contract_open_refresh_skips_when_subscription_already_exists(monkeypatch):
+def test_schedule_contract_open_refresh_still_checks_when_subscription_already_exists(monkeypatch):
     ws = _DummyWs()
     state = {
         "ws_nonce": "nonce-1",
@@ -111,7 +111,19 @@ def test_schedule_contract_open_refresh_skips_when_subscription_already_exists(m
     ok = server._schedule_contract_open_refresh("cid-fast", "nonce-1", "12345", delays=(0.01,))
 
     assert ok is True
-    assert ws.messages == []
+    assert ws.messages == [{"proposal_open_contract": 1, "contract_id": 12345}]
+
+
+def test_multi_tick_digit_contract_refresh_delays_extend_past_short_window():
+    delays = server._contract_refresh_delays_for_meta({
+        "profile": "KOOLKID",
+        "type": "OVER",
+        "duration": 5,
+        "duration_unit": "t",
+    })
+
+    assert delays[: len(server.FAST_CONTRACT_REFRESH_DELAYS)] == server.FAST_CONTRACT_REFRESH_DELAYS
+    assert max(delays) > max(server.FAST_CONTRACT_REFRESH_DELAYS)
 
 
 def test_buy_confirm_emits_trade_placed_immediately_and_uses_fast_refresh(monkeypatch):
@@ -156,6 +168,55 @@ def test_buy_confirm_emits_trade_placed_immediately_and_uses_fast_refresh(monkey
     assert "_server_event_ms" in trade_events[0][1]
     assert refresh_calls == [("cid-buy", "nonce-buy", 555, server.FAST_CONTRACT_REFRESH_DELAYS)]
     assert ws.messages == [{"proposal_open_contract": 1, "contract_id": 555, "subscribe": 1}]
+
+
+def test_human_pair_buy_confirm_emits_exact_pair_action(monkeypatch):
+    emitted = []
+    refresh_calls = []
+    ws = _DummyWs()
+    state = {
+        "ws_nonce": "nonce-human-pair",
+        "ws_connected": True,
+        "ws": ws,
+        "req_meta": {
+            202: {
+                "profile": "HUMAN",
+                "type": "ASIANS DOWN",
+                "stake": 0.35,
+                "symbol": "R_10",
+                "time": "now",
+                "duration": 2,
+                "duration_unit": "t",
+                "mode": "human_manual_contract",
+                "contract_type": "ASIAND",
+                "pair_batch_id": 900,
+                "pair_batch_size": 2,
+                "pair_leg_index": 1,
+                "pair_action": "ASIANS_DOWN",
+            }
+        },
+        "contract_meta": {},
+        "human_pending_contracts": {},
+        "active_profile": "HUMAN",
+        "strategies": {},
+        "bot_auto_close_timers": {},
+    }
+    monkeypatch.setattr(server, "clients", {"cid-human-pair-buy": state})
+    monkeypatch.setattr(server.socketio, "emit", lambda event, payload=None, room=None: emitted.append((event, payload, room)))
+    monkeypatch.setattr(server, "_schedule_contract_open_refresh", lambda cid, nonce, contract_id, delays=None: refresh_calls.append((cid, nonce, contract_id, delays)) or True)
+    monkeypatch.setattr(server, "_schedule_bot_auto_close", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_upsert_human_pending_contract", lambda *_args, **_kwargs: None)
+
+    server.handle_on_message("cid-human-pair-buy", ws, json.dumps({
+        "req_id": 202,
+        "buy": {"contract_id": 9090, "buy_price": 0.35},
+    }), "nonce-human-pair")
+
+    trade_events = [item for item in emitted if item[0] == "trade_placed"]
+    assert len(trade_events) == 1
+    assert trade_events[0][1]["contract_id"] == 9090
+    assert trade_events[0][1]["action"] == "ASIANS_DOWN"
+    assert trade_events[0][1]["pair_action"] == "ASIANS_DOWN"
 
 
 def test_settled_open_contract_emits_trade_result_immediately(monkeypatch):
@@ -211,6 +272,67 @@ def test_settled_open_contract_emits_trade_result_immediately(monkeypatch):
     assert result_events[0][1]["contract_id"] == 777
     assert result_events[0][1]["result"] == "WIN"
     assert "_server_event_ms" in result_events[0][1]
+
+
+def test_human_pair_result_emits_exact_pair_action(monkeypatch):
+    emitted = []
+
+    class _Strategy:
+        risk_block_reason = None
+
+        def on_contract(self, contract, settled_balance):
+            self.contract = contract
+            self.balance = settled_balance
+
+        def get_last_trade_entry(self):
+            return {"result": "LOSS", "profit": -0.35}
+
+    state = {
+        "active_profile": "HUMAN",
+        "strategies": {"HUMAN": _Strategy()},
+        "contract_meta": {
+            "9191": {
+                "profile": "HUMAN",
+                "type": "ASIANS DOWN",
+                "stake": 0.35,
+                "symbol": "R_10",
+                "time": "now",
+                "duration": 2,
+                "duration_unit": "t",
+                "mode": "human_manual_contract",
+                "contract_type": "ASIAND",
+                "pair_batch_id": 901,
+                "pair_batch_size": 2,
+                "pair_leg_index": 1,
+                "pair_action": "ASIANS_DOWN",
+            }
+        },
+        "human_pending_contracts": {},
+        "processed_contract_ids": set(),
+        "balance": 100.0,
+        "last_known_trade_balance": 100.0,
+        "local_balance_adjustment": 0.0,
+        "profile_budgets": server._new_profile_budget_map(),
+        "bot_auto_close_timers": {},
+    }
+    monkeypatch.setattr(server, "clients", {"cid-human-pair-result": state})
+    monkeypatch.setattr(server.socketio, "emit", lambda event, payload=None, room=None: emitted.append((event, payload, room)))
+    monkeypatch.setattr(server, "send_stats_update", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_emit_balance_payload", lambda *_args, **_kwargs: None)
+
+    server.process_contract("cid-human-pair-result", {
+        "contract_id": 9191,
+        "is_sold": 1,
+        "status": "lost",
+        "profit": -0.35,
+        "sell_price": 0,
+    })
+
+    result_events = [item for item in emitted if item[0] == "trade_result"]
+    assert len(result_events) == 1
+    assert result_events[0][1]["contract_id"] == 9191
+    assert result_events[0][1]["action"] == "ASIANS_DOWN"
+    assert result_events[0][1]["pair_action"] == "ASIANS_DOWN"
 
 
 def test_tick_ui_throttle_does_not_block_trade_result(monkeypatch):
@@ -395,10 +517,12 @@ def test_api_connection_status_reconnects_when_authorize_stays_pending_too_long(
 def test_batch_trade_sleep_seconds_gives_turbo_a_much_faster_lane():
     normal = server._batch_trade_sleep_seconds({}, 0.04)
     turbo = server._batch_trade_sleep_seconds({"turbo": True}, 0.04)
+    same_tick = server._batch_trade_sleep_seconds({"same_tick": True}, 0.04)
 
-    assert normal >= 0.08
+    assert normal == 0.04
     assert turbo == 0.002
     assert turbo < normal
+    assert same_tick == 0.0
 
 
 def test_ensure_trade_socket_ready_skips_reconnect_during_tick_warmup(monkeypatch):
@@ -503,6 +627,6 @@ def test_human_manual_contract_batch_does_not_force_reconnect_on_nonfatal_pair_s
     assert "temporary send rejected" in msg
     assert len(ws.messages) == 1
     assert ws.messages[0]["buy"] == "proposal-ASIANU"
-    assert sleeps == [server.HUMAN_PAIR_BATCH_SEND_DELAY_SEC]
+    assert sleeps == []
     assert marked == []
     assert released == [{"reservation": 1}, {"reservation": 1}]

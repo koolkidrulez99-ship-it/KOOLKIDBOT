@@ -152,6 +152,11 @@ function renderTurboToggleJokerjoe() {
     const ctx = window.LICENSE_CONTEXT || (App() && App().licenseContext) || {};
     return !!(ctx && (ctx.is_lifetime || String(ctx.license_type || "").toLowerCase() === "lifetime"));
   }
+  function isMonthlyOrLifetimeUserJokerjoe() {
+    const ctx = window.LICENSE_CONTEXT || (App() && App().licenseContext) || {};
+    const type = String((ctx && ctx.license_type) || "").toLowerCase();
+    return !!(ctx && (ctx.is_lifetime || ctx.is_monthly || type === "lifetime" || type === "monthly" || type === "beta_testers"));
+  }
   function isKid100WinsFeatureUserJokerjoe() {
     return true;
   }
@@ -1095,21 +1100,22 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
       const known = jokerjoeBatchKnownCount();
       const settled = jokerjoeBatchSettledCount();
       const expected = Math.max(1, Number(st.expected || 0), known);
-      if (settled >= expected || (settled >= Math.max(1, expected - 1) && known >= Math.max(1, expected - 1))) {
+      if (settled >= expected) {
         finalizeJokerjoeBatchMartingale({ forced: true });
         return;
       }
-      if (settled > 0) {
-        finalizeJokerjoeBatchMartingale({ forced: true });
-      }
+      st.status = `Waiting for delayed batch result ${settled}/${expected}`;
+      if (st.currentBatch) renderJokerjoeBatchMartingaleHistory(st.currentBatch, true);
+      updateJokerjoeBatchMartingalePanel();
+      scheduleJokerjoeBatchCompletionFallback(5000);
     }, Math.max(4000, Number(delayMs || 9000)));
   }
 
   function updateJokerjoeBatchMartingalePanel() {
-    const lifetime = isLifetimeBlackcardUserJokerjoe();
+    const allowed = isMonthlyOrLifetimeUserJokerjoe();
     const panel = getEl("jokerjoeBatchMartingalePanel");
-    if (panel) panel.style.display = lifetime ? "" : "none";
-    if (!lifetime) return;
+    if (panel) panel.style.display = allowed ? "" : "none";
+    if (!allowed) return;
     const st = state.batchMartingale;
     const settings = readJokerjoeBatchMartingaleSettings();
     st.group = settings.group.key;
@@ -1162,8 +1168,8 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
   }
 
   function toggleJokerjoeBatchMartingale() {
-    if (!isLifetimeBlackcardUserJokerjoe()) {
-      safeToast("JokerJoe Match Batch Martingale is for lifetime users only.", "error");
+    if (!isMonthlyOrLifetimeUserJokerjoe()) {
+      safeToast("JokerJoe Match Batch Martingale is for monthly and lifetime users only.", "error");
       return;
     }
     const st = state.batchMartingale;
@@ -1184,8 +1190,8 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
   }
 
   async function placeJokerjoeBatchMartingaleTrade(options) {
-    if (!isLifetimeBlackcardUserJokerjoe()) {
-      safeToast("JokerJoe Match Batch Martingale is for lifetime users only.", "error");
+    if (!isMonthlyOrLifetimeUserJokerjoe()) {
+      safeToast("JokerJoe Match Batch Martingale is for monthly and lifetime users only.", "error");
       return;
     }
     const st = state.batchMartingale;
@@ -1379,11 +1385,13 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
   function renderJokerjoeKoolkidPopup() {
     const kk = state.koolkidCombo;
     const settings = readJokerjoeKoolkidSettings();
+    const lifetime = isLifetimeBlackcardUserJokerjoe();
     const btn = getEl("jokerjoeKoolkidBtn");
     if (btn) {
-      btn.disabled = !!kk.busy;
-      btn.style.opacity = kk.busy ? "0.68" : "1";
-      btn.style.cursor = kk.busy ? "wait" : "pointer";
+      btn.disabled = !!(kk.busy || !lifetime);
+      btn.style.opacity = !lifetime ? "0.52" : (kk.busy ? "0.68" : "1");
+      btn.style.cursor = !lifetime ? "not-allowed" : (kk.busy ? "wait" : "pointer");
+      btn.title = lifetime ? "" : "Lifetime users only";
       btn.innerText = kk.busy ? "💲KOOLKID RUNNING..." : "💲KOOLKID💲";
     }
     const summary = getEl("jokerjoeKoolkidSummary");
@@ -1448,9 +1456,9 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     }
     const placeBtn = getEl("jokerjoeKoolkidPlaceBtn");
     if (placeBtn) {
-      placeBtn.disabled = !!kk.busy;
-      placeBtn.style.opacity = kk.busy ? "0.6" : "1";
-      placeBtn.style.cursor = kk.busy ? "wait" : "pointer";
+      placeBtn.disabled = !!(kk.busy || !lifetime);
+      placeBtn.style.opacity = !lifetime ? "0.52" : (kk.busy ? "0.6" : "1");
+      placeBtn.style.cursor = !lifetime ? "not-allowed" : (kk.busy ? "wait" : "pointer");
       placeBtn.innerText = `PLACE OVER 3 + MATCH ${settings.matchDigitsText}`;
     }
     const status = getEl("jokerjoeKoolkidStatus");
@@ -1559,7 +1567,13 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
       if (!mb.currentBatch) return;
       const settled = jokerjoeKoolkidMatchBatchSettledCount();
       const expected = Math.max(1, Number(mb.expected || 0), jokerjoeKoolkidMatchBatchKnownCount());
-      if (settled > 0 || settled >= expected) finalizeJokerjoeKoolkidMatchBatch();
+      if (settled >= expected) {
+        finalizeJokerjoeKoolkidMatchBatch();
+        return;
+      }
+      renderJokerjoeKoolkidMatchBatchHistory(mb.currentBatch, true);
+      setJokerjoeKoolkidStatus(`Waiting for delayed Match batch result ${settled}/${expected}.`, "#fbbf24");
+      scheduleJokerjoeKoolkidMatchBatchFallback(5000);
     }, Math.max(4000, Number(delayMs || 9000)));
   }
 
@@ -1631,6 +1645,10 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
   }
 
   async function placeJokerjoeKoolkidComboTrade() {
+    if (!isLifetimeBlackcardUserJokerjoe()) {
+      safeToast("💲KOOLKID💲 is for lifetime users only.", "error");
+      return;
+    }
     const kk = state.koolkidCombo;
     if (kk.busy) return;
     if (typeof apiConnected !== "undefined" && !apiConnected) {
@@ -1736,6 +1754,10 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
   }
 
   function openJokerjoeKoolkidPopup() {
+    if (!isLifetimeBlackcardUserJokerjoe()) {
+      safeToast("💲KOOLKID💲 is for lifetime users only.", "error");
+      return;
+    }
     const popup = getEl("jokerjoeKoolkidPopup");
     if (!popup) return;
     state.koolkidCombo.modalOpen = true;
@@ -2181,8 +2203,28 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     // Send stake with each manual trade so batch actions (MatchSniper 5x) respect the UI stake.
     // Include both `stake` and `amount` for compatibility with different backend parsers.
     const base = Object.assign({ type: contractType, stake, amount: stake, duration, duration_unit: "t" }, (options && options.extraPayload) || {});
+    const batchPayloads = (digits || []).map((d) => Object.assign({}, base, { barrier: Number(d) }));
+    const app = App();
+    if (sameTick && app && typeof app.sendFastProfileTradeBatch === "function") {
+      const result = await app.sendFastProfileTradeBatch(PROFILE, batchPayloads, {
+        turbo: turboOn,
+        useSocket: true,
+        fireAndForget: options && Object.prototype.hasOwnProperty.call(options, "fireAndForget") ? !!options.fireAndForget : false,
+        skipMartha: !!(options && options.skipMartha),
+      });
+      const data = (result && result.data) || {};
+      const responses = Array.isArray(data.responses) ? data.responses : [];
+      const placed = Number(data.placed || 0);
+      const failed = responses.length
+        ? (digits || []).filter((_d, index) => {
+          const response = responses[index] || {};
+          return response.status !== "success";
+        }).map(Number)
+        : ((placed >= (digits || []).length) ? [] : (digits || []).slice(placed).map(Number));
+      return { placed, failed, responses };
+    }
 
-    const jobs = (digits || []).map((d) => sendFastManualTradeJokerjoe(Object.assign({}, base, { barrier: Number(d) }), {
+    const jobs = batchPayloads.map((payload) => sendFastManualTradeJokerjoe(payload, {
       turbo: turboOn,
       queue: sameTick ? false : !turboOn,
       useSocket: turboOn,

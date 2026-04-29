@@ -236,7 +236,7 @@ TICK_STREAM_RESUBSCRIBE_COOLDOWN_SEC = float(os.environ.get("TICK_STREAM_RESUBSC
 TICK_STREAM_RECONNECT_AFTER_SEC = float(os.environ.get("TICK_STREAM_RECONNECT_AFTER_SEC", "90"))
 TICK_STREAM_WARMUP_SEC = float(os.environ.get("TICK_STREAM_WARMUP_SEC", "6"))
 STEP_TICK_STREAM_WARMUP_SEC = float(os.environ.get("STEP_TICK_STREAM_WARMUP_SEC", "10"))
-HUMAN_PAIR_BATCH_SEND_DELAY_SEC = float(os.environ.get("HUMAN_PAIR_BATCH_SEND_DELAY_SEC", "0.04"))
+HUMAN_PAIR_BATCH_SEND_DELAY_SEC = float(os.environ.get("HUMAN_PAIR_BATCH_SEND_DELAY_SEC", "0"))
 MUTANT_DEPLOY_GATE_ENABLED = str(os.environ.get("MUTANT_DEPLOY_GATE_ENABLED", "1")).strip().lower() not in {"0", "false", "no", "off"}
 MUTANT_ALLOWED_ACCOUNT = str(
     os.environ.get(
@@ -1249,7 +1249,31 @@ def _is_fast_contract_meta(meta):
 
 
 def _contract_refresh_delays_for_meta(meta):
-    return FAST_CONTRACT_REFRESH_DELAYS if _is_fast_contract_meta(meta) else DEFAULT_CONTRACT_REFRESH_DELAYS
+    base_delays = FAST_CONTRACT_REFRESH_DELAYS if _is_fast_contract_meta(meta) else DEFAULT_CONTRACT_REFRESH_DELAYS
+    try:
+        duration = int(float((meta or {}).get("duration") or 0))
+    except Exception:
+        duration = 0
+    duration_unit = str((meta or {}).get("duration_unit") or "t").strip().lower()
+    if duration_unit != "t" or duration <= 1:
+        return base_delays
+
+    # Tick contracts can settle after the first short fallback window,
+    # especially on Render when subscription messages lag. Keep a few absolute
+    # refreshes past the expected expiry so pending history rows can self-heal.
+    extra_delays = (
+        min(18.0, (duration * 1.5) + 2.0),
+        min(36.0, (duration * 3.0) + 5.0),
+    )
+    merged = []
+    for value in tuple(base_delays) + extra_delays:
+        try:
+            delay = round(max(0.0, float(value)), 3)
+        except Exception:
+            continue
+        if delay not in merged:
+            merged.append(delay)
+    return tuple(sorted(merged))
 
 
 def _should_emit_ui_event(state, key, min_interval_sec):
@@ -2442,12 +2466,14 @@ def _is_turbo_requested(payload):
 
 
 def _batch_trade_sleep_seconds(payload, normal_default=0.04):
+    if payload and bool((payload or {}).get("same_tick")):
+        return 0.0
     if _is_turbo_requested(payload):
         return 0.002
     try:
-        return max(0.08, float(normal_default or 0.0))
+        return max(0.0, float(normal_default or 0.0))
     except Exception:
-        return 0.08
+        return 0.0
 
 
 def _trade_extra_meta_from_payload(data, *, leg_action=None):
@@ -2471,7 +2497,11 @@ def handle_fast_profile_trade(data=None):
         return {"status": "error", "message": "Unauthorized"}
 
     cid, state = get_client_state()
-    payload = data or {}
+    return _handle_fast_profile_trade_payload(cid, state, data or {}, emit_balance_after_send=False)
+
+
+def _handle_fast_profile_trade_payload(client_id, state, payload, *, emit_balance_after_send=False):
+    payload = payload or {}
     profile = str(payload.get("profile") or state.get("active_profile") or "").upper().strip()
     if profile not in ("KOOLKID", "JOKERJOE"):
         return {"status": "error", "message": "Invalid profile"}
@@ -2500,13 +2530,13 @@ def handle_fast_profile_trade(data=None):
         "duration": duration,
         "duration_unit": duration_unit,
         "mode": mode,
-        "emit_balance_after_send": False,
+        "emit_balance_after_send": bool(emit_balance_after_send),
     }
     extra_meta = _trade_extra_meta_from_payload(payload, leg_action=leg_action)
     if extra_meta:
         send_kwargs["extra_meta"] = extra_meta
     ok, message = send_buy_with_profile(
-        cid,
+        client_id,
         profile,
         contract_type,
         stake,
@@ -2521,6 +2551,52 @@ def handle_fast_profile_trade(data=None):
         "type": contract_type,
         "barrier": barrier,
         "leg_action": leg_action,
+    }
+
+
+@socketio.on("fast_profile_trade_batch")
+def handle_fast_profile_trade_batch(data=None):
+    if not login_required():
+        return {"status": "error", "message": "Unauthorized"}
+
+    cid, state = get_client_state()
+    payload = data or {}
+    profile = str(payload.get("profile") or state.get("active_profile") or "").upper().strip()
+    if profile not in ("KOOLKID", "JOKERJOE"):
+        return {"status": "error", "message": "Invalid profile"}
+
+    trades = payload.get("trades")
+    if not isinstance(trades, list) or not trades:
+        return {"status": "error", "message": "No batch trades supplied", "placed": 0, "responses": []}
+    trades = trades[:12]
+
+    responses = []
+    placed = 0
+    lock = _get_ws_lifecycle_lock(state)
+    with lock:
+        for index, item in enumerate(trades):
+            trade_payload = dict(item or {})
+            trade_payload["profile"] = profile
+            response = _handle_fast_profile_trade_payload(
+                cid,
+                state,
+                trade_payload,
+                emit_balance_after_send=False,
+            )
+            response["index"] = index
+            responses.append(response)
+            if response.get("status") == "success":
+                placed += 1
+    try:
+        _emit_balance_payload(cid, state)
+    except Exception:
+        pass
+    return {
+        "status": "success" if placed == len(trades) else ("partial" if placed else "error"),
+        "message": f"Sent {placed}/{len(trades)} batch trades",
+        "profile": profile,
+        "placed": placed,
+        "responses": responses,
     }
 
 
@@ -3620,7 +3696,9 @@ def place_human_manual_contract_batch(client_id, *, actions):
                     item["trade"].get("action"),
                 )
                 if index < (len(prepared) - 1):
-                    time.sleep(max(0.0, float(HUMAN_PAIR_BATCH_SEND_DELAY_SEC)))
+                    delay_sec = max(0.0, float(HUMAN_PAIR_BATCH_SEND_DELAY_SEC))
+                    if delay_sec > 0:
+                        time.sleep(delay_sec)
         _emit_balance_payload(client_id, state)
         return True, f"Sent {len(prepared)} HUMAN manual trades", [item["trade"] for item in prepared]
     except Exception as e:
@@ -6263,8 +6341,6 @@ def _send_ntt_both_pair(
             if not ok:
                 return False, msg, placed
             placed.append(trade_side)
-            if index < (len(plan) - 1):
-                time.sleep(0.04)
     finally:
         ntt["pair_send_in_flight"] = False
 
@@ -7365,8 +7441,6 @@ def _schedule_contract_open_refresh(client_id, expected_nonce, contract_id, dela
                 return
             ws = state.get("ws")
             if not state.get("ws_connected") or not ws:
-                return
-            if _get_open_contract_sub_map(state).get(norm):
                 return
             meta = _peek_contract_meta(state, norm)
             _log_trade_latency(client_id, meta, "open_contract_refresh", contract_id=norm, target_delay=target_delay)
@@ -15455,6 +15529,8 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                         "duration": duration_val,
                         "duration_unit": duration_unit_val if duration_val is not None else None,
                         "mode": meta.get("mode"),
+                        "action": meta.get("pair_action") or meta.get("leg_action"),
+                        "pair_action": meta.get("pair_action"),
                         "leg_action": meta.get("leg_action"),
                         "contract_type": meta.get("contract_type"),
                         "selected_tick": meta.get("selected_tick"),
@@ -15544,6 +15620,8 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                         "duration": duration_val,
                         "duration_unit": duration_unit_val if duration_val is not None else None,
                         "mode": meta.get("mode"),
+                        "action": meta.get("pair_action") or meta.get("leg_action"),
+                        "pair_action": meta.get("pair_action"),
                         "leg_action": meta.get("leg_action"),
                         "contract_type": meta.get("contract_type"),
                         "selected_tick": meta.get("selected_tick"),
@@ -16071,6 +16149,8 @@ def process_contract(client_id, contract):
                 entry.setdefault("duration", meta.get("duration"))
                 entry.setdefault("duration_unit", meta.get("duration_unit"))
                 entry.setdefault("mode", meta.get("mode"))
+                entry.setdefault("action", meta.get("pair_action") or meta.get("leg_action"))
+                entry.setdefault("pair_action", meta.get("pair_action"))
                 entry.setdefault("leg_action", meta.get("leg_action"))
                 entry.setdefault("contract_type", meta.get("contract_type"))
                 entry.setdefault("selected_tick", meta.get("selected_tick"))
@@ -16575,27 +16655,31 @@ def api_connection_status():
         **tick_health,
         **_build_balance_payload(state),
     }
-    logger.info(
-        "[%s] TEMP api_connection_status_runtime server_instance_id=%s runtime_present=%s ws_connected=%s ws_thread_alive=%s reconnecting=%s tick_healthy=%s tick_recovering=%s",
-        _cid,
-        payload.get("server_instance_id"),
-        payload.get("client_runtime_present"),
-        payload.get("ws_connected_runtime"),
-        payload.get("ws_thread_alive"),
-        reconnecting,
-        payload.get("tick_stream_healthy"),
-        payload.get("tick_stream_recovering"),
-    )
     budget = payload.get("active_profile_budget") or {}
-    logger.info(
-        "[%s] TEMP reconnect_restore_values connected=%s live_account=%s display=%s budget_remaining=%s session_pnl=%s",
-        _cid,
-        connected,
-        payload.get("account_balance"),
-        payload.get("display_balance"),
-        budget.get("remaining_budget"),
-        budget.get("realized_pnl"),
-    )
+    now_ts = time.time()
+    last_api_status_log = float(state.get("_api_status_log_at", 0.0) or 0.0)
+    if (now_ts - last_api_status_log) >= 30.0:
+        state["_api_status_log_at"] = now_ts
+        logger.info(
+            "[%s] TEMP api_connection_status_runtime server_instance_id=%s runtime_present=%s ws_connected=%s ws_thread_alive=%s reconnecting=%s tick_healthy=%s tick_recovering=%s",
+            _cid,
+            payload.get("server_instance_id"),
+            payload.get("client_runtime_present"),
+            payload.get("ws_connected_runtime"),
+            payload.get("ws_thread_alive"),
+            reconnecting,
+            payload.get("tick_stream_healthy"),
+            payload.get("tick_stream_recovering"),
+        )
+        logger.info(
+            "[%s] TEMP reconnect_restore_values connected=%s live_account=%s display=%s budget_remaining=%s session_pnl=%s",
+            _cid,
+            connected,
+            payload.get("account_balance"),
+            payload.get("display_balance"),
+            budget.get("remaining_budget"),
+            budget.get("realized_pnl"),
+        )
     return jsonify(payload)
 
 
@@ -18359,8 +18443,6 @@ def unchain_trade_route():
                 socketio.emit("unchain_status", payload, room=cid)
             return jsonify({"status": "error", "message": msg, "payload": payload, "placed": placed}), 400
         placed.append(trade_side)
-        if side == "BOTH" and index < (len(plan) - 1):
-            time.sleep(0.04)
     u["last_action"] = f"Sent {' + '.join(placed)} on {symbol}"
     payload = _unchain_payload_response(state)
     if state.get("active_profile") == "UNCHAIN":
@@ -19640,24 +19722,26 @@ def human_parity_trade_route():
                 return jsonify({"status": "error", "message": msg, "placed": [], "batch_id": batch_id}), 400
             prepared.append(item)
         placed = []
-        for item in prepared:
-            try:
-                ws.send(json.dumps(item["payload"]))
-                placed.append(item["side"])
-            except Exception as exc:
-                for unsent in prepared[len(placed):]:
-                    try:
-                        state.get("req_meta", {}).pop(unsent.get("req_id"), None)
-                        _release_profile_budget_reservation(state, unsent.get("budget_reservation"))
-                    except Exception:
-                        pass
-                _emit_balance_payload(cid, state)
-                return jsonify({
-                    "status": "error",
-                    "message": str(exc),
-                    "placed": placed,
-                    "batch_id": batch_id,
-                }), 400
+        lock = _get_ws_lifecycle_lock(state)
+        with lock:
+            for item in prepared:
+                try:
+                    ws.send(json.dumps(item["payload"]))
+                    placed.append(item["side"])
+                except Exception as exc:
+                    for unsent in prepared[len(placed):]:
+                        try:
+                            state.get("req_meta", {}).pop(unsent.get("req_id"), None)
+                            _release_profile_budget_reservation(state, unsent.get("budget_reservation"))
+                        except Exception:
+                            pass
+                    _emit_balance_payload(cid, state)
+                    return jsonify({
+                        "status": "error",
+                        "message": str(exc),
+                        "placed": placed,
+                        "batch_id": batch_id,
+                    }), 400
         _emit_balance_payload(cid, state)
         return jsonify({
             "status": "success",
@@ -19773,9 +19857,11 @@ def human_formula_x_route():
     ]
 
     results = []
-    for sig in signals:
-        ok, msg = place_risefall_order(cid, sig)
-        results.append((ok, msg))
+    lock = _get_ws_lifecycle_lock(state)
+    with lock:
+        for sig in signals:
+            ok, msg = place_risefall_order(cid, sig)
+            results.append((ok, msg))
 
     payload = strat.get_human_rf_payload()
     if state.get("active_profile") == "HUMAN":

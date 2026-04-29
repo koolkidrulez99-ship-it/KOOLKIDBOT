@@ -5229,6 +5229,45 @@ function sendFastProfileTradeOverSocket(profile, payload, options){
     });
 }
 
+function sendFastProfileTradeBatchOverSocket(profile, payloads, options){
+    return new Promise((resolve)=>{
+        try{
+            if(typeof socket === "undefined" || !socket || !socket.connected){
+                resolve({ ok: false, data: { status: "error", message: "Socket not connected", placed: 0, responses: [] } });
+                return;
+            }
+            const trades = Array.isArray(payloads) ? payloads : [];
+            if(!trades.length){
+                resolve({ ok: false, data: { status: "error", message: "No batch trades supplied", placed: 0, responses: [] } });
+                return;
+            }
+            const fireAndForget = !!(options && options.fireAndForget);
+            const batchPayload = { profile: normalizeFastBuyProfile(profile), trades };
+            if(fireAndForget){
+                socket.emit("fast_profile_trade_batch", batchPayload);
+                resolve({ ok: true, data: { status: "success", message: "Batch sent", placed: trades.length, responses: [] } });
+                return;
+            }
+            let settled = false;
+            const finish = (response)=>{
+                if(settled) return;
+                settled = true;
+                const data = response || { status: "error", message: "Fast batch send failed", placed: 0, responses: [] };
+                resolve({ ok: !!(data && data.status === "success"), data });
+            };
+            const timer = setTimeout(()=>{
+                finish({ status: "error", message: "Fast batch send timed out", placed: 0, responses: [] });
+            }, 4000);
+            socket.emit("fast_profile_trade_batch", batchPayload, (response)=>{
+                clearTimeout(timer);
+                finish(response);
+            });
+        }catch(e){
+            resolve({ ok: false, data: { status: "error", message: "Fast batch send failed", placed: 0, responses: [] } });
+        }
+    });
+}
+
 async function sendFastProfileTradeNow(profile, payload, options){
     const built = buildFastProfileTradePayload(profile, payload, options || {});
     const useSocket = !!((options && options.useSocket) || built.turboRequested);
@@ -5253,6 +5292,33 @@ async function sendFastProfileTradeNow(profile, payload, options){
     }
 }
 
+async function sendFastProfileTradeBatchNow(profile, payloads, options){
+    const items = (Array.isArray(payloads) ? payloads : []).map((payload)=> buildFastProfileTradePayload(profile, payload, options || {}));
+    const trades = items.map((item)=> item.requestPayload);
+    const key = (items[0] && items[0].key) || normalizeFastBuyProfile(profile);
+    const turboRequested = items.some((item)=> !!item.turboRequested);
+    const useSocket = !!((options && options.useSocket) || turboRequested);
+    const socketReady = typeof socket !== "undefined" && socket && socket.connected;
+    if(useSocket && key && socketReady){
+        const fireAndForget = options && Object.prototype.hasOwnProperty.call(options, "fireAndForget")
+            ? !!options.fireAndForget
+            : !!turboRequested;
+        return sendFastProfileTradeBatchOverSocket(key, trades, { fireAndForget });
+    }
+    const settled = await Promise.allSettled(trades.map((payload)=> sendFastProfileTradeNow(key || profile, payload, Object.assign({}, options || {}, { queue: false }))));
+    const responses = settled.map((item)=> item.status === "fulfilled" ? (item.value && item.value.data) : { status: "error", message: (item.reason && item.reason.message) || "Trade failed" });
+    const placed = responses.filter((response)=> response && response.status === "success").length;
+    return {
+        ok: placed === trades.length,
+        data: {
+            status: placed === trades.length ? "success" : (placed ? "partial" : "error"),
+            message: `Sent ${placed}/${trades.length} batch trades`,
+            placed,
+            responses,
+        },
+    };
+}
+
 function postFastProfileTrade(profile, payload, options){
     const built = buildFastProfileTradePayload(profile, payload, options || {});
     const action = buildMarthaTradeAction(built.key || profile, built.requestPayload, Object.assign({ source: "fast_profile_trade" }, options || {}));
@@ -5264,10 +5330,21 @@ function postFastProfileTrade(profile, payload, options){
     return enqueueFastBuyTask(built.key || profile, task);
 }
 
+function postFastProfileTradeBatch(profile, payloads, options){
+    const key = normalizeFastBuyProfile(profile);
+    const action = buildMarthaTradeAction(key || profile, (Array.isArray(payloads) && payloads[0]) || {}, Object.assign({
+        source: "fast_profile_trade_batch",
+        batchCount: Array.isArray(payloads) ? payloads.length : 0,
+    }, options || {}));
+    const sendTask = ()=> sendFastProfileTradeBatchNow(key || profile, payloads, options || {});
+    return (options && options.skipMartha) ? sendTask() : guardMarthaTrade(action, sendTask);
+}
+
 window.BotApp = window.BotApp || {};
 window.BotApp.enqueueFastBuyTask = enqueueFastBuyTask;
 window.BotApp.getFastBuyIntervalMs = getFastBuyIntervalMs;
 window.BotApp.sendFastProfileTrade = postFastProfileTrade;
+window.BotApp.sendFastProfileTradeBatch = postFastProfileTradeBatch;
 window.BotApp.buildMarthaTradeAction = buildMarthaTradeAction;
 window.BotApp.guardMarthaTrade = guardMarthaTrade;
 window.BotApp.isMarthaBlockedTradeResult = isMarthaBlockedTradeResult;

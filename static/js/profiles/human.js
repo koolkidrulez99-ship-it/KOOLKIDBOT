@@ -1724,16 +1724,10 @@
         actions.forEach((key) => {
           pairOptions[key] = Object.assign({ stake: humanSingleMartingaleStakeForPairAction(key), quiet: true }, settings.option);
         });
-        if(String(settings.action || "").toUpperCase() === "ASIANS_UP_DOWNS"){
-          await placeHumanManualAsiansPair({
-            stake: humanSingleMartingaleStakeForPairAction("ASIANS_UP"),
-            durationTicks: settings.option.duration_ticks,
-          });
-        }else{
-          await Promise.all(actions.map((key) => (
-            placeHumanManualAction(key, pairOptions[key])
-          )));
-        }
+        await placeHumanManualPairAction(actions, pairOptions, {
+          type: settings.action,
+          label: `HUMAN ${humanSingleMartingaleLabel(settings.action)}`,
+        });
         if(typeof showToast === "function") {
           const sentText = actions
             .map((key) => `${humanSingleMartingaleLabel(key)} $${humanSingleMartingaleStakeForPairAction(key).toFixed(2)}`)
@@ -1939,16 +1933,12 @@
           duration_unit: "t",
           batch_count: 2,
         }, async () => {
-          for(const leg of pairPlan){
-            await postJSON("/human_rf_trade", {
-              direction: leg.direction,
-              stake: leg.stake,
-              duration_ticks: settings.duration,
-              allow_equals: allowEquals,
-              ignore_cooldown: true,
-            });
-          }
-          return { status: "success" };
+          return postJSON("/human_auto_rise_fall", {
+            rise_stake: pairPlan[0].stake,
+            fall_stake: pairPlan[1].stake,
+            duration_ticks: settings.duration,
+            allow_equals: allowEquals,
+          });
         });
         if(isMarthaBlocked(data)) throw new Error("Trade blocked");
         if(typeof showToast === "function") showToast(`HUMAN ${allowEquals ? "Rise + Fall Equals" : "Rise + Fall"} martingale sent: RISE $${pairPlan[0].stake.toFixed(2)} + FALL $${pairPlan[1].stake.toFixed(2)}`, "success");
@@ -2210,7 +2200,7 @@
     const text = String(value || "").toUpperCase().replace(/[^A-Z0-9]+/g, "_");
     const compact = text.replace(/[^A-Z0-9]/g, "");
     if(compact === "ONLYUPSONLYDOWNS" || compact === "ONLYUPSDOWNS" || compact === "RUNSUPRUNSDOWN") return "ONLY_UPS_DOWNS";
-    if(compact === "ASIANSUPASIANSDOWN" || compact === "ASIANSUPASIANSDOWN" || compact === "ASIANUPASIANSDOWN" || compact === "ASIANSUPDOWN") return "ASIANS_UP_DOWNS";
+    if(text === "ASIANS_UP_DOWNS" || text === "ASIANS_UP_DOWN" || text === "ASIAN_UP_DOWNS" || text === "ASIAN_UP_DOWN" || compact === "ASIANSUPDOWNS" || compact === "ASIANUPDOWNS" || compact === "ASIANSUPASIANSDOWN" || compact === "ASIANSUPASIANDOWN" || compact === "ASIANUPASIANSDOWN" || compact === "ASIANUPASIANDOWN" || compact === "ASIANSUPDOWN" || compact === "ASIANUPDOWN") return "ASIANS_UP_DOWNS";
     if(compact === "HIGHTICKLOWTICKS" || compact === "HIGHLOWTICKS" || compact === "HIGHTICKLOWTICK") return "HIGH_LOW_TICKS";
     if(text.includes("ASIANS_UP") || text.includes("ASIAN_UP") || compact.includes("ASIANU") || compact.includes("ASIANSUP")) return "ASIANS_UP";
     if(text.includes("ASIANS_DOWN") || text.includes("ASIAN_DOWN") || compact.includes("ASIAND") || compact.includes("ASIANSDOWN")) return "ASIANS_DOWN";
@@ -2249,7 +2239,7 @@
   function rememberHumanSpecialTrade(payload){
     if(!payload || String(payload.profile || "").toUpperCase() !== PROFILE) return;
     const activeCycle = HUMAN_SPECIAL_AUTO_STATE.running || HUMAN_SPECIAL_AUTO_STATE.firing || HUMAN_SPECIAL_AUTO_STATE.pendingCount > 0 || HUMAN_SPECIAL_AUTO_STATE.expectedCount > 0;
-    const action = normalizeHumanSpecialAction([payload.type, payload.contract_type, payload.label, payload.action].filter(Boolean).join(" "))
+    const action = normalizeHumanSpecialAction([payload.pair_action, payload.action, payload.leg_action, payload.type, payload.contract_type, payload.label].filter(Boolean).join(" "))
       || (activeCycle ? (HUMAN_SPECIAL_AUTO_STATE.localOrderActions[Object.keys(HUMAN_SPECIAL_AUTO_STATE.cycleContractActions || {}).length] || "") : "");
     const contractId = payload.contract_id || payload.buy_contract_id || payload.id;
     if(action && contractId){
@@ -2349,7 +2339,7 @@
     if(!HUMAN_SINGLE_MARTINGALE_STATE.inProgress && !HUMAN_SINGLE_MARTINGALE_STATE.pendingContractId && !HUMAN_SINGLE_MARTINGALE_STATE.pendingPair) return;
     const contractId = payload.contract_id || payload.buy_contract_id || payload.id;
     const mode = String(payload.mode || "").toLowerCase();
-    const action = normalizeHumanSpecialAction([payload.type, payload.contract_type, payload.label, payload.action].filter(Boolean).join(" "))
+    const action = normalizeHumanSpecialAction([payload.pair_action, payload.action, payload.leg_action, payload.type, payload.contract_type, payload.label].filter(Boolean).join(" "))
       || (contractId ? (((HUMAN_SINGLE_MARTINGALE_STATE.pendingContracts || {})[String(contractId)] || {}).action || "") : "")
       || (mode === "human_manual_contract" ? HUMAN_SINGLE_MARTINGALE_STATE.pendingAction : "");
     if(HUMAN_SINGLE_MARTINGALE_STATE.pendingPair){
