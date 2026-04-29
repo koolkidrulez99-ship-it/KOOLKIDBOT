@@ -823,9 +823,22 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     return selected.slice();
   }
 
-  function getJokerjoeBatchMartingaleCustomDigits() {
+  function getJokerjoeBatchMartingaleCustomDigitLimit() {
+    const groupEl = getEl("jokerjoeBatchMartingaleGroup");
+    const key = String(groupEl ? groupEl.value : (state.batchMartingale && state.batchMartingale.group) || "").toUpperCase();
+    return key === "CUSTOM6" ? 6 : 3;
+  }
+
+  function getJokerjoeBatchMartingaleCustomStoreKey(limit) {
+    return Number(limit) === 6 ? "customDigits6" : "customDigits";
+  }
+
+  function getJokerjoeBatchMartingaleCustomDigits(limitValue) {
     const st = state.batchMartingale || {};
-    const source = Array.isArray(st.customDigits) ? st.customDigits : [7, 8, 9];
+    const limit = Math.max(3, Math.min(6, Math.floor(Number(limitValue || getJokerjoeBatchMartingaleCustomDigitLimit()) || 3)));
+    const storeKey = getJokerjoeBatchMartingaleCustomStoreKey(limit);
+    const fallback = limit === 6 ? [0, 1, 2, 3, 4, 5] : [7, 8, 9];
+    const source = Array.isArray(st[storeKey]) ? st[storeKey] : fallback;
     const seen = new Set();
     const out = [];
     source.forEach((value) => {
@@ -834,31 +847,37 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
       seen.add(digit);
       out.push(digit);
     });
-    st.customDigits = out.slice(0, 3).sort((a, b) => a - b);
-    return st.customDigits.slice();
+    st[storeKey] = out.slice(0, limit).sort((a, b) => a - b);
+    return st[storeKey].slice();
   }
 
-  function setJokerjoeBatchMartingaleCustomDigits(digits) {
+  function setJokerjoeBatchMartingaleCustomDigits(digits, limitValue) {
     const st = state.batchMartingale || {};
+    const limit = Math.max(3, Math.min(6, Math.floor(Number(limitValue || getJokerjoeBatchMartingaleCustomDigitLimit()) || 3)));
+    const storeKey = getJokerjoeBatchMartingaleCustomStoreKey(limit);
     const seen = new Set();
     const out = [];
     (Array.isArray(digits) ? digits : []).forEach((value) => {
       const digit = Math.floor(Number(value));
-      if (!Number.isInteger(digit) || digit < 0 || digit > 9 || seen.has(digit) || out.length >= 3) return;
+      if (!Number.isInteger(digit) || digit < 0 || digit > 9 || seen.has(digit) || out.length >= limit) return;
       seen.add(digit);
       out.push(digit);
     });
-    st.customDigits = out.sort((a, b) => a - b);
-    return st.customDigits.slice();
+    st[storeKey] = out.sort((a, b) => a - b);
+    return st[storeKey].slice();
   }
 
   function renderJokerjoeBatchMartingaleCustomDigits() {
     const groupEl = getEl("jokerjoeBatchMartingaleGroup");
     const wrap = getEl("jokerjoeBatchMartingaleCustomWrap");
     const hint = getEl("jokerjoeBatchMartingaleCustomHint");
-    const isCustom = !!(groupEl && String(groupEl.value || "").toUpperCase() === "CUSTOM");
+    const label = getEl("jokerjoeBatchMartingaleCustomLabel");
+    const groupKey = String(groupEl ? groupEl.value || "" : "").toUpperCase();
+    const isCustom = groupKey === "CUSTOM" || groupKey === "CUSTOM6";
+    const required = groupKey === "CUSTOM6" ? 6 : 3;
     if (wrap) wrap.style.display = isCustom ? "" : "none";
-    const digits = getJokerjoeBatchMartingaleCustomDigits();
+    if (label) label.textContent = `Pick exactly ${required} MATCH digits`;
+    const digits = getJokerjoeBatchMartingaleCustomDigits(required);
     const selected = new Set(digits.map(String));
     const buttons = document.querySelectorAll("[data-jj-batch-digit]");
     buttons.forEach((btn) => {
@@ -870,45 +889,48 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     });
     if (hint) {
       const count = digits.length;
-      hint.textContent = count === 3 ? `Selected: ${digits.join(", ")}` : `${count}/3 selected`;
-      hint.style.color = count === 3 ? "#22c55e" : "#fbbf24";
+      hint.textContent = count === required ? `Selected: ${digits.join(", ")}` : `${count}/${required} selected`;
+      hint.style.color = count === required ? "#22c55e" : "#fbbf24";
     }
   }
 
   function toggleJokerjoeBatchMartingaleDigit(value) {
     const digit = Math.floor(Number(value));
     if (!Number.isInteger(digit) || digit < 0 || digit > 9) return;
-    const digits = getJokerjoeBatchMartingaleCustomDigits();
+    const required = getJokerjoeBatchMartingaleCustomDigitLimit();
+    const digits = getJokerjoeBatchMartingaleCustomDigits(required);
     const existing = digits.indexOf(digit);
     if (existing >= 0) {
       digits.splice(existing, 1);
-    } else if (digits.length >= 3) {
-      safeToast("Pick only 3 digits for the Match Batch.", "error");
+    } else if (digits.length >= required) {
+      safeToast(`Pick only ${required} digits for the Match Batch.`, "error");
       renderJokerjoeBatchMartingaleCustomDigits();
       return;
     } else {
       digits.push(digit);
     }
-    setJokerjoeBatchMartingaleCustomDigits(digits);
+    setJokerjoeBatchMartingaleCustomDigits(digits, required);
     renderJokerjoeBatchMartingaleCustomDigits();
     updateJokerjoeBatchMartingalePanel();
   }
 
   function normalizeJokerjoeBatchMartingaleGroup(value) {
     const key = String(value || "").toUpperCase().replace(/\s+/g, "_");
-    if (key === "CUSTOM") {
-      const digits = getJokerjoeBatchMartingaleCustomDigits();
+    if (key === "CUSTOM" || key === "CUSTOM6") {
+      const required = key === "CUSTOM6" ? 6 : 3;
+      const digits = getJokerjoeBatchMartingaleCustomDigits(required);
       return {
-        key: `MATCH_CUSTOM_${digits.join("") || "NONE"}`,
+        key: `MATCH_CUSTOM${required}_${digits.join("") || "NONE"}`,
         digits,
-        label: digits.length === 3 ? `Match Batch ${digits.join(",")}` : "Match Batch Custom",
+        label: digits.length === required ? `Match Batch ${digits.join(",")}` : `Match Batch Custom ${required}`,
         custom: true,
+        required,
       };
     }
     const map = {
-      MATCH_789: { key: "MATCH_789", digits: [7, 8, 9], label: "Match Batch 7,8,9" },
-      MATCH_456: { key: "MATCH_456", digits: [4, 5, 6], label: "Match Batch 4,5,6" },
-      MATCH_123: { key: "MATCH_123", digits: [1, 2, 3], label: "Match Batch 1,2,3" },
+      MATCH_789: { key: "MATCH_789", digits: [7, 8, 9], label: "Match Batch 7,8,9", required: 3 },
+      MATCH_456: { key: "MATCH_456", digits: [4, 5, 6], label: "Match Batch 4,5,6", required: 3 },
+      MATCH_123: { key: "MATCH_123", digits: [1, 2, 3], label: "Match Batch 1,2,3", required: 3 },
     };
     return map[key] || map.MATCH_789;
   }
@@ -927,25 +949,34 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     const groupEl = getEl("jokerjoeBatchMartingaleGroup");
     const group = normalizeJokerjoeBatchMartingaleGroup(groupEl ? groupEl.value : st.group);
     renderJokerjoeBatchMartingaleCustomDigits();
-    const startBatchStake = Number(readJokerjoeBatchMartingaleNumber("jokerjoeBatchMartingaleStartStake", 1.05, 1.05, 1000000).toFixed(2));
+    const digitCount = Math.max(1, Array.isArray(group.digits) ? group.digits.length : Number(group.required || 3) || 3);
+    const minBatchStake = Number((digitCount * 0.35).toFixed(2));
+    const startStakeEl = getEl("jokerjoeBatchMartingaleStartStake");
+    if (startStakeEl) {
+      startStakeEl.min = minBatchStake.toFixed(2);
+      startStakeEl.step = "0.01";
+    }
+    const startBatchStake = Number(readJokerjoeBatchMartingaleNumber("jokerjoeBatchMartingaleStartStake", minBatchStake, minBatchStake, 1000000).toFixed(2));
     const maxSteps = Math.max(1, Math.floor(readJokerjoeBatchMartingaleNumber("jokerjoeBatchMartingaleMaxSteps", 100, 1, 100000)));
     const tickSpacing = Math.max(1, Math.min(10, Math.floor(readJokerjoeBatchMartingaleNumber("jokerjoeBatchMartingaleTickSpacing", 1, 1, 10))));
     const spacingEl = getEl("jokerjoeBatchMartingaleTickSpacing");
     if (spacingEl) spacingEl.value = String(tickSpacing);
-    return { group, startBatchStake, maxSteps, multiplier: 2, tickSpacing };
+    return { group, startBatchStake, maxSteps, multiplier: 2, tickSpacing, digitCount, minBatchStake };
   }
 
   function jokerjoeBatchStakeForStep(stepValue) {
     const settings = readJokerjoeBatchMartingaleSettings();
     const step = Math.max(1, Math.min(settings.maxSteps, Math.floor(Number(stepValue || state.batchMartingale.step) || 1)));
     const rawBatch = settings.startBatchStake * Math.pow(settings.multiplier, step - 1);
-    const perStake = Number(Math.max(0.35, rawBatch / 3).toFixed(2));
-    return Number((perStake * 3).toFixed(2));
+    const count = Math.max(1, Number(settings.digitCount || 3));
+    const perStake = Number(Math.max(0.35, rawBatch / count).toFixed(2));
+    return Number((perStake * count).toFixed(2));
   }
 
-  function jokerjoePerMatchStakeForBatch(batchStake) {
+  function jokerjoePerMatchStakeForBatch(batchStake, digitCount) {
     const value = Number(batchStake);
-    return Number(Math.max(0.35, (Number.isFinite(value) ? value : 1.05) / 3).toFixed(2));
+    const count = Math.max(1, Number(digitCount || (readJokerjoeBatchMartingaleSettings().digitCount) || 3));
+    return Number(Math.max(0.35, (Number.isFinite(value) ? value : (count * 0.35)) / count).toFixed(2));
   }
 
   function getJokerjoeBatchIdFromMode(mode) {
@@ -974,7 +1005,7 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
       upsertTradeInStore({
         profile: PROFILE,
         type: batch.label,
-        barrier: batch.digits.join(","),
+        barrier: "",
         stake: Number(batch.batchStake || 0).toFixed(2),
         symbol: batch.symbol,
         time: batch.time || new Date().toLocaleTimeString(),
@@ -1119,9 +1150,14 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     const st = state.batchMartingale;
     const settings = readJokerjoeBatchMartingaleSettings();
     st.group = settings.group.key;
-    const groupReady = Array.isArray(settings.group.digits) && settings.group.digits.length === 3;
+    const requiredDigits = Math.max(1, Number(settings.group.required || settings.digitCount || 3));
+    const groupReady = Array.isArray(settings.group.digits) && settings.group.digits.length === requiredDigits;
     const batchStake = jokerjoeBatchStakeForStep();
-    const perStake = jokerjoePerMatchStakeForBatch(batchStake);
+    const perStake = jokerjoePerMatchStakeForBatch(batchStake, settings.digitCount);
+    const startStakeEl = getEl("jokerjoeBatchMartingaleStartStake");
+    if (startStakeEl && Number(startStakeEl.value) < settings.minBatchStake) {
+      startStakeEl.value = settings.minBatchStake.toFixed(2);
+    }
     const nextBatch = jokerjoeBatchStakeForStep(Math.min(settings.maxSteps, st.step + 1));
     const toggleBtn = getEl("jokerjoeBatchMartingaleToggleBtn");
     if (toggleBtn) {
@@ -1146,7 +1182,7 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     if (status) {
       status.textContent = groupReady
         ? `${st.status}. ${settings.group.label} - Step ${st.step} - Batch stake $${batchStake.toFixed(2)} - Per match $${perStake.toFixed(2)} - Next batch $${nextBatch.toFixed(2)} - Spacing ${settings.tickSpacing} tick(s) - Last result: ${st.lastResult}`
-        : "Pick exactly 3 custom MATCH digits before placing this batch.";
+        : `Pick exactly ${requiredDigits} custom MATCH digits before placing this batch.`;
       status.style.color = !groupReady || st.inProgress ? "#fbbf24" : "#94a3b8";
     }
   }
@@ -1198,14 +1234,15 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     const opts = options || {};
     if (st.inProgress) return;
     const settings = readJokerjoeBatchMartingaleSettings();
-    if (!Array.isArray(settings.group.digits) || settings.group.digits.length !== 3) {
-      st.status = "Pick exactly 3 custom MATCH digits";
-      safeToast("Pick exactly 3 MATCH digits for the batch.", "error");
+    const requiredDigits = Math.max(1, Number(settings.group.required || settings.digitCount || 3));
+    if (!Array.isArray(settings.group.digits) || settings.group.digits.length !== requiredDigits) {
+      st.status = `Pick exactly ${requiredDigits} custom MATCH digits`;
+      safeToast(`Pick exactly ${requiredDigits} MATCH digits for the batch.`, "error");
       updateJokerjoeBatchMartingalePanel();
       return;
     }
     const batchStake = jokerjoeBatchStakeForStep();
-    const perStake = jokerjoePerMatchStakeForBatch(batchStake);
+    const perStake = jokerjoePerMatchStakeForBatch(batchStake, settings.digitCount);
     const batchId = `JJ-MATCH-BATCH-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
     const mode = `jokerjoe_match_batch_martingale|${batchId}`;
     if (st.enabled && !opts.continuation) {
@@ -2202,7 +2239,7 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
 
     // Send stake with each manual trade so batch actions (MatchSniper 5x) respect the UI stake.
     // Include both `stake` and `amount` for compatibility with different backend parsers.
-    const base = Object.assign({ type: contractType, stake, amount: stake, duration, duration_unit: "t" }, (options && options.extraPayload) || {});
+    const base = Object.assign({ type: contractType, stake, amount: stake, duration, duration_unit: "t", same_tick: sameTick }, (options && options.extraPayload) || {});
     const batchPayloads = (digits || []).map((d) => Object.assign({}, base, { barrier: Number(d) }));
     const app = App();
     if (sameTick && app && typeof app.sendFastProfileTradeBatch === "function") {

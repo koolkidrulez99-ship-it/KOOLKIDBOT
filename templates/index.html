@@ -4,6 +4,8 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>KOOLKID AI BOT</title>
+<link rel="icon" type="image/png" href="/static/images/favicon.png">
+<link rel="shortcut icon" type="image/png" href="/static/images/favicon.png">
 
 <!-- ✅ BULLETPROOF: Local Socket.IO client (v4) -->
 <script src="/static/vendor/socket.io.min.js"></script>
@@ -34,6 +36,28 @@ h1{
     text-align:center;
     color:#38bdf8;
     text-shadow:0 0 20px #38bdf8;
+}
+
+.bot-header{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    gap:16px;
+    flex-wrap:wrap;
+    margin:0 0 8px;
+    text-align:center;
+}
+
+.bot-header h1{
+    margin:0;
+}
+
+.bot-logo{
+    width:72px;
+    height:72px;
+    object-fit:contain;
+    flex:0 0 auto;
+    filter:drop-shadow(0 0 14px rgba(56,189,248,0.78)) drop-shadow(0 0 28px rgba(14,165,233,0.38));
 }
 
 .card{
@@ -814,7 +838,8 @@ body{
   max-width:1280px;
   padding:22px 18px 44px;
 }
-.container > h1{
+.container > h1,
+.bot-header h1{
   margin:0;
   font-size:clamp(1.9rem,3.4vw,3rem);
   letter-spacing:.06em;
@@ -975,7 +1000,10 @@ input:focus, select:focus{
   body{padding:10px;}
   .container{padding:12px 8px 96px;}
   .card{padding:14px; border-radius:20px;}
-  .container > h1{text-align:left;}
+  .bot-header{justify-content:flex-start; gap:12px; text-align:left;}
+  .bot-logo{width:48px; height:48px;}
+  .container > h1,
+  .bot-header h1{text-align:left;}
   .container > .card:first-of-type{padding-top:18px;}
   .container > .card:first-of-type::before{top:12px;right:14px;}
   .profile-btn{min-width:calc(50% - 12px);width:calc(50% - 12px);font-size:.98rem;margin:4px;}
@@ -989,6 +1017,9 @@ input:focus, select:focus{
   .digit-stream{font-size:18px; letter-spacing:3px;}
 }
 @media (max-width: 520px){
+  .bot-header{gap:10px;}
+  .bot-logo{width:44px; height:44px;}
+  .bot-header h1{font-size:1.45rem;}
   .container > a[href="/logout"]{width:100%;}
   .koolkid-auto-trade-launch{width:100%;}
   .profile-btn{width:100%; min-width:0; margin:5px 0;}
@@ -1071,7 +1102,10 @@ body.mobile-only-ui #profileContainer .unchain-history-grid{
 <div id="toastContainer"></div>
 
 <div class="container">
-    <h1>KOOLKID AI TRADING ENGINE</h1>
+    <div class="bot-header">
+        <img src="/static/images/logo.png" alt="Bot Logo" class="bot-logo">
+        <h1>KOOLKID AI TRADING ENGINE</h1>
+    </div>
     <a href="/logout" style="color:#ef4444; font-weight:bold;">Logout</a>
     <button id="koolkidAutoTradeLaunchBtn" class="koolkid-auto-trade-launch" type="button" onclick="openKoolkidAutoTradePlaceholder()">
         KOOLKID AUTO TRADE
@@ -1955,7 +1989,7 @@ function bindSocketHandlers(){
         const winRateEl = getProfileScopedElement("profileWinRate");
         const lossRateEl = getProfileScopedElement("profileLossRate");
         const netProfitLossEl = getProfileScopedElement("profileNetProfitLoss");
-        if (totalEl) {
+        if (totalEl && statsProfile === normalizeProfileName(activeProfile)) {
             setNodeTextIfChanged(totalEl, totalTrades);
             if (winsEl) setNodeTextIfChanged(winsEl, wins);
             if (lossesEl) setNodeTextIfChanged(lossesEl, losses);
@@ -2063,6 +2097,7 @@ const FAST_MAX_BUY_QUEUE = 12;       // safety limit
 const tradeToastByProfile = {};
 const TRADE_STORE_MAX_ITEMS = 250;
 const TRADE_RENDER_MAX_ITEMS = 120;
+const TRADE_HISTORY_SESSION_STORAGE_KEY = "bot_trade_history_cache_v1";
 const autoScanningToasts = {};
 const AUTO_SCANNING_MODE_KEYS = new Set([
     "master_auto",
@@ -2232,6 +2267,7 @@ window.BotApp.clearAutoScanningToasts = clearAutoScanningToasts;
 function clearBotTransientState(){
     try{ localStorage.removeItem(PROFILE_DRAFTS_STORAGE_KEY); }catch(e){}
     try{ localStorage.removeItem(HALF_AUTO_STAKES_STORAGE_KEY_KOOLKID); }catch(e){}
+    try{ sessionStorage.removeItem(TRADE_HISTORY_SESSION_STORAGE_KEY); }catch(e){}
     profileDrafts = {};
     halfAutoStakeDraftKoolkid = null;
     Object.keys(tradeStore || {}).forEach((profile)=>{
@@ -3086,6 +3122,41 @@ function resolveTradeProfile(data, fallbackProfile){
     return normalizeProfileName(fallbackProfile || activeProfile);
 }
 
+function persistTradeHistoryCache(){
+    try{
+        const cache = {};
+        Object.keys(tradeStore || {}).forEach((profileKey)=>{
+            const profile = normalizeProfileName(profileKey);
+            const arr = Array.isArray(tradeStore[profile]) ? tradeStore[profile] : [];
+            cache[profile] = arr.slice(-TRADE_STORE_MAX_ITEMS).map((trade)=>Object.assign({}, trade));
+        });
+        sessionStorage.setItem(TRADE_HISTORY_SESSION_STORAGE_KEY, JSON.stringify(cache));
+    }catch(e){}
+}
+
+function restoreTradeHistoryCache(profile){
+    const key = normalizeProfileName(profile || activeProfile);
+    if(Array.isArray(tradeStore[key]) && tradeStore[key].length > 0) return false;
+    try{
+        const raw = sessionStorage.getItem(TRADE_HISTORY_SESSION_STORAGE_KEY);
+        if(!raw) return false;
+        const cache = JSON.parse(raw);
+        const items = cache && Array.isArray(cache[key]) ? cache[key] : [];
+        if(!items.length) return false;
+        tradeStore[key] = items.slice(-TRADE_STORE_MAX_ITEMS).map((trade)=>{
+            const record = Object.assign({}, trade, { profile: key });
+            if(!Number.isFinite(Number(record._store_seq))){
+                tradeStoreSequence += 1;
+                record._store_seq = tradeStoreSequence;
+            }
+            return record;
+        });
+        return true;
+    }catch(e){
+        return false;
+    }
+}
+
 function toProfitNumber(v){
     const n = Number(v);
     return Number.isFinite(n) ? n : 0;
@@ -3290,6 +3361,7 @@ function upsertTradeInStore(trade){
                 tradeStoreSequence += 1;
                 existingArr[existing.index]._store_seq = tradeStoreSequence;
             }
+            persistTradeHistoryCache();
             return existingArr[existing.index];
         }
     }
@@ -3301,6 +3373,7 @@ function upsertTradeInStore(trade){
     }
     arr.push(incoming);
     if(arr.length > TRADE_STORE_MAX_ITEMS) arr.shift();
+    persistTradeHistoryCache();
     return incoming;
 }
 
@@ -3312,6 +3385,7 @@ function removeTradeFromStoreByContractId(profile, contractId){
     const idx = arr.findIndex((item)=> normalizeContractId(item && (item.contract_id ?? item.contractId)) === cid);
     if(idx < 0) return false;
     arr.splice(idx, 1);
+    persistTradeHistoryCache();
     return true;
 }
 
@@ -3325,7 +3399,9 @@ function removePendingDirectionalSimulationTrades(){
         const isSimulation = !!(item && item.is_simulation);
         return !(pending && isSimulation && type.startsWith("DIRECTIONAL SIM "));
     });
-    return tradeStore[profile].length !== originalLength;
+    const changed = tradeStore[profile].length !== originalLength;
+    if(changed) persistTradeHistoryCache();
+    return changed;
 }
 
 function buildPendingTradeFromPlacement(data){
@@ -3663,6 +3739,7 @@ function applyTradeHistorySnapshotProfiles(profiles){
         });
         changedProfiles.add(profile);
     });
+    persistTradeHistoryCache();
     return changedProfiles;
 }
 
@@ -4365,11 +4442,45 @@ function maybeRefreshTradeHistoryTotalStakeFromEvent(event){
 document.addEventListener("click", maybeRefreshTradeHistoryTotalStakeFromEvent, true);
 document.addEventListener("change", maybeRefreshTradeHistoryTotalStakeFromEvent, true);
 
+function renderTradeHistoryStatsFromStore(profile, trades){
+    const items = Array.isArray(trades) ? trades : [];
+    let wins = 0;
+    let losses = 0;
+    let netPnl = 0;
+    items.forEach((trade)=>{
+        if(!trade || typeof trade !== "object") return;
+        const result = normalizeTradeResultLabel(trade.result, trade.status);
+        if(result === "WIN") wins += 1;
+        else if(result === "LOSS") losses += 1;
+        netPnl += getTradeProfitAmount(trade);
+    });
+    const total = wins + losses;
+    const winRate = total ? ((wins / total) * 100) : 0;
+    const lossRate = total ? (100 - winRate) : 0;
+    const moneyPayload = items.length ? items[0] : {};
+    const totalEl = getProfileScopedElement("profileTotalTrades");
+    const winsEl = getProfileScopedElement("profileWins");
+    const lossesEl = getProfileScopedElement("profileLosses");
+    const winRateEl = getProfileScopedElement("profileWinRate");
+    const lossRateEl = getProfileScopedElement("profileLossRate");
+    const netProfitLossEl = getProfileScopedElement("profileNetProfitLoss");
+    if(totalEl) setNodeTextIfChanged(totalEl, total);
+    if(winsEl) setNodeTextIfChanged(winsEl, wins);
+    if(lossesEl) setNodeTextIfChanged(lossesEl, losses);
+    if(winRateEl) setNodeTextIfChanged(winRateEl, winRate.toFixed(1) + "%");
+    if(lossRateEl) setNodeTextIfChanged(lossRateEl, lossRate.toFixed(1) + "%");
+    if(netProfitLossEl){
+        setNodeTextIfChanged(netProfitLossEl, formatSignedCurrencyAmount(netPnl, moneyPayload));
+        setNodeStyleIfChanged(netProfitLossEl, "color", netPnl > 0 ? "#22c55e" : (netPnl < 0 ? "#ef4444" : "#e2e8f0"));
+    }
+}
+
 function renderTradeList(profile){
     const list = getProfileScopedElement("profileTradeList");
     if(!list) return;
 
     const key = normalizeProfileName(profile || activeProfile);
+    restoreTradeHistoryCache(key);
     const arr = tradeStore[key] || [];
     const filter = getTradeHistoryFilter(key);
     const filtered = arr.filter((trade)=>{
@@ -4380,6 +4491,7 @@ function renderTradeList(profile){
     const emptyLabel = filter === "WIN" ? "No wins yet" : (filter === "LOSS" ? "No losses yet" : "No trades yet");
 
     renderTradeHistoryFilterState(key);
+    renderTradeHistoryStatsFromStore(key, arr);
     renderTradeHistoryTotalStake(key, arr);
 
     if(filtered.length === 0){
@@ -4420,6 +4532,10 @@ function renderTradeList(profile){
         list.dataset.tradeEmpty = "0";
         list.dataset.tradeEmptyLabel = "";
     }
+    Array.from(list.children || []).forEach((node)=>{
+        const domKey = node && node.dataset ? node.dataset.tradeKey : "";
+        if(!domKey && node && node.parentNode === list) node.remove();
+    });
     list.dataset.tradeRenderProfile = key;
     list.dataset.tradeRenderFilter = filter;
 
@@ -6456,7 +6572,9 @@ async function setProfile(profile){
 
     // ==================== PATCH 2D: refresh SeqVIX status ====================
     refreshSeqVixStatus().catch(()=>{});
-    syncTradeHistorySnapshot(profile).catch(()=>{});
+    await syncTradeHistorySnapshot(profile).catch(()=>false);
+    if(switchSeq !== profileSwitchSeq) return;
+    renderTradeList(profile);
 
     refreshHowTo();
     suppressProfileSwitchToastsUntil = 0;
@@ -6565,6 +6683,7 @@ async function clearProfileHistory(){
         payload = data && data.payload ? data.payload : null;
     }catch(_err){}
     tradeStore[activeProfile] = [];
+    persistTradeHistoryCache();
     const totalEl = getProfileScopedElement("profileTotalTrades");
     const winsEl = getProfileScopedElement("profileWins");
     const lossesEl = getProfileScopedElement("profileLosses");

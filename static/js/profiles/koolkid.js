@@ -3202,7 +3202,6 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
     state.over6Analyzer.useForEntry = !!enabled;
     state.over6Analyzer.lastSignature = "";
     renderOver6AnalyzerKoolkid();
-    safeToast(`Over 6 Analyzer entry toggle: ${state.over6Analyzer.useForEntry ? "ON" : "OFF"}`, state.over6Analyzer.useForEntry ? "success" : "error");
   };
 
   const previousProfileReinvestStakeHookKoolkid = window.getProfileReinvestStake;
