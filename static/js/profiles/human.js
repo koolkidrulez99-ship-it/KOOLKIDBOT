@@ -168,6 +168,7 @@
     limitHit: false,
     plusRecoveryPending: false,
     capAfterThreeDoubles: false,
+    doubleLimit: 0,
     evenDoubleCount: 0,
     oddDoubleCount: 0,
     lastResult: "none",
@@ -709,13 +710,15 @@
     const tickSpacing = readHumanTickSpacing("humanParityMartingaleTickSpacing", 1);
     const takeProfit = Number(readHumanParityNumber("humanParityMartingaleTp", 0, 0, 100000000).toFixed(2));
     const stopLoss = Number(readHumanParityNumber("humanParityMartingaleSl", 0, 0, 100000000).toFixed(2));
+    const doubleLimit = readHumanParityInteger("humanParityMartingaleDoubleLimit", capToggleEl && capToggleEl.checked ? 3 : 0, 0, 1000);
     const stakeEl = byId("humanParityMartingaleStake");
     const multEl = byId("humanParityMartingaleMultiplier");
     const durationEl = byId("humanParityMartingaleDuration");
     const spacingEl = byId("humanParityMartingaleTickSpacing");
     const tpEl = byId("humanParityMartingaleTp");
     const slEl = byId("humanParityMartingaleSl");
-    const capAfterThreeDoubles = !!(capToggleEl && capToggleEl.checked);
+    const doubleLimitEl = byId("humanParityMartingaleDoubleLimit");
+    const capAfterThreeDoubles = doubleLimit > 0;
     if(modeEl) modeEl.value = mode;
     if(stakeEl && String(stakeEl.value || "").trim() === "") stakeEl.value = startStake.toFixed(2);
     if(multEl && String(multEl.value || "").trim() === "") multEl.value = String(multiplier);
@@ -723,7 +726,8 @@
     if(spacingEl) spacingEl.value = String(tickSpacing);
     if(tpEl && String(tpEl.value || "").trim() === "") tpEl.value = "0";
     if(slEl && String(slEl.value || "").trim() === "") slEl.value = "0";
-    return { mode, startStake, multiplier, duration, tickSpacing, capAfterThreeDoubles, takeProfit, stopLoss };
+    if(doubleLimitEl && String(doubleLimitEl.value || "").trim() === "") doubleLimitEl.value = "0";
+    return { mode, startStake, multiplier, duration, tickSpacing, capAfterThreeDoubles, doubleLimit, takeProfit, stopLoss };
   }
 
   function updateHumanParityMartingalePanel(){
@@ -732,6 +736,7 @@
     HUMAN_PARITY_MARTINGALE_STATE.mode = mode;
     HUMAN_PARITY_MARTINGALE_STATE.multiplier = settings.multiplier;
     HUMAN_PARITY_MARTINGALE_STATE.capAfterThreeDoubles = !!settings.capAfterThreeDoubles;
+    HUMAN_PARITY_MARTINGALE_STATE.doubleLimit = settings.doubleLimit;
     HUMAN_PARITY_MARTINGALE_STATE.takeProfit = settings.takeProfit;
     HUMAN_PARITY_MARTINGALE_STATE.stopLoss = settings.stopLoss;
     if(!HUMAN_PARITY_MARTINGALE_STATE.running && !HUMAN_PARITY_MARTINGALE_STATE.inFlight && !HUMAN_PARITY_MARTINGALE_STATE.runId){
@@ -765,7 +770,7 @@
               : "Even";
       const modeDetail = isHumanParityPlusMode(mode)
         ? "1-step 2x recovery"
-        : `${settings.multiplier}x${settings.capAfterThreeDoubles ? " • cap 3 doubles" : ""}`;
+        : `${settings.multiplier}x${settings.doubleLimit > 0 ? ` • limit ${settings.doubleLimit} double-up(s)` : ""}`;
       const limits = [
         settings.takeProfit > 0 ? `TP ${money(settings.takeProfit)}` : "TP off",
         settings.stopLoss > 0 ? `SL ${money(settings.stopLoss)}` : "SL off",
@@ -800,6 +805,7 @@
     HUMAN_PARITY_MARTINGALE_STATE.limitHit = false;
     HUMAN_PARITY_MARTINGALE_STATE.plusRecoveryPending = false;
     HUMAN_PARITY_MARTINGALE_STATE.capAfterThreeDoubles = !!settings.capAfterThreeDoubles;
+    HUMAN_PARITY_MARTINGALE_STATE.doubleLimit = settings.doubleLimit;
     HUMAN_PARITY_MARTINGALE_STATE.evenDoubleCount = 0;
     HUMAN_PARITY_MARTINGALE_STATE.oddDoubleCount = 0;
     HUMAN_PARITY_MARTINGALE_STATE.lastResult = "none";
@@ -1094,11 +1100,12 @@
         }
       }else{
         const currentDoubleCount = Math.max(0, Number(st[counterKey] || 0));
-        if(st.capAfterThreeDoubles && currentDoubleCount >= 3){
+        const doubleLimit = Math.max(0, Math.floor(Number(st.doubleLimit || 0)));
+        if(doubleLimit > 0 && currentDoubleCount >= doubleLimit){
           if(side === "EVEN") st.evenStake = baseStake;
           if(side === "ODD") st.oddStake = baseStake;
           st[counterKey] = 0;
-          st.lastResult = `${side} LOSS at ${money(stake)} • cap reached, reset to base`;
+          st.lastResult = `${side} LOSS at ${money(stake)} • double-up limit ${doubleLimit} reached, reset to base`;
           capResetApplied = true;
         }else{
           const next = Number((stake * Math.max(1, Number(st.multiplier || 2))).toFixed(2));
