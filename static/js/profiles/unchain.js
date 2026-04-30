@@ -71,6 +71,8 @@
       lowerStake: 1,
       higherBaseStake: 1,
       lowerBaseStake: 1,
+      higherDoubleCount: 0,
+      lowerDoubleCount: 0,
       pendingSide: "",
       pendingContractId: "",
       pendingDirections: {},
@@ -325,6 +327,7 @@
     const lowerStartStake = Math.max(0.35, readNumber("unchainSingleMartingaleLowerStartStake", 1));
     const multiplier = Math.max(1, readNumber("unchainSingleMartingaleMultiplier", 2));
     const maxSteps = Math.max(1, Math.floor(readNumber("unchainSingleMartingaleMaxSteps", 1000)));
+    const doubleLimit = Math.max(0, Math.floor(readNumber("unchainSingleMartingaleDoubleLimit", 0)));
     const maxStakeRaw = readText("unchainSingleMartingaleMaxStake", "");
     const maxStake = maxStakeRaw === "" ? null : Math.max(0.35, Number(maxStakeRaw || 0));
     const tickSpacing = Math.max(1, Math.min(10, readInteger("unchainSingleMartingaleTickSpacing", 1)));
@@ -342,6 +345,7 @@
       startStake: Number(higherStartStake.toFixed(2)),
       multiplier,
       maxSteps,
+      doubleLimit,
       maxStake: Number.isFinite(maxStake) ? Number(maxStake.toFixed(2)) : null,
       tickSpacing,
       duration,
@@ -419,6 +423,18 @@
   function resetUnchainSingleMartingaleSideToBase(direction, settings) {
     setUnchainSingleMartingaleSideStake(direction, getUnchainSingleMartingaleBaseStake(direction, settings), settings);
     setUnchainSingleMartingaleProfitCarryState(direction, false);
+    if (normalizeUnchainDirection(direction) === "LOWER") {
+      state.singleMartingale.lowerDoubleCount = 0;
+    } else {
+      state.singleMartingale.higherDoubleCount = 0;
+    }
+  }
+
+  function nextUnchainLimitedMartingaleStep(currentStep, settings) {
+    const step = Math.max(1, Math.min(settings.maxSteps || 1000000, Math.floor(Number(currentStep || 1) || 1)));
+    const limit = Math.max(0, Math.floor(Number(settings.doubleLimit || 0) || 0));
+    if (limit > 0 && (step - 1) >= limit) return 1;
+    return Math.min(settings.maxSteps || 1000000, step + 1);
   }
 
   function advanceUnchainSingleMartingaleLossSide(direction, stakeValue, settings) {
@@ -426,9 +442,18 @@
       resetUnchainSingleMartingaleSideToBase(direction, settings);
       return;
     }
+    const side = normalizeUnchainDirection(direction);
+    const countKey = side === "LOWER" ? "lowerDoubleCount" : "higherDoubleCount";
+    const limit = Math.max(0, Math.floor(Number(settings.doubleLimit || 0) || 0));
+    const currentCount = Math.max(0, Math.floor(Number(state.singleMartingale[countKey] || 0) || 0));
+    if (limit > 0 && currentCount >= limit) {
+      resetUnchainSingleMartingaleSideToBase(side, settings);
+      return;
+    }
     let nextStake = Number((Number(stakeValue || getUnchainSingleMartingaleBaseStake(direction, settings)) * settings.multiplier).toFixed(2));
     if (settings.maxStake !== null) nextStake = Math.min(nextStake, settings.maxStake);
     setUnchainSingleMartingaleSideStake(direction, nextStake, settings);
+    state.singleMartingale[countKey] = currentCount + 1;
     setUnchainSingleMartingaleProfitCarryState(direction, false);
   }
 
@@ -478,6 +503,8 @@
     state.singleMartingale.step = 1;
     state.singleMartingale.spacingWait = 0;
     state.singleMartingale.plusSetCount = 0;
+    state.singleMartingale.higherDoubleCount = 0;
+    state.singleMartingale.lowerDoubleCount = 0;
     state.singleMartingale.fixedProfitsEnabled = false;
     state.singleMartingale.higherProfitCarryActive = false;
     state.singleMartingale.lowerProfitCarryActive = false;
@@ -520,9 +547,10 @@
         : `$${unchainSingleMartingaleStakeForStep().toFixed(2)}`;
       const nextStake = isUnchainSingleMartingalePairedAction(settings.action)
         ? `Next Higher $${Math.max(0.35, (unchainSingleMartingalePairStakeForDirection("HIGHER") * settings.multiplier)).toFixed(2)} • Next Lower $${Math.max(0.35, (unchainSingleMartingalePairStakeForDirection("LOWER") * settings.multiplier)).toFixed(2)}`
-        : `$${unchainSingleMartingaleStakeForStep(Math.min(settings.maxSteps, state.singleMartingale.step + 1)).toFixed(2)}`;
+        : `$${unchainSingleMartingaleStakeForStep(nextUnchainLimitedMartingaleStep(state.singleMartingale.step, settings)).toFixed(2)}`;
       const winsSideText = settings.action === "BOTH_WINS" ? ` • Martingale side: ${settings.winsSide}` : "";
-      status.innerText = `${state.singleMartingale.status}. Current ${currentStake} • ${nextStake}${winsSideText} • Last result: ${state.singleMartingale.lastResult}`;
+      const limitText = settings.doubleLimit > 0 ? ` • Limit ${settings.doubleLimit} double-up${settings.doubleLimit === 1 ? "" : "s"}` : "";
+      status.innerText = `${state.singleMartingale.status}. Current ${currentStake} • ${nextStake}${limitText}${winsSideText} • Last result: ${state.singleMartingale.lastResult}`;
     }
   }
 
@@ -607,6 +635,8 @@
       state.singleMartingale.stopRequested = false;
       state.singleMartingale.step = 1;
       state.singleMartingale.plusSetCount = 0;
+      state.singleMartingale.higherDoubleCount = 0;
+      state.singleMartingale.lowerDoubleCount = 0;
       state.singleMartingale.fixedProfitsEnabled = settings.fixedProfits;
       state.singleMartingale.lastResult = "none";
       state.singleMartingale.higherStake = settings.higherStartStake;
@@ -3650,7 +3680,7 @@
         advanceUnchainSingleMartingaleLossSide("HIGHER", pendingStake, settings);
       }
       if (wasMartingaleTrade && state.singleMartingale.enabled) {
-        state.singleMartingale.step = Math.min(settings.maxSteps, state.singleMartingale.step + 1);
+        state.singleMartingale.step = nextUnchainLimitedMartingaleStep(state.singleMartingale.step, settings);
         state.singleMartingale.spacingWait = settings.tickSpacing;
         state.singleMartingale.status = settings.tickSpacing > 0 ? `Waiting ${settings.tickSpacing} tick(s) before next round` : "Running";
       } else {
@@ -4152,6 +4182,7 @@
       "unchainSingleMartingaleMultiplier",
       "unchainSingleMartingaleMaxSteps",
       "unchainSingleMartingaleMaxStake",
+      "unchainSingleMartingaleDoubleLimit",
       "unchainSingleMartingaleTickSpacing",
       "unchainSingleMartingaleHigherBarrier",
       "unchainSingleMartingaleLowerBarrier",

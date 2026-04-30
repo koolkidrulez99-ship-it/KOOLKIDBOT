@@ -626,6 +626,10 @@
                     Max Stake
                     <input id="humanMartingaleMaxStake" type="number" min="0" step="0.01" placeholder="optional" oninput="updateHumanSingleMartingalePanel()" style="width:100%; min-height:38px;">
                 </label>
+                <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                    Double Up Limit
+                    <input id="humanMartingaleDoubleLimit" type="number" min="0" step="1" value="0" placeholder="0 = unlimited" oninput="updateHumanSingleMartingalePanel()" style="width:100%; min-height:38px;">
+                </label>
             </div>
             <div id="humanMartingaleStatus" style="margin-top:8px; color:#94a3b8; font-size:12px;">Ready. Step 1 • Current stake $0.35 • Next stake $0.70 • Last result: none</div>
             <div style="margin-top:8px; display:grid; grid-template-columns:1fr 1fr; gap:8px;">
@@ -787,6 +791,10 @@
                     <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
                         Max Stake
                         <input id="humanRfMartingaleMaxStake" type="number" min="0" step="0.01" placeholder="optional" oninput="updateHumanRfMartingalePanel()" style="width:100%; min-height:38px;">
+                    </label>
+                    <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                        Double Up Limit
+                        <input id="humanRfMartingaleDoubleLimit" type="number" min="0" step="1" value="0" placeholder="0 = unlimited" oninput="updateHumanRfMartingalePanel()" style="width:100%; min-height:38px;">
                     </label>
                     <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
                         Tick Spacing

@@ -130,6 +130,8 @@
     direction: "RISE",
     enabled: false,
     step: 1,
+    riseDoubleCount: 0,
+    fallDoubleCount: 0,
     inProgress: false,
     pendingDirection: "",
     pendingDirections: {},
@@ -831,51 +833,24 @@
   }
 
   function purgeHumanParityBatchLegRows(batch){
-    if(!batch || !batch.id) return;
-    try{
-      if(typeof tradeStore === "undefined" || !tradeStore || !Array.isArray(tradeStore[PROFILE])) return;
-      const visibleBatchId = String(batch.id);
-      tradeStore[PROFILE] = (tradeStore[PROFILE] || []).filter((item) => {
-        if(!item || typeof item !== "object") return true;
-        const cid = String(item.contract_id ?? item.contractId ?? "");
-        if(cid === visibleBatchId) return true;
-        const mode = String(item.mode || "");
-        if(mode === "human_parity_even_odd_visible") return true;
-        const batchId = String(item.batch_id || "");
-        if(batchId && batchId === visibleBatchId) return false;
-        if(mode === batch.mode && ["EVEN", "ODD"].includes(String(item.type || "").toUpperCase())) return false;
-        return true;
-      });
-    }catch(e){}
+    return;
   }
 
   function renderHumanParityBatchHistory(batch, pending){
-    if(!batch || !batch.id) return;
+    return;
+  }
+
+  function removeHumanParitySyntheticBatchRows(){
     try{
-      if(typeof upsertTradeInStore !== "function" || typeof renderTradeList !== "function") return;
-      purgeHumanParityBatchLegRows(batch);
-      const profit = Number(batch.totalProfit || 0);
-      const result = pending ? "PENDING" : (profit > 0 ? "WIN" : "LOSS");
-      upsertTradeInStore({
-        profile: PROFILE,
-        type: "Even+Odd",
-        barrier: "Even+Odd",
-        stake: Number(batch.totalStake || 0).toFixed(2),
-        symbol: batch.symbol,
-        time: batch.time || new Date().toLocaleTimeString(),
-        contract_id: batch.id,
-        duration: batch.duration,
-        duration_unit: "t",
-        countdown_remaining: pending ? Math.max(0, Math.floor(Number(batch.duration || 0))) : 0,
-        countdown_unit: "t",
-        status: result,
-        result,
-        pending: !!pending,
-        profit: pending ? 0 : Number(profit.toFixed(2)),
-        exit_digit: Array.isArray(batch.exitDigits) && batch.exitDigits.length ? batch.exitDigits.join(",") : undefined,
-        mode: "human_parity_even_odd_visible",
+      if(typeof tradeStore === "undefined" || !tradeStore || !Array.isArray(tradeStore[PROFILE])) return;
+      const before = tradeStore[PROFILE].length;
+      tradeStore[PROFILE] = tradeStore[PROFILE].filter((item) => {
+        return String(item && item.mode || "") !== "human_parity_even_odd_visible";
       });
-      if(typeof activeProfile !== "undefined" && String(activeProfile || "").toUpperCase() === PROFILE) renderTradeList(PROFILE);
+      if(tradeStore[PROFILE].length !== before){
+        if(typeof persistTradeHistoryCache === "function") persistTradeHistoryCache();
+        if(typeof renderTradeList === "function" && typeof activeProfile !== "undefined" && String(activeProfile || "").toUpperCase() === PROFILE) renderTradeList(PROFILE);
+      }
     }catch(e){}
   }
 
@@ -951,8 +926,6 @@
         symbol: (typeof window.getConfirmedMarketSymbol === "function" ? window.getConfirmedMarketSymbol() : ((document.getElementById("symbol") || {}).value || "")),
         time: new Date().toLocaleTimeString(),
       };
-      renderHumanParityBatchHistory(st.currentBatch, true);
-      scheduleHumanParityBatchFallback(st.currentBatch);
     }else{
       clearHumanParityVisibleBatch();
     }
@@ -974,12 +947,6 @@
       await postJSON("/human_parity_trade", payload);
       st.status = `Running. Waiting for ${plan.length} result(s).`;
     }catch(e){
-      if(pairMode && st.currentBatch && typeof removeTradeFromStoreByContractId === "function"){
-        try{
-          removeTradeFromStoreByContractId(PROFILE, st.currentBatch.id);
-          if(typeof renderTradeList === "function" && typeof activeProfile !== "undefined" && String(activeProfile || "").toUpperCase() === PROFILE) renderTradeList(PROFILE);
-        }catch(_err){}
-      }
       clearHumanParityVisibleBatch();
       st.running = false;
       st.runId = "";
@@ -1062,9 +1029,6 @@
         st.currentBatch.exitDigits = Array.isArray(st.currentBatch.exitDigits) ? st.currentBatch.exitDigits : [];
         st.currentBatch.exitDigits.push(exitDigit);
       }
-      const expectedBatch = Object.keys(st.pending || {}).length || 2;
-      renderHumanParityBatchHistory(st.currentBatch, st.settled < expectedBatch);
-      if(st.settled < expectedBatch) scheduleHumanParityBatchFallback(st.currentBatch);
     }
     const counterKey = side === "EVEN" ? "evenDoubleCount" : "oddDoubleCount";
     const baseStake = Number(Math.max(0.35, Number(side === "EVEN" ? st.evenBaseStake : st.oddBaseStake) || 1).toFixed(2));
@@ -1126,7 +1090,7 @@
     if(!st.running && st.limitHit && expected > 0 && st.settled >= expected){
       if(st.mode === "EVEN_ODD" && st.currentBatch){
         clearHumanParityBatchCompletionTimer();
-        renderHumanParityBatchHistory(st.currentBatch, false);
+        st.currentBatch = null;
       }
       st.pending = {};
       st.settled = 0;
@@ -1137,7 +1101,7 @@
     if(st.running && expected > 0 && st.settled >= expected){
       if(st.mode === "EVEN_ODD" && st.currentBatch){
         clearHumanParityBatchCompletionTimer();
-        renderHumanParityBatchHistory(st.currentBatch, false);
+        st.currentBatch = null;
       }
       st.pending = {};
       st.settled = 0;
@@ -1512,6 +1476,7 @@
     const stepAmount = Number(readHumanSingleMartingaleNumber("humanMartingaleStepAmount", 0.05, 0.01, 1000000).toFixed(2));
     const multiplier = Math.max(1, readHumanSingleMartingaleNumber("humanMartingaleMultiplier", 2, 1, 100));
     const maxSteps = Math.max(1, Math.floor(readHumanSingleMartingaleNumber("humanMartingaleMaxSteps", 1000, 1, 1000000)));
+    const doubleLimit = Math.max(0, Math.floor(readHumanSingleMartingaleNumber("humanMartingaleDoubleLimit", 0, 0, 1000000)));
     const capRaw = byId("humanMartingaleMaxStake");
     const maxStakeValue = capRaw && String(capRaw.value || "").trim() !== ""
       ? Math.max(0.35, Number(capRaw.value))
@@ -1533,7 +1498,14 @@
       if(durationEl) durationEl.value = String(durationTicks);
     }
     if(modeEl) modeEl.value = mode;
-    return { action, startStake, mode, stepAmount, multiplier, maxSteps, maxStake, option, isPair: !!pairConfig, pairConfig };
+    return { action, startStake, mode, stepAmount, multiplier, maxSteps, maxStake, doubleLimit, option, isPair: !!pairConfig, pairConfig };
+  }
+
+  function nextHumanLimitedMartingaleStep(currentStep, settings){
+    const step = Math.max(1, Math.min(settings.maxSteps || 1000000, Math.floor(Number(currentStep || 1) || 1)));
+    const limit = Math.max(0, Math.floor(Number(settings.doubleLimit || 0) || 0));
+    if(limit > 0 && (step - 1) >= limit) return 1;
+    return Math.min(settings.maxSteps || 1000000, step + 1);
   }
 
   function humanSingleMartingaleStakeForStep(stepValue){
@@ -1627,6 +1599,7 @@
     const status = byId("humanMartingaleStatus");
     if(status){
       const modeLabel = settings.mode === "STEP_005" ? `$${settings.stepAmount.toFixed(2)} step` : `${settings.multiplier}x`;
+      const limitLabel = settings.doubleLimit > 0 ? ` • Limit ${settings.doubleLimit} double-up${settings.doubleLimit === 1 ? "" : "s"}` : "";
       if(settings.isPair){
         if(!HUMAN_SINGLE_MARTINGALE_STATE.running && !HUMAN_SINGLE_MARTINGALE_STATE.inProgress){
           (settings.pairConfig.actions || []).forEach((key) => {
@@ -1636,12 +1609,12 @@
         const currentLabel = (settings.pairConfig.actions || [])
           .map((key) => `${humanSingleMartingaleLabel(key)} $${humanSingleMartingaleStakeForPairAction(key).toFixed(2)}`)
           .join(" • ");
-        status.textContent = `${HUMAN_SINGLE_MARTINGALE_STATE.status}. ${humanSingleMartingaleLabel(settings.action)} • ${modeLabel} • ${currentLabel} • Last result: ${HUMAN_SINGLE_MARTINGALE_STATE.lastResult}`;
+        status.textContent = `${HUMAN_SINGLE_MARTINGALE_STATE.status}. ${humanSingleMartingaleLabel(settings.action)} • ${modeLabel}${limitLabel} • ${currentLabel} • Last result: ${HUMAN_SINGLE_MARTINGALE_STATE.lastResult}`;
       }else{
         const currentStake = humanSingleMartingaleStakeForStep();
-        const nextStep = Math.min(settings.maxSteps, HUMAN_SINGLE_MARTINGALE_STATE.step + 1);
+        const nextStep = nextHumanLimitedMartingaleStep(HUMAN_SINGLE_MARTINGALE_STATE.step, settings);
         const nextStake = HUMAN_SINGLE_MARTINGALE_STATE.enabled ? humanSingleMartingaleStakeForStep(nextStep) : settings.startStake;
-        status.textContent = `${HUMAN_SINGLE_MARTINGALE_STATE.status}. ${modeLabel} • Step ${HUMAN_SINGLE_MARTINGALE_STATE.step} • Current stake $${currentStake.toFixed(2)} • Next stake $${nextStake.toFixed(2)} • Last result: ${HUMAN_SINGLE_MARTINGALE_STATE.lastResult}`;
+        status.textContent = `${HUMAN_SINGLE_MARTINGALE_STATE.status}. ${modeLabel}${limitLabel} • Step ${HUMAN_SINGLE_MARTINGALE_STATE.step} • Current stake $${currentStake.toFixed(2)} • Next stake $${nextStake.toFixed(2)} • Last result: ${HUMAN_SINGLE_MARTINGALE_STATE.lastResult}`;
       }
       status.style.color = HUMAN_SINGLE_MARTINGALE_STATE.inProgress ? "#fbbf24" : (available ? "#94a3b8" : "#fca5a5");
     }
@@ -1776,6 +1749,7 @@
     const multiplier = Math.max(1, readHumanRfMartingaleNumber("humanRfMartingaleMultiplier", 2, 1, 100));
     const tickSpacing = readHumanTickSpacing("humanRfMartingaleTickSpacing", 1);
     const maxSteps = Math.max(1, Math.floor(readHumanRfMartingaleNumber("humanRfMartingaleMaxSteps", 8, 1, 1000)));
+    const doubleLimit = Math.max(0, Math.floor(readHumanRfMartingaleNumber("humanRfMartingaleDoubleLimit", 0, 0, 1000000)));
     const capRaw = byId("humanRfMartingaleMaxStake");
     const maxStakeValue = capRaw && String(capRaw.value || "").trim() !== ""
       ? Math.max(0.35, Number(capRaw.value))
@@ -1786,7 +1760,7 @@
     if(durationEl) durationEl.value = String(duration);
     const spacingEl = byId("humanRfMartingaleTickSpacing");
     if(spacingEl) spacingEl.value = String(tickSpacing);
-    return { direction, duration, startStake, riseStake, fallStake, multiplier, tickSpacing, maxSteps, maxStake };
+    return { direction, duration, startStake, riseStake, fallStake, multiplier, tickSpacing, maxSteps, maxStake, doubleLimit };
   }
 
   function humanRfMartingaleStakeForStep(stepValue){
@@ -1837,12 +1811,14 @@
           HUMAN_RF_MARTINGALE_STATE.multiplier = settings.multiplier;
         }
         const pairLabel = settings.direction === "BOTH_EQUALS" ? "Rise + Fall Equals" : "Rise + Fall";
-        status.textContent = `${HUMAN_RF_MARTINGALE_STATE.status}. ${pairLabel} • ${settings.multiplier}x • Rise stake $${humanRfPairStakeForDirection("RISE").toFixed(2)} • Fall stake $${humanRfPairStakeForDirection("FALL").toFixed(2)} • Last result: ${HUMAN_RF_MARTINGALE_STATE.lastResult}`;
+        const limitLabel = settings.doubleLimit > 0 ? ` • Limit ${settings.doubleLimit} double-up${settings.doubleLimit === 1 ? "" : "s"}` : "";
+        status.textContent = `${HUMAN_RF_MARTINGALE_STATE.status}. ${pairLabel} • ${settings.multiplier}x${limitLabel} • Rise stake $${humanRfPairStakeForDirection("RISE").toFixed(2)} • Fall stake $${humanRfPairStakeForDirection("FALL").toFixed(2)} • Last result: ${HUMAN_RF_MARTINGALE_STATE.lastResult}`;
       }else{
         const currentStake = humanRfMartingaleStakeForStep();
-        const nextStep = Math.min(settings.maxSteps, HUMAN_RF_MARTINGALE_STATE.step + 1);
+        const nextStep = nextHumanLimitedMartingaleStep(HUMAN_RF_MARTINGALE_STATE.step, settings);
         const nextStake = HUMAN_RF_MARTINGALE_STATE.enabled ? humanRfMartingaleStakeForStep(nextStep) : settings.startStake;
-        status.textContent = `${HUMAN_RF_MARTINGALE_STATE.status}. ${settings.direction} • Step ${HUMAN_RF_MARTINGALE_STATE.step} • Current stake $${currentStake.toFixed(2)} • Next stake $${nextStake.toFixed(2)} • Last result: ${HUMAN_RF_MARTINGALE_STATE.lastResult}`;
+        const limitLabel = settings.doubleLimit > 0 ? ` • Limit ${settings.doubleLimit} double-up${settings.doubleLimit === 1 ? "" : "s"}` : "";
+        status.textContent = `${HUMAN_RF_MARTINGALE_STATE.status}. ${settings.direction}${limitLabel} • Step ${HUMAN_RF_MARTINGALE_STATE.step} • Current stake $${currentStake.toFixed(2)} • Next stake $${nextStake.toFixed(2)} • Last result: ${HUMAN_RF_MARTINGALE_STATE.lastResult}`;
       }
       status.style.color = HUMAN_RF_MARTINGALE_STATE.inProgress ? "#fbbf24" : "#94a3b8";
     }
@@ -1859,6 +1835,8 @@
     HUMAN_RF_MARTINGALE_STATE.enabled = !HUMAN_RF_MARTINGALE_STATE.enabled;
     if(HUMAN_RF_MARTINGALE_STATE.enabled){
       HUMAN_RF_MARTINGALE_STATE.step = 1;
+      HUMAN_RF_MARTINGALE_STATE.riseDoubleCount = 0;
+      HUMAN_RF_MARTINGALE_STATE.fallDoubleCount = 0;
       HUMAN_RF_MARTINGALE_STATE.status = "Ready";
       HUMAN_RF_MARTINGALE_STATE.lastResult = "none";
     }else{
@@ -1887,6 +1865,8 @@
     HUMAN_RF_MARTINGALE_STATE.stopRequested = true;
     HUMAN_RF_MARTINGALE_STATE.enabled = false;
     HUMAN_RF_MARTINGALE_STATE.spacingWait = 0;
+    HUMAN_RF_MARTINGALE_STATE.riseDoubleCount = 0;
+    HUMAN_RF_MARTINGALE_STATE.fallDoubleCount = 0;
     clearHumanRfMartingalePending();
     HUMAN_RF_MARTINGALE_STATE.status = reason || "Stopped";
     updateHumanRfMartingalePanel();
@@ -2376,7 +2356,7 @@
         }else if(legItem.outcome === "LOSS"){
           const settings = readHumanSingleMartingaleSettings();
           const currentStep = Math.max(1, Math.min(settings.maxSteps, Math.floor(Number((HUMAN_SINGLE_MARTINGALE_STATE.pairSteps || {})[key] || 1) || 1)));
-          HUMAN_SINGLE_MARTINGALE_STATE.pairSteps[key] = Math.min(settings.maxSteps, currentStep + 1);
+          HUMAN_SINGLE_MARTINGALE_STATE.pairSteps[key] = nextHumanLimitedMartingaleStep(currentStep, settings);
         }
       });
       const lastParts = (pairConfig.actions || []).map((key) => {
@@ -2425,7 +2405,7 @@
       HUMAN_SINGLE_MARTINGALE_STATE.lastResult = "LOSS";
       if(wasMartingaleTrade && HUMAN_SINGLE_MARTINGALE_STATE.enabled){
         const settings = readHumanSingleMartingaleSettings();
-        HUMAN_SINGLE_MARTINGALE_STATE.step = Math.min(settings.maxSteps, HUMAN_SINGLE_MARTINGALE_STATE.step + 1);
+        HUMAN_SINGLE_MARTINGALE_STATE.step = nextHumanLimitedMartingaleStep(HUMAN_SINGLE_MARTINGALE_STATE.step, settings);
         HUMAN_SINGLE_MARTINGALE_STATE.status = "Running";
         if(HUMAN_SINGLE_MARTINGALE_STATE.running && !HUMAN_SINGLE_MARTINGALE_STATE.stopRequested){
           if(HUMAN_SINGLE_MARTINGALE_STATE.restartTimer) clearTimeout(HUMAN_SINGLE_MARTINGALE_STATE.restartTimer);
@@ -2461,12 +2441,24 @@
       if(outcome === "WIN"){
         if(direction === "RISE") HUMAN_RF_MARTINGALE_STATE.riseStake = Number((HUMAN_RF_MARTINGALE_STATE.riseBaseStake || 0.35).toFixed(2));
         if(direction === "FALL") HUMAN_RF_MARTINGALE_STATE.fallStake = Number((HUMAN_RF_MARTINGALE_STATE.fallBaseStake || 0.35).toFixed(2));
+        if(direction === "RISE") HUMAN_RF_MARTINGALE_STATE.riseDoubleCount = 0;
+        if(direction === "FALL") HUMAN_RF_MARTINGALE_STATE.fallDoubleCount = 0;
       }else{
         const settings = readHumanRfMartingaleSettings();
-        let next = Number((stake * Math.max(1, Number(settings.multiplier || HUMAN_RF_MARTINGALE_STATE.multiplier || 2))).toFixed(2));
-        if(settings.maxStake !== null) next = Math.min(next, settings.maxStake);
-        if(direction === "RISE") HUMAN_RF_MARTINGALE_STATE.riseStake = Number(Math.max(0.35, next).toFixed(2));
-        if(direction === "FALL") HUMAN_RF_MARTINGALE_STATE.fallStake = Number(Math.max(0.35, next).toFixed(2));
+        const countKey = direction === "FALL" ? "fallDoubleCount" : "riseDoubleCount";
+        const limit = Math.max(0, Math.floor(Number(settings.doubleLimit || 0) || 0));
+        const currentCount = Math.max(0, Math.floor(Number(HUMAN_RF_MARTINGALE_STATE[countKey] || 0) || 0));
+        if(limit > 0 && currentCount >= limit){
+          if(direction === "RISE") HUMAN_RF_MARTINGALE_STATE.riseStake = Number((HUMAN_RF_MARTINGALE_STATE.riseBaseStake || settings.riseStake || 0.35).toFixed(2));
+          if(direction === "FALL") HUMAN_RF_MARTINGALE_STATE.fallStake = Number((HUMAN_RF_MARTINGALE_STATE.fallBaseStake || settings.fallStake || 0.35).toFixed(2));
+          HUMAN_RF_MARTINGALE_STATE[countKey] = 0;
+        }else{
+          let next = Number((stake * Math.max(1, Number(settings.multiplier || HUMAN_RF_MARTINGALE_STATE.multiplier || 2))).toFixed(2));
+          if(settings.maxStake !== null) next = Math.min(next, settings.maxStake);
+          if(direction === "RISE") HUMAN_RF_MARTINGALE_STATE.riseStake = Number(Math.max(0.35, next).toFixed(2));
+          if(direction === "FALL") HUMAN_RF_MARTINGALE_STATE.fallStake = Number(Math.max(0.35, next).toFixed(2));
+          HUMAN_RF_MARTINGALE_STATE[countKey] = currentCount + 1;
+        }
       }
       HUMAN_RF_MARTINGALE_STATE.lastResult = `${direction} ${outcome} at ${money(stake)}`;
       const expected = Object.keys(HUMAN_RF_MARTINGALE_STATE.pendingDirections || {}).length;
@@ -2499,6 +2491,8 @@
     clearHumanRfMartingalePending();
     if(won){
       HUMAN_RF_MARTINGALE_STATE.step = 1;
+      HUMAN_RF_MARTINGALE_STATE.riseDoubleCount = 0;
+      HUMAN_RF_MARTINGALE_STATE.fallDoubleCount = 0;
       HUMAN_RF_MARTINGALE_STATE.running = false;
       HUMAN_RF_MARTINGALE_STATE.stopRequested = false;
       HUMAN_RF_MARTINGALE_STATE.enabled = false;
@@ -2508,7 +2502,7 @@
       HUMAN_RF_MARTINGALE_STATE.lastResult = "LOSS";
       if(wasMartingaleTrade && HUMAN_RF_MARTINGALE_STATE.enabled){
         const settings = readHumanRfMartingaleSettings();
-        HUMAN_RF_MARTINGALE_STATE.step = Math.min(settings.maxSteps, HUMAN_RF_MARTINGALE_STATE.step + 1);
+        HUMAN_RF_MARTINGALE_STATE.step = nextHumanLimitedMartingaleStep(HUMAN_RF_MARTINGALE_STATE.step, settings);
         HUMAN_RF_MARTINGALE_STATE.status = "Running";
         if(HUMAN_RF_MARTINGALE_STATE.running && !HUMAN_RF_MARTINGALE_STATE.stopRequested){
           if(HUMAN_RF_MARTINGALE_STATE.restartTimer) clearTimeout(HUMAN_RF_MARTINGALE_STATE.restartTimer);
@@ -2942,6 +2936,7 @@
     window.updateHumanParityMartingalePanel = updateHumanParityMartingalePanel;
     window.startHumanParityMartingale = startHumanParityMartingale;
     window.stopHumanParityMartingale = stopHumanParityMartingale;
+    removeHumanParitySyntheticBatchRows();
 
     // initial render/poll
     startPolling();
@@ -2951,6 +2946,7 @@
     updateHumanRfMartingalePanel();
     updateHumanParityMartingalePanel();
     renderHumanParityDigitScreen();
+    removeHumanParitySyntheticBatchRows();
     maybeAutoFormulaX();
   }
 
@@ -2964,6 +2960,7 @@
     updateHumanRfMartingalePanel();
     updateHumanParityMartingalePanel();
     renderHumanParityDigitScreen();
+    removeHumanParitySyntheticBatchRows();
     maybeAutoFormulaX();
   }
 

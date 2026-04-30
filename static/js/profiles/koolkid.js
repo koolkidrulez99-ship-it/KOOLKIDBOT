@@ -47,6 +47,7 @@
       step: 1,
       over3Step: 1,
       pairSteps: {},
+      doubleLimit: 0,
       running: false,
       inProgress: false,
       pendingAction: "",
@@ -736,6 +737,7 @@
     const stepAmount = Number(readKoolkidMartingaleNumber("koolkidMartingaleStepAmount", 0.05, 0.01, 1000000).toFixed(2));
     const multiplier = Math.max(1, readKoolkidMartingaleNumber("koolkidMartingaleMultiplier", 2, 1, 100));
     const maxSteps = Math.max(1, Math.floor(readKoolkidMartingaleNumber("koolkidMartingaleMaxSteps", 1000, 1, 1000000)));
+    const doubleLimit = Math.max(0, Math.floor(readKoolkidMartingaleNumber("koolkidMartingaleDoubleLimit", 0, 0, 1000000)));
     const capEl = document.getElementById("koolkidMartingaleMaxStake");
     const maxStake = capEl && String(capEl.value || "").trim() !== ""
       ? Number(readKoolkidMartingaleNumber("koolkidMartingaleMaxStake", 0, 0, 1000000).toFixed(2))
@@ -756,8 +758,16 @@
       stepAmount,
       multiplier,
       maxSteps,
-      maxStake
+      maxStake,
+      doubleLimit
     };
+  }
+
+  function nextKoolkidLimitedMartingaleStep(currentStep, settings) {
+    const step = Math.max(1, Math.min(settings.maxSteps || 1000000, Math.floor(Number(currentStep || 1) || 1)));
+    const limit = Math.max(0, Math.floor(Number(settings.doubleLimit || 0) || 0));
+    if (limit > 0 && (step - 1) >= limit) return 1;
+    return Math.min(settings.maxSteps || 1000000, step + 1);
   }
 
   function koolkidSingleMartingaleStakeForLeg(leg, stepValue) {
@@ -846,9 +856,10 @@
     const status = document.getElementById("koolkidMartingaleStatus");
     if (status) {
       const currentStake = koolkidSingleMartingaleStakeForStep();
-      const nextStep = Math.min(settings.maxSteps, st.step + 1);
+      const nextStep = nextKoolkidLimitedMartingaleStep(st.step, settings);
       const nextStake = st.enabled ? koolkidSingleMartingaleStakeForStep(nextStep) : settings.startStake;
       const modeLabel = settings.isPair ? `paired ${settings.multiplier}x` : (settings.mode === "STEP_005" ? `$${settings.stepAmount.toFixed(2)} step` : `${settings.multiplier}x`);
+      const limitLabel = settings.doubleLimit > 0 ? ` - Limit ${settings.doubleLimit} double-up${settings.doubleLimit === 1 ? "" : "s"}` : "";
       const waitTotal = Math.max(1, Math.floor(Number(st.tickSpacing || settings.tickSpacing) || settings.tickSpacing));
       const waitText = st.waitingForTicks
         ? `Waiting ${st.waitTicksRemaining}/${waitTotal} tick${waitTotal === 1 ? "" : "s"}`
@@ -870,7 +881,7 @@
         : settings.isPair
         ? `Current stakes $${currentStake.toFixed(2)} each - Next stakes $${nextStake.toFixed(2)} each`
         : `Current stake $${currentStake.toFixed(2)} - Next stake $${nextStake.toFixed(2)}`;
-      status.textContent = `${st.status}. ${modeLabel} - ${settings.label} - ${waitText} - Step ${st.step} - ${stakeLabel} - Last result: ${st.lastResult}`;
+      status.textContent = `${st.status}. ${modeLabel}${limitLabel} - ${settings.label} - ${waitText} - Step ${st.step} - ${stakeLabel} - Last result: ${st.lastResult}`;
       status.style.color = st.inProgress ? "#fbbf24" : "#94a3b8";
     }
   }
@@ -1128,7 +1139,7 @@
           if (!legAction) return;
           if (pending.outcome === "LOSS") {
             const currentStep = Math.max(1, Math.min(settings.maxSteps, Math.floor(Number((st.pairSteps || {})[legAction] || 1) || 1)));
-            st.pairSteps[legAction] = Math.min(settings.maxSteps, currentStep + 1);
+            st.pairSteps[legAction] = nextKoolkidLimitedMartingaleStep(currentStep, settings);
           } else if (pending.outcome === "WIN") {
             st.pairSteps[legAction] = 1;
           }
@@ -1194,7 +1205,7 @@
       st.lastResult = "LOSS";
       if (wasMartingaleTrade && st.enabled) {
         const settings = readKoolkidSingleMartingaleSettings();
-        st.step = Math.min(settings.maxSteps, st.step + 1);
+        st.step = nextKoolkidLimitedMartingaleStep(st.step, settings);
         st.status = "Running";
         if (st.running && !st.stopRequested) {
           if (st.restartTimer) clearTimeout(st.restartTimer);
@@ -1230,7 +1241,7 @@
       st.lastResult = "LOSS";
       if (wasMartingaleTrade && st.enabled) {
         const settings = readKoolkidSingleMartingaleSettings();
-        st.step = Math.min(settings.maxSteps, st.step + 1);
+        st.step = nextKoolkidLimitedMartingaleStep(st.step, settings);
         st.status = "Running";
         if (st.running && !st.stopRequested) {
           if (st.restartTimer) clearTimeout(st.restartTimer);

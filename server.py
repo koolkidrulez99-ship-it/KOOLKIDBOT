@@ -19882,7 +19882,6 @@ def human_parity_trade_route():
     if side == "EVEN_ODD":
         batch_id = str(data.get("batch_id") or _new_req_id())
         extra_base.update({
-            "hide_from_history": True,
             "batch_id": batch_id,
             "batch_label": data.get("batch_label") or "Even+Odd",
             "batch_stake": data.get(

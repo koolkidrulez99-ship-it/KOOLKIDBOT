@@ -17,6 +17,11 @@
 /* make sizing predictable so padding doesn't cause overflow */
 *, *::before, *::after { box-sizing: border-box; }
 
+html{
+    scroll-behavior:auto;
+    overflow-anchor:none;
+}
+
 body{
     background:linear-gradient(135deg,#0f172a,#020617);
     font-family:Arial, sans-serif;
@@ -24,6 +29,7 @@ body{
     margin:0;
     padding:20px;
     overflow-x:hidden; /* prevents side-scroll if anything leaks */
+    overflow-anchor:none;
 }
 
 .container{
@@ -469,6 +475,12 @@ input, select{
     gap:10px;
     width:300px;
     pointer-events:none;
+    overflow-anchor:none;
+}
+
+#profileContainer,
+.broadcast-notice{
+    overflow-anchor:none;
 }
 .toast{
     background:#111827;

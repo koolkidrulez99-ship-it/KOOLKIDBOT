@@ -958,10 +958,18 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     }
     const startBatchStake = Number(readJokerjoeBatchMartingaleNumber("jokerjoeBatchMartingaleStartStake", minBatchStake, minBatchStake, 1000000).toFixed(2));
     const maxSteps = Math.max(1, Math.floor(readJokerjoeBatchMartingaleNumber("jokerjoeBatchMartingaleMaxSteps", 100, 1, 100000)));
+    const doubleLimit = Math.max(0, Math.floor(readJokerjoeBatchMartingaleNumber("jokerjoeBatchMartingaleDoubleLimit", 0, 0, 1000000)));
     const tickSpacing = Math.max(1, Math.min(10, Math.floor(readJokerjoeBatchMartingaleNumber("jokerjoeBatchMartingaleTickSpacing", 1, 1, 10))));
     const spacingEl = getEl("jokerjoeBatchMartingaleTickSpacing");
     if (spacingEl) spacingEl.value = String(tickSpacing);
-    return { group, startBatchStake, maxSteps, multiplier: 2, tickSpacing, digitCount, minBatchStake };
+    return { group, startBatchStake, maxSteps, multiplier: 2, doubleLimit, tickSpacing, digitCount, minBatchStake };
+  }
+
+  function nextJokerjoeBatchMartingaleStep(currentStep, settings) {
+    const step = Math.max(1, Math.min(settings.maxSteps || 100000, Math.floor(Number(currentStep || 1) || 1)));
+    const limit = Math.max(0, Math.floor(Number(settings.doubleLimit || 0) || 0));
+    if (limit > 0 && (step - 1) >= limit) return 1;
+    return Math.min(settings.maxSteps || 100000, step + 1);
   }
 
   function jokerjoeBatchStakeForStep(stepValue) {
@@ -1088,7 +1096,8 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
       st.status = options.forced ? "Reset (batch finalized)" : "Reset";
       safeToast(`${st.currentBatch ? st.currentBatch.label : "Match Batch"} won ${signedMoney(st.totalProfit)}`, "success");
     } else if (st.enabled && st.running && !st.stopRequested) {
-      st.step = Math.min(readJokerjoeBatchMartingaleSettings().maxSteps, st.step + 1);
+      const settings = readJokerjoeBatchMartingaleSettings();
+      st.step = nextJokerjoeBatchMartingaleStep(st.step, settings);
       st.status = options.forced ? "Batch finalized - waiting for next batch" : "Waiting for next batch";
       safeToast(`Match Batch loss ${signedMoney(st.totalProfit)} - next batch $${jokerjoeBatchStakeForStep().toFixed(2)}`, "error");
       scheduleJokerjoeBatchMartingaleNextRound();
@@ -1158,7 +1167,7 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     if (startStakeEl && Number(startStakeEl.value) < settings.minBatchStake) {
       startStakeEl.value = settings.minBatchStake.toFixed(2);
     }
-    const nextBatch = jokerjoeBatchStakeForStep(Math.min(settings.maxSteps, st.step + 1));
+    const nextBatch = jokerjoeBatchStakeForStep(nextJokerjoeBatchMartingaleStep(st.step, settings));
     const toggleBtn = getEl("jokerjoeBatchMartingaleToggleBtn");
     if (toggleBtn) {
       toggleBtn.textContent = `MARTINGALE: ${st.enabled ? "ON" : "OFF"}`;
@@ -1180,8 +1189,9 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     }
     const status = getEl("jokerjoeBatchMartingaleStatus");
     if (status) {
+      const limitLabel = settings.doubleLimit > 0 ? ` - Limit ${settings.doubleLimit} double-up${settings.doubleLimit === 1 ? "" : "s"}` : "";
       status.textContent = groupReady
-        ? `${st.status}. ${settings.group.label} - Step ${st.step} - Batch stake $${batchStake.toFixed(2)} - Per match $${perStake.toFixed(2)} - Next batch $${nextBatch.toFixed(2)} - Spacing ${settings.tickSpacing} tick(s) - Last result: ${st.lastResult}`
+        ? `${st.status}. ${settings.group.label}${limitLabel} - Step ${st.step} - Batch stake $${batchStake.toFixed(2)} - Per match $${perStake.toFixed(2)} - Next batch $${nextBatch.toFixed(2)} - Spacing ${settings.tickSpacing} tick(s) - Last result: ${st.lastResult}`
         : `Pick exactly ${requiredDigits} custom MATCH digits before placing this batch.`;
       status.style.color = !groupReady || st.inProgress ? "#fbbf24" : "#94a3b8";
     }
