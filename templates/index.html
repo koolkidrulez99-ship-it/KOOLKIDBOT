@@ -3064,7 +3064,6 @@ function applyApiConnectionState(data){
     apiConnected = tradeReady;
 
     if(tradeReady){
-        const restoringTicks = tickUnhealthy || tickRecovering || (!!data && !!data.ws_stale && !connected);
         console.info("TEMP connected_state_success", {
             loginid: (data && data.loginid) || "UNKNOWN",
             connected,
@@ -3076,9 +3075,9 @@ function applyApiConnectionState(data){
         clearApiConnectPending("connected_state_success");
         stopApiConnectPolling();
         clearApiTokenInputAfterConnect("connected_state_success");
-        apiStatus.innerText = restoringTicks ? "Connected - restoring live ticks" : "Connected";
-        apiStatus.className = restoringTicks ? "blue" : "green";
-        updateApiConnectionUi("connected", restoringTicks ? "API CONNECTED - LIVE TICKS RESTORING" : "API CONNECTED SUCCESSFULLY");
+        apiStatus.innerText = "Connected";
+        apiStatus.className = "green";
+        updateApiConnectionUi("connected", "API CONNECTED SUCCESSFULLY");
         applyKnownApiBalance(data || {}, true);
         return true;
     }
