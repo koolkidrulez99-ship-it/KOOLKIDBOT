@@ -1988,7 +1988,12 @@ def disconnect_client(client_id, reason="manual", emit=True):
     if emit:
         socketio.emit(
             "connection_status",
-            {"connected": False, "loginid": "UNKNOWN", **_build_balance_payload(reset_state)},
+            {
+                "connected": False,
+                "loginid": "UNKNOWN",
+                **_connection_trade_ready_payload(reset_state),
+                **_build_balance_payload(reset_state),
+            },
             room=client_id,
         )
         socketio.emit("reset_ui", room=client_id)
@@ -2006,6 +2011,19 @@ def init_client(client_id):
     clients[client_id]["runtime_created_at"] = time.time()
     clients[client_id]["runtime_server_instance_id"] = SERVER_INSTANCE_ID
     clients[client_id]["runtime_process_id"] = os.getpid()
+
+
+def _connection_trade_ready_payload(state):
+    state = state or {}
+    ws_authorized = bool(state.get("ws_connected"))
+    ws_present = bool(state.get("ws"))
+    trade_ready = bool(ws_authorized and ws_present)
+    return {
+        "authorized": ws_authorized,
+        "ws_authorized": ws_authorized,
+        "can_trade": trade_ready,
+        "trade_ready": trade_ready,
+    }
 
 
 def _runtime_diag_payload(client_id, state, *, runtime_missing_before_init=False):
@@ -2032,6 +2050,7 @@ def _runtime_diag_payload(client_id, state, *, runtime_missing_before_init=False
         "ws_reconnect_pending_runtime": bool(state.get("ws_reconnect_pending")),
         "ws_nonce_runtime": int(state.get("ws_nonce", 0) or 0),
         "has_token_runtime": bool(str(state.get("api_token", "") or "").strip()),
+        **_connection_trade_ready_payload(state),
     }
 
 
@@ -2610,9 +2629,10 @@ def handle_connect(auth=None):
     if active_notice:
         socketio.emit("broadcast_notice", active_notice, room=cid)
     warmup_active = _has_active_tick_stream_warmup(state, now_ts=time.time(), client_id=cid)
-    connected = bool(state["ws_connected"]) and (warmup_active or not _is_ws_stale(state))
-    if not connected and state.get("ws_connected") and not warmup_active:
-        _mark_ws_unhealthy_and_reconnect(cid, state, "Deriv connection went stale. Reconnecting now...", emit_error=False)
+    authorized = bool(state.get("ws_connected")) and bool(state.get("ws"))
+    connected = authorized
+    if authorized and not warmup_active and _is_ws_stale(state):
+        logger.warning("[%s] api_socket_stale_observed reason=socket_connect_status action=keep_authorized", cid)
 
     socketio.emit("connection_status", {
         "connected": connected,
@@ -2639,6 +2659,7 @@ def client_heartbeat():
             socketio.emit("connection_status", {
                 "connected": True,
                 "loginid": state.get("loginid", "UNKNOWN"),
+                **_connection_trade_ready_payload(state),
                 **health,
                 **_build_balance_payload(state),
             }, room=cid)
@@ -4625,6 +4646,7 @@ def _mark_ws_unhealthy_and_reconnect(client_id, state, message, *, emit_error=Tr
             "reconnecting": reconnecting,
             "has_token": has_token,
             "loginid": "UNKNOWN",
+            **_connection_trade_ready_payload(state),
             **_build_balance_payload(state),
         },
         room=client_id,
@@ -4687,14 +4709,17 @@ def _ensure_trade_socket_ready(client_id, state, *, emit_error=True):
             warmup_active = False
         if warmup_active:
             logger.info("[%s] ws_stale_check_skipped reason=tick_warmup_active", client_id)
-            return True, None
-        _mark_ws_unhealthy_and_reconnect(
-            client_id,
-            state,
-            "Deriv connection went stale. Reconnecting now...",
-            emit_error=emit_error,
-        )
-        return False, "Deriv connection went stale. Reconnecting now..."
+        else:
+            logger.warning(
+                "[%s] trade_socket_stale_observed action=allow_authorized_send transport=%s",
+                client_id,
+                bool(state.get("ws_transport_connected")),
+            )
+            try:
+                _restore_required_tick_subscriptions(client_id, state, "trade_socket_stale_self_heal")
+            except Exception:
+                pass
+        return True, None
     if not state.get("ws_connected") or not ws:
         if str(state.get("api_token", "") or "").strip():
             try:
@@ -15548,6 +15573,8 @@ def handle_on_message(client_id, ws, message, expected_nonce):
             socketio.emit("connection_status", {
                 "connected": True,
                 "loginid": loginid,
+                "has_token": bool(str(state.get("api_token", "") or "").strip()),
+                **_connection_trade_ready_payload(state),
                 **tick_health,
                 **_build_balance_payload(state),
             }, room=client_id)
@@ -16566,6 +16593,7 @@ def handle_on_close(client_id, ws, code, msg, expected_nonce):
         "reconnecting": should_reconnect,
         "has_token": bool(str(state.get("api_token", "") or "").strip()),
         "loginid": "UNKNOWN",
+        **_connection_trade_ready_payload(state),
         **_build_balance_payload(state),
     }, room=client_id)
     if should_reconnect:
@@ -16721,6 +16749,7 @@ def _restart_deriv_websocket_preserve_session(client_id, state, reason="manual_r
         "connected": False,
         "loginid": "UNKNOWN",
         "has_token": True,
+        **_connection_trade_ready_payload(state),
         **_build_balance_payload(state),
     }, room=client_id)
     return True, "Martha AI emergency reconnect started"
@@ -16750,7 +16779,7 @@ def set_token():
 
     same_token = token == str(state.get("api_token", "") or "").strip()
     ws_thread_alive = bool(state.get("ws_thread") and state["ws_thread"].is_alive())
-    same_token_authorized = bool(same_token and state.get("ws_connected") and not _is_ws_stale(state))
+    same_token_authorized = bool(same_token and state.get("ws_connected") and state.get("ws"))
     same_token_in_progress = bool(
         same_token
         and not state.get("ws_connected")
@@ -16821,9 +16850,15 @@ def api_connection_status():
     )
     _check_ws_connect_timeout(_cid, state)
     warmup_active = _has_active_tick_stream_warmup(state, now_ts=time.time(), client_id=_cid)
-    connected = bool(state.get("ws_connected")) and (warmup_active or not _is_ws_stale(state))
-    if not connected and state.get("ws_connected") and not warmup_active:
-        _mark_ws_unhealthy_and_reconnect(_cid, state, "Deriv connection went stale. Reconnecting now...", emit_error=False)
+    authorized = bool(state.get("ws_connected")) and bool(state.get("ws"))
+    connected = authorized
+    ws_stale = bool(authorized and not warmup_active and _is_ws_stale(state))
+    if ws_stale:
+        logger.warning("[%s] api_connection_status_ws_stale action=keep_authorized_self_heal_ticks", _cid)
+        try:
+            _restore_required_tick_subscriptions(_cid, state, "api_status_stale_self_heal")
+        except Exception:
+            pass
     tick_health = _get_tick_stream_health(_cid, state, self_heal=connected, allow_reconnect=False)
     has_token = bool(str(state.get("api_token", "") or "").strip())
     reconnecting = bool(
@@ -16838,6 +16873,7 @@ def api_connection_status():
     payload = {
         "connected": connected,
         "reconnecting": reconnecting,
+        "ws_stale": ws_stale,
         "loginid": state.get("loginid", "UNKNOWN"),
         "has_token": has_token,
         "license_context": get_user_license_context(),

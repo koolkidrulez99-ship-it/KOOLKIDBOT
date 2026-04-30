@@ -411,7 +411,7 @@ def test_tick_ui_throttle_does_not_block_trade_result(monkeypatch):
     assert len([item for item in emitted if item[0] == "trade_result"]) == 1
 
 
-def test_send_buy_marks_stale_socket_unhealthy_and_requests_reconnect(monkeypatch):
+def test_send_buy_allows_authorized_stale_transport_and_sends_trade(monkeypatch):
     emitted = []
     reconnects = []
     ws = _DummyWs()
@@ -428,6 +428,10 @@ def test_send_buy_marks_stale_socket_unhealthy_and_requests_reconnect(monkeypatc
         "balance": 100.0,
         "strategies": {"KOOLKID": None},
         "loginid": "CR123",
+        "active_profile": "KOOLKID",
+        "profile_budgets": server._new_profile_budget_map(),
+        "contract_meta": {},
+        "bot_auto_close_timers": {},
     }
     monkeypatch.setattr(server, "clients", {"cid-stale": state})
     monkeypatch.setattr(server.socketio, "emit", lambda event, payload=None, room=None: emitted.append((event, payload, room)))
@@ -435,15 +439,15 @@ def test_send_buy_marks_stale_socket_unhealthy_and_requests_reconnect(monkeypatc
 
     ok, msg = server.send_buy("cid-stale", "OVER", 1.0, "R_10", 5)
 
-    assert ok is False
-    assert "stale" in msg.lower() or "reconnecting" in msg.lower()
-    assert state["ws_connected"] is False
-    assert ws.closed is True
-    assert reconnects == [("cid-stale", "nonce-1", 0.25)]
-    assert any(event == "connection_status" and payload.get("connected") is False for event, payload, _room in emitted)
+    assert ok is True
+    assert msg == "Trade sent"
+    assert state["ws_connected"] is True
+    assert ws.closed is False
+    assert reconnects == []
+    assert any(message.get("buy") == 1 for message in ws.messages)
 
 
-def test_api_connection_status_reports_false_for_stale_socket(monkeypatch):
+def test_api_connection_status_keeps_authorized_stale_socket_trade_ready(monkeypatch):
     reconnects = []
     emitted = []
     ws = _DummyWs()
@@ -471,10 +475,13 @@ def test_api_connection_status_reports_false_for_stale_socket(monkeypatch):
         response = server.api_connection_status()
 
     data = response.get_json()
-    assert data["connected"] is False
-    assert state["ws_connected"] is False
-    assert reconnects == [("cid-status", 2, 0.25)]
-    assert any(event == "connection_status" and payload.get("connected") is False for event, payload, _room in emitted)
+    assert data["connected"] is True
+    assert data["can_trade"] is True
+    assert data["authorized"] is True
+    assert data["ws_stale"] is True
+    assert state["ws_connected"] is True
+    assert reconnects == []
+    assert emitted == []
 
 
 def test_api_connection_status_reconnects_when_authorize_stays_pending_too_long(monkeypatch):

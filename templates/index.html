@@ -3019,12 +3019,27 @@ function clearApiTokenInputAfterConnect(reason){
     }
 }
 
+function isApiTradeReadyPayload(data){
+    if(!data) return false;
+    const keys = ["can_trade", "trade_ready", "authorized", "ws_authorized"];
+    for(const key of keys){
+        if(Object.prototype.hasOwnProperty.call(data, key)){
+            return !!data[key];
+        }
+    }
+    if(Object.prototype.hasOwnProperty.call(data, "ws_connected_runtime")){
+        return !!data.ws_connected_runtime;
+    }
+    return !!data.connected;
+}
+
 function applyApiConnectionState(data){
     const connected = !!(data && data.connected);
+    const tradeReady = isApiTradeReadyPayload(data);
     const reconnecting = !!(data && data.reconnecting);
     const tickHealthKnown = data && Object.prototype.hasOwnProperty.call(data, "tick_stream_healthy");
     const tickRecovering = !!(data && data.tick_stream_recovering);
-    const tickUnhealthy = connected && tickHealthKnown && data.tick_stream_healthy === false;
+    const tickUnhealthy = tradeReady && tickHealthKnown && data.tick_stream_healthy === false;
     if(data && Object.prototype.hasOwnProperty.call(data, "server_instance_id")){
         console.info("TEMP api_runtime_diag", {
             server_instance_id: data.server_instance_id,
@@ -3039,23 +3054,31 @@ function applyApiConnectionState(data){
             ws_transport_connected_runtime: data.ws_transport_connected_runtime,
             ws_reconnect_pending_runtime: data.ws_reconnect_pending_runtime,
             ws_nonce_runtime: data.ws_nonce_runtime,
-            has_token_runtime: data.has_token_runtime
+            has_token_runtime: data.has_token_runtime,
+            can_trade: data.can_trade,
+            trade_ready: data.trade_ready,
+            authorized: data.authorized,
+            ws_stale: data.ws_stale
         });
     }
-    apiConnected = connected;
+    apiConnected = tradeReady;
 
-    if(connected){
+    if(tradeReady){
+        const restoringTicks = tickUnhealthy || tickRecovering || (!!data && !!data.ws_stale && !connected);
         console.info("TEMP connected_state_success", {
             loginid: (data && data.loginid) || "UNKNOWN",
+            connected,
+            trade_ready: tradeReady,
+            ws_stale: !!(data && data.ws_stale),
             tick_stream_healthy: tickHealthKnown ? !!data.tick_stream_healthy : null,
             tick_stream_recovering: tickRecovering
         });
         clearApiConnectPending("connected_state_success");
         stopApiConnectPolling();
         clearApiTokenInputAfterConnect("connected_state_success");
-        apiStatus.innerText = "Connected";
-        apiStatus.className = "green";
-        updateApiConnectionUi("connected", "API CONNECTED SUCCESSFULLY");
+        apiStatus.innerText = restoringTicks ? "Connected - restoring live ticks" : "Connected";
+        apiStatus.className = restoringTicks ? "blue" : "green";
+        updateApiConnectionUi("connected", restoringTicks ? "API CONNECTED - LIVE TICKS RESTORING" : "API CONNECTED SUCCESSFULLY");
         applyKnownApiBalance(data || {}, true);
         return true;
     }
