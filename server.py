@@ -202,6 +202,93 @@ socketio = SocketIO(
 
 DERIV_WS = "wss://ws.derivws.com/websockets/v3?app_id=1089"
 
+ACTIVE_BROADCAST_NOTICE = None
+BROADCAST_NOTICE_LOCK = threading.RLock()
+BROADCAST_NOTICE_TYPES = {"info", "warning", "danger", "success"}
+
+
+def _serialize_broadcast_notice(notice):
+    if not notice:
+        return None
+    expires_at_ts = notice.get("expires_at_ts")
+    remaining_sec = None
+    if expires_at_ts:
+        remaining_sec = max(0, int(float(expires_at_ts) - time.time()))
+    return {
+        "active": True,
+        "id": notice.get("id"),
+        "message": notice.get("message") or "",
+        "type": notice.get("type") or "info",
+        "created_at": notice.get("created_at"),
+        "expires_at": notice.get("expires_at"),
+        "remaining_sec": remaining_sec,
+    }
+
+
+def get_active_broadcast_notice():
+    global ACTIVE_BROADCAST_NOTICE
+    with BROADCAST_NOTICE_LOCK:
+        notice = ACTIVE_BROADCAST_NOTICE
+        if not notice:
+            return None
+        expires_at_ts = notice.get("expires_at_ts")
+        if expires_at_ts and time.time() >= float(expires_at_ts):
+            ACTIVE_BROADCAST_NOTICE = None
+            logger.info("Admin broadcast notice auto-cleared after expiry")
+            return None
+        return _serialize_broadcast_notice(notice)
+
+
+def set_active_broadcast_notice(message, notice_type="info", duration_minutes=None, admin_user=None):
+    global ACTIVE_BROADCAST_NOTICE
+    clean_message = str(message or "").strip()
+    if not clean_message:
+        return False, "Message is required", None
+    clean_type = str(notice_type or "info").strip().lower()
+    if clean_type not in BROADCAST_NOTICE_TYPES:
+        clean_type = "info"
+
+    expires_at_ts = None
+    expires_at = None
+    if duration_minutes not in (None, ""):
+        try:
+            minutes = float(duration_minutes)
+        except Exception:
+            return False, "Duration must be a number of minutes", None
+        if minutes <= 0:
+            return False, "Duration must be greater than 0 minutes", None
+        expires_at_ts = time.time() + (minutes * 60)
+        expires_at = datetime.utcfromtimestamp(expires_at_ts).strftime("%Y-%m-%d %H:%M:%S")
+
+    notice = {
+        "id": uuid.uuid4().hex[:12],
+        "message": clean_message,
+        "type": clean_type,
+        "created_at": _utc_now_str(),
+        "expires_at": expires_at,
+        "expires_at_ts": expires_at_ts,
+    }
+    with BROADCAST_NOTICE_LOCK:
+        ACTIVE_BROADCAST_NOTICE = notice
+    payload = _serialize_broadcast_notice(notice)
+    socketio.emit("broadcast_notice", payload)
+    logger.info(
+        "Admin broadcast notice sent by %s type=%s duration_minutes=%s",
+        admin_user or "admin",
+        clean_type,
+        duration_minutes if duration_minutes not in (None, "") else "none",
+    )
+    return True, "Broadcast notice sent", payload
+
+
+def clear_active_broadcast_notice(admin_user=None):
+    global ACTIVE_BROADCAST_NOTICE
+    with BROADCAST_NOTICE_LOCK:
+        ACTIVE_BROADCAST_NOTICE = None
+    socketio.emit("broadcast_notice", {"active": False})
+    logger.info("Admin broadcast notice cleared by %s", admin_user or "admin")
+    return True, "Broadcast notice cleared"
+
 # DATABASE FILE (SQLite fallback for laptop/local testing)
 DB_FILE = (os.environ.get("SQLITE_DB_PATH") or "users.db").strip() or "users.db"
 
@@ -599,18 +686,26 @@ def _normalize_license_type(license_type):
     raw = str(license_type or "").strip().lower().replace("-", "_").replace(" ", "_")
     if raw in ("month", "monthly", "1_month", "one_month"):
         return "monthly"
+    if raw in ("15_day", "fifteen_day", "15_days", "fifteen_days", "half_month"):
+        return "fifteen_day"
     if raw in ("paid_month", "paid_monthly", "paid_month_users", "paid_monthly_users", "paid_monthly_user"):
         return "paid_monthly"
     if raw in ("life", "lifetime"):
         return "lifetime"
     if raw in ("beta", "beta_tester", "beta_testers"):
         return "beta_testers"
+    if raw in ("tester", "testers", "30_day_tester", "testers_30_day"):
+        return "testers"
     return raw
 
 
 def _license_expiry_for_activation(license_type):
     ltype = _normalize_license_type(license_type)
     if ltype in ("monthly", "paid_monthly"):
+        return (datetime.utcnow() + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+    if ltype == "fifteen_day":
+        return (datetime.utcnow() + timedelta(days=15)).strftime("%Y-%m-%d %H:%M:%S")
+    if ltype == "testers":
         return (datetime.utcnow() + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
     if ltype == "beta_testers":
         return (datetime.utcnow() + timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
@@ -627,7 +722,7 @@ def _license_is_expired(license_row):
     if exp is None:
         # A linked/activated expiring key without an expiry is unsafe. Treat it
         # as blocked so admin must explicitly reassign/renew the account.
-        if license_type in ("monthly", "paid_monthly", "beta_testers") and (license_row.get("used_by") or license_row.get("activated_at")):
+        if license_type in ("monthly", "fifteen_day", "paid_monthly", "testers", "beta_testers") and (license_row.get("used_by") or license_row.get("activated_at")):
             return True
         return False
     return datetime.utcnow() > exp
@@ -701,8 +796,8 @@ def get_user_license_context(username=None):
     status = str((lic or {}).get("status") or "").lower().strip()
     active = bool(lic and status != "revoked" and not _license_is_expired(lic))
     is_paid_monthly = bool(active and ltype == "paid_monthly")
-    is_monthly = bool(active and ltype in ("monthly", "paid_monthly"))
-    is_lifetime = bool(active and ltype in ("lifetime", "beta_testers"))
+    is_monthly = bool(active and ltype in ("monthly", "fifteen_day", "paid_monthly"))
+    is_lifetime = bool(active and ltype in ("lifetime", "testers", "beta_testers"))
     return {
         **context,
         "license_type": ltype or "unknown",
@@ -743,7 +838,7 @@ def _validate_license_for_registration(conn, license_key):
     if str(rowd.get("used_by") or "").strip():
         return False, "This license key has already been used"
     ltype = _normalize_license_type(rowd.get("license_type"))
-    if ltype not in ("monthly", "paid_monthly", "lifetime", "beta_testers"):
+    if ltype not in ("monthly", "fifteen_day", "paid_monthly", "lifetime", "testers", "beta_testers"):
         return False, "Unsupported license key type"
     return True, rowd
 
@@ -938,8 +1033,12 @@ def _generate_license_key(license_type):
     ltype = _normalize_license_type(license_type)
     if ltype == "monthly":
         prefix = "KK-MTH"
+    elif ltype == "fifteen_day":
+        prefix = "KK-15D"
     elif ltype == "paid_monthly":
         prefix = "KK-PAIDMTH"
+    elif ltype == "testers":
+        prefix = "KK-TEST"
     elif ltype == "beta_testers":
         prefix = "KK-BETA"
     else:
@@ -950,7 +1049,7 @@ def _generate_license_key(license_type):
 
 def create_license_record(license_type):
     ltype = _normalize_license_type(license_type)
-    if ltype not in ("monthly", "paid_monthly", "lifetime", "beta_testers"):
+    if ltype not in ("monthly", "fifteen_day", "paid_monthly", "lifetime", "testers", "beta_testers"):
         return False, "Invalid license type", None
     conn = _db_connect()
     c = conn.cursor()
@@ -1008,7 +1107,7 @@ def renew_license_record(license_key):
             return False, "Revoked keys cannot be renewed. Create or reassign a key instead.", None
 
         ltype = _normalize_license_type(lic_row.get("license_type"))
-        if ltype not in ("monthly", "paid_monthly", "beta_testers"):
+        if ltype not in ("monthly", "fifteen_day", "paid_monthly", "testers", "beta_testers"):
             return False, "Only expiring license keys can be renewed", None
 
         now_s = _utc_now_str()
@@ -1032,7 +1131,7 @@ def renew_license_record(license_key):
 
 def _reset_license_binding_for_user(conn, username):
     c = conn.cursor()
-    _db_execute(c, "UPDATE licenses SET used_by=NULL, activated_at=NULL, expires_at=CASE WHEN lower(replace(replace(license_type, '-', '_'), ' ', '_')) IN ('monthly','paid_monthly','paid_monthly_users','paid_month_users','beta_testers','beta_tester','beta') THEN NULL ELSE expires_at END WHERE used_by=?", (username,))
+    _db_execute(c, "UPDATE licenses SET used_by=NULL, activated_at=NULL, expires_at=CASE WHEN lower(replace(replace(license_type, '-', '_'), ' ', '_')) IN ('monthly','fifteen_day','15_day','15_days','paid_monthly','paid_monthly_users','paid_month_users','testers','tester','30_day_tester','testers_30_day','beta_testers','beta_tester','beta') THEN NULL ELSE expires_at END WHERE used_by=?", (username,))
 
 
 def admin_reset_user_license(username):
@@ -2432,6 +2531,37 @@ def admin_renew_license():
     return jsonify({"status": "ok", "message": msg, "expires_at": expires_at})
 
 
+@app.route("/admin/broadcast/send", methods=["POST"])
+def admin_broadcast_send():
+    if not login_required() or not is_admin():
+        return jsonify({"status": "error", "error": "Unauthorized"}), 403
+
+    data = request.get_json(silent=True) or {}
+    message = data.get("message") or request.form.get("message") or ""
+    notice_type = data.get("type") or request.form.get("type") or "info"
+    duration_minutes = data.get("duration_minutes")
+    if duration_minutes is None:
+        duration_minutes = request.form.get("duration_minutes")
+    ok, msg, notice = set_active_broadcast_notice(
+        message,
+        notice_type=notice_type,
+        duration_minutes=duration_minutes,
+        admin_user=session.get("user"),
+    )
+    if not ok:
+        return jsonify({"status": "error", "error": msg}), 400
+    return jsonify({"status": "ok", "message": msg, "notice": notice})
+
+
+@app.route("/admin/broadcast/clear", methods=["POST"])
+def admin_broadcast_clear():
+    if not login_required() or not is_admin():
+        return jsonify({"status": "error", "error": "Unauthorized"}), 403
+
+    ok, msg = clear_active_broadcast_notice(admin_user=session.get("user"))
+    return jsonify({"status": "ok" if ok else "error", "message": msg})
+
+
 @app.route("/admin/user/reset_key", methods=["POST"])
 def admin_user_reset_key():
     if not login_required() or not is_admin():
@@ -2476,6 +2606,9 @@ def handle_connect(auth=None):
         bool(state.get("ws_thread") and state["ws_thread"].is_alive()),
     )
     join_room(cid)
+    active_notice = get_active_broadcast_notice()
+    if active_notice:
+        socketio.emit("broadcast_notice", active_notice, room=cid)
     warmup_active = _has_active_tick_stream_warmup(state, now_ts=time.time(), client_id=cid)
     connected = bool(state["ws_connected"]) and (warmup_active or not _is_ws_stale(state))
     if not connected and state.get("ws_connected") and not warmup_active:
@@ -2778,6 +2911,7 @@ def index():
         username=session.get("user"),
         mutant_access=_mutant_access_state(),
         license_context=get_user_license_context(),
+        active_broadcast_notice=get_active_broadcast_notice(),
     )
 
 

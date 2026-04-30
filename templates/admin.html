@@ -139,8 +139,40 @@
         .toolbar .grow{ flex:1; min-width:180px; }
         .small-btn{ padding:6px 9px; font-size:12px; }
         .mono{ font-family:monospace; }
+        .broadcast-form{
+            display:grid;
+            grid-template-columns:1fr 150px 150px;
+            gap:10px;
+            align-items:start;
+        }
+        .broadcast-form textarea{
+            min-height:78px;
+            resize:vertical;
+            background:#0f172a;
+            color:white;
+            border:1px solid #334155;
+            border-radius:10px;
+            padding:10px;
+            font-family:Arial, sans-serif;
+        }
+        .broadcast-form select,
+        .broadcast-form input{
+            width:100%;
+            background:#0f172a;
+            color:white;
+            border:1px solid #334155;
+            border-radius:10px;
+            padding:10px;
+        }
+        .broadcast-actions{
+            display:flex;
+            gap:8px;
+            flex-wrap:wrap;
+            margin-top:10px;
+        }
         @media (max-width: 980px){
             .grid{ grid-template-columns:1fr; }
+            .broadcast-form{ grid-template-columns:1fr; }
         }
     </style>
 </head>
@@ -154,14 +186,42 @@
     <a href="/logout">Logout</a>
 </div>
 
+<div class="card" style="margin-bottom:16px;">
+    <h2>📢 Broadcast Notice</h2>
+    <div class="muted" style="margin-bottom:10px;">Send a lightweight dashboard banner before maintenance or updates. It does not block trading.</div>
+    <div class="broadcast-form">
+        <textarea id="broadcastMessage" placeholder="Message to show users"></textarea>
+        <div>
+            <div class="muted" style="margin-bottom:5px;">Notice Type</div>
+            <select id="broadcastType">
+                <option value="info">info</option>
+                <option value="warning">warning</option>
+                <option value="danger">danger</option>
+                <option value="success">success</option>
+            </select>
+        </div>
+        <div>
+            <div class="muted" style="margin-bottom:5px;">Duration Minutes</div>
+            <input id="broadcastDuration" type="number" min="1" step="1" placeholder="Optional">
+        </div>
+    </div>
+    <div class="broadcast-actions">
+        <button class="btn-blue" onclick="sendBroadcastNotice()">Send Notice</button>
+        <button class="btn-gray" onclick="useMaintenancePreset()">Maintenance in 5 minutes</button>
+        <button onclick="clearBroadcastNotice()">Clear Notice</button>
+    </div>
+</div>
+
 <div class="grid">
     <div class="card">
         <h2>🔑 License Manager</h2>
         <div class="actions">
             <select id="licenseType">
                 <option value="monthly">1-Month License</option>
+                <option value="fifteen_day">15-Day License</option>
                 <option value="paid_monthly">Paid Monthly users</option>
                 <option value="lifetime">Lifetime License</option>
+                <option value="testers">Testers License</option>
                 <option value="beta_testers">Beta Testers License</option>
             </select>
             <button class="btn-green" onclick="createLicense()">Create License Key</button>
@@ -169,7 +229,7 @@
         </div>
         <div id="generatedKey" class="generated-key">No key generated yet.</div>
         <div class="muted" style="margin-top:8px;">
-            Monthly keys expire 30 days after first registration use. Paid Monthly users get monthly access without the Human profile. Beta tester keys expire 7 days after first use and have lifetime privileges while active. Lifetime keys never expire unless revoked.
+            Monthly keys expire 30 days after first registration use. 15-Day keys expire after 15 days and have normal monthly access. Paid Monthly users get monthly access without the Human profile. Testers keys expire after 30 days and have lifetime privileges while active. Beta tester keys expire 7 days after first use and have lifetime privileges while active. Lifetime keys never expire unless revoked.
         </div>
 
         <h2 style="margin-top:16px;">📋 Licenses</h2>
@@ -186,8 +246,10 @@
             <select id="licenseTypeFilter" onchange="filterLicenseRows()">
                 <option value="all">All Types</option>
                 <option value="monthly">Monthly</option>
+                <option value="fifteen_day">15-Day</option>
                 <option value="paid_monthly">Paid Monthly users</option>
                 <option value="lifetime">Lifetime</option>
+                <option value="testers">Testers</option>
                 <option value="beta_testers">Beta Testers</option>
             </select>
             <button class="btn-blue" onclick="copyUnusedKeys()">Copy Unused Keys</button>
@@ -226,7 +288,7 @@
                         {% if l.status|lower != "revoked" %}
                             <div class="row-actions">
                                 <button class="small-btn btn-gray" onclick="copyLicenseKey('{{l.license_key}}')">Copy</button>
-                                {% if (l.license_type or '')|lower in ['monthly', 'paid_monthly', 'beta_testers'] %}
+                                {% if (l.license_type or '')|lower in ['monthly', 'fifteen_day', 'paid_monthly', 'testers', 'beta_testers'] %}
                                     <button class="small-btn btn-green" onclick="renewLicenseDate('{{l.license_key}}')">Renew Date</button>
                                 {% endif %}
                                 <button class="small-btn" onclick="revokeLicense('{{l.license_key}}')">Revoke</button>
@@ -338,9 +400,46 @@ async function createLicense(){
     try{
         const data = await postJSON("/admin/license/create", {license_type:type});
         document.getElementById("generatedKey").textContent = data.license_key || "No key returned";
-        const label = type === "monthly" ? "1-month" : (type === "paid_monthly" ? "Paid Monthly users" : (type === "beta_testers" ? "Beta testers" : "Lifetime"));
+        const label = type === "monthly" ? "1-month" : (type === "fifteen_day" ? "15-day" : (type === "paid_monthly" ? "Paid Monthly users" : (type === "testers" ? "Testers" : (type === "beta_testers" ? "Beta testers" : "Lifetime"))));
         alert(label + " key created");
         setTimeout(() => location.reload(), 350);
+    }catch(err){
+        alert("Error: " + (err.message || err));
+    }
+}
+
+function useMaintenancePreset(){
+    const message = "⚠️ Maintenance in 5 minutes. Please pause trading and refresh after the update is complete.";
+    document.getElementById("broadcastMessage").value = message;
+    document.getElementById("broadcastType").value = "warning";
+    document.getElementById("broadcastDuration").value = "10";
+}
+
+async function sendBroadcastNotice(){
+    const message = (document.getElementById("broadcastMessage").value || "").trim();
+    const type = document.getElementById("broadcastType").value || "info";
+    const duration = (document.getElementById("broadcastDuration").value || "").trim();
+    if(!message){
+        alert("Enter a notice message first");
+        return;
+    }
+    try{
+        await postJSON("/admin/broadcast/send", {
+            message,
+            type,
+            duration_minutes: duration || null
+        });
+        alert("Broadcast notice sent");
+    }catch(err){
+        alert("Error: " + (err.message || err));
+    }
+}
+
+async function clearBroadcastNotice(){
+    if(!confirm("Clear the active broadcast notice for everyone?")) return;
+    try{
+        await postJSON("/admin/broadcast/clear", {});
+        alert("Broadcast notice cleared");
     }catch(err){
         alert("Error: " + (err.message || err));
     }

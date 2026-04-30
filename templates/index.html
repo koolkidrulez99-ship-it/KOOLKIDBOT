@@ -60,6 +60,59 @@ h1{
     filter:drop-shadow(0 0 14px rgba(56,189,248,0.78)) drop-shadow(0 0 28px rgba(14,165,233,0.38));
 }
 
+.broadcast-notice{
+    display:none;
+    align-items:flex-start;
+    justify-content:space-between;
+    gap:14px;
+    margin:0 0 14px;
+    padding:12px 14px;
+    border-radius:14px;
+    border:1px solid rgba(56,189,248,0.32);
+    background:rgba(8,47,73,0.92);
+    box-shadow:0 0 22px rgba(56,189,248,0.16);
+    color:#e0f2fe;
+    font-weight:800;
+    line-height:1.35;
+}
+.broadcast-notice.show{ display:flex; }
+.broadcast-notice.warning{
+    border-color:rgba(250,204,21,0.45);
+    background:rgba(66,32,6,0.94);
+    color:#fef3c7;
+    box-shadow:0 0 22px rgba(250,204,21,0.14);
+}
+.broadcast-notice.danger{
+    border-color:rgba(248,113,113,0.48);
+    background:rgba(69,10,10,0.94);
+    color:#fee2e2;
+    box-shadow:0 0 22px rgba(248,113,113,0.15);
+}
+.broadcast-notice.success{
+    border-color:rgba(34,197,94,0.42);
+    background:rgba(5,46,22,0.94);
+    color:#dcfce7;
+    box-shadow:0 0 22px rgba(34,197,94,0.15);
+}
+.broadcast-notice-text{ flex:1; min-width:0; }
+.broadcast-notice-meta{
+    display:block;
+    margin-top:4px;
+    color:rgba(226,232,240,0.72);
+    font-size:12px;
+    font-weight:700;
+}
+.broadcast-notice-close{
+    margin:0;
+    padding:4px 8px;
+    border-radius:999px;
+    background:rgba(15,23,42,0.65);
+    color:white;
+    line-height:1;
+    flex:0 0 auto;
+    touch-action:manipulation;
+}
+
 .card{
     background:#111827;
     padding:20px;
@@ -1102,6 +1155,13 @@ body.mobile-only-ui #profileContainer .unchain-history-grid{
 <div id="toastContainer"></div>
 
 <div class="container">
+    <div id="broadcastNoticeBanner" class="broadcast-notice" role="status" aria-live="polite">
+        <div>
+            <div id="broadcastNoticeText" class="broadcast-notice-text"></div>
+            <span id="broadcastNoticeMeta" class="broadcast-notice-meta"></span>
+        </div>
+        <button id="broadcastNoticeClose" class="broadcast-notice-close" type="button" aria-label="Dismiss notice">×</button>
+    </div>
     <div class="bot-header">
         <img src="/static/images/logo.png" alt="Bot Logo" class="bot-logo">
         <h1>KOOLKID AI TRADING ENGINE</h1>
@@ -1345,6 +1405,8 @@ function buildMutantConstructionMarkup(){
 
 /* ===================== SOCKET.IO (BULLETPROOF INIT) ===================== */
 let socket = null;
+const INITIAL_BROADCAST_NOTICE = {{ active_broadcast_notice|tojson|safe }};
+let broadcastNoticeClearTimer = null;
 const SOCKET_INDEX_NAMESPACE = "__INDEX__";
 const SOCKET_DISPATCH_ONLY_EVENTS = [
     "golden_card_update",
@@ -1716,6 +1778,62 @@ window.addEventListener("pagehide", () => {
     sendApiDisconnectKeepalive("pagehide");
 });
 
+function clearBroadcastNoticeBanner(){
+    if(broadcastNoticeClearTimer){
+        clearTimeout(broadcastNoticeClearTimer);
+        broadcastNoticeClearTimer = null;
+    }
+    const banner = document.getElementById("broadcastNoticeBanner");
+    if(!banner) return;
+    banner.className = "broadcast-notice";
+    banner.style.display = "";
+    const text = document.getElementById("broadcastNoticeText");
+    const meta = document.getElementById("broadcastNoticeMeta");
+    if(text) text.textContent = "";
+    if(meta) meta.textContent = "";
+}
+
+function renderBroadcastNotice(notice){
+    if(!notice || notice.active === false){
+        clearBroadcastNoticeBanner();
+        return;
+    }
+    if(broadcastNoticeClearTimer){
+        clearTimeout(broadcastNoticeClearTimer);
+        broadcastNoticeClearTimer = null;
+    }
+    const banner = document.getElementById("broadcastNoticeBanner");
+    const text = document.getElementById("broadcastNoticeText");
+    const meta = document.getElementById("broadcastNoticeMeta");
+    if(!banner || !text) return;
+    const noticeType = ["info", "warning", "danger", "success"].includes(String(notice.type || "").toLowerCase())
+        ? String(notice.type).toLowerCase()
+        : "info";
+    banner.className = `broadcast-notice show ${noticeType}`;
+    text.textContent = notice.message || "";
+    if(meta){
+        if(notice.remaining_sec && Number(notice.remaining_sec) > 0){
+            const mins = Math.max(1, Math.ceil(Number(notice.remaining_sec) / 60));
+            meta.textContent = `Notice active for about ${mins} more minute(s).`;
+            if(broadcastNoticeClearTimer) clearTimeout(broadcastNoticeClearTimer);
+            broadcastNoticeClearTimer = setTimeout(clearBroadcastNoticeBanner, Number(notice.remaining_sec) * 1000);
+        }else{
+            meta.textContent = "";
+        }
+    }
+}
+
+function initBroadcastNoticeBanner(){
+    const closeBtn = document.getElementById("broadcastNoticeClose");
+    if(closeBtn && !closeBtn.dataset.bound){
+        closeBtn.dataset.bound = "1";
+        closeBtn.addEventListener("click", clearBroadcastNoticeBanner);
+    }
+    if(INITIAL_BROADCAST_NOTICE){
+        renderBroadcastNotice(INITIAL_BROADCAST_NOTICE);
+    }
+}
+
 function initSocket(){
     if (socket) return;
 
@@ -1780,6 +1898,10 @@ function bindSocketHandlers(){
     bind("connect_error", (err)=> {
         console.error("Socket connect_error:", err);
         showToast("Socket connect error (see console).", "error");
+    });
+
+    bind("broadcast_notice", (notice)=>{
+        renderBroadcastNotice(notice);
     });
 
     bind("connection_status", (data)=>{
@@ -7821,6 +7943,7 @@ syncMobileOnlyLayout();
 
 /* ✅ STARTUP */
 try{ if(window.MarthaAI && typeof window.MarthaAI.init === "function") window.MarthaAI.init(); }catch(e){}
+initBroadcastNoticeBanner();
 initSocket();
 (async () => {
     try{ await refreshApiConnectionState(true); }catch(e){}
