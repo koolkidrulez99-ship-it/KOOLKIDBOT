@@ -294,7 +294,7 @@
         <details id="koolkidSingleMartingalePanel" class="ui-group" style="display:none; margin-top:10px; border-color:rgba(245,158,11,0.32);">
           <summary>
             <span>Single Contract Martingale</span>
-            <span style="font-size:11px; color:#facc15; font-weight:900;">LIFETIME</span>
+            <span id="koolkidMartingaleAccessBadge" style="font-size:11px; color:#facc15; font-weight:900;">LIFETIME</span>
           </summary>
           <div style="padding:10px 12px; background:rgba(15,23,42,0.82);">
             <div style="display:flex; justify-content:flex-end; align-items:center; gap:10px; flex-wrap:wrap;">
@@ -351,14 +351,14 @@
               </label>
             </div>
             <div style="margin-top:8px; display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:8px;">
-              <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+              <label id="koolkidMartingaleModeWrap" style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
                 Martingale Type
                 <select id="koolkidMartingaleMode" onchange="updateKoolkidSingleMartingalePanel()" style="width:100%; min-height:38px;">
                   <option value="STEP_005" selected>$0.05 Step</option>
                   <option value="MULTIPLIER">Multiplier</option>
                 </select>
               </label>
-              <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+              <label id="koolkidMartingaleStepAmountWrap" style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
                 Step Amount
                 <input id="koolkidMartingaleStepAmount" type="number" min="0.01" step="0.01" value="0.05" oninput="updateKoolkidSingleMartingalePanel()" style="width:100%; min-height:38px;">
               </label>

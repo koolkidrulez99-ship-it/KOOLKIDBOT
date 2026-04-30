@@ -1115,7 +1115,7 @@ body.mobile-only-ui #profileContainer .unchain-history-grid{
         <h3>🎮 SELECT PROFILE</h3>
         <button id="koolkidBtn" class="profile-btn koolkid-btn active" onclick="setProfile('KOOLKID')">🔵 KOOLKID</button>
         <button id="jokerjoeBtn" class="profile-btn jokerjoe-btn" onclick="setProfile('JOKERJOE')">🃏 JOKERJOE</button>
-        <button id="humanBtn" class="profile-btn human-btn" onclick="setProfile('HUMAN')">🧑 HUMAN</button>
+        <button id="humanBtn" class="profile-btn human-btn" onclick="setProfile('HUMAN')" {% if license_context and license_context.human_profile_blocked %}style="display:none;" disabled aria-hidden="true"{% endif %}>🧑 HUMAN</button>
         <button id="unchainBtn" class="profile-btn unchain-btn" onclick="setProfile('UNCHAIN')">⛓️ UNCHAIN</button>
         <button id="nttBtn" class="profile-btn ntt-btn" onclick="setProfile('NTT')">🎯 Mutant</button>
 
@@ -1307,6 +1307,12 @@ function isMonthlyLicenseUser(){
 }
 
 window.BotApp.isMonthlyLicenseUser = isMonthlyLicenseUser;
+
+function isHumanProfileBlockedByLicense(){
+    return !!(window.LICENSE_CONTEXT && window.LICENSE_CONTEXT.human_profile_blocked);
+}
+
+window.BotApp.isHumanProfileBlockedByLicense = isHumanProfileBlockedByLicense;
 
 function isMutantAvailable(){
     return !!(window.MUTANT_ACCESS && window.MUTANT_ACCESS.enabled);
@@ -3037,6 +3043,15 @@ function hideMonthlyElement(id, options){
 
 function applyMonthlyLicenseGate(profile){
     if(!isMonthlyLicenseUser()) return;
+    const humanBtn = document.getElementById("humanBtn");
+    if(isHumanProfileBlockedByLicense() && humanBtn){
+        humanBtn.disabled = true;
+        humanBtn.style.display = "none";
+        humanBtn.setAttribute("aria-hidden", "true");
+        humanBtn.style.opacity = "0.42";
+        humanBtn.style.cursor = "not-allowed";
+        humanBtn.title = "Human profile is not included with Paid Monthly users.";
+    }
     const p = normalizeProfileName(profile || activeProfile);
     if(p === "KOOLKID"){
         [
@@ -6482,6 +6497,10 @@ function openKoolkidAutoTradePlaceholder(){
 
 async function setProfile(profile){
     profile = normalizeProfileName(profile);
+    if(profile === "HUMAN" && isHumanProfileBlockedByLicense()){
+        showToast("Human profile is not included with Paid Monthly users.", "error");
+        return;
+    }
     const switchSeq = ++profileSwitchSeq;
     const previousProfile = activeProfile;
     captureProfileDraft(previousProfile);
@@ -6495,6 +6514,11 @@ async function setProfile(profile){
             body:JSON.stringify({profile})
         });
         profileData = await res.json().catch(()=>({}));
+        if(profileData && profileData.license_context){
+            window.LICENSE_CONTEXT = profileData.license_context;
+            window.BotApp = window.BotApp || {};
+            window.BotApp.licenseContext = window.LICENSE_CONTEXT;
+        }
         if(!res.ok || String(profileData.status || "").toLowerCase() !== "success"){
             throw new Error(profileData.error || profileData.message || "Failed to change profile");
         }

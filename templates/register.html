@@ -4,6 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Register - KoolKid Bot</title>
+  <link rel="icon" type="image/png" href="/static/images/favicon.png">
+  <link rel="shortcut icon" type="image/png" href="/static/images/favicon.png">
 
   <style>
     body{
@@ -47,6 +49,7 @@
       color:white;
       font-size:15px;
       outline:none;
+      box-sizing:border-box;
     }
     input:focus{
       box-shadow:0 0 0 2px rgba(168,85,247,0.35);
@@ -67,6 +70,41 @@
     button:hover{
       transform:scale(1.03);
     }
+    .password-wrap{
+      position:relative;
+      width:90%;
+      margin:10px auto 0 auto;
+    }
+    .password-wrap input{
+      width:100%;
+      margin:0;
+      padding-right:46px;
+    }
+    .toggle-eye{
+      position:absolute;
+      right:10px;
+      top:50%;
+      transform:translateY(-50%);
+      width:auto;
+      margin:0;
+      padding:4px;
+      background:transparent;
+      border:none;
+      color:#cbd5e1;
+      cursor:pointer;
+      font-size:18px;
+      line-height:1;
+      touch-action:manipulation;
+      -webkit-tap-highlight-color:transparent;
+    }
+    .toggle-eye:hover{
+      transform:translateY(-50%) scale(1.08);
+      color:white;
+    }
+    .toggle-eye:focus-visible{
+      outline:2px solid #a855f7;
+      border-radius:6px;
+    }
     .error{
       color:#ef4444;
       font-weight:bold;
@@ -82,6 +120,10 @@
       text-decoration:none;
       font-weight:bold;
     }
+    @media (max-width:480px){
+      .card{padding:22px 16px; width:100%; box-sizing:border-box;}
+      input, .password-wrap, button{width:100%;}
+    }
   </style>
 </head>
 
@@ -92,7 +134,10 @@
 
     <form method="POST">
       <input type="text" name="username" placeholder="Choose Username" required />
-      <input type="password" name="password" placeholder="Choose Password" required />
+      <div class="password-wrap">
+        <input type="password" id="registerPassword" name="password" placeholder="Choose Password" required />
+        <button type="button" class="toggle-eye" data-toggle-password="registerPassword" aria-label="Show password" title="Show/Hide password">👀</button>
+      </div>
       <input type="text" name="license_key" placeholder="License Key (required)" required style="text-transform:uppercase;" />
       <button type="submit">Create Account</button>
     </form>
@@ -107,5 +152,24 @@
       Already have an account? <a href="/login">Login</a>
     </p>
   </div>
+  <script>
+    function togglePasswordVisibility(targetId, btn){
+      const input = document.getElementById(targetId);
+      if (!input) return;
+      const show = input.type === 'password';
+      input.type = show ? 'text' : 'password';
+      if (btn) {
+        btn.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+        btn.textContent = show ? '🙈' : '👀';
+      }
+    }
+    document.querySelectorAll('[data-toggle-password]').forEach((btn) => {
+      btn.addEventListener('click', () => togglePasswordVisibility(btn.dataset.togglePassword, btn));
+      btn.addEventListener('touchend', (ev) => {
+        ev.preventDefault();
+        togglePasswordVisibility(btn.dataset.togglePassword, btn);
+      }, { passive:false });
+    });
+  </script>
 </body>
 </html>

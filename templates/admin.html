@@ -3,6 +3,8 @@
 <head>
     <title>Admin Panel - KOOLKID BOT</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/png" href="/static/images/favicon.png">
+    <link rel="shortcut icon" type="image/png" href="/static/images/favicon.png">
     <style>
         *{ box-sizing:border-box; }
         body{
@@ -158,6 +160,7 @@
         <div class="actions">
             <select id="licenseType">
                 <option value="monthly">1-Month License</option>
+                <option value="paid_monthly">Paid Monthly users</option>
                 <option value="lifetime">Lifetime License</option>
                 <option value="beta_testers">Beta Testers License</option>
             </select>
@@ -166,7 +169,7 @@
         </div>
         <div id="generatedKey" class="generated-key">No key generated yet.</div>
         <div class="muted" style="margin-top:8px;">
-            Monthly keys expire 30 days after first registration use. Beta tester keys expire 7 days after first use and have lifetime privileges while active. Lifetime keys never expire unless revoked.
+            Monthly keys expire 30 days after first registration use. Paid Monthly users get monthly access without the Human profile. Beta tester keys expire 7 days after first use and have lifetime privileges while active. Lifetime keys never expire unless revoked.
         </div>
 
         <h2 style="margin-top:16px;">📋 Licenses</h2>
@@ -183,6 +186,7 @@
             <select id="licenseTypeFilter" onchange="filterLicenseRows()">
                 <option value="all">All Types</option>
                 <option value="monthly">Monthly</option>
+                <option value="paid_monthly">Paid Monthly users</option>
                 <option value="lifetime">Lifetime</option>
                 <option value="beta_testers">Beta Testers</option>
             </select>
@@ -222,6 +226,9 @@
                         {% if l.status|lower != "revoked" %}
                             <div class="row-actions">
                                 <button class="small-btn btn-gray" onclick="copyLicenseKey('{{l.license_key}}')">Copy</button>
+                                {% if (l.license_type or '')|lower in ['monthly', 'paid_monthly', 'beta_testers'] %}
+                                    <button class="small-btn btn-green" onclick="renewLicenseDate('{{l.license_key}}')">Renew Date</button>
+                                {% endif %}
                                 <button class="small-btn" onclick="revokeLicense('{{l.license_key}}')">Revoke</button>
                             </div>
                         {% else %}
@@ -331,7 +338,7 @@ async function createLicense(){
     try{
         const data = await postJSON("/admin/license/create", {license_type:type});
         document.getElementById("generatedKey").textContent = data.license_key || "No key returned";
-        const label = type === "monthly" ? "1-month" : (type === "beta_testers" ? "Beta testers" : "Lifetime");
+        const label = type === "monthly" ? "1-month" : (type === "paid_monthly" ? "Paid Monthly users" : (type === "beta_testers" ? "Beta testers" : "Lifetime"));
         alert(label + " key created");
         setTimeout(() => location.reload(), 350);
     }catch(err){
@@ -344,6 +351,17 @@ async function revokeLicense(key){
     try{
         await postJSON("/admin/license/revoke", {license_key:key});
         alert("License revoked");
+        location.reload();
+    }catch(err){
+        alert("Error: " + (err.message || err));
+    }
+}
+
+async function renewLicenseDate(key){
+    if(!confirm("Renew this license date using the same key?")) return;
+    try{
+        const data = await postJSON("/admin/license/renew", {license_key:key});
+        alert((data.message || "License date renewed") + (data.expires_at ? `\nNew expiry: ${data.expires_at}` : ""));
         location.reload();
     }catch(err){
         alert("Error: " + (err.message || err));

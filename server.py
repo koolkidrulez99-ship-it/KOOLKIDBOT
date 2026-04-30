@@ -599,6 +599,8 @@ def _normalize_license_type(license_type):
     raw = str(license_type or "").strip().lower().replace("-", "_").replace(" ", "_")
     if raw in ("month", "monthly", "1_month", "one_month"):
         return "monthly"
+    if raw in ("paid_month", "paid_monthly", "paid_month_users", "paid_monthly_users", "paid_monthly_user"):
+        return "paid_monthly"
     if raw in ("life", "lifetime"):
         return "lifetime"
     if raw in ("beta", "beta_tester", "beta_testers"):
@@ -608,7 +610,7 @@ def _normalize_license_type(license_type):
 
 def _license_expiry_for_activation(license_type):
     ltype = _normalize_license_type(license_type)
-    if ltype == "monthly":
+    if ltype in ("monthly", "paid_monthly"):
         return (datetime.utcnow() + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
     if ltype == "beta_testers":
         return (datetime.utcnow() + timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
@@ -625,7 +627,7 @@ def _license_is_expired(license_row):
     if exp is None:
         # A linked/activated expiring key without an expiry is unsafe. Treat it
         # as blocked so admin must explicitly reassign/renew the account.
-        if license_type in ("monthly", "beta_testers") and (license_row.get("used_by") or license_row.get("activated_at")):
+        if license_type in ("monthly", "paid_monthly", "beta_testers") and (license_row.get("used_by") or license_row.get("activated_at")):
             return True
         return False
     return datetime.utcnow() > exp
@@ -698,7 +700,8 @@ def get_user_license_context(username=None):
     ltype = _normalize_license_type((lic or {}).get("license_type"))
     status = str((lic or {}).get("status") or "").lower().strip()
     active = bool(lic and status != "revoked" and not _license_is_expired(lic))
-    is_monthly = bool(active and ltype == "monthly")
+    is_paid_monthly = bool(active and ltype == "paid_monthly")
+    is_monthly = bool(active and ltype in ("monthly", "paid_monthly"))
     is_lifetime = bool(active and ltype in ("lifetime", "beta_testers"))
     return {
         **context,
@@ -707,6 +710,8 @@ def get_user_license_context(username=None):
         "is_monthly": is_monthly,
         "is_lifetime": is_lifetime,
         "is_full_access": bool(is_lifetime),
+        "is_paid_monthly": is_paid_monthly,
+        "human_profile_blocked": is_paid_monthly,
     }
 
 
@@ -738,7 +743,7 @@ def _validate_license_for_registration(conn, license_key):
     if str(rowd.get("used_by") or "").strip():
         return False, "This license key has already been used"
     ltype = _normalize_license_type(rowd.get("license_type"))
-    if ltype not in ("monthly", "lifetime", "beta_testers"):
+    if ltype not in ("monthly", "paid_monthly", "lifetime", "beta_testers"):
         return False, "Unsupported license key type"
     return True, rowd
 
@@ -933,6 +938,8 @@ def _generate_license_key(license_type):
     ltype = _normalize_license_type(license_type)
     if ltype == "monthly":
         prefix = "KK-MTH"
+    elif ltype == "paid_monthly":
+        prefix = "KK-PAIDMTH"
     elif ltype == "beta_testers":
         prefix = "KK-BETA"
     else:
@@ -943,7 +950,7 @@ def _generate_license_key(license_type):
 
 def create_license_record(license_type):
     ltype = _normalize_license_type(license_type)
-    if ltype not in ("monthly", "lifetime", "beta_testers"):
+    if ltype not in ("monthly", "paid_monthly", "lifetime", "beta_testers"):
         return False, "Invalid license type", None
     conn = _db_connect()
     c = conn.cursor()
@@ -985,9 +992,47 @@ def revoke_license_record(license_key):
     return True, "License revoked"
 
 
+def renew_license_record(license_key):
+    key = normalize_license_key(license_key)
+    if not key:
+        return False, "License key is required", None
+
+    conn = _db_connect(row_factory=not _db_is_postgres())
+    c = conn.cursor()
+    try:
+        _db_execute(c, "SELECT * FROM licenses WHERE license_key = ?", (key,))
+        lic_row = _db_row_to_dict(c, _db_fetchone(c))
+        if not lic_row:
+            return False, "License key not found", None
+        if str(lic_row.get("status") or "").lower() == "revoked":
+            return False, "Revoked keys cannot be renewed. Create or reassign a key instead.", None
+
+        ltype = _normalize_license_type(lic_row.get("license_type"))
+        if ltype not in ("monthly", "paid_monthly", "beta_testers"):
+            return False, "Only expiring license keys can be renewed", None
+
+        now_s = _utc_now_str()
+        expires_at = _license_expiry_for_activation(ltype)
+        _db_execute(
+            c,
+            "UPDATE licenses SET activated_at=?, expires_at=? WHERE license_key=?",
+            (now_s, expires_at, key),
+        )
+        _db_commit(conn)
+        return True, "License date renewed", expires_at
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False, str(e), None
+    finally:
+        conn.close()
+
+
 def _reset_license_binding_for_user(conn, username):
     c = conn.cursor()
-    _db_execute(c, "UPDATE licenses SET used_by=NULL, activated_at=NULL, expires_at=CASE WHEN lower(replace(replace(license_type, '-', '_'), ' ', '_')) IN ('monthly','beta_testers','beta_tester','beta') THEN NULL ELSE expires_at END WHERE used_by=?", (username,))
+    _db_execute(c, "UPDATE licenses SET used_by=NULL, activated_at=NULL, expires_at=CASE WHEN lower(replace(replace(license_type, '-', '_'), ' ', '_')) IN ('monthly','paid_monthly','paid_monthly_users','paid_month_users','beta_testers','beta_tester','beta') THEN NULL ELSE expires_at END WHERE used_by=?", (username,))
 
 
 def admin_reset_user_license(username):
@@ -2233,30 +2278,28 @@ def register():
 @app.route("/forgot_password", methods=["GET", "POST"])
 def forgot_password():
     if request.method == "POST":
-        identifier = (request.form.get("email") or "").strip()  # template compatibility
+        username = (request.form.get("username") or request.form.get("email") or "").strip()
         license_key = (request.form.get("license_key") or "").strip()
 
-        if not identifier:
-            return render_template("forgot_password.html", error="Enter your email or username", entered_email=identifier)
+        if not username:
+            return render_template("forgot_password.html", error="Enter your username", entered_username=username)
 
-        user_row = _find_user_for_reset(identifier)
+        user_row = _get_user_row(username)
         if not user_row:
-            return render_template("forgot_password.html", error="No account found with that email/username", entered_email=identifier)
+            return render_template("forgot_password.html", error="No account found with that username", entered_username=username)
 
         lic_ok, lic_err = _validate_reset_license_for_user(user_row, license_key)
         if not lic_ok:
-            return render_template("forgot_password.html", error=lic_err, entered_email=identifier, entered_license_key=license_key)
+            return render_template("forgot_password.html", error=lic_err, entered_username=username, entered_license_key=license_key)
 
         username = user_row.get("username")
         raw_token, _exp_dt = _create_password_reset_token(username, minutes_valid=30)
-        reset_link = url_for("reset_password", token=raw_token, _external=True)
 
         return render_template(
-            "forgot_password.html",
-            success=f"Reset link created for {username}. It expires in 30 minutes.",
-            reset_link=reset_link,
-            entered_email=identifier,
-            entered_license_key=license_key
+            "reset_password.html",
+            token=raw_token,
+            entered_license_key=license_key,
+            reset_username=username,
         )
 
     return render_template("forgot_password.html")
@@ -2302,7 +2345,7 @@ def reset_password(token=None):
             return render_template("reset_password.html", error=err, token="")
         return render_template("reset_password.html", token=token)
 
-    return render_template("reset_password.html", token="")
+    return redirect(url_for("forgot_password"))
 
 
 @app.route("/logout")
@@ -2374,6 +2417,19 @@ def admin_revoke_license():
     if not ok:
         return jsonify({"status": "error", "error": msg}), 400
     return jsonify({"status": "ok", "message": msg})
+
+
+@app.route("/admin/license/renew", methods=["POST"])
+def admin_renew_license():
+    if not login_required() or not is_admin():
+        return jsonify({"status": "error", "error": "Unauthorized"}), 403
+
+    data = request.get_json(silent=True) or {}
+    license_key = (data.get("license_key") or request.form.get("license_key") or "").strip()
+    ok, msg, expires_at = renew_license_record(license_key)
+    if not ok:
+        return jsonify({"status": "error", "error": msg}), 400
+    return jsonify({"status": "ok", "message": msg, "expires_at": expires_at})
 
 
 @app.route("/admin/user/reset_key", methods=["POST"])
@@ -16898,6 +16954,13 @@ def set_profile():
 
     if profile not in state["strategies"]:
         return jsonify({"error": "Invalid profile"}), 400
+    license_context = get_user_license_context()
+    if profile == "HUMAN" and license_context.get("human_profile_blocked"):
+        return jsonify({
+            "status": "error",
+            "error": "Human profile is not included with Paid Monthly users.",
+            "license_context": license_context,
+        }), 403
 
     state["active_profile"] = profile
     if profile == "HUMAN":
@@ -16923,7 +16986,7 @@ def set_profile():
         "profile": profile,
         "mutant_locked": bool(profile == "NTT" and not mutant_access.get("enabled")),
         "mutant_access": mutant_access,
-        "license_context": get_user_license_context(),
+        "license_context": license_context,
         "main_symbol": state.get("current_symbol"),
         "human_symbol": state.get("human_symbol") or state.get("current_symbol"),
         "symbol": (state.get("human_symbol") if profile == "HUMAN" else state.get("current_symbol")),

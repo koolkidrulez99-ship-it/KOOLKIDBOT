@@ -4,6 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Login - KoolKid Bot</title>
+  <link rel="icon" type="image/png" href="/static/images/favicon.png">
+  <link rel="shortcut icon" type="image/png" href="/static/images/favicon.png">
 
   <style>
     body{
@@ -68,6 +70,8 @@
       padding:4px;
       width:auto;
       margin:0;
+      touch-action:manipulation;
+      -webkit-tap-highlight-color:transparent;
     }
     .toggle-eye:hover{
       transform:translateY(-50%) scale(1.08);
@@ -129,7 +133,7 @@
       <input type="text" name="username" placeholder="Username" required />
       <div class="password-wrap">
         <input type="password" id="loginPassword" name="password" placeholder="Password" required />
-        <button type="button" class="toggle-eye" aria-label="Show password" title="Show/Hide password" onclick="togglePassword()"> 👀</button>
+        <button type="button" class="toggle-eye" data-toggle-password="loginPassword" aria-label="Show password" title="Show/Hide password">👀</button>
       </div>
       <button type="submit" class="submit-btn">Login</button>
     </form>
@@ -144,18 +148,28 @@
       </div>
       <div>
         <a href="/forgot_password">Forgot Password</a>
-        <span class="divider">|</span>
-        <a href="/reset_password">Reset Password</a>
       </div>
     </div>
   </div>
 
   <script>
-    function togglePassword(){
-      const input = document.getElementById('loginPassword');
+    function togglePasswordVisibility(targetId, btn){
+      const input = document.getElementById(targetId);
       if (!input) return;
-      input.type = input.type === 'password' ? 'text' : 'password';
+      const show = input.type === 'password';
+      input.type = show ? 'text' : 'password';
+      if (btn) {
+        btn.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+        btn.textContent = show ? '🙈' : '👀';
+      }
     }
+    document.querySelectorAll('[data-toggle-password]').forEach((btn) => {
+      btn.addEventListener('click', () => togglePasswordVisibility(btn.dataset.togglePassword, btn));
+      btn.addEventListener('touchend', (ev) => {
+        ev.preventDefault();
+        togglePasswordVisibility(btn.dataset.togglePassword, btn);
+      }, { passive:false });
+    });
   </script>
 </body>
 </html>

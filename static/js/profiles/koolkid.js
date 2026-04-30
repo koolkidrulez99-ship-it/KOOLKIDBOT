@@ -111,6 +111,32 @@
     }
   }
 
+  function isPaidMonthlyUserKoolkid() {
+    try {
+      const ctx = window.LICENSE_CONTEXT || {};
+      return !!(ctx.is_paid_monthly || String(ctx.license_type || "").toLowerCase() === "paid_monthly");
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function isRegularMonthlyUserKoolkid() {
+    try {
+      const ctx = window.LICENSE_CONTEXT || {};
+      return !!(ctx.is_monthly || String(ctx.license_type || "").toLowerCase() === "monthly") && !isPaidMonthlyUserKoolkid();
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function canUseKoolkidSingleMartingale() {
+    return isLifetimeUserKoolkid() || isRegularMonthlyUserKoolkid();
+  }
+
+  function isKoolkidSingleMartingaleMonthlyLimited() {
+    return isRegularMonthlyUserKoolkid() && !isLifetimeUserKoolkid();
+  }
+
   function fmtPct(v) {
     if (v === null || v === undefined || v === "") return "-";
     const n = Number(v);
@@ -580,6 +606,49 @@
     return state.singleMartingale || {};
   }
 
+  function isKoolkidMonthlySingleMartingaleActionAllowed(action) {
+    return ["UNDER_3", "OVER_5", "OVER_6"].includes(String(action || "").toUpperCase());
+  }
+
+  function syncKoolkidMonthlySingleMartingaleUi() {
+    const limited = isKoolkidSingleMartingaleMonthlyLimited();
+    const actionEl = document.getElementById("koolkidMartingaleAction");
+    if (actionEl) {
+      Array.from(actionEl.options || []).forEach((opt) => {
+        const action = normalizeKoolkidMartingaleAction(opt.value).action;
+        const allowed = !limited || isKoolkidMonthlySingleMartingaleActionAllowed(action);
+        opt.hidden = !allowed;
+        opt.disabled = !allowed;
+      });
+      const selected = normalizeKoolkidMartingaleAction(actionEl.value).action;
+      if (limited && !isKoolkidMonthlySingleMartingaleActionAllowed(selected)) {
+        actionEl.value = "UNDER_3";
+      }
+    }
+    const modeEl = document.getElementById("koolkidMartingaleMode");
+    if (modeEl) {
+      Array.from(modeEl.options || []).forEach((opt) => {
+        const isStep = String(opt.value || "").toUpperCase() === "STEP_005";
+        opt.hidden = limited && isStep;
+        opt.disabled = limited && isStep;
+      });
+      if (limited) modeEl.value = "MULTIPLIER";
+    }
+    const stepWrap = document.getElementById("koolkidMartingaleStepAmountWrap");
+    if (stepWrap) stepWrap.style.display = limited ? "none" : "grid";
+    const badge = document.getElementById("koolkidMartingaleAccessBadge");
+    if (badge) {
+      badge.textContent = limited ? "MONTHLY" : "LIFETIME";
+      badge.style.color = limited ? "#38bdf8" : "#facc15";
+    }
+    const note = document.getElementById("koolkidMartingaleLifetimeNote");
+    if (note) {
+      note.textContent = limited
+        ? "Monthly users: UNDER 3, OVER 5, and OVER 6 only. Multiplier martingale only."
+        : "Lifetime users only.";
+    }
+  }
+
   function normalizeKoolkidMartingaleAction(value) {
     const text = String(value || "").toUpperCase();
     const compact = text.replace(/\s+/g, "_").replace(/\+/g, "_").replace(/__+/g, "_");
@@ -650,13 +719,20 @@
 
   function readKoolkidSingleMartingaleSettings() {
     const st = getKoolkidSingleMartingaleState();
+    syncKoolkidMonthlySingleMartingaleUi();
     const actionEl = document.getElementById("koolkidMartingaleAction");
-    const action = normalizeKoolkidMartingaleAction(actionEl ? actionEl.value : st.action);
+    let action = normalizeKoolkidMartingaleAction(actionEl ? actionEl.value : st.action);
+    if (isKoolkidSingleMartingaleMonthlyLimited() && !isKoolkidMonthlySingleMartingaleActionAllowed(action.action)) {
+      if (actionEl) actionEl.value = "UNDER_3";
+      action = normalizeKoolkidMartingaleAction("UNDER_3");
+    }
     const duration = Math.max(1, Math.min(10, Math.floor(readKoolkidMartingaleNumber("koolkidMartingaleDuration", 1, 1, 10))));
     const startStake = Number(readKoolkidMartingaleNumber("koolkidMartingaleStartStake", 0.35, 0.35, 1000000).toFixed(2));
     const tickSpacing = Math.max(1, Math.min(10, Math.floor(readKoolkidMartingaleNumber("koolkidMartingaleTickSpacing", 1, 1, 10))));
     const modeEl = document.getElementById("koolkidMartingaleMode");
-    const mode = String((modeEl && modeEl.value) || "STEP_005").toUpperCase() === "MULTIPLIER" ? "MULTIPLIER" : "STEP_005";
+    const mode = isKoolkidSingleMartingaleMonthlyLimited()
+      ? "MULTIPLIER"
+      : (String((modeEl && modeEl.value) || "STEP_005").toUpperCase() === "MULTIPLIER" ? "MULTIPLIER" : "STEP_005");
     const stepAmount = Number(readKoolkidMartingaleNumber("koolkidMartingaleStepAmount", 0.05, 0.01, 1000000).toFixed(2));
     const multiplier = Math.max(1, readKoolkidMartingaleNumber("koolkidMartingaleMultiplier", 2, 1, 100));
     const maxSteps = Math.max(1, Math.floor(readKoolkidMartingaleNumber("koolkidMartingaleMaxSteps", 1000, 1, 1000000)));
@@ -740,10 +816,11 @@
 
   function updateKoolkidSingleMartingalePanel() {
     const st = getKoolkidSingleMartingaleState();
-    const lifetime = isLifetimeUserKoolkid();
+    const allowed = canUseKoolkidSingleMartingale();
     const panel = document.getElementById("koolkidSingleMartingalePanel");
-    if (panel) panel.style.display = lifetime ? "" : "none";
-    if (!lifetime) return;
+    if (panel) panel.style.display = allowed ? "" : "none";
+    if (!allowed) return;
+    syncKoolkidMonthlySingleMartingaleUi();
 
     const settings = readKoolkidSingleMartingaleSettings();
     st.action = settings.action;
@@ -825,9 +902,16 @@
   }
 
   function toggleKoolkidSingleMartingale() {
-    if (!isLifetimeUserKoolkid()) {
-      safeToast("This Koolkid martingale is for lifetime users only.", "error");
+    if (!canUseKoolkidSingleMartingale()) {
+      safeToast(isPaidMonthlyUserKoolkid() ? "This Koolkid martingale is not included for Paid Monthly users." : "This Koolkid martingale is for monthly and lifetime users only.", "error");
       return;
+    }
+    if (isKoolkidSingleMartingaleMonthlyLimited()) {
+      const settings = readKoolkidSingleMartingaleSettings();
+      if (!isKoolkidMonthlySingleMartingaleActionAllowed(settings.action)) {
+        safeToast("Monthly users can only use UNDER 3, OVER 5, or OVER 6 here.", "error");
+        return;
+      }
     }
     const st = getKoolkidSingleMartingaleState();
     st.enabled = !st.enabled;
@@ -848,14 +932,19 @@
   }
 
   async function placeKoolkidSingleMartingaleTrade(options) {
-    if (!isLifetimeUserKoolkid()) {
-      safeToast("This Koolkid martingale is for lifetime users only.", "error");
+    if (!canUseKoolkidSingleMartingale()) {
+      safeToast(isPaidMonthlyUserKoolkid() ? "This Koolkid martingale is not included for Paid Monthly users." : "This Koolkid martingale is for monthly and lifetime users only.", "error");
       return;
     }
     const st = getKoolkidSingleMartingaleState();
     const opts = options || {};
     if (st.inProgress) return;
     const settings = readKoolkidSingleMartingaleSettings();
+    if (isKoolkidSingleMartingaleMonthlyLimited() && !isKoolkidMonthlySingleMartingaleActionAllowed(settings.action)) {
+      safeToast("Monthly users can only use UNDER 3, OVER 5, or OVER 6 here.", "error");
+      updateKoolkidSingleMartingalePanel();
+      return;
+    }
     const stake = st.enabled ? koolkidSingleMartingaleStakeForStep() : settings.startStake;
     if (st.enabled && !opts.continuation) {
       st.running = true;
