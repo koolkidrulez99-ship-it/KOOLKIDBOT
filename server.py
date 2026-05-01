@@ -14595,6 +14595,13 @@ def _ensure_tick_subscription(state, symbol, *, force=False, reason="", client_i
     if existing_sub_id and not force:
         _start_tick_stream_warmup(state, sym, client_id=client_id, reason=reason or "existing_subscription", warmup_sec=warmup_sec)
         return True
+    sent_at = state.setdefault("tick_subscribe_sent_at", {})
+    pending_sent_ts = float(sent_at.get(sym, 0.0) or 0.0)
+    pending_window = max(1.0, _tick_stream_warmup_for_symbol(sym, TICK_STREAM_WARMUP_SEC if warmup_sec is None else warmup_sec))
+    if not existing_sub_id and not force and pending_sent_ts > 0.0 and (time.time() - pending_sent_ts) < pending_window:
+        _start_tick_stream_warmup(state, sym, client_id=client_id, reason=reason or "pending_subscription", warmup_sec=warmup_sec)
+        sent_at[sym] = pending_sent_ts
+        return True
     if existing_sub_id and force:
         # For health recovery, avoid sending a forget for a possibly stale Deriv
         # subscription id. A fresh ticks subscribe is safer and keeps trade logic untouched.
@@ -14607,7 +14614,7 @@ def _ensure_tick_subscription(state, symbol, *, force=False, reason="", client_i
     try:
         ws.send(json.dumps({"ticks": sym, "subscribe": 1}))
         now_ts = time.time()
-        state.setdefault("tick_subscribe_sent_at", {})[sym] = now_ts
+        sent_at[sym] = now_ts
         state.setdefault("tick_stream_recovering_symbols", {})[sym] = now_ts
         state.setdefault("tick_resubscribe_attempted_at", {})[sym] = now_ts
         _start_tick_stream_warmup(state, sym, client_id=client_id, reason=reason or "ensure", warmup_sec=warmup_sec)
@@ -15026,11 +15033,18 @@ def _cleanup_koolkid_golden_card_subscriptions(state, preserve_scan_state=False)
         except Exception:
             pass
         tick_subs.pop(sym, None)
+        state.setdefault("tick_subscribe_sent_at", {}).pop(sym, None)
+        state.setdefault("tick_last_seen_at", {}).pop(sym, None)
+        state.setdefault("tick_resubscribe_attempted_at", {}).pop(sym, None)
+        state.setdefault("tick_stream_recovering_symbols", {}).pop(sym, None)
+        state.setdefault("tick_stream_unhealthy_since", {}).pop(sym, None)
+        state.setdefault("tick_stream_warmup_until", {}).pop(sym, None)
+        state.setdefault("tick_stream_warmup_reason", {}).pop(sym, None)
     scan["owned_syms"] = set()
     scan["running"] = False
 
 
-def _sync_koolkid_golden_card_subscriptions(state, symbols=None):
+def _sync_koolkid_golden_card_subscriptions(state, symbols=None, *, client_id=None):
     scan = _ensure_koolkid_golden_card_state(state)
     desired_symbols = []
     for sym in list(symbols or scan.get("symbols") or []):
@@ -15061,22 +15075,54 @@ def _sync_koolkid_golden_card_subscriptions(state, symbols=None):
         except Exception:
             pass
         tick_subs.pop(sym, None)
+        state.setdefault("tick_subscribe_sent_at", {}).pop(sym, None)
+        state.setdefault("tick_last_seen_at", {}).pop(sym, None)
+        state.setdefault("tick_resubscribe_attempted_at", {}).pop(sym, None)
+        state.setdefault("tick_stream_recovering_symbols", {}).pop(sym, None)
+        state.setdefault("tick_stream_unhealthy_since", {}).pop(sym, None)
+        state.setdefault("tick_stream_warmup_until", {}).pop(sym, None)
+        state.setdefault("tick_stream_warmup_reason", {}).pop(sym, None)
 
     next_owned = set()
     for sym in desired_symbols:
         if sym in protected_symbols:
+            _ensure_tick_subscription(
+                state,
+                sym,
+                force=False,
+                reason="koolkid_golden_card_protected",
+                client_id=client_id,
+                warmup_sec=_tick_stream_warmup_for_symbol(sym),
+            )
             continue
         if tick_subs.get(sym):
             next_owned.add(sym)
+            _ensure_tick_subscription(
+                state,
+                sym,
+                force=False,
+                reason="koolkid_golden_card_existing",
+                client_id=client_id,
+                warmup_sec=_tick_stream_warmup_for_symbol(sym),
+            )
             continue
         try:
-            ws.send(json.dumps({"ticks": sym, "subscribe": 1}))
-            next_owned.add(sym)
+            ok = _ensure_tick_subscription(
+                state,
+                sym,
+                force=False,
+                reason="koolkid_golden_card",
+                client_id=client_id,
+                warmup_sec=_tick_stream_warmup_for_symbol(sym),
+            )
+            if ok:
+                next_owned.add(sym)
         except Exception:
-            pass
+            ok = False
+        if not ok and client_id:
+            logger.warning("[%s] golden_card_tick_subscribe_failed symbol=%s", client_id, sym)
 
     scan["owned_syms"] = next_owned
-
 
 def _start_koolkid_golden_card_scan(client_id, state, *, filter_mode="BOTH", add_jump_pairs=False):
     strat = (state.get("strategies") or {}).get("KOOLKID")
@@ -15095,7 +15141,7 @@ def _start_koolkid_golden_card_scan(client_id, state, *, filter_mode="BOTH", add
     scan["running"] = True
     scan["confirmations"] = {}
     scan["market_pool_size"] = int(payload.get("market_pool_size", 0) or 0)
-    _sync_koolkid_golden_card_subscriptions(state, payload.get("symbols") or [])
+    _sync_koolkid_golden_card_subscriptions(state, payload.get("symbols") or [], client_id=client_id)
 
     payload = _emit_koolkid_golden_card(client_id, state)
     try:
@@ -15224,7 +15270,7 @@ def _process_koolkid_golden_card_tick(client_id, tick):
     payload = strat.record_golden_card_tick(sym, digit) or {}
     payload = _enrich_koolkid_golden_card_payload(state, payload, advance_confirmation=True, checked_symbol=sym)
     scan["market_pool_size"] = int(payload.get("market_pool_size", 0) or 0)
-    _sync_koolkid_golden_card_subscriptions(state, payload.get("symbols") or scan.get("symbols") or [])
+    _sync_koolkid_golden_card_subscriptions(state, payload.get("symbols") or scan.get("symbols") or [], client_id=client_id)
     try:
         socketio.emit("golden_card_update", payload, room=client_id)
     except Exception:

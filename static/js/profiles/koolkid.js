@@ -3460,7 +3460,12 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
     }));
     window.openGoldenCardPopupKoolkid();
     await nextPaintFrame();
-    const r = await postJSON("/start_golden_card_koolkid", options);
+    let r = null;
+    try {
+      r = await postJSON("/start_golden_card_koolkid", options);
+    } catch (e) {
+      r = { data: { status: "error", message: "Golden Card scan failed to reach the server" } };
+    }
     if (r.data && r.data.status === "success") {
       if (r.data.golden_card_data) renderGoldenCardKoolkid(r.data.golden_card_data);
       safeToast("Golden Card scan started", "success");
@@ -3502,6 +3507,8 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
       } else if (r && r.data && r.data.golden_card_data) {
         renderGoldenCardKoolkid(r.data.golden_card_data);
       }
+    } catch (e) {
+      safeToast("Golden Card settings failed to update", "error");
     } finally {
       state.goldenCardSettingsBusy = false;
     }
@@ -3608,7 +3615,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
         turbo: true,
         queue: false,
         useSocket: true,
-        fireAndForget: true,
+        fireAndForget: false,
       });
       const ok = !!(r && r.data && r.data.status === "success");
       if (ok) {

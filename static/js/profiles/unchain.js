@@ -688,6 +688,33 @@
     return normalizeMarketSymbol(picker ? picker.value : "");
   }
 
+  function getUnchainChartExpectedSymbol() {
+    const payload = state.lastPayload && (state.lastPayload.unchain || state.lastPayload);
+    return normalizeMarketSymbol(
+      state.lastMainSymbol ||
+      (state.lastPayload && (state.lastPayload.main_symbol || state.lastPayload.symbol)) ||
+      (payload && (payload.main_symbol || payload.symbol)) ||
+      ""
+    );
+  }
+
+  function isTickForUnchainChart(symbol) {
+    const tickSymbol = normalizeMarketSymbol(symbol);
+    const expectedSymbol = getUnchainChartExpectedSymbol();
+    return !tickSymbol || !expectedSymbol || tickSymbol === expectedSymbol;
+  }
+
+  function clearBarrierChartForSymbol(symbol) {
+    const expectedSymbol = normalizeMarketSymbol(symbol);
+    state.marketChart.history = [];
+    state.marketChart.basePrice = null;
+    state.marketChart.previewBasePrice = null;
+    state.marketChart.wasActiveTrade = false;
+    state.marketChart.lastPrice = null;
+    state.marketChart.lastSymbol = expectedSymbol || null;
+    state.marketChart.previewBaseSymbol = expectedSymbol || null;
+  }
+
   function getMarketBarrierStore() {
     const store = state.marketBarrierStore;
     return store && typeof store === "object" ? store : {};
@@ -1073,7 +1100,7 @@
   function pushBarrierChartPrice(price, symbol) {
     const p = Number(price);
     if (!Number.isFinite(p)) return;
-    const s = symbol || state.marketChart.lastSymbol || null;
+    const s = normalizeMarketSymbol(symbol) || state.marketChart.lastSymbol || null;
     if (state.marketChart.basePrice == null || (s && state.marketChart.lastSymbol && s !== state.marketChart.lastSymbol)) {
       resetBarrierChartBase(p, s);
     }
@@ -1108,7 +1135,9 @@
     if (!svg) return;
 
     const liveCandidate = num(payload && (payload.price != null ? payload.price : payload.quote), null);
-    if (Number.isFinite(liveCandidate)) pushBarrierChartPrice(liveCandidate, payload && payload.symbol);
+    if (Number.isFinite(liveCandidate) && isTickForUnchainChart(payload && payload.symbol)) {
+      pushBarrierChartPrice(liveCandidate, payload && payload.symbol);
+    }
 
     const barriers = getBarrierInputs(un || {});
     const higher = barriers.higher;
@@ -3279,6 +3308,7 @@
     const symbolChanged = !!nextSymbol && nextSymbol !== String(state.lastMainSymbol || "").toUpperCase();
     const forceMarketDefaults = !!(opts && opts.forceMarketDefaults);
     const shouldUseFreshMarketDefaults = !!nextSymbol && (symbolChanged || forceMarketDefaults);
+    if (symbolChanged) clearBarrierChartForSymbol(nextSymbol);
     state.lastPayload = payload;
     state.scanner = payload.scanner || state.scanner;
     fillForm(un, !!(opts && opts.forceForm), {
@@ -4020,8 +4050,8 @@
       bind("tick", (data) => {
         if (!data) return;
         handleUnchainSingleMartingaleTick();
-        pushBarrierChartPrice(data.price != null ? data.price : data.quote, data.symbol);
-        if (isActive()) {
+        if (isActive() && isTickForUnchainChart(data.symbol)) {
+          pushBarrierChartPrice(data.price != null ? data.price : data.quote, data.symbol);
           const un = state.lastPayload && (state.lastPayload.unchain || state.lastPayload);
           scheduleLiveChartRender(un || {}, state.lastPayload || data || {});
         }
