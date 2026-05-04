@@ -126,6 +126,53 @@ def test_multi_tick_digit_contract_refresh_delays_extend_past_short_window():
     assert max(delays) > max(server.FAST_CONTRACT_REFRESH_DELAYS)
 
 
+def test_second_contract_refresh_delays_extend_past_expiry():
+    delays = server._contract_refresh_delays_for_meta({
+        "profile": "HUMAN",
+        "type": "RISE",
+        "duration": 15,
+        "duration_unit": "s",
+    })
+
+    assert delays[: len(server.DEFAULT_CONTRACT_REFRESH_DELAYS)] == server.DEFAULT_CONTRACT_REFRESH_DELAYS
+    assert max(delays) > 15
+
+
+def test_expired_open_contract_with_profit_counts_as_settled():
+    assert server._is_contract_settled_fast({
+        "is_expired": 1,
+        "status": "open",
+        "profit": "0.42",
+    }) is True
+
+
+def test_second_duration_sanitizer_allows_thirty_second_contracts():
+    assert server._sanitize_trade_duration_for_unit(30, "s", default=5) == 30
+    assert server._sanitize_trade_duration_for_unit(35, "s", default=5) == 30
+    assert server._sanitize_trade_duration_for_unit(30, "t", default=5) == 20
+
+
+def test_human_pending_contract_tracks_second_duration_unit():
+    state = {
+        "human_pending_contracts": {},
+        "human_symbol": "R_10",
+        "_human_tick_seq": 12,
+    }
+    entry = server._upsert_human_pending_contract(state, "9876", {
+        "profile": "HUMAN",
+        "type": "RISE",
+        "duration": 15,
+        "duration_unit": "s",
+        "symbol": "R_10",
+    })
+
+    assert entry is not None
+    assert entry["duration_unit"] == "s"
+    assert entry["duration"] == 15
+    assert entry["open_tick_seq"] == 12
+    assert entry["open_ts"] > 0
+
+
 def test_buy_confirm_emits_trade_placed_immediately_and_uses_fast_refresh(monkeypatch):
     emitted = []
     refresh_calls = []

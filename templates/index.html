@@ -2130,14 +2130,21 @@ function bindSocketHandlers(){
         const lossRateEl = getProfileScopedElement("profileLossRate");
         const netProfitLossEl = getProfileScopedElement("profileNetProfitLoss");
         if (totalEl && statsProfile === normalizeProfileName(activeProfile)) {
-            setNodeTextIfChanged(totalEl, totalTrades);
-            if (winsEl) setNodeTextIfChanged(winsEl, wins);
-            if (lossesEl) setNodeTextIfChanged(lossesEl, losses);
-            if (winRateEl) setNodeTextIfChanged(winRateEl, safeWinrate.toFixed(1) + "%");
-            if (lossRateEl) setNodeTextIfChanged(lossRateEl, safeLossrate.toFixed(1) + "%");
-            if (netProfitLossEl) {
-                setNodeTextIfChanged(netProfitLossEl, formatSignedCurrencyAmount(pnl, data || {}));
-                setNodeStyleIfChanged(netProfitLossEl, "color", pnl > 0 ? "#22c55e" : (pnl < 0 ? "#ef4444" : "#e2e8f0"));
+            const localHistory = Array.isArray(tradeStore[statsProfile]) ? tradeStore[statsProfile] : [];
+            const preferLocalHumanHistoryStats = statsProfile === "HUMAN" && localHistory.length > 0;
+            if(preferLocalHumanHistoryStats){
+                renderTradeHistoryStatsFromStore(statsProfile, localHistory);
+                renderTradeHistoryTotalStake(statsProfile, localHistory);
+            }else{
+                setNodeTextIfChanged(totalEl, totalTrades);
+                if (winsEl) setNodeTextIfChanged(winsEl, wins);
+                if (lossesEl) setNodeTextIfChanged(lossesEl, losses);
+                if (winRateEl) setNodeTextIfChanged(winRateEl, safeWinrate.toFixed(1) + "%");
+                if (lossRateEl) setNodeTextIfChanged(lossRateEl, safeLossrate.toFixed(1) + "%");
+                if (netProfitLossEl) {
+                    setNodeTextIfChanged(netProfitLossEl, formatSignedCurrencyAmount(pnl, data || {}));
+                    setNodeStyleIfChanged(netProfitLossEl, "color", pnl > 0 ? "#22c55e" : (pnl < 0 ? "#ef4444" : "#e2e8f0"));
+                }
             }
         }
         const hideMonthlyMasterToast = isMonthlyLicenseUser() && (statsProfile === "KOOLKID" || statsProfile === "JOKERJOE");
@@ -3335,12 +3342,57 @@ function toProfitNumber(v){
 
 function getTradeProfitAmount(trade){
     if(!trade || typeof trade !== "object") return 0;
+    const settlementNet = getTradeSettlementNetProfit(trade);
+    const result = normalizeTradeResultLabel(trade.result, trade.status);
     const candidates = [trade.profit, trade.profit_value, trade.profit_loss, trade.pnl];
     for(const raw of candidates){
         const n = Number(raw);
-        if(Number.isFinite(n)) return n;
+        if(Number.isFinite(n)){
+            if(Number.isFinite(settlementNet)){
+                const looksLikePayout = [trade.sell_price, trade.payout, trade.bid_price].some((value) => {
+                    const candidate = Number(value);
+                    return Number.isFinite(candidate) && Math.abs(candidate - n) < 0.005;
+                });
+                const contradictsResult = (result === "WIN" && n < 0) || (result === "LOSS" && n > 0);
+                if(looksLikePayout || contradictsResult) return settlementNet;
+            }
+            return n;
+        }
     }
+    if(Number.isFinite(settlementNet)) return settlementNet;
     return 0;
+}
+
+function getTradeFinalResultLabel(trade){
+    const result = normalizeTradeResultLabel(trade && trade.result, trade && trade.status);
+    if(result === "SETTLED"){
+        return getTradeProfitAmount(trade) > 0 ? "WIN" : "LOSS";
+    }
+    return result;
+}
+
+function getTradeSettlementNetProfit(trade){
+    if(!trade || typeof trade !== "object") return null;
+    const payoutCandidates = [trade.sell_price, trade.payout, trade.bid_price];
+    const stakeCandidates = [trade.buy_price, trade.stake, trade.amount, trade.price];
+    let payout = null;
+    let stake = null;
+    for(const raw of payoutCandidates){
+        const n = Number(raw);
+        if(Number.isFinite(n)){
+            payout = n;
+            break;
+        }
+    }
+    for(const raw of stakeCandidates){
+        const n = Number(raw);
+        if(Number.isFinite(n)){
+            stake = n;
+            break;
+        }
+    }
+    if(payout === null || stake === null) return null;
+    return Number((payout - stake).toFixed(2));
 }
 
 function resolveTradeSortTimestamp(data, fallbackNow){
@@ -3373,6 +3425,7 @@ function normalizeTradeResultLabel(result, status){
     if(!raw) return "LOSS";
     if(raw === "WIN" || raw === "WON") return "WIN";
     if(raw === "LOSS" || raw === "LOST") return "LOSS";
+    if(raw === "SOLD" || raw === "SETTLED" || raw === "CLOSED" || raw === "EXPIRED") return "SETTLED";
     if(raw.includes("CLOSE REQUESTED") || raw === "CLOSING") return "CLOSING";
     if(raw.includes("PENDING") || raw === "OPEN" || raw === "ACTIVE") return "PENDING";
     return raw;
@@ -3440,6 +3493,11 @@ function resolveMergedTradeResult(base, next, merged){
     const prior = normalizeTradeResultLabel(base && base.result, (base && base.status) || (merged && merged.status));
     if(nextResult){
         const normalizedNext = normalizeTradeResultLabel(nextResult, nextStatus);
+        const nextProfitRaw = (next && next.profit !== undefined) ? next.profit : (next ? next.profit_value : undefined);
+        const nextProfit = Number(nextProfitRaw);
+        if(normalizedNext === "SETTLED" && Number.isFinite(nextProfit)){
+            return nextProfit > 0 ? "WIN" : "LOSS";
+        }
         if(!isTradeResultPending(prior) && isTradeResultPending(normalizedNext)){
             return prior;
         }
@@ -3448,6 +3506,11 @@ function resolveMergedTradeResult(base, next, merged){
 
     if(nextStatus){
         const byStatus = normalizeTradeResultLabel(nextStatus, nextStatus);
+        const nextProfitRaw = (next && next.profit !== undefined) ? next.profit : (next ? next.profit_value : undefined);
+        const nextProfit = Number(nextProfitRaw);
+        if(byStatus === "SETTLED" && Number.isFinite(nextProfit)){
+            return nextProfit > 0 ? "WIN" : "LOSS";
+        }
         if(!isTradeResultPending(byStatus)) return byStatus;
     }
 
@@ -4052,6 +4115,7 @@ function decrementPendingTickCountdowns(symbol){
             const tradeType = String(trade.type || "").toUpperCase();
             const isHumanTickContract = profile === "HUMAN" && (
                 tradeMode === "human_manual_contract"
+                || tradeMode === "human_dual_market_contracts"
                 || tradeMode.includes("human_rf")
                 || ["HIGH TICK", "LOW TICK", "ONLY UPS", "ONLY DOWNS", "RISE", "FALL", "RISE + FALL", "RISE + FALL EQUALS"].includes(tradeType)
             );
@@ -4066,6 +4130,63 @@ function decrementPendingTickCountdowns(symbol){
     });
     return changedProfiles;
 }
+
+function decrementPendingSecondCountdowns(){
+    const nowMs = Date.now();
+    const changedProfiles = new Set();
+    Object.keys(tradeStore || {}).forEach((profileKey)=>{
+        const profile = normalizeProfileName(profileKey);
+        if(profile === "UNCHAIN") return; // UNCHAIN countdown is synced from backend status.
+        const arr = Array.isArray(tradeStore[profile]) ? tradeStore[profile] : [];
+        arr.forEach((trade)=>{
+            if(!trade || typeof trade !== "object") return;
+            if(!isTradeResultPending(normalizeTradeResultLabel(trade.result, trade.status))) return;
+            const unit = String(trade.countdown_unit || trade.duration_unit || "").toLowerCase();
+            if(unit !== "s") return;
+
+            const currentSeconds = Number.isFinite(Number(trade.countdown_seconds))
+                ? Number(trade.countdown_seconds)
+                : Number(trade.countdown_remaining);
+            if(!Number.isFinite(currentSeconds)){
+                trade._countdown_last_ms = nowMs;
+                return;
+            }
+            if(currentSeconds <= 0){
+                trade._countdown_last_ms = nowMs;
+                return;
+            }
+
+            const lastMs = Number(trade._countdown_last_ms);
+            if(!Number.isFinite(lastMs) || lastMs <= 0){
+                trade._countdown_last_ms = nowMs;
+                return;
+            }
+
+            const elapsedSeconds = Math.floor((nowMs - lastMs) / 1000);
+            if(elapsedSeconds <= 0) return;
+            const nextSeconds = Math.max(0, Math.floor(currentSeconds) - elapsedSeconds);
+            if(nextSeconds === Math.floor(currentSeconds)){
+                trade._countdown_last_ms = nowMs;
+                return;
+            }
+
+            trade._countdown_last_ms = lastMs + (elapsedSeconds * 1000);
+            trade.countdown_seconds = nextSeconds;
+            trade.countdown_remaining = nextSeconds;
+            changedProfiles.add(profile);
+        });
+    });
+    return changedProfiles;
+}
+
+registerFrontendInterval("pending_second_countdowns", setInterval(()=>{
+    try{
+        const changedProfiles = decrementPendingSecondCountdowns();
+        if(changedProfiles.has(normalizeProfileName(activeProfile))){
+            renderTradeList(activeProfile);
+        }
+    }catch(e){}
+}, 1000));
 
 function isTurboDigitResolveProfile(profile){
     const normalized = normalizeProfileName(profile);
@@ -4620,7 +4741,7 @@ function renderTradeHistoryStatsFromStore(profile, trades){
     let netPnl = 0;
     items.forEach((trade)=>{
         if(!trade || typeof trade !== "object") return;
-        const result = normalizeTradeResultLabel(trade.result, trade.status);
+        const result = getTradeFinalResultLabel(trade);
         if(result === "WIN") wins += 1;
         else if(result === "LOSS") losses += 1;
         netPnl += getTradeProfitAmount(trade);
@@ -4655,8 +4776,8 @@ function renderTradeList(profile){
     const arr = tradeStore[key] || [];
     const filter = getTradeHistoryFilter(key);
     const filtered = arr.filter((trade)=>{
-        if(filter === "WIN") return normalizeTradeResultLabel(trade && trade.result, trade && trade.status) === "WIN";
-        if(filter === "LOSS") return normalizeTradeResultLabel(trade && trade.result, trade && trade.status) === "LOSS";
+        if(filter === "WIN") return getTradeFinalResultLabel(trade) === "WIN";
+        if(filter === "LOSS") return getTradeFinalResultLabel(trade) === "LOSS";
         return true;
     });
     const emptyLabel = filter === "WIN" ? "No wins yet" : (filter === "LOSS" ? "No losses yet" : "No trades yet");
@@ -4838,7 +4959,7 @@ window.toggleTradeHistoryFilter = toggleTradeHistoryFilter;
 function buildTradeItem(trade){
     const tradeProfile = normalizeProfileName((trade && trade.profile) || activeProfile);
     const moneyPayload = trade || {};
-    const result = normalizeTradeResultLabel(trade.result, trade.status);
+    const result = getTradeFinalResultLabel(trade);
     const pending = isTradeResultPending(result);
     const resultClass = (result === "WIN")
         ? "win"

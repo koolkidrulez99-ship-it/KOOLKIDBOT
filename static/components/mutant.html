@@ -258,17 +258,25 @@
       border-radius:16px;
       padding:14px;
       background:linear-gradient(180deg, rgba(34,211,238,0.10), rgba(15,23,42,0.96));
+      min-height:178px;
+      display:flex;
+      flex-direction:column;
     }
     .ntt-profile .ntt-bias-headline{
       font-size:1.05rem;
       font-weight:900;
       line-height:1.25;
       margin-bottom:8px;
+      min-height:2.6em;
+      display:flex;
+      align-items:center;
     }
     .ntt-profile .ntt-bias-sub{
       color:var(--muted);
       font-size:12px;
       line-height:1.45;
+      min-height:4.35em;
+      overflow:hidden;
     }
     .ntt-profile .ntt-bias-stats{
       display:grid;
@@ -282,6 +290,7 @@
       border-radius:14px;
       padding:12px;
       min-width:0;
+      min-height:72px;
     }
     .ntt-profile .ntt-bias-stat .k{
       color:var(--muted);
@@ -292,12 +301,15 @@
       font-size:1rem;
       font-weight:900;
       line-height:1.2;
+      min-height:1.25em;
     }
     .ntt-profile .ntt-reasons{
       display:flex;
       flex-wrap:wrap;
       gap:8px;
       margin-top:12px;
+      min-height:72px;
+      align-content:flex-start;
     }
     .ntt-profile .ntt-reason-chip{
       padding:7px 10px;

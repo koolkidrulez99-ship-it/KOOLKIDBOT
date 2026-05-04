@@ -20,6 +20,7 @@
 #humanProfilePanel .human-exec-grid,
 #humanProfilePanel .human-manual-action-grid,
 #humanProfilePanel .human-manual-control-grid,
+#humanProfilePanel .human-dual-market-grid,
 #humanProfilePanel .human-history-stats {
   min-width: 0;
 }
@@ -251,7 +252,8 @@
     grid-template-columns: 1fr !important;
   }
   #humanProfilePanel .human-manual-action-grid,
-  #humanProfilePanel .human-manual-control-grid {
+  #humanProfilePanel .human-manual-control-grid,
+  #humanProfilePanel .human-dual-market-grid {
     grid-template-columns: 1fr !important;
   }
   #humanProfilePanel .human-score-grid {
@@ -562,6 +564,116 @@
         </div>
     </details>
 
+        <details id="humanDualMarketDropdown" class="human-dropdown-panel" style="border-color:rgba(56,189,248,0.28); background:rgba(15,23,42,0.72);">
+            <summary>
+                <div class="human-dropdown-title-row">
+                    <div>
+                        <div class="human-dropdown-title" style="color:#bae6fd;">Dual Market Contracts</div>
+                        <div id="humanDualMarketNote" style="color:#94a3b8; font-size:11px; margin-top:3px;">Pick two different markets and send both manual contracts together.</div>
+                    </div>
+                    <span class="human-dropdown-caret">Dropdown</span>
+                </div>
+            </summary>
+            <div class="human-dropdown-content">
+                <div class="human-dual-market-grid" style="display:grid; grid-template-columns:repeat(2,minmax(240px,1fr)); gap:12px;">
+                    <div style="border:1px solid rgba(56,189,248,0.22); border-radius:14px; padding:12px; background:rgba(2,6,23,0.46);">
+                        <div style="font-weight:900; color:#e0f2fe; margin-bottom:8px;">Trade A</div>
+                        <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:8px;">
+                            <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                                Market
+                                <select id="humanDualMarketA" onchange="populateHumanDualMarketSelects()" style="width:100%; min-height:38px;"></select>
+                            </label>
+                            <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                                Trade Type
+                                <select id="humanDualTradeA" onchange="updateHumanDualMarketPanel()" style="width:100%; min-height:38px;">
+                                    <option value="RISE">Rise</option>
+                                    <option value="FALL">Fall</option>
+                                    <option value="EVEN">Even</option>
+                                    <option value="ODD">Odd</option>
+                                    <option value="HIGH_TICK">High Tick</option>
+                                    <option value="LOW_TICK">Low Tick</option>
+                                    <option value="ONLY_UPS">Only Ups</option>
+                                    <option value="ONLY_DOWNS">Only Downs</option>
+                                </select>
+                            </label>
+                            <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                                Stake
+                                <input id="humanDualStakeA" type="number" min="0.35" step="0.01" value="0.35" oninput="updateHumanDualMarketPanel()" style="width:100%; min-height:46px; font-size:16px; font-weight:800; padding:10px 12px;">
+                            </label>
+                            <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                                Duration
+                                <select id="humanDualDurationA" onchange="updateHumanDualMarketPanel()" style="width:100%; min-height:38px;">
+                                    <option value="1">1 tick</option>
+                                    <option value="2" selected>2 ticks</option>
+                                    <option value="3">3 ticks</option>
+                                    <option value="4">4 ticks</option>
+                                    <option value="5">5 ticks</option>
+                                    <option value="6">6 ticks</option>
+                                    <option value="7">7 ticks</option>
+                                    <option value="8">8 ticks</option>
+                                    <option value="9">9 ticks</option>
+                                    <option value="10">10 ticks</option>
+                                </select>
+                            </label>
+                            <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                                Selected Tick
+                                <input id="humanDualSelectedTickA" type="number" min="1" max="5" step="1" value="5" oninput="updateHumanDualMarketPanel()" style="width:100%; min-height:38px;">
+                            </label>
+                        </div>
+                    </div>
+                    <div style="border:1px solid rgba(34,197,94,0.22); border-radius:14px; padding:12px; background:rgba(2,6,23,0.46);">
+                        <div style="font-weight:900; color:#dcfce7; margin-bottom:8px;">Trade B</div>
+                        <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:8px;">
+                            <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                                Market
+                                <select id="humanDualMarketB" onchange="populateHumanDualMarketSelects()" style="width:100%; min-height:38px;"></select>
+                            </label>
+                            <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                                Trade Type
+                                <select id="humanDualTradeB" onchange="updateHumanDualMarketPanel()" style="width:100%; min-height:38px;">
+                                    <option value="RISE">Rise</option>
+                                    <option value="FALL">Fall</option>
+                                    <option value="EVEN">Even</option>
+                                    <option value="ODD" selected>Odd</option>
+                                    <option value="HIGH_TICK">High Tick</option>
+                                    <option value="LOW_TICK">Low Tick</option>
+                                    <option value="ONLY_UPS">Only Ups</option>
+                                    <option value="ONLY_DOWNS">Only Downs</option>
+                                </select>
+                            </label>
+                            <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                                Stake
+                                <input id="humanDualStakeB" type="number" min="0.35" step="0.01" value="0.35" oninput="updateHumanDualMarketPanel()" style="width:100%; min-height:46px; font-size:16px; font-weight:800; padding:10px 12px;">
+                            </label>
+                            <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                                Duration
+                                <select id="humanDualDurationB" onchange="updateHumanDualMarketPanel()" style="width:100%; min-height:38px;">
+                                    <option value="1">1 tick</option>
+                                    <option value="2" selected>2 ticks</option>
+                                    <option value="3">3 ticks</option>
+                                    <option value="4">4 ticks</option>
+                                    <option value="5">5 ticks</option>
+                                    <option value="6">6 ticks</option>
+                                    <option value="7">7 ticks</option>
+                                    <option value="8">8 ticks</option>
+                                    <option value="9">9 ticks</option>
+                                    <option value="10">10 ticks</option>
+                                </select>
+                            </label>
+                            <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                                Selected Tick
+                                <input id="humanDualSelectedTickB" type="number" min="1" max="5" step="1" value="5" oninput="updateHumanDualMarketPanel()" style="width:100%; min-height:38px;">
+                            </label>
+                        </div>
+                    </div>
+                </div>
+                <div style="margin-top:10px; display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+                    <div id="humanDualMarketStatus" style="color:#94a3b8; font-size:12px;">Ready. High/Low Tick uses selected tick; the other contracts use duration.</div>
+                    <button id="humanDualMarketPlaceBtn" type="button" onclick="humanDualMarketPlaceBoth()" style="background:#38bdf8; color:#082f49; min-width:180px;">Place Both</button>
+                </div>
+            </div>
+        </details>
+
         <details id="humanSingleMartingaleDropdown" class="human-dropdown-panel" style="border-color:rgba(245,158,11,0.28); background:rgba(15,23,42,0.72);">
             <summary>
                 <div class="human-dropdown-title-row">
@@ -781,16 +893,32 @@
                     <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
                         Duration
                         <select id="humanRfMartingaleDuration" onchange="updateHumanRfMartingalePanel()" style="width:100%; min-height:38px;">
-                            <option value="1">1 tick</option>
-                            <option value="2">2 ticks</option>
-                            <option value="3">3 ticks</option>
-                            <option value="4">4 ticks</option>
-                            <option value="5" selected>5 ticks</option>
-                            <option value="6">6 ticks</option>
-                            <option value="7">7 ticks</option>
-                            <option value="8">8 ticks</option>
-                            <option value="9">9 ticks</option>
-                            <option value="10">10 ticks</option>
+                            <option value="t:1">1 tick</option>
+                            <option value="t:2">2 ticks</option>
+                            <option value="t:3">3 ticks</option>
+                            <option value="t:4">4 ticks</option>
+                            <option value="t:5" selected>5 ticks</option>
+                            <option value="t:6">6 ticks</option>
+                            <option value="t:7">7 ticks</option>
+                            <option value="t:8">8 ticks</option>
+                            <option value="t:9">9 ticks</option>
+                            <option value="t:10">10 ticks</option>
+                            <option value="s:15">15 secs</option>
+                            <option value="s:16">16 secs</option>
+                            <option value="s:17">17 secs</option>
+                            <option value="s:18">18 secs</option>
+                            <option value="s:19">19 secs</option>
+                            <option value="s:20">20 secs</option>
+                            <option value="s:21">21 secs</option>
+                            <option value="s:22">22 secs</option>
+                            <option value="s:23">23 secs</option>
+                            <option value="s:24">24 secs</option>
+                            <option value="s:25">25 secs</option>
+                            <option value="s:26">26 secs</option>
+                            <option value="s:27">27 secs</option>
+                            <option value="s:28">28 secs</option>
+                            <option value="s:29">29 secs</option>
+                            <option value="s:30">30 secs</option>
                         </select>
                     </label>
                     <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">

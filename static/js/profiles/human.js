@@ -76,6 +76,29 @@
     ASIANS_UP: "Asians Up",
     ASIANS_DOWN: "Asians Down",
   };
+  const HUMAN_DUAL_MARKET_LABELS = Object.assign({
+    RISE: "Rise",
+    FALL: "Fall",
+    EVEN: "Even",
+    ODD: "Odd",
+  }, HUMAN_SPECIAL_LABELS);
+  const HUMAN_DUAL_FALLBACK_MARKETS = [
+    ["R_10", "Volatility 10"],
+    ["R_25", "Volatility 25"],
+    ["R_50", "Volatility 50"],
+    ["R_75", "Volatility 75"],
+    ["R_100", "Volatility 100"],
+    ["1HZ10V", "Volatility 10 (1s)"],
+    ["1HZ25V", "Volatility 25 (1s)"],
+    ["1HZ50V", "Volatility 50 (1s)"],
+    ["1HZ75V", "Volatility 75 (1s)"],
+    ["1HZ100V", "Volatility 100 (1s)"],
+    ["stpRNG", "Step Index"],
+    ["stpRNG2", "Step 200"],
+    ["stpRNG3", "Step 300"],
+    ["stpRNG4", "Step 400"],
+    ["stpRNG5", "Step 500"],
+  ];
   const HUMAN_SINGLE_MARTINGALE_PAIR_CONFIGS = {
     ONLY_UPS_DOWNS: {
       label: "Only Ups + Only Downs",
@@ -1313,6 +1336,9 @@
     if(stakeEl && opts.stake === undefined) stakeEl.value = String(stakeVal);
 
     const payload = { action: key, stake: stakeVal };
+    if(opts.symbol !== undefined && opts.symbol !== null && String(opts.symbol).trim()){
+      payload.symbol = String(opts.symbol).trim();
+    }
     if(key === "HIGH_TICK" || key === "LOW_TICK"){
       const selectedTickSource = opts.selected_tick !== undefined ? opts.selected_tick : (selectedTickEl ? selectedTickEl.value : 5);
       const selectedTick = Math.round(clampNum(selectedTickSource || 5, 1, 5, 5));
@@ -1437,6 +1463,179 @@
       if(typeof showToast === "function") showToast(`HUMAN Asians Up + Asians Down sent at $${Number(settings.baseStake).toFixed(2)} each`, "success");
     }catch(e){
       if(typeof showToast === "function") showToast(e.message || "HUMAN Asians pair trade failed", "error");
+    }
+  }
+
+  function getHumanCurrentMarketSymbol(){
+    try{
+      if(typeof window.getConfirmedMarketSymbol === "function"){
+        const sym = window.getConfirmedMarketSymbol();
+        if(sym) return String(sym);
+      }
+    }catch(e){}
+    const source = byId("symbol");
+    return String((source && source.value) || humanManualContractsSymbol || "R_10");
+  }
+
+  function getHumanDualMarketOptions(){
+    const source = byId("symbol");
+    const options = [];
+    if(source && source.options && source.options.length){
+      Array.from(source.options).forEach((opt) => {
+        if(!opt || !opt.value) return;
+        options.push([String(opt.value), String(opt.textContent || opt.value)]);
+      });
+    }
+    return options.length ? options : HUMAN_DUAL_FALLBACK_MARKETS.slice();
+  }
+
+  function syncHumanDualMarketSelect(id, preferredSymbol){
+    const sel = byId(id);
+    if(!sel) return;
+    const options = getHumanDualMarketOptions();
+    const previous = sel.value || preferredSymbol || "";
+    const signature = options.map((item) => item[0]).join("|");
+    if(sel.dataset.humanDualMarketSignature !== signature){
+      sel.innerHTML = "";
+      options.forEach(([value, label]) => {
+        const opt = document.createElement("option");
+        opt.value = value;
+        opt.textContent = label;
+        sel.appendChild(opt);
+      });
+      sel.dataset.humanDualMarketSignature = signature;
+    }
+    const values = new Set(options.map((item) => item[0]));
+    if(previous && values.has(previous)){
+      sel.value = previous;
+    }else if(preferredSymbol && values.has(preferredSymbol)){
+      sel.value = preferredSymbol;
+    }else if(options.length){
+      sel.value = options[0][0];
+    }
+  }
+
+  function populateHumanDualMarketSelects(){
+    const current = getHumanCurrentMarketSymbol();
+    const options = getHumanDualMarketOptions();
+    const firstOther = (options.find((item) => item[0] !== current) || options[0] || [current])[0];
+    syncHumanDualMarketSelect("humanDualMarketA", current);
+    syncHumanDualMarketSelect("humanDualMarketB", firstOther);
+    updateHumanDualMarketPanel();
+  }
+
+  function setHumanDualStake(side){
+    const suffix = String(side || "A").toUpperCase() === "B" ? "B" : "A";
+    const input = byId(`humanDualStake${suffix}`);
+    const mainStake = byId("stake");
+    if(!input) return;
+    const source = mainStake && mainStake.value ? mainStake.value : input.value;
+    const stake = clampNum(source || 0.35, 0.35, 1000000, 0.35);
+    input.value = stake.toFixed(2).replace(/\.00$/, "");
+    updateHumanDualMarketPanel();
+  }
+
+  function readHumanDualLeg(side){
+    const suffix = String(side || "A").toUpperCase() === "B" ? "B" : "A";
+    const symbolEl = byId(`humanDualMarket${suffix}`);
+    const actionEl = byId(`humanDualTrade${suffix}`);
+    const stakeEl = byId(`humanDualStake${suffix}`);
+    const durationEl = byId(`humanDualDuration${suffix}`);
+    const tickEl = byId(`humanDualSelectedTick${suffix}`);
+    const symbol = String((symbolEl && symbolEl.value) || getHumanCurrentMarketSymbol()).trim();
+    const action = String((actionEl && actionEl.value) || "RISE").toUpperCase();
+    const stake = Number(clampNum(stakeEl ? stakeEl.value : 0.35, 0.35, 1000000, 0.35).toFixed(2));
+    const minDuration = (action === "ONLY_UPS" || action === "ONLY_DOWNS") ? 2 : 1;
+    const duration = Math.round(clampNum(durationEl ? durationEl.value : minDuration, minDuration, 1000, minDuration));
+    const selectedTick = Math.round(clampNum(tickEl ? tickEl.value : 5, 1, 5, 5));
+    if(stakeEl) stakeEl.value = stake.toFixed(2).replace(/\.00$/, "");
+    if(durationEl) durationEl.value = String(duration);
+    if(tickEl) tickEl.value = String(selectedTick);
+    const payload = {
+      symbol,
+      action,
+      stake,
+      duration_ticks: duration,
+      duration_unit: "t",
+    };
+    if(action === "HIGH_TICK" || action === "LOW_TICK"){
+      payload.selected_tick = selectedTick;
+    }
+    return payload;
+  }
+
+  function updateHumanDualMarketPanel(){
+    const status = byId("humanDualMarketStatus");
+    const btn = byId("humanDualMarketPlaceBtn");
+    if(!status && !btn) return;
+    let message = "Ready. High/Low Tick uses selected tick; the other contracts use duration.";
+    let color = "#94a3b8";
+    try{
+      const a = readHumanDualLeg("A");
+      const b = readHumanDualLeg("B");
+      const labelA = HUMAN_DUAL_MARKET_LABELS[a.action] || a.action.replaceAll("_", " ");
+      const labelB = HUMAN_DUAL_MARKET_LABELS[b.action] || b.action.replaceAll("_", " ");
+      const totalStake = Number(a.stake || 0) + Number(b.stake || 0);
+      message = `${a.symbol} ${labelA} + ${b.symbol} ${labelB} • Total stake $${totalStake.toFixed(2)}`;
+      if(a.symbol && b.symbol && a.symbol === b.symbol){
+        message = "Choose two different markets for Dual Market Contracts.";
+        color = "#fbbf24";
+      }
+    }catch(e){
+      message = e.message || message;
+      color = "#fca5a5";
+    }
+    if(status){
+      status.textContent = message;
+      status.style.color = color;
+    }
+    if(btn){
+      btn.disabled = false;
+      btn.style.opacity = "1";
+      btn.style.cursor = "pointer";
+    }
+  }
+
+  async function humanDualMarketPlaceBoth(){
+    const btn = byId("humanDualMarketPlaceBtn");
+    try{
+      populateHumanDualMarketSelects();
+      const legs = [readHumanDualLeg("A"), readHumanDualLeg("B")];
+      if(!legs[0].symbol || !legs[1].symbol) throw new Error("Select both markets first.");
+      if(legs[0].symbol === legs[1].symbol) throw new Error("Choose two different markets for this mode.");
+      const totalStake = legs.reduce((sum, leg) => sum + Number(leg.stake || 0), 0);
+      const maxDuration = legs.reduce((maxVal, leg) => Math.max(maxVal, Number(leg.duration_ticks || 0)), 0);
+      if(btn){
+        btn.disabled = true;
+        btn.style.opacity = "0.65";
+        btn.style.cursor = "wait";
+      }
+      const data = await guardMartha({
+        profile: PROFILE,
+        source: "human_dual_market_contracts",
+        type: "DUAL_MARKET_CONTRACTS",
+        label: "HUMAN Dual Market Contracts",
+        stake: totalStake,
+        duration: maxDuration || 1,
+        duration_unit: "t",
+        batch_count: 2,
+      }, () => postJSON("/human_dual_market_contracts", { legs }));
+      if(isMarthaBlocked(data)) return;
+      if(!data || (data.status !== "success" && data.status !== "partial")){
+        throw new Error((data && (data.error || data.message)) || "Dual Market Contracts failed");
+      }
+      const toastType = data.status === "success" ? "success" : "warn";
+      if(typeof showToast === "function") showToast(data.message || "Dual Market Contracts sent", toastType);
+      await fetchHumanRFStatus();
+    }catch(e){
+      if(typeof showToast === "function") showToast(e.message || "Dual Market Contracts failed", "error");
+    }finally{
+      if(btn){
+        btn.disabled = false;
+        btn.style.opacity = "1";
+        btn.style.cursor = "pointer";
+      }
+      updateHumanDualMarketPanel();
     }
   }
 
@@ -1774,11 +1973,34 @@
     return value;
   }
 
+  function readHumanRfMartingaleDurationSelection(){
+    const el = byId("humanRfMartingaleDuration");
+    const raw = String((el && el.value) || "t:5").trim().toLowerCase();
+    let durationUnit = "t";
+    let duration = 5;
+    if(raw.includes(":")){
+      const parts = raw.split(":");
+      durationUnit = parts[0] === "s" ? "s" : "t";
+      duration = Number(parts[1]);
+    }else{
+      duration = Number(raw);
+    }
+    if(durationUnit === "s"){
+      duration = Math.round(clampNum(duration, 15, 30, 15));
+    }else{
+      duration = Math.round(clampNum(duration, 1, 10, 5));
+    }
+    if(el) el.value = `${durationUnit}:${duration}`;
+    return { duration, durationUnit };
+  }
+
   function readHumanRfMartingaleSettings(){
     const directionEl = byId("humanRfMartingaleDirection");
     const directionRaw = String((directionEl && directionEl.value) || HUMAN_RF_MARTINGALE_STATE.direction || "RISE").toUpperCase();
     const direction = directionRaw === "FALL" || directionRaw === "BOTH" || directionRaw === "BOTH_EQUALS" ? directionRaw : "RISE";
-    const duration = Math.round(readHumanRfMartingaleNumber("humanRfMartingaleDuration", 5, 1, 10));
+    const durationSelection = readHumanRfMartingaleDurationSelection();
+    const duration = durationSelection.duration;
+    const durationUnit = durationSelection.durationUnit;
     const riseStake = Number(readHumanRfMartingaleNumber("humanRfMartingaleRiseStake", 0.35, 0.35, 1000000).toFixed(2));
     const fallStake = Number(readHumanRfMartingaleNumber("humanRfMartingaleFallStake", 0.35, 0.35, 1000000).toFixed(2));
     const startStake = direction === "FALL" ? fallStake : riseStake;
@@ -1792,11 +2014,9 @@
       : null;
     const maxStake = Number.isFinite(maxStakeValue) ? Number(maxStakeValue.toFixed(2)) : null;
     if(directionEl) directionEl.value = direction;
-    const durationEl = byId("humanRfMartingaleDuration");
-    if(durationEl) durationEl.value = String(duration);
     const spacingEl = byId("humanRfMartingaleTickSpacing");
     if(spacingEl) spacingEl.value = String(tickSpacing);
-    return { direction, duration, startStake, riseStake, fallStake, multiplier, tickSpacing, maxSteps, maxStake, doubleLimit };
+    return { direction, duration, durationUnit, startStake, riseStake, fallStake, multiplier, tickSpacing, maxSteps, maxStake, doubleLimit };
   }
 
   function humanRfMartingaleStakeForStep(stepValue){
@@ -1848,13 +2068,15 @@
         }
         const pairLabel = settings.direction === "BOTH_EQUALS" ? "Rise + Fall Equals" : "Rise + Fall";
         const limitLabel = settings.doubleLimit > 0 ? ` • Limit ${settings.doubleLimit} double-up${settings.doubleLimit === 1 ? "" : "s"}` : "";
-        status.textContent = `${HUMAN_RF_MARTINGALE_STATE.status}. ${pairLabel} • ${settings.multiplier}x${limitLabel} • Rise stake $${humanRfPairStakeForDirection("RISE").toFixed(2)} • Fall stake $${humanRfPairStakeForDirection("FALL").toFixed(2)} • Last result: ${HUMAN_RF_MARTINGALE_STATE.lastResult}`;
+        const durationLabel = `${settings.duration} ${settings.durationUnit === "s" ? "sec" : "tick"}${settings.duration === 1 ? "" : "s"}`;
+        status.textContent = `${HUMAN_RF_MARTINGALE_STATE.status}. ${pairLabel} • ${durationLabel} • ${settings.multiplier}x${limitLabel} • Rise stake $${humanRfPairStakeForDirection("RISE").toFixed(2)} • Fall stake $${humanRfPairStakeForDirection("FALL").toFixed(2)} • Last result: ${HUMAN_RF_MARTINGALE_STATE.lastResult}`;
       }else{
         const currentStake = humanRfMartingaleStakeForStep();
         const nextStep = nextHumanLimitedMartingaleStep(HUMAN_RF_MARTINGALE_STATE.step, settings);
         const nextStake = HUMAN_RF_MARTINGALE_STATE.enabled ? humanRfMartingaleStakeForStep(nextStep) : settings.startStake;
         const limitLabel = settings.doubleLimit > 0 ? ` • Limit ${settings.doubleLimit} double-up${settings.doubleLimit === 1 ? "" : "s"}` : "";
-        status.textContent = `${HUMAN_RF_MARTINGALE_STATE.status}. ${settings.direction}${limitLabel} • Step ${HUMAN_RF_MARTINGALE_STATE.step} • Current stake $${currentStake.toFixed(2)} • Next stake $${nextStake.toFixed(2)} • Last result: ${HUMAN_RF_MARTINGALE_STATE.lastResult}`;
+        const durationLabel = `${settings.duration} ${settings.durationUnit === "s" ? "sec" : "tick"}${settings.duration === 1 ? "" : "s"}`;
+        status.textContent = `${HUMAN_RF_MARTINGALE_STATE.status}. ${settings.direction} • ${durationLabel}${limitLabel} • Step ${HUMAN_RF_MARTINGALE_STATE.step} • Current stake $${currentStake.toFixed(2)} • Next stake $${nextStake.toFixed(2)} • Last result: ${HUMAN_RF_MARTINGALE_STATE.lastResult}`;
       }
       status.style.color = HUMAN_RF_MARTINGALE_STATE.inProgress ? "#fbbf24" : "#94a3b8";
     }
@@ -1953,13 +2175,14 @@
           label: allowEquals ? "HUMAN Rise + Fall Equals Martingale" : "HUMAN Rise + Fall Martingale",
           stake: totalStake,
           duration: settings.duration,
-          duration_unit: "t",
+          duration_unit: settings.durationUnit,
           batch_count: 2,
         }, async () => {
           return postJSON("/human_auto_rise_fall", {
             rise_stake: pairPlan[0].stake,
             fall_stake: pairPlan[1].stake,
             duration_ticks: settings.duration,
+            duration_unit: settings.durationUnit,
             allow_equals: allowEquals,
           });
         });
@@ -1970,6 +2193,7 @@
           direction: settings.direction,
           stake,
           duration_ticks: settings.duration,
+          duration_unit: settings.durationUnit,
           ignore_cooldown: true,
         };
         const data = await guardMartha({
@@ -1979,7 +2203,7 @@
           label: `HUMAN ${settings.direction} Martingale`,
           stake,
           duration: settings.duration,
-          duration_unit: "t",
+          duration_unit: settings.durationUnit,
           batch_count: 1,
         }, () => postJSON("/human_rf_trade", payload));
         if(isMarthaBlocked(data)) throw new Error("Trade blocked");
@@ -2974,6 +3198,10 @@
     window.runFormulaX = toggleFormulaX;
     window.humanManualTrade = humanManualTrade;
     window.humanManualAsiansPairTrade = humanManualAsiansPairTrade;
+    window.populateHumanDualMarketSelects = populateHumanDualMarketSelects;
+    window.updateHumanDualMarketPanel = updateHumanDualMarketPanel;
+    window.setHumanDualStake = setHumanDualStake;
+    window.humanDualMarketPlaceBoth = humanDualMarketPlaceBoth;
     window.refreshHumanManualContracts = refreshHumanManualContracts;
     window.openHumanSpecialAutoPopup = openHumanSpecialAutoPopup;
     window.closeHumanSpecialAutoPopup = closeHumanSpecialAutoPopup;
@@ -3001,6 +3229,7 @@
     // initial render/poll
     startPolling();
     refreshHumanManualContracts(false);
+    populateHumanDualMarketSelects();
     syncHumanRFAllowEqualsToggle();
     updateHumanSingleMartingalePanel();
     updateHumanRfMartingalePanel();
@@ -3015,6 +3244,7 @@
     bindSocketIfPossible();
     startPolling();
     refreshHumanManualContracts(false);
+    populateHumanDualMarketSelects();
     syncHumanRFAllowEqualsToggle();
     updateHumanSingleMartingalePanel();
     updateHumanRfMartingalePanel();
@@ -3031,6 +3261,7 @@
       if(typeof refreshHumanKeepAliveUI === "function") await refreshHumanKeepAliveUI();
     }catch(e){}
     refreshHumanManualContracts(false);
+    populateHumanDualMarketSelects();
     syncHumanRFAllowEqualsToggle();
     updateHumanSingleMartingalePanel();
     updateHumanRfMartingalePanel();

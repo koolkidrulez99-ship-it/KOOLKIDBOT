@@ -1399,16 +1399,29 @@ def _contract_refresh_delays_for_meta(meta):
     except Exception:
         duration = 0
     duration_unit = str((meta or {}).get("duration_unit") or "t").strip().lower()
-    if duration_unit != "t" or duration <= 1:
+    if duration <= 1:
         return base_delays
 
+    extra_delays = ()
     # Tick contracts can settle after the first short fallback window,
     # especially on Render when subscription messages lag. Keep a few absolute
     # refreshes past the expected expiry so pending history rows can self-heal.
-    extra_delays = (
-        min(18.0, (duration * 1.5) + 2.0),
-        min(36.0, (duration * 3.0) + 5.0),
-    )
+    if duration_unit == "t":
+        extra_delays = (
+            min(18.0, (duration * 1.5) + 2.0),
+            min(36.0, (duration * 3.0) + 5.0),
+        )
+    elif duration_unit == "s":
+        # Second-based contracts need refreshes past their wall-clock expiry;
+        # otherwise 15-30s rows can stay pending if the subscription update lags.
+        extra_delays = (
+            min(45.0, duration + 0.75),
+            min(50.0, duration + 2.0),
+            min(60.0, duration + 6.0),
+        )
+    else:
+        return base_delays
+
     merged = []
     for value in tuple(base_delays) + extra_delays:
         try:
@@ -3206,6 +3219,23 @@ def _resolve_post_contract_balance(state, profit):
 
 
 # ---------------- DERIV BUY FUNCTION (PER CLIENT) ---------------- #
+def _normalize_trade_duration_unit(duration_unit, default="t"):
+    unit = str(duration_unit or default).strip().lower()
+    if unit not in ("t", "s", "m", "h"):
+        unit = default
+    return unit
+
+
+def _sanitize_trade_duration_for_unit(duration, duration_unit, default=1):
+    try:
+        value = int(float(duration or default))
+    except Exception:
+        value = int(default or 1)
+    unit = _normalize_trade_duration_unit(duration_unit)
+    max_duration = 30 if unit == "s" else 20
+    return max(1, min(max_duration, value))
+
+
 def send_buy(client_id, contract_type, stake, symbol, barrier, duration=1, duration_unit="t", mode=None, extra_meta=None):
     state = clients.get(client_id)
     ready, ready_msg = _ensure_trade_socket_ready(client_id, state)
@@ -3247,14 +3277,8 @@ def send_buy(client_id, contract_type, stake, symbol, barrier, duration=1, durat
         return False, "Invalid contract type"
 
     deriv_contract = contract_map[contract_type]
-    try:
-        duration = int(duration or 1)
-    except Exception:
-        duration = 1
-    duration = max(1, min(20, duration))
-    duration_unit = str(duration_unit or "t").strip().lower()
-    if duration_unit not in ("t", "s", "m", "h"):
-        duration_unit = "t"
+    duration_unit = _normalize_trade_duration_unit(duration_unit)
+    duration = _sanitize_trade_duration_for_unit(duration, duration_unit, default=1)
 
     budget_ok, budget_msg, budget_reservation = _reserve_profile_budget(state, profile, stake_value)
     if not budget_ok:
@@ -3368,14 +3392,8 @@ def send_buy_with_profile(
         return False, "Invalid contract type"
 
     deriv_contract = contract_map[contract_type]
-    try:
-        duration = int(duration or 1)
-    except Exception:
-        duration = 1
-    duration = max(1, min(20, duration))
-    duration_unit = str(duration_unit or "t").strip().lower()
-    if duration_unit not in ("t", "s", "m", "h"):
-        duration_unit = "t"
+    duration_unit = _normalize_trade_duration_unit(duration_unit)
+    duration = _sanitize_trade_duration_for_unit(duration, duration_unit, default=1)
 
     budget_ok, budget_msg, budget_reservation = _reserve_profile_budget(state, profile, stake_value)
     if not budget_ok:
@@ -3464,9 +3482,8 @@ def place_risefall_order(client_id, signal):
         return False, "Invalid rise/fall direction"
 
     stake = float(signal.get("stake", state.get("auto_stake", 1.0)))
-    duration = int(signal.get("duration", 5) or 5)
-    duration = max(1, min(20, duration))
-    duration_unit = signal.get("duration_unit", "t") or "t"
+    duration_unit = _normalize_trade_duration_unit(signal.get("duration_unit", "t"))
+    duration = _sanitize_trade_duration_for_unit(signal.get("duration", 5), duration_unit, default=5)
     symbol_to_use = signal.get("symbol") or state.get("human_symbol") or state.get("current_symbol")
 
     budget_ok, budget_msg, budget_reservation = _reserve_profile_budget(state, "HUMAN", stake)
@@ -3487,6 +3504,7 @@ def place_risefall_order(client_id, signal):
         "time": now_time(),
         "mode": signal.get("mode") or "human_rf",
         "duration": duration,
+        "duration_unit": duration_unit,
         "allow_equals": allow_equals,
         "contract_type": deriv_contract,
         "budget_reservation": budget_reservation,
@@ -3637,7 +3655,7 @@ def _request_human_manual_proposal_quote(
     }, None
 
 
-def place_human_manual_contract(client_id, *, action, stake, selected_tick=None, duration_ticks=None):
+def place_human_manual_contract(client_id, *, action, stake, selected_tick=None, duration_ticks=None, symbol=None):
     state = clients.get(client_id)
     ready, ready_msg = _ensure_trade_socket_ready(client_id, state)
     if not ready:
@@ -3661,7 +3679,12 @@ def place_human_manual_contract(client_id, *, action, stake, selected_tick=None,
         except Exception:
             pass
 
-    info, err, symbol = _fetch_human_manual_contracts_for_state(state)
+    requested_symbol = str(symbol or "").strip()
+    if requested_symbol:
+        info, err, resolved_symbol = _fetch_human_manual_contracts_for_symbol(requested_symbol)
+        symbol = resolved_symbol or requested_symbol
+    else:
+        info, err, symbol = _fetch_human_manual_contracts_for_state(state)
     if err:
         return False, err, None
     action_info = (info or {}).get(action_key) or {}
@@ -5966,7 +5989,7 @@ def _upsert_human_pending_contract(state, contract_id, meta=None, contract=None,
     if not _is_human_profile_meta(meta):
         return None
     duration_unit = _clean_unchain_duration_unit(meta.get("duration_unit", "t"))
-    if duration_unit != "t":
+    if duration_unit not in ("t", "s"):
         return None
     try:
         duration = max(1, int(float(meta.get("duration", 0) or 0)))
@@ -5979,6 +6002,7 @@ def _upsert_human_pending_contract(state, contract_id, meta=None, contract=None,
     norm = _normalize_contract_id(contract_id) or str(contract_id)
     existing = active.get(norm) if isinstance(active.get(norm), dict) else {}
     now_tick_seq = _get_human_tick_counter(state)
+    now_ts = time.time()
     entry = dict(existing)
     entry.update({
         "contract_id": norm,
@@ -5999,6 +6023,14 @@ def _upsert_human_pending_contract(state, contract_id, meta=None, contract=None,
         if _is_contract_settled_fast(contract):
             _remove_human_pending_contract(state, contract_id)
             return None
+        for start_key in ("date_start", "purchase_time"):
+            try:
+                start_value = contract.get(start_key)
+                if start_value not in (None, ""):
+                    entry.setdefault("open_ts", float(start_value))
+                    break
+            except Exception:
+                continue
         for source_key, target_key in (
             ("profit", "open_profit"),
             ("profit_value", "open_profit"),
@@ -6011,6 +6043,7 @@ def _upsert_human_pending_contract(state, contract_id, meta=None, contract=None,
             value = contract.get(source_key)
             if value not in (None, ""):
                 entry[target_key] = value
+    entry.setdefault("open_ts", now_ts)
 
     active[norm] = entry
     return entry
@@ -6067,11 +6100,6 @@ def _maybe_force_human_pending_close(client_id, state):
             continue
 
         try:
-            open_tick_seq = int(float(entry.get("open_tick_seq", now_tick_seq) or now_tick_seq))
-        except Exception:
-            open_tick_seq = now_tick_seq
-            entry["open_tick_seq"] = open_tick_seq
-        try:
             duration = max(1, int(float(entry.get("duration", 0) or 0)))
         except Exception:
             duration = 0
@@ -6079,14 +6107,36 @@ def _maybe_force_human_pending_close(client_id, state):
             _remove_human_pending_contract(state, contract_id)
             continue
 
-        expiry_tick = open_tick_seq + duration
-        settle_after_tick = expiry_tick + HUMAN_PENDING_SETTLE_BUFFER_TICKS
-        if now_tick_seq < expiry_tick:
-            continue
+        duration_unit = _clean_unchain_duration_unit(entry.get("duration_unit", "t"))
+        open_tick_seq = now_tick_seq
+        if duration_unit == "s":
+            try:
+                open_ts = float(entry.get("open_ts", now_ts) or now_ts)
+            except Exception:
+                open_ts = now_ts
+                entry["open_ts"] = open_ts
+            expiry_ts = open_ts + duration
+            settle_after_ts = expiry_ts + 5.0
+            if now_ts < expiry_ts:
+                continue
+            _request_human_open_contract_refresh(state, entry, now_ts)
+            if now_ts < settle_after_ts:
+                continue
+        else:
+            try:
+                open_tick_seq = int(float(entry.get("open_tick_seq", now_tick_seq) or now_tick_seq))
+            except Exception:
+                open_tick_seq = now_tick_seq
+                entry["open_tick_seq"] = open_tick_seq
 
-        _request_human_open_contract_refresh(state, entry, now_ts)
-        if now_tick_seq < settle_after_tick:
-            continue
+            expiry_tick = open_tick_seq + duration
+            settle_after_tick = expiry_tick + HUMAN_PENDING_SETTLE_BUFFER_TICKS
+            if now_tick_seq < expiry_tick:
+                continue
+
+            _request_human_open_contract_refresh(state, entry, now_ts)
+            if now_tick_seq < settle_after_tick:
+                continue
 
         local_profit = None
         for key in ("open_profit", "profit", "profit_value"):
@@ -6111,10 +6161,11 @@ def _maybe_force_human_pending_close(client_id, state):
             buy_price = 0.0
 
         logger.info(
-            "[%s] TEMP human_pending_bot_settle contract_id=%s duration=%s open_tick=%s now_tick=%s profit=%s",
+            "[%s] TEMP human_pending_bot_settle contract_id=%s duration=%s%s open_tick=%s now_tick=%s profit=%s",
             client_id,
             contract_id,
             duration,
+            duration_unit,
             open_tick_seq,
             now_tick_seq,
             local_profit,
@@ -13024,14 +13075,8 @@ def _prepare_human_parity_trade_request(
         return False, None, "Invalid stake"
     if stake <= 0:
         return False, None, "Stake must be greater than 0"
-    duration_unit = str(duration_unit or "t").strip().lower()
-    if duration_unit not in ("t", "s", "m", "h"):
-        duration_unit = "t"
-    try:
-        duration = int(duration or 5)
-    except Exception:
-        duration = 5
-    duration = max(1, min(20, duration))
+    duration_unit = _normalize_trade_duration_unit(duration_unit)
+    duration = _sanitize_trade_duration_for_unit(duration, duration_unit, default=5)
 
     budget_ok, budget_msg, budget_reservation = _reserve_profile_budget(state, "HUMAN", stake)
     if not budget_ok:
@@ -16302,6 +16347,11 @@ def _is_contract_settled_fast(contract: dict) -> bool:
     try:
         if contract.get("is_sold") or contract.get("is_settled"):
             return True
+        if contract.get("is_expired") and any(
+            contract.get(key) not in (None, "")
+            for key in ("profit", "profit_value", "sell_price", "bid_price")
+        ):
+            return True
         status = (contract.get("status") or "").lower()
         # Deriv can report settled contracts under several terminal states.
         if status in ("sold", "won", "lost", "settled", "closed", "expired", "cancelled", "canceled"):
@@ -16434,6 +16484,7 @@ def process_contract(client_id, contract):
                 raw_entry_result in ("", "PENDING", "OPEN", "ACTIVE", "CLOSING")
                 or "PENDING" in raw_entry_result
                 or "CLOSE REQUESTED" in raw_entry_result
+                or raw_entry_result in ("SOLD", "SETTLED", "CLOSED", "EXPIRED")
             ):
                 entry["result"] = "WIN" if profit > 0 else "LOSS"
             exit_digit = extract_exit_digit_from_contract(contract)
@@ -19908,6 +19959,7 @@ def human_manual_trade_route():
         stake=data.get("stake"),
         selected_tick=data.get("selected_tick"),
         duration_ticks=data.get("duration_ticks"),
+        symbol=data.get("symbol"),
     )
     if ok:
         return jsonify({"status": "success", "message": msg, "trade": trade})
@@ -19937,6 +19989,113 @@ def human_manual_pair_trade_route():
         "error": msg,
         "placed": placed,
     }), (400 if not placed else 200)
+
+
+@app.route("/human_dual_market_contracts", methods=["POST"])
+def human_dual_market_contracts_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    data = request.json or {}
+    legs = data.get("legs")
+    if not isinstance(legs, list) or len(legs) != 2:
+        return jsonify({"status": "error", "message": "Exactly two dual-market legs are required.", "placed": []}), 400
+
+    ready, ready_msg = _ensure_trade_socket_ready(cid, state)
+    if not ready:
+        return jsonify({"status": "error", "message": ready_msg, "placed": []}), 400
+
+    batch_id = str(data.get("batch_id") or _new_req_id())
+    placed = []
+    errors = []
+    allowed_actions = {
+        "RISE", "FALL", "EVEN", "ODD",
+        "HIGH_TICK", "LOW_TICK", "ONLY_UPS", "ONLY_DOWNS",
+    }
+    for index, raw_leg in enumerate(legs, start=1):
+        leg = raw_leg if isinstance(raw_leg, dict) else {}
+        action = str(leg.get("action") or "").upper().strip()
+        if action not in allowed_actions:
+            errors.append(f"Leg {index}: invalid trade type")
+            continue
+        symbol = str(leg.get("symbol") or state.get("human_symbol") or state.get("current_symbol") or "R_10").strip()
+        try:
+            stake = max(0.35, float(leg.get("stake") or 0))
+        except Exception:
+            errors.append(f"Leg {index}: invalid stake")
+            continue
+        duration_unit = str(leg.get("duration_unit") or "t").strip().lower()
+        if duration_unit not in ("t", "s", "m", "h"):
+            duration_unit = "t"
+        min_duration = 2 if action in ("ONLY_UPS", "ONLY_DOWNS") else 1
+        try:
+            duration = int(float(leg.get("duration_ticks") or leg.get("duration") or min_duration))
+        except Exception:
+            duration = min_duration
+        duration = max(min_duration, min(1000, duration))
+        extra_meta = {
+            "dual_market_batch_id": batch_id,
+            "dual_market_leg_index": index,
+            "mode": "human_dual_market_contracts",
+        }
+        if action in ("RISE", "FALL"):
+            ok, msg = place_risefall_order(cid, {
+                "direction": action,
+                "stake": stake,
+                "duration": duration,
+                "duration_unit": duration_unit,
+                "symbol": symbol,
+                "mode": "human_dual_market_contracts",
+            })
+            trade = {
+                "action": action,
+                "label": action,
+                "symbol": symbol,
+                "duration": duration,
+                "duration_unit": duration_unit,
+            }
+        elif action in ("EVEN", "ODD"):
+            ok, msg = _send_human_parity_trade(
+                cid,
+                side=action,
+                stake=stake,
+                symbol=symbol,
+                duration=duration,
+                duration_unit=duration_unit,
+                mode="human_dual_market_contracts",
+                extra_meta=extra_meta,
+            )
+            trade = {
+                "action": action,
+                "label": action,
+                "symbol": symbol,
+                "duration": duration,
+                "duration_unit": duration_unit,
+            }
+        else:
+            ok, msg, trade = place_human_manual_contract(
+                cid,
+                action=action,
+                stake=stake,
+                selected_tick=leg.get("selected_tick"),
+                duration_ticks=duration,
+                symbol=symbol,
+            )
+        if ok:
+            placed.append(trade or {"action": action, "symbol": symbol})
+        else:
+            errors.append(f"Leg {index}: {msg}")
+
+    status = "success" if len(placed) == 2 else ("partial" if placed else "error")
+    message = "Dual Market Contracts sent both trades" if status == "success" else "; ".join(errors or ["Dual Market Contracts failed"])
+    return jsonify({
+        "status": status,
+        "message": message,
+        "placed": placed,
+        "errors": errors,
+        "batch_id": batch_id,
+    }), (200 if placed else 400)
 
 
 @app.route("/human_parity_trade", methods=["POST"])
@@ -20061,6 +20220,12 @@ def human_rf_trade():
     direction = (data.get("direction") or "AUTO").upper().strip()
     ignore_cooldown = bool(data.get("ignore_cooldown") or data.get("bypass_cooldown"))
     allow_equals = bool(data.get("allow_equals", False))
+    duration_unit = _normalize_trade_duration_unit(data.get("duration_unit") or "t")
+    requested_duration = _sanitize_trade_duration_for_unit(
+        data.get("duration_ticks") or data.get("duration") or getattr(strat, "rf_duration_ticks", 5) or 5,
+        duration_unit,
+        default=getattr(strat, "rf_duration_ticks", 5) or 5,
+    )
 
     # sync stake from request if provided (optional)
     try:
@@ -20069,8 +20234,8 @@ def human_rf_trade():
     except Exception:
         pass
     try:
-        if data.get("duration_ticks") is not None and hasattr(strat, "set_human_rf_settings"):
-            strat.set_human_rf_settings(duration_ticks=int(data.get("duration_ticks")))
+        if data.get("duration_ticks") is not None and duration_unit == "t" and hasattr(strat, "set_human_rf_settings"):
+            strat.set_human_rf_settings(duration_ticks=requested_duration)
     except Exception:
         pass
 
@@ -20089,6 +20254,8 @@ def human_rf_trade():
         return jsonify({"error": "No valid setup / cooldown active"}), 400
 
     sig["symbol"] = state.get("human_symbol") or state.get("current_symbol")
+    sig["duration"] = requested_duration
+    sig["duration_unit"] = duration_unit
     if allow_equals:
         sig["allow_equals"] = True
     ok, msg = place_risefall_order(cid, sig)
@@ -20111,7 +20278,12 @@ def human_formula_x_route():
     data = request.json or {}
     rise_stake = max(0.35, float(data.get("rise_stake") or 0))
     fall_stake = max(0.35, float(data.get("fall_stake") or 0))
-    duration_ticks = int(data.get("duration_ticks") or getattr(strat, "rf_duration_ticks", 5) or 5)
+    duration_unit = _normalize_trade_duration_unit(data.get("duration_unit") or "t")
+    duration_ticks = _sanitize_trade_duration_for_unit(
+        data.get("duration_ticks") or getattr(strat, "rf_duration_ticks", 5) or 5,
+        duration_unit,
+        default=getattr(strat, "rf_duration_ticks", 5) or 5,
+    )
     allow_equals = bool(data.get("allow_equals", False))
 
     symbol = state.get("human_symbol") or state.get("current_symbol")
@@ -20120,6 +20292,7 @@ def human_formula_x_route():
             "direction": "RISE",
             "stake": rise_stake,
             "duration": duration_ticks,
+            "duration_unit": duration_unit,
             "symbol": symbol,
             "allow_equals": allow_equals,
             "mode": "human_auto_rise_fall" if request.path.endswith("human_auto_rise_fall") else "human_formula_x",
@@ -20128,6 +20301,7 @@ def human_formula_x_route():
             "direction": "FALL",
             "stake": fall_stake,
             "duration": duration_ticks,
+            "duration_unit": duration_unit,
             "symbol": symbol,
             "allow_equals": allow_equals,
             "mode": "human_auto_rise_fall" if request.path.endswith("human_auto_rise_fall") else "human_formula_x",
