@@ -3509,6 +3509,8 @@ def place_risefall_order(client_id, signal):
         "contract_type": deriv_contract,
         "budget_reservation": budget_reservation,
     }
+    if isinstance(signal.get("extra_meta"), dict):
+        state["req_meta"][req_id].update(signal.get("extra_meta"))
     _stamp_trade_latency(state["req_meta"][req_id], "buy_send")
 
     payload = {
@@ -3655,7 +3657,17 @@ def _request_human_manual_proposal_quote(
     }, None
 
 
-def place_human_manual_contract(client_id, *, action, stake, selected_tick=None, duration_ticks=None, symbol=None):
+def place_human_manual_contract(
+    client_id,
+    *,
+    action,
+    stake,
+    selected_tick=None,
+    duration_ticks=None,
+    symbol=None,
+    mode="human_manual_contract",
+    extra_meta=None,
+):
     state = clients.get(client_id)
     ready, ready_msg = _ensure_trade_socket_ready(client_id, state)
     if not ready:
@@ -3746,13 +3758,15 @@ def place_human_manual_contract(client_id, *, action, stake, selected_tick=None,
         "stake": stake_value,
         "symbol": symbol,
         "time": now_time(),
-        "mode": "human_manual_contract",
+        "mode": mode or "human_manual_contract",
         "duration": int(duration_value),
         "duration_unit": duration_unit,
         "contract_type": action_info.get("contract_type"),
         "selected_tick": selected_tick_for_proposal,
         "budget_reservation": budget_reservation,
     }
+    if isinstance(extra_meta, dict):
+        state["req_meta"][req_id].update(extra_meta)
     _stamp_trade_latency(state["req_meta"][req_id], "buy_send")
 
     payload = {
@@ -16363,6 +16377,47 @@ def _is_contract_settled_fast(contract: dict) -> bool:
     return False
 
 
+def _resolve_human_contract_profit(contract, meta=None):
+    contract = contract if isinstance(contract, dict) else {}
+    meta = meta if isinstance(meta, dict) else {}
+    status = str(contract.get("status") or "").lower().strip()
+
+    def as_float(value):
+        try:
+            n = float(value)
+            return n if math.isfinite(n) else None
+        except Exception:
+            return None
+
+    raw_profit = as_float(contract.get("profit"))
+    if raw_profit is None:
+        raw_profit = as_float(contract.get("profit_value"))
+    buy_price = as_float(contract.get("buy_price"))
+    if buy_price is None:
+        buy_price = as_float(meta.get("stake"))
+    sell_price = as_float(contract.get("sell_price"))
+    if sell_price is None:
+        sell_price = as_float(contract.get("bid_price"))
+    net_profit = None
+    if buy_price is not None and sell_price is not None:
+        net_profit = round(sell_price - buy_price, 2)
+
+    if status in ("lost", "loss"):
+        if net_profit is not None and net_profit <= 0:
+            return float(net_profit)
+        if raw_profit is not None and raw_profit <= 0:
+            return float(raw_profit)
+        return -abs(float(buy_price or raw_profit or 0.0))
+    if status in ("won", "win"):
+        if raw_profit is not None and raw_profit >= 0:
+            return float(raw_profit)
+        if net_profit is not None:
+            return float(net_profit)
+    if net_profit is not None and raw_profit is None:
+        return float(net_profit)
+    return float(raw_profit or 0.0)
+
+
 def process_contract(client_id, contract):
     state = clients.get(client_id)
     if not state:
@@ -16385,10 +16440,12 @@ def process_contract(client_id, contract):
                 socketio.emit("unchain_status", _unchain_payload_response(state), room=client_id)
             return
 
-        profit = float(contract.get("profit", 0) or 0)
-        settled_balance = _resolve_post_contract_balance(state, profit)
-
         meta = _pull_contract_meta(state, contract_id) if contract_id is not None else None
+        if _is_human_profile_meta(meta):
+            profit = _resolve_human_contract_profit(contract, meta)
+        else:
+            profit = float(contract.get("profit", 0) or 0)
+        settled_balance = _resolve_post_contract_balance(state, profit)
         if isinstance(meta, dict):
             _stamp_trade_latency(meta, "contract_settled")
         try:
@@ -16471,16 +16528,29 @@ def process_contract(client_id, contract):
                 entry.setdefault("batch_id", meta.get("batch_id"))
                 entry.setdefault("batch_label", meta.get("batch_label"))
                 entry.setdefault("batch_stake", meta.get("batch_stake"))
+                if _is_human_profile_meta(meta):
+                    entry["stake"] = meta.get("stake")
             else:
                 entry.setdefault("profile", profile_for_contract)
-            entry.setdefault("profit", round(float(profit), 2))
+            if _is_human_profile_meta(meta):
+                entry["profit"] = round(float(profit), 2)
+            else:
+                entry.setdefault("profit", round(float(profit), 2))
             # Always emit the same contract id used at placement so frontend can
             # merge pending -> settled instead of showing a duplicate row.
             if contract_id not in (None, ""):
                 entry["contract_id"] = contract_id
             entry["status"] = contract.get("status") or entry.get("status")
             raw_entry_result = str(entry.get("result") or "").upper().strip()
-            if (
+            if _is_human_profile_meta(meta):
+                status_text = str(contract.get("status") or "").lower().strip()
+                if status_text in ("lost", "loss"):
+                    entry["result"] = "LOSS"
+                elif status_text in ("won", "win"):
+                    entry["result"] = "WIN"
+                else:
+                    entry["result"] = "WIN" if profit > 0 else "LOSS"
+            elif (
                 raw_entry_result in ("", "PENDING", "OPEN", "ACTIVE", "CLOSING")
                 or "PENDING" in raw_entry_result
                 or "CLOSE REQUESTED" in raw_entry_result
@@ -20047,6 +20117,7 @@ def human_dual_market_contracts_route():
                 "duration_unit": duration_unit,
                 "symbol": symbol,
                 "mode": "human_dual_market_contracts",
+                "extra_meta": extra_meta,
             })
             trade = {
                 "action": action,
@@ -20081,6 +20152,8 @@ def human_dual_market_contracts_route():
                 selected_tick=leg.get("selected_tick"),
                 duration_ticks=duration,
                 symbol=symbol,
+                mode="human_dual_market_contracts",
+                extra_meta=extra_meta,
             )
         if ok:
             placed.append(trade or {"action": action, "symbol": symbol})

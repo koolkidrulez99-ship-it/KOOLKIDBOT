@@ -2053,7 +2053,7 @@ function bindSocketHandlers(){
             const sortTs = resolveTradeSortTimestamp(settled, true);
             if(Number.isFinite(Number(sortTs))) settled._sort_ts = Number(sortTs);
         }
-        settled.result = normalizeTradeResultLabel(settled.result, settled.status);
+        settled.result = getTradeFinalResultLabel(settled);
         settled.pending = isTradeResultPending(settled.result);
         const hiddenBatchTrade = !!settled.hide_from_history || String(settled.mode || "").toLowerCase().startsWith("jokerjoe_match_batch_martingale");
         if(!hiddenBatchTrade){
@@ -3356,6 +3356,13 @@ function getTradeProfitAmount(trade){
                 const contradictsResult = (result === "WIN" && n < 0) || (result === "LOSS" && n > 0);
                 if(looksLikePayout || contradictsResult) return settlementNet;
             }
+            if(result === "LOSS" && n > 0){
+                const stake = getTradeStakeAmount(trade);
+                return -Math.abs(Number.isFinite(stake) && stake > 0 ? stake : n);
+            }
+            if(result === "WIN" && n < 0){
+                return Math.abs(n);
+            }
             return n;
         }
     }
@@ -3363,7 +3370,20 @@ function getTradeProfitAmount(trade){
     return 0;
 }
 
+function getTradeStakeAmount(trade){
+    if(!trade || typeof trade !== "object") return 0;
+    const candidates = [trade.stake, trade.original_stake, trade.entry_stake, trade.amount, trade.price, trade.buy_price];
+    for(const raw of candidates){
+        const n = Number(raw);
+        if(Number.isFinite(n) && n >= 0) return n;
+    }
+    return 0;
+}
+
 function getTradeFinalResultLabel(trade){
+    const statusRaw = String((trade && trade.status) || "").toUpperCase().trim();
+    if(statusRaw === "WON" || statusRaw === "WIN") return "WIN";
+    if(statusRaw === "LOST" || statusRaw === "LOSS") return "LOSS";
     const result = normalizeTradeResultLabel(trade && trade.result, trade && trade.status);
     if(result === "SETTLED"){
         return getTradeProfitAmount(trade) > 0 ? "WIN" : "LOSS";
@@ -4973,7 +4993,7 @@ function buildTradeItem(trade){
     const typeRaw = formatTradeTypeLabelForProfile(tradeProfile, trade.type, trade.contract_type);
     const barrier = (trade.barrier !== undefined && trade.barrier !== null) ? trade.barrier : "";
     const type = (barrier !== "" ? `${typeRaw} ${barrier}` : typeRaw);
-    const stake = trade.stake || trade.buy_price || 0;
+    const stake = getTradeStakeAmount(trade);
     const market = String(trade.symbol || trade.market || "—");
     const durationLabel = formatTradeDurationLabel(trade);
 

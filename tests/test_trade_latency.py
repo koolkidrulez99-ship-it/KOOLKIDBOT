@@ -173,6 +173,47 @@ def test_human_pending_contract_tracks_second_duration_unit():
     assert entry["open_ts"] > 0
 
 
+def test_dual_market_lost_status_overrides_positive_profit_like_value():
+    profit = server._resolve_human_contract_profit(
+        {
+            "status": "lost",
+            "profit": "0.35",
+            "buy_price": "0.35",
+            "sell_price": "0",
+        },
+        {"mode": "human_dual_market_contracts", "stake": 0.35},
+    )
+
+    assert profit == -0.35
+
+
+def test_dual_market_sold_status_uses_sell_minus_buy_when_profit_missing():
+    profit = server._resolve_human_contract_profit(
+        {
+            "status": "sold",
+            "buy_price": "1.00",
+            "sell_price": "0.00",
+        },
+        {"mode": "human_dual_market_contracts", "stake": 1.0},
+    )
+
+    assert profit == -1.0
+
+
+def test_human_rise_fall_lost_status_overrides_positive_profit_like_value():
+    profit = server._resolve_human_contract_profit(
+        {
+            "status": "lost",
+            "profit": "1.00",
+            "buy_price": "1.00",
+            "sell_price": "0.00",
+        },
+        {"mode": "human_rf_martingale", "stake": 1.0},
+    )
+
+    assert profit == -1.0
+
+
 def test_buy_confirm_emits_trade_placed_immediately_and_uses_fast_refresh(monkeypatch):
     emitted = []
     refresh_calls = []
