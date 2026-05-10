@@ -280,6 +280,14 @@ def _deriv_connection_type(state):
     return str((state or {}).get("api_token_type") or "legacy").strip().lower() or "legacy"
 
 
+def _proposal_payload_for_connection(state, payload):
+    final_payload = dict(payload or {})
+    if _deriv_connection_type(state) == "oauth" and "symbol" in final_payload:
+        symbol = final_payload.pop("symbol")
+        final_payload["underlying_symbol"] = symbol
+    return final_payload
+
+
 def _build_digit_proposal_payload(req_id, deriv_contract, stake, symbol, barrier, duration, duration_unit):
     return {
         "proposal": 1,
@@ -299,6 +307,7 @@ def _request_digit_proposal_for_buy(client_id, state, payload, timeout_sec=5.0):
     ws = state.get("ws") if isinstance(state, dict) else None
     if not ws:
         return None, "Not connected"
+    payload = _proposal_payload_for_connection(state, payload)
     req_id = payload.get("req_id")
     waiter = {"event": threading.Event(), "proposal": None, "error": None}
     waiters = state.setdefault("_proposal_waiters", {})
@@ -324,7 +333,10 @@ def _request_digit_proposal_for_buy(client_id, state, payload, timeout_sec=5.0):
     waiters.pop(req_id, None)
     waiters.pop(str(req_id), None)
     if waiter.get("error"):
-        return None, str(waiter.get("error"))
+        err_payload = waiter.get("error")
+        if isinstance(err_payload, dict):
+            return None, str(err_payload.get("message") or err_payload.get("error") or "Quote error")
+        return None, str(err_payload)
     proposal = waiter.get("proposal") or {}
     proposal_id = proposal.get("id")
     if proposal_id in (None, ""):
@@ -364,7 +376,7 @@ def _send_trade_payload_with_oauth_proposal(client_id, state, req_id, payload, s
         params = dict((payload or {}).get("parameters") or {})
         if not params:
             return False, "Proposal parameters missing"
-        proposal_payload = {"proposal": 1, **params, "req_id": req_id}
+        proposal_payload = _proposal_payload_for_connection(state, {"proposal": 1, **params, "req_id": req_id})
         logger.info(
             "[%s] deriv_legacy_direct_buy_payload_for_compare payload=%s",
             client_id,
@@ -4201,6 +4213,7 @@ def _request_human_manual_proposal_quote(
     }
     if selected_tick is not None:
         payload["selected_tick"] = int(selected_tick)
+    payload = _proposal_payload_for_connection(state, payload)
 
     try:
         if client_id is not None:
@@ -6855,8 +6868,13 @@ def _request_ntt_proposal_quote(state, *, side, stake, symbol, barrier, duration
         "barrier": barrier_value,
         "req_id": req_id,
     }
+    payload = _proposal_payload_for_connection(state, payload)
     try:
+        if client_id is not None:
+            logger.info("[%s] TEMP proposal_about_to_be_sent token_type=%s payload=%s", client_id, _deriv_connection_type(state), _safe_deriv_payload_text(payload))
         ws.send(json.dumps(payload))
+        if client_id is not None:
+            logger.info("[%s] TEMP proposal_actually_sent req_id=%s token_type=%s", client_id, req_id, _deriv_connection_type(state))
     except Exception as e:
         if client_id is not None:
             _mark_ws_unhealthy_and_reconnect(client_id, state, "Deriv connection failed while requesting a quote. Reconnecting now...", emit_error=False)
@@ -6950,8 +6968,13 @@ def _request_digit_proposal_quote(state, *, contract_type, stake, symbol, barrie
         "barrier": int(barrier_value),
         "req_id": req_id,
     }
+    payload = _proposal_payload_for_connection(state, payload)
     try:
+        if client_id is not None:
+            logger.info("[%s] TEMP proposal_about_to_be_sent token_type=%s payload=%s", client_id, _deriv_connection_type(state), _safe_deriv_payload_text(payload))
         ws.send(json.dumps(payload))
+        if client_id is not None:
+            logger.info("[%s] TEMP proposal_actually_sent req_id=%s token_type=%s", client_id, req_id, _deriv_connection_type(state))
     except Exception as e:
         if client_id is not None:
             _mark_ws_unhealthy_and_reconnect(client_id, state, "Deriv connection failed while requesting a quote. Reconnecting now...", emit_error=False)
@@ -11739,9 +11762,14 @@ def _request_unchain_proposal_quote(state, *, side, stake, symbol, barrier, dura
     }
     if barrier_value not in (None, ""):
         payload["barrier"] = barrier_value
+    payload = _proposal_payload_for_connection(state, payload)
 
     try:
+        if client_id is not None:
+            logger.info("[%s] TEMP proposal_about_to_be_sent token_type=%s payload=%s", client_id, _deriv_connection_type(state), _safe_deriv_payload_text(payload))
         ws.send(json.dumps(payload))
+        if client_id is not None:
+            logger.info("[%s] TEMP proposal_actually_sent req_id=%s token_type=%s", client_id, req_id, _deriv_connection_type(state))
     except Exception as e:
         if client_id is not None:
             _mark_ws_unhealthy_and_reconnect(client_id, state, "Deriv connection failed while requesting a quote. Reconnecting now...", emit_error=False)
@@ -16250,6 +16278,13 @@ def handle_on_message(client_id, ws, message, expected_nonce):
         if req_id in (None, ""):
             req_id = echo_req.get("req_id")
         if "proposal" in data:
+            logger.info(
+                "[%s] TEMP deriv_proposal_response_raw req_id=%s token_type=%s raw=%s",
+                client_id,
+                req_id,
+                _deriv_connection_type(state),
+                _safe_deriv_payload_text(data),
+            )
             if _resolve_proposal_waiter(state, req_id, proposal=data.get("proposal"), error=None):
                 return
 
@@ -16265,7 +16300,17 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 _safe_deriv_payload_text((data.get("error") or {}).get("details") or (data.get("error") or {}).get("validation") or {}),
                 _sanitize_deriv_oauth_response_text(json.dumps(data)),
             )
-            if _resolve_proposal_waiter(state, req_id, proposal=None, error=(data.get("error") or {}).get("message", "Quote error")):
+            if data.get("msg_type") == "proposal" or (echo_req or {}).get("proposal") is not None:
+                logger.warning(
+                    "[%s] TEMP deriv_proposal_error_raw req_id=%s token_type=%s echo_req=%s error=%s raw=%s",
+                    client_id,
+                    req_id,
+                    _deriv_connection_type(state),
+                    _safe_deriv_payload_text(echo_req),
+                    _safe_deriv_payload_text(data.get("error") or {}),
+                    _safe_deriv_payload_text(data),
+                )
+            if _resolve_proposal_waiter(state, req_id, proposal=None, error=(data.get("error") or {})):
                 return
             if (echo_req or {}).get("authorize") is not None:
                 state["ws_connected"] = False
