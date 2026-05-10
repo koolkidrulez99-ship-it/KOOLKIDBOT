@@ -2010,7 +2010,8 @@ function bindSocketHandlers(){
             return;
         }
         if(message){
-            console.warn("Suppressed api_error toast:", message);
+            console.warn("api_error:", message, data || {});
+            showToast(message, "error");
         }
     });
 

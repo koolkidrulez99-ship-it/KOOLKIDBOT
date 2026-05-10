@@ -269,6 +269,91 @@ def _sanitize_deriv_oauth_response_text(body_text):
     return str(body_text or "")[:1000]
 
 
+def _safe_deriv_payload_text(payload):
+    try:
+        return json.dumps(payload, separators=(",", ":"), sort_keys=True)
+    except Exception:
+        return str(payload)
+
+
+def _deriv_connection_type(state):
+    return str((state or {}).get("api_token_type") or "legacy").strip().lower() or "legacy"
+
+
+def _build_digit_proposal_payload(req_id, deriv_contract, stake, symbol, barrier, duration, duration_unit):
+    return {
+        "proposal": 1,
+        "amount": float(stake),
+        "basis": "stake",
+        "contract_type": str(deriv_contract or "").upper().strip(),
+        "currency": "USD",
+        "duration": int(duration),
+        "duration_unit": str(duration_unit or "t").lower(),
+        "symbol": str(symbol or "").strip(),
+        "barrier": str(int(barrier)),
+        "req_id": req_id,
+    }
+
+
+def _request_digit_proposal_for_buy(client_id, state, payload, timeout_sec=5.0):
+    ws = state.get("ws") if isinstance(state, dict) else None
+    if not ws:
+        return None, "Not connected"
+    req_id = payload.get("req_id")
+    waiter = {"event": threading.Event(), "proposal": None, "error": None}
+    waiters = state.setdefault("_proposal_waiters", {})
+    waiters[req_id] = waiter
+    waiters[str(req_id)] = waiter
+    logger.info(
+        "[%s] deriv_outgoing_proposal token_type=%s payload=%s",
+        client_id,
+        _deriv_connection_type(state),
+        _safe_deriv_payload_text(payload),
+    )
+    try:
+        ws.send(json.dumps(payload))
+    except Exception as exc:
+        waiters.pop(req_id, None)
+        waiters.pop(str(req_id), None)
+        return None, str(exc)
+    if not waiter["event"].wait(max(0.40, float(timeout_sec))):
+        waiters.pop(req_id, None)
+        waiters.pop(str(req_id), None)
+        return None, "Proposal timeout"
+    waiters.pop(req_id, None)
+    waiters.pop(str(req_id), None)
+    if waiter.get("error"):
+        return None, str(waiter.get("error"))
+    proposal = waiter.get("proposal") or {}
+    proposal_id = proposal.get("id")
+    if proposal_id in (None, ""):
+        return None, "Proposal id missing"
+    return proposal, None
+
+
+def _send_buy_from_proposal(client_id, state, req_id, proposal, stake):
+    ws = state.get("ws") if isinstance(state, dict) else None
+    proposal_id = (proposal or {}).get("id")
+    if not ws:
+        return False, "Not connected"
+    if proposal_id in (None, ""):
+        return False, "Proposal id missing"
+    ask_price = _safe_float((proposal or {}).get("ask_price"), _safe_float((proposal or {}).get("display_value"), stake))
+    buy_payload = {
+        "req_id": req_id,
+        "buy": proposal_id,
+        "price": float(ask_price if ask_price is not None else stake),
+    }
+    logger.info(
+        "[%s] deriv_outgoing_buy token_type=%s payload=%s",
+        client_id,
+        _deriv_connection_type(state),
+        _safe_deriv_payload_text(buy_payload),
+    )
+    ws.send(json.dumps(buy_payload))
+    return True, "Trade sent"
+
+
 def _oauth_account_is_demo(account):
     account = account or {}
     account_id = str(account.get("account_id") or account.get("loginid") or account.get("id") or "").upper()
@@ -3630,6 +3715,35 @@ def send_buy(client_id, contract_type, stake, symbol, barrier, duration=1, durat
     }
 
     try:
+        if _deriv_connection_type(state) == "oauth":
+            proposal_payload = _build_digit_proposal_payload(
+                req_id,
+                deriv_contract,
+                stake,
+                symbol,
+                barrier,
+                duration,
+                duration_unit,
+            )
+            logger.info(
+                "[%s] deriv_legacy_direct_buy_payload_for_compare payload=%s",
+                client_id,
+                _safe_deriv_payload_text(payload),
+            )
+            proposal, proposal_err = _request_digit_proposal_for_buy(client_id, state, proposal_payload)
+            if proposal_err:
+                try:
+                    _release_profile_budget_reservation(state, budget_reservation)
+                except Exception:
+                    pass
+                return False, proposal_err
+            return _send_buy_from_proposal(client_id, state, req_id, proposal, stake)
+        logger.info(
+            "[%s] deriv_outgoing_legacy_direct_buy token_type=%s payload=%s",
+            client_id,
+            _deriv_connection_type(state),
+            _safe_deriv_payload_text(payload),
+        )
         ws.send(json.dumps(payload))
         return True, "Trade sent"
     except Exception as e:
@@ -3745,6 +3859,40 @@ def send_buy_with_profile(
     }
 
     try:
+        if _deriv_connection_type(state) == "oauth":
+            proposal_payload = _build_digit_proposal_payload(
+                req_id,
+                deriv_contract,
+                stake,
+                symbol,
+                barrier,
+                duration,
+                duration_unit,
+            )
+            logger.info(
+                "[%s] deriv_legacy_direct_buy_payload_for_compare payload=%s",
+                client_id,
+                _safe_deriv_payload_text(payload),
+            )
+            proposal, proposal_err = _request_digit_proposal_for_buy(client_id, state, proposal_payload)
+            if proposal_err:
+                try:
+                    _release_profile_budget_reservation(state, budget_reservation)
+                    if emit_balance_after_send:
+                        _emit_balance_payload(client_id, state)
+                except Exception:
+                    pass
+                return False, proposal_err
+            ok, msg = _send_buy_from_proposal(client_id, state, req_id, proposal, stake)
+            if emit_balance_after_send:
+                _emit_balance_payload(client_id, state)
+            return ok, msg
+        logger.info(
+            "[%s] deriv_outgoing_legacy_direct_buy token_type=%s payload=%s",
+            client_id,
+            _deriv_connection_type(state),
+            _safe_deriv_payload_text(payload),
+        )
         ws.send(json.dumps(payload))
         if emit_balance_after_send:
             _emit_balance_payload(client_id, state)
@@ -15944,9 +16092,19 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 return
 
         if "error" in data:
+            msg = data["error"].get("message", "Unknown API Error")
+            logger.warning(
+                "[%s] deriv_raw_error token_type=%s req_id=%s msg_type=%s message=%s details=%s raw=%s",
+                client_id,
+                _deriv_connection_type(state),
+                req_id,
+                data.get("msg_type"),
+                msg,
+                _safe_deriv_payload_text((data.get("error") or {}).get("details") or (data.get("error") or {}).get("validation") or {}),
+                _sanitize_deriv_oauth_response_text(json.dumps(data)),
+            )
             if _resolve_proposal_waiter(state, req_id, proposal=None, error=(data.get("error") or {}).get("message", "Quote error")):
                 return
-            msg = data["error"].get("message", "Unknown API Error")
             if (echo_req or {}).get("authorize") is not None:
                 state["ws_connected"] = False
                 state["ws_authorize_deadline_at"] = 0.0
