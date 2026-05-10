@@ -67,6 +67,22 @@
       status: "Ready",
       lastResult: "none",
     },
+    over6ScanMartingale: {
+      running: false,
+      inProgress: false,
+      step: 1,
+      maxSteps: 4,
+      cooldownUntil: 0,
+      cooldownTimer: null,
+      pendingContractId: "",
+      lastResult: "none",
+      status: "Scanning",
+      reason: "Scanning for Over 6 opening...",
+      digits: [],
+      lastSymbol: "",
+      lastTickCount: null,
+      lastUiAt: 0,
+    },
     balancedRecovery: {
       enabled: false,
       running: false,
@@ -605,6 +621,325 @@
 
   function getKoolkidSingleMartingaleState() {
     return state.singleMartingale || {};
+  }
+
+  function getKoolkidOver6ScanState() {
+    return state.over6ScanMartingale || {};
+  }
+
+  function readKoolkidOver6ScanSettings() {
+    const duration = Math.max(1, Math.min(10, Math.floor(readKoolkidMartingaleNumber("koolkidOver6ScanDuration", 1, 1, 10))));
+    const maxSteps = Math.max(1, Math.min(50, Math.floor(readKoolkidMartingaleNumber("koolkidOver6ScanMaxSteps", 4, 1, 50))));
+    const cooldownSeconds = Math.max(30, Math.min(60, Math.floor(readKoolkidMartingaleNumber("koolkidOver6ScanCooldown", 45, 30, 60))));
+    const baseStake = Number(Math.max(0.35, getRawStakeValueKoolkid()).toFixed(2));
+    return { duration, maxSteps, cooldownSeconds, baseStake };
+  }
+
+  function getKoolkidOver6ScanSymbol() {
+    const symbolEl = document.getElementById("symbol");
+    const value = symbolEl && symbolEl.value ? String(symbolEl.value).trim() : "";
+    return value || "R_25";
+  }
+
+  function extractKoolkidDigitFromTickPayload(payload) {
+    const direct = extractPredictionLastDigitKoolkid(payload || {});
+    if (Number.isInteger(direct)) return direct;
+    const quoteCandidates = [
+      payload && payload.quote,
+      payload && payload.tick && payload.tick.quote,
+      payload && payload.price,
+      payload && payload.value,
+    ];
+    for (const candidate of quoteCandidates) {
+      const text = String(candidate ?? "");
+      const match = text.match(/(\d)(?!.*\d)/);
+      if (match) return Number(match[1]);
+    }
+    return null;
+  }
+
+  function rememberKoolkidOver6ScanDigit(digit, symbol) {
+    const value = Number(digit);
+    if (!Number.isInteger(value) || value < 0 || value > 9) return;
+    const st = getKoolkidOver6ScanState();
+    const safeSymbol = String(symbol || getKoolkidOver6ScanSymbol() || "");
+    if (safeSymbol && st.lastSymbol && st.lastSymbol !== safeSymbol) {
+      st.digits = [];
+      st.lastTickCount = null;
+      st.pendingContractId = "";
+      st.inProgress = false;
+      st.reason = "Market changed. Collecting fresh Over 6 scan data...";
+    }
+    if (safeSymbol) st.lastSymbol = safeSymbol;
+    st.digits = (st.digits || []).concat(value).slice(-10);
+  }
+
+  function syncKoolkidOver6ScanDigitsFromData(data) {
+    const symbol = String((data && (data.symbol || data.market || data.current_symbol)) || getKoolkidOver6ScanSymbol() || "");
+    const digits = extractPredictionDigitsKoolkid(data || {});
+    const tickCount = extractPredictionTickCountKoolkid(data || {});
+    const st = getKoolkidOver6ScanState();
+    if (Number.isFinite(tickCount) && st.lastTickCount === tickCount) return;
+    if (digits && digits.length) {
+      if (symbol && st.lastSymbol && st.lastSymbol !== symbol) {
+        st.digits = [];
+        st.lastTickCount = null;
+      }
+      if (symbol) st.lastSymbol = symbol;
+      if (digits.length >= 10) {
+        st.digits = digits.map(Number).filter((d) => Number.isInteger(d) && d >= 0 && d <= 9).slice(-10);
+      } else if (!(st.digits || []).length) {
+        st.digits = digits.map(Number).filter((d) => Number.isInteger(d) && d >= 0 && d <= 9).slice(-10);
+      } else {
+        const latest = Number(digits[digits.length - 1]);
+        if (Number.isInteger(latest) && latest >= 0 && latest <= 9) st.digits = (st.digits || []).concat(latest).slice(-10);
+      }
+      if (Number.isFinite(tickCount)) st.lastTickCount = tickCount;
+      return;
+    }
+    const digit = extractKoolkidDigitFromTickPayload(data || {});
+    rememberKoolkidOver6ScanDigit(digit, symbol);
+    if (Number.isFinite(tickCount)) st.lastTickCount = tickCount;
+  }
+
+  function analyzeKoolkidOver6Scan() {
+    const st = getKoolkidOver6ScanState();
+    const digits = (st.digits || []).slice(-10);
+    const low10 = digits.filter((digit) => digit >= 0 && digit <= 6).length;
+    const high10 = digits.filter((digit) => digit >= 7 && digit <= 9).length;
+    const highPercentages = [7, 8, 9].map((digit) => {
+      const pct = Number((state.digitPercentages && state.digitPercentages[digit]) || 0);
+      return { digit, pct: Number.isFinite(pct) ? pct : 0 };
+    });
+    const strongestHigh = highPercentages.reduce((best, item) => (item.pct > best.pct ? item : best), { digit: 7, pct: 0 });
+    const highQuality = highPercentages.some((item) => item.pct > 10);
+    const latest = digits.length ? digits[digits.length - 1] : null;
+    const lowMajority = low10 > high10;
+    const strength = strongestHigh.pct;
+    const ready = digits.length >= 10 && lowMajority && highQuality;
+    let reason = "Scanning for Over 6 opening...";
+    if (digits.length < 10) reason = `Collecting 10 ticks... ${digits.length}/10`;
+    else if (!lowMajority) reason = `Scanning for 0-6 majority... low digits ${low10}/10.`;
+    else if (!highQuality) reason = `0-6 pattern found. Waiting for 7-9 strength over 10% (best ${strongestHigh.digit}: ${strongestHigh.pct.toFixed(1)}%).`;
+    else reason = `Signal found. Low digits ${low10}/10 and digit ${strongestHigh.digit} is ${strongestHigh.pct.toFixed(1)}%.`;
+    return { ready, digits, low10, high10, highPercentages, strongestHigh, latest, strength, reason };
+  }
+
+  function koolkidOver6ScanStakeForStep(stepValue) {
+    const settings = readKoolkidOver6ScanSettings();
+    const step = Math.max(1, Math.min(settings.maxSteps, Math.floor(Number(stepValue || getKoolkidOver6ScanState().step) || 1)));
+    return Number((settings.baseStake * Math.pow(2, step - 1)).toFixed(2));
+  }
+
+  function updateKoolkidOver6ScanMartingalePanel() {
+    const st = getKoolkidOver6ScanState();
+    const settings = readKoolkidOver6ScanSettings();
+    st.maxSteps = settings.maxSteps;
+    const signal = analyzeKoolkidOver6Scan();
+    const now = Date.now();
+    const inCooldown = now < Number(st.cooldownUntil || 0);
+    let status = st.status || "Scanning";
+    if (inCooldown) status = "Cooldown";
+    else if (st.inProgress) status = "Trade placed";
+    else if (st.running && signal.ready) status = "Signal found";
+    else if (st.running) status = "Scanning";
+    const statusNode = document.getElementById("koolkidOver6ScanStatus");
+    const strengthNode = document.getElementById("koolkidOver6ScanStrength");
+    const stepNode = document.getElementById("koolkidOver6ScanStep");
+    const stakeNode = document.getElementById("koolkidOver6ScanStake");
+    const reasonNode = document.getElementById("koolkidOver6ScanReason");
+    const startBtn = document.getElementById("koolkidOver6ScanStartBtn");
+    const stopBtn = document.getElementById("koolkidOver6ScanStopBtn");
+    if (statusNode) statusNode.textContent = status;
+    if (strengthNode) strengthNode.textContent = `${signal.strength.toFixed(0)}%`;
+    if (stepNode) stepNode.textContent = `Martingale step ${Math.max(1, st.step || 1)}/${settings.maxSteps}`;
+    if (stakeNode) stakeNode.textContent = money(koolkidOver6ScanStakeForStep(), { stake: settings.baseStake });
+    if (reasonNode) {
+      const cooldownLeft = inCooldown ? Math.ceil((Number(st.cooldownUntil || 0) - now) / 1000) : 0;
+      reasonNode.textContent = inCooldown ? `Cooldown ${cooldownLeft}s after failed cycle.` : (st.reason || signal.reason);
+      reasonNode.style.color = signal.ready && !inCooldown ? "#86efac" : "#94a3b8";
+    }
+    if (startBtn) {
+      startBtn.disabled = !!st.running;
+      startBtn.style.opacity = st.running ? "0.55" : "1";
+    }
+    if (stopBtn) {
+      stopBtn.disabled = !st.running && !st.inProgress && !inCooldown;
+      stopBtn.style.opacity = stopBtn.disabled ? "0.55" : "1";
+    }
+  }
+
+  function clearKoolkidOver6ScanCooldownTimer() {
+    const st = getKoolkidOver6ScanState();
+    if (st.cooldownTimer) {
+      clearTimeout(st.cooldownTimer);
+      st.cooldownTimer = null;
+    }
+  }
+
+  function scheduleKoolkidOver6ScanCooldown(seconds) {
+    const st = getKoolkidOver6ScanState();
+    clearKoolkidOver6ScanCooldownTimer();
+    st.cooldownUntil = Date.now() + (Math.max(30, Math.min(60, Number(seconds || 45))) * 1000);
+    st.status = "Cooldown";
+    st.reason = "Cooldown";
+    updateKoolkidOver6ScanMartingalePanel();
+    st.cooldownTimer = setTimeout(() => {
+      st.cooldownTimer = null;
+      st.cooldownUntil = 0;
+      if (st.running) {
+        st.status = "Scanning";
+        st.reason = "Scanning for Over 6 opening...";
+        maybeRunKoolkidOver6ScanMartingale();
+      }
+      updateKoolkidOver6ScanMartingalePanel();
+    }, Math.max(30, Math.min(60, Number(seconds || 45))) * 1000);
+  }
+
+  async function maybeRunKoolkidOver6ScanMartingale(data) {
+    if (data) syncKoolkidOver6ScanDigitsFromData(data);
+    const st = getKoolkidOver6ScanState();
+    if (!st.running || st.inProgress) {
+      const now = Date.now();
+      if (st.running || now - Number(st.lastUiAt || 0) > 500) {
+        st.lastUiAt = now;
+        updateKoolkidOver6ScanMartingalePanel();
+      }
+      return;
+    }
+    if (Date.now() < Number(st.cooldownUntil || 0)) {
+      st.status = "Cooldown";
+      updateKoolkidOver6ScanMartingalePanel();
+      return;
+    }
+    const signal = analyzeKoolkidOver6Scan();
+    if (!signal.ready) {
+      st.status = "Scanning";
+      st.reason = signal.reason || "Scanning for Over 6 opening...";
+      updateKoolkidOver6ScanMartingalePanel();
+      return;
+    }
+    const settings = readKoolkidOver6ScanSettings();
+    const stake = koolkidOver6ScanStakeForStep();
+    st.inProgress = true;
+    st.pendingContractId = "";
+    st.status = "Trade placed";
+    st.reason = `Signal found. Sending OVER 6 at ${money(stake)}.`;
+    updateKoolkidOver6ScanMartingalePanel();
+    try {
+      const result = await sendFastManualTradeKoolkid({
+        stake,
+        amount: stake,
+        type: "OVER",
+        barrier: 6,
+        symbol: getKoolkidOver6ScanSymbol(),
+        duration: settings.duration,
+        duration_unit: "t",
+        mode: "koolkid_over6_scan_martingale",
+        action: "OVER_6_SCAN_MARTINGALE",
+        label: `Over 6 Scan Martingale step ${st.step}/${settings.maxSteps}`,
+      }, { turbo: false, queue: false, fireAndForget: false });
+      if (!(result && result.data && result.data.status === "success")) {
+        throw new Error((result && result.data && result.data.message) || "Over 6 scan martingale trade failed");
+      }
+      st.status = "Trade placed";
+      st.reason = `Trade placed. Martingale step ${st.step}/${settings.maxSteps}.`;
+    } catch (e) {
+      st.inProgress = false;
+      st.status = "Scanning";
+      st.reason = (e && e.message) || "Trade failed. Scanning for Over 6 opening...";
+      safeToast(st.reason, "error");
+    } finally {
+      updateKoolkidOver6ScanMartingalePanel();
+    }
+  }
+
+  function rememberKoolkidOver6ScanTrade(payload) {
+    if (!payload || String(payload.profile || "").toUpperCase() !== PROFILE) return;
+    const st = getKoolkidOver6ScanState();
+    if (!st.inProgress) return;
+    const mode = String(payload.mode || "").toLowerCase();
+    const action = String(payload.action || "").toUpperCase();
+    if (mode !== "koolkid_over6_scan_martingale" && action !== "OVER_6_SCAN_MARTINGALE") return;
+    const contractId = payload.contract_id || payload.buy_contract_id || payload.id;
+    if (contractId) st.pendingContractId = String(contractId);
+    st.status = "Trade placed";
+    st.reason = "Trade placed";
+    updateKoolkidOver6ScanMartingalePanel();
+  }
+
+  function updateKoolkidOver6ScanFromResult(payload) {
+    if (!payload || String(payload.profile || "").toUpperCase() !== PROFILE) return;
+    const st = getKoolkidOver6ScanState();
+    if (!st.inProgress && !st.pendingContractId) return;
+    const contractId = payload.contract_id || payload.buy_contract_id || payload.id;
+    const mode = String(payload.mode || "").toLowerCase();
+    const action = String(payload.action || "").toUpperCase();
+    if (st.pendingContractId) {
+      if (contractId && String(contractId) !== String(st.pendingContractId)) return;
+      if (!contractId && mode !== "koolkid_over6_scan_martingale" && action !== "OVER_6_SCAN_MARTINGALE") return;
+    } else if (mode !== "koolkid_over6_scan_martingale" && action !== "OVER_6_SCAN_MARTINGALE") {
+      return;
+    }
+    const outcome = resolveKoolkidTradeOutcome(payload);
+    if (!outcome) return;
+    const settings = readKoolkidOver6ScanSettings();
+    st.inProgress = false;
+    st.pendingContractId = "";
+    st.lastResult = outcome;
+    if (outcome === "WIN") {
+      st.step = 1;
+      st.status = "Scanning";
+      st.reason = "Win. Reset to base stake. Scanning for Over 6 opening...";
+      updateKoolkidOver6ScanMartingalePanel();
+      setTimeout(() => maybeRunKoolkidOver6ScanMartingale(), 120);
+      return;
+    }
+    if (Math.max(1, Number(st.step || 1)) >= settings.maxSteps) {
+      st.step = 1;
+      st.reason = "Max martingale step lost. Resetting stake and entering cooldown.";
+      scheduleKoolkidOver6ScanCooldown(settings.cooldownSeconds);
+      return;
+    }
+    st.step = Math.min(settings.maxSteps, Math.max(1, Number(st.step || 1)) + 1);
+    st.status = "Scanning";
+    st.reason = `Loss. Martingale step ${st.step}/${settings.maxSteps}. Rescanning before recovery.`;
+    updateKoolkidOver6ScanMartingalePanel();
+    setTimeout(() => maybeRunKoolkidOver6ScanMartingale(), 120);
+  }
+
+  function startKoolkidOver6ScanMartingale() {
+    const st = getKoolkidOver6ScanState();
+    const selectedSymbol = getKoolkidOver6ScanSymbol();
+    if (selectedSymbol && st.lastSymbol && st.lastSymbol !== selectedSymbol) {
+      st.digits = [];
+      st.lastTickCount = null;
+    }
+    st.lastSymbol = selectedSymbol || st.lastSymbol;
+    clearKoolkidOver6ScanCooldownTimer();
+    st.running = true;
+    st.inProgress = false;
+    st.step = 1;
+    st.cooldownUntil = 0;
+    st.pendingContractId = "";
+    st.lastResult = "none";
+    st.status = "Scanning";
+    st.reason = "Scanning for Over 6 opening...";
+    updateKoolkidOver6ScanMartingalePanel();
+    maybeRunKoolkidOver6ScanMartingale();
+  }
+
+  function stopKoolkidOver6ScanMartingale() {
+    const st = getKoolkidOver6ScanState();
+    clearKoolkidOver6ScanCooldownTimer();
+    st.running = false;
+    st.inProgress = false;
+    st.step = 1;
+    st.cooldownUntil = 0;
+    st.pendingContractId = "";
+    st.status = "Stopped";
+    st.reason = "Stopped.";
+    updateKoolkidOver6ScanMartingalePanel();
   }
 
   function isKoolkidMonthlySingleMartingaleActionAllowed(action) {
@@ -2238,8 +2573,39 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
     };
   }
 
+  function isMonthlyPredictionSummaryUserKoolkid() {
+    return !isLifetimeUserKoolkid() && (isRegularMonthlyUserKoolkid() || isPaidMonthlyUserKoolkid());
+  }
+
+  function syncPredictionSummaryDropdownKoolkid() {
+    const block = document.getElementById("koolkidConfidenceBarsBlock");
+    const dropdown = document.getElementById("predictionSummaryDropdownKoolkid");
+    const card = document.getElementById("predictionSummaryCardKoolkid");
+    const isMonthly = isMonthlyPredictionSummaryUserKoolkid();
+    if (block) block.classList.toggle("monthly-prediction-summary-mode", isMonthly);
+    if (dropdown) {
+      dropdown.style.display = "";
+      dropdown.removeAttribute("data-monthly-hidden");
+      dropdown.classList.toggle("monthly-dropdown-mode", isMonthly);
+      if (isMonthly) {
+        if (dropdown.dataset.monthlyDefaultClosedApplied !== "1") {
+          dropdown.open = false;
+          dropdown.dataset.monthlyDefaultClosedApplied = "1";
+        }
+      } else {
+        dropdown.open = true;
+        delete dropdown.dataset.monthlyDefaultClosedApplied;
+      }
+    }
+    if (card) {
+      card.style.display = "";
+      card.removeAttribute("data-monthly-hidden");
+    }
+  }
+
   function renderPredictionSummaryKoolkid(data) {
     if (data) syncPredictionRecentDigitsKoolkid(data);
+    syncPredictionSummaryDropdownKoolkid();
     const card = document.getElementById("predictionSummaryCardKoolkid");
     const labelNode = document.getElementById("predictionSummaryLabelKoolkid");
     const confidenceNode = document.getElementById("predictionSummaryConfidenceKoolkid");
@@ -3118,6 +3484,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
 
       bind("digit_analysis", (data) => {
         if (!isActive()) return;
+        maybeRunKoolkidOver6ScanMartingale(data || {}).catch(() => {});
         scheduleDigitAnalysisRenderKoolkid(data || {});
         maybeRunG1AutoKoolkid(data || {}).catch(() => {});
       });
@@ -3132,14 +3499,16 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
         updateModeButtonsFromPayload(modes || {});
       });
 
-      bind("tick", () => {
+      bind("tick", (tick) => {
         if (!isActive()) return;
+        if (tick) maybeRunKoolkidOver6ScanMartingale(tick || {}).catch(() => {});
         onKoolkidSingleMartingaleTick();
       });
 
       bind("trade_placed", (trade) => {
         if (!isActive()) return;
         trackGoldenCardReinvestPlacementKoolkid(trade || {});
+        rememberKoolkidOver6ScanTrade(trade || {});
         rememberKoolkidSingleMartingaleTrade(trade || {});
         rememberKoolkidBalancedRecoveryTrade(trade || {});
       });
@@ -3149,6 +3518,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
         handleKoolkidLiveDigitTradeResult(trade || {});
         handleProfileReinvestResultKoolkid(trade || {});
         handleGoldenCardReinvestResultKoolkid(trade || {});
+        updateKoolkidOver6ScanFromResult(trade || {});
         updateKoolkidSingleMartingaleFromResult(trade || {});
         updateKoolkidBalancedRecoveryFromResult(trade || {});
       });
@@ -3189,6 +3559,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
     updateDual2xUIKoolkid();
     relocateKoolkidTradeHistoryForLifetime();
     renderProfileReinvestControlsKoolkid();
+    updateKoolkidOver6ScanMartingalePanel();
     updateKoolkidSingleMartingalePanel();
     updateKoolkidBalancedRecoveryPanel();
     renderG1AutoUiKoolkid();
@@ -3209,6 +3580,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
     updateDual2xUIKoolkid();
     relocateKoolkidTradeHistoryForLifetime();
     renderProfileReinvestControlsKoolkid();
+    updateKoolkidOver6ScanMartingalePanel();
     updateKoolkidSingleMartingalePanel();
     updateKoolkidBalancedRecoveryPanel();
     renderG1AutoUiKoolkid();
@@ -3229,6 +3601,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
     updateDual2xUIKoolkid();
     relocateKoolkidTradeHistoryForLifetime();
     renderProfileReinvestControlsKoolkid();
+    updateKoolkidOver6ScanMartingalePanel();
     updateKoolkidSingleMartingalePanel();
     updateKoolkidBalancedRecoveryPanel();
     renderG1AutoUiKoolkid();
@@ -3267,6 +3640,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
     mgState.inProgress = false;
     mgState.waitingForTicks = false;
     mgState.waitTicksRemaining = 0;
+    stopKoolkidOver6ScanMartingale();
     state.socketBound = false;
     state.lastSocket = null;
     try { stopFallbackBootstrap(); } catch (e) {}
@@ -3316,6 +3690,9 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
   window.updateKoolkidSingleMartingalePanel = updateKoolkidSingleMartingalePanel;
   window.placeKoolkidSingleMartingaleTrade = placeKoolkidSingleMartingaleTrade;
   window.quickStopKoolkidSingleMartingale = quickStopKoolkidSingleMartingale;
+  window.startKoolkidOver6ScanMartingale = startKoolkidOver6ScanMartingale;
+  window.stopKoolkidOver6ScanMartingale = stopKoolkidOver6ScanMartingale;
+  window.updateKoolkidOver6ScanMartingalePanel = updateKoolkidOver6ScanMartingalePanel;
   window.toggleKoolkidBalancedRecovery = toggleKoolkidBalancedRecovery;
   window.updateKoolkidBalancedRecoveryPanel = updateKoolkidBalancedRecoveryPanel;
   window.startKoolkidBalancedRecovery = startKoolkidBalancedRecovery;

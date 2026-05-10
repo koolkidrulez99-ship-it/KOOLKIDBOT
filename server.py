@@ -13,10 +13,14 @@ import hashlib
 import math
 import statistics
 import ipaddress
+import base64
+import urllib.error
+import urllib.parse
+import urllib.request
 from decimal import Decimal, ROUND_DOWN
 from collections import deque
 
-from flask import Flask, render_template, request, jsonify, redirect, url_for, session, send_file
+from flask import Flask, render_template, render_template_string, request, jsonify, redirect, url_for, session, send_file
 from flask_socketio import SocketIO, join_room
 from datetime import datetime, timedelta
 import logging
@@ -200,11 +204,207 @@ socketio = SocketIO(
     ping_timeout=int(float(os.environ.get("SOCKETIO_PING_TIMEOUT_SEC", "600"))),
 )
 
-DERIV_WS = "wss://ws.derivws.com/websockets/v3?app_id=1089"
+DERIV_APP_ID = str(os.environ.get("DERIV_APP_ID", "1089")).strip() or "1089"
+DERIV_WS = f"wss://ws.derivws.com/websockets/v3?app_id={DERIV_APP_ID}"
+DERIV_ACCOUNT_ID = str(os.environ.get("DERIV_ACCOUNT_ID", "") or "").strip()
+DERIV_PAT_OTP_ENDPOINT_TEMPLATE = "https://api.derivws.com/trading/v1/options/accounts/{account_id}/otp"
+DERIV_OAUTH_CLIENT_ID = str(os.environ.get("DERIV_OAUTH_CLIENT_ID", "33emYLF3Ib9Npm7Z8L8wQ") or "").strip()
+DERIV_OAUTH_CLIENT_SECRET = str(os.environ.get("DERIV_OAUTH_CLIENT_SECRET", "") or "").strip()
+DERIV_OAUTH_REDIRECT_URI = str(os.environ.get("DERIV_OAUTH_REDIRECT_URI", "https://koolkidbot.org/oauth/callback") or "").strip()
+DERIV_OAUTH_SCOPE = str(os.environ.get("DERIV_OAUTH_SCOPE", "trade account_manage") or "trade account_manage").strip()
+DERIV_OAUTH_AUTH_URL = "https://auth.deriv.com/oauth2/auth"
+DERIV_OAUTH_TOKEN_URL = "https://auth.deriv.com/oauth2/token"
+DERIV_ACCOUNTS_URL = "https://api.derivws.com/trading/v1/options/accounts"
 
 ACTIVE_BROADCAST_NOTICE = None
 BROADCAST_NOTICE_LOCK = threading.RLock()
 BROADCAST_NOTICE_TYPES = {"info", "warning", "danger", "success"}
+
+
+def _is_pat_token(token):
+    return str(token or "").strip().startswith("pat_")
+
+
+def _token_uses_deriv_otp_ws(token, token_type=None):
+    token_type = str(token_type or "").strip().lower()
+    return token_type in ("pat", "oauth") or _is_pat_token(token)
+
+
+def _mask_api_token(token):
+    token = str(token or "").strip()
+    if not token:
+        return ""
+    if len(token) <= 10:
+        return f"{token[:4]}..."
+    return f"{token[:8]}...{token[-3:]}"
+
+
+def _extract_deriv_rest_error(body_text):
+    body_text = str(body_text or "").strip()
+    if not body_text:
+        return "Deriv OTP request failed"
+    try:
+        payload = json.loads(body_text)
+        error = payload.get("error")
+        if isinstance(error, dict):
+            return str(error.get("message") or error.get("code") or body_text[:300])
+        if isinstance(error, str):
+            return error
+        return str(payload.get("message") or body_text[:300])
+    except Exception:
+        return body_text[:300]
+
+
+def _request_pat_authenticated_ws_url(client_id, token, account_id, app_id=None):
+    """pat_ and OAuth bearer tokens use REST Bearer auth to get a one-time authenticated WebSocket URL."""
+    account_id = str(account_id or "").strip()
+    if not account_id:
+        raise RuntimeError("Deriv account ID is required for pat_ tokens")
+    app_id = str(app_id or DERIV_APP_ID or "1089").strip() or "1089"
+
+    endpoint = DERIV_PAT_OTP_ENDPOINT_TEMPLATE.format(account_id=account_id)
+    req = urllib.request.Request(
+        endpoint,
+        data=b"",
+        method="POST",
+        headers={
+            "Deriv-App-ID": app_id,
+            "Authorization": f"Bearer {str(token or '').strip()}",
+            "Accept": "application/json",
+        },
+    )
+    logger.info(
+        "[%s] deriv_bearer_otp_request account_id=%s token=%s app_id=%s",
+        client_id,
+        account_id,
+        _mask_api_token(token),
+        app_id,
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            status = getattr(resp, "status", 200)
+            body = resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        message = _extract_deriv_rest_error(body)
+        raise RuntimeError(f"Deriv OTP request failed ({exc.code}): {message}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Deriv OTP request failed: {exc.reason}") from exc
+
+    try:
+        payload = json.loads(body or "{}")
+    except Exception as exc:
+        raise RuntimeError("Deriv OTP request returned invalid JSON") from exc
+
+    url = ((payload.get("data") or {}).get("url") if isinstance(payload.get("data"), dict) else None) or payload.get("url")
+    if not url:
+        raise RuntimeError("Failed to get Deriv authenticated WebSocket URL")
+    logger.info("[%s] deriv_bearer_otp_success status=%s account_id=%s", client_id, status, account_id)
+    return str(url)
+
+
+def _base64url_no_padding(raw_bytes):
+    return base64.urlsafe_b64encode(raw_bytes).decode("ascii").rstrip("=")
+
+
+def _derive_oauth_redirect_uri():
+    if DERIV_OAUTH_REDIRECT_URI:
+        return DERIV_OAUTH_REDIRECT_URI
+    return url_for("deriv_oauth_callback", _external=True)
+
+
+def _generate_deriv_oauth_pkce():
+    verifier = _base64url_no_padding(secrets.token_bytes(48))
+    challenge = _base64url_no_padding(hashlib.sha256(verifier.encode("ascii")).digest())
+    state_value = secrets.token_urlsafe(32)
+    return verifier, challenge, state_value
+
+
+def _deriv_oauth_login_url(code_challenge, state_value, redirect_uri):
+    params = {
+        "response_type": "code",
+        "client_id": DERIV_OAUTH_CLIENT_ID,
+        "redirect_uri": redirect_uri,
+        "scope": DERIV_OAUTH_SCOPE,
+        "state": state_value,
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
+        "app_id": DERIV_APP_ID,
+    }
+    return f"{DERIV_OAUTH_AUTH_URL}?{urllib.parse.urlencode(params)}"
+
+
+def _exchange_deriv_oauth_code(code, code_verifier, redirect_uri):
+    form = {
+        "grant_type": "authorization_code",
+        "client_id": DERIV_OAUTH_CLIENT_ID,
+        "code": code,
+        "code_verifier": code_verifier,
+        "redirect_uri": redirect_uri,
+    }
+    if DERIV_OAUTH_CLIENT_SECRET:
+        form["client_secret"] = DERIV_OAUTH_CLIENT_SECRET
+    body = urllib.parse.urlencode(form).encode("utf-8")
+    req = urllib.request.Request(
+        DERIV_OAUTH_TOKEN_URL,
+        data=body,
+        method="POST",
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            payload = json.loads(resp.read().decode("utf-8", errors="replace") or "{}")
+    except urllib.error.HTTPError as exc:
+        body_text = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Deriv OAuth token exchange failed ({exc.code}): {_extract_deriv_rest_error(body_text)}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Deriv OAuth token exchange failed: {exc.reason}") from exc
+    token = str(payload.get("access_token") or "").strip()
+    if not token:
+        raise RuntimeError("Deriv OAuth did not return an access token")
+    return payload
+
+
+def _fetch_deriv_oauth_accounts(access_token):
+    req = urllib.request.Request(
+        DERIV_ACCOUNTS_URL,
+        method="GET",
+        headers={
+            "Deriv-App-ID": DERIV_APP_ID,
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            payload = json.loads(resp.read().decode("utf-8", errors="replace") or "{}")
+    except urllib.error.HTTPError as exc:
+        body_text = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Deriv account list failed ({exc.code}): {_extract_deriv_rest_error(body_text)}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Deriv account list failed: {exc.reason}") from exc
+    raw_accounts = payload.get("data") or payload.get("accounts") or []
+    if isinstance(raw_accounts, dict):
+        raw_accounts = raw_accounts.get("accounts") or raw_accounts.get("data") or []
+    accounts = []
+    if isinstance(raw_accounts, list):
+        for item in raw_accounts:
+            if not isinstance(item, dict):
+                continue
+            account_id = str(item.get("account_id") or item.get("loginid") or item.get("id") or "").strip()
+            if account_id:
+                accounts.append({
+                    "account_id": account_id,
+                    "currency": str(item.get("currency") or "").strip(),
+                    "account_type": str(item.get("account_type") or item.get("landing_company") or "").strip(),
+                    "is_virtual": bool(item.get("is_virtual") or item.get("demo")),
+                })
+    if not accounts:
+        raise RuntimeError("No Deriv accounts were returned for this login")
+    return accounts
 
 
 def _serialize_broadcast_notice(notice):
@@ -1529,6 +1729,8 @@ def _cleanup_client_runtime(client_id, state, reason="cleanup"):
         state["ws_connect_started_at"] = 0.0
         state["ws_authorize_deadline_at"] = 0.0
         state["ws_reconnect_pending"] = False
+        state["pat_otp_ws_url"] = ""
+        state["pat_otp_reconnect_used"] = False
     except Exception:
         pass
     logger.info(
@@ -1831,6 +2033,13 @@ def _build_default_client_state():
         "username": None,
         "license_access_cache": {"checked_at": 0.0, "ok": False, "reason": "not checked"},
         "api_token": "",
+        "api_token_type": "legacy",
+        "deriv_account_id": DERIV_ACCOUNT_ID,
+        "deriv_app_id": DERIV_APP_ID,
+        "oauth_pending_access_token": "",
+        "oauth_pending_accounts": [],
+        "pat_otp_ws_url": "",
+        "pat_otp_reconnect_used": False,
         "ws": None,
         "ws_thread": None,
         "ws_stop_event": threading.Event(),
@@ -13498,6 +13707,23 @@ def run_auto_trade(client_id, state):
     if active_profile == "JOKERJOE" and hasattr(strategy, "check_multig_signal"):
         try:
             multig_sig = strategy.check_multig_signal()
+            pending_key = ""
+            try:
+                if bool(getattr(strategy, "multig_pending_active", False)):
+                    pending_key = "{}:{}".format(
+                        getattr(strategy, "multig_pending_barrier", ""),
+                        int(float(getattr(strategy, "multig_pending_due_time", 0) or 0)),
+                    )
+            except Exception:
+                pending_key = ""
+
+            if pending_key:
+                if state.get("_jokerjoe_multig_pending_emit_key") != pending_key:
+                    state["_jokerjoe_multig_pending_emit_key"] = pending_key
+                    socketio.emit("digit_analysis", strategy.get_ui_payload(), room=client_id)
+            else:
+                state["_jokerjoe_multig_pending_emit_key"] = ""
+
             if multig_sig:
                 signals = multig_sig
         except Exception:
@@ -13590,11 +13816,23 @@ def run_auto_trade(client_id, state):
                         strategy.on_auto_trade_sent(sig)
                     except Exception:
                         pass
+                if active_profile == "JOKERJOE" and str(mode or "").lower() == "multig":
+                    try:
+                        state["_jokerjoe_multig_pending_emit_key"] = ""
+                        socketio.emit("digit_analysis", strategy.get_ui_payload(), room=client_id)
+                    except Exception:
+                        pass
             else:
                 logger.error(f"[{client_id}] ❌ AUTO TRADE FAILED: {msg}")
                 if hasattr(strategy, "on_auto_trade_failed"):
                     try:
                         strategy.on_auto_trade_failed(sig, msg)
+                    except Exception:
+                        pass
+                if active_profile == "JOKERJOE" and str(mode or "").lower() == "multig":
+                    try:
+                        state["_jokerjoe_multig_pending_emit_key"] = ""
+                        socketio.emit("digit_analysis", strategy.get_ui_payload(), room=client_id)
                     except Exception:
                         pass
 
@@ -15534,6 +15772,55 @@ def _apply_scanner_recommendation(client_id, state, symbol, switch_symbol=True):
     payload = _unchain_payload_response(state)
     return True, f"Applied scanner pick for {_scanner_market_label(sym)}", payload
 # ---------------- WEBSOCKET HANDLERS (PER CLIENT) ---------------- #
+def _complete_deriv_authenticated_session(client_id, state, ws, loginid="UNKNOWN", balance=0.0, source="authorize"):
+    state["ws_connected"] = True
+    state["ws_last_authorized_at"] = time.time()
+    state["ws_connect_started_at"] = 0.0
+    state["ws_authorize_deadline_at"] = 0.0
+
+    state["loginid"] = loginid
+    balance_known = balance is not None
+    if balance_known:
+        balance = float(balance or 0.0)
+        state["balance"] = balance
+        state["last_live_balance"] = balance
+        if balance > 0.0:
+            state["last_known_trade_balance"] = balance
+        state["last_live_balance_updated_at"] = time.time()
+        state["local_balance_adjustment"] = 0.0
+        state["balance_updated_at"] = time.time()
+
+        if state["session_start_balance"] is None:
+            state["session_start_balance"] = balance
+
+    logger.info("[%s] TEMP %s_success loginid=%s live_account_balance=%s", client_id, source, loginid, balance if balance_known else "pending")
+
+    _restore_required_tick_subscriptions(client_id, state, f"{source}_restore")
+    tick_health = _get_tick_stream_health(client_id, state, self_heal=False)
+    state["tick_stream_last_emitted_healthy"] = bool(tick_health.get("tick_stream_healthy"))
+    socketio.emit("connection_status", {
+        "connected": True,
+        "loginid": loginid,
+        "has_token": bool(str(state.get("api_token", "") or "").strip()),
+        **_connection_trade_ready_payload(state),
+        **tick_health,
+        **_build_balance_payload(state),
+    }, room=client_id)
+    logger.info("[%s] TEMP connected_state_emitted", client_id)
+
+    _emit_balance_payload(client_id, state)
+    emit_profile_snapshot(client_id)
+
+    try:
+        ws.send(json.dumps({"balance": 1, "subscribe": 1}))
+    except Exception as exc:
+        logger.warning("[%s] balance_subscribe_send_failed source=%s error=%s", client_id, source, exc)
+    _log_runtime_subscription_counts(client_id, state, f"{source}_subscriptions_sent", force=True)
+
+    # Seed HUMAN candles early so chart is ready instantly.
+    request_human_seed(client_id)
+
+
 def handle_on_message(client_id, ws, message, expected_nonce):
     state = clients.get(client_id)
     if not state:
@@ -15649,50 +15936,10 @@ def handle_on_message(client_id, ws, message, expected_nonce):
             return
 
         if "authorize" in data:
-            # AUTHORIZED
-            state["ws_connected"] = True
-            state["ws_last_authorized_at"] = time.time()
-            state["ws_connect_started_at"] = 0.0
-            state["ws_authorize_deadline_at"] = 0.0
             loginid = data["authorize"].get("loginid", "UNKNOWN")
             balance = float(data["authorize"].get("balance", 0))
-
-            state["loginid"] = loginid
-            state["balance"] = balance
-            state["last_live_balance"] = balance
-            if balance > 0.0:
-                state["last_known_trade_balance"] = balance
-            state["last_live_balance_updated_at"] = time.time()
-            state["local_balance_adjustment"] = 0.0
-            state["balance_updated_at"] = time.time()
-
-            if state["session_start_balance"] is None:
-                state["session_start_balance"] = balance
-
             logger.info(f"[{client_id}] ✅ Authorized: {loginid} Balance={balance}")
-            logger.info("[%s] TEMP authorize_success loginid=%s live_account_balance=%s", client_id, loginid, balance)
-
-            _restore_required_tick_subscriptions(client_id, state, "authorize_restore")
-            tick_health = _get_tick_stream_health(client_id, state, self_heal=False)
-            state["tick_stream_last_emitted_healthy"] = bool(tick_health.get("tick_stream_healthy"))
-            socketio.emit("connection_status", {
-                "connected": True,
-                "loginid": loginid,
-                "has_token": bool(str(state.get("api_token", "") or "").strip()),
-                **_connection_trade_ready_payload(state),
-                **tick_health,
-                **_build_balance_payload(state),
-            }, room=client_id)
-            logger.info("[%s] TEMP connected_state_emitted", client_id)
-
-            _emit_balance_payload(client_id, state)
-            emit_profile_snapshot(client_id)
-
-            ws.send(json.dumps({"balance": 1, "subscribe": 1}))
-            _log_runtime_subscription_counts(client_id, state, "authorize_subscriptions_sent", force=True)
-
-            # seed HUMAN candles early so chart is ready instantly
-            request_human_seed(client_id)
+            _complete_deriv_authenticated_session(client_id, state, ws, loginid, balance, source="authorize")
 
         if "balance" in data:
             try:
@@ -15704,6 +15951,8 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 state["last_live_balance_updated_at"] = time.time()
                 state["local_balance_adjustment"] = 0.0
                 state["balance_updated_at"] = time.time()
+                if state.get("session_start_balance") is None:
+                    state["session_start_balance"] = balance
                 logger.info("[%s] TEMP live_account_balance_received balance=%s", client_id, balance)
                 _emit_balance_payload(client_id, state)
                 send_stats_update(client_id)
@@ -16318,10 +16567,10 @@ def process_tick(client_id, tick):
                 _maybe_refresh_koolkid_testtrial_quotes(client_id, state)
             except Exception:
                 pass
+        run_auto_trade(client_id, state)
+
         if active_strategy and hasattr(active_strategy, "get_ui_payload") and _should_emit_ui_event(state, f"digit_analysis:{active_profile}", UI_ANALYSIS_EMIT_MIN_SEC):
             socketio.emit("digit_analysis", active_strategy.get_ui_payload(), room=client_id)
-
-        run_auto_trade(client_id, state)
         if is_main:
             _run_unchain_hybrid(client_id, state)
             _run_unchain_primordial_blue(client_id, state)
@@ -16651,16 +16900,24 @@ def handle_on_open(client_id, ws, expected_nonce):
     state["ws_connected"] = False  # IMPORTANT: not authorized yet
     state["ws_last_message_at"] = time.time()
     state["ws_last_authorized_at"] = 0.0
-    state["ws_authorize_deadline_at"] = time.time() + float(DERIV_WS_AUTHORIZE_TIMEOUT_SEC)
+    token_type = str(state.get("api_token_type") or "legacy").lower()
+    state["ws_authorize_deadline_at"] = 0.0 if _token_uses_deriv_otp_ws(state.get("api_token"), token_type) else time.time() + float(DERIV_WS_AUTHORIZE_TIMEOUT_SEC)
 
     api_token = state.get("api_token")
     if api_token:
         try:
-            logger.info("[%s] TEMP authorize_sent token_present=True nonce=%s", client_id, expected_nonce)
-            ws.send(json.dumps({"authorize": api_token}))
+            if _token_uses_deriv_otp_ws(api_token, token_type):
+                # New pat_ and OAuth tokens already authenticate the WebSocket through the REST OTP URL.
+                loginid = str(state.get("deriv_account_id") or "PAT").strip() or "PAT"
+                logger.info("[%s] TEMP bearer_websocket_authenticated nonce=%s account_id=%s token_type=%s", client_id, expected_nonce, loginid, token_type)
+                _complete_deriv_authenticated_session(client_id, state, ws, loginid, None, source=f"{token_type}_otp")
+            else:
+                # Old Deriv tokens still use the legacy authorize message over WebSocket.
+                logger.info("[%s] TEMP authorize_sent token_present=True nonce=%s", client_id, expected_nonce)
+                ws.send(json.dumps({"authorize": api_token}))
         except Exception as exc:
             logger.exception("[%s] TEMP authorize_failure send_exception=%s", client_id, exc)
-            socketio.emit("api_error", {"message": f"Authorize failed: {exc}"}, room=client_id)
+            socketio.emit("api_error", {"message": f"Authentication failed: {exc}"}, room=client_id)
     else:
         logger.warning("[%s] TEMP authorize_failure token_present=False", client_id)
 
@@ -16764,7 +17021,17 @@ def handle_on_close(client_id, ws, code, msg, expected_nonce):
         **_build_balance_payload(state),
     }, room=client_id)
     if should_reconnect:
-        _schedule_ws_reconnect(client_id, expected_nonce, delay_sec=2.0)
+        close_text = f"{code or ''} {msg or ''}".lower()
+        pat_otp_expired = bool(
+            _token_uses_deriv_otp_ws(state.get("api_token"), state.get("api_token_type"))
+            and any(token in close_text for token in ("otp", "expired", "unauthor", "forbidden", "401", "403"))
+        )
+        if pat_otp_expired and not state.get("pat_otp_reconnect_used"):
+            state["pat_otp_reconnect_used"] = True
+            logger.info("[%s] deriv_pat_otp_expired_reconnect_once code=%s message=%s", client_id, code, msg)
+            _schedule_ws_reconnect(client_id, expected_nonce, delay_sec=0.5)
+        else:
+            _schedule_ws_reconnect(client_id, expected_nonce, delay_sec=2.0)
 
 
 def start_ws_for_client(client_id):
@@ -16838,8 +17105,54 @@ def start_ws_for_client(client_id):
     def _on_close(ws, code, msg, cid=client_id, nonce=expected_nonce):
         handle_on_close(cid, ws, code, msg, nonce)
 
+    token = str(state.get("api_token", "") or "").strip()
+    stored_token_type = str(state.get("api_token_type") or "").lower()
+    token_type = "pat" if _is_pat_token(token) else ("oauth" if stored_token_type == "oauth" else "legacy")
+    state["api_token_type"] = token_type
+    ws_url = DERIV_WS
+    if _token_uses_deriv_otp_ws(token, token_type):
+        account_id = str(state.get("deriv_account_id") or DERIV_ACCOUNT_ID or "").strip()
+        if not account_id:
+            message = "Deriv account ID is required for this token"
+            logger.warning("[%s] deriv_pat_account_id_missing token=%s", client_id, _mask_api_token(token))
+            socketio.emit("api_error", {"message": message}, room=client_id)
+            socketio.emit("connection_status", {
+                "connected": False,
+                "reconnecting": False,
+                "has_token": True,
+                "loginid": "UNKNOWN",
+                **_connection_trade_ready_payload(state),
+                **_build_balance_payload(state),
+            }, room=client_id)
+            with lock:
+                state["ws_connect_started_at"] = 0.0
+                state["ws_authorize_deadline_at"] = 0.0
+                state["ws_thread"] = None
+            return
+        try:
+            ws_url = _request_pat_authenticated_ws_url(client_id, token, account_id, state.get("deriv_app_id"))
+            state["deriv_account_id"] = account_id
+            state["pat_otp_ws_url"] = ws_url
+        except Exception as exc:
+            message = str(exc) or "Failed to get Deriv authenticated WebSocket URL"
+            logger.warning("[%s] deriv_pat_otp_failed account_id=%s token=%s error=%s", client_id, account_id, _mask_api_token(token), message)
+            socketio.emit("api_error", {"message": message}, room=client_id)
+            socketio.emit("connection_status", {
+                "connected": False,
+                "reconnecting": False,
+                "has_token": True,
+                "loginid": "UNKNOWN",
+                **_connection_trade_ready_payload(state),
+                **_build_balance_payload(state),
+            }, room=client_id)
+            with lock:
+                state["ws_connect_started_at"] = 0.0
+                state["ws_authorize_deadline_at"] = 0.0
+                state["ws_thread"] = None
+            return
+
     ws_app = websocket.WebSocketApp(
-        DERIV_WS,
+        ws_url,
         on_message=_on_message,
         on_open=_on_open,
         on_error=_on_error,
@@ -16922,6 +17235,150 @@ def _restart_deriv_websocket_preserve_session(client_id, state, reason="manual_r
     return True, "Martha AI emergency reconnect started"
 
 
+def _start_deriv_connection_for_state(cid, state, token, token_type, account_id, reason, app_id=None):
+    state["api_token"] = token
+    state["api_token_type"] = token_type
+    state["deriv_account_id"] = account_id
+    state["deriv_app_id"] = str(app_id or DERIV_APP_ID or "1089").strip() or "1089"
+    state["pat_otp_ws_url"] = ""
+    state["pat_otp_reconnect_used"] = False
+    state["loginid"] = "UNKNOWN"
+    state["session_start_balance"] = None
+    state["ws_connected"] = False
+    state["ws_transport_connected"] = False
+    state["ws_last_message_at"] = 0.0
+    state["ws_last_authorized_at"] = 0.0
+    state["ws_connect_started_at"] = 0.0
+    state["ws_authorize_deadline_at"] = 0.0
+    state["ws_reconnect_pending"] = False
+    state["ws_reconnect_attempts"] = 0
+
+    t = state.get("ws_thread")
+    if t and t.is_alive():
+        logger.info("[%s] TEMP old_session_socket_cleared alive_thread=True reason=%s", cid, reason)
+        try:
+            state["ws_stop_event"].set()
+        except Exception:
+            pass
+        try:
+            if state.get("ws"):
+                state["ws"].close()
+        except Exception:
+            pass
+    else:
+        logger.info("[%s] TEMP old_session_socket_cleared alive_thread=False reason=%s", cid, reason)
+
+    _start_ws_worker_thread(cid, state, reason=reason)
+    logger.info("[%s] TEMP deriv_websocket_thread_started_from_connect reason=%s token_type=%s", cid, reason, token_type)
+
+
+@app.route("/deriv/oauth/start", methods=["GET"])
+def deriv_oauth_start():
+    if not login_required():
+        return redirect(url_for("login"))
+    if not DERIV_OAUTH_CLIENT_ID:
+        return "Deriv OAuth is not configured. Set DERIV_OAUTH_CLIENT_ID on the server.", 500
+    code_verifier, code_challenge, state_value = _generate_deriv_oauth_pkce()
+    redirect_uri = _derive_oauth_redirect_uri()
+    session["deriv_oauth_state"] = state_value
+    session["deriv_oauth_code_verifier"] = code_verifier
+    session["deriv_oauth_redirect_uri"] = redirect_uri
+    logger.info("[oauth] deriv_oauth_start client_id=%s redirect_uri=%s", DERIV_OAUTH_CLIENT_ID, redirect_uri)
+    return redirect(_deriv_oauth_login_url(code_challenge, state_value, redirect_uri))
+
+
+@app.route("/oauth/callback", methods=["GET"])
+@app.route("/deriv/oauth/callback", methods=["GET"])
+def deriv_oauth_callback():
+    if not login_required():
+        return redirect(url_for("login"))
+    error = request.args.get("error")
+    if error:
+        desc = request.args.get("error_description") or error
+        logger.warning("[oauth] deriv_oauth_callback_error error=%s", desc)
+        return f"Deriv login failed: {desc}", 400
+
+    returned_state = request.args.get("state")
+    expected_state = session.get("deriv_oauth_state")
+    if not returned_state or returned_state != expected_state:
+        logger.warning("[oauth] deriv_oauth_state_mismatch")
+        return "Deriv login failed: state mismatch", 400
+
+    code = request.args.get("code")
+    code_verifier = session.get("deriv_oauth_code_verifier")
+    redirect_uri = session.get("deriv_oauth_redirect_uri") or _derive_oauth_redirect_uri()
+    if not code or not code_verifier:
+        return "Deriv login failed: missing OAuth code", 400
+
+    try:
+        token_payload = _exchange_deriv_oauth_code(code, code_verifier, redirect_uri)
+        access_token = str(token_payload.get("access_token") or "").strip()
+        accounts = _fetch_deriv_oauth_accounts(access_token)
+    except Exception as exc:
+        logger.warning("[oauth] deriv_oauth_exchange_failed error=%s", exc)
+        return f"Deriv login failed: {exc}", 400
+    finally:
+        session.pop("deriv_oauth_state", None)
+        session.pop("deriv_oauth_code_verifier", None)
+        session.pop("deriv_oauth_redirect_uri", None)
+
+    cid, state = get_client_state()
+    state["oauth_pending_access_token"] = access_token
+    state["oauth_pending_accounts"] = accounts
+    logger.info("[%s] deriv_oauth_accounts_loaded count=%s token=%s", cid, len(accounts), _mask_api_token(access_token))
+
+    if len(accounts) == 1:
+        account_id = accounts[0]["account_id"]
+        _start_deriv_connection_for_state(cid, state, access_token, "oauth", account_id, "deriv_oauth")
+        return redirect(url_for("index"))
+
+    return render_template_string("""
+<!doctype html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Select Deriv Account</title>
+    <style>
+        body{margin:0;min-height:100vh;background:linear-gradient(135deg,#061827,#0b3154);color:#e5f7ff;font-family:Arial,sans-serif;display:flex;align-items:center;justify-content:center;padding:24px;}
+        .box{width:min(520px,100%);background:rgba(15,23,42,.9);border:1px solid rgba(56,189,248,.4);border-radius:18px;padding:22px;box-shadow:0 0 24px rgba(14,165,233,.25);}
+        h2{margin:0 0 14px;color:#67e8f9;}
+        button{width:100%;margin:8px 0;padding:12px 14px;border:0;border-radius:12px;background:#38bdf8;color:#062033;font-weight:800;cursor:pointer;}
+        .muted{color:#9cc7d9;font-size:13px;margin-bottom:14px;}
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h2>Login with Deriv</h2>
+        <div class="muted">Choose which Deriv account should connect to the bot.</div>
+        {% for account in accounts %}
+        <form method="post" action="{{ url_for('deriv_oauth_select_account') }}">
+            <input type="hidden" name="account_id" value="{{ account.account_id }}">
+            <button type="submit">{{ account.account_id }}{% if account.currency %} • {{ account.currency }}{% endif %}{% if account.is_virtual %} • Demo{% endif %}</button>
+        </form>
+        {% endfor %}
+    </div>
+</body>
+</html>
+    """, accounts=accounts)
+
+
+@app.route("/deriv/oauth/select-account", methods=["POST"])
+def deriv_oauth_select_account():
+    if not login_required():
+        return redirect(url_for("login"))
+    cid, state = get_client_state()
+    access_token = str(state.get("oauth_pending_access_token") or "").strip()
+    accounts = state.get("oauth_pending_accounts") or []
+    selected = str(request.form.get("account_id") or "").strip()
+    allowed = {str(account.get("account_id") or "") for account in accounts if isinstance(account, dict)}
+    if not access_token or not selected or selected not in allowed:
+        return "Deriv account selection expired. Please login with Deriv again.", 400
+    state["oauth_pending_access_token"] = ""
+    state["oauth_pending_accounts"] = []
+    _start_deriv_connection_for_state(cid, state, access_token, "oauth", selected, "deriv_oauth_select")
+    return redirect(url_for("index"))
+
+
 @app.route("/set_token", methods=["POST"])
 def set_token():
     if not login_required():
@@ -16930,7 +17387,10 @@ def set_token():
     cid, state = get_client_state()
     data = request.get_json(silent=True) or {}
     token = str(data.get("token", "") or "").strip()
-    logger.info("[%s] TEMP connect_request_received token_present=%s", cid, bool(token))
+    account_id = str(DERIV_ACCOUNT_ID or "").strip()
+    app_id = str(DERIV_APP_ID or "1089").strip() or "1089"
+    token_type = "legacy"
+    logger.info("[%s] TEMP connect_request_received token_present=%s token_type=%s token=%s", cid, bool(token), token_type, _mask_api_token(token))
     logger.info(
         "[%s] TEMP set_token_runtime server_instance_id=%s process_id=%s runtime_present=%s ws_connected=%s ws_thread_alive=%s",
         cid,
@@ -16945,10 +17405,14 @@ def set_token():
         return jsonify({"status": "error", "message": "API token is required"}), 400
 
     same_token = token == str(state.get("api_token", "") or "").strip()
+    same_account_id = account_id == str(state.get("deriv_account_id") or DERIV_ACCOUNT_ID or "").strip()
+    same_app_id = app_id == str(state.get("deriv_app_id") or DERIV_APP_ID or "1089").strip()
     ws_thread_alive = bool(state.get("ws_thread") and state["ws_thread"].is_alive())
-    same_token_authorized = bool(same_token and state.get("ws_connected") and state.get("ws"))
+    same_token_authorized = bool(same_token and same_account_id and same_app_id and state.get("ws_connected") and state.get("ws"))
     same_token_in_progress = bool(
         same_token
+        and same_account_id
+        and same_app_id
         and not state.get("ws_connected")
         and (
             state.get("ws_transport_connected")
@@ -16971,6 +17435,11 @@ def set_token():
         })
 
     state["api_token"] = token
+    state["api_token_type"] = token_type
+    state["deriv_account_id"] = account_id
+    state["deriv_app_id"] = app_id
+    state["pat_otp_ws_url"] = ""
+    state["pat_otp_reconnect_used"] = False
     state["loginid"] = "UNKNOWN"
     state["session_start_balance"] = None
     state["ws_connected"] = False
@@ -17001,7 +17470,7 @@ def set_token():
     _start_ws_worker_thread(cid, state, reason="set_token")
     logger.info("[%s] TEMP deriv_websocket_thread_started_from_connect", cid)
 
-    return jsonify({"status": "connecting"})
+    return jsonify({"status": "connecting", "token_type": token_type})
 
 
 @app.route("/api_connection_status", methods=["GET"])
@@ -18172,8 +18641,6 @@ def toggle_kidx_auto_route():
 def toggle_multig_auto_route():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
-    if is_monthly_license_user():
-        return jsonify({"status": "error", "message": "Admin is working on them."}), 403
 
     cid, state = get_client_state()
     strat = state["strategies"].get("JOKERJOE")

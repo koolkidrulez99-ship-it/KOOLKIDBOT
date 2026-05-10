@@ -131,10 +131,21 @@
 .over6-analyzer-toggle-knob{position:absolute;top:2px;left:2px;width:20px;height:20px;background:#fff;border-radius:999px;transition:transform .2s}
 .over6-analyzer-toggle-input:checked + .over6-analyzer-toggle-btn{background:rgba(34,197,94,0.62);border-color:rgba(74,222,128,0.52)}
 .over6-analyzer-toggle-input:checked + .over6-analyzer-toggle-btn .over6-analyzer-toggle-knob{transform:translateX(22px)}
+.prediction-summary-dropdown{margin-top:12px}
+.prediction-summary-dropdown > summary{display:none}
+.prediction-summary-dropdown[open] > .prediction-summary-card{display:block}
+.prediction-summary-dropdown.monthly-dropdown-mode{border:1px solid rgba(56,189,248,0.28);border-radius:16px;background:rgba(15,23,42,0.64);box-shadow:0 0 18px rgba(14,165,233,0.12);overflow:hidden}
+.prediction-summary-dropdown.monthly-dropdown-mode > summary{display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;list-style:none;padding:12px 14px;color:#e0f7ff;font-weight:900}
+.prediction-summary-dropdown.monthly-dropdown-mode > summary::-webkit-details-marker{display:none}
+.prediction-summary-dropdown-title{display:inline-flex;align-items:center;gap:8px}
+.prediction-summary-dropdown-caret{font-size:11px;color:#8ee7ff;border:1px solid rgba(34,211,238,0.28);border-radius:999px;padding:4px 9px;background:rgba(8,47,73,0.42)}
+.prediction-summary-dropdown.monthly-dropdown-mode[open] .prediction-summary-dropdown-caret::before{content:"OPEN"}
+.prediction-summary-dropdown.monthly-dropdown-mode:not([open]) .prediction-summary-dropdown-caret::before{content:"CLOSED"}
+.prediction-summary-dropdown.monthly-dropdown-mode #predictionSummaryCardKoolkid{margin:0 12px 12px}
 #koolkidConfidenceBarsBlock.monthly-prediction-summary-mode{display:flex;flex-direction:column}
 #koolkidConfidenceBarsBlock.monthly-prediction-summary-mode #koolkidConfidenceBarsTitle,
 #koolkidConfidenceBarsBlock.monthly-prediction-summary-mode #koolkidConfidenceBarsWrap{display:none!important}
-#koolkidConfidenceBarsBlock.monthly-prediction-summary-mode #predictionSummaryCardKoolkid{order:0;margin-top:0}
+#koolkidConfidenceBarsBlock.monthly-prediction-summary-mode #predictionSummaryDropdownKoolkid{order:0;margin-top:0}
 #koolkidConfidenceBarsBlock.monthly-prediction-summary-mode #barrierAnalysisCard{order:1}
 @media (max-width: 900px){
   .ui-btn-grid-2,.ui-btn-grid-3{grid-template-columns:1fr}
@@ -388,6 +399,70 @@
           </div>
         </details>
 
+        <details id="koolkidOver6ScanMartingalePanel" class="ui-group" style="margin-top:10px; border-color:rgba(34,197,94,0.34);">
+          <summary>
+            <span>Over 6 Martingale Scanner</span>
+            <span style="font-size:11px; color:#86efac; font-weight:900;">SCAN</span>
+          </summary>
+          <div style="padding:10px 12px; background:rgba(15,23,42,0.82);">
+            <div style="font-size:12px; color:#94a3b8; line-height:1.45;">
+              Scans the last 10 digits before every Over 6 entry and recovery. It starts only when 0-6 are the majority and at least one of 7, 8, or 9 is above 10%.
+            </div>
+            <div style="margin-top:10px; display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:8px;">
+              <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                Duration
+                <select id="koolkidOver6ScanDuration" onchange="updateKoolkidOver6ScanMartingalePanel()" style="width:100%; min-height:38px;">
+                  <option value="1" selected>1 Tick</option>
+                  <option value="2">2 Ticks</option>
+                  <option value="3">3 Ticks</option>
+                  <option value="4">4 Ticks</option>
+                  <option value="5">5 Ticks</option>
+                  <option value="6">6 Ticks</option>
+                  <option value="7">7 Ticks</option>
+                  <option value="8">8 Ticks</option>
+                  <option value="9">9 Ticks</option>
+                  <option value="10">10 Ticks</option>
+                </select>
+              </label>
+              <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                Max Steps
+                <input id="koolkidOver6ScanMaxSteps" type="number" min="1" step="1" value="4" oninput="updateKoolkidOver6ScanMartingalePanel()" style="width:100%; min-height:38px;">
+              </label>
+              <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                Cooldown
+                <select id="koolkidOver6ScanCooldown" onchange="updateKoolkidOver6ScanMartingalePanel()" style="width:100%; min-height:38px;">
+                  <option value="30">30 Seconds</option>
+                  <option value="45" selected>45 Seconds</option>
+                  <option value="60">60 Seconds</option>
+                </select>
+              </label>
+            </div>
+            <div style="margin-top:8px; display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:8px;">
+              <div style="background:#0f172a; border:1px solid #334155; border-radius:12px; padding:10px;">
+                <div style="font-size:11px; color:#94a3b8; font-weight:800;">Status</div>
+                <div id="koolkidOver6ScanStatus" style="margin-top:4px; color:#f8fafc; font-weight:900;">Scanning</div>
+              </div>
+              <div style="background:#0f172a; border:1px solid #334155; border-radius:12px; padding:10px;">
+                <div style="font-size:11px; color:#94a3b8; font-weight:800;">High Digit Strength</div>
+                <div id="koolkidOver6ScanStrength" style="margin-top:4px; color:#86efac; font-weight:900;">0%</div>
+              </div>
+              <div style="background:#0f172a; border:1px solid #334155; border-radius:12px; padding:10px;">
+                <div style="font-size:11px; color:#94a3b8; font-weight:800;">Martingale</div>
+                <div id="koolkidOver6ScanStep" style="margin-top:4px; color:#facc15; font-weight:900;">Step 1/4</div>
+              </div>
+              <div style="background:#0f172a; border:1px solid #334155; border-radius:12px; padding:10px;">
+                <div style="font-size:11px; color:#94a3b8; font-weight:800;">Next Stake</div>
+                <div id="koolkidOver6ScanStake" style="margin-top:4px; color:#38bdf8; font-weight:900;">$0.35</div>
+              </div>
+            </div>
+            <div id="koolkidOver6ScanReason" style="margin-top:8px; color:#94a3b8; font-size:12px;">Scanning for Over 6 opening...</div>
+            <div style="margin-top:8px; display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+              <button id="koolkidOver6ScanStartBtn" type="button" onclick="startKoolkidOver6ScanMartingale()" style="background:#22c55e; color:#052e16; font-weight:900;">START OVER 6 SCAN</button>
+              <button id="koolkidOver6ScanStopBtn" type="button" onclick="stopKoolkidOver6ScanMartingale()" style="background:#ef4444; color:#fff7ed; font-weight:900;">STOP</button>
+            </div>
+          </div>
+        </details>
+
         <details id="koolkidBalancedRecoveryPanel" class="ui-group" style="display:none; margin-top:10px; border-color:rgba(56,189,248,0.34);">
           <summary>
             <span>Under 3 / Over 5 Balanced Recovery</span>
@@ -513,34 +588,43 @@
             <div id="barrierAnalysisRecommended" style="margin-top:8px; font-size:12px; color:#cbd5e1;">Recommended: -</div>
           </div>
         </div>
-        <div id="predictionSummaryCardKoolkid" class="prediction-summary-card">
-          <div class="prediction-summary-title">
-            <span class="prediction-summary-bolt">⚡</span>
-            <span>Prediction Summary</span>
-          </div>
-          <div class="prediction-summary-inner">
-            <div class="prediction-summary-head">
-              <div class="prediction-summary-contract">
-                <div class="prediction-summary-target">🎯</div>
-                <div>
-                  <div id="predictionSummaryLabelKoolkid" class="prediction-summary-label">OVER 5</div>
-                  <div class="prediction-summary-subtitle">Mini X Strategy Prediction</div>
+        <details id="predictionSummaryDropdownKoolkid" class="prediction-summary-dropdown" open>
+          <summary>
+            <span class="prediction-summary-dropdown-title">
+              <span class="prediction-summary-bolt">⚡</span>
+              <span>Prediction Summary</span>
+            </span>
+            <span class="prediction-summary-dropdown-caret" aria-hidden="true"></span>
+          </summary>
+          <div id="predictionSummaryCardKoolkid" class="prediction-summary-card">
+            <div class="prediction-summary-title">
+              <span class="prediction-summary-bolt">⚡</span>
+              <span>Prediction Summary</span>
+            </div>
+            <div class="prediction-summary-inner">
+              <div class="prediction-summary-head">
+                <div class="prediction-summary-contract">
+                  <div class="prediction-summary-target">🎯</div>
+                  <div>
+                    <div id="predictionSummaryLabelKoolkid" class="prediction-summary-label">OVER 5</div>
+                    <div class="prediction-summary-subtitle">Mini X Strategy Prediction</div>
+                  </div>
+                </div>
+                <div class="prediction-summary-confidence">
+                  <div id="predictionSummaryConfidenceKoolkid" class="prediction-summary-confidence-value">50%</div>
+                  <div class="prediction-summary-confidence-label">Confidence</div>
                 </div>
               </div>
-              <div class="prediction-summary-confidence">
-                <div id="predictionSummaryConfidenceKoolkid" class="prediction-summary-confidence-value">50%</div>
-                <div class="prediction-summary-confidence-label">Confidence</div>
+              <div class="prediction-summary-analysis-box">
+                <div class="prediction-summary-analysis-title">📊 Analysis</div>
+                <div id="predictionSummaryAnalysisKoolkid" class="prediction-summary-analysis-body">Analyzing digit distribution...</div>
+              </div>
+              <div id="predictionSummaryStreamKoolkid" class="prediction-summary-stream">
+                <span style="color:#8fb1c9;">Waiting for live digits...</span>
               </div>
             </div>
-            <div class="prediction-summary-analysis-box">
-              <div class="prediction-summary-analysis-title">📊 Analysis</div>
-              <div id="predictionSummaryAnalysisKoolkid" class="prediction-summary-analysis-body">Analyzing digit distribution...</div>
-            </div>
-            <div id="predictionSummaryStreamKoolkid" class="prediction-summary-stream">
-              <span style="color:#8fb1c9;">Waiting for live digits...</span>
-            </div>
           </div>
-        </div>
+        </details>
         <div id="over6AnalyzerCardKoolkid" class="over6-analyzer-card" style="display:none;">
           <div class="over6-analyzer-head">
             <div class="over6-analyzer-title">

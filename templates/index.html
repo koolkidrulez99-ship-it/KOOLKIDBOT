@@ -66,6 +66,25 @@ h1{
     filter:drop-shadow(0 0 14px rgba(56,189,248,0.78)) drop-shadow(0 0 28px rgba(14,165,233,0.38));
 }
 
+.deriv-login-btn{
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    min-height:38px;
+    padding:10px 14px;
+    border-radius:10px;
+    background:#22c55e;
+    color:#052e16;
+    font-weight:800;
+    font-size:13px;
+    text-decoration:none;
+    box-shadow:0 0 14px rgba(34,197,94,.24);
+}
+
+.deriv-login-btn:hover{
+    filter:brightness(1.08);
+}
+
 .broadcast-notice{
     display:none;
     align-items:flex-start;
@@ -1229,6 +1248,7 @@ body.mobile-only-ui #profileContainer .unchain-history-grid{
                 <div id="apiConnectForm" style="display:flex; flex-wrap:wrap; align-items:center; gap:10px; width:100%;">
                     <input id="token" placeholder="Enter API Token" type="password" style="flex:0 1 210px; min-width:180px; max-width:240px;">
                     <button id="connectBtn" onclick="connect()" style="background:#38bdf8;">Connect</button>
+                    <a href="/deriv/oauth/start" class="deriv-login-btn">Login with Deriv</a>
                 </div>
                 <div id="apiConnectedPanel" style="display:none; align-items:center; gap:10px; flex-wrap:wrap; width:100%;">
                     <div id="apiConnectedMessage" class="green" style="display:flex; align-items:center; gap:8px; font-weight:700; font-size:13px; line-height:1.2;">
@@ -3231,7 +3251,6 @@ function applyMonthlyLicenseGate(profile){
             "kidracksAiBtnKoolkid",
             "testtrialBtnKoolkid",
             "metaBrainInfoKoolkid",
-            "predictionSummaryCardKoolkid",
         ].forEach((id)=>hideMonthlyElement(id));
     }
     if(p === "JOKERJOE"){
@@ -3845,6 +3864,7 @@ function syncJokerjoeMultiGPendingTrade(payload){
     }
 
     const remaining = Math.max(0, Number(mp.seconds_remaining || 0));
+    const nowMs = Date.now();
     const currentStakeNode = document.getElementById("stake");
     const currentStake = Number(currentStakeNode && currentStakeNode.value);
     const durationValue = existing && existing.record && Number.isFinite(Number(existing.record.duration))
@@ -3864,6 +3884,9 @@ function syncJokerjoeMultiGPendingTrade(payload){
         countdown_remaining: remaining,
         countdown_unit: "s",
         countdown_seconds: remaining,
+        _countdown_last_ms: existing && existing.record && Number.isFinite(Number(existing.record._countdown_last_ms))
+            ? existing.record._countdown_last_ms
+            : nowMs,
         status: "QUEUED",
         result: "PENDING",
         pending: true,
@@ -7352,10 +7375,6 @@ async function toggleKidXAuto(){
 }
 
 async function toggleMultiGAuto(){
-    if(isMonthlyLicenseUser()){
-        showToast("Admin is working on MultiG for monthly users.", "warn");
-        return;
-    }
     const res = await fetch("/toggle_multig_auto", {method:"POST"});
     const data = await res.json();
     if(data.status === "success"){

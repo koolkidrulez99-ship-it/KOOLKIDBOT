@@ -755,7 +755,7 @@ class JokerJoeStrategy:
     def _multig_seconds_remaining(self):
         if not self.multig_pending_active or not self.multig_pending_due_time:
             return 0
-        return max(0, int(round(self.multig_pending_due_time - time.time())))
+        return max(0, int(math.ceil(self.multig_pending_due_time - time.time())))
 
     def _multig_pick_digit(self):
         """
