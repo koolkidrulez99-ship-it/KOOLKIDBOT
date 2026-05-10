@@ -269,6 +269,26 @@ def _sanitize_deriv_oauth_response_text(body_text):
     return str(body_text or "")[:1000]
 
 
+def _oauth_account_is_demo(account):
+    account = account or {}
+    account_id = str(account.get("account_id") or account.get("loginid") or account.get("id") or "").upper()
+    account_type = str(account.get("account_type") or account.get("type") or account.get("landing_company") or "").lower()
+    if bool(account.get("is_virtual") or account.get("demo") or account.get("is_demo")):
+        return True
+    return account_id.startswith("VRTC") or "demo" in account_type or "virtual" in account_type
+
+
+def _oauth_account_label(account):
+    return "Demo" if _oauth_account_is_demo(account) else "Real"
+
+
+def _mask_account_id(account_id):
+    account_id = str(account_id or "").strip()
+    if len(account_id) <= 6:
+        return account_id
+    return f"{account_id[:3]}...{account_id[-3:]}"
+
+
 def _request_pat_authenticated_ws_url(client_id, token, account_id, app_id=None):
     """pat_ and OAuth bearer tokens use REST Bearer auth to get a one-time authenticated WebSocket URL."""
     account_id = str(account_id or "").strip()
@@ -285,12 +305,14 @@ def _request_pat_authenticated_ws_url(client_id, token, account_id, app_id=None)
             "Deriv-App-ID": app_id,
             "Authorization": f"Bearer {str(token or '').strip()}",
             "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0",
         },
     )
     logger.info(
-        "[%s] deriv_bearer_otp_request account_id=%s token=%s app_id=%s",
+        "[%s] deriv_bearer_otp_request account_id=%s account_kind=%s token=%s app_id=%s",
         client_id,
-        account_id,
+        _mask_account_id(account_id),
+        "demo" if _oauth_account_is_demo({"account_id": account_id}) else "real",
         _mask_api_token(token),
         app_id,
     )
@@ -301,6 +323,13 @@ def _request_pat_authenticated_ws_url(client_id, token, account_id, app_id=None)
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
         message = _extract_deriv_rest_error(body)
+        logger.warning(
+            "[%s] deriv_bearer_otp_failed status=%s account_id=%s response_text=%s",
+            client_id,
+            exc.code,
+            _mask_account_id(account_id),
+            _sanitize_deriv_oauth_response_text(body),
+        )
         raise RuntimeError(f"Deriv OTP request failed ({exc.code}): {message}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Deriv OTP request failed: {exc.reason}") from exc
@@ -313,7 +342,13 @@ def _request_pat_authenticated_ws_url(client_id, token, account_id, app_id=None)
     url = ((payload.get("data") or {}).get("url") if isinstance(payload.get("data"), dict) else None) or payload.get("url")
     if not url:
         raise RuntimeError("Failed to get Deriv authenticated WebSocket URL")
-    logger.info("[%s] deriv_bearer_otp_success status=%s account_id=%s", client_id, status, account_id)
+    logger.info(
+        "[%s] deriv_bearer_otp_success status=%s account_id=%s websocket_type=%s",
+        client_id,
+        status,
+        _mask_account_id(account_id),
+        "demo" if _oauth_account_is_demo({"account_id": account_id}) else "real",
+    )
     return str(url)
 
 
@@ -413,19 +448,33 @@ def _fetch_deriv_oauth_accounts(access_token):
             "Deriv-App-ID": DERIV_OAUTH_APP_ID,
             "Authorization": f"Bearer {access_token}",
             "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0",
         },
     )
     try:
         with urllib.request.urlopen(req, timeout=20) as resp:
-            payload = json.loads(resp.read().decode("utf-8", errors="replace") or "{}")
+            status_code = getattr(resp, "status", 200)
+            body_text = resp.read().decode("utf-8", errors="replace")
+            logger.info("[oauth] deriv_oauth_accounts_response status=%s response_text=%s", status_code, _sanitize_deriv_oauth_response_text(body_text))
+            payload = json.loads(body_text or "{}")
     except urllib.error.HTTPError as exc:
         body_text = exc.read().decode("utf-8", errors="replace")
+        logger.warning("[oauth] deriv_oauth_accounts_response status=%s response_text=%s", exc.code, _sanitize_deriv_oauth_response_text(body_text))
         raise RuntimeError(f"Deriv account list failed ({exc.code}): {_extract_deriv_rest_error(body_text)}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Deriv account list failed: {exc.reason}") from exc
     raw_accounts = payload.get("data") or payload.get("accounts") or []
     if isinstance(raw_accounts, dict):
-        raw_accounts = raw_accounts.get("accounts") or raw_accounts.get("data") or []
+        candidates = []
+        for key in ("accounts", "data", "demo", "real", "virtual", "trading_accounts"):
+            value = raw_accounts.get(key)
+            if isinstance(value, list):
+                candidates.extend(value)
+            elif isinstance(value, dict):
+                candidates.extend([v for v in value.values() if isinstance(v, dict)])
+        if not candidates:
+            candidates.extend([v for v in raw_accounts.values() if isinstance(v, dict)])
+        raw_accounts = candidates
     accounts = []
     if isinstance(raw_accounts, list):
         for item in raw_accounts:
@@ -433,14 +482,24 @@ def _fetch_deriv_oauth_accounts(access_token):
                 continue
             account_id = str(item.get("account_id") or item.get("loginid") or item.get("id") or "").strip()
             if account_id:
-                accounts.append({
+                entry = {
                     "account_id": account_id,
                     "currency": str(item.get("currency") or "").strip(),
                     "account_type": str(item.get("account_type") or item.get("landing_company") or "").strip(),
-                    "is_virtual": bool(item.get("is_virtual") or item.get("demo")),
-                })
+                    "is_virtual": _oauth_account_is_demo(item),
+                }
+                entry["account_kind"] = _oauth_account_label(entry)
+                accounts.append(entry)
     if not accounts:
         raise RuntimeError("No Deriv accounts were returned for this login")
+    demo_count = sum(1 for account in accounts if _oauth_account_is_demo(account))
+    logger.info(
+        "[oauth] deriv_oauth_accounts_returned count=%s demo=%s real=%s app_id=%s",
+        len(accounts),
+        demo_count,
+        max(0, len(accounts) - demo_count),
+        DERIV_OAUTH_APP_ID,
+    )
     return accounts
 
 
@@ -4982,6 +5041,8 @@ def _should_force_ws_reconnect_on_send_exception(state, exc):
 def _ensure_trade_socket_ready(client_id, state, *, emit_error=True):
     if not state:
         return False, "No client state"
+    if str(state.get("api_token_type") or "").lower() == "oauth_pending":
+        return False, "Select a Deriv account before trading"
     ws = state.get("ws")
     if state.get("ws_connected") and ws and _is_ws_stale(state):
         warmup_active = False
@@ -15890,6 +15951,14 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 state["ws_connected"] = False
                 state["ws_authorize_deadline_at"] = 0.0
                 logger.warning("[%s] TEMP authorize_failure message=%s", client_id, msg)
+            if (echo_req or {}).get("buy") is not None:
+                logger.warning(
+                    "[%s] deriv_buy_error req_id=%s message=%s response=%s",
+                    client_id,
+                    req_id,
+                    msg,
+                    _sanitize_deriv_oauth_response_text(json.dumps(data)),
+                )
             failed_buy_meta = None
             try:
                 _seqvix_jokerjoe_handle_buy_error(state, req_id)
@@ -17275,6 +17344,45 @@ def _restart_deriv_websocket_preserve_session(client_id, state, reason="manual_r
     return True, "Martha AI emergency reconnect started"
 
 
+def _pause_for_oauth_account_selection(client_id, state, accounts):
+    if not state:
+        return
+    try:
+        ws = state.get("ws")
+        if ws:
+            ws.close()
+    except Exception:
+        pass
+    state["api_token"] = ""
+    state["api_token_type"] = "oauth_pending"
+    state["deriv_account_id"] = ""
+    state["deriv_app_id"] = DERIV_OAUTH_APP_ID
+    state["pat_otp_ws_url"] = ""
+    state["pat_otp_reconnect_used"] = False
+    state["ws"] = None
+    state["ws_connected"] = False
+    state["ws_transport_connected"] = False
+    state["ws_connect_started_at"] = 0.0
+    state["ws_authorize_deadline_at"] = 0.0
+    state["loginid"] = "OAUTH_ACCOUNT_REQUIRED"
+    logger.info(
+        "[%s] deriv_oauth_account_selection_required count=%s trade_ready=false",
+        client_id,
+        len(accounts or []),
+    )
+    try:
+        socketio.emit("connection_status", {
+            "connected": False,
+            "reconnecting": False,
+            "loginid": "Select Deriv account",
+            "has_token": False,
+            **_connection_trade_ready_payload(state),
+            **_build_balance_payload(state),
+        }, room=client_id)
+    except Exception:
+        pass
+
+
 def _start_deriv_connection_for_state(cid, state, token, token_type, account_id, reason, app_id=None):
     state["api_token"] = token
     state["api_token_type"] = token_type
@@ -17293,6 +17401,15 @@ def _start_deriv_connection_for_state(cid, state, token, token_type, account_id,
     state["ws_authorize_deadline_at"] = 0.0
     state["ws_reconnect_pending"] = False
     state["ws_reconnect_attempts"] = 0
+    logger.info(
+        "[%s] deriv_connection_start token_type=%s account_id=%s account_kind=%s app_id=%s reason=%s trade_ready=false",
+        cid,
+        token_type,
+        _mask_account_id(account_id),
+        "demo" if _oauth_account_is_demo({"account_id": account_id}) else "real",
+        state["deriv_app_id"],
+        reason,
+    )
 
     t = state.get("ws_thread")
     if t and t.is_alive():
@@ -17374,11 +17491,7 @@ def deriv_oauth_callback():
     state["oauth_pending_access_token"] = access_token
     state["oauth_pending_accounts"] = accounts
     logger.info("[%s] deriv_oauth_accounts_loaded count=%s token=%s", cid, len(accounts), _mask_api_token(access_token))
-
-    if len(accounts) == 1:
-        account_id = accounts[0]["account_id"]
-        _start_deriv_connection_for_state(cid, state, access_token, "oauth", account_id, "deriv_oauth", DERIV_OAUTH_APP_ID)
-        return redirect(url_for("index"))
+    _pause_for_oauth_account_selection(cid, state, accounts)
 
     return render_template_string("""
 <!doctype html>
@@ -17390,18 +17503,25 @@ def deriv_oauth_callback():
         body{margin:0;min-height:100vh;background:linear-gradient(135deg,#061827,#0b3154);color:#e5f7ff;font-family:Arial,sans-serif;display:flex;align-items:center;justify-content:center;padding:24px;}
         .box{width:min(520px,100%);background:rgba(15,23,42,.9);border:1px solid rgba(56,189,248,.4);border-radius:18px;padding:22px;box-shadow:0 0 24px rgba(14,165,233,.25);}
         h2{margin:0 0 14px;color:#67e8f9;}
-        button{width:100%;margin:8px 0;padding:12px 14px;border:0;border-radius:12px;background:#38bdf8;color:#062033;font-weight:800;cursor:pointer;}
+        button{width:100%;margin:8px 0;padding:12px 14px;border:0;border-radius:12px;background:#38bdf8;color:#062033;font-weight:800;cursor:pointer;text-align:left;}
+        .kind{display:inline-flex;margin-left:8px;padding:3px 8px;border-radius:999px;background:#0f766e;color:#ecfeff;font-size:12px;}
+        .kind.real{background:#b45309;color:#fff7ed;}
         .muted{color:#9cc7d9;font-size:13px;margin-bottom:14px;}
+        .sub{display:block;font-size:12px;opacity:.78;margin-top:3px;}
     </style>
 </head>
 <body>
     <div class="box">
         <h2>Login with Deriv</h2>
-        <div class="muted">Choose which Deriv account should connect to the bot.</div>
+        <div class="muted">Choose which Deriv account should connect to the bot. Trading stays disabled until you pick one.</div>
         {% for account in accounts %}
         <form method="post" action="{{ url_for('deriv_oauth_select_account') }}">
             <input type="hidden" name="account_id" value="{{ account.account_id }}">
-            <button type="submit">{{ account.account_id }}{% if account.currency %} • {{ account.currency }}{% endif %}{% if account.is_virtual %} • Demo{% endif %}</button>
+            <button type="submit">
+                {{ account.account_id }}
+                <span class="kind {% if not account.is_virtual %}real{% endif %}">{{ account.account_kind or ("Demo" if account.is_virtual else "Real") }}</span>
+                <span class="sub">{% if account.currency %}Currency: {{ account.currency }}{% endif %}{% if account.account_type %} • Type: {{ account.account_type }}{% endif %}</span>
+            </button>
         </form>
         {% endfor %}
     </div>
@@ -17421,6 +17541,14 @@ def deriv_oauth_select_account():
     allowed = {str(account.get("account_id") or "") for account in accounts if isinstance(account, dict)}
     if not access_token or not selected or selected not in allowed:
         return "Deriv account selection expired. Please login with Deriv again.", 400
+    selected_account = next((account for account in accounts if isinstance(account, dict) and str(account.get("account_id") or "") == selected), {})
+    logger.info(
+        "[%s] deriv_oauth_account_selected account_id=%s account_kind=%s currency=%s",
+        cid,
+        _mask_account_id(selected),
+        _oauth_account_label(selected_account),
+        (selected_account or {}).get("currency") or "",
+    )
     state["oauth_pending_access_token"] = ""
     state["oauth_pending_accounts"] = []
     _start_deriv_connection_for_state(cid, state, access_token, "oauth", selected, "deriv_oauth_select", DERIV_OAUTH_APP_ID)
