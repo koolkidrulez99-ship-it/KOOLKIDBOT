@@ -305,13 +305,14 @@ def _request_digit_proposal_for_buy(client_id, state, payload, timeout_sec=5.0):
     waiters[req_id] = waiter
     waiters[str(req_id)] = waiter
     logger.info(
-        "[%s] deriv_outgoing_proposal token_type=%s payload=%s",
+        "[%s] TEMP proposal_about_to_be_sent token_type=%s payload=%s",
         client_id,
         _deriv_connection_type(state),
         _safe_deriv_payload_text(payload),
     )
     try:
         ws.send(json.dumps(payload))
+        logger.info("[%s] TEMP proposal_actually_sent req_id=%s token_type=%s", client_id, req_id, _deriv_connection_type(state))
     except Exception as exc:
         waiters.pop(req_id, None)
         waiters.pop(str(req_id), None)
@@ -345,12 +346,42 @@ def _send_buy_from_proposal(client_id, state, req_id, proposal, stake):
         "price": float(ask_price if ask_price is not None else stake),
     }
     logger.info(
-        "[%s] deriv_outgoing_buy token_type=%s payload=%s",
+        "[%s] TEMP buy_about_to_be_sent token_type=%s payload=%s",
         client_id,
         _deriv_connection_type(state),
         _safe_deriv_payload_text(buy_payload),
     )
     ws.send(json.dumps(buy_payload))
+    logger.info("[%s] TEMP buy_actually_sent req_id=%s token_type=%s", client_id, req_id, _deriv_connection_type(state))
+    return True, "Trade sent"
+
+
+def _send_trade_payload_with_oauth_proposal(client_id, state, req_id, payload, stake):
+    ws = state.get("ws") if isinstance(state, dict) else None
+    if not ws:
+        return False, "Not connected"
+    if _deriv_connection_type(state) == "oauth":
+        params = dict((payload or {}).get("parameters") or {})
+        if not params:
+            return False, "Proposal parameters missing"
+        proposal_payload = {"proposal": 1, **params, "req_id": req_id}
+        logger.info(
+            "[%s] deriv_legacy_direct_buy_payload_for_compare payload=%s",
+            client_id,
+            _safe_deriv_payload_text(payload),
+        )
+        proposal, proposal_err = _request_digit_proposal_for_buy(client_id, state, proposal_payload)
+        if proposal_err:
+            return False, proposal_err
+        return _send_buy_from_proposal(client_id, state, req_id, proposal, stake)
+    logger.info(
+        "[%s] TEMP buy_about_to_be_sent token_type=%s payload=%s",
+        client_id,
+        _deriv_connection_type(state),
+        _safe_deriv_payload_text(payload),
+    )
+    ws.send(json.dumps(payload))
+    logger.info("[%s] TEMP buy_actually_sent req_id=%s token_type=%s", client_id, req_id, _deriv_connection_type(state))
     return True, "Trade sent"
 
 
@@ -2429,6 +2460,50 @@ def _connection_trade_ready_payload(state):
     }
 
 
+def _is_trade_ready(state):
+    if not isinstance(state, dict):
+        return False, "No client state"
+    token_type = str(state.get("api_token_type") or "legacy").lower()
+    if token_type == "oauth_pending":
+        return False, "Select a Deriv account before trading"
+    if not state.get("ws_connected"):
+        return False, "Deriv websocket is not authenticated"
+    if not state.get("ws"):
+        return False, "Deriv websocket is not available"
+    return True, None
+
+
+def _has_live_trade_balance(state):
+    if not isinstance(state, dict):
+        return False
+    return bool(
+        _safe_money(state.get("last_live_balance_updated_at", 0.0)) > 0.0
+        or _safe_money(state.get("balance_updated_at", 0.0)) > 0.0
+        or _safe_money(state.get("last_known_trade_balance", 0.0)) > 0.0
+    )
+
+
+def _should_skip_local_balance_precheck(state):
+    """OAuth OTP sockets can be trade-ready before the first balance event arrives."""
+    return _deriv_connection_type(state) == "oauth" and not _has_live_trade_balance(state)
+
+
+def _log_trade_path(client_id, stage, state, **extra):
+    try:
+        logger.info(
+            "[%s] TEMP trade_path_%s token_type=%s trade_ready=%s ws_connected=%s ws_present=%s %s",
+            client_id,
+            stage,
+            _deriv_connection_type(state),
+            _is_trade_ready(state)[0],
+            bool((state or {}).get("ws_connected")) if isinstance(state, dict) else False,
+            bool((state or {}).get("ws")) if isinstance(state, dict) else False,
+            " ".join(f"{key}={value}" for key, value in extra.items()),
+        )
+    except Exception:
+        pass
+
+
 def _runtime_diag_payload(client_id, state, *, runtime_missing_before_init=False):
     state = state or {}
     ws_thread = state.get("ws_thread")
@@ -3110,11 +3185,18 @@ def handle_fast_profile_trade(data=None):
         return {"status": "error", "message": "Unauthorized"}
 
     cid, state = get_client_state()
+    logger.info(
+        "[%s] TEMP backend_received_trade_request source=fast_profile_trade token_type=%s payload=%s",
+        cid,
+        _deriv_connection_type(state),
+        _safe_deriv_payload_text(data or {}),
+    )
     return _handle_fast_profile_trade_payload(cid, state, data or {}, emit_balance_after_send=False)
 
 
 def _handle_fast_profile_trade_payload(client_id, state, payload, *, emit_balance_after_send=False):
     payload = payload or {}
+    _log_trade_path(client_id, "fast_profile_payload", state, profile=payload.get("profile"), type=payload.get("type"), symbol=payload.get("symbol"))
     profile = str(payload.get("profile") or state.get("active_profile") or "").upper().strip()
     if profile not in ("KOOLKID", "JOKERJOE"):
         return {"status": "error", "message": "Invalid profile"}
@@ -3631,6 +3713,7 @@ def _sanitize_trade_duration_for_unit(duration, duration_unit, default=1):
 
 def send_buy(client_id, contract_type, stake, symbol, barrier, duration=1, duration_unit="t", mode=None, extra_meta=None):
     state = clients.get(client_id)
+    _log_trade_path(client_id, "send_buy_received", state, contract_type=contract_type, symbol=symbol, barrier=barrier)
     ready, ready_msg = _ensure_trade_socket_ready(client_id, state)
     if not ready:
         return False, ready_msg
@@ -3643,7 +3726,21 @@ def send_buy(client_id, contract_type, stake, symbol, barrier, duration=1, durat
     balance_value = _get_pre_trade_available_balance(state)
     if balance_value > 0.0:
         state["last_known_trade_balance"] = balance_value
-    if stake_value > 0 and (_effective_trade_balance(balance_value) + 1e-9) < stake_value:
+    skip_balance_precheck = _should_skip_local_balance_precheck(state)
+    if skip_balance_precheck:
+        logger.info(
+            "[%s] TEMP trade_path_balance_precheck_skipped reason=oauth_balance_pending stake=%s",
+            client_id,
+            stake_value,
+        )
+    if (not skip_balance_precheck) and stake_value > 0 and (_effective_trade_balance(balance_value) + 1e-9) < stake_value:
+        logger.warning(
+            "[%s] TEMP trade_path_blocked reason=insufficient_local_balance stake=%s balance=%s token_type=%s",
+            client_id,
+            stake_value,
+            balance_value,
+            _deriv_connection_type(state),
+        )
         try:
             socketio.emit("api_error", {"message": "Insufficient funds to place trade"}, room=client_id)
         except Exception:
@@ -3739,12 +3836,13 @@ def send_buy(client_id, contract_type, stake, symbol, barrier, duration=1, durat
                 return False, proposal_err
             return _send_buy_from_proposal(client_id, state, req_id, proposal, stake)
         logger.info(
-            "[%s] deriv_outgoing_legacy_direct_buy token_type=%s payload=%s",
+            "[%s] TEMP buy_about_to_be_sent token_type=%s payload=%s",
             client_id,
             _deriv_connection_type(state),
             _safe_deriv_payload_text(payload),
         )
         ws.send(json.dumps(payload))
+        logger.info("[%s] TEMP buy_actually_sent req_id=%s token_type=%s", client_id, req_id, _deriv_connection_type(state))
         return True, "Trade sent"
     except Exception as e:
         _mark_ws_unhealthy_and_reconnect(client_id, state, "Deriv connection failed while sending a trade. Reconnecting now...")
@@ -3771,6 +3869,7 @@ def send_buy_with_profile(
     extra_meta=None,
 ):
     state = clients.get(client_id)
+    _log_trade_path(client_id, "send_buy_with_profile_received", state, profile=profile, contract_type=contract_type, symbol=symbol, barrier=barrier)
     ready, ready_msg = _ensure_trade_socket_ready(client_id, state)
     if not ready:
         return False, ready_msg
@@ -3783,11 +3882,28 @@ def send_buy_with_profile(
     balance_value = _get_pre_trade_available_balance(state)
     if balance_value > 0.0:
         state["last_known_trade_balance"] = balance_value
+    skip_balance_precheck = _should_skip_local_balance_precheck(state)
+    if skip_balance_precheck:
+        logger.info(
+            "[%s] TEMP trade_path_balance_precheck_skipped reason=oauth_balance_pending profile=%s stake=%s",
+            client_id,
+            profile,
+            stake_value,
+        )
     if (
         not bool(skip_local_balance_check)
+        and not skip_balance_precheck
         and stake_value > 0
         and (_effective_trade_balance(balance_value) + 1e-9) < stake_value
     ):
+        logger.warning(
+            "[%s] TEMP trade_path_blocked reason=insufficient_local_balance profile=%s stake=%s balance=%s token_type=%s",
+            client_id,
+            profile,
+            stake_value,
+            balance_value,
+            _deriv_connection_type(state),
+        )
         try:
             socketio.emit("api_error", {"message": "Insufficient funds to place trade"}, room=client_id)
         except Exception:
@@ -3888,12 +4004,13 @@ def send_buy_with_profile(
                 _emit_balance_payload(client_id, state)
             return ok, msg
         logger.info(
-            "[%s] deriv_outgoing_legacy_direct_buy token_type=%s payload=%s",
+            "[%s] TEMP buy_about_to_be_sent token_type=%s payload=%s",
             client_id,
             _deriv_connection_type(state),
             _safe_deriv_payload_text(payload),
         )
         ws.send(json.dumps(payload))
+        logger.info("[%s] TEMP buy_actually_sent req_id=%s token_type=%s", client_id, req_id, _deriv_connection_type(state))
         if emit_balance_after_send:
             _emit_balance_payload(client_id, state)
         return True, "Trade sent"
@@ -3985,9 +4102,16 @@ def place_risefall_order(client_id, signal):
     }
 
     try:
-        ws.send(json.dumps(payload))
+        _log_trade_path(client_id, "buy_about_to_be_sent", state, req_id=req_id, contract=deriv_contract, symbol=symbol_to_use)
+        ok, msg = _send_trade_payload_with_oauth_proposal(client_id, state, req_id, payload, stake)
+        if not ok:
+            try:
+                _release_profile_budget_reservation(state, budget_reservation)
+            except Exception:
+                pass
+            return False, msg
         _emit_balance_payload(client_id, state)
-        return True, "Trade sent"
+        return True, msg
     except Exception as e:
         _mark_ws_unhealthy_and_reconnect(client_id, state, "Deriv connection failed while sending a trade. Reconnecting now...")
         try:
@@ -4079,7 +4203,16 @@ def _request_human_manual_proposal_quote(
         payload["selected_tick"] = int(selected_tick)
 
     try:
+        if client_id is not None:
+            logger.info(
+                "[%s] TEMP proposal_about_to_be_sent token_type=%s payload=%s",
+                client_id,
+                _deriv_connection_type(state),
+                _safe_deriv_payload_text(payload),
+            )
         ws.send(json.dumps(payload))
+        if client_id is not None:
+            logger.info("[%s] TEMP proposal_actually_sent req_id=%s token_type=%s", client_id, req_id, _deriv_connection_type(state))
     except Exception as e:
         if client_id is not None and _should_force_ws_reconnect_on_send_exception(state, e):
             _mark_ws_unhealthy_and_reconnect(client_id, state, "Deriv connection failed while requesting a quote. Reconnecting now...", emit_error=False)
@@ -4231,7 +4364,10 @@ def place_human_manual_contract(
         "price": float(quote.get("ask_price") or stake_value),
     }
     try:
+        _log_trade_path(client_id, "buy_about_to_be_sent", state, req_id=req_id, action=action_key, symbol=symbol)
+        logger.info("[%s] TEMP buy_about_to_be_sent token_type=%s payload=%s", client_id, _deriv_connection_type(state), _safe_deriv_payload_text(payload))
         state["ws"].send(json.dumps(payload))
+        logger.info("[%s] TEMP buy_actually_sent req_id=%s token_type=%s", client_id, req_id, _deriv_connection_type(state))
         _emit_balance_payload(client_id, state)
         return True, "Trade sent", {
             "action": action_key,
@@ -5187,10 +5323,13 @@ def _should_force_ws_reconnect_on_send_exception(state, exc):
 
 
 def _ensure_trade_socket_ready(client_id, state, *, emit_error=True):
+    ready_now, not_ready_msg = _is_trade_ready(state)
     if not state:
-        return False, "No client state"
+        logger.warning("[%s] TEMP trade_path_blocked reason=%s", client_id, not_ready_msg)
+        return False, not_ready_msg
     if str(state.get("api_token_type") or "").lower() == "oauth_pending":
-        return False, "Select a Deriv account before trading"
+        logger.warning("[%s] TEMP trade_path_blocked reason=%s", client_id, not_ready_msg)
+        return False, not_ready_msg
     ws = state.get("ws")
     if state.get("ws_connected") and ws and _is_ws_stale(state):
         warmup_active = False
@@ -5215,13 +5354,22 @@ def _ensure_trade_socket_ready(client_id, state, *, emit_error=True):
             except Exception:
                 pass
         return True, None
-    if not state.get("ws_connected") or not ws:
+    if not ready_now:
         if str(state.get("api_token", "") or "").strip():
             try:
                 _schedule_ws_reconnect(client_id, state.get("ws_nonce"), delay_sec=0.25)
             except Exception:
                 pass
-        return False, "Not connected"
+        logger.warning(
+            "[%s] TEMP trade_path_blocked reason=%s token_type=%s ws_connected=%s ws_present=%s",
+            client_id,
+            not_ready_msg,
+            _deriv_connection_type(state),
+            bool(state.get("ws_connected")),
+            bool(ws),
+        )
+        return False, not_ready_msg
+    _log_trade_path(client_id, "ready", state)
     return True, None
 
 
@@ -13510,7 +13658,21 @@ def _send_human_parity_trade(
         return False, msg
 
     try:
-        ws.send(json.dumps(prepared["payload"]))
+        _log_trade_path(client_id, "buy_about_to_be_sent", state, req_id=prepared.get("req_id"), side=prepared.get("side"), symbol=symbol)
+        sent_ok, sent_msg = _send_trade_payload_with_oauth_proposal(
+            client_id,
+            state,
+            prepared.get("req_id"),
+            prepared["payload"],
+            stake,
+        )
+        if not sent_ok:
+            try:
+                state.get("req_meta", {}).pop(prepared.get("req_id"), None)
+                _release_profile_budget_reservation(state, prepared.get("budget_reservation"))
+            except Exception:
+                pass
+            return False, sent_msg
         if emit_balance_after_send:
             _emit_balance_payload(client_id, state)
         return True, f"{prepared['side']} trade sent"
@@ -19238,6 +19400,12 @@ def manual_trade():
 
     cid, state = get_client_state()
     data = request.json or {}
+    logger.info(
+        "[%s] TEMP backend_received_trade_request source=manual_trade token_type=%s payload=%s",
+        cid,
+        _deriv_connection_type(state),
+        _safe_deriv_payload_text(data),
+    )
 
     contract_type = data.get("type")
     stake = float(data.get("stake", 1))
@@ -20824,6 +20992,12 @@ def human_manual_trade_route():
 
     cid, _state = get_client_state()
     data = request.json or {}
+    logger.info(
+        "[%s] TEMP backend_received_trade_request source=human_manual_trade token_type=%s payload=%s",
+        cid,
+        _deriv_connection_type(_state),
+        _safe_deriv_payload_text(data),
+    )
     ok, msg, trade = place_human_manual_contract(
         cid,
         action=data.get("action"),
@@ -20844,6 +21018,12 @@ def human_manual_pair_trade_route():
 
     cid, _state = get_client_state()
     data = request.json or {}
+    logger.info(
+        "[%s] TEMP backend_received_trade_request source=human_manual_pair_trade token_type=%s payload=%s",
+        cid,
+        _deriv_connection_type(_state),
+        _safe_deriv_payload_text(data),
+    )
     actions = data.get("actions")
     if not isinstance(actions, list) or len(actions) < 2:
         return jsonify({"error": "At least two HUMAN manual actions are required."}), 400
@@ -20869,6 +21049,12 @@ def human_dual_market_contracts_route():
 
     cid, state = get_client_state()
     data = request.json or {}
+    logger.info(
+        "[%s] TEMP backend_received_trade_request source=human_dual_market_contracts token_type=%s payload=%s",
+        cid,
+        _deriv_connection_type(state),
+        _safe_deriv_payload_text(data),
+    )
     legs = data.get("legs")
     if not isinstance(legs, list) or len(legs) != 2:
         return jsonify({"status": "error", "message": "Exactly two dual-market legs are required.", "placed": []}), 400

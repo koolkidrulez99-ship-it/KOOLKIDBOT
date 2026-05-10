@@ -2335,6 +2335,7 @@ let apiConnectPollTimer = null;
 let apiConnectPendingUntil = 0;
 let apiConnectSubmitting = false;
 let apiConnectRequestSeq = 0;
+let latestApiConnectionState = {};
 let globalObservedTickCount = 0;
 const API_CONNECT_POLL_INTERVAL_MS = 2000;
 const API_CONNECT_POLL_MAX_ATTEMPTS = 180;
@@ -3096,7 +3097,23 @@ function isApiTradeReadyPayload(data){
     return !!data.connected;
 }
 
+function getTradeReadyReason(){
+    const data = latestApiConnectionState || {};
+    if(data.oauth_account_selection_required) return "Deriv account selection is required";
+    if(data.reconnecting) return "API is reconnecting";
+    if(data.connected && (data.trade_ready || data.can_trade || data.authorized || data.ws_authorized)) return "";
+    if(data.connected) return "API is connected but not trade-ready yet";
+    return "API is not connected";
+}
+
+function isTradeReady(){
+    return !!apiConnected || isApiTradeReadyPayload(latestApiConnectionState || {});
+}
+window.isTradeReady = isTradeReady;
+window.getTradeReadyReason = getTradeReadyReason;
+
 function applyApiConnectionState(data){
+    latestApiConnectionState = Object.assign({}, latestApiConnectionState || {}, data || {});
     const connected = !!(data && data.connected);
     const tradeReady = isApiTradeReadyPayload(data);
     const reconnecting = !!(data && data.reconnecting);
@@ -3177,6 +3194,22 @@ function applyApiConnectionState(data){
     resetBalanceMilestones();
     return false;
 }
+
+document.addEventListener("click", (event)=>{
+    try{
+        const btn = event.target && event.target.closest ? event.target.closest("button,a,[role='button']") : null;
+        if(!btn) return;
+        const label = (btn.innerText || btn.value || btn.id || btn.getAttribute("aria-label") || "").trim();
+        if(!/trade|over|under|match|differs|rise|fall|higher|lower|touch|martingale|kid|black|golden|place/i.test(label)) return;
+        const ready = isTradeReady();
+        console.info("TEMP manual trade button clicked", {
+            id: btn.id || "",
+            label: label.slice(0, 90),
+            trade_ready: ready,
+            blocked_reason: ready ? "" : getTradeReadyReason()
+        });
+    }catch(_err){}
+}, true);
 
 async function refreshApiConnectionState(silent){
     try{
@@ -5687,9 +5720,11 @@ function sendFastProfileTradeOverSocket(profile, payload, options){
     return new Promise((resolve)=>{
         try{
             if(typeof socket === "undefined" || !socket || !socket.connected){
+                console.warn("TEMP frontend blocked trade", { source: "fast_profile_trade", reason: "Socket not connected", trade_ready: isTradeReady() });
                 resolve({ ok: false, data: { status: "error", message: "Socket not connected" } });
                 return;
             }
+            console.info("TEMP frontend allowed trade", { source: "fast_profile_trade", profile, trade_ready: isTradeReady(), payload });
             const fireAndForget = !!(options && options.fireAndForget);
             if(fireAndForget){
                 socket.emit("fast_profile_trade", payload);
@@ -5720,6 +5755,7 @@ function sendFastProfileTradeBatchOverSocket(profile, payloads, options){
     return new Promise((resolve)=>{
         try{
             if(typeof socket === "undefined" || !socket || !socket.connected){
+                console.warn("TEMP frontend blocked trade", { source: "fast_profile_trade_batch", reason: "Socket not connected", trade_ready: isTradeReady() });
                 resolve({ ok: false, data: { status: "error", message: "Socket not connected", placed: 0, responses: [] } });
                 return;
             }
@@ -5730,6 +5766,7 @@ function sendFastProfileTradeBatchOverSocket(profile, payloads, options){
             }
             const fireAndForget = !!(options && options.fireAndForget);
             const batchPayload = { profile: normalizeFastBuyProfile(profile), trades };
+            console.info("TEMP frontend allowed trade", { source: "fast_profile_trade_batch", profile, trade_ready: isTradeReady(), count: trades.length });
             if(fireAndForget){
                 socket.emit("fast_profile_trade_batch", batchPayload);
                 resolve({ ok: true, data: { status: "success", message: "Batch sent", placed: trades.length, responses: [] } });
