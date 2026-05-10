@@ -205,12 +205,13 @@ socketio = SocketIO(
 )
 
 DERIV_OAUTH_CLIENT_ID = str(os.environ.get("DERIV_OAUTH_CLIENT_ID", "33emYLF3Ib9Npm7Z8L8wQ") or "").strip()
-DERIV_APP_ID = str(os.environ.get("DERIV_APP_ID", DERIV_OAUTH_CLIENT_ID) or DERIV_OAUTH_CLIENT_ID).strip()
+DERIV_APP_ID = str(os.environ.get("DERIV_APP_ID", "1089") or "1089").strip()
+DERIV_OAUTH_APP_ID = str(os.environ.get("DERIV_OAUTH_APP_ID", DERIV_OAUTH_CLIENT_ID) or DERIV_OAUTH_CLIENT_ID).strip()
 DERIV_WS = f"wss://ws.derivws.com/websockets/v3?app_id={DERIV_APP_ID}"
 DERIV_ACCOUNT_ID = str(os.environ.get("DERIV_ACCOUNT_ID", "") or "").strip()
 DERIV_PAT_OTP_ENDPOINT_TEMPLATE = "https://api.derivws.com/trading/v1/options/accounts/{account_id}/otp"
 DERIV_OAUTH_CLIENT_SECRET = str(os.environ.get("DERIV_OAUTH_CLIENT_SECRET", "") or "").strip()
-DERIV_OAUTH_REDIRECT_URI = str(os.environ.get("DERIV_OAUTH_REDIRECT_URI", "https://koolkidbot.org/oauth/callback") or "").strip()
+DERIV_OAUTH_REDIRECT_URI = "https://koolkidbot.org/oauth/callback"
 DERIV_OAUTH_SCOPE = str(os.environ.get("DERIV_OAUTH_SCOPE", "trade") or "trade").strip()
 DERIV_OAUTH_AUTH_URL = "https://auth.deriv.com/oauth2/auth"
 DERIV_OAUTH_TOKEN_URL = "https://auth.deriv.com/oauth2/token"
@@ -308,9 +309,7 @@ def _base64url_no_padding(raw_bytes):
 
 
 def _derive_oauth_redirect_uri():
-    if DERIV_OAUTH_REDIRECT_URI:
-        return DERIV_OAUTH_REDIRECT_URI
-    return url_for("deriv_oauth_callback", _external=True)
+    return DERIV_OAUTH_REDIRECT_URI
 
 
 def _generate_deriv_oauth_pkce():
@@ -330,7 +329,18 @@ def _deriv_oauth_login_url(code_challenge, state_value, redirect_uri):
         "code_challenge": code_challenge,
         "code_challenge_method": "S256",
     }
-    return f"{DERIV_OAUTH_AUTH_URL}?{urllib.parse.urlencode(params)}"
+    login_url = f"{DERIV_OAUTH_AUTH_URL}?{urllib.parse.urlencode(params)}"
+    safe_params = dict(params)
+    safe_params["state"] = "<generated>"
+    safe_params["code_challenge"] = "<generated_pkce_challenge>"
+    logger.info(
+        "[oauth] deriv_oauth_login_url_generated base=%s redirect_uri=%s safe_url=%s?%s",
+        DERIV_OAUTH_AUTH_URL,
+        redirect_uri,
+        DERIV_OAUTH_AUTH_URL,
+        urllib.parse.urlencode(safe_params),
+    )
+    return login_url
 
 
 def _exchange_deriv_oauth_code(code, code_verifier, redirect_uri):
@@ -372,7 +382,7 @@ def _fetch_deriv_oauth_accounts(access_token):
         DERIV_ACCOUNTS_URL,
         method="GET",
         headers={
-            "Deriv-App-ID": DERIV_APP_ID,
+            "Deriv-App-ID": DERIV_OAUTH_APP_ID,
             "Authorization": f"Bearer {access_token}",
             "Accept": "application/json",
         },
@@ -17238,7 +17248,8 @@ def _start_deriv_connection_for_state(cid, state, token, token_type, account_id,
     state["api_token"] = token
     state["api_token_type"] = token_type
     state["deriv_account_id"] = account_id
-    state["deriv_app_id"] = str(app_id or DERIV_APP_ID or "1089").strip() or "1089"
+    app_id_default = DERIV_OAUTH_APP_ID if str(token_type or "").lower() == "oauth" else DERIV_APP_ID
+    state["deriv_app_id"] = str(app_id or app_id_default or "1089").strip() or "1089"
     state["pat_otp_ws_url"] = ""
     state["pat_otp_reconnect_used"] = False
     state["loginid"] = "UNKNOWN"
@@ -17282,13 +17293,20 @@ def deriv_oauth_start():
     session["deriv_oauth_state"] = state_value
     session["deriv_oauth_code_verifier"] = code_verifier
     session["deriv_oauth_redirect_uri"] = redirect_uri
-    logger.info("[oauth] deriv_oauth_start client_id=%s redirect_uri=%s", DERIV_OAUTH_CLIENT_ID, redirect_uri)
+    logger.info("[oauth] deriv_oauth_start client_id=%s redirect_uri=%s auth_url=%s", DERIV_OAUTH_CLIENT_ID, redirect_uri, DERIV_OAUTH_AUTH_URL)
     return redirect(_deriv_oauth_login_url(code_challenge, state_value, redirect_uri))
 
 
 @app.route("/oauth/callback", methods=["GET"])
 @app.route("/deriv/oauth/callback", methods=["GET"])
 def deriv_oauth_callback():
+    logger.info(
+        "[oauth] deriv_oauth_callback_reached path=%s has_code=%s has_state=%s redirect_uri=%s",
+        request.path,
+        bool(request.args.get("code")),
+        bool(request.args.get("state")),
+        DERIV_OAUTH_REDIRECT_URI,
+    )
     if not login_required():
         return redirect(url_for("login"))
     error = request.args.get("error")
@@ -17305,7 +17323,7 @@ def deriv_oauth_callback():
 
     code = request.args.get("code")
     code_verifier = session.get("deriv_oauth_code_verifier")
-    redirect_uri = session.get("deriv_oauth_redirect_uri") or _derive_oauth_redirect_uri()
+    redirect_uri = _derive_oauth_redirect_uri()
     if not code or not code_verifier:
         return "Deriv login failed: missing OAuth code", 400
 
@@ -17328,7 +17346,7 @@ def deriv_oauth_callback():
 
     if len(accounts) == 1:
         account_id = accounts[0]["account_id"]
-        _start_deriv_connection_for_state(cid, state, access_token, "oauth", account_id, "deriv_oauth")
+        _start_deriv_connection_for_state(cid, state, access_token, "oauth", account_id, "deriv_oauth", DERIV_OAUTH_APP_ID)
         return redirect(url_for("index"))
 
     return render_template_string("""
@@ -17374,7 +17392,7 @@ def deriv_oauth_select_account():
         return "Deriv account selection expired. Please login with Deriv again.", 400
     state["oauth_pending_access_token"] = ""
     state["oauth_pending_accounts"] = []
-    _start_deriv_connection_for_state(cid, state, access_token, "oauth", selected, "deriv_oauth_select")
+    _start_deriv_connection_for_state(cid, state, access_token, "oauth", selected, "deriv_oauth_select", DERIV_OAUTH_APP_ID)
     return redirect(url_for("index"))
 
 
