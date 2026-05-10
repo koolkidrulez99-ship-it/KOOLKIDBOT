@@ -204,11 +204,11 @@ socketio = SocketIO(
     ping_timeout=int(float(os.environ.get("SOCKETIO_PING_TIMEOUT_SEC", "600"))),
 )
 
-DERIV_APP_ID = str(os.environ.get("DERIV_APP_ID", "1089")).strip() or "1089"
+DERIV_OAUTH_CLIENT_ID = str(os.environ.get("DERIV_OAUTH_CLIENT_ID", "33emYLF3Ib9Npm7Z8L8wQ") or "").strip()
+DERIV_APP_ID = str(os.environ.get("DERIV_APP_ID", DERIV_OAUTH_CLIENT_ID) or DERIV_OAUTH_CLIENT_ID).strip()
 DERIV_WS = f"wss://ws.derivws.com/websockets/v3?app_id={DERIV_APP_ID}"
 DERIV_ACCOUNT_ID = str(os.environ.get("DERIV_ACCOUNT_ID", "") or "").strip()
 DERIV_PAT_OTP_ENDPOINT_TEMPLATE = "https://api.derivws.com/trading/v1/options/accounts/{account_id}/otp"
-DERIV_OAUTH_CLIENT_ID = str(os.environ.get("DERIV_OAUTH_CLIENT_ID", "33emYLF3Ib9Npm7Z8L8wQ") or "").strip()
 DERIV_OAUTH_CLIENT_SECRET = str(os.environ.get("DERIV_OAUTH_CLIENT_SECRET", "") or "").strip()
 DERIV_OAUTH_REDIRECT_URI = str(os.environ.get("DERIV_OAUTH_REDIRECT_URI", "https://koolkidbot.org/oauth/callback") or "").strip()
 DERIV_OAUTH_SCOPE = str(os.environ.get("DERIV_OAUTH_SCOPE", "trade") or "trade").strip()
@@ -329,7 +329,6 @@ def _deriv_oauth_login_url(code_challenge, state_value, redirect_uri):
         "state": state_value,
         "code_challenge": code_challenge,
         "code_challenge_method": "S256",
-        "app_id": DERIV_APP_ID,
     }
     return f"{DERIV_OAUTH_AUTH_URL}?{urllib.parse.urlencode(params)}"
 
