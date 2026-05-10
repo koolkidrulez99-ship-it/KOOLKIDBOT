@@ -1248,7 +1248,8 @@ body.mobile-only-ui #profileContainer .unchain-history-grid{
                 <div id="apiConnectForm" style="display:flex; flex-wrap:wrap; align-items:center; gap:10px; width:100%;">
                     <input id="token" placeholder="Enter API Token" type="password" style="flex:0 1 210px; min-width:180px; max-width:240px;">
                     <button id="connectBtn" onclick="connect()" style="background:#38bdf8;">Connect</button>
-                    <a href="/deriv/oauth/start" class="deriv-login-btn">Login with Deriv</a>
+                    <a href="/deriv/oauth/start" class="deriv-login-btn" data-deriv-login-source="dashboard" onclick="return startDerivOAuthLogin(event, this);">Login with Deriv</a>
+                    <div id="derivOAuthDebugLine" style="flex-basis:100%; font-size:11px; color:#93c5fd; display:none;"></div>
                 </div>
                 <div id="apiConnectedPanel" style="display:none; align-items:center; gap:10px; flex-wrap:wrap; width:100%;">
                     <div id="apiConnectedMessage" class="green" style="display:flex; align-items:center; gap:8px; font-weight:700; font-size:13px; line-height:1.2;">
@@ -1391,8 +1392,42 @@ body.mobile-only-ui #profileContainer .unchain-history-grid{
 <script>
 window.MUTANT_ACCESS = {{ (mutant_access or {})|tojson }};
 window.LICENSE_CONTEXT = {{ (license_context or {})|tojson }};
+window.DERIV_OAUTH_CONFIG = {
+    authHost: {{ (deriv_oauth_auth_url or "https://auth.deriv.com/oauth2/auth")|tojson }},
+    clientId: {{ (deriv_oauth_client_id or "")|tojson }},
+    redirectUri: {{ (deriv_oauth_redirect_uri or "https://koolkidbot.org/oauth/callback")|tojson }},
+    startUrl: "/deriv/oauth/start?v=20260510-oauth2"
+};
 window.BotApp = window.BotApp || {};
 window.BotApp.licenseContext = window.LICENSE_CONTEXT;
+
+function startDerivOAuthLogin(event, trigger){
+    if(event && typeof event.preventDefault === "function") event.preventDefault();
+    const cfg = window.DERIV_OAUTH_CONFIG || {};
+    const source = window.matchMedia && window.matchMedia("(max-width: 768px)").matches ? "mobile" : "desktop";
+    const button = trigger && trigger.dataset && trigger.dataset.derivLoginSource
+        ? trigger.dataset.derivLoginSource
+        : "dashboard";
+    const debug = {
+        host: cfg.authHost || "https://auth.deriv.com/oauth2/auth",
+        client_id: cfg.clientId || "",
+        redirect_uri: cfg.redirectUri || "https://koolkidbot.org/oauth/callback",
+        source,
+        button
+    };
+    try{ console.info("deriv_oauth_login_redirect", debug); }catch(e){}
+    try{
+        const line = document.getElementById("derivOAuthDebugLine");
+        if(line){
+            line.style.display = "block";
+            line.textContent = `Deriv OAuth: ${debug.host} | client_id=${debug.client_id} | redirect_uri=${debug.redirect_uri} | source=${debug.source} | button=${debug.button}`;
+        }
+    }catch(e){}
+    window.location.href = cfg.startUrl || "/deriv/oauth/start?v=20260510-oauth2";
+    return false;
+}
+
+window.BotApp.startDerivOAuthLogin = startDerivOAuthLogin;
 
 function isMonthlyLicenseUser(){
     return !!(window.LICENSE_CONTEXT && window.LICENSE_CONTEXT.is_monthly);

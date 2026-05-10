@@ -256,6 +256,19 @@ def _extract_deriv_rest_error(body_text):
         return body_text[:300]
 
 
+def _sanitize_deriv_oauth_response_text(body_text):
+    try:
+        payload = json.loads(str(body_text or "") or "{}")
+        if isinstance(payload, dict):
+            for key in ("access_token", "refresh_token", "id_token"):
+                if key in payload:
+                    payload[key] = "<redacted>"
+            return json.dumps(payload, separators=(",", ":"))[:1000]
+    except Exception:
+        pass
+    return str(body_text or "")[:1000]
+
+
 def _request_pat_authenticated_ws_url(client_id, token, account_id, app_id=None):
     """pat_ and OAuth bearer tokens use REST Bearer auth to get a one-time authenticated WebSocket URL."""
     account_id = str(account_id or "").strip()
@@ -351,8 +364,6 @@ def _exchange_deriv_oauth_code(code, code_verifier, redirect_uri):
         "code_verifier": code_verifier,
         "redirect_uri": redirect_uri,
     }
-    if DERIV_OAUTH_CLIENT_SECRET:
-        form["client_secret"] = DERIV_OAUTH_CLIENT_SECRET
     body = urllib.parse.urlencode(form).encode("utf-8")
     req = urllib.request.Request(
         DERIV_OAUTH_TOKEN_URL,
@@ -361,15 +372,32 @@ def _exchange_deriv_oauth_code(code, code_verifier, redirect_uri):
         headers={
             "Content-Type": "application/x-www-form-urlencoded",
             "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0",
         },
     )
+    logger.info("[oauth] backend_token_exchange_start endpoint=%s redirect_uri=%s", DERIV_OAUTH_TOKEN_URL, redirect_uri)
     try:
         with urllib.request.urlopen(req, timeout=20) as resp:
-            payload = json.loads(resp.read().decode("utf-8", errors="replace") or "{}")
+            status_code = getattr(resp, "status", 200)
+            body_text = resp.read().decode("utf-8", errors="replace")
+            logger.info(
+                "[oauth] backend_token_exchange_response endpoint=%s status=%s response_text=%s",
+                DERIV_OAUTH_TOKEN_URL,
+                status_code,
+                _sanitize_deriv_oauth_response_text(body_text),
+            )
+            payload = json.loads(body_text or "{}")
     except urllib.error.HTTPError as exc:
         body_text = exc.read().decode("utf-8", errors="replace")
+        logger.warning(
+            "[oauth] backend_token_exchange_response endpoint=%s status=%s response_text=%s",
+            DERIV_OAUTH_TOKEN_URL,
+            exc.code,
+            _sanitize_deriv_oauth_response_text(body_text),
+        )
         raise RuntimeError(f"Deriv OAuth token exchange failed ({exc.code}): {_extract_deriv_rest_error(body_text)}") from exc
     except urllib.error.URLError as exc:
+        logger.warning("[oauth] backend_token_exchange_transport_error endpoint=%s error=%s", DERIV_OAUTH_TOKEN_URL, exc.reason)
         raise RuntimeError(f"Deriv OAuth token exchange failed: {exc.reason}") from exc
     token = str(payload.get("access_token") or "").strip()
     if not token:
@@ -3164,6 +3192,9 @@ def index():
         mutant_access=_mutant_access_state(),
         license_context=get_user_license_context(),
         active_broadcast_notice=get_active_broadcast_notice(),
+        deriv_oauth_auth_url=DERIV_OAUTH_AUTH_URL,
+        deriv_oauth_client_id=DERIV_OAUTH_CLIENT_ID,
+        deriv_oauth_redirect_uri=DERIV_OAUTH_REDIRECT_URI,
     )
 
 
