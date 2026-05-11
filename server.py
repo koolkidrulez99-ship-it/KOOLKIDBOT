@@ -283,8 +283,9 @@ def _deriv_connection_type(state):
 def _proposal_payload_for_connection(state, payload):
     final_payload = dict(payload or {})
     if _deriv_connection_type(state) == "oauth" and "symbol" in final_payload:
-        symbol = final_payload.pop("symbol")
-        final_payload["underlying_symbol"] = symbol
+        symbol = str(final_payload.pop("symbol") or "").strip()
+        if symbol:
+            final_payload["underlying_symbol"] = symbol
     return final_payload
 
 
@@ -3730,6 +3731,9 @@ def send_buy(client_id, contract_type, stake, symbol, barrier, duration=1, durat
     if not ready:
         return False, ready_msg
     ws = state.get("ws")
+    symbol = str(symbol or state.get("current_symbol") or "R_10").strip()
+    if not symbol:
+        return False, "Invalid symbol"
 
     try:
         stake_value = float(stake)
@@ -3886,6 +3890,9 @@ def send_buy_with_profile(
     if not ready:
         return False, ready_msg
     ws = state.get("ws")
+    symbol = str(symbol or state.get("current_symbol") or "R_10").strip()
+    if not symbol:
+        return False, "Invalid symbol"
 
     try:
         stake_value = float(stake)
@@ -6410,14 +6417,12 @@ def _maybe_force_ntt_close_on_countdown(client_id, state):
                 ws.send(json.dumps({
                     "proposal_open_contract": 1,
                     "contract_id": int(float(contract_id)),
-                    "subscribe": 1,
                 }))
             except Exception:
                 try:
                     ws.send(json.dumps({
                         "proposal_open_contract": 1,
                         "contract_id": contract_id,
-                        "subscribe": 1,
                     }))
                 except Exception:
                     return False
@@ -6699,14 +6704,12 @@ def _request_human_open_contract_refresh(state, entry, now_ts):
         ws.send(json.dumps({
             "proposal_open_contract": 1,
             "contract_id": int(float(contract_id)),
-            "subscribe": 1,
         }))
     except Exception:
         try:
             ws.send(json.dumps({
                 "proposal_open_contract": 1,
                 "contract_id": contract_id,
-                "subscribe": 1,
             }))
         except Exception:
             return False
@@ -8888,14 +8891,12 @@ def _maybe_force_unchain_close_on_countdown(client_id, state):
                 ws.send(json.dumps({
                     "proposal_open_contract": 1,
                     "contract_id": int(float(contract_id)),
-                    "subscribe": 1,
                 }))
             except Exception:
                 try:
                     ws.send(json.dumps({
                         "proposal_open_contract": 1,
                         "contract_id": contract_id,
-                        "subscribe": 1,
                     }))
                 except Exception:
                     return False
@@ -13671,6 +13672,9 @@ def _send_human_parity_trade(
     if not ready:
         return False, ready_msg
     ws = state.get("ws")
+    symbol = str(symbol or state.get("current_symbol") or "R_10").strip()
+    if not symbol:
+        return False, "Invalid symbol"
 
     ok, prepared, msg = _prepare_human_parity_trade_request(
         state,
@@ -14079,7 +14083,7 @@ def _request_sell_contract(client_id, contract_id):
             if norm_cid and str(norm_cid).isdigit():
                 sell_contract_id = int(norm_cid)
         ws.send(json.dumps({"sell": sell_contract_id, "price": 0}))
-        # Keep an open-contract subscription alive so settlement always arrives.
+        # Refresh once after sell without creating another Deriv subscription.
         try:
             sub_contract_id = sell_contract_id
             try:
@@ -14089,7 +14093,6 @@ def _request_sell_contract(client_id, contract_id):
             ws.send(json.dumps({
                 "proposal_open_contract": 1,
                 "contract_id": sub_contract_id,
-                "subscribe": 1,
             }))
         except Exception:
             pass
@@ -14182,6 +14185,18 @@ def run_auto_trade(client_id, state):
             pass
 
     if not signals:
+        if getattr(strategy, "kidgx_auto", False) and _should_emit_ui_event(state, f"kidgx_no_signal:{active_profile}", 3.0):
+            try:
+                barrier_ready = strategy._barrier_analysis_ready() if hasattr(strategy, "_barrier_analysis_ready") else None
+            except Exception:
+                barrier_ready = None
+            logger.info(
+                "[%s] TEMP kidgx_no_signal profile=%s symbol=%s barrier_ready=%s",
+                client_id,
+                active_profile,
+                state.get("current_symbol"),
+                barrier_ready,
+            )
         return
 
     if isinstance(signals, dict):
@@ -14196,6 +14211,18 @@ def run_auto_trade(client_id, state):
             duration = sig.get("duration", 1)
             duration_unit = sig.get("duration_unit", "t")
             mode = sig.get("mode")
+            if str(mode or "").upper() == "KIDGX":
+                logger.info(
+                    "[%s] TEMP kidgx_signal_detected profile=%s type=%s barrier=%s symbol=%s stake=%s duration=%s%s",
+                    client_id,
+                    active_profile,
+                    ctype,
+                    barrier,
+                    symbol,
+                    stake,
+                    duration,
+                    duration_unit,
+                )
             martha_decision = evaluate_martha_auto_signal(
                 state.get("martha_ai"),
                 active_profile,
@@ -14250,6 +14277,8 @@ def run_auto_trade(client_id, state):
 
             if ok:
                 logger.info(f"[{client_id}] 🤖 AUTO TRADE SENT ({active_profile}): {ctype} barrier={barrier} stake={stake} mode={sig.get('mode')}")
+                if str(mode or "").upper() == "KIDGX":
+                    logger.info("[%s] TEMP kidgx_trade_sent profile=%s symbol=%s type=%s barrier=%s", client_id, active_profile, symbol, ctype, barrier)
                 if hasattr(strategy, "on_auto_trade_sent"):
                     try:
                         strategy.on_auto_trade_sent(sig)
@@ -14263,6 +14292,8 @@ def run_auto_trade(client_id, state):
                         pass
             else:
                 logger.error(f"[{client_id}] ❌ AUTO TRADE FAILED: {msg}")
+                if str(mode or "").upper() == "KIDGX":
+                    logger.warning("[%s] TEMP kidgx_trade_failed profile=%s symbol=%s type=%s barrier=%s msg=%s", client_id, active_profile, symbol, ctype, barrier, msg)
                 if hasattr(strategy, "on_auto_trade_failed"):
                     try:
                         strategy.on_auto_trade_failed(sig, msg)
@@ -16561,6 +16592,7 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                         countdown_seconds = int(duration_val) * 60
                     elif duration_unit_val == "h":
                         countdown_seconds = int(duration_val) * 3600
+                trade_symbol = meta.get("symbol") or meta.get("underlying_symbol") or state.get("current_symbol")
                 if not is_auto_session_contract:
                     _log_trade_latency(client_id, meta, "trade_placed_emit", contract_id=contract_id)
                     socketio.emit("trade_placed", {
@@ -16568,7 +16600,7 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                         "type": meta.get("type"),
                         "barrier": meta.get("barrier"),
                         "stake": meta.get("stake"),
-                        "symbol": meta.get("symbol"),
+                        "symbol": trade_symbol,
                         "time": meta.get("time"),
                         "contract_id": contract_id,
                         "duration": duration_val,
@@ -16659,7 +16691,7 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                         "type": meta.get("type"),
                         "barrier": meta.get("barrier"),
                         "stake": meta.get("stake"),
-                        "symbol": meta.get("symbol"),
+                        "symbol": trade_symbol,
                         "time": meta.get("time"),
                         "contract_id": contract_id,
                         "duration": duration_val,
@@ -16760,7 +16792,6 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                             ws.send(json.dumps({
                                 "proposal_open_contract": 1,
                                 "contract_id": int(float(cid_val)),
-                                "subscribe": 1,
                             }))
                         except Exception:
                             pass
@@ -16810,7 +16841,6 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                             ws.send(json.dumps({
                                 "proposal_open_contract": 1,
                                 "contract_id": int(float(cid_val)),
-                                "subscribe": 1,
                             }))
                         except Exception:
                             pass
@@ -16851,7 +16881,6 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                             ws.send(json.dumps({
                                 "proposal_open_contract": 1,
                                 "contract_id": int(float(cid_val)),
-                                "subscribe": 1,
                             }))
                         except Exception:
                             pass
@@ -16874,10 +16903,7 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 is_ntt_processed = _is_ntt_contract_processed(state, cid_val)
                 is_human_processed = _is_regular_contract_processed(state, cid_val)
                 is_settled_fast = _is_contract_settled_fast(contract)
-                if unchain_known and sub_id not in (None, ""):
-                    _remember_unchain_open_contract_subscription(state, cid_val, sub_id)
-                    _log_runtime_subscription_counts(client_id, state, "open_contract_subscription_updated")
-                if ntt_known and sub_id not in (None, ""):
+                if sub_id not in (None, ""):
                     _remember_unchain_open_contract_subscription(state, cid_val, sub_id)
                     _log_runtime_subscription_counts(client_id, state, "open_contract_subscription_updated")
                 if is_settled_fast:
@@ -17152,6 +17178,7 @@ def process_contract(client_id, contract):
 
         contract_id = contract.get("contract_id")
         _clear_bot_auto_close_timer(state, contract_id)
+        _forget_unchain_open_contract_subscription(state, contract_id)
         if _is_regular_contract_processed(state, contract_id):
             _remove_human_pending_contract(state, contract_id)
             return
@@ -17233,11 +17260,13 @@ def process_contract(client_id, contract):
             if strategy and hasattr(strategy, "get_last_trade_entry"):
                 entry = strategy.get_last_trade_entry() or {}
             if meta:
+                resolved_symbol = meta.get("symbol") or meta.get("underlying_symbol") or state.get("current_symbol")
                 entry.setdefault("profile", meta.get("profile"))
                 entry.setdefault("type", meta.get("type"))
                 entry.setdefault("barrier", meta.get("barrier"))
                 entry.setdefault("stake", meta.get("stake"))
-                entry.setdefault("symbol", meta.get("symbol"))
+                if not entry.get("symbol") and resolved_symbol:
+                    entry["symbol"] = resolved_symbol
                 entry.setdefault("time", meta.get("time"))
                 entry.setdefault("duration", meta.get("duration"))
                 entry.setdefault("duration_unit", meta.get("duration_unit"))

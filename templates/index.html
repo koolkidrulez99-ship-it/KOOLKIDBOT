@@ -3749,14 +3749,14 @@ function removePendingDirectionalSimulationTrades(){
 function buildPendingTradeFromPlacement(data){
     const profile = resolveTradeProfile(data, activeProfile);
     const symbolNode = document.getElementById("symbol");
-    const fallbackSymbol = symbolNode && symbolNode.value ? symbolNode.value : undefined;
+    const fallbackSymbol = symbolNode ? (symbolNode.dataset.confirmedSymbol || symbolNode.value || undefined) : undefined;
     const sortTs = resolveTradeSortTimestamp(data, true);
     return {
         profile,
         type: data && data.type,
         barrier: data && data.barrier,
         stake: data && data.stake,
-        symbol: (data && data.symbol) || fallbackSymbol,
+        symbol: (data && (data.symbol || data.underlying_symbol || data.market)) || fallbackSymbol,
         time: (data && data.time) || new Date().toLocaleTimeString(),
         contract_id: data && data.contract_id,
         duration: data && data.duration,
