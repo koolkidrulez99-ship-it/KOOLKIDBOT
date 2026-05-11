@@ -458,14 +458,19 @@
   }
 
   async function postJSON(url, body) {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body || {}),
-    });
-    let data = {};
-    try { data = await res.json(); } catch (e) {}
-    return { ok: res.ok, data };
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body || {}),
+      });
+      let data = {};
+      try { data = await res.json(); } catch (e) {}
+      if (!res.ok && !data.message) data.message = `Request failed (${res.status})`;
+      return { ok: res.ok, data };
+    } catch (e) {
+      return { ok: false, data: { status: "error", message: "Connection interrupted. Please try again." } };
+    }
   }
 
   async function sendFastManualTradeKoolkid(payload, options) {

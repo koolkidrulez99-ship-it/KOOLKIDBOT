@@ -289,6 +289,64 @@ def _proposal_payload_for_connection(state, payload):
     return final_payload
 
 
+def _proposal_error_text(error):
+    if isinstance(error, dict):
+        pieces = [
+            error.get("message"),
+            error.get("code"),
+            error.get("error"),
+            error.get("details"),
+            error.get("validation"),
+        ]
+        return " ".join(str(piece) for piece in pieces if piece not in (None, ""))
+    return str(error or "")
+
+
+def _is_proposal_rate_limit_error(error):
+    text = _proposal_error_text(error).lower()
+    return bool(
+        text
+        and (
+            ("proposal" in text and "limit" in text)
+            or ("rate" in text and "limit" in text)
+            or "too many" in text
+            or "ratelimit" in text
+        )
+    )
+
+
+def _friendly_proposal_error_message(error):
+    if _is_proposal_rate_limit_error(error):
+        return "Deriv quote limit reached. Waiting a moment before trying again."
+    text = _proposal_error_text(error).strip()
+    return text or "Quote error"
+
+
+def _mark_proposal_rate_limited(state, error):
+    if not isinstance(state, dict) or not _is_proposal_rate_limit_error(error):
+        return False
+    try:
+        state["proposal_rate_limited_until"] = max(
+            float(state.get("proposal_rate_limited_until", 0.0) or 0.0),
+            time.time() + max(0.2, float(DERIV_PROPOSAL_RATE_LIMIT_COOLDOWN_SEC)),
+        )
+    except Exception:
+        state["proposal_rate_limited_until"] = time.time() + 2.5
+    return True
+
+
+def _proposal_rate_limit_wait_message(state):
+    if not isinstance(state, dict):
+        return None
+    try:
+        remaining = float(state.get("proposal_rate_limited_until", 0.0) or 0.0) - time.time()
+    except Exception:
+        remaining = 0.0
+    if remaining <= 0:
+        return None
+    return f"Deriv quote limit reached. Waiting {max(1, int(math.ceil(remaining)))}s before trying again."
+
+
 def _build_digit_proposal_payload(req_id, deriv_contract, stake, symbol, barrier, duration, duration_unit):
     return {
         "proposal": 1,
@@ -308,6 +366,9 @@ def _request_digit_proposal_for_buy(client_id, state, payload, timeout_sec=5.0):
     ws = state.get("ws") if isinstance(state, dict) else None
     if not ws:
         return None, "Not connected"
+    rate_limit_msg = _proposal_rate_limit_wait_message(state)
+    if rate_limit_msg:
+        return None, rate_limit_msg
     payload = _proposal_payload_for_connection(state, payload)
     req_id = payload.get("req_id")
     waiter = {"event": threading.Event(), "proposal": None, "error": None}
@@ -335,9 +396,8 @@ def _request_digit_proposal_for_buy(client_id, state, payload, timeout_sec=5.0):
     waiters.pop(str(req_id), None)
     if waiter.get("error"):
         err_payload = waiter.get("error")
-        if isinstance(err_payload, dict):
-            return None, str(err_payload.get("message") or err_payload.get("error") or "Quote error")
-        return None, str(err_payload)
+        _mark_proposal_rate_limited(state, err_payload)
+        return None, _friendly_proposal_error_message(err_payload)
     proposal = waiter.get("proposal") or {}
     proposal_id = proposal.get("id")
     if proposal_id in (None, ""):
@@ -743,6 +803,7 @@ DERIV_WS_PING_INTERVAL_SEC = float(os.environ.get("DERIV_WS_PING_INTERVAL_SEC", 
 DERIV_WS_PING_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_PING_TIMEOUT_SEC", "10"))
 DERIV_WS_CONNECT_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_CONNECT_TIMEOUT_SEC", "75"))
 DERIV_WS_AUTHORIZE_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_AUTHORIZE_TIMEOUT_SEC", "60"))
+DERIV_PROPOSAL_RATE_LIMIT_COOLDOWN_SEC = float(os.environ.get("DERIV_PROPOSAL_RATE_LIMIT_COOLDOWN_SEC", "2.5"))
 TICK_STREAM_STALE_SEC = float(os.environ.get("TICK_STREAM_STALE_SEC", "20"))
 TICK_STREAM_RESUBSCRIBE_COOLDOWN_SEC = float(os.environ.get("TICK_STREAM_RESUBSCRIBE_COOLDOWN_SEC", "8"))
 TICK_STREAM_RECONNECT_AFTER_SEC = float(os.environ.get("TICK_STREAM_RECONNECT_AFTER_SEC", "90"))
@@ -4182,6 +4243,9 @@ def _request_human_manual_proposal_quote(
         if not ready:
             return None, ready_msg
     ws = state.get("ws")
+    rate_limit_msg = _proposal_rate_limit_wait_message(state)
+    if rate_limit_msg:
+        return None, rate_limit_msg
     if not ws:
         return None, "Not connected"
 
@@ -4248,7 +4312,9 @@ def _request_human_manual_proposal_quote(
     waiters.pop(req_id, None)
     waiters.pop(str(req_id), None)
     if waiter.get("error"):
-        return None, str(waiter.get("error"))
+        err_payload = waiter.get("error")
+        _mark_proposal_rate_limited(state, err_payload)
+        return None, _friendly_proposal_error_message(err_payload)
 
     proposal = waiter.get("proposal") or {}
     proposal_id = proposal.get("id")
@@ -5342,6 +5408,16 @@ def _should_force_ws_reconnect_on_send_exception(state, exc):
     return any(marker in text for marker in fatal_markers)
 
 
+def _is_ws_ping_pong_timeout_error(error):
+    text = str(error or "").strip().lower()
+    return bool(
+        text
+        and "ping" in text
+        and "pong" in text
+        and ("timed out" in text or "timeout" in text)
+    )
+
+
 def _ensure_trade_socket_ready(client_id, state, *, emit_error=True):
     ready_now, not_ready_msg = _is_trade_ready(state)
     if not state:
@@ -5391,6 +5467,54 @@ def _ensure_trade_socket_ready(client_id, state, *, emit_error=True):
         return False, not_ready_msg
     _log_trade_path(client_id, "ready", state)
     return True, None
+
+
+def _auto_enable_connection_error_response(client_id, state, profile, mode_label):
+    token = str((state or {}).get("api_token", "") or "").strip()
+    api_token_type = str((state or {}).get("api_token_type") or "").lower()
+    if not token and api_token_type != "oauth_pending":
+        return None
+    ok, message = _ensure_trade_socket_ready(client_id, state, emit_error=False)
+    if ok:
+        return None
+    token_type = _deriv_connection_type(state)
+    logger.warning(
+        "[%s] auto_mode_enable_blocked profile=%s mode=%s token_type=%s reason=%s",
+        client_id,
+        profile,
+        mode_label,
+        token_type,
+        message,
+    )
+    if token:
+        try:
+            _schedule_ws_reconnect(client_id, (state or {}).get("ws_nonce"), delay_sec=0.25)
+        except Exception:
+            pass
+    user_message = "Deriv is reconnecting. Please try this button again in a moment."
+    if token_type == "oauth":
+        user_message = "Deriv login is reconnecting. Please try this button again in a moment."
+    elif api_token_type == "oauth_pending":
+        user_message = "Select a Deriv account before turning on auto trading."
+    return jsonify({
+        "status": "error",
+        "message": user_message,
+        "connection_message": message,
+        "trade_ready": False,
+        **_connection_trade_ready_payload(state),
+    }), 409
+
+
+def _guard_auto_enable(client_id, state, profile, strat, attr_name, mode_label=None):
+    if not strat or not attr_name:
+        return None
+    try:
+        currently_enabled = bool(getattr(strat, attr_name, False))
+    except Exception:
+        currently_enabled = False
+    if currently_enabled:
+        return None
+    return _auto_enable_connection_error_response(client_id, state, profile, mode_label or attr_name)
 
 
 def _check_ws_connect_timeout(client_id, state, now_ts=None):
@@ -6834,6 +6958,9 @@ def _request_ntt_proposal_quote(state, *, side, stake, symbol, barrier, duration
         if not ready:
             return None, ready_msg
     ws = state.get("ws")
+    rate_limit_msg = _proposal_rate_limit_wait_message(state)
+    if rate_limit_msg:
+        return None, rate_limit_msg
 
     side = str(side or "").upper().strip()
     if side not in ("TOUCH", "NO_TOUCH"):
@@ -6893,7 +7020,9 @@ def _request_ntt_proposal_quote(state, *, side, stake, symbol, barrier, duration
     waiters.pop(req_id, None)
     waiters.pop(str(req_id), None)
     if waiter.get("error"):
-        return None, str(waiter.get("error"))
+        err_payload = waiter.get("error")
+        _mark_proposal_rate_limited(state, err_payload)
+        return None, _friendly_proposal_error_message(err_payload)
     proposal = waiter.get("proposal") or {}
     ask_price = _safe_float(proposal.get("ask_price"), _safe_float(proposal.get("display_value"), None))
     payout = _safe_float(proposal.get("payout"), None)
@@ -6924,6 +7053,9 @@ def _request_digit_proposal_quote(state, *, contract_type, stake, symbol, barrie
         if not ready:
             return None, ready_msg
     ws = state.get("ws")
+    rate_limit_msg = _proposal_rate_limit_wait_message(state)
+    if rate_limit_msg:
+        return None, rate_limit_msg
 
     contract_map = {
         "OVER": "DIGITOVER",
@@ -6993,7 +7125,9 @@ def _request_digit_proposal_quote(state, *, contract_type, stake, symbol, barrie
     waiters.pop(req_id, None)
     waiters.pop(str(req_id), None)
     if waiter.get("error"):
-        return None, str(waiter.get("error"))
+        err_payload = waiter.get("error")
+        _mark_proposal_rate_limited(state, err_payload)
+        return None, _friendly_proposal_error_message(err_payload)
 
     proposal = waiter.get("proposal") or {}
     ask_price = _safe_float(proposal.get("ask_price"), _safe_float(proposal.get("display_value"), None))
@@ -8088,6 +8222,9 @@ def _toggle_ntt_auto_both(cid, state, data):
     enabled = (not bool(auto.get("enabled"))) if requested is None else bool(requested)
 
     if enabled:
+        blocked = _auto_enable_connection_error_response(cid, state, "NTT", "Mutant AUTO")
+        if blocked:
+            return blocked
         risk_block = _check_ntt_risk_block(state)
         if risk_block:
             payload = _ntt_payload_response(state)
@@ -11639,6 +11776,8 @@ def _resolve_proposal_waiter(state, req_id, proposal=None, error=None):
         waiters.pop(used_key, None)
     if waiter is None:
         return False
+    if error:
+        _mark_proposal_rate_limited(state, error)
     waiter["proposal"] = proposal
     waiter["error"] = error
     evt = waiter.get("event")
@@ -11721,6 +11860,9 @@ def _request_unchain_proposal_quote(state, *, side, stake, symbol, barrier, dura
         if not ready:
             return None, ready_msg
     ws = state.get("ws")
+    rate_limit_msg = _proposal_rate_limit_wait_message(state)
+    if rate_limit_msg:
+        return None, rate_limit_msg
 
     side = str(side or "").upper().strip()
     if side not in ("HIGHER", "LOWER"):
@@ -11786,7 +11928,9 @@ def _request_unchain_proposal_quote(state, *, side, stake, symbol, barrier, dura
     waiters.pop(req_id, None)
     waiters.pop(str(req_id), None)
     if waiter.get("error"):
-        return None, str(waiter.get("error"))
+        err_payload = waiter.get("error")
+        _mark_proposal_rate_limited(state, err_payload)
+        return None, _friendly_proposal_error_message(err_payload)
 
     proposal = waiter.get("proposal") or {}
     ask_price = _safe_float(proposal.get("ask_price"), _safe_float(proposal.get("display_value"), None))
@@ -17432,6 +17576,15 @@ def handle_on_error(client_id, ws, error, expected_nonce):
     if state.get("ws_nonce") != expected_nonce:
         return
     logger.error(f"[{client_id}] WebSocket Error: {error}")
+    if _is_ws_ping_pong_timeout_error(error):
+        logger.warning("[%s] deriv_ws_ping_pong_timeout action=reconnect_silent", client_id)
+        _mark_ws_unhealthy_and_reconnect(
+            client_id,
+            state,
+            "Deriv connection timed out. Reconnecting now...",
+            emit_error=False,
+        )
+        return
     state["ws_connected"] = False
     state["ws_transport_connected"] = False
     state["ws_authorize_deadline_at"] = 0.0
@@ -18537,6 +18690,10 @@ def toggle_auto():
     strategy = state["strategies"].get(state["active_profile"])
     if not strategy or not hasattr(strategy, "toggle_auto"):
         return jsonify({"status": "error", "message": "No strategy loaded"}), 400
+    active_profile = state.get("active_profile")
+    blocked = _guard_auto_enable(cid, state, active_profile, strategy, "auto_trade", "Master Auto")
+    if blocked:
+        return blocked
 
     new_state = strategy.toggle_auto()
     send_stats_update(cid)
@@ -18557,6 +18714,9 @@ def toggle_kidracks_auto_route():
 
     cid, state = get_client_state()
     strat = state["strategies"].get("KOOLKID")
+    blocked = _guard_auto_enable(cid, state, "KOOLKID", strat, "kidracks_auto", "KidRacks")
+    if blocked:
+        return blocked
     state_val = strat.toggle_kidracks_auto()
     if _sync_monthly_profile_master_auto(state, "KOOLKID", state_val):
         send_stats_update(cid)
@@ -18572,6 +18732,9 @@ def toggle_koolkidspeed_auto_route():
 
     cid, state = get_client_state()
     strat = state["strategies"].get("KOOLKID")
+    blocked = _guard_auto_enable(cid, state, "KOOLKID", strat, "koolkidspeed_auto", "KoolkidSpeed")
+    if blocked:
+        return blocked
     state_val = strat.toggle_koolkidspeed_auto()
     if _sync_monthly_profile_master_auto(state, "KOOLKID", state_val):
         send_stats_update(cid)
@@ -18587,6 +18750,9 @@ def toggle_koolluck_auto_route():
 
     cid, state = get_client_state()
     strat = state["strategies"].get("KOOLKID")
+    blocked = _guard_auto_enable(cid, state, "KOOLKID", strat, "koolluck_auto", "KoolLuck")
+    if blocked:
+        return blocked
     state_val = strat.toggle_koolluck_auto()
     if _sync_monthly_profile_master_auto(state, "KOOLKID", state_val):
         send_stats_update(cid)
@@ -18621,6 +18787,9 @@ def toggle_kidbagz_auto_route():
 
     cid, state = get_client_state()
     strat = state["strategies"].get("KOOLKID")
+    blocked = _guard_auto_enable(cid, state, "KOOLKID", strat, "kidbagz_auto", "KidBagz")
+    if blocked:
+        return blocked
     state_val = strat.toggle_kidbagz_auto()
     if _sync_monthly_profile_master_auto(state, "KOOLKID", state_val):
         send_stats_update(cid)
@@ -18636,6 +18805,9 @@ def toggle_mpull_auto_route():
 
     cid, state = get_client_state()
     strat = state["strategies"].get("KOOLKID")
+    blocked = _guard_auto_enable(cid, state, "KOOLKID", strat, "mpull_auto", "MPull")
+    if blocked:
+        return blocked
     state_val = strat.toggle_mpull_auto()
     if _sync_monthly_profile_master_auto(state, "KOOLKID", state_val):
         send_stats_update(cid)
@@ -18652,6 +18824,9 @@ def toggle_kidpairs_auto_route():
 
     cid, state = get_client_state()
     strat = state["strategies"].get("KOOLKID")
+    blocked = _guard_auto_enable(cid, state, "KOOLKID", strat, "kidpairs_auto", "KidPairs")
+    if blocked:
+        return blocked
     state_val = strat.toggle_kidpairs_auto()
     if _sync_monthly_profile_master_auto(state, "KOOLKID", state_val):
         send_stats_update(cid)
@@ -18669,6 +18844,9 @@ def toggle_over3_analysis_koolkid_route():
     strat = state["strategies"].get("KOOLKID")
     if not strat or not hasattr(strat, "toggle_over3_analysis_auto"):
         return jsonify({"status": "error", "message": "KOOLKID strategy not available"}), 400
+    blocked = _guard_auto_enable(cid, state, "KOOLKID", strat, "over3_analysis_auto", "Over 3 Analysis")
+    if blocked:
+        return blocked
 
     enabled = bool(strat.toggle_over3_analysis_auto())
     if _sync_monthly_profile_master_auto(state, "KOOLKID", enabled):
@@ -18865,6 +19043,9 @@ def toggle_kid2vix_koolkid_route():
     strat = state["strategies"].get("KOOLKID")
     if not strat or not hasattr(strat, "toggle_kid2vix_auto"):
         return jsonify({"status": "error", "message": "KOOLKID strategy not available"}), 400
+    blocked = _guard_auto_enable(cid, state, "KOOLKID", strat, "kid2vix_auto", "Kid2vix")
+    if blocked:
+        return blocked
 
     enabled = bool(strat.toggle_kid2vix_auto())
     if _sync_monthly_profile_master_auto(state, "KOOLKID", enabled):
@@ -19001,6 +19182,9 @@ def _toggle_koolkid_advanced_alias(cid, state, *, method_name, base_key, alias_k
     strat = state.get("strategies", {}).get("KOOLKID")
     if not strat:
         return jsonify({"status": "error", "message": "KOOLKID strategy not available"}), 400
+    blocked = _guard_auto_enable(cid, state, "KOOLKID", strat, base_key, alias_key)
+    if blocked:
+        return blocked
 
     state_val = None
     try:
@@ -19159,6 +19343,9 @@ def toggle_sludgex_auto_route():
     strat = state["strategies"].get("JOKERJOE")
     if not strat or not hasattr(strat, "toggle_sludgex_auto"):
         return jsonify({"status": "error", "message": "JOKERJOE strategy not available"}), 400
+    blocked = _guard_auto_enable(cid, state, "JOKERJOE", strat, "sludgex_auto", "SludgeX")
+    if blocked:
+        return blocked
 
     new_val = strat.toggle_sludgex_auto()
     _sync_monthly_profile_master_auto(state, "JOKERJOE", new_val)
@@ -19177,6 +19364,9 @@ def toggle_triplex_auto_route():
     strat = state["strategies"].get("JOKERJOE")
     if not strat or not hasattr(strat, "toggle_triplex_auto"):
         return jsonify({"status": "error", "message": "JOKERJOE strategy not available"}), 400
+    blocked = _guard_auto_enable(cid, state, "JOKERJOE", strat, "triplex_auto", "TripleX")
+    if blocked:
+        return blocked
 
     new_val = strat.toggle_triplex_auto()
     _sync_monthly_profile_master_auto(state, "JOKERJOE", new_val)
@@ -19195,6 +19385,9 @@ def toggle_kidx_auto_route():
     strat = state["strategies"].get("JOKERJOE")
     if not strat or not hasattr(strat, "toggle_kidx_auto"):
         return jsonify({"status": "error", "message": "JOKERJOE strategy not available"}), 400
+    blocked = _guard_auto_enable(cid, state, "JOKERJOE", strat, "kidx_auto", "KidX")
+    if blocked:
+        return blocked
 
     data = request.json or {}
     barrier = int(data.get("barrier", 5))
@@ -19216,6 +19409,9 @@ def toggle_multig_auto_route():
     strat = state["strategies"].get("JOKERJOE")
     if not strat or not hasattr(strat, "toggle_multig_auto"):
         return jsonify({"status": "error", "message": "JOKERJOE strategy not available"}), 400
+    blocked = _guard_auto_enable(cid, state, "JOKERJOE", strat, "multig_auto", "MultiG")
+    if blocked:
+        return blocked
 
     new_val = strat.toggle_multig_auto()
     _sync_monthly_profile_master_auto(state, "JOKERJOE", new_val)
@@ -19283,6 +19479,9 @@ def toggle_kidgx_auto_route():
     strat = state["strategies"].get(profile)
     if not strat or not hasattr(strat, "toggle_kidgx_auto"):
         return jsonify({"status": "error", "message": f"{profile} strategy not available"}), 400
+    blocked = _guard_auto_enable(cid, state, profile, strat, "kidgx_auto", "kidGx")
+    if blocked:
+        return blocked
 
     barrier = data.get("barrier", None)
     try:
@@ -19385,6 +19584,9 @@ def toggle_ai_auto_trading_route():
     strat = state["strategies"].get(profile)
     if not strat or not hasattr(strat, "toggle_ai_auto_trading"):
         return jsonify({"status": "error", "message": f"{profile} strategy not available"}), 400
+    blocked = _guard_auto_enable(cid, state, profile, strat, "ai_auto_trading", "AI auto trading")
+    if blocked:
+        return blocked
 
     new_val = strat.toggle_ai_auto_trading()
     if _sync_monthly_profile_master_auto(state, profile, new_val):
@@ -19408,6 +19610,9 @@ def toggle_mpull_all_digits_auto_route():
     strat = state["strategies"].get("KOOLKID")
     if not strat or not hasattr(strat, "toggle_mpull_all_digits_auto"):
         return jsonify({"status": "error", "message": "KOOLKID strategy not available"}), 400
+    blocked = _guard_auto_enable(cid, state, "KOOLKID", strat, "mpull_all_digits_auto", "MPull all digits")
+    if blocked:
+        return blocked
 
     new_val = strat.toggle_mpull_all_digits_auto()
     if _sync_monthly_profile_master_auto(state, "KOOLKID", new_val):
@@ -20360,6 +20565,11 @@ def ntt_clear_active_route():
 def _toggle_unchain_auto(cid, state, data):
     u = _ensure_unchain_hl_state(state)
     requested = data.get("enabled")
+    enable_requested = (not bool(u.get("auto_both_enabled"))) if requested is None else bool(requested)
+    if enable_requested:
+        blocked = _auto_enable_connection_error_response(cid, state, "UNCHAIN", "UNCHAIN AUTO BOTH")
+        if blocked:
+            return blocked
     if requested is None:
         u["auto_both_enabled"] = not bool(u.get("auto_both_enabled"))
     else:
@@ -20401,6 +20611,11 @@ def _toggle_unchain_auto(cid, state, data):
 def _toggle_unchain_ai_auto_trade(cid, state, data):
     u = _ensure_unchain_hl_state(state)
     requested = data.get("enabled")
+    enable_requested = (not bool(u.get("ai_auto_trade_enabled"))) if requested is None else bool(requested)
+    if enable_requested:
+        blocked = _auto_enable_connection_error_response(cid, state, "UNCHAIN", "UNCHAIN AI AUTO TRADE")
+        if blocked:
+            return blocked
     if requested is None:
         u["ai_auto_trade_enabled"] = not bool(u.get("ai_auto_trade_enabled"))
     else:
@@ -20456,6 +20671,11 @@ def _toggle_unchain_ai_auto_trade(cid, state, data):
 def _toggle_unchain_directional_auto(cid, state, data):
     u = _ensure_unchain_hl_state(state)
     requested = data.get("enabled")
+    enable_requested = (not bool(u.get("directional_auto_enabled"))) if requested is None else bool(requested)
+    if enable_requested:
+        blocked = _auto_enable_connection_error_response(cid, state, "UNCHAIN", "UNCHAIN directional auto")
+        if blocked:
+            return blocked
     if requested is None:
         u["directional_auto_enabled"] = not bool(u.get("directional_auto_enabled"))
     else:
