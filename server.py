@@ -395,6 +395,17 @@ def _resolve_request_waiter(state, waiter_key, req_id, payload=None, error=None)
         waiters.pop(used_key, None)
     if waiter is None:
         return False
+    if error:
+        try:
+            logger.warning(
+                "deriv_request_waiter_error waiter=%s req_id=%s failed_at=%s error=%s",
+                waiter_key,
+                req_id,
+                "contracts_for_error" if waiter_key == "_contracts_for_waiters" else waiter_key,
+                _safe_deriv_payload_text(error),
+            )
+        except Exception:
+            pass
     waiter["payload"] = payload
     waiter["error"] = error
     try:
@@ -512,16 +523,40 @@ def _get_contracts_for_symbol(client_id, state, underlying_symbol, force_refresh
         and (now_ts - float(cached.get("ts", 0.0) or 0.0)) < _CONTRACTS_FOR_CACHE_TTL_SEC
     ):
         return cached.get("contracts_for"), None
+    payload = {"contracts_for": symbol, "req_id": _new_req_id()}
+    if not _uses_new_deriv_trade_api(state):
+        payload["currency"] = "USD"
+    logger.info(
+        "[%s] deriv_contracts_for_send mode=%s payload=%s",
+        client_id,
+        _deriv_trade_connection_mode(state),
+        _safe_deriv_payload_text(payload),
+    )
     payload, err = _send_ws_request_for_response(
         client_id,
         state,
-        {"contracts_for": symbol, "currency": "USD", "req_id": _new_req_id()},
+        payload,
         "contracts_for",
         "_contracts_for_waiters",
         timeout_sec=6.0,
     )
     if err:
+        logger.warning(
+            "[%s] deriv_contracts_for_error mode=%s failed_at=contracts_for_error symbol=%s error=%s response=%s",
+            client_id,
+            _deriv_trade_connection_mode(state),
+            symbol,
+            err,
+            _safe_deriv_payload_text(payload or {}),
+        )
         return None, err
+    logger.info(
+        "[%s] deriv_contracts_for_response mode=%s symbol=%s response=%s",
+        client_id,
+        _deriv_trade_connection_mode(state),
+        symbol,
+        _safe_deriv_payload_text(payload or {}),
+    )
     contracts_for = payload.get("contracts_for") if isinstance(payload, dict) else None
     if not isinstance(contracts_for, dict):
         return None, "contracts_for returned no contract list"
@@ -775,7 +810,7 @@ def execute_deriv_trade(trade_request):
         contracts_for, contracts_err = _get_contracts_for_symbol(client_id, state, underlying_symbol)
         if contracts_err:
             debug["error"] = contracts_err
-            debug["failed_at"] = "contracts_for"
+            debug["failed_at"] = "contracts_for_error"
             _deriv_trade_debug_log(client_id, "blocked", debug)
             return False, contracts_err
         available = _contracts_for_has_contract_type(contracts_for, deriv_contract)
