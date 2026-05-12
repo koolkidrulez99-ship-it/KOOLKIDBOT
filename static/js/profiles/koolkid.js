@@ -66,6 +66,20 @@
       tickSpacing: 1,
       status: "Ready",
       lastResult: "none",
+      over3Under6Pair: {
+        running: false,
+        enabled: false,
+        inProgress: false,
+        round: 1,
+        pendingContracts: {},
+        pendingExpected: 0,
+        pendingSettled: 0,
+        lastDigit: null,
+        status: "Ready",
+        availabilityError: "",
+        over3_state: { current_stake: 0.35, loss_bank: 0, step: 1, last_result: "none" },
+        under6_state: { current_stake: 0.35, loss_bank: 0, step: 1, last_result: "none" },
+      },
     },
     over6ScanMartingale: {
       running: false,
@@ -1058,6 +1072,82 @@
     return value;
   }
 
+  function isOver3Under6PairModeKoolkid() {
+    const el = document.getElementById("koolkidMartingaleStrategyMode");
+    return String((el && el.value) || "NORMAL").toUpperCase() === "OVER3_UNDER6_PAIR";
+  }
+
+  function getOver3Under6PairStateKoolkid() {
+    const st = getKoolkidSingleMartingaleState();
+    if (!st.over3Under6Pair) {
+      st.over3Under6Pair = {
+        running: false,
+        enabled: false,
+        inProgress: false,
+        round: 1,
+        pendingContracts: {},
+        pendingExpected: 0,
+        pendingSettled: 0,
+        lastDigit: null,
+        status: "Ready",
+        availabilityError: "",
+        over3_state: { current_stake: 0.35, loss_bank: 0, step: 1, last_result: "none" },
+        under6_state: { current_stake: 0.35, loss_bank: 0, step: 1, last_result: "none" },
+      };
+    }
+    return st.over3Under6Pair;
+  }
+
+  function readOver3Under6PairSettingsKoolkid() {
+    return {
+      duration: Math.max(1, Math.min(10, Math.floor(readKoolkidMartingaleNumber("koolkidMartingaleDuration", 1, 1, 10)))),
+      over3BaseStake: Number(readKoolkidMartingaleNumber("koolkidPairOver3BaseStake", 0.35, 0.35, 1000000).toFixed(2)),
+      under6BaseStake: Number(readKoolkidMartingaleNumber("koolkidPairUnder6BaseStake", 0.35, 0.35, 1000000).toFixed(2)),
+      targetProfit: Number(readKoolkidMartingaleNumber("koolkidPairTargetProfit", 0.05, 0.01, 1000000).toFixed(2)),
+      payoutMultiplier: Math.max(0.01, Number(readKoolkidMartingaleNumber("koolkidPairPayoutMultiplier", 0.63, 0.01, 100).toFixed(4))),
+    };
+  }
+
+  function calculateNextOver3Under6SideStakeKoolkid(lossBank, targetProfit, payoutMultiplier) {
+    const next = (Number(lossBank || 0) + Number(targetProfit || 0.05)) / Math.max(0.01, Number(payoutMultiplier || 0.63));
+    return Number(Math.max(0.35, Math.ceil((next - 1e-9) * 100) / 100).toFixed(2));
+  }
+
+  function resetOver3Under6SideStateKoolkid(sideState, baseStake) {
+    sideState.current_stake = Number(Math.max(0.35, Number(baseStake || 0.35)).toFixed(2));
+    sideState.loss_bank = 0;
+    sideState.step = 1;
+    sideState.last_result = "none";
+  }
+
+  function resetOver3Under6PairStateKoolkid(status) {
+    const pair = getOver3Under6PairStateKoolkid();
+    const settings = readOver3Under6PairSettingsKoolkid();
+    pair.inProgress = false;
+    pair.pendingContracts = {};
+    pair.pendingExpected = 0;
+    pair.pendingSettled = 0;
+    pair.lastDigit = null;
+    pair.round = 1;
+    pair.status = status || "Ready";
+    resetOver3Under6SideStateKoolkid(pair.over3_state, settings.over3BaseStake);
+    resetOver3Under6SideStateKoolkid(pair.under6_state, settings.under6BaseStake);
+    updateKoolkidSingleMartingalePanel();
+  }
+
+  function updateOver3Under6SideAfterWinKoolkid(sideState, baseStake) {
+    resetOver3Under6SideStateKoolkid(sideState, baseStake);
+    sideState.last_result = "WIN";
+  }
+
+  function updateOver3Under6SideAfterLossKoolkid(sideState, settings) {
+    const stake = Number(sideState.current_stake || 0.35);
+    sideState.loss_bank = Number((Number(sideState.loss_bank || 0) + stake).toFixed(2));
+    sideState.step = Math.max(1, Math.floor(Number(sideState.step || 1))) + 1;
+    sideState.current_stake = calculateNextOver3Under6SideStakeKoolkid(sideState.loss_bank, settings.targetProfit, settings.payoutMultiplier);
+    sideState.last_result = "LOSS";
+  }
+
   function readKoolkidSingleMartingaleSettings() {
     const st = getKoolkidSingleMartingaleState();
     syncKoolkidMonthlySingleMartingaleUi();
@@ -1173,28 +1263,53 @@
     syncKoolkidMonthlySingleMartingaleUi();
 
     const settings = readKoolkidSingleMartingaleSettings();
+    const pairMode = isOver3Under6PairModeKoolkid();
+    const pairSettingsWrap = document.getElementById("koolkidOver3Under6PairSettings");
+    if (pairSettingsWrap) pairSettingsWrap.style.display = pairMode ? "" : "none";
+    ["koolkidMartingaleAction", "koolkidMartingaleMode", "koolkidMartingaleStepAmount", "koolkidMartingaleMultiplier", "koolkidMartingaleMaxSteps", "koolkidMartingaleMaxStake", "koolkidMartingaleDoubleLimit", "koolkidMartingaleTickSpacing", "koolkidMartingaleStartStake"].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.disabled = pairMode;
+    });
+    const pair = getOver3Under6PairStateKoolkid();
+    const pairSettings = readOver3Under6PairSettingsKoolkid();
+    const pairStatus = document.getElementById("koolkidPairStatus");
+    if (pairStatus) {
+      const over = pair.over3_state || {};
+      const under = pair.under6_state || {};
+      const errorText = pair.availabilityError ? ` - ${pair.availabilityError}` : "";
+      pairStatus.textContent = `${pair.status || "Ready"}${errorText} - Round ${pair.round || 1} - Over 3 stake $${Number(over.current_stake || pairSettings.over3BaseStake).toFixed(2)} / bank $${Number(over.loss_bank || 0).toFixed(2)} / step ${over.step || 1} - Under 6 stake $${Number(under.current_stake || pairSettings.under6BaseStake).toFixed(2)} / bank $${Number(under.loss_bank || 0).toFixed(2)} / step ${under.step || 1} - Last digit ${pair.lastDigit === null || pair.lastDigit === undefined ? "-" : pair.lastDigit}`;
+      pairStatus.style.color = pair.inProgress ? "#fbbf24" : pair.status === "Error" ? "#fca5a5" : "#94a3b8";
+    }
+    const pairStart = document.getElementById("koolkidPairStartBtn");
+    if (pairStart) pairStart.disabled = !!(pair.running || pair.inProgress);
+    const pairStop = document.getElementById("koolkidPairStopBtn");
+    if (pairStop) pairStop.disabled = !(pair.running || pair.inProgress);
     st.action = settings.action;
     const toggleBtn = document.getElementById("koolkidMartingaleToggleBtn");
     if (toggleBtn) {
-      toggleBtn.textContent = `MARTINGALE: ${st.enabled ? "ON" : "OFF"}`;
-      toggleBtn.style.background = st.enabled ? "#f59e0b" : "#334155";
-      toggleBtn.style.color = st.enabled ? "#111827" : "#f8fafc";
+      toggleBtn.textContent = pairMode ? `PAIR: ${pair.running ? "ON" : "OFF"}` : `MARTINGALE: ${st.enabled ? "ON" : "OFF"}`;
+      toggleBtn.style.background = (pairMode ? pair.running : st.enabled) ? "#f59e0b" : "#334155";
+      toggleBtn.style.color = (pairMode ? pair.running : st.enabled) ? "#111827" : "#f8fafc";
     }
     const placeBtn = document.getElementById("koolkidMartingalePlaceBtn");
     if (placeBtn) {
-      placeBtn.disabled = !!(st.inProgress || st.running);
+      placeBtn.textContent = pairMode ? "START PAIR" : "PLACE SELECTED CONTRACT";
+      placeBtn.disabled = pairMode ? !!(pair.running || pair.inProgress) : !!(st.inProgress || st.running);
       placeBtn.style.opacity = placeBtn.disabled ? "0.55" : "1";
       placeBtn.style.cursor = placeBtn.disabled ? "not-allowed" : "pointer";
     }
     const stopBtn = document.getElementById("koolkidMartingaleQuickStopBtn");
     if (stopBtn) {
-      const canStop = !!(st.running || st.inProgress || st.waitingForTicks);
+      stopBtn.textContent = pairMode ? "STOP PAIR" : "QUICK STOP";
+      const canStop = pairMode ? !!(pair.running || pair.inProgress) : !!(st.running || st.inProgress || st.waitingForTicks);
       stopBtn.disabled = !canStop;
       stopBtn.style.opacity = canStop ? "1" : "0.55";
       stopBtn.style.cursor = canStop ? "pointer" : "not-allowed";
     }
     const status = document.getElementById("koolkidMartingaleStatus");
     if (status) {
+      status.style.display = pairMode ? "none" : "";
+      if (pairMode) return;
       const currentStake = koolkidSingleMartingaleStakeForStep();
       const nextStep = nextKoolkidLimitedMartingaleStep(st.step, settings);
       const nextStake = st.enabled ? koolkidSingleMartingaleStakeForStep(nextStep) : settings.startStake;
@@ -1235,6 +1350,10 @@
   }
 
   function quickStopKoolkidSingleMartingale(reason) {
+    if (isOver3Under6PairModeKoolkid()) {
+      stopOver3Under6PairMartingaleKoolkid(reason || "Stopped");
+      return;
+    }
     const st = getKoolkidSingleMartingaleState();
     if (st.restartTimer) {
       clearTimeout(st.restartTimer);
@@ -1253,6 +1372,12 @@
   }
 
   function toggleKoolkidSingleMartingale() {
+    if (isOver3Under6PairModeKoolkid()) {
+      const pair = getOver3Under6PairStateKoolkid();
+      if (pair.running || pair.inProgress) stopOver3Under6PairMartingaleKoolkid("Stopped");
+      else startOver3Under6PairMartingaleKoolkid();
+      return;
+    }
     if (!canUseKoolkidSingleMartingale()) {
       safeToast(isPaidMonthlyUserKoolkid() ? "This Koolkid martingale is not included for Paid Monthly users." : "This Koolkid martingale is for monthly and lifetime users only.", "error");
       return;
@@ -1282,7 +1407,136 @@
     updateKoolkidSingleMartingalePanel();
   }
 
+  async function checkOver3Under6AvailabilityKoolkid() {
+    const symbolEl = document.getElementById("symbol");
+    const symbol = symbolEl ? symbolEl.value : undefined;
+    const r = await postJSON("/koolkid/over3-under6-availability", { symbol });
+    if (!(r && r.data && r.data.status === "success")) {
+      throw new Error((r && r.data && r.data.message) || "Over/Under digit contracts are not available on this market.");
+    }
+    return r.data;
+  }
+
+  async function placeOver3Under6PairRoundKoolkid(options) {
+    const pair = getOver3Under6PairStateKoolkid();
+    const settings = readOver3Under6PairSettingsKoolkid();
+    if (pair.inProgress) return;
+    pair.inProgress = true;
+    pair.pendingContracts = {};
+    pair.pendingExpected = 2;
+    pair.pendingSettled = 0;
+    pair.status = "Running";
+    updateKoolkidSingleMartingalePanel();
+    const round = Math.max(1, Number(pair.round || 1));
+    const overStake = Number(pair.over3_state.current_stake || settings.over3BaseStake);
+    const underStake = Number(pair.under6_state.current_stake || settings.under6BaseStake);
+    const legs = [
+      { key: "over3", action: "OVER_3", type: "OVER", barrier: 3, label: "Over 3", stake: Number(overStake.toFixed(2)) },
+      { key: "under6", action: "UNDER_6", type: "UNDER", barrier: 6, label: "Under 6", stake: Number(underStake.toFixed(2)) },
+    ];
+    try {
+      const results = await Promise.all(legs.map((leg) => {
+        const payload = {
+          stake: leg.stake,
+          amount: leg.stake,
+          type: leg.type,
+          barrier: leg.barrier,
+          duration: settings.duration,
+          duration_unit: "t",
+          mode: "koolkid_over3_under6_pair_martingale",
+          action: "OVER3_UNDER6_PAIR",
+          leg_action: leg.action,
+          label: `Over 3 + Under 6 Pair Martingale ${leg.label}`,
+          batch_label: "Over 3 + Under 6 Pair Martingale",
+          strategy_name: "Over 3 + Under 6 Pair Martingale",
+          round_number: round,
+          over3_stake: Number(overStake.toFixed(2)),
+          under6_stake: Number(underStake.toFixed(2)),
+          hide_from_history: false,
+        };
+        return sendFastManualTradeKoolkid(payload, { turbo: false, queue: false, fireAndForget: false })
+          .then((result) => ({ result, leg }));
+      }));
+      const failed = results.find((row) => !(row && row.result && row.result.data && row.result.data.status === "success"));
+      results.forEach((row) => {
+        const data = row && row.result && row.result.data;
+        const contractId = data && (data.contract_id || data.buy_contract_id || data.id);
+        if (contractId) {
+          pair.pendingContracts[String(contractId)] = {
+            key: row.leg.key,
+            action: row.leg.action,
+            label: row.leg.label,
+            stake: row.leg.stake,
+            outcome: "",
+            exit_digit: null,
+          };
+        }
+      });
+      if (failed) throw new Error((failed.result && failed.result.data && failed.result.data.message) || "Over 3 + Under 6 pair trade failed");
+      pair.status = "Running";
+      safeToast(`Over 3 + Under 6 round ${round} sent`, "success");
+    } catch (e) {
+      pair.inProgress = false;
+      pair.running = false;
+      pair.enabled = false;
+      pair.pendingContracts = {};
+      pair.pendingExpected = 0;
+      pair.pendingSettled = 0;
+      pair.status = "Error";
+      pair.availabilityError = (e && e.message) || "Over 3 + Under 6 pair trade failed";
+      safeToast(pair.availabilityError, "error");
+    } finally {
+      updateKoolkidSingleMartingalePanel();
+    }
+  }
+
+  async function startOver3Under6PairMartingaleKoolkid(options) {
+    if (!canUseKoolkidSingleMartingale()) {
+      safeToast(isPaidMonthlyUserKoolkid() ? "This Koolkid martingale is not included for Paid Monthly users." : "This Koolkid martingale is for monthly and lifetime users only.", "error");
+      return;
+    }
+    const pair = getOver3Under6PairStateKoolkid();
+    if (pair.inProgress) return;
+    try {
+      await checkOver3Under6AvailabilityKoolkid();
+      pair.availabilityError = "";
+    } catch (e) {
+      pair.running = false;
+      pair.enabled = false;
+      pair.status = "Error";
+      pair.availabilityError = (e && e.message) || "Over/Under digit contracts are not available on this market.";
+      updateKoolkidSingleMartingalePanel();
+      safeToast(pair.availabilityError, "error");
+      return;
+    }
+    const opts = options || {};
+    pair.running = true;
+    pair.enabled = true;
+    pair.status = "Running";
+    if (!opts.continuation) {
+      pair.round = Math.max(1, Number(pair.round || 1));
+      pair.lastDigit = null;
+    }
+    updateKoolkidSingleMartingalePanel();
+    await placeOver3Under6PairRoundKoolkid(opts);
+  }
+
+  function stopOver3Under6PairMartingaleKoolkid(reason) {
+    const pair = getOver3Under6PairStateKoolkid();
+    pair.running = false;
+    pair.enabled = false;
+    pair.inProgress = false;
+    pair.pendingContracts = {};
+    pair.pendingExpected = 0;
+    pair.pendingSettled = 0;
+    pair.status = reason || "Stopped";
+    updateKoolkidSingleMartingalePanel();
+  }
+
   async function placeKoolkidSingleMartingaleTrade(options) {
+    if (isOver3Under6PairModeKoolkid()) {
+      return startOver3Under6PairMartingaleKoolkid(options || {});
+    }
     if (!canUseKoolkidSingleMartingale()) {
       safeToast(isPaidMonthlyUserKoolkid() ? "This Koolkid martingale is not included for Paid Monthly users." : "This Koolkid martingale is for monthly and lifetime users only.", "error");
       return;
@@ -1386,6 +1640,26 @@
 
   function rememberKoolkidSingleMartingaleTrade(payload) {
     if (!payload || String(payload.profile || "").toUpperCase() !== PROFILE) return;
+    const pairMode = String(payload.mode || "").toLowerCase() === "koolkid_over3_under6_pair_martingale";
+    if (pairMode) {
+      const pair = getOver3Under6PairStateKoolkid();
+      const contractId = payload.contract_id || payload.buy_contract_id || payload.id;
+      if (!contractId || pair.pendingContracts[String(contractId)]) return;
+      const legAction = String(payload.leg_action || "").toUpperCase();
+      const isUnder = legAction === "UNDER_6" || String(payload.type || "").toUpperCase() === "UNDER";
+      pair.pendingContracts[String(contractId)] = {
+        key: isUnder ? "under6" : "over3",
+        action: isUnder ? "UNDER_6" : "OVER_3",
+        label: isUnder ? "Under 6" : "Over 3",
+        stake: Number(payload.stake || payload.amount || 0),
+        outcome: "",
+        exit_digit: null,
+      };
+      pair.pendingExpected = 2;
+      pair.status = "Running";
+      updateKoolkidSingleMartingalePanel();
+      return;
+    }
     const st = getKoolkidSingleMartingaleState();
     if (!st.inProgress) return;
     const mode = String(payload.mode || "").toLowerCase();
@@ -1438,8 +1712,96 @@
     return !item || item.controlsStop !== false;
   }
 
+  function resolveOver3Under6FinalDigitKoolkid(items) {
+    const direct = items
+      .map((item) => Number(item.exit_digit))
+      .find((digit) => Number.isInteger(digit) && digit >= 0 && digit <= 9);
+    if (Number.isInteger(direct)) return direct;
+    const over = items.find((item) => item.key === "over3");
+    const under = items.find((item) => item.key === "under6");
+    if (over && under && over.outcome === "WIN" && under.outcome === "WIN") return 4;
+    if (over && over.outcome === "LOSS") return 3;
+    if (under && under.outcome === "LOSS") return 6;
+    return null;
+  }
+
+  function handleOver3Under6PairResultKoolkid() {
+    const pair = getOver3Under6PairStateKoolkid();
+    const settings = readOver3Under6PairSettingsKoolkid();
+    const items = Object.keys(pair.pendingContracts || {}).map((id) => pair.pendingContracts[id]).filter(Boolean);
+    if (items.length < 2 || items.some((item) => !item.outcome)) return;
+    const over = items.find((item) => item.key === "over3");
+    const under = items.find((item) => item.key === "under6");
+    if (!over || !under) return;
+    const digit = resolveOver3Under6FinalDigitKoolkid(items);
+    pair.lastDigit = digit;
+    const bothWon = over.outcome === "WIN" && under.outcome === "WIN";
+    const bothLost = over.outcome === "LOSS" && under.outcome === "LOSS";
+    if (bothWon) {
+      updateOver3Under6SideAfterWinKoolkid(pair.over3_state, settings.over3BaseStake);
+      updateOver3Under6SideAfterWinKoolkid(pair.under6_state, settings.under6BaseStake);
+      pair.running = false;
+      pair.enabled = false;
+      pair.inProgress = false;
+      pair.pendingContracts = {};
+      pair.pendingExpected = 0;
+      pair.pendingSettled = 0;
+      pair.round = 1;
+      pair.status = "Both Won";
+      safeToast("Both Over 3 and Under 6 won. Strategy stopped.", "success");
+      updateKoolkidSingleMartingalePanel();
+      return;
+    }
+    if (bothLost) {
+      pair.running = false;
+      pair.enabled = false;
+      pair.inProgress = false;
+      pair.pendingContracts = {};
+      pair.status = "Error";
+      pair.availabilityError = "Both sides lost or Deriv rejected a pair result. Strategy stopped.";
+      safeToast(pair.availabilityError, "error");
+      updateKoolkidSingleMartingalePanel();
+      return;
+    }
+    if (over.outcome === "LOSS") {
+      updateOver3Under6SideAfterLossKoolkid(pair.over3_state, settings);
+      updateOver3Under6SideAfterWinKoolkid(pair.under6_state, settings.under6BaseStake);
+      pair.status = "Over 3 increased";
+    } else if (under.outcome === "LOSS") {
+      updateOver3Under6SideAfterWinKoolkid(pair.over3_state, settings.over3BaseStake);
+      updateOver3Under6SideAfterLossKoolkid(pair.under6_state, settings);
+      pair.status = "Under 6 increased";
+    }
+    pair.inProgress = false;
+    pair.pendingContracts = {};
+    pair.pendingExpected = 0;
+    pair.pendingSettled = 0;
+    pair.round = Math.max(1, Number(pair.round || 1)) + 1;
+    updateKoolkidSingleMartingalePanel();
+    if (pair.running && pair.enabled) {
+      setTimeout(() => startOver3Under6PairMartingaleKoolkid({ continuation: true }), 140);
+    }
+  }
+
   function updateKoolkidSingleMartingaleFromResult(payload) {
     if (!payload || String(payload.profile || "").toUpperCase() !== PROFILE) return;
+    if (String(payload.mode || "").toLowerCase() === "koolkid_over3_under6_pair_martingale") {
+      const pair = getOver3Under6PairStateKoolkid();
+      const contractId = payload.contract_id || payload.buy_contract_id || payload.id;
+      const key = String(contractId || "");
+      const item = key ? (pair.pendingContracts || {})[key] : null;
+      if (!item || item.outcome) return;
+      const outcome = resolveKoolkidTradeOutcome(payload);
+      if (!outcome) return;
+      item.outcome = outcome;
+      const exitDigit = Number(payload.exit_digit ?? payload.final_digit ?? payload.last_digit);
+      if (Number.isInteger(exitDigit) && exitDigit >= 0 && exitDigit <= 9) item.exit_digit = exitDigit;
+      pair.pendingSettled = Object.keys(pair.pendingContracts || {}).filter((id) => pair.pendingContracts[id] && pair.pendingContracts[id].outcome).length;
+      pair.status = pair.pendingSettled < 2 ? `Running: waiting for ${2 - pair.pendingSettled} result(s)` : "Settling";
+      updateKoolkidSingleMartingalePanel();
+      handleOver3Under6PairResultKoolkid();
+      return;
+    }
     const st = getKoolkidSingleMartingaleState();
     if (!st.inProgress && !st.pendingContractId && !st.pendingPair) return;
     const contractId = payload.contract_id || payload.buy_contract_id || payload.id;
@@ -3695,6 +4057,14 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
   window.updateKoolkidSingleMartingalePanel = updateKoolkidSingleMartingalePanel;
   window.placeKoolkidSingleMartingaleTrade = placeKoolkidSingleMartingaleTrade;
   window.quickStopKoolkidSingleMartingale = quickStopKoolkidSingleMartingale;
+  window.startOver3Under6PairMartingaleKoolkid = startOver3Under6PairMartingaleKoolkid;
+  window.stopOver3Under6PairMartingaleKoolkid = stopOver3Under6PairMartingaleKoolkid;
+  window.resetOver3Under6PairMartingaleKoolkid = function () {
+    const pair = getOver3Under6PairStateKoolkid();
+    pair.running = false;
+    pair.enabled = false;
+    resetOver3Under6PairStateKoolkid("Ready");
+  };
   window.startKoolkidOver6ScanMartingale = startKoolkidOver6ScanMartingale;
   window.stopKoolkidOver6ScanMartingale = stopKoolkidOver6ScanMartingale;
   window.updateKoolkidOver6ScanMartingalePanel = updateKoolkidOver6ScanMartingalePanel;

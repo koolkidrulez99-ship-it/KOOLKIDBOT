@@ -311,6 +311,15 @@
             <div style="display:flex; justify-content:flex-end; align-items:center; gap:10px; flex-wrap:wrap;">
               <button id="koolkidMartingaleToggleBtn" type="button" onclick="toggleKoolkidSingleMartingale()" style="background:#334155; min-width:120px;">MARTINGALE: OFF</button>
             </div>
+            <div style="margin-top:10px; display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:8px;">
+              <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                Mode
+                <select id="koolkidMartingaleStrategyMode" onchange="updateKoolkidSingleMartingalePanel()" style="width:100%; min-height:38px;">
+                  <option value="NORMAL" selected>Normal Single Contract Martingale</option>
+                  <option value="OVER3_UNDER6_PAIR">Over 3 + Under 6 Pair Martingale</option>
+                </select>
+              </label>
+            </div>
             <div style="margin-top:10px; display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:8px;">
               <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
                 Contract
@@ -389,6 +398,33 @@
                 Double Up Limit
                 <input id="koolkidMartingaleDoubleLimit" type="number" min="0" step="1" value="0" placeholder="0 = unlimited" oninput="updateKoolkidSingleMartingalePanel()" style="width:100%; min-height:38px;">
               </label>
+            </div>
+            <div id="koolkidOver3Under6PairSettings" style="display:none; margin-top:8px; border:1px solid #334155; border-radius:10px; padding:8px; background:#0f172a;">
+              <div style="color:#94a3b8; font-size:11px; margin-bottom:8px;">Places Over 3 and Under 6 together. Only the losing side martingales. Strategy stops only when digit 4 or 5 makes both trades win.</div>
+              <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(125px,1fr)); gap:8px;">
+                <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                  Over 3 Base
+                  <input id="koolkidPairOver3BaseStake" type="number" min="0.35" step="0.01" value="0.35" oninput="updateKoolkidSingleMartingalePanel()" style="width:100%; min-height:38px;">
+                </label>
+                <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                  Under 6 Base
+                  <input id="koolkidPairUnder6BaseStake" type="number" min="0.35" step="0.01" value="0.35" oninput="updateKoolkidSingleMartingalePanel()" style="width:100%; min-height:38px;">
+                </label>
+                <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                  Target Profit
+                  <input id="koolkidPairTargetProfit" type="number" min="0.01" step="0.01" value="0.05" oninput="updateKoolkidSingleMartingalePanel()" style="width:100%; min-height:38px;">
+                </label>
+                <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                  Payout Multiplier
+                  <input id="koolkidPairPayoutMultiplier" type="number" min="0.01" step="0.01" value="0.63" oninput="updateKoolkidSingleMartingalePanel()" style="width:100%; min-height:38px;">
+                </label>
+              </div>
+              <div style="margin-top:8px; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px;">
+                <button id="koolkidPairStartBtn" type="button" onclick="startOver3Under6PairMartingaleKoolkid()" style="background:#22c55e; color:#052e16; font-weight:900;">START</button>
+                <button id="koolkidPairStopBtn" type="button" onclick="stopOver3Under6PairMartingaleKoolkid()" style="background:#ef4444; color:#fff7ed; font-weight:900;">STOP</button>
+                <button id="koolkidPairResetBtn" type="button" onclick="resetOver3Under6PairMartingaleKoolkid()" style="background:#475569; color:#f8fafc; font-weight:900;">RESET</button>
+              </div>
+              <div id="koolkidPairStatus" style="margin-top:8px; color:#94a3b8; font-size:12px;">Ready.</div>
             </div>
             <div id="koolkidMartingaleStatus" style="margin-top:8px; color:#94a3b8; font-size:12px;">Ready. $0.05 step - Step 1 - Current stake $0.35 - Next stake $0.40 - Last result: none</div>
             <div style="margin-top:8px; display:grid; grid-template-columns:1fr 1fr; gap:8px;">

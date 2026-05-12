@@ -8,6 +8,7 @@ import time
 import uuid
 import sqlite3
 import random  # PATCH 1A
+import re
 import secrets
 import hashlib
 import math
@@ -280,12 +281,35 @@ def _deriv_connection_type(state):
     return str((state or {}).get("api_token_type") or "legacy").strip().lower() or "legacy"
 
 
+def _deriv_trade_connection_mode(state):
+    token_type = _deriv_connection_type(state)
+    if token_type == "oauth":
+        return "oauth"
+    if token_type == "pat" or _is_pat_token((state or {}).get("api_token")):
+        return "pat"
+    return "legacy_token"
+
+
+def _uses_new_deriv_trade_api(state):
+    return _deriv_trade_connection_mode(state) in ("pat", "oauth")
+
+
 def _proposal_payload_for_connection(state, payload):
     final_payload = dict(payload or {})
-    if _deriv_connection_type(state) == "oauth" and "symbol" in final_payload:
+    if _uses_new_deriv_trade_api(state) and "symbol" in final_payload:
         symbol = str(final_payload.pop("symbol") or "").strip()
         if symbol:
             final_payload["underlying_symbol"] = symbol
+    if _uses_new_deriv_trade_api(state):
+        for unsupported_key in (
+            "loginid",
+            "product_type",
+            "barrier_range",
+            "date_start",
+            "trade_risk_profile",
+            "trading_period_start",
+        ):
+            final_payload.pop(unsupported_key, None)
     return final_payload
 
 
@@ -345,6 +369,237 @@ def _proposal_rate_limit_wait_message(state):
     if remaining <= 0:
         return None
     return f"Deriv quote limit reached. Waiting {max(1, int(math.ceil(remaining)))}s before trying again."
+
+
+def _resolve_request_waiter(state, waiter_key, req_id, payload=None, error=None):
+    if req_id in (None, ""):
+        return False
+    waiters = (state or {}).get(waiter_key)
+    if not isinstance(waiters, dict):
+        return False
+    candidate_keys = [req_id, str(req_id)]
+    try:
+        normalized_int = int(float(req_id))
+        candidate_keys.append(normalized_int)
+        candidate_keys.append(str(normalized_int))
+    except Exception:
+        pass
+    waiter = None
+    used_key = None
+    for key in candidate_keys:
+        waiter = waiters.get(key)
+        if waiter is not None:
+            used_key = key
+            break
+    if waiter is not None and used_key is not None:
+        waiters.pop(used_key, None)
+    if waiter is None:
+        return False
+    waiter["payload"] = payload
+    waiter["error"] = error
+    try:
+        evt = waiter.get("event")
+        if evt:
+            evt.set()
+    except Exception:
+        pass
+    return True
+
+
+def _send_ws_request_for_response(client_id, state, payload, response_key, waiter_key, timeout_sec=5.0):
+    ws = state.get("ws") if isinstance(state, dict) else None
+    if not ws:
+        return None, "Not connected"
+    req_id = payload.get("req_id") or _new_req_id()
+    payload = dict(payload or {})
+    payload["req_id"] = req_id
+    waiter = {"event": threading.Event(), "payload": None, "error": None}
+    waiters = state.setdefault(waiter_key, {})
+    waiters[req_id] = waiter
+    waiters[str(req_id)] = waiter
+    try:
+        ws.send(json.dumps(payload))
+    except Exception as exc:
+        waiters.pop(req_id, None)
+        waiters.pop(str(req_id), None)
+        if client_id:
+            _mark_ws_unhealthy_and_reconnect(client_id, state, "Deriv connection failed while validating market data. Reconnecting now...", emit_error=False)
+        return None, str(exc)
+    if not waiter["event"].wait(max(0.40, float(timeout_sec))):
+        waiters.pop(req_id, None)
+        waiters.pop(str(req_id), None)
+        return None, f"{response_key} timeout"
+    waiters.pop(req_id, None)
+    waiters.pop(str(req_id), None)
+    if waiter.get("error"):
+        return None, _proposal_error_text(waiter.get("error")) or f"{response_key} error"
+    return waiter.get("payload"), None
+
+
+_ACTIVE_SYMBOLS_CACHE_TTL_SEC = 300.0
+_CONTRACTS_FOR_CACHE_TTL_SEC = 300.0
+_LEGACY_SYMBOL_ALIASES = {
+    "R_10": ("R_10",),
+    "R_25": ("R_25",),
+    "R_50": ("R_50",),
+    "R_75": ("R_75",),
+    "R_100": ("R_100",),
+}
+
+
+def _get_active_symbols_for_state(client_id, state, force_refresh=False):
+    now_ts = time.time()
+    cached = state.get("active_symbols_cache") if isinstance(state, dict) else None
+    if (
+        not force_refresh
+        and isinstance(cached, dict)
+        and isinstance(cached.get("symbols"), list)
+        and (now_ts - float(cached.get("ts", 0.0) or 0.0)) < _ACTIVE_SYMBOLS_CACHE_TTL_SEC
+    ):
+        return cached.get("symbols") or [], None
+    payload, err = _send_ws_request_for_response(
+        client_id,
+        state,
+        {"active_symbols": "brief", "req_id": _new_req_id()},
+        "active_symbols",
+        "_active_symbols_waiters",
+        timeout_sec=6.0,
+    )
+    if err:
+        return [], err
+    symbols = payload.get("active_symbols") if isinstance(payload, dict) else None
+    if not isinstance(symbols, list):
+        return [], "active_symbols returned no markets"
+    state["active_symbols_cache"] = {"ts": now_ts, "symbols": symbols}
+    return symbols, None
+
+
+def _resolve_deriv_underlying_symbol(client_id, state, requested_symbol):
+    original = str(requested_symbol or "").strip()
+    if not original:
+        return None, "Invalid symbol for new Deriv API: "
+    if not _uses_new_deriv_trade_api(state):
+        return original, None
+    symbols, err = _get_active_symbols_for_state(client_id, state)
+    if err:
+        return None, err
+    by_symbol = {}
+    for item in symbols:
+        if not isinstance(item, dict):
+            continue
+        symbol = str(item.get("symbol") or item.get("underlying_symbol") or "").strip()
+        if symbol:
+            by_symbol[symbol.upper()] = symbol
+    requested_upper = original.upper()
+    if requested_upper in by_symbol:
+        return by_symbol[requested_upper], None
+    for alias in _LEGACY_SYMBOL_ALIASES.get(requested_upper, ()):
+        if str(alias).upper() in by_symbol:
+            return by_symbol[str(alias).upper()], None
+    return None, f"Invalid symbol for new Deriv API: {original}"
+
+
+def _get_contracts_for_symbol(client_id, state, underlying_symbol, force_refresh=False):
+    symbol = str(underlying_symbol or "").strip()
+    if not symbol:
+        return None, "Invalid symbol"
+    cache = state.setdefault("contracts_for_cache", {})
+    now_ts = time.time()
+    cached = cache.get(symbol.upper())
+    if (
+        not force_refresh
+        and isinstance(cached, dict)
+        and (now_ts - float(cached.get("ts", 0.0) or 0.0)) < _CONTRACTS_FOR_CACHE_TTL_SEC
+    ):
+        return cached.get("contracts_for"), None
+    payload, err = _send_ws_request_for_response(
+        client_id,
+        state,
+        {"contracts_for": symbol, "currency": "USD", "req_id": _new_req_id()},
+        "contracts_for",
+        "_contracts_for_waiters",
+        timeout_sec=6.0,
+    )
+    if err:
+        return None, err
+    contracts_for = payload.get("contracts_for") if isinstance(payload, dict) else None
+    if not isinstance(contracts_for, dict):
+        return None, "contracts_for returned no contract list"
+    cache[symbol.upper()] = {"ts": now_ts, "contracts_for": contracts_for}
+    return contracts_for, None
+
+
+def _contracts_for_has_contract_type(contracts_for, contract_type):
+    wanted = str(contract_type or "").upper().strip()
+    if not wanted:
+        return False
+    for item in ((contracts_for or {}).get("available") or []):
+        if str((item or {}).get("contract_type") or "").upper().strip() == wanted:
+            return True
+    return False
+
+
+_DERIV_CONTRACT_ALIASES = {
+    "OVER": "DIGITOVER",
+    "UNDER": "DIGITUNDER",
+    "MATCHES": "DIGITMATCH",
+    "MATCH": "DIGITMATCH",
+    "DIFFERS": "DIGITDIFF",
+    "DIFFER": "DIGITDIFF",
+    "DIFF": "DIGITDIFF",
+    "HIGHER": "CALL",
+    "LOWER": "PUT",
+    "RISE": "CALL",
+    "FALL": "PUT",
+    "TOUCH": "ONETOUCH",
+    "NO_TOUCH": "NOTOUCH",
+    "NO TOUCH": "NOTOUCH",
+    "NOTOUCH": "NOTOUCH",
+}
+
+
+def _normalize_deriv_contract_type(value):
+    raw = str(value or "").upper().strip()
+    if not raw:
+        return ""
+    match = re.match(r"^(OVER|UNDER|MATCHES|MATCH|DIFFERS|DIFFER|DIFF)\s+([0-9])$", raw)
+    if match:
+        return _DERIV_CONTRACT_ALIASES.get(match.group(1), raw)
+    return _DERIV_CONTRACT_ALIASES.get(raw, raw)
+
+
+def _barrier_from_trade_label(contract_type, barrier):
+    if barrier not in (None, ""):
+        return barrier
+    match = re.search(r"\b([0-9])\b", str(contract_type or ""))
+    if match:
+        return int(match.group(1))
+    return barrier
+
+
+def _deriv_trade_debug_log(client_id, stage, context):
+    context = context or {}
+    try:
+        logger.info(
+            "[%s] deriv_trade_%s button=%s mode=%s account=%s requested_symbol=%s underlying_symbol=%s requested_contract=%s deriv_contract=%s contract_available=%s proposal=%s proposal_response=%s buy=%s buy_response=%s error=%s",
+            client_id,
+            stage,
+            context.get("button") or context.get("profile") or "",
+            context.get("connection_mode") or "",
+            context.get("account_type") or "",
+            context.get("requested_symbol") or "",
+            context.get("underlying_symbol") or "",
+            context.get("requested_contract_type") or "",
+            context.get("deriv_contract_type") or "",
+            context.get("contract_available"),
+            _safe_deriv_payload_text(context.get("proposal_payload") or {}),
+            _safe_deriv_payload_text(context.get("proposal_response") or {}),
+            _safe_deriv_payload_text(context.get("buy_payload") or {}),
+            _safe_deriv_payload_text(context.get("buy_response") or {}),
+            context.get("error") or "",
+        )
+    except Exception:
+        pass
 
 
 def _build_digit_proposal_payload(req_id, deriv_contract, stake, symbol, barrier, duration, duration_unit):
@@ -429,24 +684,199 @@ def _send_buy_from_proposal(client_id, state, req_id, proposal, stake):
     return True, "Trade sent"
 
 
+def execute_deriv_trade(trade_request):
+    trade_request = trade_request or {}
+    client_id = trade_request.get("client_id")
+    state = trade_request.get("state") or clients.get(client_id)
+    if not client_id or not isinstance(state, dict):
+        return False, "No client state"
+    ready, ready_msg = _ensure_trade_socket_ready(client_id, state)
+    if not ready:
+        return False, ready_msg
+    ws = state.get("ws")
+    if not ws:
+        return False, "Not connected"
+
+    req_id = trade_request.get("req_id") or _new_req_id()
+    requested_symbol = str(trade_request.get("symbol") or state.get("current_symbol") or "R_10").strip()
+    requested_contract = str(trade_request.get("contract_type") or "").strip()
+    deriv_contract = _normalize_deriv_contract_type(requested_contract)
+    if not deriv_contract:
+        return False, "Invalid contract type"
+
+    try:
+        stake = float(trade_request.get("stake"))
+    except Exception:
+        stake = 0.0
+    if stake <= 0:
+        return False, "Invalid stake"
+
+    duration_unit = _normalize_trade_duration_unit(trade_request.get("duration_unit", "t"))
+    duration = _sanitize_trade_duration_for_unit(trade_request.get("duration", 1), duration_unit, default=1)
+    barrier = trade_request.get("barrier")
+    mode = _deriv_trade_connection_mode(state)
+    account_type = "demo" if _oauth_account_is_demo({"account_id": state.get("deriv_account_id")}) else "real"
+    debug = {
+        "button": trade_request.get("button") or trade_request.get("strategy_name"),
+        "profile": trade_request.get("profile"),
+        "connection_mode": mode,
+        "account_type": account_type,
+        "requested_symbol": requested_symbol,
+        "requested_contract_type": requested_contract,
+        "deriv_contract_type": deriv_contract,
+    }
+
+    underlying_symbol = requested_symbol
+    if _uses_new_deriv_trade_api(state):
+        underlying_symbol, symbol_err = _resolve_deriv_underlying_symbol(client_id, state, requested_symbol)
+        debug["underlying_symbol"] = underlying_symbol
+        if symbol_err:
+            debug["error"] = symbol_err
+            _deriv_trade_debug_log(client_id, "blocked", debug)
+            return False, symbol_err
+        contracts_for, contracts_err = _get_contracts_for_symbol(client_id, state, underlying_symbol)
+        if contracts_err:
+            debug["error"] = contracts_err
+            _deriv_trade_debug_log(client_id, "blocked", debug)
+            return False, contracts_err
+        available = _contracts_for_has_contract_type(contracts_for, deriv_contract)
+        debug["contract_available"] = bool(available)
+        if not available:
+            msg = f"Contract type {deriv_contract} is not available for {underlying_symbol}"
+            debug["error"] = msg
+            _deriv_trade_debug_log(client_id, "blocked", debug)
+            return False, msg
+    else:
+        debug["underlying_symbol"] = underlying_symbol
+        debug["contract_available"] = True
+
+    parameters = {
+        "amount": float(stake),
+        "basis": "stake",
+        "contract_type": deriv_contract,
+        "currency": str(trade_request.get("currency") or "USD"),
+        "duration": int(duration),
+        "duration_unit": duration_unit,
+        "symbol": underlying_symbol,
+    }
+    if barrier not in (None, ""):
+        parameters["barrier"] = barrier
+    if deriv_contract.startswith("DIGIT") and barrier not in (None, ""):
+        try:
+            parameters["barrier"] = int(float(barrier))
+        except Exception:
+            parameters["barrier"] = str(barrier)
+
+    req_meta = dict(trade_request.get("req_meta") or {})
+    req_meta.setdefault("profile", trade_request.get("profile") or state.get("active_profile"))
+    req_meta.setdefault("type", requested_contract)
+    req_meta.setdefault("contract_type", requested_contract)
+    req_meta.setdefault("deriv_contract_type", deriv_contract)
+    req_meta.setdefault("barrier", parameters.get("barrier"))
+    req_meta.setdefault("stake", float(stake))
+    req_meta.setdefault("symbol", requested_symbol)
+    req_meta.setdefault("underlying_symbol", underlying_symbol)
+    req_meta.setdefault("time", now_time())
+    req_meta.setdefault("mode", trade_request.get("mode"))
+    req_meta.setdefault("duration", int(duration))
+    req_meta.setdefault("duration_unit", duration_unit)
+    if trade_request.get("budget_reservation") is not None:
+        req_meta.setdefault("budget_reservation", trade_request.get("budget_reservation"))
+    state.setdefault("req_meta", {})[req_id] = req_meta
+    _stamp_trade_latency(req_meta, "buy_send")
+
+    legacy_payload = {
+        "req_id": req_id,
+        "buy": 1,
+        "price": float(stake),
+        "parameters": dict(parameters),
+    }
+    if _uses_new_deriv_trade_api(state):
+        proposal_payload = _proposal_payload_for_connection(state, {"proposal": 1, "req_id": req_id, **parameters})
+        debug["proposal_payload"] = proposal_payload
+        _deriv_trade_debug_log(client_id, "proposal_send", debug)
+        proposal, proposal_err = _request_digit_proposal_for_buy(client_id, state, proposal_payload, timeout_sec=float(trade_request.get("proposal_timeout_sec", 5.0) or 5.0))
+        debug["proposal_response"] = proposal or {"error": proposal_err}
+        if proposal_err:
+            debug["error"] = proposal_err
+            _deriv_trade_debug_log(client_id, "proposal_failed", debug)
+            try:
+                state.get("req_meta", {}).pop(req_id, None)
+            except Exception:
+                pass
+            return False, proposal_err
+        proposal_id = (proposal or {}).get("id")
+        ask_price = _safe_float((proposal or {}).get("ask_price"), _safe_float((proposal or {}).get("display_value"), stake))
+        buy_payload = {
+            "req_id": req_id,
+            "buy": proposal_id,
+            "price": float(ask_price if ask_price is not None else stake),
+        }
+        debug["buy_payload"] = buy_payload
+        _deriv_trade_debug_log(client_id, "buy_send", debug)
+        try:
+            ws.send(json.dumps(buy_payload))
+        except Exception as exc:
+            debug["error"] = str(exc)
+            _deriv_trade_debug_log(client_id, "buy_failed", debug)
+            _mark_ws_unhealthy_and_reconnect(client_id, state, "Deriv connection failed while sending a trade. Reconnecting now...")
+            try:
+                state.get("req_meta", {}).pop(req_id, None)
+            except Exception:
+                pass
+            return False, str(exc)
+        return True, "Trade sent"
+
+    debug["buy_payload"] = legacy_payload
+    _deriv_trade_debug_log(client_id, "legacy_buy_send", debug)
+    try:
+        ws.send(json.dumps(legacy_payload))
+        return True, "Trade sent"
+    except Exception as exc:
+        debug["error"] = str(exc)
+        _deriv_trade_debug_log(client_id, "legacy_buy_failed", debug)
+        _mark_ws_unhealthy_and_reconnect(client_id, state, "Deriv connection failed while sending a trade. Reconnecting now...")
+        try:
+            state.get("req_meta", {}).pop(req_id, None)
+        except Exception:
+            pass
+        return False, str(exc)
+
+
 def _send_trade_payload_with_oauth_proposal(client_id, state, req_id, payload, stake):
     ws = state.get("ws") if isinstance(state, dict) else None
     if not ws:
         return False, "Not connected"
-    if _deriv_connection_type(state) == "oauth":
+    if _uses_new_deriv_trade_api(state):
         params = dict((payload or {}).get("parameters") or {})
         if not params:
             return False, "Proposal parameters missing"
-        proposal_payload = _proposal_payload_for_connection(state, {"proposal": 1, **params, "req_id": req_id})
         logger.info(
             "[%s] deriv_legacy_direct_buy_payload_for_compare payload=%s",
             client_id,
             _safe_deriv_payload_text(payload),
         )
-        proposal, proposal_err = _request_digit_proposal_for_buy(client_id, state, proposal_payload)
-        if proposal_err:
-            return False, proposal_err
-        return _send_buy_from_proposal(client_id, state, req_id, proposal, stake)
+        meta = {}
+        try:
+            meta = dict((state.get("req_meta") or {}).get(req_id) or (state.get("req_meta") or {}).get(str(req_id)) or {})
+        except Exception:
+            meta = {}
+        return execute_deriv_trade({
+            "client_id": client_id,
+            "state": state,
+            "req_id": req_id,
+            "profile": meta.get("profile") or state.get("active_profile"),
+            "strategy_name": meta.get("profile") or state.get("active_profile"),
+            "contract_type": params.get("contract_type"),
+            "stake": stake,
+            "symbol": params.get("symbol") or params.get("underlying_symbol"),
+            "barrier": params.get("barrier"),
+            "duration": params.get("duration"),
+            "duration_unit": params.get("duration_unit"),
+            "mode": meta.get("mode"),
+            "budget_reservation": meta.get("budget_reservation"),
+            "req_meta": meta,
+        })
     logger.info(
         "[%s] TEMP buy_about_to_be_sent token_type=%s payload=%s",
         client_id,
@@ -1970,6 +2400,12 @@ def _cleanup_client_runtime(client_id, state, reason="cleanup"):
     except Exception:
         pass
     try:
+        ping_stop = state.get("ws_ping_stop_event")
+        if ping_stop:
+            ping_stop.set()
+    except Exception:
+        pass
+    try:
         ws = state.get("ws")
         if ws:
             ws.close()
@@ -2038,6 +2474,12 @@ def _start_ws_worker_thread(client_id, state, reason="start"):
             logger.info("[%s] websocket_existing_worker_stopping reason=%s", client_id, reason)
             try:
                 state["ws_stop_event"].set()
+            except Exception:
+                pass
+            try:
+                ping_stop = state.get("ws_ping_stop_event")
+                if ping_stop:
+                    ping_stop.set()
             except Exception:
                 pass
             try:
@@ -3246,7 +3688,7 @@ def _trade_extra_meta_from_payload(data, *, leg_action=None):
         extra["leg_action"] = str(leg).strip()
     if payload.get("hide_from_history") is not None:
         extra["hide_from_history"] = bool(payload.get("hide_from_history"))
-    for key in ("batch_id", "batch_label", "batch_stake"):
+    for key in ("batch_id", "batch_label", "batch_stake", "round_number", "strategy_name", "over3_stake", "under6_stake"):
         value = payload.get(key)
         if value not in (None, ""):
             extra[key] = value
@@ -3840,10 +4282,12 @@ def send_buy(client_id, contract_type, stake, symbol, barrier, duration=1, durat
         "DIFFERS": "DIGITDIFF"
     }
 
-    if contract_type not in contract_map:
+    normalized_deriv_contract = _normalize_deriv_contract_type(contract_type)
+    if contract_type not in contract_map and normalized_deriv_contract not in set(contract_map.values()):
         return False, "Invalid contract type"
 
-    deriv_contract = contract_map[contract_type]
+    deriv_contract = contract_map.get(contract_type, normalized_deriv_contract)
+    barrier = _barrier_from_trade_label(contract_type, barrier)
     duration_unit = _normalize_trade_duration_unit(duration_unit)
     duration = _sanitize_trade_duration_for_unit(duration, duration_unit, default=1)
 
@@ -3872,62 +4316,29 @@ def send_buy(client_id, contract_type, stake, symbol, barrier, duration=1, durat
         state["req_meta"][req_id].update(extra_meta)
     _stamp_trade_latency(state["req_meta"][req_id], "buy_send")
 
-    payload = {
+    ok, msg = execute_deriv_trade({
+        "client_id": client_id,
+        "state": state,
         "req_id": req_id,
-        "buy": 1,
-        "price": float(stake),
-        "parameters": {
-            "amount": float(stake),
-            "basis": "stake",
-            "contract_type": deriv_contract,
-            "currency": "USD",
-            "duration": duration,
-            "duration_unit": duration_unit,
-            "symbol": symbol,
-            "barrier": int(barrier)
-        }
-    }
-
-    try:
-        if _deriv_connection_type(state) == "oauth":
-            proposal_payload = _build_digit_proposal_payload(
-                req_id,
-                deriv_contract,
-                stake,
-                symbol,
-                barrier,
-                duration,
-                duration_unit,
-            )
-            logger.info(
-                "[%s] deriv_legacy_direct_buy_payload_for_compare payload=%s",
-                client_id,
-                _safe_deriv_payload_text(payload),
-            )
-            proposal, proposal_err = _request_digit_proposal_for_buy(client_id, state, proposal_payload)
-            if proposal_err:
-                try:
-                    _release_profile_budget_reservation(state, budget_reservation)
-                except Exception:
-                    pass
-                return False, proposal_err
-            return _send_buy_from_proposal(client_id, state, req_id, proposal, stake)
-        logger.info(
-            "[%s] TEMP buy_about_to_be_sent token_type=%s payload=%s",
-            client_id,
-            _deriv_connection_type(state),
-            _safe_deriv_payload_text(payload),
-        )
-        ws.send(json.dumps(payload))
-        logger.info("[%s] TEMP buy_actually_sent req_id=%s token_type=%s", client_id, req_id, _deriv_connection_type(state))
-        return True, "Trade sent"
-    except Exception as e:
-        _mark_ws_unhealthy_and_reconnect(client_id, state, "Deriv connection failed while sending a trade. Reconnecting now...")
+        "profile": profile,
+        "strategy_name": profile,
+        "contract_type": contract_type,
+        "stake": stake,
+        "symbol": symbol,
+        "barrier": barrier,
+        "duration": duration,
+        "duration_unit": duration_unit,
+        "mode": mode,
+        "budget_reservation": budget_reservation,
+        "req_meta": state["req_meta"].get(req_id, {}),
+    })
+    if not ok:
         try:
+            _release_profile_budget_reservation(state, budget_reservation)
             _pull_req_meta_by_req_id(state, req_id)
         except Exception:
             pass
-        return False, str(e)
+    return ok, msg
 
 
 # ==================== PATCH 1C: send_buy_with_profile ====================
@@ -4006,10 +4417,12 @@ def send_buy_with_profile(
         "MATCHES": "DIGITMATCH",
         "DIFFERS": "DIGITDIFF"
     }
-    if contract_type not in contract_map:
+    normalized_deriv_contract = _normalize_deriv_contract_type(contract_type)
+    if contract_type not in contract_map and normalized_deriv_contract not in set(contract_map.values()):
         return False, "Invalid contract type"
 
-    deriv_contract = contract_map[contract_type]
+    deriv_contract = contract_map.get(contract_type, normalized_deriv_contract)
+    barrier = _barrier_from_trade_label(contract_type, barrier)
     duration_unit = _normalize_trade_duration_unit(duration_unit)
     duration = _sanitize_trade_duration_for_unit(duration, duration_unit, default=1)
 
@@ -4038,74 +4451,36 @@ def send_buy_with_profile(
         state["req_meta"][req_id].update(extra_meta)
     _stamp_trade_latency(state["req_meta"][req_id], "buy_send")
 
-    payload = {
+    ok, msg = execute_deriv_trade({
+        "client_id": client_id,
+        "state": state,
         "req_id": req_id,
-        "buy": 1,
-        "price": float(stake),
-        "parameters": {
-            "amount": float(stake),
-            "basis": "stake",
-            "contract_type": deriv_contract,
-            "currency": "USD",
-            "duration": duration,
-            "duration_unit": duration_unit,
-            "symbol": symbol,
-            "barrier": int(barrier)
-        }
-    }
-
-    try:
-        if _deriv_connection_type(state) == "oauth":
-            proposal_payload = _build_digit_proposal_payload(
-                req_id,
-                deriv_contract,
-                stake,
-                symbol,
-                barrier,
-                duration,
-                duration_unit,
-            )
-            logger.info(
-                "[%s] deriv_legacy_direct_buy_payload_for_compare payload=%s",
-                client_id,
-                _safe_deriv_payload_text(payload),
-            )
-            proposal, proposal_err = _request_digit_proposal_for_buy(client_id, state, proposal_payload)
-            if proposal_err:
-                try:
-                    _release_profile_budget_reservation(state, budget_reservation)
-                    if emit_balance_after_send:
-                        _emit_balance_payload(client_id, state)
-                except Exception:
-                    pass
-                return False, proposal_err
-            ok, msg = _send_buy_from_proposal(client_id, state, req_id, proposal, stake)
-            if emit_balance_after_send:
-                _emit_balance_payload(client_id, state)
-            return ok, msg
-        logger.info(
-            "[%s] TEMP buy_about_to_be_sent token_type=%s payload=%s",
-            client_id,
-            _deriv_connection_type(state),
-            _safe_deriv_payload_text(payload),
-        )
-        ws.send(json.dumps(payload))
-        logger.info("[%s] TEMP buy_actually_sent req_id=%s token_type=%s", client_id, req_id, _deriv_connection_type(state))
-        if emit_balance_after_send:
-            _emit_balance_payload(client_id, state)
-        return True, "Trade sent"
-    except Exception as e:
-        _mark_ws_unhealthy_and_reconnect(client_id, state, "Deriv connection failed while sending a trade. Reconnecting now...")
-        try:
-            _pull_req_meta_by_req_id(state, req_id)
-        except Exception:
-            pass
+        "profile": profile,
+        "strategy_name": profile,
+        "contract_type": contract_type,
+        "stake": stake,
+        "symbol": symbol,
+        "barrier": barrier,
+        "duration": duration,
+        "duration_unit": duration_unit,
+        "mode": mode,
+        "budget_reservation": budget_reservation,
+        "req_meta": state["req_meta"].get(req_id, {}),
+    })
+    if not ok:
         try:
             _release_profile_budget_reservation(state, budget_reservation)
+            _pull_req_meta_by_req_id(state, req_id)
+            if emit_balance_after_send:
+                _emit_balance_payload(client_id, state)
+        except Exception:
+            pass
+    elif emit_balance_after_send:
+        try:
             _emit_balance_payload(client_id, state)
         except Exception:
             pass
-        return False, str(e)
+    return ok, msg
 
 
 # ---------------- RISE/FALL ORDER (HUMAN Smart Assist) ---------------- #
@@ -7295,26 +7670,35 @@ def _send_ntt_trade(
     if isinstance(extra_meta, dict):
         req_meta.update(extra_meta)
     state.setdefault("req_meta", {})[req_id] = req_meta
-    payload = {
-        "req_id": req_id,
-        "buy": 1,
-        "price": float(stake),
-        "parameters": {
-            "amount": float(stake),
-            "basis": "stake",
+    try:
+        ok, msg = execute_deriv_trade({
+            "client_id": client_id,
+            "state": state,
+            "req_id": req_id,
+            "profile": "NTT",
+            "strategy_name": "NTT",
             "contract_type": contract_type,
-            "currency": "USD",
-            "duration": int(duration),
-            "duration_unit": unit,
+            "stake": stake,
             "symbol": symbol,
             "barrier": barrier_value,
-        }
-    }
-    try:
-        ws.send(json.dumps(payload))
+            "duration": duration,
+            "duration_unit": unit,
+            "mode": mode,
+            "budget_reservation": budget_reservation,
+            "req_meta": req_meta,
+        })
+        if not ok:
+            try:
+                state.get("req_meta", {}).pop(req_id, None)
+                _release_profile_budget_reservation(state, budget_reservation)
+                if emit_balance:
+                    _emit_balance_payload(client_id, state)
+            except Exception:
+                pass
+            return False, msg
         if emit_balance:
             _emit_balance_payload(client_id, state)
-        return True, "Trade sent"
+        return True, msg
     except Exception as e:
         _mark_ws_unhealthy_and_reconnect(client_id, state, "Deriv connection failed while sending a trade. Reconnecting now...")
         try:
@@ -13764,23 +14148,31 @@ def _send_unchain_hl_trade(
     state.setdefault("req_meta", {})[req_id] = req_meta
     _stamp_trade_latency(req_meta, "buy_send")
     deriv_contract = {"HIGHER": "CALL", "LOWER": "PUT"}[side]
-    payload = {
-        "req_id": req_id,
-        "buy": 1,
-        "price": float(stake),
-        "parameters": {
-            "amount": float(stake),
-            "basis": "stake",
+    try:
+        ok, msg = execute_deriv_trade({
+            "client_id": client_id,
+            "state": state,
+            "req_id": req_id,
+            "profile": "UNCHAIN",
+            "strategy_name": "UNCHAIN",
             "contract_type": deriv_contract,
-            "currency": "USD",
-            "duration": int(duration),
-            "duration_unit": duration_unit,
+            "stake": stake,
             "symbol": symbol,
             "barrier": barrier_value,
-        }
-    }
-    try:
-        ws.send(json.dumps(payload))
+            "duration": duration,
+            "duration_unit": duration_unit,
+            "mode": mode,
+            "budget_reservation": budget_reservation,
+            "req_meta": req_meta,
+        })
+        if not ok:
+            try:
+                state.get("req_meta", {}).pop(req_id, None)
+                _release_profile_budget_reservation(state, budget_reservation)
+                _emit_balance_payload(client_id, state)
+            except Exception:
+                pass
+            return False, msg
         u["last_action"] = f"{side} request sent on {symbol}"
         _emit_balance_payload(client_id, state)
         return True, f"{side} trade sent"
@@ -16452,6 +16844,17 @@ def handle_on_message(client_id, ws, message, expected_nonce):
         req_id = data.get("req_id")
         if req_id in (None, ""):
             req_id = echo_req.get("req_id")
+        msg_type = data.get("msg_type")
+        if msg_type in ("ping", "pong") or "ping" in data or "pong" in data:
+            logger.debug("[%s] deriv_keepalive_response req_id=%s msg_type=%s", client_id, req_id, msg_type)
+            _resolve_request_waiter(state, "_ping_waiters", req_id, payload=data, error=None)
+            return
+        if "active_symbols" in data:
+            if _resolve_request_waiter(state, "_active_symbols_waiters", req_id, payload=data, error=None):
+                return
+        if "contracts_for" in data:
+            if _resolve_request_waiter(state, "_contracts_for_waiters", req_id, payload=data, error=None):
+                return
         if "proposal" in data:
             logger.info(
                 "[%s] TEMP deriv_proposal_response_raw req_id=%s token_type=%s raw=%s",
@@ -16485,6 +16888,15 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                     _safe_deriv_payload_text(data.get("error") or {}),
                     _safe_deriv_payload_text(data),
                 )
+            if data.get("msg_type") == "active_symbols" or (echo_req or {}).get("active_symbols") is not None:
+                if _resolve_request_waiter(state, "_active_symbols_waiters", req_id, payload=None, error=(data.get("error") or {})):
+                    return
+            if data.get("msg_type") == "contracts_for" or (echo_req or {}).get("contracts_for") is not None:
+                if _resolve_request_waiter(state, "_contracts_for_waiters", req_id, payload=None, error=(data.get("error") or {})):
+                    return
+            if data.get("msg_type") in ("ping", "pong") or (echo_req or {}).get("ping") is not None:
+                if _resolve_request_waiter(state, "_ping_waiters", req_id, payload=None, error=(data.get("error") or {})):
+                    return
             if _resolve_proposal_waiter(state, req_id, proposal=None, error=(data.get("error") or {})):
                 return
             if (echo_req or {}).get("authorize") is not None:
@@ -16499,6 +16911,23 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                     msg,
                     _sanitize_deriv_oauth_response_text(json.dumps(data)),
                 )
+                try:
+                    meta_for_error = (state.get("req_meta") or {}).get(req_id) or (state.get("req_meta") or {}).get(str(req_id)) or {}
+                    _deriv_trade_debug_log(client_id, "buy_error", {
+                        "button": meta_for_error.get("mode") or meta_for_error.get("profile"),
+                        "profile": meta_for_error.get("profile"),
+                        "connection_mode": _deriv_trade_connection_mode(state),
+                        "account_type": "demo" if _oauth_account_is_demo({"account_id": state.get("deriv_account_id")}) else "real",
+                        "requested_symbol": meta_for_error.get("symbol"),
+                        "underlying_symbol": meta_for_error.get("underlying_symbol") or meta_for_error.get("symbol"),
+                        "requested_contract_type": meta_for_error.get("type") or meta_for_error.get("contract_type"),
+                        "deriv_contract_type": meta_for_error.get("deriv_contract_type") or meta_for_error.get("contract_type"),
+                        "contract_available": None,
+                        "buy_response": data,
+                        "error": msg,
+                    })
+                except Exception:
+                    pass
             failed_buy_meta = None
             try:
                 _seqvix_jokerjoe_handle_buy_error(state, req_id)
@@ -16714,6 +17143,18 @@ def handle_on_message(client_id, ws, message, expected_nonce):
             if isinstance(meta, dict):
                 _stamp_trade_latency(meta, "buy_confirm")
                 _log_trade_latency(client_id, meta, "buy_confirm_received", contract_id=contract_id)
+                _deriv_trade_debug_log(client_id, "buy_response", {
+                    "button": meta.get("mode") or meta.get("profile"),
+                    "profile": meta.get("profile"),
+                    "connection_mode": _deriv_trade_connection_mode(state),
+                    "account_type": "demo" if _oauth_account_is_demo({"account_id": state.get("deriv_account_id")}) else "real",
+                    "requested_symbol": meta.get("symbol"),
+                    "underlying_symbol": meta.get("underlying_symbol") or meta.get("symbol"),
+                    "requested_contract_type": meta.get("type") or meta.get("contract_type"),
+                    "deriv_contract_type": meta.get("deriv_contract_type") or meta.get("contract_type"),
+                    "contract_available": True,
+                    "buy_response": data,
+                })
 
             if contract_id and meta:
                 state["contract_meta"][contract_id] = meta
@@ -16759,6 +17200,10 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                         "batch_id": meta.get("batch_id"),
                         "batch_label": meta.get("batch_label"),
                         "batch_stake": meta.get("batch_stake"),
+                        "round_number": meta.get("round_number"),
+                        "strategy_name": meta.get("strategy_name"),
+                        "over3_stake": meta.get("over3_stake"),
+                        "under6_stake": meta.get("under6_stake"),
                         "countdown_remaining": duration_val,
                         "countdown_unit": duration_unit_val if duration_val is not None else None,
                         "countdown_seconds": countdown_seconds,
@@ -16850,6 +17295,10 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                         "batch_id": meta.get("batch_id"),
                         "batch_label": meta.get("batch_label"),
                         "batch_stake": meta.get("batch_stake"),
+                        "round_number": meta.get("round_number"),
+                        "strategy_name": meta.get("strategy_name"),
+                        "over3_stake": meta.get("over3_stake"),
+                        "under6_stake": meta.get("under6_stake"),
                         "countdown_remaining": duration_val,
                         "countdown_unit": duration_unit_val if duration_val is not None else None,
                         "countdown_seconds": countdown_seconds,
@@ -17424,6 +17873,10 @@ def process_contract(client_id, contract):
                 entry.setdefault("batch_id", meta.get("batch_id"))
                 entry.setdefault("batch_label", meta.get("batch_label"))
                 entry.setdefault("batch_stake", meta.get("batch_stake"))
+                entry.setdefault("round_number", meta.get("round_number"))
+                entry.setdefault("strategy_name", meta.get("strategy_name"))
+                entry.setdefault("over3_stake", meta.get("over3_stake"))
+                entry.setdefault("under6_stake", meta.get("under6_stake"))
                 if _is_human_profile_meta(meta):
                     entry["stake"] = meta.get("stake")
             else:
@@ -17547,6 +18000,7 @@ def handle_on_open(client_id, ws, expected_nonce):
     state["ws_connected"] = False  # IMPORTANT: not authorized yet
     state["ws_last_message_at"] = time.time()
     state["ws_last_authorized_at"] = 0.0
+    _start_deriv_keepalive(client_id, state, ws, expected_nonce)
     token_type = str(state.get("api_token_type") or "legacy").lower()
     state["ws_authorize_deadline_at"] = 0.0 if _token_uses_deriv_otp_ws(state.get("api_token"), token_type) else time.time() + float(DERIV_WS_AUTHORIZE_TIMEOUT_SEC)
 
@@ -17566,7 +18020,54 @@ def handle_on_open(client_id, ws, expected_nonce):
             logger.exception("[%s] TEMP authorize_failure send_exception=%s", client_id, exc)
             socketio.emit("api_error", {"message": f"Authentication failed: {exc}"}, room=client_id)
     else:
-        logger.warning("[%s] TEMP authorize_failure token_present=False", client_id)
+            logger.warning("[%s] TEMP authorize_failure token_present=False", client_id)
+
+
+def _start_deriv_keepalive(client_id, state, ws, expected_nonce):
+    if not isinstance(state, dict) or not ws:
+        return
+    try:
+        old_stop = state.get("ws_ping_stop_event")
+        if old_stop:
+            old_stop.set()
+    except Exception:
+        pass
+    stop_event = threading.Event()
+    state["ws_ping_stop_event"] = stop_event
+
+    def _worker():
+        while not stop_event.wait(45.0):
+            live_state = clients.get(client_id)
+            if not live_state or live_state.get("ws_nonce") != expected_nonce:
+                return
+            if live_state.get("ws_stop_event") and live_state["ws_stop_event"].is_set():
+                return
+            if not live_state.get("ws_transport_connected"):
+                continue
+            req_id = _new_req_id()
+            waiter = {"event": threading.Event(), "payload": None, "error": None}
+            live_state.setdefault("_ping_waiters", {})[req_id] = waiter
+            live_state.setdefault("_ping_waiters", {})[str(req_id)] = waiter
+            try:
+                ws.send(json.dumps({"ping": 1, "req_id": req_id}))
+            except Exception as exc:
+                live_state.get("_ping_waiters", {}).pop(req_id, None)
+                live_state.get("_ping_waiters", {}).pop(str(req_id), None)
+                logger.warning("[%s] deriv_keepalive_send_failed error=%s", client_id, exc)
+                _mark_ws_unhealthy_and_reconnect(client_id, live_state, "Deriv keepalive failed. Reconnecting now...", emit_error=False)
+                return
+            if not waiter["event"].wait(12.0):
+                live_state.get("_ping_waiters", {}).pop(req_id, None)
+                live_state.get("_ping_waiters", {}).pop(str(req_id), None)
+                logger.warning("[%s] deriv_keepalive_timeout req_id=%s", client_id, req_id)
+                _mark_ws_unhealthy_and_reconnect(client_id, live_state, "Deriv keepalive timed out. Reconnecting now...", emit_error=False)
+                return
+            if waiter.get("error"):
+                logger.warning("[%s] deriv_keepalive_error req_id=%s error=%s", client_id, req_id, waiter.get("error"))
+                _mark_ws_unhealthy_and_reconnect(client_id, live_state, "Deriv keepalive failed. Reconnecting now...", emit_error=False)
+                return
+
+    threading.Thread(target=_worker, daemon=True, name=f"deriv_ping_{client_id}").start()
 
 
 def handle_on_error(client_id, ws, error, expected_nonce):
@@ -17661,6 +18162,12 @@ def handle_on_close(client_id, ws, code, msg, expected_nonce):
     state["ws_connect_started_at"] = 0.0
     state["ws_authorize_deadline_at"] = 0.0
     state["loginid"] = "UNKNOWN"
+    try:
+        ping_stop = state.get("ws_ping_stop_event")
+        if ping_stop:
+            ping_stop.set()
+    except Exception:
+        pass
     logger.warning(f"[{client_id}] 🔌 WebSocket Disconnected")
     should_reconnect = bool(
         str(state.get("api_token", "") or "").strip()
@@ -17722,6 +18229,12 @@ def start_ws_for_client(client_id):
         # stop old ws/thread
         try:
             state["ws_stop_event"].set()
+        except Exception:
+            pass
+        try:
+            ping_stop = state.get("ws_ping_stop_event")
+            if ping_stop:
+                ping_stop.set()
         except Exception:
             pass
 
@@ -17821,8 +18334,8 @@ def start_ws_for_client(client_id):
     # run until closed
     try:
         ws_app.run_forever(
-            ping_interval=max(0.0, float(DERIV_WS_PING_INTERVAL_SEC)),
-            ping_timeout=max(1.0, float(DERIV_WS_PING_TIMEOUT_SEC)),
+            ping_interval=0,
+            ping_timeout=None,
         )
     except Exception as exc:
         logger.exception("[%s] TEMP deriv_websocket_run_exception nonce=%s error=%s", client_id, expected_nonce, exc)
@@ -18266,6 +18779,52 @@ def api_connection_status():
             budget.get("realized_pnl"),
         )
     return jsonify(payload)
+
+
+@app.route("/koolkid/over3-under6-availability", methods=["POST"])
+def koolkid_over3_under6_availability_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    ready, ready_msg = _ensure_trade_socket_ready(cid, state, emit_error=False)
+    if not ready:
+        return jsonify({"status": "error", "message": ready_msg}), 409
+
+    data = request.get_json(silent=True) or {}
+    requested_symbol = str(data.get("symbol") or state.get("current_symbol") or "R_10").strip()
+    underlying_symbol, symbol_err = _resolve_deriv_underlying_symbol(cid, state, requested_symbol)
+    if symbol_err:
+        return jsonify({"status": "error", "message": symbol_err, "symbol": requested_symbol}), 400
+
+    contracts_for, contracts_err = _get_contracts_for_symbol(cid, state, underlying_symbol)
+    if contracts_err:
+        return jsonify({
+            "status": "error",
+            "message": contracts_err,
+            "symbol": requested_symbol,
+            "underlying_symbol": underlying_symbol,
+        }), 400
+
+    over_ok = _contracts_for_has_contract_type(contracts_for, "DIGITOVER")
+    under_ok = _contracts_for_has_contract_type(contracts_for, "DIGITUNDER")
+    if not (over_ok and under_ok):
+        return jsonify({
+            "status": "error",
+            "message": "Over/Under digit contracts are not available on this market.",
+            "symbol": requested_symbol,
+            "underlying_symbol": underlying_symbol,
+            "over_available": bool(over_ok),
+            "under_available": bool(under_ok),
+        }), 400
+
+    return jsonify({
+        "status": "success",
+        "symbol": requested_symbol,
+        "underlying_symbol": underlying_symbol,
+        "over_available": True,
+        "under_available": True,
+    })
 
 
 @app.route("/profile_budget", methods=["POST"])
