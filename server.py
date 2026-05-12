@@ -581,25 +581,57 @@ def _deriv_trade_debug_log(client_id, stage, context):
     context = context or {}
     try:
         logger.info(
-            "[%s] deriv_trade_%s button=%s mode=%s account=%s requested_symbol=%s underlying_symbol=%s requested_contract=%s deriv_contract=%s contract_available=%s proposal=%s proposal_response=%s buy=%s buy_response=%s error=%s",
+            "[%s] deriv_trade_%s button=%s mode=%s account_id=%s account_type=%s ws_ready_state=%s otp_authenticated=%s requested_symbol=%s underlying_symbol=%s requested_contract=%s deriv_contract=%s contract_available=%s proposal_id=%s proposal=%s proposal_response=%s buy=%s buy_response=%s error=%s failed_at=%s",
             client_id,
             stage,
             context.get("button") or context.get("profile") or "",
             context.get("connection_mode") or "",
+            _mask_account_id(context.get("account_id") or ""),
             context.get("account_type") or "",
+            context.get("ws_ready_state") or "",
+            context.get("otp_authenticated"),
             context.get("requested_symbol") or "",
             context.get("underlying_symbol") or "",
             context.get("requested_contract_type") or "",
             context.get("deriv_contract_type") or "",
             context.get("contract_available"),
+            context.get("proposal_id") or "",
             _safe_deriv_payload_text(context.get("proposal_payload") or {}),
             _safe_deriv_payload_text(context.get("proposal_response") or {}),
             _safe_deriv_payload_text(context.get("buy_payload") or {}),
             _safe_deriv_payload_text(context.get("buy_response") or {}),
             context.get("error") or "",
+            context.get("failed_at") or "",
         )
     except Exception:
         pass
+
+
+def _websocket_ready_state_label(state):
+    ws = (state or {}).get("ws") if isinstance(state, dict) else None
+    if not ws:
+        return "missing"
+    try:
+        sock = getattr(ws, "sock", None)
+        if sock is not None and bool(getattr(sock, "connected", False)):
+            return "open"
+        if sock is not None:
+            return "closed"
+    except Exception:
+        pass
+    if bool((state or {}).get("ws_transport_connected")):
+        return "transport_connected"
+    return "unknown"
+
+
+def _is_otp_authenticated_socket(state):
+    if not isinstance(state, dict):
+        return False
+    return bool(
+        _token_uses_deriv_otp_ws(state.get("api_token"), state.get("api_token_type"))
+        and state.get("ws_connected")
+        and state.get("ws")
+    )
 
 
 def _build_digit_proposal_payload(req_id, deriv_contract, stake, symbol, barrier, duration, duration_unit):
@@ -720,7 +752,10 @@ def execute_deriv_trade(trade_request):
         "button": trade_request.get("button") or trade_request.get("strategy_name"),
         "profile": trade_request.get("profile"),
         "connection_mode": mode,
+        "account_id": state.get("deriv_account_id"),
         "account_type": account_type,
+        "ws_ready_state": _websocket_ready_state_label(state),
+        "otp_authenticated": _is_otp_authenticated_socket(state),
         "requested_symbol": requested_symbol,
         "requested_contract_type": requested_contract,
         "deriv_contract_type": deriv_contract,
@@ -730,13 +765,17 @@ def execute_deriv_trade(trade_request):
     if _uses_new_deriv_trade_api(state):
         underlying_symbol, symbol_err = _resolve_deriv_underlying_symbol(client_id, state, requested_symbol)
         debug["underlying_symbol"] = underlying_symbol
+        debug["ws_ready_state"] = _websocket_ready_state_label(state)
+        debug["otp_authenticated"] = _is_otp_authenticated_socket(state)
         if symbol_err:
             debug["error"] = symbol_err
+            debug["failed_at"] = "symbol_resolver"
             _deriv_trade_debug_log(client_id, "blocked", debug)
             return False, symbol_err
         contracts_for, contracts_err = _get_contracts_for_symbol(client_id, state, underlying_symbol)
         if contracts_err:
             debug["error"] = contracts_err
+            debug["failed_at"] = "contracts_for"
             _deriv_trade_debug_log(client_id, "blocked", debug)
             return False, contracts_err
         available = _contracts_for_has_contract_type(contracts_for, deriv_contract)
@@ -744,6 +783,7 @@ def execute_deriv_trade(trade_request):
         if not available:
             msg = f"Contract type {deriv_contract} is not available for {underlying_symbol}"
             debug["error"] = msg
+            debug["failed_at"] = "contract_resolver"
             _deriv_trade_debug_log(client_id, "blocked", debug)
             return False, msg
     else:
@@ -794,11 +834,15 @@ def execute_deriv_trade(trade_request):
     if _uses_new_deriv_trade_api(state):
         proposal_payload = _proposal_payload_for_connection(state, {"proposal": 1, "req_id": req_id, **parameters})
         debug["proposal_payload"] = proposal_payload
+        debug["ws_ready_state"] = _websocket_ready_state_label(state)
+        debug["otp_authenticated"] = _is_otp_authenticated_socket(state)
         _deriv_trade_debug_log(client_id, "proposal_send", debug)
         proposal, proposal_err = _request_digit_proposal_for_buy(client_id, state, proposal_payload, timeout_sec=float(trade_request.get("proposal_timeout_sec", 5.0) or 5.0))
         debug["proposal_response"] = proposal or {"error": proposal_err}
+        debug["proposal_id"] = (proposal or {}).get("id")
         if proposal_err:
             debug["error"] = proposal_err
+            debug["failed_at"] = "proposal_response"
             _deriv_trade_debug_log(client_id, "proposal_failed", debug)
             try:
                 state.get("req_meta", {}).pop(req_id, None)
@@ -806,6 +850,16 @@ def execute_deriv_trade(trade_request):
                 pass
             return False, proposal_err
         proposal_id = (proposal or {}).get("id")
+        if proposal_id in (None, ""):
+            msg = "Proposal id missing"
+            debug["error"] = msg
+            debug["failed_at"] = "proposal_id_missing"
+            _deriv_trade_debug_log(client_id, "proposal_failed", debug)
+            try:
+                state.get("req_meta", {}).pop(req_id, None)
+            except Exception:
+                pass
+            return False, msg
         ask_price = _safe_float((proposal or {}).get("ask_price"), _safe_float((proposal or {}).get("display_value"), stake))
         buy_payload = {
             "req_id": req_id,
@@ -813,11 +867,14 @@ def execute_deriv_trade(trade_request):
             "price": float(ask_price if ask_price is not None else stake),
         }
         debug["buy_payload"] = buy_payload
+        debug["ws_ready_state"] = _websocket_ready_state_label(state)
+        debug["otp_authenticated"] = _is_otp_authenticated_socket(state)
         _deriv_trade_debug_log(client_id, "buy_send", debug)
         try:
             ws.send(json.dumps(buy_payload))
         except Exception as exc:
             debug["error"] = str(exc)
+            debug["failed_at"] = "buy_send"
             _deriv_trade_debug_log(client_id, "buy_failed", debug)
             _mark_ws_unhealthy_and_reconnect(client_id, state, "Deriv connection failed while sending a trade. Reconnecting now...")
             try:
@@ -16917,7 +16974,10 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                         "button": meta_for_error.get("mode") or meta_for_error.get("profile"),
                         "profile": meta_for_error.get("profile"),
                         "connection_mode": _deriv_trade_connection_mode(state),
+                        "account_id": state.get("deriv_account_id"),
                         "account_type": "demo" if _oauth_account_is_demo({"account_id": state.get("deriv_account_id")}) else "real",
+                        "ws_ready_state": _websocket_ready_state_label(state),
+                        "otp_authenticated": _is_otp_authenticated_socket(state),
                         "requested_symbol": meta_for_error.get("symbol"),
                         "underlying_symbol": meta_for_error.get("underlying_symbol") or meta_for_error.get("symbol"),
                         "requested_contract_type": meta_for_error.get("type") or meta_for_error.get("contract_type"),
@@ -16925,6 +16985,7 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                         "contract_available": None,
                         "buy_response": data,
                         "error": msg,
+                        "failed_at": "buy_response",
                     })
                 except Exception:
                     pass
@@ -17147,7 +17208,10 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                     "button": meta.get("mode") or meta.get("profile"),
                     "profile": meta.get("profile"),
                     "connection_mode": _deriv_trade_connection_mode(state),
+                    "account_id": state.get("deriv_account_id"),
                     "account_type": "demo" if _oauth_account_is_demo({"account_id": state.get("deriv_account_id")}) else "real",
+                    "ws_ready_state": _websocket_ready_state_label(state),
+                    "otp_authenticated": _is_otp_authenticated_socket(state),
                     "requested_symbol": meta.get("symbol"),
                     "underlying_symbol": meta.get("underlying_symbol") or meta.get("symbol"),
                     "requested_contract_type": meta.get("type") or meta.get("contract_type"),
