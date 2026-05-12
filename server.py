@@ -458,6 +458,13 @@ _LEGACY_SYMBOL_ALIASES = {
 }
 
 
+def _client_id_for_state(state):
+    for _cid, _state in clients.items():
+        if _state is state:
+            return _cid
+    return None
+
+
 def _get_active_symbols_for_state(client_id, state, force_refresh=False):
     now_ts = time.time()
     cached = state.get("active_symbols_cache") if isinstance(state, dict) else None
@@ -508,6 +515,57 @@ def _resolve_deriv_underlying_symbol(client_id, state, requested_symbol):
         if str(alias).upper() in by_symbol:
             return by_symbol[str(alias).upper()], None
     return None, f"Invalid symbol for new Deriv API: {original}"
+
+
+def resolve_new_api_symbol(state, requested_symbol, context="", client_id=None):
+    original = str(requested_symbol or "").strip()
+    if not _uses_new_deriv_trade_api(state):
+        return original, None
+    cid = client_id or _client_id_for_state(state)
+    resolved, err = _resolve_deriv_underlying_symbol(cid, state, original)
+    if err:
+        logger.info(
+            "[%s] skipped_invalid_symbol=%s context=%s mode=%s error=%s",
+            cid or "?",
+            original,
+            context or "",
+            _deriv_trade_connection_mode(state),
+            err,
+        )
+        return None, err
+    if resolved and resolved != original:
+        logger.info(
+            "[%s] new_api_symbol_resolved original=%s resolved=%s context=%s mode=%s",
+            cid or "?",
+            original,
+            resolved,
+            context or "",
+            _deriv_trade_connection_mode(state),
+        )
+    return resolved, None
+
+
+def _filter_new_api_symbols(state, symbols, context="", client_id=None, max_symbols=None):
+    items = []
+    seen = set()
+    for symbol in list(symbols or []):
+        resolved, _err = resolve_new_api_symbol(state, symbol, context=context, client_id=client_id)
+        if not resolved:
+            continue
+        key = str(resolved).upper()
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(resolved)
+        if max_symbols and len(items) >= int(max_symbols):
+            break
+    return items
+
+
+def _first_valid_new_api_symbol(state, symbols, context="", client_id=None):
+    filtered = _filter_new_api_symbols(state, symbols, context=context, client_id=client_id, max_symbols=1)
+    return filtered[0] if filtered else None
+
 
 
 def _get_contracts_for_symbol(client_id, state, underlying_symbol, force_refresh=False):
@@ -568,10 +626,7 @@ def _contracts_for_has_contract_type(contracts_for, contract_type):
     wanted = str(contract_type or "").upper().strip()
     if not wanted:
         return False
-    for item in ((contracts_for or {}).get("available") or []):
-        if str((item or {}).get("contract_type") or "").upper().strip() == wanted:
-            return True
-    return False
+    return bool(_contracts_for_candidates(contracts_for, wanted))
 
 
 _DERIV_CONTRACT_ALIASES = {
@@ -582,6 +637,10 @@ _DERIV_CONTRACT_ALIASES = {
     "DIFFERS": "DIGITDIFF",
     "DIFFER": "DIGITDIFF",
     "DIFF": "DIGITDIFF",
+    "DIGITDIFFERS": "DIGITDIFF",
+    "DIGITMATCHES": "DIGITMATCH",
+    "EVEN": "DIGITEVEN",
+    "ODD": "DIGITODD",
     "HIGHER": "CALL",
     "LOWER": "PUT",
     "RISE": "CALL",
@@ -612,11 +671,117 @@ def _barrier_from_trade_label(contract_type, barrier):
     return barrier
 
 
+def _contracts_for_candidates(contracts_for, contract_type):
+    wanted = str(contract_type or "").upper().strip()
+    return [
+        item for item in ((contracts_for or {}).get("available") or [])
+        if str((item or {}).get("contract_type") or "").upper().strip() == wanted
+    ]
+
+
+def _contract_item_barrier_values(item):
+    values = []
+    for key in ("barrier", "barrier1", "barrier2"):
+        value = (item or {}).get(key)
+        if value not in (None, ""):
+            values.append(str(value).strip())
+    for key in ("barriers", "barrier_choices", "barrier_range"):
+        value = (item or {}).get(key)
+        if isinstance(value, (list, tuple)):
+            values.extend(str(v).strip() for v in value if v not in (None, ""))
+    return [v for v in values if v]
+
+
+def _contract_item_allows_no_barrier(item):
+    try:
+        barriers_count = int(float((item or {}).get("barriers") or 0))
+    except Exception:
+        barriers_count = 0
+    barrier_category = str((item or {}).get("barrier_category") or "").strip().lower()
+    return barriers_count <= 0 and not _contract_item_barrier_values(item) and barrier_category in ("", "none", "no_barrier")
+
+
+def resolve_new_api_barrier(state, contracts_for, contract_type, requested_barrier, duration, duration_unit, context="", client_id=None):
+    deriv_contract = _normalize_deriv_contract_type(contract_type)
+    if not _uses_new_deriv_trade_api(state):
+        return requested_barrier, None
+    cid = client_id or _client_id_for_state(state)
+    raw = requested_barrier
+    if deriv_contract in ("DIGITOVER", "DIGITUNDER", "DIGITMATCH", "DIGITDIFF"):
+        try:
+            digit = int(float(raw))
+        except Exception:
+            return None, f"Invalid barrier for {deriv_contract}: {raw}"
+        if digit < 0 or digit > 9:
+            return None, f"Invalid barrier for {deriv_contract}: {raw}"
+        return digit, None
+    if deriv_contract in ("DIGITEVEN", "DIGITODD"):
+        return None, None
+
+    candidates = _contracts_for_candidates(contracts_for, deriv_contract)
+    if not candidates:
+        return raw, None
+    raw_text = "" if raw in (None, "") else str(raw).strip()
+    if deriv_contract in ("CALL", "PUT"):
+        if not raw_text:
+            return None, None
+        for item in candidates:
+            if _contract_item_allows_no_barrier(item):
+                logger.info(
+                    "[%s] new_api_barrier_removed context=%s contract_type=%s requested_barrier=%s reason=contracts_for_allows_no_barrier",
+                    cid or "?",
+                    context or "",
+                    deriv_contract,
+                    raw_text,
+                )
+                return None, None
+        for item in candidates:
+            values = _contract_item_barrier_values(item)
+            if raw_text in values:
+                return raw_text, None
+        for item in candidates:
+            values = _contract_item_barrier_values(item)
+            if values:
+                logger.info(
+                    "[%s] new_api_barrier_replaced context=%s contract_type=%s requested_barrier=%s resolved_barrier=%s",
+                    cid or "?",
+                    context or "",
+                    deriv_contract,
+                    raw_text,
+                    values[0],
+                )
+                return values[0], None
+        return None, f"No valid barrier is available for {deriv_contract}"
+
+    if deriv_contract in ("ONETOUCH", "NOTOUCH"):
+        for item in candidates:
+            values = _contract_item_barrier_values(item)
+            if raw_text and raw_text in values:
+                return raw_text, None
+        for item in candidates:
+            values = _contract_item_barrier_values(item)
+            if values:
+                resolved = raw_text if raw_text in values else values[0]
+                if raw_text and raw_text != resolved:
+                    logger.info(
+                        "[%s] new_api_barrier_replaced context=%s contract_type=%s requested_barrier=%s resolved_barrier=%s",
+                        cid or "?",
+                        context or "",
+                        deriv_contract,
+                        raw_text,
+                        resolved,
+                    )
+                return resolved, None
+        return None, f"No valid barrier is available for {deriv_contract}"
+
+    return raw, None
+
+
 def _deriv_trade_debug_log(client_id, stage, context):
     context = context or {}
     try:
         logger.info(
-            "[%s] deriv_trade_%s button=%s mode=%s account_id=%s account_type=%s ws_ready_state=%s otp_authenticated=%s requested_symbol=%s underlying_symbol=%s requested_contract=%s deriv_contract=%s contract_available=%s proposal_id=%s proposal=%s proposal_response=%s buy=%s buy_response=%s error=%s failed_at=%s",
+            "[%s] deriv_trade_%s button=%s mode=%s account_id=%s account_type=%s ws_ready_state=%s otp_authenticated=%s requested_symbol=%s underlying_symbol=%s requested_contract=%s deriv_contract=%s requested_barrier=%s resolved_barrier=%s contract_available=%s proposal_id=%s proposal=%s proposal_response=%s buy=%s buy_response=%s error=%s failed_at=%s",
             client_id,
             stage,
             context.get("button") or context.get("profile") or "",
@@ -629,6 +794,8 @@ def _deriv_trade_debug_log(client_id, stage, context):
             context.get("underlying_symbol") or "",
             context.get("requested_contract_type") or "",
             context.get("deriv_contract_type") or "",
+            context.get("requested_barrier"),
+            context.get("resolved_barrier"),
             context.get("contract_available"),
             context.get("proposal_id") or "",
             _safe_deriv_payload_text(context.get("proposal_payload") or {}),
@@ -781,6 +948,7 @@ def execute_deriv_trade(trade_request):
     duration_unit = _normalize_trade_duration_unit(trade_request.get("duration_unit", "t"))
     duration = _sanitize_trade_duration_for_unit(trade_request.get("duration", 1), duration_unit, default=1)
     barrier = trade_request.get("barrier")
+    req_meta = dict(trade_request.get("req_meta") or {})
     mode = _deriv_trade_connection_mode(state)
     account_type = "demo" if _oauth_account_is_demo({"account_id": state.get("deriv_account_id")}) else "real"
     debug = {
@@ -794,11 +962,14 @@ def execute_deriv_trade(trade_request):
         "requested_symbol": requested_symbol,
         "requested_contract_type": requested_contract,
         "deriv_contract_type": deriv_contract,
+        "requested_barrier": barrier,
     }
 
     underlying_symbol = requested_symbol
     if _uses_new_deriv_trade_api(state):
-        underlying_symbol, symbol_err = _resolve_deriv_underlying_symbol(client_id, state, requested_symbol)
+        trade_context = trade_request.get("button") or trade_request.get("strategy_name") or trade_request.get("profile") or "trade"
+        is_kidgx_trade = str(trade_request.get("mode") or req_meta.get("mode") or "").upper() == "KIDGX"
+        underlying_symbol, symbol_err = resolve_new_api_symbol(state, requested_symbol, context=trade_context, client_id=client_id)
         debug["underlying_symbol"] = underlying_symbol
         debug["ws_ready_state"] = _websocket_ready_state_label(state)
         debug["otp_authenticated"] = _is_otp_authenticated_socket(state)
@@ -807,6 +978,14 @@ def execute_deriv_trade(trade_request):
             debug["failed_at"] = "symbol_resolver"
             _deriv_trade_debug_log(client_id, "blocked", debug)
             return False, symbol_err
+        if is_kidgx_trade:
+            logger.info(
+                "[%s] kidgx_symbol_resolved profile=%s original_symbol=%s resolved_symbol=%s",
+                client_id,
+                trade_request.get("profile") or state.get("active_profile"),
+                requested_symbol,
+                underlying_symbol,
+            )
         contracts_for, contracts_err = _get_contracts_for_symbol(client_id, state, underlying_symbol)
         if contracts_err:
             debug["error"] = contracts_err
@@ -821,9 +1000,37 @@ def execute_deriv_trade(trade_request):
             debug["failed_at"] = "contract_resolver"
             _deriv_trade_debug_log(client_id, "blocked", debug)
             return False, msg
+        if is_kidgx_trade:
+            logger.info(
+                "[%s] kidgx_contract_resolved profile=%s original_contract_type=%s resolved_contract_type=%s barrier=%s available=%s",
+                client_id,
+                trade_request.get("profile") or state.get("active_profile"),
+                requested_contract,
+                deriv_contract,
+                barrier,
+                bool(available),
+            )
+        resolved_barrier, barrier_err = resolve_new_api_barrier(
+            state,
+            contracts_for,
+            deriv_contract,
+            barrier,
+            duration,
+            duration_unit,
+            context=trade_request.get("button") or trade_request.get("strategy_name") or trade_request.get("profile") or "trade",
+            client_id=client_id,
+        )
+        debug["resolved_barrier"] = resolved_barrier
+        if barrier_err:
+            debug["error"] = barrier_err
+            debug["failed_at"] = "barrier_resolver"
+            _deriv_trade_debug_log(client_id, "blocked", debug)
+            return False, barrier_err
+        barrier = resolved_barrier
     else:
         debug["underlying_symbol"] = underlying_symbol
         debug["contract_available"] = True
+        debug["resolved_barrier"] = barrier
 
     parameters = {
         "amount": float(stake),
@@ -842,7 +1049,6 @@ def execute_deriv_trade(trade_request):
         except Exception:
             parameters["barrier"] = str(barrier)
 
-    req_meta = dict(trade_request.get("req_meta") or {})
     req_meta.setdefault("profile", trade_request.get("profile") or state.get("active_profile"))
     req_meta.setdefault("type", requested_contract)
     req_meta.setdefault("contract_type", requested_contract)
@@ -871,10 +1077,24 @@ def execute_deriv_trade(trade_request):
         debug["proposal_payload"] = proposal_payload
         debug["ws_ready_state"] = _websocket_ready_state_label(state)
         debug["otp_authenticated"] = _is_otp_authenticated_socket(state)
+        if str(trade_request.get("mode") or req_meta.get("mode") or "").upper() == "KIDGX":
+            logger.info(
+                "[%s] kidgx_final_proposal_payload profile=%s payload=%s",
+                client_id,
+                trade_request.get("profile") or state.get("active_profile"),
+                _safe_deriv_payload_text(proposal_payload),
+            )
         _deriv_trade_debug_log(client_id, "proposal_send", debug)
         proposal, proposal_err = _request_digit_proposal_for_buy(client_id, state, proposal_payload, timeout_sec=float(trade_request.get("proposal_timeout_sec", 5.0) or 5.0))
         debug["proposal_response"] = proposal or {"error": proposal_err}
         debug["proposal_id"] = (proposal or {}).get("id")
+        if str(trade_request.get("mode") or req_meta.get("mode") or "").upper() == "KIDGX":
+            logger.info(
+                "[%s] kidgx_deriv_response profile=%s stage=proposal response=%s",
+                client_id,
+                trade_request.get("profile") or state.get("active_profile"),
+                _safe_deriv_payload_text(proposal or {"error": proposal_err}),
+            )
         if proposal_err:
             debug["error"] = proposal_err
             debug["failed_at"] = "proposal_response"
@@ -4092,9 +4312,18 @@ def auto_session_start():
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
 
-    for symbol in AUTO_SESSION_MARKETS:
+    seed_markets = list(AUTO_SESSION_MARKETS)
+    if _uses_new_deriv_trade_api(state):
+        seed_markets = _filter_new_api_symbols(
+            state,
+            seed_markets,
+            context="auto_session_markets",
+            client_id=cid,
+        )
+
+    for symbol in seed_markets:
         try:
-            _ensure_tick_subscription(state, symbol)
+            _ensure_tick_subscription(state, symbol, reason="auto_session", client_id=cid)
         except Exception:
             pass
         try:
@@ -7448,6 +7677,27 @@ def _request_ntt_proposal_quote(state, *, side, stake, symbol, barrier, duration
         return None, str(e)
 
     contract_type = "ONETOUCH" if side == "TOUCH" else "NOTOUCH"
+    if _uses_new_deriv_trade_api(state):
+        symbol, sym_err = resolve_new_api_symbol(state, symbol, context="ntt_proposal_quote", client_id=client_id)
+        if sym_err:
+            return None, sym_err
+        contracts_for, contracts_err = _get_contracts_for_symbol(client_id, state, symbol)
+        if contracts_err:
+            return None, contracts_err
+        if not _contracts_for_has_contract_type(contracts_for, contract_type):
+            return None, f"Contract type {contract_type} is not available for {symbol}"
+        barrier_value, barrier_err = resolve_new_api_barrier(
+            state,
+            contracts_for,
+            contract_type,
+            barrier_value,
+            duration_val,
+            unit,
+            context="ntt_proposal_quote",
+            client_id=client_id,
+        )
+        if barrier_err:
+            return None, barrier_err
     req_id = _new_req_id()
     waiter = {"event": threading.Event(), "proposal": None, "error": None}
     waiters = state.setdefault("_proposal_waiters", {})
@@ -7462,9 +7712,10 @@ def _request_ntt_proposal_quote(state, *, side, stake, symbol, barrier, duration
         "duration": int(duration_val),
         "duration_unit": unit,
         "symbol": symbol,
-        "barrier": barrier_value,
         "req_id": req_id,
     }
+    if barrier_value not in (None, ""):
+        payload["barrier"] = barrier_value
     payload = _proposal_payload_for_connection(state, payload)
     try:
         if client_id is not None:
@@ -7552,6 +7803,28 @@ def _request_digit_proposal_quote(state, *, contract_type, stake, symbol, barrie
     unit = str(duration_unit or "t").strip().lower()
     if unit not in ("t", "s", "m", "h"):
         unit = "t"
+
+    if _uses_new_deriv_trade_api(state):
+        symbol, sym_err = resolve_new_api_symbol(state, symbol, context="digit_proposal_quote", client_id=client_id)
+        if sym_err:
+            return None, sym_err
+        contracts_for, contracts_err = _get_contracts_for_symbol(client_id, state, symbol)
+        if contracts_err:
+            return None, contracts_err
+        if not _contracts_for_has_contract_type(contracts_for, deriv_type):
+            return None, f"Contract type {deriv_type} is not available for {symbol}"
+        barrier_value, barrier_err = resolve_new_api_barrier(
+            state,
+            contracts_for,
+            deriv_type,
+            barrier_value,
+            duration_val,
+            unit,
+            context="digit_proposal_quote",
+            client_id=client_id,
+        )
+        if barrier_err:
+            return None, barrier_err
 
     req_id = _new_req_id()
     waiter = {"event": threading.Event(), "proposal": None, "error": None}
@@ -12362,6 +12635,28 @@ def _request_unchain_proposal_quote(state, *, side, stake, symbol, barrier, dura
             return None, str(e)
 
     contract_type = "CALL" if side == "HIGHER" else "PUT"
+    if _uses_new_deriv_trade_api(state):
+        symbol, sym_err = resolve_new_api_symbol(state, symbol, context="unchain_proposal_quote", client_id=client_id)
+        if sym_err:
+            return None, sym_err
+        contracts_for, contracts_err = _get_contracts_for_symbol(client_id, state, symbol)
+        if contracts_err:
+            return None, contracts_err
+        if not _contracts_for_has_contract_type(contracts_for, contract_type):
+            return None, f"Contract type {contract_type} is not available for {symbol}"
+        barrier_value, barrier_err = resolve_new_api_barrier(
+            state,
+            contracts_for,
+            contract_type,
+            barrier_value,
+            duration_val,
+            unit,
+            context="unchain_proposal_quote",
+            client_id=client_id,
+        )
+        if barrier_err:
+            return None, barrier_err
+
     req_id = _new_req_id()
     waiter = {"event": threading.Event(), "proposal": None, "error": None}
     waiters = state.setdefault("_proposal_waiters", {})
@@ -14840,6 +15135,47 @@ def run_auto_trade(client_id, state):
             duration_unit = sig.get("duration_unit", "t")
             mode = sig.get("mode")
             if str(mode or "").upper() == "KIDGX":
+                if _uses_new_deriv_trade_api(state):
+                    resolved_symbol, sym_err = resolve_new_api_symbol(
+                        state,
+                        symbol,
+                        context=f"{active_profile}:KidGx:auto_trade",
+                        client_id=client_id,
+                    )
+                    if not resolved_symbol:
+                        fallback_pool = []
+                        if active_profile == "JOKERJOE":
+                            try:
+                                fallback_pool.extend(_seqvix_jokerjoe_markets_for_pool("ALL"))
+                            except Exception:
+                                pass
+                        fallback_pool.extend([state.get("current_symbol"), state.get("human_symbol")])
+                        fallback_pool.extend(SEQVIX_MARKETS)
+                        resolved_symbol = _first_valid_new_api_symbol(
+                            state,
+                            fallback_pool,
+                            context=f"{active_profile}:KidGx:fallback",
+                            client_id=client_id,
+                        )
+                        if not resolved_symbol:
+                            logger.warning(
+                                "[%s] kidgx_symbol_resolved profile=%s original_symbol=%s resolved_symbol= unavailable error=%s",
+                                client_id,
+                                active_profile,
+                                symbol,
+                                sym_err,
+                            )
+                            continue
+                    if resolved_symbol != symbol:
+                        logger.info(
+                            "[%s] kidgx_symbol_resolved profile=%s original_symbol=%s resolved_symbol=%s source=auto_switch",
+                            client_id,
+                            active_profile,
+                            symbol,
+                            resolved_symbol,
+                        )
+                        symbol = resolved_symbol
+                        state["current_symbol"] = resolved_symbol
                 logger.info(
                     "[%s] TEMP kidgx_signal_detected profile=%s type=%s barrier=%s symbol=%s stake=%s duration=%s%s",
                     client_id,
@@ -14967,6 +15303,17 @@ def _seqvix_jokerjoe_activate_market(state, sym):
     if not ws or not state.get("ws_connected"):
         return False, False
     symbol = str(sym or "").upper().strip()
+    cid = _client_id_for_state(state)
+    if _uses_new_deriv_trade_api(state):
+        resolved_symbol, _sym_err = resolve_new_api_symbol(
+            state,
+            symbol,
+            context="seqvix_jokerjoe_scanner",
+            client_id=cid,
+        )
+        if not resolved_symbol:
+            return False, False
+        symbol = str(resolved_symbol or "").upper().strip()
     if not symbol or symbol in run.get("active_syms", set()):
         return False, False
     main_symbol = str(state.get("current_symbol") or "").upper().strip()
@@ -14980,9 +15327,18 @@ def _seqvix_jokerjoe_activate_market(state, sym):
     existing_sub_id = (state.get("tick_subs") or {}).get(symbol)
     if existing_sub_id:
         return True, False
-    run.setdefault("owned_syms", set()).add(symbol)
     try:
-        ws.send(json.dumps({"ticks": symbol, "subscribe": 1}))
+        ok = _ensure_tick_subscription(
+            state,
+            symbol,
+            force=False,
+            reason="seqvix_jokerjoe_scanner",
+            client_id=cid,
+            warmup_sec=_tick_stream_warmup_for_symbol(symbol),
+        )
+        if not ok:
+            raise RuntimeError("tick subscription rejected")
+        run.setdefault("owned_syms", set()).add(symbol)
         return True, True
     except Exception:
         run["active_syms"].discard(symbol)
@@ -15228,6 +15584,17 @@ def _seqvix_fill_batch(state, profile):
                 break
 
         sym = run["remaining"].pop()
+        cid = _client_id_for_state(state)
+        if _uses_new_deriv_trade_api(state):
+            resolved_sym, _sym_err = resolve_new_api_symbol(
+                state,
+                sym,
+                context=f"seqvix_{profile.lower()}_scanner",
+                client_id=cid,
+            )
+            if not resolved_sym:
+                continue
+            sym = str(resolved_sym or "").upper().strip()
         if sym in run["active_syms"]:
             continue
 
@@ -15243,11 +15610,19 @@ def _seqvix_fill_batch(state, profile):
         # otherwise subscribe and mark as owned by seqvix
         run["active_syms"].add(sym)
         run["samples"][sym] = []
-        run["owned_syms"].add(sym)
-        try:
-            ws.send(json.dumps({"ticks": sym, "subscribe": 1}))
-        except Exception:
-            pass
+        ok = _ensure_tick_subscription(
+            state,
+            sym,
+            force=False,
+            reason=f"seqvix_{profile.lower()}_scanner",
+            client_id=cid,
+            warmup_sec=_tick_stream_warmup_for_symbol(sym),
+        )
+        if ok:
+            run["owned_syms"].add(sym)
+        else:
+            run["active_syms"].discard(sym)
+            run["samples"].pop(sym, None)
 
 def _pick_two_rarest_digits(sample):
     counts = {d: 0 for d in range(10)}
@@ -15306,6 +15681,15 @@ def start_seqvix_jokerjoe(state, client_id, market_mode, trade_mode="1", scan_po
     trade_mode = _seqvix_jokerjoe_normalize_trade_mode(trade_mode)
     scan_pool = _seqvix_jokerjoe_normalize_scan_pool(scan_pool)
     markets = _seqvix_jokerjoe_markets_for_pool(scan_pool)
+    if _uses_new_deriv_trade_api(state):
+        markets = _filter_new_api_symbols(
+            state,
+            markets,
+            context="seqvix_jokerjoe_market_pool",
+            client_id=client_id,
+        )
+        if not markets:
+            return
     requested_limit = 10 if market_mode == "ENDLESS" else int(market_mode)
     market_limit = min(requested_limit, len(markets))
     trade_target = _seqvix_jokerjoe_trade_target(trade_mode)
@@ -15389,10 +15773,19 @@ def start_seqvix_koolkid(state, client_id, contract_type, barrier, trades_per_ma
     except Exception:
         b = 1
 
+    remaining_markets = SEQVIX_MARKETS.copy()
+    if _uses_new_deriv_trade_api(state):
+        remaining_markets = _filter_new_api_symbols(
+            state,
+            remaining_markets,
+            context="seqvix_koolkid_market_pool",
+            client_id=client_id,
+        )
+
     run.update({
         "running": True, "endless": False, "total": 10, "done": 0,
         "batch_size": 6, "sample_size": 30,
-        "remaining": SEQVIX_MARKETS.copy(),
+        "remaining": remaining_markets,
         "active_syms": set(), "samples": {}, "ready_syms": set(),
         "last_exec_ts": 0.0,
         "config": {"contract_type": ct, "barrier": b},
@@ -15752,9 +16145,17 @@ def _start_unchain_scanner_worker(client_id, state):
                             needs_sub = True
                         if needs_sub:
                             try:
-                                ws.send(json.dumps({"ticks": sym, "subscribe": 1}))
-                                scan.setdefault("owned_syms", set()).add(sym)
-                                last_attempt[sym] = now_ts
+                                ok = _ensure_tick_subscription(
+                                    state,
+                                    sym,
+                                    force=False,
+                                    reason="unchain_scanner_worker",
+                                    client_id=client_id,
+                                    warmup_sec=_tick_stream_warmup_for_symbol(sym),
+                                )
+                                if ok:
+                                    scan.setdefault("owned_syms", set()).add(sym)
+                                    last_attempt[sym] = now_ts
                             except Exception:
                                 pass
                 scan["last_emit"] = time.time()
@@ -15982,19 +16383,25 @@ def _ensure_tick_subscription(state, symbol, *, force=False, reason="", client_i
     sym = _normalize_tick_symbol(symbol)
     if not sym:
         return False
+    cid = client_id or _client_id_for_state(state)
+    if _uses_new_deriv_trade_api(state):
+        resolved_sym, _sym_err = resolve_new_api_symbol(state, sym, context=reason or "tick_subscription", client_id=cid)
+        if not resolved_sym:
+            return False
+        sym = _normalize_tick_symbol(resolved_sym)
     ws = state.get("ws")
     if not state.get("ws_connected") or not ws:
         return False
     tick_subs = state.setdefault("tick_subs", {})
     existing_sub_id = tick_subs.get(sym)
     if existing_sub_id and not force:
-        _start_tick_stream_warmup(state, sym, client_id=client_id, reason=reason or "existing_subscription", warmup_sec=warmup_sec)
+        _start_tick_stream_warmup(state, sym, client_id=cid, reason=reason or "existing_subscription", warmup_sec=warmup_sec)
         return True
     sent_at = state.setdefault("tick_subscribe_sent_at", {})
     pending_sent_ts = float(sent_at.get(sym, 0.0) or 0.0)
     pending_window = max(1.0, _tick_stream_warmup_for_symbol(sym, TICK_STREAM_WARMUP_SEC if warmup_sec is None else warmup_sec))
     if not existing_sub_id and not force and pending_sent_ts > 0.0 and (time.time() - pending_sent_ts) < pending_window:
-        _start_tick_stream_warmup(state, sym, client_id=client_id, reason=reason or "pending_subscription", warmup_sec=warmup_sec)
+        _start_tick_stream_warmup(state, sym, client_id=cid, reason=reason or "pending_subscription", warmup_sec=warmup_sec)
         sent_at[sym] = pending_sent_ts
         return True
     if existing_sub_id and force:
@@ -16012,11 +16419,11 @@ def _ensure_tick_subscription(state, symbol, *, force=False, reason="", client_i
         sent_at[sym] = now_ts
         state.setdefault("tick_stream_recovering_symbols", {})[sym] = now_ts
         state.setdefault("tick_resubscribe_attempted_at", {})[sym] = now_ts
-        _start_tick_stream_warmup(state, sym, client_id=client_id, reason=reason or "ensure", warmup_sec=warmup_sec)
-        if client_id:
+        _start_tick_stream_warmup(state, sym, client_id=cid, reason=reason or "ensure", warmup_sec=warmup_sec)
+        if cid:
             logger.info(
                 "[%s] tick_stream_subscribe_sent symbol=%s force=%s reason=%s",
-                client_id,
+                cid,
                 sym,
                 bool(force),
                 reason or "ensure",
@@ -16024,10 +16431,10 @@ def _ensure_tick_subscription(state, symbol, *, force=False, reason="", client_i
         return True
     except Exception:
         tick_subs.pop(sym, None)
-        if client_id:
+        if cid:
             logger.warning(
                 "[%s] tick_stream_subscribe_failed symbol=%s force=%s reason=%s",
-                client_id,
+                cid,
                 sym,
                 bool(force),
                 reason or "ensure",
@@ -16446,6 +16853,13 @@ def _sync_koolkid_golden_card_subscriptions(state, symbols=None, *, client_id=No
         clean_sym = str(sym or "").upper().strip()
         if clean_sym and clean_sym not in desired_symbols:
             desired_symbols.append(clean_sym)
+    if _uses_new_deriv_trade_api(state):
+        desired_symbols = _filter_new_api_symbols(
+            state,
+            desired_symbols,
+            context="koolkid_golden_card_scanner",
+            client_id=client_id,
+        )
     scan["symbols"] = desired_symbols
     ws = state.get("ws")
     if not state.get("ws_connected") or not ws:
@@ -16700,6 +17114,32 @@ def _start_unchain_scanner(client_id, state, symbols=None, window_ticks=None):
             if len(symbols) >= 10:
                 break
     symbols = symbols[:10]
+    if _uses_new_deriv_trade_api(state):
+        symbols = _filter_new_api_symbols(
+            state,
+            symbols,
+            context="unchain_scanner",
+            client_id=client_id,
+            max_symbols=10,
+        )
+        if len(symbols) < 10:
+            for sym in UNCHAIN_SCANNER_DEFAULTS:
+                if len(symbols) >= 10:
+                    break
+                candidate = str(sym or "").upper().strip()
+                if not candidate or candidate in {str(s).upper() for s in symbols}:
+                    continue
+                resolved = _first_valid_new_api_symbol(
+                    state,
+                    [candidate],
+                    context="unchain_scanner_defaults",
+                    client_id=client_id,
+                )
+                if resolved and str(resolved).upper() not in {str(s).upper() for s in symbols}:
+                    symbols.append(resolved)
+        if not symbols:
+            scan["running"] = False
+            return False, "No valid Deriv markets available for this account.", _get_unchain_scanner_payload(state)
 
     scan["running"] = True
     scan["max_symbols"] = 10
@@ -16747,10 +17187,18 @@ def _start_unchain_scanner(client_id, state, symbols=None, window_ticks=None):
         if existing_sub_id:
             continue
         try:
-            ws.send(json.dumps({"ticks": sym, "subscribe": 1}))
-            if sym not in (main_symbol, human_symbol):
-                scan.setdefault("owned_syms", set()).add(sym)
-            scan.setdefault("last_sub_attempt", {})[sym] = time.time()
+            ok = _ensure_tick_subscription(
+                state,
+                sym,
+                force=False,
+                reason="unchain_scanner",
+                client_id=client_id,
+                warmup_sec=_tick_stream_warmup_for_symbol(sym),
+            )
+            if ok:
+                if sym not in (main_symbol, human_symbol):
+                    scan.setdefault("owned_syms", set()).add(sym)
+                scan.setdefault("last_sub_attempt", {})[sym] = time.time()
         except Exception:
             pass
 
