@@ -648,7 +648,18 @@ _DERIV_CONTRACT_ALIASES = {
     "TOUCH": "ONETOUCH",
     "NO_TOUCH": "NOTOUCH",
     "NO TOUCH": "NOTOUCH",
+    "NO-TOUCH": "NOTOUCH",
     "NOTOUCH": "NOTOUCH",
+}
+
+
+_DERIV_DIGIT_CONTRACT_TYPES = {
+    "DIGITOVER",
+    "DIGITUNDER",
+    "DIGITMATCH",
+    "DIGITDIFF",
+    "DIGITEVEN",
+    "DIGITODD",
 }
 
 
@@ -948,6 +959,7 @@ def execute_deriv_trade(trade_request):
     duration_unit = _normalize_trade_duration_unit(trade_request.get("duration_unit", "t"))
     duration = _sanitize_trade_duration_for_unit(trade_request.get("duration", 1), duration_unit, default=1)
     barrier = trade_request.get("barrier")
+    requested_barrier = barrier
     req_meta = dict(trade_request.get("req_meta") or {})
     mode = _deriv_trade_connection_mode(state)
     account_type = "demo" if _oauth_account_is_demo({"account_id": state.get("deriv_account_id")}) else "real"
@@ -962,7 +974,7 @@ def execute_deriv_trade(trade_request):
         "requested_symbol": requested_symbol,
         "requested_contract_type": requested_contract,
         "deriv_contract_type": deriv_contract,
-        "requested_barrier": barrier,
+        "requested_barrier": requested_barrier,
     }
 
     underlying_symbol = requested_symbol
@@ -1053,7 +1065,9 @@ def execute_deriv_trade(trade_request):
     req_meta.setdefault("type", requested_contract)
     req_meta.setdefault("contract_type", requested_contract)
     req_meta.setdefault("deriv_contract_type", deriv_contract)
-    req_meta.setdefault("barrier", parameters.get("barrier"))
+    req_meta["requested_barrier"] = requested_barrier
+    req_meta["barrier"] = parameters.get("barrier")
+    req_meta["resolved_barrier"] = parameters.get("barrier")
     req_meta.setdefault("stake", float(stake))
     req_meta.setdefault("symbol", requested_symbol)
     req_meta.setdefault("underlying_symbol", underlying_symbol)
@@ -4600,14 +4614,20 @@ def send_buy(client_id, contract_type, stake, symbol, barrier, duration=1, durat
         "OVER": "DIGITOVER",
         "UNDER": "DIGITUNDER",
         "MATCHES": "DIGITMATCH",
-        "DIFFERS": "DIGITDIFF"
+        "MATCH": "DIGITMATCH",
+        "DIFFERS": "DIGITDIFF",
+        "DIFFER": "DIGITDIFF",
+        "DIFF": "DIGITDIFF",
+        "EVEN": "DIGITEVEN",
+        "ODD": "DIGITODD",
     }
 
     normalized_deriv_contract = _normalize_deriv_contract_type(contract_type)
-    if contract_type not in contract_map and normalized_deriv_contract not in set(contract_map.values()):
+    raw_contract_key = str(contract_type or "").upper().strip()
+    if raw_contract_key not in contract_map and normalized_deriv_contract not in _DERIV_DIGIT_CONTRACT_TYPES:
         return False, "Invalid contract type"
 
-    deriv_contract = contract_map.get(contract_type, normalized_deriv_contract)
+    deriv_contract = contract_map.get(raw_contract_key, normalized_deriv_contract)
     barrier = _barrier_from_trade_label(contract_type, barrier)
     duration_unit = _normalize_trade_duration_unit(duration_unit)
     duration = _sanitize_trade_duration_for_unit(duration, duration_unit, default=1)
@@ -4624,13 +4644,14 @@ def send_buy(client_id, contract_type, stake, symbol, barrier, duration=1, durat
     state["req_meta"][req_id] = {
         "profile": profile,  # PATCH D: use the same profile variable
         "type": contract_type,
-        "barrier": int(barrier),
+        "barrier": (int(barrier) if barrier not in (None, "") else None),
         "stake": float(stake),
         "symbol": symbol,
         "time": now_time(),
         "mode": mode,
         "duration": duration,
         "duration_unit": duration_unit,
+        "deriv_contract_type": deriv_contract,
         "budget_reservation": budget_reservation,
     }
     if isinstance(extra_meta, dict):
@@ -4643,7 +4664,7 @@ def send_buy(client_id, contract_type, stake, symbol, barrier, duration=1, durat
         "req_id": req_id,
         "profile": profile,
         "strategy_name": profile,
-        "contract_type": contract_type,
+        "contract_type": deriv_contract,
         "stake": stake,
         "symbol": symbol,
         "barrier": barrier,
@@ -4736,13 +4757,19 @@ def send_buy_with_profile(
         "OVER": "DIGITOVER",
         "UNDER": "DIGITUNDER",
         "MATCHES": "DIGITMATCH",
-        "DIFFERS": "DIGITDIFF"
+        "MATCH": "DIGITMATCH",
+        "DIFFERS": "DIGITDIFF",
+        "DIFFER": "DIGITDIFF",
+        "DIFF": "DIGITDIFF",
+        "EVEN": "DIGITEVEN",
+        "ODD": "DIGITODD",
     }
     normalized_deriv_contract = _normalize_deriv_contract_type(contract_type)
-    if contract_type not in contract_map and normalized_deriv_contract not in set(contract_map.values()):
+    raw_contract_key = str(contract_type or "").upper().strip()
+    if raw_contract_key not in contract_map and normalized_deriv_contract not in _DERIV_DIGIT_CONTRACT_TYPES:
         return False, "Invalid contract type"
 
-    deriv_contract = contract_map.get(contract_type, normalized_deriv_contract)
+    deriv_contract = contract_map.get(raw_contract_key, normalized_deriv_contract)
     barrier = _barrier_from_trade_label(contract_type, barrier)
     duration_unit = _normalize_trade_duration_unit(duration_unit)
     duration = _sanitize_trade_duration_for_unit(duration, duration_unit, default=1)
@@ -4759,13 +4786,14 @@ def send_buy_with_profile(
     state["req_meta"][req_id] = {
         "profile": profile,
         "type": contract_type,
-        "barrier": int(barrier),
+        "barrier": (int(barrier) if barrier not in (None, "") else None),
         "stake": float(stake),
         "symbol": symbol,
         "time": now_time(),
         "mode": mode,
         "duration": duration,
         "duration_unit": duration_unit,
+        "deriv_contract_type": deriv_contract,
         "budget_reservation": budget_reservation,
     }
     if isinstance(extra_meta, dict):
@@ -4778,7 +4806,7 @@ def send_buy_with_profile(
         "req_id": req_id,
         "profile": profile,
         "strategy_name": profile,
-        "contract_type": contract_type,
+        "contract_type": deriv_contract,
         "stake": stake,
         "symbol": symbol,
         "barrier": barrier,
@@ -8041,7 +8069,8 @@ def _send_ntt_trade(
             "state": state,
             "req_id": req_id,
             "profile": "NTT",
-            "strategy_name": "NTT",
+            "strategy_name": "Mutant",
+            "button": f"Mutant {side.replace('_', ' ')}",
             "contract_type": contract_type,
             "stake": stake,
             "symbol": symbol,
@@ -14542,6 +14571,7 @@ def _send_unchain_hl_trade(
             "req_id": req_id,
             "profile": "UNCHAIN",
             "strategy_name": "UNCHAIN",
+            "button": f"UNCHAIN {side}",
             "contract_type": deriv_contract,
             "stake": stake,
             "symbol": symbol,
@@ -17465,6 +17495,8 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                         "underlying_symbol": meta_for_error.get("underlying_symbol") or meta_for_error.get("symbol"),
                         "requested_contract_type": meta_for_error.get("type") or meta_for_error.get("contract_type"),
                         "deriv_contract_type": meta_for_error.get("deriv_contract_type") or meta_for_error.get("contract_type"),
+                        "requested_barrier": meta_for_error.get("requested_barrier") if "requested_barrier" in meta_for_error else meta_for_error.get("barrier"),
+                        "resolved_barrier": meta_for_error.get("barrier"),
                         "contract_available": None,
                         "buy_response": data,
                         "error": msg,
@@ -17699,6 +17731,8 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                     "underlying_symbol": meta.get("underlying_symbol") or meta.get("symbol"),
                     "requested_contract_type": meta.get("type") or meta.get("contract_type"),
                     "deriv_contract_type": meta.get("deriv_contract_type") or meta.get("contract_type"),
+                    "requested_barrier": meta.get("requested_barrier") if "requested_barrier" in meta else meta.get("barrier"),
+                    "resolved_barrier": meta.get("barrier"),
                     "contract_available": True,
                     "buy_response": data,
                 })
