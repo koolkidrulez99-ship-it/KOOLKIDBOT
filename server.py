@@ -301,6 +301,7 @@ def _proposal_payload_for_connection(state, payload):
         if symbol:
             final_payload["underlying_symbol"] = symbol
     if _uses_new_deriv_trade_api(state):
+        contract_type = _normalize_deriv_contract_type(final_payload.get("contract_type"))
         for unsupported_key in (
             "loginid",
             "product_type",
@@ -310,6 +311,22 @@ def _proposal_payload_for_connection(state, payload):
             "trading_period_start",
         ):
             final_payload.pop(unsupported_key, None)
+        if contract_type in {
+            "CALL",
+            "PUT",
+            "DIGITOVER",
+            "DIGITUNDER",
+            "DIGITMATCH",
+            "DIGITDIFF",
+            "DIGITEVEN",
+            "DIGITODD",
+            "ONETOUCH",
+            "NOTOUCH",
+        }:
+            final_payload.pop("barrier2", None)
+        if contract_type in ("DIGITEVEN", "DIGITODD"):
+            final_payload.pop("barrier", None)
+            final_payload.pop("barrier2", None)
     return final_payload
 
 
@@ -344,6 +361,23 @@ def _friendly_proposal_error_message(error):
         return "Deriv quote limit reached. Waiting a moment before trying again."
     text = _proposal_error_text(error).strip()
     return text or "Quote error"
+
+
+def _is_deriv_trade_validation_error_text(value):
+    text = str(value or "").lower()
+    return any(
+        token in text
+        for token in (
+            "contractbuyvalidationerror",
+            "invalidbarrier",
+            "invalid barrier",
+            "invalidsymbol",
+            "invalid symbol",
+            "unknown contract_type",
+            "contract type",
+            "properties not allowed",
+        )
+    )
 
 
 def _mark_proposal_rate_limited(state, error):
@@ -692,15 +726,25 @@ def _contracts_for_candidates(contracts_for, contract_type):
 
 def _contract_item_barrier_values(item):
     values = []
-    for key in ("barrier", "barrier1", "barrier2"):
+    for key in ("barrier", "barrier1"):
         value = (item or {}).get(key)
         if value not in (None, ""):
             values.append(str(value).strip())
-    for key in ("barriers", "barrier_choices", "barrier_range"):
+    for key in ("barrier_choices", "barrier_range"):
         value = (item or {}).get(key)
         if isinstance(value, (list, tuple)):
             values.extend(str(v).strip() for v in value if v not in (None, ""))
     return [v for v in values if v]
+
+
+def _contract_item_supports_second_barrier(item):
+    if not isinstance(item, dict):
+        return False
+    try:
+        barriers_count = int(float(item.get("barriers") or 0))
+    except Exception:
+        barriers_count = 0
+    return bool(barriers_count >= 2 and item.get("barrier2") not in (None, ""))
 
 
 def _contract_item_allows_no_barrier(item):
@@ -786,6 +830,52 @@ def resolve_new_api_barrier(state, contracts_for, contract_type, requested_barri
         return None, f"No valid barrier is available for {deriv_contract}"
 
     return raw, None
+
+
+_NEW_API_SINGLE_BARRIER_CONTRACTS = {
+    "CALL",
+    "PUT",
+    "DIGITOVER",
+    "DIGITUNDER",
+    "DIGITMATCH",
+    "DIGITDIFF",
+    "DIGITEVEN",
+    "DIGITODD",
+    "ONETOUCH",
+    "NOTOUCH",
+}
+
+
+def sanitize_new_api_trade_payload(state, payload, *, contracts_for=None, contract_type=None, context="", client_id=None):
+    original = dict(payload or {})
+    sanitized = dict(payload or {})
+    removed = {}
+    if not _uses_new_deriv_trade_api(state):
+        return sanitized, removed
+    deriv_contract = _normalize_deriv_contract_type(contract_type or sanitized.get("contract_type"))
+    if deriv_contract in _NEW_API_SINGLE_BARRIER_CONTRACTS and "barrier2" in sanitized:
+        removed["barrier2"] = sanitized.pop("barrier2", None)
+    if deriv_contract in ("DIGITEVEN", "DIGITODD"):
+        if "barrier" in sanitized:
+            removed["barrier"] = sanitized.pop("barrier", None)
+        if "barrier2" in sanitized:
+            removed["barrier2"] = sanitized.pop("barrier2", None)
+    if deriv_contract in ("DIGITOVER", "DIGITUNDER", "DIGITMATCH", "DIGITDIFF") and sanitized.get("barrier") not in (None, ""):
+        try:
+            sanitized["barrier"] = int(float(sanitized.get("barrier")))
+        except Exception:
+            pass
+    if removed:
+        logger.info(
+            "[%s] new_api_payload_sanitized context=%s contract_type=%s removed_fields=%s original_payload=%s sanitized_payload=%s",
+            client_id or _client_id_for_state(state) or "?",
+            context or "",
+            deriv_contract,
+            ",".join(sorted(removed.keys())),
+            _safe_deriv_payload_text(original),
+            _safe_deriv_payload_text(sanitized),
+        )
+    return sanitized, removed
 
 
 def _deriv_trade_debug_log(client_id, stage, context):
@@ -979,6 +1069,17 @@ def execute_deriv_trade(trade_request):
 
     underlying_symbol = requested_symbol
     if _uses_new_deriv_trade_api(state):
+        logger.info(
+            "[%s] auth_state_before_trade profile=%s button=%s connection_mode=%s account_id=%s account_type=%s ws_ready_state=%s otp_authenticated=%s",
+            client_id,
+            trade_request.get("profile") or state.get("active_profile"),
+            trade_request.get("button") or trade_request.get("strategy_name") or trade_request.get("mode") or "",
+            mode,
+            _mask_account_id(state.get("deriv_account_id") or ""),
+            account_type,
+            _websocket_ready_state_label(state),
+            _is_otp_authenticated_socket(state),
+        )
         trade_context = trade_request.get("button") or trade_request.get("strategy_name") or trade_request.get("profile") or "trade"
         is_kidgx_trade = str(trade_request.get("mode") or req_meta.get("mode") or "").upper() == "KIDGX"
         underlying_symbol, symbol_err = resolve_new_api_symbol(state, requested_symbol, context=trade_context, client_id=client_id)
@@ -1055,11 +1156,27 @@ def execute_deriv_trade(trade_request):
     }
     if barrier not in (None, ""):
         parameters["barrier"] = barrier
+    if trade_request.get("barrier2") not in (None, ""):
+        parameters["barrier2"] = trade_request.get("barrier2")
     if deriv_contract.startswith("DIGIT") and barrier not in (None, ""):
         try:
             parameters["barrier"] = int(float(barrier))
         except Exception:
             parameters["barrier"] = str(barrier)
+    if _uses_new_deriv_trade_api(state):
+        original_parameters = dict(parameters)
+        parameters, removed_fields = sanitize_new_api_trade_payload(
+            state,
+            parameters,
+            contracts_for=contracts_for if "contracts_for" in locals() else None,
+            contract_type=deriv_contract,
+            context=trade_request.get("button") or trade_request.get("strategy_name") or trade_request.get("profile") or "trade",
+            client_id=client_id,
+        )
+        if removed_fields:
+            debug["original_payload"] = original_parameters
+            debug["sanitized_payload"] = parameters
+            debug["removed_fields"] = ",".join(sorted(removed_fields.keys()))
 
     req_meta.setdefault("profile", trade_request.get("profile") or state.get("active_profile"))
     req_meta.setdefault("type", requested_contract)
@@ -1113,6 +1230,15 @@ def execute_deriv_trade(trade_request):
             debug["error"] = proposal_err
             debug["failed_at"] = "proposal_response"
             _deriv_trade_debug_log(client_id, "proposal_failed", debug)
+            logger.info(
+                "[%s] auth_state_after_trade profile=%s button=%s connection_mode=%s ws_ready_state=%s otp_authenticated=%s trade_failed_without_disconnect=true failed_at=proposal_response",
+                client_id,
+                trade_request.get("profile") or state.get("active_profile"),
+                trade_request.get("button") or trade_request.get("strategy_name") or trade_request.get("mode") or "",
+                mode,
+                _websocket_ready_state_label(state),
+                _is_otp_authenticated_socket(state),
+            )
             try:
                 state.get("req_meta", {}).pop(req_id, None)
             except Exception:
@@ -1124,6 +1250,15 @@ def execute_deriv_trade(trade_request):
             debug["error"] = msg
             debug["failed_at"] = "proposal_id_missing"
             _deriv_trade_debug_log(client_id, "proposal_failed", debug)
+            logger.info(
+                "[%s] auth_state_after_trade profile=%s button=%s connection_mode=%s ws_ready_state=%s otp_authenticated=%s trade_failed_without_disconnect=true failed_at=proposal_id_missing",
+                client_id,
+                trade_request.get("profile") or state.get("active_profile"),
+                trade_request.get("button") or trade_request.get("strategy_name") or trade_request.get("mode") or "",
+                mode,
+                _websocket_ready_state_label(state),
+                _is_otp_authenticated_socket(state),
+            )
             try:
                 state.get("req_meta", {}).pop(req_id, None)
             except Exception:
@@ -1151,6 +1286,15 @@ def execute_deriv_trade(trade_request):
             except Exception:
                 pass
             return False, str(exc)
+        logger.info(
+            "[%s] auth_state_after_trade profile=%s button=%s connection_mode=%s ws_ready_state=%s otp_authenticated=%s",
+            client_id,
+            trade_request.get("profile") or state.get("active_profile"),
+            trade_request.get("button") or trade_request.get("strategy_name") or trade_request.get("mode") or "",
+            mode,
+            _websocket_ready_state_label(state),
+            _is_otp_authenticated_socket(state),
+        )
         return True, "Trade sent"
 
     debug["buy_payload"] = legacy_payload
@@ -18658,6 +18802,15 @@ def handle_on_error(client_id, ws, error, expected_nonce):
     if state.get("ws_nonce") != expected_nonce:
         return
     logger.error(f"[{client_id}] WebSocket Error: {error}")
+    if _uses_new_deriv_trade_api(state) and _is_deriv_trade_validation_error_text(error):
+        logger.warning(
+            "[%s] trade_failed_without_disconnect=true websocket_error_ignored_as_trade_validation error=%s ws_ready_state=%s otp_authenticated=%s",
+            client_id,
+            error,
+            _websocket_ready_state_label(state),
+            _is_otp_authenticated_socket(state),
+        )
+        return
     if _is_ws_ping_pong_timeout_error(error):
         logger.warning("[%s] deriv_ws_ping_pong_timeout action=reconnect_silent", client_id)
         _mark_ws_unhealthy_and_reconnect(
@@ -18750,6 +18903,13 @@ def handle_on_close(client_id, ws, code, msg, expected_nonce):
     except Exception:
         pass
     logger.warning(f"[{client_id}] 🔌 WebSocket Disconnected")
+    logger.warning(
+        "[%s] websocket_closed_reason code=%s message=%s connection_mode=%s",
+        client_id,
+        code,
+        msg,
+        _deriv_trade_connection_mode(state),
+    )
     should_reconnect = bool(
         str(state.get("api_token", "") or "").strip()
         and (not state.get("ws_stop_event") or not state["ws_stop_event"].is_set())
