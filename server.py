@@ -737,6 +737,13 @@ def _contract_item_barrier_values(item):
     return [v for v in values if v]
 
 
+def _contract_item_duration_matches(item, duration, duration_unit):
+    try:
+        return _duration_matches_contracts_for(item, int(float(duration or 0)), str(duration_unit or "t").lower())
+    except Exception:
+        return True
+
+
 def _contract_item_supports_second_barrier(item):
     if not isinstance(item, dict):
         return False
@@ -878,6 +885,118 @@ def sanitize_new_api_trade_payload(state, payload, *, contracts_for=None, contra
     return sanitized, removed
 
 
+def sanitize_new_api_trade_parameters(
+    state,
+    client_id,
+    contracts_for,
+    deriv_contract,
+    parameters,
+    requested_barrier,
+    duration,
+    duration_unit,
+    context,
+):
+    original = dict(parameters or {})
+    sanitized = dict(parameters or {})
+    removed = {}
+    matched_item = None
+    resolved_barrier = None
+    if not _uses_new_deriv_trade_api(state):
+        return sanitized, None, {"removed": removed, "matched_item": matched_item, "resolved_barrier": resolved_barrier}
+
+    contract_type = _normalize_deriv_contract_type(deriv_contract)
+    candidates = [
+        item for item in _contracts_for_candidates(contracts_for, contract_type)
+        if _contract_item_duration_matches(item, duration, duration_unit)
+    ] or _contracts_for_candidates(contracts_for, contract_type)
+    if candidates:
+        matched_item = candidates[0]
+
+    def remove_field(name):
+        if name in sanitized:
+            removed[name] = sanitized.pop(name, None)
+
+    if contract_type in _NEW_API_SINGLE_BARRIER_CONTRACTS:
+        remove_field("barrier2")
+
+    if contract_type in ("DIGITOVER", "DIGITUNDER", "DIGITMATCH", "DIGITDIFF"):
+        try:
+            digit = int(float(requested_barrier))
+        except Exception:
+            return sanitized, f"Invalid barrier for {contract_type}: {requested_barrier}", {"removed": removed, "matched_item": matched_item, "resolved_barrier": resolved_barrier}
+        if digit < 0 or digit > 9:
+            return sanitized, f"Invalid barrier for {contract_type}: {requested_barrier}", {"removed": removed, "matched_item": matched_item, "resolved_barrier": resolved_barrier}
+        sanitized["barrier"] = digit
+        resolved_barrier = digit
+    elif contract_type in ("DIGITEVEN", "DIGITODD"):
+        remove_field("barrier")
+        remove_field("barrier2")
+        resolved_barrier = None
+    elif contract_type in ("CALL", "PUT"):
+        no_barrier_allowed = any(_contract_item_allows_no_barrier(item) for item in candidates)
+        if no_barrier_allowed:
+            remove_field("barrier")
+            remove_field("barrier2")
+            resolved_barrier = None
+        else:
+            valid_values = []
+            for item in candidates:
+                valid_values.extend(_contract_item_barrier_values(item))
+            valid_values = [str(v).strip() for v in valid_values if str(v).strip()]
+            requested_text = "" if requested_barrier in (None, "") else str(requested_barrier).strip()
+            if requested_text and requested_text in valid_values:
+                sanitized["barrier"] = requested_text
+                resolved_barrier = requested_text
+            elif valid_values:
+                sanitized["barrier"] = valid_values[0]
+                resolved_barrier = valid_values[0]
+            else:
+                remove_field("barrier")
+                remove_field("barrier2")
+                if candidates:
+                    resolved_barrier = None
+                else:
+                    return sanitized, "Invalid barrier for CALL/PUT on this market/duration", {"removed": removed, "matched_item": matched_item, "resolved_barrier": resolved_barrier}
+    elif contract_type in ("ONETOUCH", "NOTOUCH"):
+        remove_field("barrier2")
+        valid_values = []
+        for item in candidates:
+            valid_values.extend(_contract_item_barrier_values(item))
+        valid_values = [str(v).strip() for v in valid_values if str(v).strip()]
+        requested_text = "" if requested_barrier in (None, "") else str(requested_barrier).strip()
+        if requested_text and requested_text in valid_values:
+            sanitized["barrier"] = requested_text
+            resolved_barrier = requested_text
+        elif valid_values:
+            sanitized["barrier"] = valid_values[0]
+            resolved_barrier = valid_values[0]
+        else:
+            return sanitized, f"Invalid barrier for {contract_type} on this market/duration", {"removed": removed, "matched_item": matched_item, "resolved_barrier": resolved_barrier}
+    else:
+        sanitized, removed_extra = sanitize_new_api_trade_payload(
+            state,
+            sanitized,
+            contracts_for=contracts_for,
+            contract_type=contract_type,
+            context=context,
+            client_id=client_id,
+        )
+        removed.update(removed_extra)
+
+    logger.info(
+        "[%s] new_api_trade_parameters_sanitized context=%s contract_type=%s original_parameters=%s sanitized_parameters=%s removed_fields=%s resolved_barrier=%s matched_contract=%s",
+        client_id or _client_id_for_state(state) or "?",
+        context or "",
+        contract_type,
+        _safe_deriv_payload_text(original),
+        _safe_deriv_payload_text(sanitized),
+        ",".join(sorted(removed.keys())),
+        resolved_barrier,
+        _safe_deriv_payload_text(matched_item or {}),
+    )
+    return sanitized, None, {"removed": removed, "matched_item": matched_item, "resolved_barrier": resolved_barrier}
+
+
 def _deriv_trade_debug_log(client_id, stage, context):
     context = context or {}
     try:
@@ -906,6 +1025,16 @@ def _deriv_trade_debug_log(client_id, stage, context):
             context.get("error") or "",
             context.get("failed_at") or "",
         )
+        if context.get("original_payload") is not None or context.get("sanitized_payload") is not None or context.get("matched_contract") is not None:
+            logger.info(
+                "[%s] deriv_trade_%s_sanitizer original_parameters=%s sanitized_parameters=%s removed_fields=%s matched_contract=%s",
+                client_id,
+                stage,
+                _safe_deriv_payload_text(context.get("original_payload") or {}),
+                _safe_deriv_payload_text(context.get("sanitized_payload") or {}),
+                context.get("removed_fields") or "",
+                _safe_deriv_payload_text(context.get("matched_contract") or {}),
+            )
     except Exception:
         pass
 
@@ -1123,23 +1252,7 @@ def execute_deriv_trade(trade_request):
                 barrier,
                 bool(available),
             )
-        resolved_barrier, barrier_err = resolve_new_api_barrier(
-            state,
-            contracts_for,
-            deriv_contract,
-            barrier,
-            duration,
-            duration_unit,
-            context=trade_request.get("button") or trade_request.get("strategy_name") or trade_request.get("profile") or "trade",
-            client_id=client_id,
-        )
-        debug["resolved_barrier"] = resolved_barrier
-        if barrier_err:
-            debug["error"] = barrier_err
-            debug["failed_at"] = "barrier_resolver"
-            _deriv_trade_debug_log(client_id, "blocked", debug)
-            return False, barrier_err
-        barrier = resolved_barrier
+        debug["resolved_barrier"] = None
     else:
         debug["underlying_symbol"] = underlying_symbol
         debug["contract_available"] = True
@@ -1165,18 +1278,38 @@ def execute_deriv_trade(trade_request):
             parameters["barrier"] = str(barrier)
     if _uses_new_deriv_trade_api(state):
         original_parameters = dict(parameters)
-        parameters, removed_fields = sanitize_new_api_trade_payload(
+        parameters, sanitize_err, sanitize_meta = sanitize_new_api_trade_parameters(
             state,
+            client_id,
+            contracts_for,
+            deriv_contract,
             parameters,
-            contracts_for=contracts_for if "contracts_for" in locals() else None,
-            contract_type=deriv_contract,
-            context=trade_request.get("button") or trade_request.get("strategy_name") or trade_request.get("profile") or "trade",
-            client_id=client_id,
+            requested_barrier,
+            duration,
+            duration_unit,
+            trade_request.get("button") or trade_request.get("strategy_name") or trade_request.get("profile") or "trade",
         )
+        debug["original_payload"] = original_parameters
+        debug["sanitized_payload"] = parameters
+        debug["resolved_barrier"] = (sanitize_meta or {}).get("resolved_barrier")
+        debug["matched_contract"] = (sanitize_meta or {}).get("matched_item")
+        removed_fields = (sanitize_meta or {}).get("removed") or {}
         if removed_fields:
-            debug["original_payload"] = original_parameters
-            debug["sanitized_payload"] = parameters
             debug["removed_fields"] = ",".join(sorted(removed_fields.keys()))
+        if sanitize_err:
+            debug["error"] = sanitize_err
+            debug["failed_at"] = "parameter_sanitizer"
+            _deriv_trade_debug_log(client_id, "blocked", debug)
+            logger.info(
+                "[%s] auth_state_after_trade profile=%s button=%s connection_mode=%s ws_ready_state=%s otp_authenticated=%s trade_failed_without_disconnect=true failed_at=parameter_sanitizer",
+                client_id,
+                trade_request.get("profile") or state.get("active_profile"),
+                trade_request.get("button") or trade_request.get("strategy_name") or trade_request.get("mode") or "",
+                mode,
+                _websocket_ready_state_label(state),
+                _is_otp_authenticated_socket(state),
+            )
+            return False, sanitize_err
 
     req_meta.setdefault("profile", trade_request.get("profile") or state.get("active_profile"))
     req_meta.setdefault("type", requested_contract)
@@ -6874,6 +7007,36 @@ def _apply_ntt_settings_update(state, data):
     return ntt
 
 
+def _resolve_contract_default_barrier_from_state(state, symbol, duration, duration_unit, contract_type, *, client_id=None, context="market_default_barrier"):
+    cid = client_id or _client_id_for_state(state)
+    underlying_symbol, symbol_err = resolve_new_api_symbol(state, symbol, context=context, client_id=cid)
+    if symbol_err:
+        return None, symbol_err
+    contracts_for, contracts_err = _get_contracts_for_symbol(cid, state, underlying_symbol)
+    if contracts_err:
+        return None, contracts_err
+    deriv_contract = _normalize_deriv_contract_type(contract_type)
+    candidates = [
+        item for item in _contracts_for_candidates(contracts_for, deriv_contract)
+        if _contract_item_duration_matches(item, duration, duration_unit)
+    ] or _contracts_for_candidates(contracts_for, deriv_contract)
+    for item in candidates:
+        values = _contract_item_barrier_values(item)
+        if values:
+            barrier = str(values[0]).strip()
+            logger.info(
+                "[%s] new_api_default_barrier_resolved context=%s symbol=%s contract_type=%s barrier=%s matched_contract=%s",
+                cid or "?",
+                context,
+                underlying_symbol,
+                deriv_contract,
+                barrier,
+                _safe_deriv_payload_text(item),
+            )
+            return barrier, None
+    return None, f"No Deriv default barrier found for {deriv_contract} on this market/duration"
+
+
 def _fetch_ntt_market_default_barrier(symbol, duration, duration_unit):
     return _fetch_unchain_market_default_barrier(symbol, duration, _clean_ntt_duration_unit(duration_unit))
 
@@ -6883,18 +7046,38 @@ def _apply_ntt_market_default_barriers(state, symbol):
     safe_symbol = str(symbol or state.get("current_symbol") or "R_25")
     touch_duration, touch_unit = _get_ntt_side_duration(ntt, "TOUCH")
     no_touch_duration, no_touch_unit = _get_ntt_side_duration(ntt, "NO_TOUCH")
-    touch_raw, touch_err = _fetch_ntt_market_default_barrier(
-        safe_symbol,
-        touch_duration,
-        touch_unit,
-    )
+    if _uses_new_deriv_trade_api(state):
+        touch_raw, touch_err = _resolve_contract_default_barrier_from_state(
+            state,
+            safe_symbol,
+            touch_duration,
+            touch_unit,
+            "ONETOUCH",
+            context="ntt_market_default_barrier",
+        )
+    else:
+        touch_raw, touch_err = _fetch_ntt_market_default_barrier(
+            safe_symbol,
+            touch_duration,
+            touch_unit,
+        )
     if touch_err:
         return False, str(touch_err)
-    no_touch_raw, no_touch_err = _fetch_ntt_market_default_barrier(
-        safe_symbol,
-        no_touch_duration,
-        no_touch_unit,
-    )
+    if _uses_new_deriv_trade_api(state):
+        no_touch_raw, no_touch_err = _resolve_contract_default_barrier_from_state(
+            state,
+            safe_symbol,
+            no_touch_duration,
+            no_touch_unit,
+            "NOTOUCH",
+            context="ntt_market_default_barrier",
+        )
+    else:
+        no_touch_raw, no_touch_err = _fetch_ntt_market_default_barrier(
+            safe_symbol,
+            no_touch_duration,
+            no_touch_unit,
+        )
     if no_touch_err:
         return False, str(no_touch_err)
     touch_barrier = _format_ntt_barrier(touch_raw, "TOUCH", touch_unit)
@@ -12992,7 +13175,7 @@ def _build_unchain_expected_profit_preview(
 _UNCHAIN_MARKET_BARRIER_CACHE = {}
 
 
-def _fetch_unchain_market_default_barrier(symbol, duration, duration_unit):
+def _fetch_unchain_market_default_barrier(symbol, duration, duration_unit, state=None, side="HIGHER"):
     sym = str(symbol or "").strip().upper()
     unit = _clean_unchain_duration_unit(duration_unit)
     try:
@@ -13004,6 +13187,19 @@ def _fetch_unchain_market_default_barrier(symbol, duration, duration_unit):
     now_ts = time.time()
     if isinstance(cached, dict) and (now_ts - float(cached.get("ts", 0.0) or 0.0)) < 300.0:
         return cached.get("barrier"), cached.get("error")
+
+    if state is not None and _uses_new_deriv_trade_api(state):
+        contract_type = "PUT" if str(side or "").upper() == "LOWER" else "CALL"
+        barrier, err = _resolve_contract_default_barrier_from_state(
+            state,
+            sym,
+            dur,
+            unit,
+            contract_type,
+            context="unchain_market_default_barrier",
+        )
+        _UNCHAIN_MARKET_BARRIER_CACHE[cache_key] = {"ts": now_ts, "barrier": barrier, "error": err}
+        return barrier, err
 
     ws = None
     try:
@@ -13061,18 +13257,38 @@ def _apply_unchain_market_default_barriers(state, symbol):
     safe_symbol = str(symbol or state.get("current_symbol") or "R_25")
     higher_duration, higher_duration_unit = _get_unchain_side_duration(u, "HIGHER")
     lower_duration, lower_duration_unit = _get_unchain_side_duration(u, "LOWER")
-    higher_quote_barrier, higher_err = _fetch_unchain_market_default_barrier(
-        safe_symbol,
-        higher_duration,
-        higher_duration_unit,
-    )
+    if _uses_new_deriv_trade_api(state):
+        higher_quote_barrier, higher_err = _resolve_contract_default_barrier_from_state(
+            state,
+            safe_symbol,
+            higher_duration,
+            higher_duration_unit,
+            "CALL",
+            context="unchain_market_default_barrier",
+        )
+    else:
+        higher_quote_barrier, higher_err = _fetch_unchain_market_default_barrier(
+            safe_symbol,
+            higher_duration,
+            higher_duration_unit,
+        )
     if higher_err:
         return False, str(higher_err)
-    lower_quote_barrier, lower_err = _fetch_unchain_market_default_barrier(
-        safe_symbol,
-        lower_duration,
-        lower_duration_unit,
-    )
+    if _uses_new_deriv_trade_api(state):
+        lower_quote_barrier, lower_err = _resolve_contract_default_barrier_from_state(
+            state,
+            safe_symbol,
+            lower_duration,
+            lower_duration_unit,
+            "PUT",
+            context="unchain_market_default_barrier",
+        )
+    else:
+        lower_quote_barrier, lower_err = _fetch_unchain_market_default_barrier(
+            safe_symbol,
+            lower_duration,
+            lower_duration_unit,
+        )
     if lower_err:
         return False, str(lower_err)
     higher_default = _format_unchain_market_default_barrier(higher_quote_barrier, "HIGHER")
