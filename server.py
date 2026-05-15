@@ -363,6 +363,27 @@ def _friendly_proposal_error_message(error):
     return text or "Quote error"
 
 
+def _is_noisy_deriv_rate_limit_message(value):
+    text = str(value or "").lower()
+    if not text:
+        return False
+    return bool(
+        ("proposal" in text and "limit" in text)
+        or ("rate" in text and "limit" in text)
+        or "too many" in text
+        or "ratelimit" in text
+        or "exceeded" in text and ("buy" in text or "proposal" in text or "rate" in text)
+        or "contract proposal" in text and ("reached" in text or "limit" in text)
+    )
+
+
+def _should_suppress_user_rate_limit_popup(state, message):
+    return bool(
+        _deriv_trade_connection_mode(state) == "legacy_token"
+        and _is_noisy_deriv_rate_limit_message(message)
+    )
+
+
 def _is_deriv_trade_validation_error_text(value):
     text = str(value or "").lower()
     return any(
@@ -17946,6 +17967,15 @@ def handle_on_message(client_id, ws, message, expected_nonce):
             logger.error(f"[{client_id}] API Error: {msg}")
             if retry_human_pair_msg:
                 logger.warning("[%s] human_manual_pair_retry_failed reason=%s", client_id, retry_human_pair_msg)
+            if _should_suppress_user_rate_limit_popup(state, msg):
+                logger.info(
+                    "[%s] suppressed_legacy_rate_limit_popup profile=%s mode=%s message=%s",
+                    client_id,
+                    (failed_buy_meta or {}).get("profile") or state.get("active_profile"),
+                    (failed_buy_meta or {}).get("mode"),
+                    msg,
+                )
+                return
             socketio.emit("api_error", {"message": msg}, room=client_id)
             return
 
