@@ -1169,6 +1169,41 @@ def _send_buy_from_proposal(client_id, state, req_id, proposal, stake):
     return True, "Trade sent"
 
 
+def _execute_oauth_pat_trade_engine(trade_request, *, state, req_id, stake, duration, duration_unit):
+    from deriv_engines.oauth_engine import OAuthDerivTradeEngine
+    from deriv_engines.trade_intent import TradeIntent
+
+    deps = {
+        "logger": logger,
+        "connection_mode": _deriv_trade_connection_mode,
+        "is_demo": _oauth_account_is_demo,
+        "mask_account": _mask_account_id,
+        "ws_ready_state": _websocket_ready_state_label,
+        "otp_authenticated": _is_otp_authenticated_socket,
+        "active_symbols": _get_active_symbols_for_state,
+        "contracts_for": _get_contracts_for_symbol,
+        "legacy_aliases": _LEGACY_SYMBOL_ALIASES,
+        "duration_matches": _duration_matches_contracts_for,
+        "safe_payload": _safe_deriv_payload_text,
+        "proposal_payload_for_connection": _proposal_payload_for_connection,
+        "request_proposal": _request_digit_proposal_for_buy,
+        "debug_log": _deriv_trade_debug_log,
+        "safe_float": _safe_float,
+        "now_time": now_time,
+        "stamp_latency": _stamp_trade_latency,
+        "mark_ws_unhealthy": _mark_ws_unhealthy_and_reconnect,
+    }
+    intent = TradeIntent.from_request(
+        trade_request,
+        state=state,
+        req_id=req_id,
+        stake=stake,
+        duration=duration,
+        duration_unit=duration_unit,
+    )
+    return OAuthDerivTradeEngine(deps).execute(intent, state=state)
+
+
 def execute_deriv_trade(trade_request):
     trade_request = trade_request or {}
     client_id = trade_request.get("client_id")
@@ -1198,6 +1233,15 @@ def execute_deriv_trade(trade_request):
 
     duration_unit = _normalize_trade_duration_unit(trade_request.get("duration_unit", "t"))
     duration = _sanitize_trade_duration_for_unit(trade_request.get("duration", 1), duration_unit, default=1)
+    if _uses_new_deriv_trade_api(state):
+        return _execute_oauth_pat_trade_engine(
+            trade_request,
+            state=state,
+            req_id=req_id,
+            stake=stake,
+            duration=duration,
+            duration_unit=duration_unit,
+        )
     barrier = trade_request.get("barrier")
     requested_barrier = barrier
     req_meta = dict(trade_request.get("req_meta") or {})
