@@ -4356,7 +4356,7 @@ def _trade_extra_meta_from_payload(data, *, leg_action=None):
         extra["leg_action"] = str(leg).strip()
     if payload.get("hide_from_history") is not None:
         extra["hide_from_history"] = bool(payload.get("hide_from_history"))
-    for key in ("batch_id", "batch_label", "batch_stake", "round_number", "strategy_name", "over3_stake", "under6_stake"):
+    for key in ("batch_id", "batch_label", "batch_stake", "batch_size", "round_number", "strategy_name", "over3_stake", "under6_stake"):
         value = payload.get(key)
         if value not in (None, ""):
             extra[key] = value
@@ -8309,6 +8309,90 @@ def _request_digit_proposal_quote(state, *, contract_type, stake, symbol, barrie
         "contract_type": deriv_type,
         "symbol": symbol,
     }, None
+
+
+def _calculate_koolkid_pair_recovery_stakes(loss_accumulated, target_profit, under_multiplier, over_multiplier):
+    need = max(0.0, _safe_float(loss_accumulated, 0.0) or 0.0) + max(0.01, _safe_float(target_profit, 0.65) or 0.65)
+    mu = max(0.0001, _safe_float(under_multiplier, 0.0) or 0.0)
+    mo = max(0.0001, _safe_float(over_multiplier, 0.0) or 0.0)
+    denominator = (mu * mo) - 1.0
+    if denominator <= 0:
+        return None, "Current payouts cannot balance this pair for the target profit"
+    under_stake = (need * (mo + 1.0)) / denominator
+    over_stake = (need * (mu + 1.0)) / denominator
+    under_stake = max(0.35, math.ceil((under_stake - 1e-9) * 100.0) / 100.0)
+    over_stake = max(0.35, math.ceil((over_stake - 1e-9) * 100.0) / 100.0)
+    for _ in range(100):
+        under_scenario = (mu * under_stake) - over_stake - max(0.0, _safe_float(loss_accumulated, 0.0) or 0.0)
+        over_scenario = (mo * over_stake) - under_stake - max(0.0, _safe_float(loss_accumulated, 0.0) or 0.0)
+        if under_scenario + 1e-9 >= need - max(0.0, _safe_float(loss_accumulated, 0.0) or 0.0) and over_scenario + 1e-9 >= need - max(0.0, _safe_float(loss_accumulated, 0.0) or 0.0):
+            break
+        if under_scenario < need - max(0.0, _safe_float(loss_accumulated, 0.0) or 0.0):
+            under_stake = round(under_stake + 0.01, 2)
+        if over_scenario < need - max(0.0, _safe_float(loss_accumulated, 0.0) or 0.0):
+            over_stake = round(over_stake + 0.01, 2)
+    return {
+        "under_stake": round(float(under_stake), 2),
+        "over_stake": round(float(over_stake), 2),
+        "under_win_net": round(float((mu * under_stake) - over_stake - max(0.0, _safe_float(loss_accumulated, 0.0) or 0.0)), 2),
+        "over_win_net": round(float((mo * over_stake) - under_stake - max(0.0, _safe_float(loss_accumulated, 0.0) or 0.0)), 2),
+    }, None
+
+
+@app.route("/koolkid_pair_recovery_quote", methods=["POST"])
+def koolkid_pair_recovery_quote_route():
+    if not login_required():
+        return jsonify({"status": "error", "message": "Unauthorized"}), 403
+    cid, state = get_client_state()
+    data = request.json or {}
+    symbol = str(data.get("symbol") or state.get("current_symbol") or "R_25").strip() or "R_25"
+    duration = _sanitize_digit_trade_duration(data.get("duration", 1))
+    duration_unit = str(data.get("duration_unit") or "t").strip().lower() or "t"
+    target = max(0.01, _safe_float(data.get("target_profit"), 0.65) or 0.65)
+    loss_accumulated = max(0.0, _safe_float(data.get("loss_accumulated"), 0.0) or 0.0)
+    quote_stake = max(0.35, _safe_float(data.get("quote_stake"), 1.0) or 1.0)
+    under_barrier = int(data.get("under_barrier", 2) or 2)
+    over_barrier = int(data.get("over_barrier", 3) or 3)
+    under_quote, under_err = _request_digit_proposal_quote(
+        state,
+        contract_type="UNDER",
+        stake=quote_stake,
+        symbol=symbol,
+        barrier=under_barrier,
+        duration=duration,
+        duration_unit=duration_unit,
+        timeout_sec=1.2,
+    )
+    over_quote, over_err = _request_digit_proposal_quote(
+        state,
+        contract_type="OVER",
+        stake=quote_stake,
+        symbol=symbol,
+        barrier=over_barrier,
+        duration=duration,
+        duration_unit=duration_unit,
+        timeout_sec=1.2,
+    )
+    if under_err or over_err:
+        return jsonify({
+            "status": "error",
+            "message": " • ".join([x for x in (under_err, over_err) if x]) or "Quote unavailable",
+            "under_quote": under_quote,
+            "over_quote": over_quote,
+        }), 400
+    under_multiplier = float(under_quote.get("profit") or 0.0) / max(0.01, float(under_quote.get("ask_price") or quote_stake))
+    over_multiplier = float(over_quote.get("profit") or 0.0) / max(0.01, float(over_quote.get("ask_price") or quote_stake))
+    stakes, stake_err = _calculate_koolkid_pair_recovery_stakes(loss_accumulated, target, under_multiplier, over_multiplier)
+    if stake_err:
+        return jsonify({"status": "error", "message": stake_err, "under_quote": under_quote, "over_quote": over_quote}), 400
+    return jsonify({
+        "status": "success",
+        "under_quote": under_quote,
+        "over_quote": over_quote,
+        "under_multiplier": round(under_multiplier, 6),
+        "over_multiplier": round(over_multiplier, 6),
+        "stakes": stakes,
+    })
 
 
 def _build_ntt_expected_profit_preview(
@@ -15589,6 +15673,23 @@ def run_auto_trade(client_id, state):
             duration = sig.get("duration", 1)
             duration_unit = sig.get("duration_unit", "t")
             mode = sig.get("mode")
+            is_jokerjoe_kidgx_differs = (
+                active_profile == "JOKERJOE"
+                and str(mode or "").upper() == "KIDGX"
+                and str(ctype or "").upper() in ("DIFFERS", "DIFF", "DIGITDIFF", "DIGITDIFFERS")
+            )
+            if is_jokerjoe_kidgx_differs:
+                now_ts = time.time()
+                next_allowed = float(state.get("_temp_jokerjoe_kidgx_next_differs_at", 0.0) or 0.0)
+                if now_ts < next_allowed:
+                    logger.info(
+                        "[%s] TEMP jokerjoe_kidgx_differs_throttled remaining=%.2fs barrier=%s symbol=%s",
+                        client_id,
+                        max(0.0, next_allowed - now_ts),
+                        barrier,
+                        symbol,
+                    )
+                    continue
             if str(mode or "").upper() == "KIDGX":
                 if _uses_new_deriv_trade_api(state):
                     resolved_symbol, sym_err = resolve_new_api_symbol(
@@ -15696,6 +15797,8 @@ def run_auto_trade(client_id, state):
 
             if ok:
                 logger.info(f"[{client_id}] 🤖 AUTO TRADE SENT ({active_profile}): {ctype} barrier={barrier} stake={stake} mode={sig.get('mode')}")
+                if is_jokerjoe_kidgx_differs:
+                    state["_temp_jokerjoe_kidgx_next_differs_at"] = time.time() + 5.0
                 if str(mode or "").upper() == "KIDGX":
                     logger.info("[%s] TEMP kidgx_trade_sent profile=%s symbol=%s type=%s barrier=%s", client_id, active_profile, symbol, ctype, barrier)
                 if hasattr(strategy, "on_auto_trade_sent"):

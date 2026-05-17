@@ -2239,10 +2239,19 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
   }
 
   async function placeBatchManualTradesJokerjoe(contractType, digits, options) {
+    const digitCount = Math.max(1, Array.isArray(digits) ? digits.length : 0);
     const stakeEl = document.getElementById("stake");
-    let stake = Number(options && options.stakeOverride);
-    if (!Number.isFinite(stake) || stake <= 0) stake = Number(stakeEl && stakeEl.value);
+    const hasStakeOverride = !!(options && Number.isFinite(Number(options.stakeOverride)) && Number(options.stakeOverride) > 0);
+    let stake = hasStakeOverride ? Number(options.stakeOverride) : Number(stakeEl && stakeEl.value);
     if (!Number.isFinite(stake) || stake <= 0) stake = 1;
+    if (!hasStakeOverride && digitCount > 1 && state.profileReinvestOn) {
+      const baseBatchStake = Number((stake * digitCount).toFixed(2));
+      const bank = Math.max(0, Number(state.profileReinvestProfitBank) || 0);
+      const reinvestAdd = bank * (getProfileReinvestPctJokerjoe() / 100);
+      stake = Number(((baseBatchStake + reinvestAdd) / digitCount).toFixed(2));
+    } else if (!hasStakeOverride) {
+      stake = getProfileReinvestStakeJokerjoe(stake);
+    }
     const duration = getDurationTicksJokerjoe();
     const sameTick = !!(options && options.sameTick);
     const turboOn = options && Object.prototype.hasOwnProperty.call(options, "turbo") ? !!options.turbo : (sameTick ? true : currentTurboModeJokerjoe());

@@ -114,11 +114,31 @@
       status: "Ready",
       stopRequested: false,
     },
+    koolkidPairRecovery: {
+      enabled: false,
+      running: false,
+      inProgress: false,
+      round: 1,
+      lossAccumulated: 0,
+      underStake: 0,
+      overStake: 0,
+      batchId: "",
+      pending: {},
+      settled: 0,
+      hasWin: false,
+      totalProfit: 0,
+      lastResult: "none",
+      status: "Ready",
+      stopRequested: false,
+      underMultiplier: 0,
+      overMultiplier: 0,
+    },
     autoModes: {},
     turboMode: loadTurboModeKoolkid(),
     dual2xOpen: false,
     dual2xBusy: false,
     dual2xAnalysis: { tickCount: 0, pctByDigit: null, ready: false },
+    dual2xReinvestBatches: {},
   };
   const fastBuyQueueKoolkid = { items: [], running: false, lastRunAt: 0 };
   let pendingDigitAnalysisRender = null;
@@ -558,6 +578,18 @@
     return getProfileReinvestStakeKoolkid(getRawStakeValueKoolkid());
   }
 
+  function getDurationTicksKoolkid() {
+    try {
+      if (typeof window.getManualDurationTicks === "function") {
+        return window.getManualDurationTicks();
+      }
+    } catch (e) {}
+    const node = document.getElementById("durationTicks");
+    const raw = parseInt((node && node.value) || "1", 10);
+    if (!Number.isFinite(raw) || raw < 1) return 1;
+    return Math.min(10, raw);
+  }
+
   function syncProfileReinvestAutoStakeKoolkid() {
     try {
       fetch("/set_auto_stake", {
@@ -571,6 +603,45 @@
   function resetProfileReinvestKoolkid() {
     state.profileReinvestBaseStake = null;
     state.profileReinvestProfitBank = 0;
+  }
+
+  function handleDual2xProfileReinvestResultKoolkid(trade) {
+    const mode = String(trade.mode || "").toLowerCase();
+    const batchId = String(trade.batch_id || trade.batchId || "");
+    if (mode !== "koolkid_dual2x" && !batchId.startsWith("koolkid_dual2x_")) return false;
+    if (!batchId) return true;
+    const profit = Number(trade.profit != null ? trade.profit : (trade.profit_value != null ? trade.profit_value : trade.pnl));
+    if (!Number.isFinite(profit)) return true;
+    const batches = state.dual2xReinvestBatches || (state.dual2xReinvestBatches = {});
+    const batch = batches[batchId] || {
+      expected: Math.max(2, Math.floor(Number(trade.batch_size || trade.batchSize || 2)) || 2),
+      settled: {},
+      totalProfit: 0,
+    };
+    const settledKey = String(trade.contract_id || trade.buy_contract_id || trade.id || `${trade.type || trade.action || "leg"}_${Object.keys(batch.settled).length}`);
+    if (batch.settled[settledKey]) {
+      batches[batchId] = batch;
+      return true;
+    }
+    batch.settled[settledKey] = true;
+    batch.totalProfit = Number((Number(batch.totalProfit || 0) + profit).toFixed(2));
+    batches[batchId] = batch;
+    if (Object.keys(batch.settled).length < batch.expected) return true;
+
+    delete batches[batchId];
+    if (batch.totalProfit > 0) {
+      if (!Number.isFinite(Number(state.profileReinvestBaseStake))) {
+        state.profileReinvestBaseStake = Number(getRawStakeValueKoolkid().toFixed(2));
+      }
+      state.profileReinvestProfitBank = Number((Math.max(0, Number(state.profileReinvestProfitBank) || 0) + batch.totalProfit).toFixed(2));
+      renderProfileReinvestControlsKoolkid();
+      syncProfileReinvestAutoStakeKoolkid();
+    } else if (batch.totalProfit < 0) {
+      resetProfileReinvestKoolkid();
+      renderProfileReinvestControlsKoolkid();
+      syncProfileReinvestAutoStakeKoolkid();
+    }
+    return true;
   }
 
   function renderProfileReinvestControlsKoolkid() {
@@ -620,6 +691,7 @@
     if (!state.profileReinvestOn || !trade || typeof trade !== "object") return;
     const profile = String(trade.profile || "").toUpperCase();
     if (profile && profile !== PROFILE) return;
+    if (handleDual2xProfileReinvestResultKoolkid(trade)) return;
     const result = String(trade.result || trade.status || "").toUpperCase();
     const profit = Number(trade.profit != null ? trade.profit : (trade.profit_value != null ? trade.profit_value : trade.pnl));
     if ((result === "WIN" || result === "WON" || profit > 0) && Number.isFinite(profit) && profit > 0) {
@@ -1981,6 +2053,10 @@
     return state.balancedRecovery || {};
   }
 
+  function getKoolkidPairRecoveryState() {
+    return state.koolkidPairRecovery || {};
+  }
+
   function readKoolkidBalancedRecoveryNumber(id, fallback, min, max) {
     const el = document.getElementById(id);
     const raw = el ? Number(el.value) : Number(fallback);
@@ -2006,6 +2082,23 @@
       stopAtBudget: !stopEl || !!stopEl.checked,
       pu: 2.142857142857143,
       po: 1.43,
+    };
+  }
+
+  function readKoolkidPairRecoverySettings() {
+    const duration = Math.max(1, Math.min(10, Math.floor(readKoolkidBalancedRecoveryNumber("koolkidPairRecoveryDuration", 1, 1, 10))));
+    const target = Number(readKoolkidBalancedRecoveryNumber("koolkidPairRecoveryTarget", 0.65, 0.01, 1000000).toFixed(2));
+    const maxRounds = Math.max(1, Math.floor(readKoolkidBalancedRecoveryNumber("koolkidPairRecoveryMaxRounds", 5, 1, 1000000)));
+    const budget = Number(readKoolkidBalancedRecoveryNumber("koolkidPairRecoveryBudget", 25, 0.01, 1000000).toFixed(2));
+    const resetEl = document.getElementById("koolkidPairRecoveryResetAfterWin");
+    const stopEl = document.getElementById("koolkidPairRecoveryStopAtBudget");
+    return {
+      duration,
+      target,
+      maxRounds,
+      budget,
+      resetAfterWin: !resetEl || !!resetEl.checked,
+      stopAtBudget: !stopEl || !!stopEl.checked,
     };
   }
 
@@ -2040,29 +2133,53 @@
     return !settings.stopAtBudget || cycleSpend <= Number(settings.budget || 0) + 1e-9;
   }
 
+  function koolkidPairRecoveryCanAfford(stakes, settings) {
+    const st = getKoolkidPairRecoveryState();
+    const total = Number(stakes.underStake || 0) + Number(stakes.overStake || 0);
+    const cycleSpend = Number(st.lossAccumulated || 0) + total;
+    return !settings.stopAtBudget || cycleSpend <= Number(settings.budget || 0) + 1e-9;
+  }
+
+  function normalizeKoolkidPairQuoteStakes(data) {
+    const stakes = data && data.stakes ? data.stakes : {};
+    return {
+      underStake: Number(stakes.under_stake || stakes.underStake || 0),
+      overStake: Number(stakes.over_stake || stakes.overStake || 0),
+      underWinNet: Number(stakes.under_win_net || stakes.underWinNet || 0),
+      overWinNet: Number(stakes.over_win_net || stakes.overWinNet || 0),
+      underMultiplier: Number(data && data.under_multiplier),
+      overMultiplier: Number(data && data.over_multiplier),
+    };
+  }
+
+  async function fetchKoolkidPairRecoveryQuote(settings, st) {
+    const symbol = typeof window.getConfirmedMarketSymbol === "function"
+      ? window.getConfirmedMarketSymbol()
+      : ((document.getElementById("symbol") || {}).value || "");
+    const result = await postJSON("/koolkid_pair_recovery_quote", {
+      symbol,
+      duration: settings.duration,
+      duration_unit: "t",
+      target_profit: settings.target,
+      loss_accumulated: 0,
+      under_barrier: 2,
+      over_barrier: 3,
+      quote_stake: 1,
+    });
+    if (!(result && result.ok && result.data && result.data.status === "success")) {
+      throw new Error((result && result.data && result.data.message) || "Payout quote unavailable");
+    }
+    return normalizeKoolkidPairQuoteStakes(result.data);
+  }
+
   function updateKoolkidBalancedRecoveryPanel() {
     const panel = document.getElementById("koolkidBalancedRecoveryPanel");
-    const lifetime = isLifetimeUserKoolkid();
-    if (panel) panel.style.display = lifetime ? "" : "none";
-    if (!lifetime) {
-      const st = getKoolkidBalancedRecoveryState();
-      st.enabled = false;
-      st.running = false;
-      st.stopRequested = true;
-      st.inProgress = false;
-      return;
-    }
+    if (panel) panel.style.display = "";
     const st = getKoolkidBalancedRecoveryState();
     const settings = readKoolkidBalancedRecoverySettings();
     const stakes = calculateKoolkidBalancedRecoveryStakes(st.lossAccumulated || 0, settings.target);
     st.underStake = stakes.underStake;
     st.overStake = stakes.overStake;
-    const toggleBtn = document.getElementById("koolkidBalancedRecoveryToggleBtn");
-    if (toggleBtn) {
-      toggleBtn.textContent = st.enabled ? "ON" : "OFF";
-      toggleBtn.style.background = st.enabled ? "#22c55e" : "#334155";
-      toggleBtn.style.color = st.enabled ? "#052e16" : "#f8fafc";
-    }
     const startBtn = document.getElementById("koolkidBalancedRecoveryStartBtn");
     if (startBtn) startBtn.disabled = !!st.inProgress;
     const statusEl = document.getElementById("koolkidBalancedRecoveryStatus");
@@ -2079,11 +2196,6 @@
   }
 
   function toggleKoolkidBalancedRecovery() {
-    if (!isLifetimeUserKoolkid()) {
-      safeToast("Balanced Recovery is for lifetime users only.", "error");
-      updateKoolkidBalancedRecoveryPanel();
-      return;
-    }
     const st = getKoolkidBalancedRecoveryState();
     st.enabled = !st.enabled;
     st.status = st.enabled ? "Ready" : "Stopped";
@@ -2099,11 +2211,6 @@
   }
 
   function resetKoolkidBalancedRecoveryCycle() {
-    if (!isLifetimeUserKoolkid()) {
-      safeToast("Balanced Recovery is for lifetime users only.", "error");
-      updateKoolkidBalancedRecoveryPanel();
-      return;
-    }
     const st = getKoolkidBalancedRecoveryState();
     st.round = 1;
     st.lossAccumulated = 0;
@@ -2130,11 +2237,6 @@
   }
 
   async function startKoolkidBalancedRecovery() {
-    if (!isLifetimeUserKoolkid()) {
-      safeToast("Balanced Recovery is for lifetime users only.", "error");
-      updateKoolkidBalancedRecoveryPanel();
-      return;
-    }
     const st = getKoolkidBalancedRecoveryState();
     const settings = readKoolkidBalancedRecoverySettings();
     if (st.inProgress) return;
@@ -2186,19 +2288,23 @@
         action: "OVER_5",
         label: `Balanced Recovery OVER 5 Round ${st.round}`,
       });
-      const [underResult, overResult] = await Promise.all([
-        sendFastManualTradeKoolkid(underPayload, { turbo: false, queue: false, fireAndForget: false }),
-        sendFastManualTradeKoolkid(overPayload, { turbo: false, queue: false, fireAndForget: false }),
-      ]);
-      if (!(underResult && underResult.data && underResult.data.status === "success")) {
-        throw new Error((underResult && underResult.data && underResult.data.message) || "Under 3 balanced trade failed");
+      const app = App();
+      if (!(app && typeof app.sendFastProfileTradeBatch === "function")) {
+        throw new Error("Same-tick batch sender is not ready");
       }
-      if (!(overResult && overResult.data && overResult.data.status === "success")) {
-        throw new Error((overResult && overResult.data && overResult.data.message) || "Over 5 balanced trade failed");
+      const batchResult = await app.sendFastProfileTradeBatch(PROFILE, [
+        Object.assign({}, underPayload, { same_tick: true }),
+        Object.assign({}, overPayload, { same_tick: true }),
+      ], { turbo: false, useSocket: true, fireAndForget: false, skipMartha: true });
+      const responses = Array.isArray(batchResult && batchResult.data && batchResult.data.responses) ? batchResult.data.responses : [];
+      if (!(batchResult && batchResult.data && batchResult.data.status === "success")) {
+        throw new Error((batchResult && batchResult.data && batchResult.data.message) || "Balanced Recovery same-tick pair failed");
       }
-      const underId = underResult.data.contract_id || underResult.data.buy_contract_id || underResult.data.id;
+      const underResp = responses[0] || {};
+      const overResp = responses[1] || {};
+      const underId = underResp.contract_id || underResp.buy_contract_id || underResp.id;
       if (underId) st.pending[String(underId)] = { side: "UNDER_3", stake: stakes.underStake, outcome: "" };
-      const overId = overResult.data.contract_id || overResult.data.buy_contract_id || overResult.data.id;
+      const overId = overResp.contract_id || overResp.buy_contract_id || overResp.id;
       if (overId) st.pending[String(overId)] = { side: "OVER_5", stake: stakes.overStake, outcome: "" };
       safeToast(`Balanced Recovery pair sent: U3 $${stakes.underStake.toFixed(2)} + O5 $${stakes.overStake.toFixed(2)}`, "success");
     } catch (e) {
@@ -2286,6 +2392,221 @@
     } else {
       st.status = `Running: waiting for ${Math.max(0, 2 - st.settled)} result(s)`;
       updateKoolkidBalancedRecoveryPanel();
+    }
+  }
+
+  function updateKoolkidPairRecoveryPanel() {
+    const dropdown = document.getElementById("koolkidPairRecoveryDropdown");
+    if (dropdown) dropdown.style.display = "";
+    const st = getKoolkidPairRecoveryState();
+    const settings = readKoolkidPairRecoverySettings();
+    const startBtn = document.getElementById("koolkidPairRecoveryStartBtn");
+    if (startBtn) startBtn.disabled = !!st.inProgress;
+    const statusEl = document.getElementById("koolkidPairRecoveryStatus");
+    if (statusEl) {
+      const total = Number(st.underStake || 0) + Number(st.overStake || 0);
+      const budgetText = settings.stopAtBudget ? `Budget check $${(Number(st.lossAccumulated || 0) + total).toFixed(2)} / $${settings.budget.toFixed(2)}` : "Budget cap ignored";
+      const payoutText = st.underMultiplier && st.overMultiplier
+        ? `Payout multipliers U2 ${Number(st.underMultiplier).toFixed(3)} / O3 ${Number(st.overMultiplier).toFixed(3)}`
+        : "Payout multipliers update before START";
+      statusEl.innerHTML = [
+        `Status: ${st.status || "Ready"} | Round ${Math.max(1, Number(st.round) || 1)} / ${settings.maxRounds}`,
+        `Under 2 stake $${Number(st.underStake || 0).toFixed(2)} | Over 3 stake $${Number(st.overStake || 0).toFixed(2)}`,
+        `Cycle loss $${Number(st.lossAccumulated || 0).toFixed(2)} | Target profit $${settings.target.toFixed(2)} | Next total $${total.toFixed(2)}`,
+        `${budgetText} | ${payoutText} | Last result: ${st.lastResult || "none"}`,
+      ].join("<br>");
+    }
+    const btn = document.getElementById("koolkidPairRecoveryBtnKoolkid");
+    if (btn) btn.innerText = st.inProgress ? "💲KOOLKID RUNNING..." : "💲KOOLKID💲";
+  }
+
+  function openKoolkidPairRecoveryPopup() {
+    const dropdown = document.getElementById("koolkidPairRecoveryDropdown");
+    if (!dropdown) return;
+    dropdown.style.display = "";
+    dropdown.open = !dropdown.open;
+    updateKoolkidPairRecoveryPanel();
+  }
+
+  function closeKoolkidPairRecoveryPopup() {
+    const dropdown = document.getElementById("koolkidPairRecoveryDropdown");
+    if (dropdown) dropdown.open = false;
+  }
+
+  function stopKoolkidPairRecovery(reason) {
+    const st = getKoolkidPairRecoveryState();
+    st.enabled = false;
+    st.running = false;
+    st.stopRequested = true;
+    st.inProgress = false;
+    st.pending = {};
+    st.status = reason || "Stopped";
+    updateKoolkidPairRecoveryPanel();
+  }
+
+  async function startKoolkidPairRecovery() {
+    const st = getKoolkidPairRecoveryState();
+    const settings = readKoolkidPairRecoverySettings();
+    if (st.inProgress) return;
+    if (typeof apiConnected !== "undefined" && !apiConnected) {
+      st.status = "Stopped: API disconnected";
+      updateKoolkidPairRecoveryPanel();
+      safeToast("Connect your API first.", "error");
+      return;
+    }
+    if (Math.max(1, Number(st.round) || 1) > settings.maxRounds) {
+      stopKoolkidPairRecovery("Stopped: max rounds reached.");
+      safeToast("KOOLKID recovery stopped: max rounds reached.", "error");
+      return;
+    }
+    let quote;
+    try {
+      st.status = "Checking payouts";
+      updateKoolkidPairRecoveryPanel();
+      quote = await fetchKoolkidPairRecoveryQuote(settings, st);
+    } catch (e) {
+      st.status = "Quote Error";
+      updateKoolkidPairRecoveryPanel();
+      safeToast((e && e.message) || "KOOLKID recovery payout quote failed", "error");
+      return;
+    }
+    const stakes = { underStake: quote.underStake, overStake: quote.overStake };
+    if (!koolkidPairRecoveryCanAfford(stakes, settings)) {
+      stopKoolkidPairRecovery("Insufficient Budget");
+      safeToast("KOOLKID recovery stopped: next round exceeds budget.", "error");
+      return;
+    }
+    const symbol = typeof window.getConfirmedMarketSymbol === "function"
+      ? window.getConfirmedMarketSymbol()
+      : ((document.getElementById("symbol") || {}).value || "");
+    st.enabled = true;
+    st.running = true;
+    st.stopRequested = false;
+    st.inProgress = true;
+    st.batchId = `kpr_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
+    st.pending = {};
+    st.settled = 0;
+    st.hasWin = false;
+    st.totalProfit = 0;
+    st.underStake = stakes.underStake;
+    st.overStake = stakes.overStake;
+    st.underMultiplier = quote.underMultiplier;
+    st.overMultiplier = quote.overMultiplier;
+    st.status = "Running";
+    updateKoolkidPairRecoveryPanel();
+    try {
+      const common = { duration: settings.duration, duration_unit: "t", mode: "koolkid_pair_recovery", batch_id: st.batchId, batch_size: 2, symbol };
+      const underPayload = Object.assign({}, common, {
+        stake: stakes.underStake,
+        amount: stakes.underStake,
+        type: "UNDER",
+        barrier: 2,
+        action: "UNDER_2",
+        label: `KOOLKID Recovery UNDER 2 Round ${st.round}`,
+      });
+      const overPayload = Object.assign({}, common, {
+        stake: stakes.overStake,
+        amount: stakes.overStake,
+        type: "OVER",
+        barrier: 3,
+        action: "OVER_3",
+        label: `KOOLKID Recovery OVER 3 Round ${st.round}`,
+      });
+      const app = App();
+      if (!(app && typeof app.sendFastProfileTradeBatch === "function")) throw new Error("Same-tick batch sender is not ready");
+      const batchResult = await app.sendFastProfileTradeBatch(PROFILE, [
+        Object.assign({}, underPayload, { same_tick: true }),
+        Object.assign({}, overPayload, { same_tick: true }),
+      ], { turbo: false, useSocket: true, fireAndForget: false, skipMartha: true });
+      const responses = Array.isArray(batchResult && batchResult.data && batchResult.data.responses) ? batchResult.data.responses : [];
+      if (!(batchResult && batchResult.data && batchResult.data.status === "success")) {
+        throw new Error((batchResult && batchResult.data && batchResult.data.message) || "KOOLKID same-tick pair failed");
+      }
+      const underResp = responses[0] || {};
+      const overResp = responses[1] || {};
+      const underId = underResp.contract_id || underResp.buy_contract_id || underResp.id;
+      if (underId) st.pending[String(underId)] = { side: "UNDER_2", stake: stakes.underStake, outcome: "" };
+      const overId = overResp.contract_id || overResp.buy_contract_id || overResp.id;
+      if (overId) st.pending[String(overId)] = { side: "OVER_3", stake: stakes.overStake, outcome: "" };
+      safeToast(`KOOLKID pair sent: U2 $${stakes.underStake.toFixed(2)} + O3 $${stakes.overStake.toFixed(2)}`, "success");
+    } catch (e) {
+      st.running = false;
+      st.stopRequested = true;
+      st.status = "Stopped";
+      st.inProgress = Object.keys(st.pending || {}).length > 0;
+      safeToast((e && e.message) || "KOOLKID pair failed", "error");
+    } finally {
+      updateKoolkidPairRecoveryPanel();
+    }
+  }
+
+  function rememberKoolkidPairRecoveryTrade(payload) {
+    if (!payload || String(payload.profile || "").toUpperCase() !== PROFILE) return;
+    const st = getKoolkidPairRecoveryState();
+    if (!st.inProgress || !st.batchId) return;
+    const mode = String(payload.mode || "").toLowerCase();
+    const batchId = String(payload.batch_id || payload.batchId || "");
+    if (mode !== "koolkid_pair_recovery" && batchId !== st.batchId) return;
+    const id = payload.contract_id || payload.buy_contract_id || payload.id;
+    if (!id || st.pending[String(id)]) return;
+    const action = String(payload.action || payload.label || "").toUpperCase();
+    const side = action.includes("OVER") ? "OVER_3" : "UNDER_2";
+    st.pending[String(id)] = { side, stake: Number(payload.stake || payload.amount || 0), outcome: "" };
+    updateKoolkidPairRecoveryPanel();
+  }
+
+  function updateKoolkidPairRecoveryFromResult(payload) {
+    if (!payload || String(payload.profile || "").toUpperCase() !== PROFILE) return;
+    const st = getKoolkidPairRecoveryState();
+    if (!st.inProgress || !st.batchId) return;
+    const id = String(payload.contract_id || payload.buy_contract_id || payload.id || "");
+    const mode = String(payload.mode || "").toLowerCase();
+    const batchId = String(payload.batch_id || payload.batchId || "");
+    if (id && !st.pending[id] && mode !== "koolkid_pair_recovery" && batchId !== st.batchId) return;
+    const item = id && st.pending[id] ? st.pending[id] : null;
+    if (!item || item.outcome) return;
+    const outcome = resolveKoolkidTradeOutcome(payload);
+    if (!outcome) return;
+    item.outcome = outcome;
+    st.settled = Object.keys(st.pending || {}).filter((key) => st.pending[key] && st.pending[key].outcome).length;
+    const profit = Number(payload.profit ?? payload.pnl ?? payload.net_profit);
+    if (Number.isFinite(profit)) st.totalProfit = Number((Number(st.totalProfit || 0) + profit).toFixed(2));
+    if (outcome === "WIN") {
+      st.hasWin = true;
+      st.lastResult = item.side === "UNDER_2" ? "Under 2 won" : "Over 3 won";
+      st.status = "Won";
+      st.inProgress = false;
+      st.running = false;
+      st.pending = {};
+      if (readKoolkidPairRecoverySettings().resetAfterWin) {
+        st.round = 1;
+        st.lossAccumulated = 0;
+      }
+      updateKoolkidPairRecoveryPanel();
+      safeToast(`KOOLKID recovery ${st.lastResult}. Cycle reset.`, "success");
+      return;
+    }
+    const pendingCount = Object.keys(st.pending || {}).length;
+    if (pendingCount >= 2 && st.settled >= 2 && !st.hasWin) {
+      st.lossAccumulated = 0;
+      st.round = Math.max(1, Number(st.round) || 1) + 1;
+      st.lastResult = "Both lost";
+      st.inProgress = false;
+      st.pending = {};
+      const settings = readKoolkidPairRecoverySettings();
+      if (st.round > settings.maxRounds) {
+        stopKoolkidPairRecovery("Stopped: max rounds reached.");
+        safeToast("KOOLKID recovery stopped: max rounds reached.", "error");
+        return;
+      }
+      st.status = "Running: firing next pair";
+      updateKoolkidPairRecoveryPanel();
+      if (st.enabled && st.running && !st.stopRequested) {
+        setTimeout(() => startKoolkidPairRecovery(), 0);
+      }
+    } else {
+      st.status = `Running: waiting for ${Math.max(0, 2 - st.settled)} result(s)`;
+      updateKoolkidPairRecoveryPanel();
     }
   }
 
@@ -2533,13 +2854,27 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
   }
 
   async function placeDual2xLegsSameTickKoolkid(legs) {
-    const stake = getStakeValueKoolkid();
+    const batchId = `koolkid_dual2x_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
+    const fixedTotal = legs.reduce((sum, leg) => {
+      const fixedStake = Number(leg && leg.fixedStake);
+      return sum + ((Number.isFinite(fixedStake) && fixedStake > 0) ? fixedStake : 0);
+    }, 0);
+    const stake = fixedTotal > 0
+      ? getProfileReinvestStakeKoolkid(fixedTotal)
+      : getStakeValueKoolkid();
+    const duration = getDurationTicksKoolkid();
     const totalWeight = legs.reduce((sum, leg) => sum + Math.max(0, Number(leg.weight || 1)), 0) || 1;
+    const fixedWeightTotal = fixedTotal > 0
+      ? legs.reduce((sum, leg) => {
+        const fixedStake = Number(leg && leg.fixedStake);
+        return sum + ((Number.isFinite(fixedStake) && fixedStake > 0) ? fixedStake : 0);
+      }, 0)
+      : 0;
     const plannedLegs = legs.map((leg) => {
       const fixedStake = Number(leg.fixedStake);
       const weight = Math.max(0, Number(leg.weight || 1));
-      const legStake = (Number.isFinite(fixedStake) && fixedStake > 0)
-        ? Number(fixedStake.toFixed(2))
+      const legStake = (fixedWeightTotal > 0 && Number.isFinite(fixedStake) && fixedStake > 0)
+        ? Number((stake * fixedStake / fixedWeightTotal).toFixed(2))
         : Number((stake * weight / totalWeight).toFixed(2));
       return Object.assign({}, leg, { legStake });
     });
@@ -2549,6 +2884,14 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
         amount: leg.legStake,
         type: String(leg.type || "OVER").toUpperCase(),
         barrier: Number(leg.barrier),
+        duration,
+        duration_unit: "t",
+        same_tick: true,
+        mode: "koolkid_dual2x",
+        batch_id: batchId,
+        batch_size: plannedLegs.length,
+        batch_stake: stake,
+        label: leg.label || `${leg.type} ${leg.barrier}`,
       };
       return sendFastManualTradeKoolkid(payload, {
         turbo: true,
@@ -2574,7 +2917,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
         stake: (r.status === "fulfilled" && r.value && r.value.stake) ? r.value.stake : defaultStake,
       });
     });
-    return { placed, failures, stake, stakes };
+    return { placed, failures, stake, stakes, duration };
   }
 
   async function placeDual2xSameTickKoolkid(overBarrier, underBarrier) {
@@ -3878,6 +4221,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
         rememberKoolkidOver6ScanTrade(trade || {});
         rememberKoolkidSingleMartingaleTrade(trade || {});
         rememberKoolkidBalancedRecoveryTrade(trade || {});
+        rememberKoolkidPairRecoveryTrade(trade || {});
       });
 
       bind("trade_result", (trade) => {
@@ -3888,6 +4232,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
         updateKoolkidOver6ScanFromResult(trade || {});
         updateKoolkidSingleMartingaleFromResult(trade || {});
         updateKoolkidBalancedRecoveryFromResult(trade || {});
+        updateKoolkidPairRecoveryFromResult(trade || {});
       });
 
       if (app && typeof app.logSocketListenerCounts === "function") app.logSocketListenerCounts("koolkid_profile_init");
@@ -3929,6 +4274,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
     updateKoolkidOver6ScanMartingalePanel();
     updateKoolkidSingleMartingalePanel();
     updateKoolkidBalancedRecoveryPanel();
+    updateKoolkidPairRecoveryPanel();
     renderG1AutoUiKoolkid();
     renderDual2xAnalysisKoolkid();
     renderOver3AnalysisKoolkid();
@@ -3950,6 +4296,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
     updateKoolkidOver6ScanMartingalePanel();
     updateKoolkidSingleMartingalePanel();
     updateKoolkidBalancedRecoveryPanel();
+    updateKoolkidPairRecoveryPanel();
     renderG1AutoUiKoolkid();
     renderDual2xAnalysisKoolkid();
     renderOver3AnalysisKoolkid();
@@ -3971,6 +4318,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
     updateKoolkidOver6ScanMartingalePanel();
     updateKoolkidSingleMartingalePanel();
     updateKoolkidBalancedRecoveryPanel();
+    updateKoolkidPairRecoveryPanel();
     renderG1AutoUiKoolkid();
     renderDual2xAnalysisKoolkid();
     renderOver3AnalysisKoolkid();
@@ -4073,6 +4421,11 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
   window.startKoolkidBalancedRecovery = startKoolkidBalancedRecovery;
   window.stopKoolkidBalancedRecovery = stopKoolkidBalancedRecovery;
   window.resetKoolkidBalancedRecoveryCycle = resetKoolkidBalancedRecoveryCycle;
+  window.openKoolkidPairRecoveryPopup = openKoolkidPairRecoveryPopup;
+  window.closeKoolkidPairRecoveryPopup = closeKoolkidPairRecoveryPopup;
+  window.updateKoolkidPairRecoveryPanel = updateKoolkidPairRecoveryPanel;
+  window.startKoolkidPairRecovery = startKoolkidPairRecovery;
+  window.stopKoolkidPairRecovery = stopKoolkidPairRecovery;
 
   if (!window.__koolkidTurboSyncBound) {
     window.__koolkidTurboSyncBound = true;

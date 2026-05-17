@@ -510,10 +510,6 @@
             </div>
             <div style="margin-top:10px; display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:8px;">
               <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
-                Strategy
-                <button id="koolkidBalancedRecoveryToggleBtn" type="button" onclick="toggleKoolkidBalancedRecovery()" style="min-height:38px; background:#334155;">OFF</button>
-              </label>
-              <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
                 Duration
                 <select id="koolkidBalancedRecoveryDuration" onchange="updateKoolkidBalancedRecoveryPanel()" style="width:100%; min-height:38px;">
                   <option value="1" selected>1 Tick</option>
@@ -552,10 +548,9 @@
               </label>
             </div>
             <div id="koolkidBalancedRecoveryStatus" style="margin-top:8px; color:#94a3b8; font-size:12px; line-height:1.55;">Ready.</div>
-            <div style="margin-top:8px; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px;">
+            <div style="margin-top:8px; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px;">
               <button id="koolkidBalancedRecoveryStartBtn" type="button" onclick="startKoolkidBalancedRecovery()" style="background:#22c55e; color:#052e16; font-weight:900;">START</button>
               <button type="button" onclick="stopKoolkidBalancedRecovery()" style="background:#ef4444; color:#fff7ed; font-weight:900;">STOP</button>
-              <button type="button" onclick="resetKoolkidBalancedRecoveryCycle()" style="background:#38bdf8; color:#031525; font-weight:900;">RESET</button>
             </div>
           </div>
         </details>
@@ -856,6 +851,66 @@
             <button id="under3SplitBtnKoolkid" onclick="runUnder3SplitKoolkid()" style="width:100%; height:46px; background:#0ea5e9;">
               UNDER 3 (OVER 3 + UNDER 3 SAME TICK)
             </button>
+            <button id="koolkidPairRecoveryBtnKoolkid" type="button" onclick="openKoolkidPairRecoveryPopup()" style="width:100%; height:46px; background:linear-gradient(135deg,#065f46,#22c55e); color:#ecfdf5; border:1px solid rgba(134,239,172,0.45); box-shadow:0 10px 22px rgba(6,95,70,0.24); font-weight:900;">
+              💲KOOLKID💲
+            </button>
+            <details id="koolkidPairRecoveryDropdown" class="ui-group" style="display:none; margin-top:0; border-color:rgba(134,239,172,0.36); background:linear-gradient(180deg,#064e3b,#020617);">
+              <summary>
+                <span>💲KOOLKID💲 Under 2 / Over 3</span>
+                <span style="font-size:11px; color:#86efac; font-weight:900;">PAIR</span>
+              </summary>
+              <div style="padding:10px 12px; background:rgba(15,23,42,0.58);">
+                <div style="font-size:12px; color:#d1fae5; line-height:1.45; margin-bottom:10px;">
+                  Places Under 2 and Over 3 together. It checks current payouts before each round and splits stake so either winning side aims for the target profit without doubling up.
+                </div>
+                <div style="display:grid; gap:9px;">
+                  <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:8px;">
+                    <label style="display:grid; gap:4px; color:#bbf7d0; font-size:12px; font-weight:800;">
+                      Duration
+                      <select id="koolkidPairRecoveryDuration" onchange="updateKoolkidPairRecoveryPanel()" style="width:100%; min-height:40px;">
+                        <option value="1" selected>1 Tick</option>
+                        <option value="2">2 Ticks</option>
+                        <option value="3">3 Ticks</option>
+                        <option value="4">4 Ticks</option>
+                        <option value="5">5 Ticks</option>
+                        <option value="6">6 Ticks</option>
+                        <option value="7">7 Ticks</option>
+                        <option value="8">8 Ticks</option>
+                        <option value="9">9 Ticks</option>
+                        <option value="10">10 Ticks</option>
+                      </select>
+                    </label>
+                    <label style="display:grid; gap:4px; color:#bbf7d0; font-size:12px; font-weight:800;">
+                      Target Profit
+                      <input id="koolkidPairRecoveryTarget" type="number" min="0.01" step="0.01" value="0.65" oninput="updateKoolkidPairRecoveryPanel()" style="width:100%; min-height:40px;">
+                    </label>
+                    <label style="display:grid; gap:4px; color:#bbf7d0; font-size:12px; font-weight:800;">
+                      Max Rounds
+                      <input id="koolkidPairRecoveryMaxRounds" type="number" min="1" step="1" value="5" oninput="updateKoolkidPairRecoveryPanel()" style="width:100%; min-height:40px;">
+                    </label>
+                    <label style="display:grid; gap:4px; color:#bbf7d0; font-size:12px; font-weight:800;">
+                      Session Budget
+                      <input id="koolkidPairRecoveryBudget" type="number" min="0.01" step="0.01" value="25" oninput="updateKoolkidPairRecoveryPanel()" style="width:100%; min-height:40px;">
+                    </label>
+                  </div>
+                  <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+                    <label style="display:flex; align-items:center; gap:8px; color:#d1fae5; font-size:12px; font-weight:800;">
+                      <input id="koolkidPairRecoveryResetAfterWin" type="checkbox" checked onchange="updateKoolkidPairRecoveryPanel()">
+                      Reset after win
+                    </label>
+                    <label style="display:flex; align-items:center; gap:8px; color:#d1fae5; font-size:12px; font-weight:800;">
+                      <input id="koolkidPairRecoveryStopAtBudget" type="checkbox" checked onchange="updateKoolkidPairRecoveryPanel()">
+                      Stop at budget cap
+                    </label>
+                  </div>
+                  <div id="koolkidPairRecoveryStatus" style="font-size:12px; color:#94a3b8; line-height:1.45;">Ready.</div>
+                  <div style="display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px;">
+                    <button id="koolkidPairRecoveryStartBtn" type="button" onclick="startKoolkidPairRecovery()" style="background:#22c55e; color:#04130a; border-radius:12px; font-weight:950;">START</button>
+                    <button type="button" onclick="stopKoolkidPairRecovery()" style="background:#ef4444; color:#fff7ed; border-radius:12px; font-weight:950;">STOP</button>
+                  </div>
+                </div>
+              </div>
+            </details>
             <button id="g1AutoBtnKoolkid" onclick="openG1AutoPopupKoolkid()" style="width:100%; height:46px; background:#0f172a; border:1px solid #334155;">
               G1🤖
             </button>
