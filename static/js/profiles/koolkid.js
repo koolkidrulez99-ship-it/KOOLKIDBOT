@@ -2066,6 +2066,25 @@
     return value;
   }
 
+  function getKoolkidBalancedRecoveryPairConfig() {
+    const node = document.getElementById("koolkidBalancedRecoveryPairType");
+    const key = String((node && node.value) || "UNDER3_OVER5").toUpperCase();
+    if (key === "OVER5_UNDER4") {
+      return {
+        key: "OVER5_UNDER4",
+        label: "Over 5 + Under 4",
+        under: { action: "UNDER_4", type: "UNDER", barrier: 4, label: "Under 4", multiplier: 1.43 },
+        over: { action: "OVER_5", type: "OVER", barrier: 5, label: "Over 5", multiplier: 1.43 },
+      };
+    }
+    return {
+      key: "UNDER3_OVER5",
+      label: "Under 3 + Over 5",
+      under: { action: "UNDER_3", type: "UNDER", barrier: 3, label: "Under 3", multiplier: 2.142857142857143 },
+      over: { action: "OVER_5", type: "OVER", barrier: 5, label: "Over 5", multiplier: 1.43 },
+    };
+  }
+
   function readKoolkidBalancedRecoverySettings() {
     const duration = Math.max(1, Math.min(10, Math.floor(readKoolkidBalancedRecoveryNumber("koolkidBalancedRecoveryDuration", 1, 1, 10))));
     const target = Number(readKoolkidBalancedRecoveryNumber("koolkidBalancedRecoveryTarget", 0.65, 0.01, 1000000).toFixed(2));
@@ -2073,6 +2092,7 @@
     const budget = Number(readKoolkidBalancedRecoveryNumber("koolkidBalancedRecoveryBudget", 25, 0.01, 1000000).toFixed(2));
     const resetEl = document.getElementById("koolkidBalancedRecoveryResetAfterWin");
     const stopEl = document.getElementById("koolkidBalancedRecoveryStopAtBudget");
+    const pair = getKoolkidBalancedRecoveryPairConfig();
     return {
       duration,
       target,
@@ -2080,8 +2100,9 @@
       budget,
       resetAfterWin: !resetEl || !!resetEl.checked,
       stopAtBudget: !stopEl || !!stopEl.checked,
-      pu: 2.142857142857143,
-      po: 1.43,
+      pair,
+      pu: pair.under.multiplier,
+      po: pair.over.multiplier,
     };
   }
 
@@ -2187,8 +2208,8 @@
       const total = stakes.underStake + stakes.overStake;
       const budgetText = settings.stopAtBudget ? `Budget check $${(Number(st.lossAccumulated || 0) + total).toFixed(2)} / $${settings.budget.toFixed(2)}` : "Budget cap ignored";
       statusEl.innerHTML = [
-        `Status: ${st.status || "Ready"} | Round ${Math.max(1, Number(st.round) || 1)} / ${settings.maxRounds}`,
-        `Under 3 stake $${stakes.underStake.toFixed(2)} | Over 5 stake $${stakes.overStake.toFixed(2)}`,
+        `Status: ${st.status || "Ready"} | ${settings.pair.label} | Round ${Math.max(1, Number(st.round) || 1)} / ${settings.maxRounds}`,
+        `${settings.pair.under.label} stake $${stakes.underStake.toFixed(2)} | ${settings.pair.over.label} stake $${stakes.overStake.toFixed(2)}`,
         `Cycle loss $${Number(st.lossAccumulated || 0).toFixed(2)} | Target profit $${settings.target.toFixed(2)} | Next total $${total.toFixed(2)}`,
         `${budgetText} | Last result: ${st.lastResult || "none"}`,
       ].join("<br>");
@@ -2231,7 +2252,14 @@
     st.running = false;
     st.stopRequested = true;
     st.inProgress = false;
+    st.round = 1;
+    st.lossAccumulated = 0;
+    st.batchId = "";
     st.pending = {};
+    st.settled = 0;
+    st.hasWin = false;
+    st.totalProfit = 0;
+    st.lastResult = "none";
     st.status = reason || "Stopped";
     updateKoolkidBalancedRecoveryPanel();
   }
@@ -2275,18 +2303,20 @@
       const underPayload = Object.assign({}, common, {
         stake: stakes.underStake,
         amount: stakes.underStake,
-        type: "UNDER",
-        barrier: 3,
-        action: "UNDER_3",
-        label: `Balanced Recovery UNDER 3 Round ${st.round}`,
+        type: settings.pair.under.type,
+        barrier: settings.pair.under.barrier,
+        action: settings.pair.under.action,
+        label: `Balanced Recovery ${settings.pair.under.label} Round ${st.round}`,
+        pair_type: settings.pair.key,
       });
       const overPayload = Object.assign({}, common, {
         stake: stakes.overStake,
         amount: stakes.overStake,
-        type: "OVER",
-        barrier: 5,
-        action: "OVER_5",
-        label: `Balanced Recovery OVER 5 Round ${st.round}`,
+        type: settings.pair.over.type,
+        barrier: settings.pair.over.barrier,
+        action: settings.pair.over.action,
+        label: `Balanced Recovery ${settings.pair.over.label} Round ${st.round}`,
+        pair_type: settings.pair.key,
       });
       const app = App();
       if (!(app && typeof app.sendFastProfileTradeBatch === "function")) {
@@ -2303,10 +2333,10 @@
       const underResp = responses[0] || {};
       const overResp = responses[1] || {};
       const underId = underResp.contract_id || underResp.buy_contract_id || underResp.id;
-      if (underId) st.pending[String(underId)] = { side: "UNDER_3", stake: stakes.underStake, outcome: "" };
+      if (underId) st.pending[String(underId)] = { side: settings.pair.under.action, label: settings.pair.under.label, stake: stakes.underStake, outcome: "" };
       const overId = overResp.contract_id || overResp.buy_contract_id || overResp.id;
-      if (overId) st.pending[String(overId)] = { side: "OVER_5", stake: stakes.overStake, outcome: "" };
-      safeToast(`Balanced Recovery pair sent: U3 $${stakes.underStake.toFixed(2)} + O5 $${stakes.overStake.toFixed(2)}`, "success");
+      if (overId) st.pending[String(overId)] = { side: settings.pair.over.action, label: settings.pair.over.label, stake: stakes.overStake, outcome: "" };
+      safeToast(`Balanced Recovery pair sent: ${settings.pair.under.label} $${stakes.underStake.toFixed(2)} + ${settings.pair.over.label} $${stakes.overStake.toFixed(2)}`, "success");
     } catch (e) {
       st.running = false;
       st.stopRequested = true;
@@ -2328,8 +2358,11 @@
     const id = payload.contract_id || payload.buy_contract_id || payload.id;
     if (!id || st.pending[String(id)]) return;
     const action = String(payload.action || payload.label || "").toUpperCase();
-    const side = action.includes("OVER") ? "OVER_5" : "UNDER_3";
-    st.pending[String(id)] = { side, stake: Number(payload.stake || payload.amount || 0), outcome: "" };
+    const settings = readKoolkidBalancedRecoverySettings();
+    const isOver = action.includes("OVER");
+    const side = isOver ? settings.pair.over.action : settings.pair.under.action;
+    const label = isOver ? settings.pair.over.label : settings.pair.under.label;
+    st.pending[String(id)] = { side, label, stake: Number(payload.stake || payload.amount || 0), outcome: "" };
     updateKoolkidBalancedRecoveryPanel();
   }
 
@@ -2351,7 +2384,7 @@
     if (Number.isFinite(profit)) st.totalProfit = Number((Number(st.totalProfit || 0) + profit).toFixed(2));
     if (outcome === "WIN") {
       st.hasWin = true;
-      st.lastResult = item.side === "UNDER_3" ? "Under 3 won" : "Over 5 won";
+      st.lastResult = `${item.label || item.side || "Side"} won`;
       st.status = "Won";
       st.inProgress = false;
       st.running = false;
