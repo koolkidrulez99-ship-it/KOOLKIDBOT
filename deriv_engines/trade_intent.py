@@ -20,6 +20,9 @@ class TradeIntent:
     mode: Optional[str] = None
     budget_reservation: Any = None
     req_meta: Dict[str, Any] = field(default_factory=dict)
+    minimum_profit: Optional[float] = None
+    minimum_profit_retries: int = 0
+    buy_best_available: bool = False
 
     @classmethod
     def from_request(cls, trade_request, *, state, req_id, stake, duration, duration_unit):
@@ -41,5 +44,7 @@ class TradeIntent:
             mode=trade_request.get("mode"),
             budget_reservation=trade_request.get("budget_reservation"),
             req_meta=dict(trade_request.get("req_meta") or {}),
+            minimum_profit=trade_request.get("minimum_profit"),
+            minimum_profit_retries=int(trade_request.get("minimum_profit_retries") or 0),
+            buy_best_available=bool(trade_request.get("buy_best_available")),
         )
-

@@ -191,7 +191,204 @@
   document.addEventListener("DOMContentLoaded", () => {
     App.ensureDigitSelectionStyles();
     setTimeout(() => App.applyDigitSelectionUI(), 200);
+    App.loadCustomUiSettings().catch(() => {});
   });
+
+  App.customUi = App.customUi || {
+    settings: { hidden: [] },
+    loaded: false,
+    editMode: false,
+    saveTimer: null,
+  };
+
+  App.normalizeCustomUiKey = function (value) {
+    const key = String(value || "").trim();
+    if (!key || key.length > 160) return "";
+    return /^[a-zA-Z0-9_\-:.]+$/.test(key) ? key : "";
+  };
+
+  App.getCustomUiCandidates = function () {
+    const selector = [
+      "#koolkidAutoTradeLaunchBtn",
+      "#marthaAiPanel",
+      "#accountDashboard",
+      "#liveTickCard",
+      "#profileTitle",
+      ".profile-btn[id]",
+      "#profileContainer button[id]",
+      "#profileContainer details[id]",
+      "#profileContainer .card[id]",
+      "#profileContainer .ui-group[id]",
+      "#profileContainer [data-custom-ui-id]",
+    ].join(",");
+    const nodes = Array.from(document.querySelectorAll(selector));
+    const seen = new Set();
+    return nodes.filter((node) => {
+      if (!node || node === document.getElementById("customEditsOpenBtn")) return false;
+      if (node.closest && node.closest("#customUiModal")) return false;
+      const raw = node.getAttribute("data-custom-ui-id") || node.id;
+      const key = App.normalizeCustomUiKey(raw);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      node.dataset.customUiKey = key;
+      return true;
+    });
+  };
+
+  App.customUiLabelFor = function (node) {
+    if (!node) return "UI item";
+    const explicit = node.getAttribute("aria-label") || node.getAttribute("title") || node.dataset.customUiLabel;
+    if (explicit) return explicit.trim();
+    const text = String(node.innerText || node.textContent || "").replace(/\s+/g, " ").trim();
+    if (text) return text.slice(0, 80);
+    return node.id || node.dataset.customUiKey || "UI item";
+  };
+
+  App.applyCustomUiSettings = function () {
+    try {
+      const hidden = new Set(((App.customUi.settings || {}).hidden || []).map(String));
+      App.getCustomUiCandidates().forEach((node) => {
+        const key = node.dataset.customUiKey;
+        node.classList.toggle("custom-ui-hidden", hidden.has(key));
+        node.setAttribute("data-custom-ui-managed", "1");
+      });
+      App.renderCustomUiEditorList();
+    } catch (e) {}
+  };
+
+  App.loadCustomUiSettings = async function () {
+    const result = await App.safeFetchJSON("/custom_ui_settings", { method: "GET" });
+    if (result.ok && result.data && result.data.settings) {
+      App.customUi.settings = {
+        hidden: Array.isArray(result.data.settings.hidden) ? result.data.settings.hidden : [],
+      };
+      App.customUi.loaded = true;
+      App.applyCustomUiSettings();
+    }
+  };
+
+  App.queueCustomUiSave = function () {
+    if (App.customUi.saveTimer) clearTimeout(App.customUi.saveTimer);
+    App.customUi.saveTimer = setTimeout(() => {
+      App.saveCustomUiSettings(false).catch(() => {});
+    }, 350);
+  };
+
+  App.saveCustomUiSettings = async function (showMessage = true) {
+    const payload = { settings: { hidden: ((App.customUi.settings || {}).hidden || []) } };
+    const result = await App.safeFetchJSON("/custom_ui_settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (result.ok && result.data && result.data.settings) {
+      App.customUi.settings = result.data.settings;
+      App.applyCustomUiSettings();
+      if (showMessage) App.safeToast("Custom UI saved.", "success");
+      return true;
+    }
+    if (showMessage) App.safeToast("Could not save Custom UI.", "error");
+    return false;
+  };
+
+  App.resetCustomUiSettings = async function () {
+    const result = await App.safeFetchJSON("/custom_ui_reset", { method: "POST" });
+    App.customUi.settings = { hidden: [] };
+    App.applyCustomUiSettings();
+    if (result.ok) App.safeToast("Custom UI reset to default.", "success");
+    else App.safeToast("Custom UI reset locally. Server save failed.", "warn");
+  };
+
+  App.hideCustomUiKey = function (key) {
+    const safe = App.normalizeCustomUiKey(key);
+    if (!safe) return;
+    const hidden = new Set(((App.customUi.settings || {}).hidden || []).map(String));
+    hidden.add(safe);
+    App.customUi.settings = { hidden: Array.from(hidden) };
+    App.applyCustomUiSettings();
+    App.queueCustomUiSave();
+  };
+
+  App.restoreCustomUiKey = function (key) {
+    const safe = App.normalizeCustomUiKey(key);
+    const hidden = ((App.customUi.settings || {}).hidden || []).filter((item) => String(item) !== safe);
+    App.customUi.settings = { hidden };
+    App.applyCustomUiSettings();
+    App.queueCustomUiSave();
+  };
+
+  App.openCustomUiEditor = function () {
+    const modal = document.getElementById("customUiModal");
+    if (modal) modal.classList.add("is-open");
+    App.applyCustomUiSettings();
+    App.renderCustomUiEditorList();
+  };
+
+  App.closeCustomUiEditor = function () {
+    const modal = document.getElementById("customUiModal");
+    if (modal) modal.classList.remove("is-open");
+  };
+
+  App.toggleCustomUiEditMode = function () {
+    App.customUi.editMode = !App.customUi.editMode;
+    document.body.classList.toggle("custom-ui-editing", !!App.customUi.editMode);
+    const btn = document.getElementById("customUiEditModeBtn");
+    if (btn) {
+      btn.textContent = `Edit Mode: ${App.customUi.editMode ? "ON" : "OFF"}`;
+      btn.style.background = App.customUi.editMode ? "#22c55e" : "#f59e0b";
+      btn.style.color = App.customUi.editMode ? "#052e16" : "#111827";
+    }
+    const status = document.getElementById("customUiStatus");
+    if (status) status.textContent = App.customUi.editMode
+      ? "Edit Mode is ON. Click a highlighted button or section to hide it from your UI."
+      : "Turn on Edit Mode, then click a highlighted UI item to hide it.";
+    App.applyCustomUiSettings();
+  };
+
+  App.renderCustomUiEditorList = function () {
+    const list = document.getElementById("customUiList");
+    if (!list) return;
+    const hidden = new Set(((App.customUi.settings || {}).hidden || []).map(String));
+    const candidates = App.getCustomUiCandidates()
+      .map((node) => ({ key: node.dataset.customUiKey, label: App.customUiLabelFor(node), hidden: hidden.has(node.dataset.customUiKey) }))
+      .filter((row) => row.key);
+    const visibleRows = candidates.filter((row) => !row.hidden).slice(0, 120);
+    const hiddenRows = Array.from(hidden).map((key) => {
+      const found = candidates.find((row) => row.key === key);
+      return { key, label: found ? found.label : key, hidden: true };
+    });
+    const rows = hiddenRows.concat(visibleRows);
+    if (!rows.length) {
+      list.innerHTML = `<div class="custom-ui-row"><div><div class="custom-ui-row-title">No customizable UI loaded yet.</div><div class="custom-ui-row-meta">Open a profile first, then come back here.</div></div></div>`;
+      return;
+    }
+    list.innerHTML = rows.map((row) => `
+      <div class="custom-ui-row">
+        <div>
+          <div class="custom-ui-row-title">${String(row.label || row.key).replace(/[<>&"]/g, (ch) => ({ "<":"&lt;", ">":"&gt;", "&":"&amp;", "\"":"&quot;" }[ch]))}</div>
+          <div class="custom-ui-row-meta">${row.hidden ? "Hidden" : "Visible"} • ${row.key}</div>
+        </div>
+        <button type="button" onclick="BotApp.${row.hidden ? "restoreCustomUiKey" : "hideCustomUiKey"}('${row.key.replace(/'/g, "\\'")}')">${row.hidden ? "Restore" : "Hide"}</button>
+      </div>
+    `).join("");
+  };
+
+  document.addEventListener("click", function (event) {
+    try {
+      if (!App.customUi.editMode) return;
+      const target = event.target && event.target.closest ? event.target.closest("[data-custom-ui-key]") : null;
+      if (!target || target.closest("#customUiModal")) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      App.hideCustomUiKey(target.dataset.customUiKey);
+      App.safeToast(`${App.customUiLabelFor(target)} hidden. Restore it from Custom Edits.`, "info");
+    } catch (e) {}
+  }, true);
+
+  if (document.readyState !== "loading") {
+    setTimeout(() => App.loadCustomUiSettings().catch(() => {}), 0);
+  }
 
   App.log("app.js ready");
 })();

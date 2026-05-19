@@ -138,6 +138,79 @@ h1{
     touch-action:manipulation;
 }
 
+.custom-edits-toolbar{
+    display:flex;
+    justify-content:center;
+    margin:10px 0 4px;
+}
+.custom-edits-open-btn{
+    min-height:36px;
+    padding:8px 13px;
+    margin:0;
+    border-radius:999px;
+    background:#1e293b;
+    border:1px solid rgba(56,189,248,0.32);
+    color:#e0f2fe;
+    font-size:12px;
+    box-shadow:0 10px 24px rgba(2,6,23,0.22);
+}
+.custom-ui-hidden{
+    display:none !important;
+}
+.custom-ui-editing [data-custom-ui-key]{
+    outline:2px dashed rgba(250,204,21,0.72) !important;
+    outline-offset:2px;
+}
+.custom-ui-modal{
+    display:none;
+    position:fixed;
+    inset:0;
+    z-index:12000;
+    padding:18px;
+    align-items:center;
+    justify-content:center;
+    background:rgba(2,6,23,0.78);
+}
+.custom-ui-modal.is-open{display:flex;}
+.custom-ui-card{
+    width:min(720px,100%);
+    max-height:calc(100vh - 36px);
+    overflow-y:auto;
+    border-radius:18px;
+    border:1px solid #334155;
+    background:linear-gradient(180deg,#0f172a,#020617);
+    box-shadow:0 26px 70px rgba(0,0,0,.55);
+    padding:16px;
+}
+.custom-ui-head{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:10px;
+    margin-bottom:10px;
+}
+.custom-ui-title{font-size:18px;font-weight:900;color:#f8fafc;}
+.custom-ui-copy{font-size:12px;color:#94a3b8;line-height:1.45;margin:0 0 12px;}
+.custom-ui-actions{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;}
+.custom-ui-actions button{margin:0;}
+.custom-ui-list{
+    display:grid;
+    gap:7px;
+}
+.custom-ui-row{
+    display:grid;
+    grid-template-columns:minmax(0,1fr) auto;
+    gap:8px;
+    align-items:center;
+    padding:8px 10px;
+    border-radius:12px;
+    border:1px solid #334155;
+    background:#0f172a;
+}
+.custom-ui-row-title{font-size:12px;color:#f8fafc;font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.custom-ui-row-meta{font-size:11px;color:#64748b;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.custom-ui-row button{margin:0;min-width:82px;padding:8px 10px;font-size:12px;background:#334155;}
+
 .card{
     background:#111827;
     padding:20px;
@@ -1196,6 +1269,27 @@ body.mobile-only-ui #profileContainer .unchain-history-grid{
     <div class="bot-header">
         <img src="/static/images/logo.png" alt="Bot Logo" class="bot-logo">
         <h1>KOOLKID AI TRADING ENGINE</h1>
+    </div>
+    <div class="custom-edits-toolbar">
+        <button id="customEditsOpenBtn" class="custom-edits-open-btn" type="button" onclick="window.BotApp && BotApp.openCustomUiEditor && BotApp.openCustomUiEditor()">Custom Edits</button>
+    </div>
+    <div id="customUiModal" class="custom-ui-modal" onclick="if(event.target===this) BotApp.closeCustomUiEditor()">
+        <div class="custom-ui-card">
+            <div class="custom-ui-head">
+                <div>
+                    <div class="custom-ui-title">Custom Edits</div>
+                    <p class="custom-ui-copy">Hide buttons or sections you do not use. This only changes your UI and saves to your username.</p>
+                </div>
+                <button type="button" onclick="BotApp.closeCustomUiEditor()" style="margin:0;background:#1e293b;">×</button>
+            </div>
+            <div class="custom-ui-actions">
+                <button id="customUiEditModeBtn" type="button" onclick="BotApp.toggleCustomUiEditMode()" style="background:#f59e0b;color:#111827;">Edit Mode: OFF</button>
+                <button type="button" onclick="BotApp.saveCustomUiSettings()" style="background:#22c55e;color:#052e16;">Save</button>
+                <button type="button" onclick="BotApp.resetCustomUiSettings()" style="background:#ef4444;color:#fff7ed;">Reset to Default</button>
+            </div>
+            <p id="customUiStatus" class="custom-ui-copy">Turn on Edit Mode, then click a highlighted UI item to hide it.</p>
+            <div id="customUiList" class="custom-ui-list"></div>
+        </div>
     </div>
     <a href="/logout" style="color:#ef4444; font-weight:bold;">Logout</a>
     <button id="koolkidAutoTradeLaunchBtn" class="koolkid-auto-trade-launch" type="button" onclick="openKoolkidAutoTradePlaceholder()">
@@ -5435,6 +5529,7 @@ async function loadProfileUI(profile){
             }
             bindProfileDraftAutosave();
             refreshDynamicElements();
+            try{ if(window.BotApp && typeof window.BotApp.applyCustomUiSettings === "function") window.BotApp.applyCustomUiSettings(); }catch(e){}
             initDigitGrid();
             refreshHowTo();
             updateInsta5Label();
@@ -5456,6 +5551,7 @@ async function loadProfileUI(profile){
             root.dataset.profileLoaded = normalizeProfileName(profile);
         }
         bindProfileDraftAutosave();
+        try{ if(window.BotApp && typeof window.BotApp.applyCustomUiSettings === "function") window.BotApp.applyCustomUiSettings(); }catch(e){}
         try{
             if(window.BotApp && typeof window.BotApp.markProfileInit === "function"){
                 window.BotApp.markProfileInit(profile, "load_profile_ui");

@@ -150,6 +150,10 @@
           </button>
         </div>
 
+        <button type="button" onclick="openProfitCalculatorJokerjoe()" style="width:100%; margin-top:10px; min-height:38px; background:#1e293b; border-radius:12px; font-size:12px; font-weight:900;">
+          Profit Caluclator
+        </button>
+
         <div id="profileReinvestPanelJokerjoe" style="margin-top:10px; border:1px solid #334155; border-radius:12px; padding:10px; background:#111827;">
           <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
             <div>
@@ -188,6 +192,30 @@
         <button onclick="manualSL()" style="width:100%; margin-top:8px; height:46px; background:linear-gradient(90deg,#fb7185,#ef4444); border-radius:12px;">
           SET SL
         </button>
+      </div>
+
+      <div id="profitCalculatorPopupJokerjoe" onclick="if(event.target===this) closeProfitCalculatorJokerjoe()" style="display:none; position:fixed; inset:0; z-index:90; padding:18px; align-items:center; justify-content:center; background:rgba(2,6,23,0.76);">
+        <div style="width:min(430px,100%); background:linear-gradient(180deg,#0f172a,#020617); border:1px solid #334155; border-radius:16px; padding:14px; box-shadow:0 20px 50px rgba(0,0,0,.38);">
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
+            <div style="font-weight:900;">Profit Calculator</div>
+            <button type="button" onclick="closeProfitCalculatorJokerjoe()" style="height:34px; min-width:34px; border-radius:10px; background:#1e293b;">x</button>
+          </div>
+          <div style="margin-top:10px; display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+            <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+              Stake
+              <input id="profitCalculatorStakeJokerjoe" type="number" min="0.35" step="0.01" value="1" style="width:100%; min-height:38px;">
+            </label>
+            <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+              Digit
+              <select id="profitCalculatorDigitJokerjoe" style="width:100%; min-height:38px;">
+                <option value="0">0</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option>
+                <option value="5" selected>5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option>
+              </select>
+            </label>
+          </div>
+          <button type="button" onclick="runProfitCalculatorJokerjoe()" style="width:100%; margin-top:10px; min-height:40px; background:#22c55e; color:#052e16; border-radius:12px; font-weight:900;">CHECK PROFIT</button>
+          <div id="profitCalculatorResultsJokerjoe" style="margin-top:10px; color:#94a3b8; font-size:12px; line-height:1.45;">Choose a digit to preview Matches/Differs profit for the current market.</div>
+        </div>
       </div>
 
       <div id="differsAnalysisBox" style="margin-top:12px; background:#0f172a; border:1px solid #334155; border-radius:12px; padding:12px;">
@@ -276,6 +304,14 @@
           <div class="ui-btn-grid-2">
             <button id="kidGxBtnJokerjoe" onclick="toggleKidGxJokerjoe()" style="width:100%; height:46px; background:#1e293b;">⚡kidGx</button>
             <button id="aiAutoTradingBtnJokerjoe" onclick="toggleAIAutoTradingJokerjoe()" style="width:100%; height:46px; background:#1e293b;">🤖AI AUTO-TRADING: OFF</button>
+          </div>
+          <div style="display:grid; gap:7px;">
+            <button id="matchesFrenzyBtnJokerjoe" onclick="toggleMatchesFrenzyJokerjoe()" style="width:100%; min-height:58px; background:linear-gradient(135deg,#facc15 0%,#f97316 42%,#db2777 100%); color:#111827; border:1px solid rgba(254,240,138,0.82); border-radius:14px; box-shadow:0 0 0 1px rgba(250,204,21,0.22),0 14px 34px rgba(219,39,119,0.28),inset 0 1px 0 rgba(255,255,255,0.45); font-weight:1000; letter-spacing:.2px;">
+              Matches Frenzy💲🎯🎯: OFF
+            </button>
+            <div id="matchesFrenzyStatusJokerjoe" style="font-size:12px; color:#fde68a; background:linear-gradient(180deg,rgba(69,26,3,0.62),rgba(15,23,42,0.88)); border:1px solid rgba(250,204,21,0.34); border-radius:10px; padding:8px 10px; line-height:1.4;">
+              Premium scan ready. Collects 100 live ticks first, then targets MATCHES quotes near $8 profit per $1 stake.
+            </div>
           </div>
           <div id="aiAutoModeModalJokerjoe" onclick="if(event.target===this) closeAIAutoModeModalJokerjoe()" style="display:none; position:fixed; inset:0; z-index:75; padding:18px; align-items:center; justify-content:center; background:rgba(2,6,23,0.76);">
             <div style="width:min(460px,100%); background:linear-gradient(180deg,#0f172a,#020617); border:1px solid #334155; border-radius:16px; padding:14px; box-shadow:0 20px 50px rgba(0,0,0,.38);">

@@ -127,12 +127,78 @@ class OAuthDerivTradeEngine:
         state.setdefault("req_meta", {})[req_id] = req_meta
         d["stamp_latency"](req_meta, "buy_send")
 
-        proposal_payload = d["proposal_payload_for_connection"](state, {"proposal": 1, "req_id": req_id, **sanitized})
-        debug["proposal_payload"] = proposal_payload
-        d["debug_log"](client_id, "oauth_proposal_send", debug)
-        proposal, proposal_err = d["request_proposal"](client_id, state, proposal_payload, timeout_sec=5.0)
-        debug["proposal_response"] = proposal or {"error": proposal_err}
-        debug["proposal_id"] = (proposal or {}).get("id")
+        proposal = None
+        proposal_err = None
+        min_profit = None
+        try:
+            min_profit = float(intent.minimum_profit) if intent.minimum_profit not in (None, "") else None
+        except Exception:
+            min_profit = None
+        max_attempts = max(1, min(8, 1 + int(intent.minimum_profit_retries or 0)))
+        best_proposal = None
+        best_profit = None
+        best_req_id = None
+        for attempt in range(max_attempts):
+            proposal_req_id = req_id if attempt == 0 else d["new_req_id"]()
+            if proposal_req_id != req_id:
+                state.setdefault("req_meta", {})[proposal_req_id] = req_meta
+            proposal_payload = d["proposal_payload_for_connection"](state, {"proposal": 1, "req_id": proposal_req_id, **sanitized})
+            debug["proposal_payload"] = proposal_payload
+            debug["proposal_attempt"] = attempt + 1
+            d["debug_log"](client_id, "oauth_proposal_send", debug)
+            proposal, proposal_err = d["request_proposal"](client_id, state, proposal_payload, timeout_sec=5.0)
+            debug["proposal_response"] = proposal or {"error": proposal_err}
+            debug["proposal_id"] = (proposal or {}).get("id")
+            if proposal_err:
+                break
+            if min_profit is None:
+                break
+            ask_price = d["safe_float"]((proposal or {}).get("ask_price"), d["safe_float"]((proposal or {}).get("display_value"), intent.stake))
+            payout = d["safe_float"]((proposal or {}).get("payout"), None)
+            profit = d["safe_float"]((proposal or {}).get("profit"), None)
+            if profit is None and ask_price is not None and payout is not None:
+                profit = float(payout) - float(ask_price)
+            debug["proposal_profit"] = profit
+            debug["minimum_profit"] = min_profit
+            if profit is not None and float(profit) + 1e-9 >= float(min_profit):
+                req_id = proposal_req_id
+                break
+            if profit is not None and (best_profit is None or float(profit) > float(best_profit)):
+                if best_req_id not in (None, proposal_req_id):
+                    try:
+                        state.get("req_meta", {}).pop(best_req_id, None)
+                    except Exception:
+                        pass
+                best_proposal = proposal
+                best_profit = profit
+                best_req_id = proposal_req_id
+            elif proposal_req_id != req_id:
+                try:
+                    state.get("req_meta", {}).pop(proposal_req_id, None)
+                except Exception:
+                    pass
+            if attempt >= max_attempts - 1:
+                if intent.buy_best_available and best_proposal:
+                    proposal = best_proposal
+                    req_id = best_req_id or req_id
+                    d["logger"].info(
+                        "[%s] oauth_matches_frenzy_best_available selected_profit=%s target_profit=%s proposal=%s",
+                        client_id,
+                        None if best_profit is None else round(float(best_profit), 4),
+                        round(float(min_profit), 4),
+                        d["safe_payload"](best_proposal or {}),
+                    )
+                    break
+                try:
+                    state.get("req_meta", {}).pop(proposal_req_id, None)
+                except Exception:
+                    pass
+                msg = f"Matches Frenzy skipped: proposal profit {float(profit or 0.0):.2f} below target {float(min_profit):.2f}"
+                return self._fail("minimum_profit_filter", msg, client_id, debug, state, cleanup=False)
+            try:
+                state.get("req_meta", {}).pop(proposal_req_id, None)
+            except Exception:
+                pass
         if proposal_err:
             try:
                 state.get("req_meta", {}).pop(req_id, None)
@@ -177,4 +243,3 @@ class OAuthDerivTradeEngine:
             self.deps["otp_authenticated"](state),
         )
         return False, message
-

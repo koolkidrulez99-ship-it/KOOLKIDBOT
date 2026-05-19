@@ -6,7 +6,7 @@ const FAST_INTERVAL_MS_NORMAL = 400; // 0.4s as requested
 const FAST_INTERVAL_MS_TURBO = 120;  // faster Turbo lane for JOKERJOE
 const FAST_MAX_BUY_QUEUE = 12;       // safety limit
 const BLACKCARD_RENDER_THROTTLE_MS = 300;
-const state = { lastSocket: null, socketBound: false, autoModes: {}, turboMode: loadTurboModeJokerjoe(), profileReinvestOn: false, profileReinvestPct: 25, profileReinvestBaseStake: null, profileReinvestProfitBank: 0, kidgxBarrier: 5, matchesAnalysisOn: false, matchesLastKey: "", matchesObserverBound: false, matchSniperOn: false, matchSniperCooldownUntil: 0, matchSniperActiveDigit: null, matchSniperConsumed: false, matchSniperBusy: false, matchesSnapshot: null, matchesSorted: [], matchSniper5xOn: false, matchSniper5xCooldownUntil: 0, matchSniper5xBusy: false, matchSniper5xLastTopKey: "", matchSniper5xRotationSets: null, matchSniper5xRotationIndex: 0, matchSniper5xCurrentDigits: [], matchSniper5xSelectedDigits: [0, 1, 2, 3, 4], batchMartingale: { group: "MATCH_789", enabled: false, running: false, inProgress: false, step: 1, batchId: "", pendingContracts: {}, expected: 0, settled: 0, batchStake: 1.05, perStake: 0.35, totalProfit: 0, hasWin: false, lastResult: "none", status: "Ready", restartTimer: null, completionTimer: null, tickSpacing: 1, spacingWait: 0, stopRequested: false }, aiAutoModeChoice: "golden_digits", aiAutoLowestTradeCountChoice: 5, aiAutoLowestLocalOn: false, aiAutoModalOpen: false, aiLowestLastTickCount: 0, aiLowestTouches: {}, aiLowestArmed: null, aiLowestBatchActive: false, aiLowestBatchPending: 0, aiLowestBatchBarrier: null, aiLowestBatchProfit: 0, aiLowestCooldownUntil: 0, aiLowestSubmitting: false, aiLowestRecoveryDeficit: 0, aiLowestRecoveryOnly: false, randomMatchesDiffersOn: false, randomMatchesDiffersMode: "DIFFERS", randomMatchesDiffersModalOpen: false, randomMatchesDiffersBusy: false, randomMatchesDiffersCooldownUntil: 0, randomMatchesDiffersLastSignalKey: "", randomMatchesDiffersTickHistory: [], randomMatchesDiffersLastTickCount: 0, randomMatchesDiffersSnapshot: null, blackcard: { lastDigit: null, recentDigits: [], percentages: {}, busy: false, winMarkerDigit: null, winMarkerUntil: 0, resultMarkerDigit: null, resultMarkerType: "", resultMarkerUntil: 0, praiseShownForTenWins: false, lastWinCount: null, reinvestProfitsOn: false, reinvestProfitPct: 25, lastProfit: 0, reinvestBaseStake: null, reinvestProfitBank: 0, reinvestCycleStake: null, reinvestPending: 0, pendingContracts: {}, pendingUnmarked: 0 }, insta2Busy: false, kid100WinsBusy: false, kid100WinsAutoOn: false, kid100WinsAutoBusy: false, kid100WinsAutoLastTick: null, kid100WinsAutoEnabledAtGlobalTick: null, kid100WinsAutoEnabledAtAnalysisTick: null, kid100WinsAutoLastSignalTick: null, kid100WinsLatestTick: null, kid100WinsLatestBest: null, kid100WinsLowPercentOn: false, kid100WinsAiDiffersOn: false, kid100WinsStopRequested: false, kid100WinsLastSeenDigit: null, kid100WinsManualArmed: false, kid100WinsManualBarrier: null, kid100WinsManualEnabledAtGlobalTick: null, kid100WinsManualEnabledAtAnalysisTick: null, kid100WinsManualLastSignalTick: null, kid100WinsReinvestProfitsOn: false, kid100WinsReinvestPct: 25, kid100WinsReinvestBaseStake: null, kid100WinsReinvestCycleStake: null, kid100WinsReinvestLastProfit: 0, kid100WinsReinvestPending: 0 };
+const state = { lastSocket: null, socketBound: false, autoModes: {}, turboMode: loadTurboModeJokerjoe(), profileReinvestOn: false, profileReinvestPct: 25, profileReinvestBaseStake: null, profileReinvestProfitBank: 0, kidgxBarrier: 5, matchesAnalysisOn: false, matchesLastKey: "", matchesObserverBound: false, matchSniperOn: false, matchSniperCooldownUntil: 0, matchSniperActiveDigit: null, matchSniperConsumed: false, matchSniperBusy: false, matchesSnapshot: null, matchesSorted: [], matchSniper5xOn: false, matchSniper5xCooldownUntil: 0, matchSniper5xBusy: false, matchSniper5xLastTopKey: "", matchSniper5xRotationSets: null, matchSniper5xRotationIndex: 0, matchSniper5xCurrentDigits: [], matchSniper5xSelectedDigits: [0, 1, 2, 3, 4], matchesFrenzy: { running: false, busy: false, tickHistory: [], ticksUntilScan: 10, scanCount: 0, lastTickCount: 0, lastDigit: null, lastMatchedDigit: null, lastTradeAt: 0, warmed: false, status: "Ready" }, batchMartingale: { group: "MATCH_789", enabled: false, running: false, inProgress: false, step: 1, batchId: "", pendingContracts: {}, expected: 0, settled: 0, batchStake: 1.05, perStake: 0.35, totalProfit: 0, hasWin: false, lastResult: "none", status: "Ready", restartTimer: null, completionTimer: null, tickSpacing: 1, spacingWait: 0, stopRequested: false }, aiAutoModeChoice: "golden_digits", aiAutoLowestTradeCountChoice: 5, aiAutoLowestLocalOn: false, aiAutoModalOpen: false, aiLowestLastTickCount: 0, aiLowestTouches: {}, aiLowestArmed: null, aiLowestBatchActive: false, aiLowestBatchPending: 0, aiLowestBatchBarrier: null, aiLowestBatchProfit: 0, aiLowestCooldownUntil: 0, aiLowestSubmitting: false, aiLowestRecoveryDeficit: 0, aiLowestRecoveryOnly: false, randomMatchesDiffersOn: false, randomMatchesDiffersMode: "DIFFERS", randomMatchesDiffersModalOpen: false, randomMatchesDiffersBusy: false, randomMatchesDiffersCooldownUntil: 0, randomMatchesDiffersLastSignalKey: "", randomMatchesDiffersTickHistory: [], randomMatchesDiffersLastTickCount: 0, randomMatchesDiffersSnapshot: null, blackcard: { lastDigit: null, recentDigits: [], percentages: {}, busy: false, winMarkerDigit: null, winMarkerUntil: 0, resultMarkerDigit: null, resultMarkerType: "", resultMarkerUntil: 0, praiseShownForTenWins: false, lastWinCount: null, reinvestProfitsOn: false, reinvestProfitPct: 25, lastProfit: 0, reinvestBaseStake: null, reinvestProfitBank: 0, reinvestCycleStake: null, reinvestPending: 0, pendingContracts: {}, pendingUnmarked: 0 }, insta2Busy: false, kid100WinsBusy: false, kid100WinsAutoOn: false, kid100WinsAutoBusy: false, kid100WinsAutoLastTick: null, kid100WinsAutoEnabledAtGlobalTick: null, kid100WinsAutoEnabledAtAnalysisTick: null, kid100WinsAutoLastSignalTick: null, kid100WinsLatestTick: null, kid100WinsLatestBest: null, kid100WinsLowPercentOn: false, kid100WinsAiDiffersOn: false, kid100WinsStopRequested: false, kid100WinsLastSeenDigit: null, kid100WinsManualArmed: false, kid100WinsManualBarrier: null, kid100WinsManualEnabledAtGlobalTick: null, kid100WinsManualEnabledAtAnalysisTick: null, kid100WinsManualLastSignalTick: null, kid100WinsReinvestProfitsOn: false, kid100WinsReinvestPct: 25, kid100WinsReinvestBaseStake: null, kid100WinsReinvestCycleStake: null, kid100WinsReinvestLastProfit: 0, kid100WinsReinvestPending: 0 };
   const fastBuyQueueJokerjoe = { items: [], running: false, lastRunAt: 0 };
   let activityPollTimerJokerjoe = null;
   let blackcardRenderTimerJokerjoe = null;
@@ -195,6 +195,26 @@ function renderTurboToggleJokerjoe() {
     if (row) row.style.display = enabled ? "flex" : "none";
     if (!enabled) state.kid100WinsAiDiffersOn = false;
     return enabled;
+  }
+  function applyMatchesFrenzyLifetimeGateJokerjoe() {
+    const allowed = isLifetimeBlackcardUserJokerjoe();
+    const btn = getEl("matchesFrenzyBtnJokerjoe");
+    const status = getEl("matchesFrenzyStatusJokerjoe");
+    if (btn) {
+      btn.disabled = !allowed;
+      btn.style.opacity = allowed ? "1" : "0.52";
+      btn.style.cursor = allowed ? "pointer" : "not-allowed";
+      btn.title = allowed ? "" : "Matches Frenzy is for lifetime users only.";
+    }
+    if (status && !allowed) {
+      status.innerText = "Matches Frenzy is for lifetime users only.";
+    }
+    if (!allowed && state.matchesFrenzy) {
+      state.matchesFrenzy.running = false;
+      state.matchesFrenzy.busy = false;
+      state.matchesFrenzy.status = "Lifetime users only.";
+    }
+    return allowed;
   }
   function setTextIfChanged(node, value) {
     if (!node) return;
@@ -3587,13 +3607,241 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
   }
 
   function refreshMatchesAnalysisJokerjoe(data) {
-    if (!state.matchesAnalysisOn) return;
     const fromPayload = parseMatchesEntriesFromDigitAnalysisPayloadJokerjoe(data);
+    ingestMatchesFrenzyAnalysisJokerjoe(data, fromPayload);
+    if (!state.matchesAnalysisOn) return;
     if (fromPayload && fromPayload.length) {
       return renderMatchesAnalysisJokerjoe(fromPayload, { status: "Live" });
     }
     const fromDom = parseMatchesEntriesFromDiffersDomJokerjoe();
     renderMatchesAnalysisJokerjoe(fromDom, { status: fromDom && fromDom.length ? "Live" : "Warm-up / waiting for digit %" });
+  }
+
+  function getMatchesFrenzyStateJokerjoe() {
+    if (!state.matchesFrenzy) {
+      state.matchesFrenzy = { running: false, busy: false, tickHistory: [], ticksUntilScan: 10, scanCount: 0, lastTickCount: 0, lastDigit: null, lastMatchedDigit: null, lastTradeAt: 0, warmed: false, status: "Ready" };
+    }
+    return state.matchesFrenzy;
+  }
+
+  function getCurrentJokerjoeSymbol() {
+    try {
+      if (typeof window.getConfirmedMarketSymbol === "function") {
+        const confirmed = String(window.getConfirmedMarketSymbol() || "").trim();
+        if (confirmed) return confirmed;
+      }
+    } catch (e) {}
+    return String(((document.getElementById("symbol") || {}).value || "R_25")).trim() || "R_25";
+  }
+
+  function normalizeMatchesFrenzyPercentagesJokerjoe(entries) {
+    if (!Array.isArray(entries) || !entries.length) return null;
+    const result = {};
+    let hasValue = false;
+    entries.forEach((entry) => {
+      const digit = Number(entry && entry.digit);
+      const pct = Number(entry && entry.pct);
+      if (Number.isInteger(digit) && digit >= 0 && digit <= 9 && Number.isFinite(pct)) {
+        result[digit] = pct;
+        if (pct > 0) hasValue = true;
+      }
+    });
+    return hasValue ? result : null;
+  }
+
+  function extractMatchesFrenzyLastDigitJokerjoe(data) {
+    const candidates = [
+      data && data.last_digit,
+      data && data.digit,
+      data && data.current_digit,
+      data && data.tick && data.tick.last_digit,
+    ];
+    for (const value of candidates) {
+      const digit = Number(value);
+      if (Number.isInteger(digit) && digit >= 0 && digit <= 9) return digit;
+    }
+    return null;
+  }
+
+  function extractMatchesFrenzyTickCountJokerjoe(data) {
+    const candidates = [data && data.tick_count, data && data.global_tick_count, data && data.tickCount];
+    for (const value of candidates) {
+      const count = Number(value);
+      if (Number.isFinite(count)) return count;
+    }
+    return null;
+  }
+
+  function ingestMatchesFrenzyAnalysisJokerjoe(data, entries) {
+    const st = getMatchesFrenzyStateJokerjoe();
+    const tickCount = extractMatchesFrenzyTickCountJokerjoe(data || {});
+    const digit = extractMatchesFrenzyLastDigitJokerjoe(data || {});
+    if (Number.isInteger(digit) && (!Number.isFinite(tickCount) || tickCount !== st.lastTickCount)) {
+      if (Number.isFinite(tickCount)) st.lastTickCount = tickCount;
+      st.lastDigit = digit;
+      const next = Array.isArray(st.tickHistory) ? st.tickHistory.slice(-99) : [];
+      next.push(digit);
+      st.tickHistory = next;
+      if (st.running) {
+        if (st.tickHistory.length < 100) {
+          st.warmed = false;
+          st.ticksUntilScan = 10;
+          st.status = `Collecting 100 ticks... ${st.tickHistory.length}/100`;
+        } else {
+          if (!st.warmed) {
+            st.warmed = true;
+            st.ticksUntilScan = 10;
+            st.status = "100 ticks ready. First match check in 10 ticks.";
+          } else {
+            st.ticksUntilScan = Math.max(0, Math.floor(Number(st.ticksUntilScan) || 0) - 1);
+            if (st.ticksUntilScan <= 0) maybeRunMatchesFrenzyTradeJokerjoe().catch(() => {});
+            else st.status = `Scanning ${st.ticksUntilScan} tick${st.ticksUntilScan === 1 ? "" : "s"} before next match check`;
+          }
+        }
+      }
+    }
+    renderMatchesFrenzyJokerjoe();
+  }
+
+  function getMatchesFrenzyTopDigitJokerjoe() {
+    const st = getMatchesFrenzyStateJokerjoe();
+    const history = Array.isArray(st.tickHistory) ? st.tickHistory.slice(-100) : [];
+    if (history.length < 100) return null;
+    const counts = {};
+    for (let digit = 0; digit <= 9; digit += 1) counts[digit] = 0;
+    history.forEach((digit) => {
+      const safeDigit = Number(digit);
+      if (Number.isInteger(safeDigit) && safeDigit >= 0 && safeDigit <= 9) counts[safeDigit] += 1;
+    });
+    const source = "100 live ticks";
+    let bestDigit = null;
+    let bestScore = -1;
+    for (let digit = 0; digit <= 9; digit += 1) {
+      const score = Number(counts[digit] ?? 0);
+      if (score > bestScore) {
+        bestScore = score;
+        bestDigit = digit;
+      }
+    }
+    if (!Number.isInteger(bestDigit) || bestScore <= 0) return null;
+    return { digit: bestDigit, score: bestScore, source, sample: history.length };
+  }
+
+  function setMatchesFrenzyBusyTimeoutJokerjoe() {
+    const st = getMatchesFrenzyStateJokerjoe();
+    const timer = setTimeout(() => {
+      const current = getMatchesFrenzyStateJokerjoe();
+      if (current.busy && Date.now() - Number(current.lastTradeAt || 0) >= 14000) {
+        current.busy = false;
+        if (current.running) {
+          current.ticksUntilScan = 3;
+          current.status = "Trade still settling. Rechecking in 3 ticks.";
+          renderMatchesFrenzyJokerjoe();
+        }
+      }
+    }, 15000);
+    st.busyTimer = timer;
+    const app = App();
+    if (app && typeof app.registerFrontendTimeout === "function") app.registerFrontendTimeout("jokerjoe_matches_frenzy_busy", timer);
+  }
+
+  async function maybeRunMatchesFrenzyTradeJokerjoe() {
+    const st = getMatchesFrenzyStateJokerjoe();
+    if (!st.running || st.busy) {
+      if (st.busy) {
+        st.ticksUntilScan = 3;
+        st.status = "Waiting for the active Matches trade to finish";
+        renderMatchesFrenzyJokerjoe();
+      }
+      return;
+    }
+    const pick = getMatchesFrenzyTopDigitJokerjoe();
+    if (!pick) {
+      st.ticksUntilScan = 10;
+      st.status = `Collecting 100 ticks... ${Array.isArray(st.tickHistory) ? st.tickHistory.length : 0}/100`;
+      renderMatchesFrenzyJokerjoe();
+      return;
+    }
+    const stake = getManualStakeValueJokerjoe();
+    const duration = getDurationTicksJokerjoe();
+    const symbol = getCurrentJokerjoeSymbol();
+    const minimumProfit = Number((stake * 8).toFixed(2));
+    st.busy = true;
+    st.lastTradeAt = Date.now();
+    st.lastMatchedDigit = pick.digit;
+    st.status = `Placing MATCH ${pick.digit} from ${pick.source}`;
+    renderMatchesFrenzyJokerjoe();
+    try {
+      const response = await sendFastManualTradeJokerjoe({
+        type: "MATCHES",
+        action: "MATCHES_FRENZY",
+        barrier: pick.digit,
+        stake,
+        amount: stake,
+        symbol,
+        duration,
+        duration_unit: "t",
+        mode: "matches_frenzy",
+        label: `Matches Frenzy MATCH ${pick.digit}`,
+        minimum_profit: minimumProfit,
+        minimum_profit_retries: 5,
+        buy_best_available: true,
+      }, { turbo: false, queue: false, fireAndForget: false, skipMartha: true });
+      if (!response || !response.ok) {
+        const msg = response && response.data && response.data.message ? response.data.message : "Matches Frenzy trade failed";
+        throw new Error(msg);
+      }
+      st.scanCount += 1;
+      st.ticksUntilScan = 3;
+      st.status = `MATCH ${pick.digit} sent. Rechecking in 3 ticks.`;
+      safeToast(`Matches Frenzy sent MATCH ${pick.digit}`, "success");
+      setMatchesFrenzyBusyTimeoutJokerjoe();
+    } catch (e) {
+      st.busy = false;
+      st.ticksUntilScan = 3;
+      st.status = (e && e.message) || "Trade failed. Rechecking in 3 ticks.";
+      safeToast(st.status, "error");
+    }
+    renderMatchesFrenzyJokerjoe();
+  }
+
+  function renderMatchesFrenzyJokerjoe() {
+    const st = getMatchesFrenzyStateJokerjoe();
+    const btn = getEl("matchesFrenzyBtnJokerjoe");
+    const status = getEl("matchesFrenzyStatusJokerjoe");
+    const pick = getMatchesFrenzyTopDigitJokerjoe();
+    const allowed = applyMatchesFrenzyLifetimeGateJokerjoe();
+    if (btn) {
+      btn.innerText = `Matches Frenzy💲🎯🎯: ${st.running ? "ON" : "OFF"}`;
+      btn.style.filter = st.running ? "saturate(1.22) brightness(1.08)" : "saturate(.92)";
+      btn.style.boxShadow = st.running
+        ? "0 0 0 1px rgba(254,240,138,0.55),0 0 28px rgba(250,204,21,0.46),0 18px 42px rgba(219,39,119,0.34),inset 0 1px 0 rgba(255,255,255,0.52)"
+        : "0 0 0 1px rgba(250,204,21,0.22),0 14px 34px rgba(219,39,119,0.28),inset 0 1px 0 rgba(255,255,255,0.45)";
+    }
+    if (!allowed) return;
+    if (status) {
+      const historyCount = Array.isArray(st.tickHistory) ? st.tickHistory.length : 0;
+      const pickText = pick ? `Top digit ${pick.digit} (${pick.score}/100)` : `Collecting ${historyCount}/100`;
+      const lastText = Number.isInteger(st.lastMatchedDigit) ? `last MATCH ${st.lastMatchedDigit}` : "no trade yet";
+      status.innerText = `${st.status || "Ready"} | ${pickText} | ${historyCount}/100 live ticks | ${lastText}`;
+    }
+  }
+
+  function updateMatchesFrenzyFromResultJokerjoe(trade) {
+    const mode = String((trade && (trade.mode || trade.strategy || trade.action || trade.label)) || "").toLowerCase();
+    if (!mode.includes("matches_frenzy") && !mode.includes("matches frenzy")) return;
+    const st = getMatchesFrenzyStateJokerjoe();
+    st.busy = false;
+    if (st.busyTimer) {
+      try { clearTimeout(st.busyTimer); } catch (e) {}
+      st.busyTimer = null;
+    }
+    const result = String((trade && (trade.result || trade.status || trade.outcome)) || "settled").toUpperCase();
+    const profit = Number(trade && (trade.profit ?? trade.profit_value ?? trade.pnl));
+    const profitText = Number.isFinite(profit) ? ` ${profit >= 0 ? "+" : ""}$${profit.toFixed(2)}` : "";
+    st.status = `${result}${profitText}. Rechecking in 3 ticks.`;
+    st.ticksUntilScan = 3;
+    renderMatchesFrenzyJokerjoe();
   }
 
   function bindMatchesAnalysisObserverJokerjoe() {
@@ -3610,6 +3858,7 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
   function shouldRunActivityPollJokerjoe() {
     return isActive() && (
       state.matchesAnalysisOn ||
+      (state.matchesFrenzy && state.matchesFrenzy.running) ||
       state.matchSniperOn ||
       state.matchSniper5xOn ||
       state.randomMatchesDiffersOn ||
@@ -3620,7 +3869,7 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
 
   function runActivityPollOnceJokerjoe() {
     try {
-      if (state.matchesAnalysisOn || state.matchSniperOn || state.matchSniper5xOn) {
+      if (state.matchesAnalysisOn || (state.matchesFrenzy && state.matchesFrenzy.running) || state.matchSniperOn || state.matchSniper5xOn) {
         refreshMatchesAnalysisJokerjoe();
         updateMatchSniperStatusJokerjoe();
         updateMatchSniper5xStatusJokerjoe();
@@ -3717,6 +3966,29 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     updateMatchSniper5xStatusJokerjoe();
     refreshActivityPollJokerjoe();
     safeToast(`🎯 MatchSniper 5x: ${state.matchSniper5xOn ? "ON" : "OFF"}`, state.matchSniper5xOn ? "success" : "error");
+  };
+
+  window.toggleMatchesFrenzyJokerjoe = function () {
+    if (!applyMatchesFrenzyLifetimeGateJokerjoe()) {
+      safeToast("Matches Frenzy is for lifetime users only.", "error");
+      return;
+    }
+    const st = getMatchesFrenzyStateJokerjoe();
+    st.running = !st.running;
+    st.busy = false;
+    st.ticksUntilScan = 10;
+    st.scanCount = 0;
+    st.warmed = Array.isArray(st.tickHistory) && st.tickHistory.length >= 100;
+    st.status = st.running
+      ? (st.warmed ? "100 ticks ready. First match check in 10 ticks." : `Collecting 100 ticks... ${Array.isArray(st.tickHistory) ? st.tickHistory.length : 0}/100`)
+      : "Stopped";
+    if (!st.running && st.busyTimer) {
+      try { clearTimeout(st.busyTimer); } catch (e) {}
+      st.busyTimer = null;
+    }
+    renderMatchesFrenzyJokerjoe();
+    refreshActivityPollJokerjoe();
+    safeToast(`Matches Frenzy ${st.running ? "started" : "stopped"}`, st.running ? "success" : "error");
   };
 
   window.toggleMatchSniper5xDigitJokerjoe = function (digit) {
@@ -3921,6 +4193,7 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
         updateJokerjoeBatchMartingaleFromResult(entry || {});
         updateJokerjoeKoolkidMatchBatchFromResult(entry || {});
         handleJokerjoeKoolkidOver3Result(entry || {});
+        updateMatchesFrenzyFromResultJokerjoe(entry || {});
       });
 
       bind("stats_update", (data) => {
@@ -4044,12 +4317,14 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     updateMatchSniperStatusJokerjoe();
     updateMatchSniper5xButtonJokerjoe();
     updateMatchSniper5xStatusJokerjoe();
+    renderMatchesFrenzyJokerjoe();
     updateAIAutoModeModalUiJokerjoe();
     updateRandomMatchesDiffersButtonJokerjoe();
     updateRandomMatchesDiffersStatusJokerjoe();
     updateRandomMatchesDiffersModalUiJokerjoe();
     renderBlackcardJokerjoe();
     applyKid100WinsLifetimeGateJokerjoe();
+    applyMatchesFrenzyLifetimeGateJokerjoe();
     currentTurboModeJokerjoe();
     renderTurboToggleJokerjoe();
     renderProfileReinvestControlsJokerjoe();
@@ -4071,12 +4346,14 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     updateMatchSniperStatusJokerjoe();
     updateMatchSniper5xButtonJokerjoe();
     updateMatchSniper5xStatusJokerjoe();
+    renderMatchesFrenzyJokerjoe();
     updateAIAutoModeModalUiJokerjoe();
     updateRandomMatchesDiffersButtonJokerjoe();
     updateRandomMatchesDiffersStatusJokerjoe();
     updateRandomMatchesDiffersModalUiJokerjoe();
     renderBlackcardJokerjoe();
     applyKid100WinsLifetimeGateJokerjoe();
+    applyMatchesFrenzyLifetimeGateJokerjoe();
     currentTurboModeJokerjoe();
     renderTurboToggleJokerjoe();
     renderProfileReinvestControlsJokerjoe();
@@ -4099,12 +4376,14 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     updateMatchSniperStatusJokerjoe();
     updateMatchSniper5xButtonJokerjoe();
     updateMatchSniper5xStatusJokerjoe();
+    renderMatchesFrenzyJokerjoe();
     updateAIAutoModeModalUiJokerjoe();
     updateRandomMatchesDiffersButtonJokerjoe();
     updateRandomMatchesDiffersStatusJokerjoe();
     updateRandomMatchesDiffersModalUiJokerjoe();
     renderBlackcardJokerjoe();
     applyKid100WinsLifetimeGateJokerjoe();
+    applyMatchesFrenzyLifetimeGateJokerjoe();
     currentTurboModeJokerjoe();
     renderTurboToggleJokerjoe();
     renderProfileReinvestControlsJokerjoe();
@@ -4132,6 +4411,15 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     if (state.batchMartingale && state.batchMartingale.restartTimer) {
       clearTimeout(state.batchMartingale.restartTimer);
       state.batchMartingale.restartTimer = null;
+    }
+    if (state.matchesFrenzy) {
+      state.matchesFrenzy.running = false;
+      state.matchesFrenzy.busy = false;
+      state.matchesFrenzy.status = "Stopped";
+      if (state.matchesFrenzy.busyTimer) {
+        try { clearTimeout(state.matchesFrenzy.busyTimer); } catch (e) {}
+        state.matchesFrenzy.busyTimer = null;
+      }
     }
     stopFallbackBootstrapJokerjoe();
     state.lastSocket = null;
@@ -4326,7 +4614,58 @@ if (!window.__jokerjoeTurboSyncBound) {
     if (state.aiAutoModalOpen) closeAIAutoModeModalJokerjoe();
     if (state.randomMatchesDiffersModalOpen) closeRandomMatchesDiffersModalJokerjoe();
     if (state.koolkidCombo && state.koolkidCombo.modalOpen) closeJokerjoeKoolkidPopup();
+    closeProfitCalculatorJokerjoe();
   });
+
+  function renderProfitCalculatorResultsJokerjoe(rows, status) {
+    const node = document.getElementById("profitCalculatorResultsJokerjoe");
+    if (!node) return;
+    if (!rows || !rows.length) {
+      node.textContent = status || "No quote available.";
+      return;
+    }
+    node.innerHTML = rows.map((row) => {
+      if (row.error) {
+        return `<div style="padding:8px; border:1px solid #334155; border-radius:10px; margin-top:6px;"><strong>${row.label}</strong><br><span style="color:#fca5a5;">${row.error}</span></div>`;
+      }
+      return `<div style="padding:8px; border:1px solid #334155; border-radius:10px; margin-top:6px;"><strong>${row.label}</strong><br>Stake $${Number(row.stake || 0).toFixed(2)} - Profit $${Number(row.profit || 0).toFixed(2)} - Return $${Number(row.payout || 0).toFixed(2)}</div>`;
+    }).join("");
+  }
+
+  window.openProfitCalculatorJokerjoe = function () {
+    const popup = document.getElementById("profitCalculatorPopupJokerjoe");
+    const stake = document.getElementById("profitCalculatorStakeJokerjoe");
+    const digit = document.getElementById("profitCalculatorDigitJokerjoe");
+    if (stake) stake.value = String(getManualStakeValueJokerjoe());
+    if (digit) digit.value = String(currentBarrier());
+    renderProfitCalculatorResultsJokerjoe([], "Choose a digit to preview Matches/Differs profit for the current market.");
+    if (popup) popup.style.display = "flex";
+  };
+
+  window.closeProfitCalculatorJokerjoe = function () {
+    closeProfitCalculatorJokerjoe();
+  };
+
+  function closeProfitCalculatorJokerjoe() {
+    const popup = document.getElementById("profitCalculatorPopupJokerjoe");
+    if (popup) popup.style.display = "none";
+  }
+
+  window.runProfitCalculatorJokerjoe = async function () {
+    const stake = Math.max(0.35, Number((document.getElementById("profitCalculatorStakeJokerjoe") || {}).value || 1) || 1);
+    const digit = Math.max(0, Math.min(9, parseInt((document.getElementById("profitCalculatorDigitJokerjoe") || {}).value || "5", 10) || 5));
+    const symbol = typeof window.getConfirmedMarketSymbol === "function" ? window.getConfirmedMarketSymbol() : ((document.getElementById("symbol") || {}).value || "");
+    renderProfitCalculatorResultsJokerjoe([], "Checking live proposal profit...");
+    const r = await postJSON("/profit_calculator_quote", {
+      profile: "JOKERJOE",
+      symbol,
+      stake,
+      digit,
+      duration: getDurationTicksJokerjoe(),
+      duration_unit: "t",
+    });
+    renderProfitCalculatorResultsJokerjoe((r.data && r.data.quotes) || [], (r.data && r.data.message) || "Quote unavailable.");
+  };
 
 
 async function toggleAdvancedModeJokerjoe(modeKey, label) {

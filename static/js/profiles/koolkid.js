@@ -66,6 +66,10 @@
       tickSpacing: 1,
       status: "Ready",
       lastResult: "none",
+      targetProfit: {
+        OVER_2_TARGET: { currentStake: 0.35, lossBank: 0, step: 1, sessionProfit: 0, lastResult: "none" },
+        OVER_3_TARGET: { currentStake: 0.35, lossBank: 0, step: 1, sessionProfit: 0, lastResult: "none" },
+      },
       over3Under6Pair: {
         running: false,
         enabled: false,
@@ -110,9 +114,15 @@
       settled: 0,
       hasWin: false,
       totalProfit: 0,
+      sessionProfit: 0,
       lastResult: "none",
       status: "Ready",
       stopRequested: false,
+      thinkingLogic: false,
+      thinkingScanning: false,
+      thinkingOpportunityActive: false,
+      thinkingLastSignalKey: "",
+      thinkingAnalysisRequested: false,
     },
     koolkidPairRecovery: {
       enabled: false,
@@ -1122,6 +1132,12 @@
     }
     const parsed = text.match(/\b(UNDER|OVER)\s*_?\s*([0-9])\b/);
     const key = parsed ? `${parsed[1]}_${parsed[2]}` : compact;
+    if (compact === "OVER_2_TARGET" || compact === "OVER_2_TP") {
+      return { action: "OVER_2_TARGET", type: "OVER", barrier: 2, label: "OVER 2 Target Profit", targetProfitMode: true };
+    }
+    if (compact === "OVER_3_TARGET" || compact === "OVER_3_TP") {
+      return { action: "OVER_3_TARGET", type: "OVER", barrier: 3, label: "OVER 3 Target Profit", targetProfitMode: true };
+    }
     const map = {
       UNDER_3: { action: "UNDER_3", type: "UNDER", barrier: 3, label: "UNDER 3" },
       UNDER_4: { action: "UNDER_4", type: "UNDER", barrier: 4, label: "UNDER 4" },
@@ -1183,6 +1199,42 @@
   function calculateNextOver3Under6SideStakeKoolkid(lossBank, targetProfit, payoutMultiplier) {
     const next = (Number(lossBank || 0) + Number(targetProfit || 0.05)) / Math.max(0.01, Number(payoutMultiplier || 0.63));
     return Number(Math.max(0.35, Math.ceil((next - 1e-9) * 100) / 100).toFixed(2));
+  }
+
+  function isKoolkidTargetProfitMartingaleAction(action) {
+    return ["OVER_2_TARGET", "OVER_3_TARGET"].includes(String(action || "").toUpperCase());
+  }
+
+  function getKoolkidTargetProfitMartingaleState(action) {
+    const st = getKoolkidSingleMartingaleState();
+    st.targetProfit = st.targetProfit || {};
+    const key = isKoolkidTargetProfitMartingaleAction(action) ? String(action).toUpperCase() : "OVER_2_TARGET";
+    if (!st.targetProfit[key]) {
+      st.targetProfit[key] = { currentStake: 0.35, lossBank: 0, step: 1, sessionProfit: 0, lastResult: "none" };
+    }
+    return st.targetProfit[key];
+  }
+
+  function readKoolkidTargetProfitMartingaleSettings() {
+    return {
+      targetProfit: Number(readKoolkidMartingaleNumber("koolkidTargetMartingaleProfit", 0.35, 0.01, 1000000).toFixed(2)),
+      payoutMultiplier: Math.max(0.01, Number(readKoolkidMartingaleNumber("koolkidTargetMartingalePayout", 0.63, 0.01, 100).toFixed(4))),
+      takeProfit: Number(readKoolkidMartingaleNumber("koolkidTargetMartingaleTP", 0, 0, 1000000).toFixed(2)),
+      stopLoss: Number(readKoolkidMartingaleNumber("koolkidTargetMartingaleSL", 0, 0, 1000000).toFixed(2)),
+    };
+  }
+
+  function calculateNextKoolkidTargetProfitStake(lossBank, targetProfit, payoutMultiplier) {
+    const next = (Number(lossBank || 0) + Number(targetProfit || 0.35)) / Math.max(0.01, Number(payoutMultiplier || 0.63));
+    return Number(Math.max(0.35, Math.ceil((next - 1e-9) * 100) / 100).toFixed(2));
+  }
+
+  function resetKoolkidTargetProfitMartingaleAction(action, baseStake) {
+    const target = getKoolkidTargetProfitMartingaleState(action);
+    target.currentStake = Number(Math.max(0.35, Number(baseStake || 0.35)).toFixed(2));
+    target.lossBank = 0;
+    target.step = 1;
+    target.lastResult = "none";
   }
 
   function resetOver3Under6SideStateKoolkid(sideState, baseStake) {
@@ -1252,6 +1304,7 @@
       isPair: !!action.isPair,
       isTriple: !!action.isTriple,
       independentPair: !!action.independentPair,
+      targetProfitMode: !!action.targetProfitMode,
       legs: action.legs || null,
       duration,
       startStake,
@@ -1336,11 +1389,18 @@
 
     const settings = readKoolkidSingleMartingaleSettings();
     const pairMode = isOver3Under6PairModeKoolkid();
+    const targetMode = !pairMode && !!settings.targetProfitMode;
     const pairSettingsWrap = document.getElementById("koolkidOver3Under6PairSettings");
     if (pairSettingsWrap) pairSettingsWrap.style.display = pairMode ? "" : "none";
+    const targetSettingsWrap = document.getElementById("koolkidTargetProfitMartingaleSettings");
+    if (targetSettingsWrap) targetSettingsWrap.style.display = targetMode ? "" : "none";
     ["koolkidMartingaleAction", "koolkidMartingaleMode", "koolkidMartingaleStepAmount", "koolkidMartingaleMultiplier", "koolkidMartingaleMaxSteps", "koolkidMartingaleMaxStake", "koolkidMartingaleDoubleLimit", "koolkidMartingaleTickSpacing", "koolkidMartingaleStartStake"].forEach((id) => {
       const el = document.getElementById(id);
       if (el) el.disabled = pairMode;
+    });
+    ["koolkidMartingaleMode", "koolkidMartingaleStepAmount", "koolkidMartingaleMultiplier", "koolkidMartingaleMaxSteps", "koolkidMartingaleMaxStake", "koolkidMartingaleDoubleLimit"].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.disabled = pairMode || targetMode;
     });
     const pair = getOver3Under6PairStateKoolkid();
     const pairSettings = readOver3Under6PairSettingsKoolkid();
@@ -1385,6 +1445,17 @@
       const currentStake = koolkidSingleMartingaleStakeForStep();
       const nextStep = nextKoolkidLimitedMartingaleStep(st.step, settings);
       const nextStake = st.enabled ? koolkidSingleMartingaleStakeForStep(nextStep) : settings.startStake;
+      if (targetMode) {
+        const targetSettings = readKoolkidTargetProfitMartingaleSettings();
+        const targetState = getKoolkidTargetProfitMartingaleState(settings.action);
+        const current = Number(targetState.currentStake || settings.startStake);
+        const nextLoss = calculateNextKoolkidTargetProfitStake(Number(targetState.lossBank || 0) + current, targetSettings.targetProfit, targetSettings.payoutMultiplier);
+        const tpText = targetSettings.takeProfit > 0 ? `TP $${targetSettings.takeProfit.toFixed(2)}` : "TP off";
+        const slText = targetSettings.stopLoss > 0 ? `SL $${targetSettings.stopLoss.toFixed(2)}` : "SL off";
+        status.textContent = `${st.status}. ${settings.label} - Target $${targetSettings.targetProfit.toFixed(2)} - Current stake $${current.toFixed(2)} - If loss next $${nextLoss.toFixed(2)} - Bank $${Number(targetState.lossBank || 0).toFixed(2)} - Step ${targetState.step || 1} - Session P/L $${Number(targetState.sessionProfit || 0).toFixed(2)} - ${tpText} / ${slText} - Last result: ${targetState.lastResult || st.lastResult}`;
+        status.style.color = st.inProgress ? "#fbbf24" : "#94a3b8";
+        return;
+      }
       const modeLabel = settings.isPair ? `paired ${settings.multiplier}x` : (settings.mode === "STEP_005" ? `$${settings.stepAmount.toFixed(2)} step` : `${settings.multiplier}x`);
       const limitLabel = settings.doubleLimit > 0 ? ` - Limit ${settings.doubleLimit} double-up${settings.doubleLimit === 1 ? "" : "s"}` : "";
       const waitTotal = Math.max(1, Math.floor(Number(st.tickSpacing || settings.tickSpacing) || settings.tickSpacing));
@@ -1417,6 +1488,9 @@
     const st = getKoolkidSingleMartingaleState();
     st.action = normalizeKoolkidMartingaleAction(action).action;
     st.pairSteps = {};
+    if (isKoolkidTargetProfitMartingaleAction(st.action)) {
+      resetKoolkidTargetProfitMartingaleAction(st.action, readKoolkidSingleMartingaleSettings().startStake);
+    }
     st.status = "Ready";
     updateKoolkidSingleMartingalePanel();
   }
@@ -1436,6 +1510,10 @@
     st.enabled = false;
     st.over3Step = 1;
     st.pairSteps = {};
+    if (isKoolkidTargetProfitMartingaleAction(st.action)) {
+      resetKoolkidTargetProfitMartingaleAction(st.action, readKoolkidSingleMartingaleSettings().startStake);
+      getKoolkidTargetProfitMartingaleState(st.action).sessionProfit = 0;
+    }
     st.waitingForTicks = false;
     st.waitTicksRemaining = 0;
     clearKoolkidSingleMartingalePending();
@@ -1467,6 +1545,11 @@
       st.step = 1;
       st.over3Step = 1;
       st.pairSteps = {};
+      if (isKoolkidTargetProfitMartingaleAction(readKoolkidSingleMartingaleSettings().action)) {
+        const settings = readKoolkidSingleMartingaleSettings();
+        resetKoolkidTargetProfitMartingaleAction(settings.action, settings.startStake);
+        getKoolkidTargetProfitMartingaleState(settings.action).sessionProfit = 0;
+      }
       st.status = "Ready";
       st.lastResult = "none";
       st.stopRequested = false;
@@ -1622,7 +1705,13 @@
       updateKoolkidSingleMartingalePanel();
       return;
     }
-    const stake = st.enabled ? koolkidSingleMartingaleStakeForStep() : settings.startStake;
+    const targetState = settings.targetProfitMode ? getKoolkidTargetProfitMartingaleState(settings.action) : null;
+    if (settings.targetProfitMode && (!Number.isFinite(Number(targetState.currentStake)) || Number(targetState.currentStake) < 0.35)) {
+      resetKoolkidTargetProfitMartingaleAction(settings.action, settings.startStake);
+    }
+    const stake = settings.targetProfitMode
+      ? Number(Math.max(0.35, Number(targetState.currentStake || settings.startStake)).toFixed(2))
+      : (st.enabled ? koolkidSingleMartingaleStakeForStep() : settings.startStake);
     if (st.enabled && !opts.continuation) {
       st.running = true;
       st.stopRequested = false;
@@ -1688,7 +1777,7 @@
         barrier: settings.barrier,
         duration: settings.duration,
         duration_unit: "t",
-        mode: "koolkid_single_martingale",
+        mode: settings.targetProfitMode ? "koolkid_target_profit_martingale" : "koolkid_single_martingale",
         action: settings.action,
         label: settings.label,
       };
@@ -2001,7 +2090,50 @@
     if (!outcome) return;
 
     const wasMartingaleTrade = !!st.pendingMartingale;
+    const pendingStakeBeforeClear = Number(st.pendingStake || 0);
     clearKoolkidSingleMartingalePending();
+    const settings = readKoolkidSingleMartingaleSettings();
+    if (settings.targetProfitMode || isKoolkidTargetProfitMartingaleAction(action)) {
+      const targetAction = isKoolkidTargetProfitMartingaleAction(action) ? action : settings.action;
+      const targetSettings = readKoolkidTargetProfitMartingaleSettings();
+      const targetState = getKoolkidTargetProfitMartingaleState(targetAction);
+      const tradeStake = Number(payload.stake || payload.amount || pendingStakeBeforeClear || targetState.currentStake || settings.startStake);
+      const profit = Number(payload.profit ?? payload.pnl ?? payload.net_profit ?? (outcome === "WIN" ? (tradeStake * targetSettings.payoutMultiplier) : -tradeStake));
+      targetState.sessionProfit = Number((Number(targetState.sessionProfit || 0) + (Number.isFinite(profit) ? profit : 0)).toFixed(2));
+      if (outcome === "WIN") {
+        resetKoolkidTargetProfitMartingaleAction(targetAction, settings.startStake);
+        const freshState = getKoolkidTargetProfitMartingaleState(targetAction);
+        freshState.sessionProfit = targetState.sessionProfit;
+        freshState.lastResult = "WIN";
+        st.lastResult = "WIN";
+      } else {
+        targetState.lossBank = Number((Number(targetState.lossBank || 0) + Math.max(0.35, tradeStake)).toFixed(2));
+        targetState.step = Math.max(1, Math.floor(Number(targetState.step || 1))) + 1;
+        targetState.currentStake = calculateNextKoolkidTargetProfitStake(targetState.lossBank, targetSettings.targetProfit, targetSettings.payoutMultiplier);
+        targetState.lastResult = "LOSS";
+        st.lastResult = "LOSS";
+      }
+      const hitTp = targetSettings.takeProfit > 0 && Number(targetState.sessionProfit || 0) >= targetSettings.takeProfit;
+      const hitSl = targetSettings.stopLoss > 0 && Number(targetState.sessionProfit || 0) <= -Math.abs(targetSettings.stopLoss);
+      if (hitTp || hitSl) {
+        st.running = false;
+        st.enabled = false;
+        st.stopRequested = true;
+        st.waitingForTicks = false;
+        st.waitTicksRemaining = 0;
+        st.status = hitTp ? "TP reached" : "SL reached";
+        safeToast(hitTp ? `${settings.label} TP reached.` : `${settings.label} SL reached.`, hitTp ? "success" : "error");
+      } else if (wasMartingaleTrade && st.enabled && st.running && !st.stopRequested) {
+        st.tickSpacing = settings.tickSpacing;
+        st.waitTicksRemaining = settings.tickSpacing;
+        st.waitingForTicks = true;
+        st.status = `Waiting ${settings.tickSpacing} tick${settings.tickSpacing === 1 ? "" : "s"}`;
+      } else {
+        st.status = "Ready";
+      }
+      updateKoolkidSingleMartingalePanel();
+      return;
+    }
     if (outcome === "WIN") {
       st.step = 1;
       st.running = false;
@@ -2069,6 +2201,34 @@
   function getKoolkidBalancedRecoveryPairConfig() {
     const node = document.getElementById("koolkidBalancedRecoveryPairType");
     const key = String((node && node.value) || "UNDER3_OVER5").toUpperCase();
+    if (key === "OVER2_RECOVERY") {
+      return {
+        key: "OVER2_RECOVERY",
+        label: "Over 2",
+        single: { action: "OVER_2", type: "OVER", barrier: 2, label: "Over 2", multiplier: 0.43 },
+      };
+    }
+    if (key === "OVER3_RECOVERY") {
+      return {
+        key: "OVER3_RECOVERY",
+        label: "Over 3",
+        single: { action: "OVER_3", type: "OVER", barrier: 3, label: "Over 3", multiplier: 0.63 },
+      };
+    }
+    if (key === "UNDER6_RECOVERY") {
+      return {
+        key: "UNDER6_RECOVERY",
+        label: "Under 6",
+        single: { action: "UNDER_6", type: "UNDER", barrier: 6, label: "Under 6", multiplier: 0.63 },
+      };
+    }
+    if (key === "UNDER7_RECOVERY") {
+      return {
+        key: "UNDER7_RECOVERY",
+        label: "Under 7",
+        single: { action: "UNDER_7", type: "UNDER", barrier: 7, label: "Under 7", multiplier: 0.43 },
+      };
+    }
     if (key === "OVER5_UNDER4") {
       return {
         key: "OVER5_UNDER4",
@@ -2101,9 +2261,73 @@
       resetAfterWin: !resetEl || !!resetEl.checked,
       stopAtBudget: !stopEl || !!stopEl.checked,
       pair,
-      pu: pair.under.multiplier,
-      po: pair.over.multiplier,
+      isSingle: !!pair.single,
+      singleMultiplier: pair.single ? pair.single.multiplier : 0,
+      pu: pair.under ? pair.under.multiplier : 0,
+      po: pair.over ? pair.over.multiplier : 0,
     };
+  }
+
+  function isKoolkidBalancedRecoveryThinkingTrade(settings) {
+    const key = String(settings && settings.pair && settings.pair.key || "").toUpperCase();
+    return key === "OVER2_RECOVERY" || key === "OVER3_RECOVERY";
+  }
+
+  function syncKoolkidBalancedRecoveryThinkingUi() {
+    const st = getKoolkidBalancedRecoveryState();
+    const node = document.getElementById("koolkidBalancedRecoveryThinkingLogic");
+    if (node) node.checked = !!st.thinkingLogic;
+  }
+
+  function getKoolkidBalancedRecoveryThinkingSignal() {
+    const d = state.over3Analysis || {};
+    const settings = readKoolkidBalancedRecoverySettings();
+    if (!isKoolkidBalancedRecoveryThinkingTrade(settings)) {
+      return { ready: false, reason: "Thinking Logic only applies to Over 2 and Over 3.", key: "" };
+    }
+    if (!d || !d.symbol_ok) return { ready: false, reason: "Thinking: waiting for market ticks.", key: "" };
+    if (d.session_stopped) return { ready: false, reason: "Thinking: Over 3 analysis session is stopped.", key: "" };
+    if (d.trade_active) return { ready: false, reason: "Thinking: Over 3 analysis trade is active.", key: "" };
+    if (d.wait_fresh_setup) return { ready: false, reason: "Thinking: waiting for fresh setup reset.", key: "" };
+    if (d.loss_guard_blocked) return { ready: false, reason: String(d.loss_guard_reason || "Thinking: loss guard blocked this opening."), key: "" };
+    const high100 = Number(d.high_count_100 || 0);
+    const high10 = Number(d.high_count_10 || 0);
+    const streak = Number(d.current_high_streak || 0);
+    const key = [String(d.symbol || ""), high100, high10, streak, Number(d.total_trades || 0)].join("|");
+    if (d.entry_conditions_ready) {
+      return { ready: true, reason: "Thinking: opening found.", key };
+    }
+    return { ready: false, reason: `Thinking: scanning with Over 3 logic • H100 ${high100}/58 • H10 ${high10}/6 • Streak ${streak}/<6`, key };
+  }
+
+  async function ensureKoolkidBalancedRecoveryThinkingAnalysis() {
+    const st = getKoolkidBalancedRecoveryState();
+    if (st.thinkingAnalysisRequested) return;
+    st.thinkingAnalysisRequested = true;
+    try {
+      await postJSON("/set_over_analysis_barrier_koolkid", { barrier: 3, enable: false, analysis_only: true });
+    } catch (e) {}
+  }
+
+  function maybeRunKoolkidBalancedRecoveryThinking() {
+    const st = getKoolkidBalancedRecoveryState();
+    const settings = readKoolkidBalancedRecoverySettings();
+    if (!st.thinkingLogic || !isKoolkidBalancedRecoveryThinkingTrade(settings)) return;
+    if (!st.enabled || !st.running || st.stopRequested || st.inProgress || st.thinkingOpportunityActive === true) return;
+    const signal = getKoolkidBalancedRecoveryThinkingSignal();
+    if (!signal.ready) {
+      st.thinkingScanning = true;
+      st.status = signal.reason || "Thinking: scanning for opening.";
+      updateKoolkidBalancedRecoveryPanel();
+      return;
+    }
+    if (signal.key && signal.key === st.thinkingLastSignalKey) return;
+    st.thinkingLastSignalKey = signal.key || String(Date.now());
+    st.thinkingScanning = false;
+    st.thinkingOpportunityActive = true;
+    st.status = `Opening found: placing ${settings.pair.label}`;
+    updateKoolkidBalancedRecoveryPanel();
+    setTimeout(() => startKoolkidBalancedRecovery({ forceTrade: true }), 0);
   }
 
   function readKoolkidPairRecoverySettings() {
@@ -2132,6 +2356,10 @@
   function calculateKoolkidBalancedRecoveryStakes(lossAccumulated, targetProfit) {
     const settings = readKoolkidBalancedRecoverySettings();
     const need = Math.max(0, Number(lossAccumulated) || 0) + Math.max(0.01, Number(targetProfit) || settings.target);
+    if (settings.isSingle) {
+      const multiplier = Math.max(0.01, Number(settings.singleMultiplier || 0.63));
+      return { singleStake: ceilKoolkidStakeCents(need / multiplier), underStake: 0, overStake: 0 };
+    }
     const denominator = (settings.pu * settings.po) - 1;
     let underStake = (need * (settings.po + 1)) / denominator;
     let overStake = (need + underStake) / settings.po;
@@ -2149,7 +2377,7 @@
 
   function koolkidBalancedRecoveryCanAfford(stakes, settings) {
     const st = getKoolkidBalancedRecoveryState();
-    const total = Number(stakes.underStake || 0) + Number(stakes.overStake || 0);
+    const total = settings.isSingle ? Number(stakes.singleStake || 0) : (Number(stakes.underStake || 0) + Number(stakes.overStake || 0));
     const cycleSpend = Number(st.lossAccumulated || 0) + total;
     return !settings.stopAtBudget || cycleSpend <= Number(settings.budget || 0) + 1e-9;
   }
@@ -2198,6 +2426,7 @@
     if (panel) panel.style.display = "";
     const st = getKoolkidBalancedRecoveryState();
     const settings = readKoolkidBalancedRecoverySettings();
+    syncKoolkidBalancedRecoveryThinkingUi();
     const stakes = calculateKoolkidBalancedRecoveryStakes(st.lossAccumulated || 0, settings.target);
     st.underStake = stakes.underStake;
     st.overStake = stakes.overStake;
@@ -2205,15 +2434,43 @@
     if (startBtn) startBtn.disabled = !!st.inProgress;
     const statusEl = document.getElementById("koolkidBalancedRecoveryStatus");
     if (statusEl) {
-      const total = stakes.underStake + stakes.overStake;
+      const total = settings.isSingle ? Number(stakes.singleStake || 0) : (stakes.underStake + stakes.overStake);
       const budgetText = settings.stopAtBudget ? `Budget check $${(Number(st.lossAccumulated || 0) + total).toFixed(2)} / $${settings.budget.toFixed(2)}` : "Budget cap ignored";
+      const stakeLine = settings.isSingle
+        ? `${settings.pair.single.label} stake $${Number(stakes.singleStake || 0).toFixed(2)}`
+        : `${settings.pair.under.label} stake $${stakes.underStake.toFixed(2)} | ${settings.pair.over.label} stake $${stakes.overStake.toFixed(2)}`;
       statusEl.innerHTML = [
         `Status: ${st.status || "Ready"} | ${settings.pair.label} | Round ${Math.max(1, Number(st.round) || 1)} / ${settings.maxRounds}`,
-        `${settings.pair.under.label} stake $${stakes.underStake.toFixed(2)} | ${settings.pair.over.label} stake $${stakes.overStake.toFixed(2)}`,
-        `Cycle loss $${Number(st.lossAccumulated || 0).toFixed(2)} | Target profit $${settings.target.toFixed(2)} | Next total $${total.toFixed(2)}`,
-        `${budgetText} | Last result: ${st.lastResult || "none"}`,
+        stakeLine,
+        `Cycle loss $${Number(st.lossAccumulated || 0).toFixed(2)} | Target profit $${settings.target.toFixed(2)} | Session P/L $${Number(st.sessionProfit || 0).toFixed(2)} | Next total $${total.toFixed(2)}`,
+        `${budgetText} | Thinking ${st.thinkingLogic && isKoolkidBalancedRecoveryThinkingTrade(settings) ? "ON" : "OFF"} | Last result: ${st.lastResult || "none"}`,
       ].join("<br>");
     }
+  }
+
+  function readKoolkidBalancedRecoveryLimits() {
+    const tpNode = document.getElementById("tp");
+    const slNode = document.getElementById("sl");
+    const tp = Math.max(0, Number(tpNode && tpNode.value) || 0);
+    const sl = Math.max(0, Number(slNode && slNode.value) || 0);
+    return { tp, sl };
+  }
+
+  function koolkidBalancedRecoveryHitSessionLimit() {
+    const st = getKoolkidBalancedRecoveryState();
+    const limits = readKoolkidBalancedRecoveryLimits();
+    const pnl = Number(st.sessionProfit || 0);
+    if (limits.tp > 0 && pnl >= limits.tp) {
+      stopKoolkidBalancedRecovery("Stopped: TP reached.");
+      safeToast("Balanced Recovery TP reached.", "success");
+      return true;
+    }
+    if (limits.sl > 0 && pnl <= -Math.abs(limits.sl)) {
+      stopKoolkidBalancedRecovery("Stopped: SL reached.");
+      safeToast("Balanced Recovery SL reached.", "error");
+      return true;
+    }
+    return false;
   }
 
   function toggleKoolkidBalancedRecovery() {
@@ -2241,8 +2498,12 @@
     st.settled = 0;
     st.hasWin = false;
     st.totalProfit = 0;
+    st.sessionProfit = 0;
     st.lastResult = "none";
     st.status = st.enabled ? "Ready" : "Ready";
+    st.thinkingScanning = false;
+    st.thinkingOpportunityActive = false;
+    st.thinkingLastSignalKey = "";
     updateKoolkidBalancedRecoveryPanel();
   }
 
@@ -2259,15 +2520,21 @@
     st.settled = 0;
     st.hasWin = false;
     st.totalProfit = 0;
+    st.sessionProfit = 0;
     st.lastResult = "none";
     st.status = reason || "Stopped";
+    st.thinkingScanning = false;
+    st.thinkingOpportunityActive = false;
+    st.thinkingLastSignalKey = "";
     updateKoolkidBalancedRecoveryPanel();
   }
 
-  async function startKoolkidBalancedRecovery() {
+  async function startKoolkidBalancedRecovery(options) {
     const st = getKoolkidBalancedRecoveryState();
     const settings = readKoolkidBalancedRecoverySettings();
+    const opts = options || {};
     if (st.inProgress) return;
+    const freshStart = !st.enabled && !st.running;
     if (typeof apiConnected !== "undefined" && !apiConnected) {
       st.status = "Stopped: API disconnected";
       updateKoolkidBalancedRecoveryPanel();
@@ -2288,18 +2555,47 @@
     st.enabled = true;
     st.running = true;
     st.stopRequested = false;
+    if (freshStart) st.sessionProfit = 0;
+    if (st.thinkingLogic && isKoolkidBalancedRecoveryThinkingTrade(settings) && !opts.forceTrade && !st.thinkingOpportunityActive) {
+      st.thinkingScanning = true;
+      st.status = "Thinking: scanning for Over 3-style opening.";
+      ensureKoolkidBalancedRecoveryThinkingAnalysis();
+      updateKoolkidBalancedRecoveryPanel();
+      maybeRunKoolkidBalancedRecoveryThinking();
+      return;
+    }
     st.inProgress = true;
     st.batchId = `kbr_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
     st.pending = {};
     st.settled = 0;
     st.hasWin = false;
     st.totalProfit = 0;
-    st.underStake = stakes.underStake;
-    st.overStake = stakes.overStake;
+    st.underStake = stakes.underStake || 0;
+    st.overStake = stakes.overStake || 0;
+    st.singleStake = stakes.singleStake || 0;
     st.status = "Running";
     updateKoolkidBalancedRecoveryPanel();
     try {
       const common = { duration: settings.duration, duration_unit: "t", mode: "koolkid_balanced_recovery", batch_id: st.batchId };
+      if (settings.isSingle) {
+        const singlePayload = Object.assign({}, common, {
+          stake: stakes.singleStake,
+          amount: stakes.singleStake,
+          type: settings.pair.single.type,
+          barrier: settings.pair.single.barrier,
+          action: settings.pair.single.action,
+          label: `Balanced Recovery ${settings.pair.single.label} Round ${st.round}`,
+          pair_type: settings.pair.key,
+        });
+        const r = await sendFastManualTradeKoolkid(singlePayload, { turbo: false, queue: false, fireAndForget: false });
+        if (!(r && r.data && r.data.status === "success")) {
+          throw new Error((r && r.data && r.data.message) || "Balanced Recovery trade failed");
+        }
+        const id = r.data.contract_id || r.data.buy_contract_id || r.data.id;
+        if (id) st.pending[String(id)] = { side: settings.pair.single.action, label: settings.pair.single.label, stake: stakes.singleStake, outcome: "" };
+        safeToast(`Balanced Recovery ${settings.pair.single.label} sent at $${Number(stakes.singleStake || 0).toFixed(2)}`, "success");
+        return;
+      }
       const underPayload = Object.assign({}, common, {
         stake: stakes.underStake,
         amount: stakes.underStake,
@@ -2359,6 +2655,11 @@
     if (!id || st.pending[String(id)]) return;
     const action = String(payload.action || payload.label || "").toUpperCase();
     const settings = readKoolkidBalancedRecoverySettings();
+    if (settings.isSingle) {
+      st.pending[String(id)] = { side: settings.pair.single.action, label: settings.pair.single.label, stake: Number(payload.stake || payload.amount || st.singleStake || 0), outcome: "" };
+      updateKoolkidBalancedRecoveryPanel();
+      return;
+    }
     const isOver = action.includes("OVER");
     const side = isOver ? settings.pair.over.action : settings.pair.under.action;
     const label = isOver ? settings.pair.over.label : settings.pair.under.label;
@@ -2381,31 +2682,53 @@
     item.outcome = outcome;
     st.settled = Object.keys(st.pending || {}).filter((key) => st.pending[key] && st.pending[key].outcome).length;
     const profit = Number(payload.profit ?? payload.pnl ?? payload.net_profit);
-    if (Number.isFinite(profit)) st.totalProfit = Number((Number(st.totalProfit || 0) + profit).toFixed(2));
+    if (Number.isFinite(profit)) {
+      st.totalProfit = Number((Number(st.totalProfit || 0) + profit).toFixed(2));
+      st.sessionProfit = Number((Number(st.sessionProfit || 0) + profit).toFixed(2));
+    }
+    const settingsNow = readKoolkidBalancedRecoverySettings();
     if (outcome === "WIN") {
       st.hasWin = true;
       st.lastResult = `${item.label || item.side || "Side"} won`;
       st.status = "Won";
       st.inProgress = false;
-      st.running = false;
       st.pending = {};
-      if (readKoolkidBalancedRecoverySettings().resetAfterWin) {
+      const limits = readKoolkidBalancedRecoveryLimits();
+      const shouldKeepCycling = limits.tp > 0 || limits.sl > 0;
+      if (settingsNow.resetAfterWin || shouldKeepCycling) {
         st.round = 1;
         st.lossAccumulated = 0;
       }
       updateKoolkidBalancedRecoveryPanel();
       safeToast(`Balanced Recovery ${st.lastResult}. Cycle reset.`, "success");
+      if (koolkidBalancedRecoveryHitSessionLimit()) return;
+      if (st.thinkingLogic && isKoolkidBalancedRecoveryThinkingTrade(settingsNow)) {
+        st.thinkingOpportunityActive = false;
+        st.thinkingScanning = true;
+        st.status = "Won: reset, scanning again.";
+        updateKoolkidBalancedRecoveryPanel();
+        setTimeout(() => maybeRunKoolkidBalancedRecoveryThinking(), 120);
+      } else if (shouldKeepCycling && st.enabled && st.running && !st.stopRequested) {
+        setTimeout(() => startKoolkidBalancedRecovery(), 0);
+      } else {
+        st.running = false;
+        st.enabled = false;
+        st.stopRequested = false;
+        st.status = "Won";
+        updateKoolkidBalancedRecoveryPanel();
+      }
       return;
     }
     const pendingCount = Object.keys(st.pending || {}).length;
-    if (pendingCount >= 2 && st.settled >= 2 && !st.hasWin) {
-      const roundLoss = Number(st.underStake || 0) + Number(st.overStake || 0);
+    if (((settingsNow.isSingle && st.settled >= 1) || (pendingCount >= 2 && st.settled >= 2)) && !st.hasWin) {
+      const roundLoss = settingsNow.isSingle ? Number(st.singleStake || item.stake || 0) : (Number(st.underStake || 0) + Number(st.overStake || 0));
       st.lossAccumulated = Number((Number(st.lossAccumulated || 0) + roundLoss).toFixed(2));
       st.round = Math.max(1, Number(st.round) || 1) + 1;
-      st.lastResult = "Both lost";
+      st.lastResult = settingsNow.isSingle ? `${item.label || item.side || "Trade"} lost` : "Both lost";
       st.inProgress = false;
       st.pending = {};
-      const settings = readKoolkidBalancedRecoverySettings();
+      if (koolkidBalancedRecoveryHitSessionLimit()) return;
+      const settings = settingsNow;
       if (st.round > settings.maxRounds) {
         stopKoolkidBalancedRecovery("Stopped: max rounds reached.");
         safeToast("Balanced Recovery stopped: max rounds reached.", "error");
@@ -2417,13 +2740,14 @@
         safeToast("Balanced Recovery stopped: next round exceeds budget.", "error");
         return;
       }
-      st.status = "Running: firing next pair";
+      st.status = settings.isSingle ? "Running: firing next trade" : "Running: firing next pair";
       updateKoolkidBalancedRecoveryPanel();
       if (st.enabled && st.running && !st.stopRequested) {
-        setTimeout(() => startKoolkidBalancedRecovery(), 0);
+        setTimeout(() => startKoolkidBalancedRecovery(st.thinkingLogic && isKoolkidBalancedRecoveryThinkingTrade(settings) ? { forceTrade: true } : undefined), 0);
       }
     } else {
-      st.status = `Running: waiting for ${Math.max(0, 2 - st.settled)} result(s)`;
+      const expected = settingsNow.isSingle ? 1 : 2;
+      st.status = `Running: waiting for ${Math.max(0, expected - st.settled)} result(s)`;
       updateKoolkidBalancedRecoveryPanel();
     }
   }
@@ -2476,6 +2800,74 @@
     st.status = reason || "Stopped";
     updateKoolkidPairRecoveryPanel();
   }
+
+  function readKoolkidPairManualStake(id) {
+    const node = document.getElementById(id);
+    const value = Number(node && node.value);
+    if (!Number.isFinite(value) || value < 0.35) return 0.35;
+    return Number(value.toFixed(2));
+  }
+
+  window.placeKoolkidPairManualStakeTrade = async function () {
+    if (typeof apiConnected !== "undefined" && !apiConnected) {
+      safeToast("Connect your API first.", "error");
+      return;
+    }
+    const settings = readKoolkidPairRecoverySettings();
+    const underStake = readKoolkidPairManualStake("koolkidPairManualUnder2Stake");
+    const overStake = readKoolkidPairManualStake("koolkidPairManualOver3Stake");
+    const status = document.getElementById("koolkidPairManualStatus");
+    const btn = document.getElementById("koolkidPairManualPlaceBtn");
+    const symbol = typeof window.getConfirmedMarketSymbol === "function"
+      ? window.getConfirmedMarketSymbol()
+      : ((document.getElementById("symbol") || {}).value || "");
+    const batchId = `kpr_manual_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
+    const common = {
+      duration: settings.duration,
+      duration_unit: "t",
+      mode: "koolkid_pair_manual",
+      batch_id: batchId,
+      batch_size: 2,
+      symbol,
+    };
+    const underPayload = Object.assign({}, common, {
+      stake: underStake,
+      amount: underStake,
+      type: "UNDER",
+      barrier: 2,
+      action: "UNDER_2",
+      label: "KOOLKID Manual UNDER 2",
+    });
+    const overPayload = Object.assign({}, common, {
+      stake: overStake,
+      amount: overStake,
+      type: "OVER",
+      barrier: 3,
+      action: "OVER_3",
+      label: "KOOLKID Manual OVER 3",
+    });
+    try {
+      if (btn) btn.disabled = true;
+      if (status) status.innerText = "Sending Under 2 + Over 3 on the same tick...";
+      const app = App();
+      if (!(app && typeof app.sendFastProfileTradeBatch === "function")) throw new Error("Same-tick batch sender is not ready");
+      const result = await app.sendFastProfileTradeBatch(PROFILE, [
+        Object.assign({}, underPayload, { same_tick: true }),
+        Object.assign({}, overPayload, { same_tick: true }),
+      ], { turbo: false, useSocket: true, fireAndForget: false, skipMartha: true });
+      if (!(result && result.data && result.data.status === "success")) {
+        throw new Error((result && result.data && result.data.message) || "Manual KOOLKID pair failed");
+      }
+      if (status) status.innerText = `Sent Under 2 $${underStake.toFixed(2)} + Over 3 $${overStake.toFixed(2)} for ${settings.duration} tick${settings.duration === 1 ? "" : "s"}.`;
+      safeToast(`KOOLKID manual pair sent: U2 $${underStake.toFixed(2)} + O3 $${overStake.toFixed(2)}`, "success");
+    } catch (e) {
+      const msg = (e && e.message) || "Manual KOOLKID pair failed";
+      if (status) status.innerText = msg;
+      safeToast(msg, "error");
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  };
 
   async function startKoolkidPairRecovery() {
     const st = getKoolkidPairRecoveryState();
@@ -3561,6 +3953,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
 
   function renderOver3AnalysisKoolkid(data) {
     if (data && typeof data === "object") state.over3Analysis = data;
+    if (data && typeof data === "object") setTimeout(() => maybeRunKoolkidBalancedRecoveryThinking(), 0);
     const d = state.over3Analysis || {};
     const info = document.getElementById("over3AnalysisInfoKoolkid");
     const btn = document.getElementById("over3AnalysisBtnKoolkid");
@@ -4230,6 +4623,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
         maybeRunKoolkidOver6ScanMartingale(data || {}).catch(() => {});
         scheduleDigitAnalysisRenderKoolkid(data || {});
         maybeRunG1AutoKoolkid(data || {}).catch(() => {});
+        maybeRunKoolkidBalancedRecoveryThinking();
       });
 
       bind("golden_card_update", (data) => {
@@ -4246,6 +4640,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
         if (!isActive()) return;
         if (tick) maybeRunKoolkidOver6ScanMartingale(tick || {}).catch(() => {});
         onKoolkidSingleMartingaleTick();
+        maybeRunKoolkidBalancedRecoveryThinking();
       });
 
       bind("trade_placed", (trade) => {
@@ -4454,6 +4849,19 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
   window.startKoolkidBalancedRecovery = startKoolkidBalancedRecovery;
   window.stopKoolkidBalancedRecovery = stopKoolkidBalancedRecovery;
   window.resetKoolkidBalancedRecoveryCycle = resetKoolkidBalancedRecoveryCycle;
+  window.toggleKoolkidBalancedRecoveryThinkingLogic = function (enabled) {
+    const st = getKoolkidBalancedRecoveryState();
+    const settings = readKoolkidBalancedRecoverySettings();
+    st.thinkingLogic = !!enabled;
+    st.thinkingScanning = false;
+    st.thinkingOpportunityActive = false;
+    st.thinkingLastSignalKey = "";
+    st.status = st.thinkingLogic && isKoolkidBalancedRecoveryThinkingTrade(settings)
+      ? "Thinking Logic armed. Press START to scan."
+      : "Ready";
+    updateKoolkidBalancedRecoveryPanel();
+    safeToast(`Thinking Logic: ${st.thinkingLogic ? "ON" : "OFF"}`, st.thinkingLogic ? "success" : "error");
+  };
   window.openKoolkidPairRecoveryPopup = openKoolkidPairRecoveryPopup;
   window.closeKoolkidPairRecoveryPopup = closeKoolkidPairRecoveryPopup;
   window.updateKoolkidPairRecoveryPanel = updateKoolkidPairRecoveryPanel;
@@ -4884,6 +5292,52 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
     } else {
       safeToast((r.data && r.data.message) || "Kid2vix settings failed", "error");
     }
+  };
+
+  function renderProfitCalculatorResultsKoolkid(rows, status) {
+    const node = document.getElementById("profitCalculatorResultsKoolkid");
+    if (!node) return;
+    if (!rows || !rows.length) {
+      node.textContent = status || "No quote available.";
+      return;
+    }
+    node.innerHTML = rows.map((row) => {
+      if (row.error) {
+        return `<div style="padding:8px; border:1px solid #334155; border-radius:10px; margin-top:6px;"><strong>${row.label}</strong><br><span style="color:#fca5a5;">${row.error}</span></div>`;
+      }
+      return `<div style="padding:8px; border:1px solid #334155; border-radius:10px; margin-top:6px;"><strong>${row.label}</strong><br>Stake $${Number(row.stake || 0).toFixed(2)} - Profit $${Number(row.profit || 0).toFixed(2)} - Return $${Number(row.payout || 0).toFixed(2)}</div>`;
+    }).join("");
+  }
+
+  window.openProfitCalculatorKoolkid = function () {
+    const popup = document.getElementById("profitCalculatorPopupKoolkid");
+    const stake = document.getElementById("profitCalculatorStakeKoolkid");
+    const digit = document.getElementById("profitCalculatorDigitKoolkid");
+    if (stake) stake.value = String(getRawStakeValueKoolkid ? getRawStakeValueKoolkid() : 1);
+    if (digit) digit.value = String(Math.max(0, Math.min(9, parseInt((document.getElementById("barrier") || {}).value || "5", 10) || 5)));
+    renderProfitCalculatorResultsKoolkid([], "Choose a digit to preview Over/Under profit for the current market.");
+    if (popup) popup.style.display = "flex";
+  };
+
+  window.closeProfitCalculatorKoolkid = function () {
+    const popup = document.getElementById("profitCalculatorPopupKoolkid");
+    if (popup) popup.style.display = "none";
+  };
+
+  window.runProfitCalculatorKoolkid = async function () {
+    const stake = Math.max(0.35, Number((document.getElementById("profitCalculatorStakeKoolkid") || {}).value || 1) || 1);
+    const digit = Math.max(0, Math.min(9, parseInt((document.getElementById("profitCalculatorDigitKoolkid") || {}).value || "5", 10) || 5));
+    const symbol = typeof window.getConfirmedMarketSymbol === "function" ? window.getConfirmedMarketSymbol() : ((document.getElementById("symbol") || {}).value || "");
+    renderProfitCalculatorResultsKoolkid([], "Checking live proposal profit...");
+    const r = await postJSON("/profit_calculator_quote", {
+      profile: "KOOLKID",
+      symbol,
+      stake,
+      digit,
+      duration: getDurationTicksKoolkid(),
+      duration_unit: "t",
+    });
+    renderProfitCalculatorResultsKoolkid((r.data && r.data.quotes) || [], (r.data && r.data.message) || "Quote unavailable.");
   };
 
 

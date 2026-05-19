@@ -1169,6 +1169,98 @@ def _send_buy_from_proposal(client_id, state, req_id, proposal, stake):
     return True, "Trade sent"
 
 
+def _proposal_profit_value(proposal, stake):
+    proposal = proposal or {}
+    ask_price = _safe_float(proposal.get("ask_price"), _safe_float(proposal.get("display_value"), stake))
+    payout = _safe_float(proposal.get("payout"), None)
+    profit = _safe_float(proposal.get("profit"), None)
+    if profit is None and ask_price is not None and payout is not None:
+        profit = float(payout) - float(ask_price)
+    return profit
+
+
+def _request_min_profit_proposal_for_buy(client_id, state, base_payload, req_meta, *, stake, minimum_profit, retries=0, buy_best_available=False):
+    try:
+        min_profit = float(minimum_profit)
+    except Exception:
+        min_profit = 0.0
+    max_attempts = max(1, min(8, 1 + int(retries or 0)))
+    original_req_id = base_payload.get("req_id")
+    best_profit = None
+    best_response = None
+    best_req_id = None
+    last_error = None
+    for attempt in range(max_attempts):
+        req_id = original_req_id if attempt == 0 else _new_req_id()
+        payload = dict(base_payload or {})
+        payload["req_id"] = req_id
+        if req_id != original_req_id:
+            state.setdefault("req_meta", {})[req_id] = dict(req_meta or {})
+        proposal, err = _request_digit_proposal_for_buy(client_id, state, payload, timeout_sec=5.0)
+        if err:
+            last_error = err
+            if req_id != original_req_id:
+                try:
+                    state.get("req_meta", {}).pop(req_id, None)
+                except Exception:
+                    pass
+            break
+        profit = _proposal_profit_value(proposal, stake)
+        logger.info(
+            "[%s] matches_frenzy_profit_gate attempt=%s/%s proposal_profit=%s minimum_profit=%s proposal=%s",
+            client_id,
+            attempt + 1,
+            max_attempts,
+            None if profit is None else round(float(profit), 4),
+            round(float(min_profit), 4),
+            _safe_deriv_payload_text(proposal or {}),
+        )
+        if profit is not None and float(profit) + 1e-9 >= min_profit:
+            if best_req_id not in (None, req_id):
+                try:
+                    state.get("req_meta", {}).pop(best_req_id, None)
+                    state.get("req_meta", {}).pop(str(best_req_id), None)
+                except Exception:
+                    pass
+            if req_id != original_req_id:
+                try:
+                    state.get("req_meta", {}).pop(original_req_id, None)
+                    state.get("req_meta", {}).pop(str(original_req_id), None)
+                except Exception:
+                    pass
+            return req_id, proposal, None
+        if profit is not None and (best_profit is None or float(profit) > float(best_profit)):
+            if best_req_id not in (None, req_id):
+                try:
+                    state.get("req_meta", {}).pop(best_req_id, None)
+                    state.get("req_meta", {}).pop(str(best_req_id), None)
+                except Exception:
+                    pass
+            best_profit = profit
+            best_response = proposal
+            best_req_id = req_id
+        elif req_id != original_req_id:
+            try:
+                state.get("req_meta", {}).pop(req_id, None)
+            except Exception:
+                pass
+        if req_id != original_req_id:
+            pass
+    if buy_best_available and best_response:
+        logger.info(
+            "[%s] matches_frenzy_profit_gate_best_available selected_profit=%s target_profit=%s proposal=%s",
+            client_id,
+            None if best_profit is None else round(float(best_profit), 4),
+            round(float(min_profit), 4),
+            _safe_deriv_payload_text(best_response or {}),
+        )
+        return best_req_id or original_req_id, best_response, None
+    msg = f"Matches Frenzy skipped: proposal profit {float(best_profit or 0.0):.2f} below target {float(min_profit):.2f}"
+    if last_error and best_response is None:
+        msg = last_error
+    return None, best_response, msg
+
+
 def _execute_oauth_pat_trade_engine(trade_request, *, state, req_id, stake, duration, duration_unit):
     from deriv_engines.oauth_engine import OAuthDerivTradeEngine
     from deriv_engines.trade_intent import TradeIntent
@@ -1187,6 +1279,7 @@ def _execute_oauth_pat_trade_engine(trade_request, *, state, req_id, stake, dura
         "safe_payload": _safe_deriv_payload_text,
         "proposal_payload_for_connection": _proposal_payload_for_connection,
         "request_proposal": _request_digit_proposal_for_buy,
+        "new_req_id": _new_req_id,
         "debug_log": _deriv_trade_debug_log,
         "safe_float": _safe_float,
         "now_time": now_time,
@@ -1494,6 +1587,51 @@ def execute_deriv_trade(trade_request):
             _is_otp_authenticated_socket(state),
         )
         return True, "Trade sent"
+
+    if trade_request.get("minimum_profit") not in (None, ""):
+        proposal_payload = {"proposal": 1, "req_id": req_id, **parameters}
+        debug["proposal_payload"] = proposal_payload
+        debug["minimum_profit"] = trade_request.get("minimum_profit")
+        _deriv_trade_debug_log(client_id, "legacy_min_profit_proposal_send", debug)
+        proposal_req_id, proposal, proposal_err = _request_min_profit_proposal_for_buy(
+            client_id,
+            state,
+            proposal_payload,
+            req_meta,
+            stake=stake,
+            minimum_profit=trade_request.get("minimum_profit"),
+            retries=trade_request.get("minimum_profit_retries") or 0,
+            buy_best_available=bool(trade_request.get("buy_best_available")),
+        )
+        debug["proposal_response"] = proposal or {"error": proposal_err}
+        debug["proposal_profit"] = _proposal_profit_value(proposal, stake) if proposal else None
+        debug["proposal_id"] = (proposal or {}).get("id")
+        if proposal_err:
+            debug["error"] = proposal_err
+            debug["failed_at"] = "minimum_profit_filter"
+            _deriv_trade_debug_log(client_id, "legacy_min_profit_blocked", debug)
+            try:
+                state.get("req_meta", {}).pop(req_id, None)
+                state.get("req_meta", {}).pop(str(req_id), None)
+            except Exception:
+                pass
+            return False, proposal_err
+        buy_req_id = proposal_req_id or req_id
+        debug["buy_payload"] = {"req_id": buy_req_id, "buy": (proposal or {}).get("id")}
+        _deriv_trade_debug_log(client_id, "legacy_min_profit_buy_send", debug)
+        try:
+            return _send_buy_from_proposal(client_id, state, buy_req_id, proposal, stake)
+        except Exception as exc:
+            debug["error"] = str(exc)
+            debug["failed_at"] = "buy_send"
+            _deriv_trade_debug_log(client_id, "legacy_min_profit_buy_failed", debug)
+            _mark_ws_unhealthy_and_reconnect(client_id, state, "Deriv connection failed while sending a trade. Reconnecting now...")
+            try:
+                state.get("req_meta", {}).pop(buy_req_id, None)
+                state.get("req_meta", {}).pop(str(buy_req_id), None)
+            except Exception:
+                pass
+            return False, str(exc)
 
     debug["buy_payload"] = legacy_payload
     _deriv_trade_debug_log(client_id, "legacy_buy_send", debug)
@@ -2034,6 +2172,13 @@ def _db_create_auth_tables(conn):
             used_at TIMESTAMP NULL
         )
         """)
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS custom_ui_settings (
+            username TEXT PRIMARY KEY,
+            settings_json TEXT NOT NULL,
+            updated_at TIMESTAMP NOT NULL
+        )
+        """)
     else:
         c.execute("""
         CREATE TABLE IF NOT EXISTS licenses (
@@ -2054,6 +2199,13 @@ def _db_create_auth_tables(conn):
             created_at TEXT NOT NULL,
             expires_at TEXT NOT NULL,
             used_at TEXT
+        )
+        """)
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS custom_ui_settings (
+            username TEXT PRIMARY KEY,
+            settings_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
         )
         """)
 
@@ -4140,6 +4292,113 @@ def logout():
     return redirect(url_for("login"))
 
 
+def _empty_custom_ui_settings():
+    return {"hidden": []}
+
+
+def _normalize_custom_ui_key(value):
+    key = str(value or "").strip()
+    if not key or len(key) > 160:
+        return ""
+    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-:.")
+    if any(ch not in allowed for ch in key):
+        return ""
+    return key
+
+
+def _normalize_custom_ui_settings(payload):
+    data = payload if isinstance(payload, dict) else {}
+    hidden = []
+    seen = set()
+    for item in data.get("hidden") or []:
+        key = _normalize_custom_ui_key(item)
+        if key and key not in seen:
+            hidden.append(key)
+            seen.add(key)
+    return {"hidden": hidden[:500]}
+
+
+def _get_custom_ui_settings_for_user(username):
+    user = str(username or "").strip()
+    if not user:
+        return _empty_custom_ui_settings()
+    conn = _db_connect(row_factory=True)
+    c = conn.cursor()
+    try:
+        _db_execute(c, "SELECT settings_json FROM custom_ui_settings WHERE lower(username)=lower(?)", (user,))
+        row = _db_fetchone(c)
+        if not row:
+            return _empty_custom_ui_settings()
+        raw = row["settings_json"] if not _db_is_postgres() else row[0]
+        return _normalize_custom_ui_settings(json.loads(raw or "{}"))
+    except Exception:
+        logger.exception("Failed to load custom UI settings for %s", user)
+        return _empty_custom_ui_settings()
+    finally:
+        conn.close()
+
+
+def _save_custom_ui_settings_for_user(username, settings):
+    user = str(username or "").strip()
+    if not user:
+        return False
+    safe = _normalize_custom_ui_settings(settings)
+    raw = json.dumps(safe, separators=(",", ":"))
+    now_s = _utc_now_str()
+    conn = _db_connect()
+    c = conn.cursor()
+    try:
+        if _db_is_postgres():
+            _db_execute(
+                c,
+                """
+                INSERT INTO custom_ui_settings (username, settings_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT (username) DO UPDATE
+                SET settings_json=EXCLUDED.settings_json, updated_at=EXCLUDED.updated_at
+                """,
+                (user, raw, now_s),
+            )
+        else:
+            _db_execute(
+                c,
+                """
+                INSERT INTO custom_ui_settings (username, settings_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(username) DO UPDATE SET settings_json=excluded.settings_json, updated_at=excluded.updated_at
+                """,
+                (user, raw, now_s),
+            )
+        _db_commit(conn)
+        return True
+    finally:
+        conn.close()
+
+
+@app.route("/custom_ui_settings", methods=["GET", "POST"])
+def custom_ui_settings_route():
+    if not login_required():
+        return jsonify({"status": "error", "message": "Unauthorized"}), 403
+    username = session.get("user")
+    if request.method == "GET":
+        return jsonify({"status": "success", "settings": _get_custom_ui_settings_for_user(username)})
+    payload = request.get_json(silent=True) or {}
+    settings = _normalize_custom_ui_settings(payload.get("settings") if "settings" in payload else payload)
+    if not _save_custom_ui_settings_for_user(username, settings):
+        return jsonify({"status": "error", "message": "Could not save custom UI settings"}), 400
+    return jsonify({"status": "success", "settings": settings})
+
+
+@app.route("/custom_ui_reset", methods=["POST"])
+def custom_ui_reset_route():
+    if not login_required():
+        return jsonify({"status": "error", "message": "Unauthorized"}), 403
+    settings = _empty_custom_ui_settings()
+    if not _save_custom_ui_settings_for_user(session.get("user"), settings):
+        return jsonify({"status": "error", "message": "Could not reset custom UI settings"}), 400
+    return jsonify({"status": "success", "settings": settings})
+
+
 @app.route("/admin")
 def admin_panel():
     if not login_required():
@@ -4356,7 +4615,7 @@ def _trade_extra_meta_from_payload(data, *, leg_action=None):
         extra["leg_action"] = str(leg).strip()
     if payload.get("hide_from_history") is not None:
         extra["hide_from_history"] = bool(payload.get("hide_from_history"))
-    for key in ("batch_id", "batch_label", "batch_stake", "batch_size", "round_number", "strategy_name", "over3_stake", "under6_stake"):
+    for key in ("batch_id", "batch_label", "batch_stake", "batch_size", "round_number", "strategy_name", "over3_stake", "under6_stake", "minimum_profit", "minimum_profit_retries", "buy_best_available"):
         value = payload.get(key)
         if value not in (None, ""):
             extra[key] = value
@@ -4411,6 +4670,9 @@ def _handle_fast_profile_trade_payload(client_id, state, payload, *, emit_balanc
         "mode": mode,
         "emit_balance_after_send": bool(emit_balance_after_send),
     }
+    for key in ("minimum_profit", "minimum_profit_retries", "buy_best_available"):
+        if payload.get(key) not in (None, ""):
+            send_kwargs[key] = payload.get(key)
     extra_meta = _trade_extra_meta_from_payload(payload, leg_action=leg_action)
     if extra_meta:
         send_kwargs["extra_meta"] = extra_meta
@@ -4904,7 +5166,7 @@ def _sanitize_trade_duration_for_unit(duration, duration_unit, default=1):
     return max(1, min(max_duration, value))
 
 
-def send_buy(client_id, contract_type, stake, symbol, barrier, duration=1, duration_unit="t", mode=None, extra_meta=None):
+def send_buy(client_id, contract_type, stake, symbol, barrier, duration=1, duration_unit="t", mode=None, extra_meta=None, minimum_profit=None, minimum_profit_retries=0, buy_best_available=False):
     state = clients.get(client_id)
     _log_trade_path(client_id, "send_buy_received", state, contract_type=contract_type, symbol=symbol, barrier=barrier)
     ready, ready_msg = _ensure_trade_socket_ready(client_id, state)
@@ -4998,6 +5260,16 @@ def send_buy(client_id, contract_type, stake, symbol, barrier, duration=1, durat
     }
     if isinstance(extra_meta, dict):
         state["req_meta"][req_id].update(extra_meta)
+    if minimum_profit not in (None, ""):
+        try:
+            state["req_meta"][req_id]["minimum_profit"] = float(minimum_profit)
+        except Exception:
+            pass
+    if minimum_profit_retries not in (None, ""):
+        try:
+            state["req_meta"][req_id]["minimum_profit_retries"] = int(minimum_profit_retries)
+        except Exception:
+            pass
     _stamp_trade_latency(state["req_meta"][req_id], "buy_send")
 
     ok, msg = execute_deriv_trade({
@@ -5015,6 +5287,9 @@ def send_buy(client_id, contract_type, stake, symbol, barrier, duration=1, durat
         "mode": mode,
         "budget_reservation": budget_reservation,
         "req_meta": state["req_meta"].get(req_id, {}),
+        "minimum_profit": minimum_profit,
+        "minimum_profit_retries": minimum_profit_retries,
+        "buy_best_available": bool(buy_best_available),
     })
     if not ok:
         try:
@@ -5039,6 +5314,9 @@ def send_buy_with_profile(
     skip_local_balance_check=False,
     emit_balance_after_send=True,
     extra_meta=None,
+    minimum_profit=None,
+    minimum_profit_retries=0,
+    buy_best_available=False,
 ):
     state = clients.get(client_id)
     _log_trade_path(client_id, "send_buy_with_profile_received", state, profile=profile, contract_type=contract_type, symbol=symbol, barrier=barrier)
@@ -5140,6 +5418,16 @@ def send_buy_with_profile(
     }
     if isinstance(extra_meta, dict):
         state["req_meta"][req_id].update(extra_meta)
+    if minimum_profit not in (None, ""):
+        try:
+            state["req_meta"][req_id]["minimum_profit"] = float(minimum_profit)
+        except Exception:
+            pass
+    if minimum_profit_retries not in (None, ""):
+        try:
+            state["req_meta"][req_id]["minimum_profit_retries"] = int(minimum_profit_retries)
+        except Exception:
+            pass
     _stamp_trade_latency(state["req_meta"][req_id], "buy_send")
 
     ok, msg = execute_deriv_trade({
@@ -5157,6 +5445,9 @@ def send_buy_with_profile(
         "mode": mode,
         "budget_reservation": budget_reservation,
         "req_meta": state["req_meta"].get(req_id, {}),
+        "minimum_profit": minimum_profit,
+        "minimum_profit_retries": minimum_profit_retries,
+        "buy_best_available": bool(buy_best_available),
     })
     if not ok:
         try:
@@ -8198,6 +8489,11 @@ def _request_digit_proposal_quote(state, *, contract_type, stake, symbol, barrie
     contract_map = {
         "OVER": "DIGITOVER",
         "UNDER": "DIGITUNDER",
+        "MATCH": "DIGITMATCH",
+        "MATCHES": "DIGITMATCH",
+        "DIFFER": "DIGITDIFF",
+        "DIFFERS": "DIGITDIFF",
+        "DIFF": "DIGITDIFF",
     }
     safe_type = str(contract_type or "").upper().strip()
     deriv_type = contract_map.get(safe_type)
@@ -8309,6 +8605,73 @@ def _request_digit_proposal_quote(state, *, contract_type, stake, symbol, barrie
         "contract_type": deriv_type,
         "symbol": symbol,
     }, None
+
+
+@app.route("/profit_calculator_quote", methods=["POST"])
+def profit_calculator_quote_route():
+    if not login_required():
+        return jsonify({"status": "error", "message": "Unauthorized"}), 403
+    cid, state = get_client_state()
+    data = request.json or {}
+    profile = str(data.get("profile") or "").strip().upper()
+    symbol = str(data.get("symbol") or state.get("current_symbol") or "R_25").strip() or "R_25"
+    stake = max(0.35, _safe_float(data.get("stake"), 1.0) or 1.0)
+    duration = _sanitize_digit_trade_duration(data.get("duration", 1))
+    duration_unit = str(data.get("duration_unit") or "t").strip().lower() or "t"
+    try:
+        digit = int(data.get("digit", 5))
+    except Exception:
+        digit = 5
+    digit = max(0, min(9, digit))
+
+    if profile == "JOKERJOE":
+        quote_specs = [
+            ("MATCHES", f"Matches {digit}", digit),
+            ("DIFFERS", f"Differs {digit}", digit),
+        ]
+    else:
+        quote_specs = []
+        if digit <= 8:
+            quote_specs.append(("OVER", f"Over {digit}", digit))
+        if digit >= 1:
+            quote_specs.append(("UNDER", f"Under {digit}", digit))
+
+    quotes = []
+    for contract_type, label, barrier in quote_specs:
+        quote, err = _request_digit_proposal_quote(
+            state,
+            contract_type=contract_type,
+            stake=stake,
+            symbol=symbol,
+            barrier=barrier,
+            duration=duration,
+            duration_unit=duration_unit,
+            timeout_sec=1.2,
+        )
+        row = {
+            "label": label,
+            "contract_type": contract_type,
+            "digit": digit,
+            "stake": round(float(stake), 2),
+            "duration": duration,
+            "duration_unit": duration_unit,
+        }
+        if err:
+            row["error"] = err
+        else:
+            row.update({
+                "ask_price": quote.get("ask_price"),
+                "payout": quote.get("payout"),
+                "profit": quote.get("profit"),
+                "symbol": quote.get("symbol"),
+            })
+        quotes.append(row)
+
+    if not quotes:
+        return jsonify({"status": "error", "message": "No valid digit quote is available for that selection.", "quotes": []}), 400
+    if all(row.get("error") for row in quotes):
+        return jsonify({"status": "error", "message": "Profit quote unavailable", "quotes": quotes}), 400
+    return jsonify({"status": "success", "quotes": quotes})
 
 
 def _calculate_koolkid_pair_recovery_stakes(loss_accumulated, target_profit, under_multiplier, over_multiplier):
@@ -21396,6 +21759,9 @@ def manual_trade():
         duration_unit=duration_unit,
         mode=data.get("mode") or data.get("source"),
         extra_meta=_trade_extra_meta_from_payload(data),
+        minimum_profit=data.get("minimum_profit"),
+        minimum_profit_retries=data.get("minimum_profit_retries") or 0,
+        buy_best_available=bool(data.get("buy_best_available")),
     )
     return jsonify({"status": "success" if ok else "error", "message": msg})
 
