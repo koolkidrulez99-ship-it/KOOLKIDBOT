@@ -1,0 +1,137 @@
+<style>
+#cloudProfilePanel{width:100%;}
+#cloudProfilePanel *{box-sizing:border-box;}
+#cloudProfilePanel .cloud-shell{display:grid;grid-template-columns:minmax(0,1.08fr) minmax(320px,.92fr);gap:14px;align-items:start;}
+#cloudProfilePanel .cloud-panel{border:1px solid rgba(103,232,249,.22);background:linear-gradient(180deg,rgba(15,23,42,.98),rgba(2,6,23,.96));border-radius:14px;padding:14px;box-shadow:0 16px 42px rgba(8,145,178,.12);}
+#cloudProfilePanel .cloud-hero{position:relative;overflow:hidden;border-color:rgba(250,204,21,.32);background:linear-gradient(135deg,#020617 0%,#0f172a 42%,#164e63 100%);}
+#cloudProfilePanel .cloud-kicker{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:#67e8f9;font-weight:900;}
+#cloudProfilePanel .cloud-title{margin:4px 0 0;font-size:clamp(22px,3.8vw,34px);line-height:1;color:#f8fafc;}
+#cloudProfilePanel .cloud-sub{margin:8px 0 0;color:#cbd5e1;font-size:13px;line-height:1.45;max-width:760px;}
+#cloudProfilePanel .cloud-badges{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;}
+#cloudProfilePanel .cloud-badge{border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.06);color:#e2e8f0;border-radius:999px;padding:7px 10px;font-size:12px;font-weight:800;}
+#cloudProfilePanel .cloud-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:14px;}
+#cloudProfilePanel .cloud-metric{border:1px solid rgba(148,163,184,.24);background:rgba(15,23,42,.78);border-radius:10px;padding:10px;min-width:0;}
+#cloudProfilePanel .cloud-metric span{display:block;color:#94a3b8;font-size:11px;text-transform:uppercase;letter-spacing:.08em;}
+#cloudProfilePanel .cloud-metric strong{display:block;color:#f8fafc;font-size:20px;margin-top:4px;overflow-wrap:anywhere;}
+#cloudProfilePanel .cloud-settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;}
+#cloudProfilePanel label{display:flex;flex-direction:column;gap:5px;color:#cbd5e1;font-size:12px;font-weight:800;}
+#cloudProfilePanel input,#cloudProfilePanel textarea,#cloudProfilePanel select{width:100%;border:1px solid #334155;background:#020617;color:#e2e8f0;border-radius:10px;padding:10px;min-height:40px;}
+#cloudProfilePanel textarea{min-height:78px;resize:vertical;}
+#cloudProfilePanel .cloud-toggle-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px;}
+#cloudProfilePanel .cloud-check{display:flex;flex-direction:row;align-items:center;justify-content:space-between;gap:10px;border:1px solid rgba(148,163,184,.24);background:rgba(15,23,42,.78);border-radius:10px;padding:10px;}
+#cloudProfilePanel .cloud-check input{width:auto;min-height:0;}
+#cloudProfilePanel .cloud-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px;}
+#cloudProfilePanel button{border:0;border-radius:10px;min-height:42px;font-weight:900;cursor:pointer;}
+#cloudProfilePanel .cloud-start{background:linear-gradient(135deg,#22c55e,#67e8f9);color:#052e16;}
+#cloudProfilePanel .cloud-stop{background:linear-gradient(135deg,#7f1d1d,#ef4444);color:#fff;}
+#cloudProfilePanel .cloud-save{background:#0ea5e9;color:#e0f2fe;}
+#cloudProfilePanel .cloud-history-stats{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-top:12px;}
+#cloudProfilePanel .cloud-history-stats>div{background:#0f172a;border:1px solid #334155;border-radius:10px;padding:10px;text-align:center;}
+#cloudProfilePanel #profileTradeList{height:330px;overflow-y:auto;margin-top:12px;padding-right:6px;}
+#cloudProfilePanel .cloud-log{font-size:12px;color:#94a3b8;line-height:1.45;max-height:220px;overflow:auto;border:1px solid rgba(148,163,184,.2);border-radius:10px;padding:10px;background:rgba(2,6,23,.7);}
+#cloudProfilePanel .cloud-budget-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;}
+#cloudProfilePanel .ui-group{background:#0f172a;border:1px solid #334155;border-radius:10px;overflow:hidden;}
+#cloudProfilePanel .ui-group summary{cursor:pointer;list-style:none;padding:10px 12px;font-weight:900;color:#e2e8f0;display:flex;justify-content:space-between;}
+#cloudProfilePanel .ui-group summary::-webkit-details-marker{display:none;}
+#cloudProfilePanel .ui-group-body{padding:10px;}
+@media(max-width:900px){
+  #cloudProfilePanel .cloud-shell{grid-template-columns:1fr;}
+  #cloudProfilePanel .cloud-grid,#cloudProfilePanel .cloud-settings-grid,#cloudProfilePanel .cloud-history-stats{grid-template-columns:repeat(2,minmax(0,1fr));}
+}
+@media(max-width:520px){
+  #cloudProfilePanel .cloud-grid,#cloudProfilePanel .cloud-settings-grid,#cloudProfilePanel .cloud-toggle-row,#cloudProfilePanel .cloud-actions,#cloudProfilePanel .cloud-history-stats{grid-template-columns:1fr;}
+}
+</style>
+
+<div id="cloudProfilePanel">
+  <div class="cloud-shell">
+    <section class="cloud-panel cloud-hero">
+      <div class="cloud-kicker">Cloud Trading Engine</div>
+      <h2 class="cloud-title">Under 9 Reinvest</h2>
+      <p class="cloud-sub">Scans every configured volatility and jump market for a low digit-9 setup, places exactly one Under 9 trade on a fresh 9,9 signal, and keeps running from the verified API token session.</p>
+      <div class="cloud-badges">
+        <span class="cloud-badge" id="cloudRunningBadge">Stopped</span>
+        <span class="cloud-badge" id="cloudTokenBadge">Token not verified</span>
+        <span class="cloud-badge">One trade lock</span>
+        <span class="cloud-badge">100% profit reinvest</span>
+      </div>
+      <div class="cloud-grid">
+        <div class="cloud-metric"><span>Market</span><strong id="cloudCurrentMarket">R_10</strong></div>
+        <div class="cloud-metric"><span>Current Stake</span><strong id="cloudCurrentStake">$0.00</strong></div>
+        <div class="cloud-metric"><span>Session Profit</span><strong id="cloudSessionProfit">$0.00</strong></div>
+        <div class="cloud-metric"><span>TP Progress</span><strong id="cloudTpProgress">0%</strong></div>
+        <div class="cloud-metric"><span>Reinvest Step</span><strong id="cloudReinvestStep">0/5</strong></div>
+        <div class="cloud-metric"><span>Digit 9</span><strong id="cloudDigit9Pct">0%</strong></div>
+      </div>
+      <div class="cloud-log" id="cloudStatusText" style="margin-top:12px;">Cloud status loading...</div>
+    </section>
+
+    <section class="cloud-panel">
+      <div class="cloud-kicker">Settings</div>
+      <div class="cloud-settings-grid" style="margin-top:10px;">
+        <label>Base Stake <input id="cloudBaseStake" type="number" min="0.35" step="0.01" value="1"></label>
+        <label>TP Target <input id="cloudTpTarget" type="number" min="0.01" step="0.01" value="50"></label>
+        <label>Max Reinvest Steps <input id="cloudMaxReinvestSteps" type="number" min="1" step="1" value="5"></label>
+        <label>Duration Ticks <input id="cloudDuration" type="number" min="1" max="10" step="1" value="1"></label>
+        <label>Market Switch Minutes <input id="cloudMarketSwitchMinutes" type="number" min="1" step="1" value="10"></label>
+        <label>Low Balance Stop <input id="cloudLowBalanceStop" type="number" min="0" step="0.01" value="0"></label>
+        <label>Max Daily Loss <input id="cloudMaxDailyLoss" type="number" min="0" step="0.01" value="0"></label>
+        <label>Max Trades Per Session <input id="cloudMaxTrades" type="number" min="0" step="1" value="0"></label>
+      </div>
+      <label style="margin-top:10px;">Allowed Markets
+        <textarea id="cloudAllowedMarkets">R_10,R_25,R_50,R_75,R_100,1HZ10V,1HZ25V,1HZ50V,1HZ75V,1HZ100V,JD10,JD25,JD50,JD75,JD100</textarea>
+      </label>
+      <div class="cloud-toggle-row">
+        <label class="cloud-check">Capital Build Mode <input id="cloudCapitalBuildMode" type="checkbox"></label>
+        <label class="cloud-check">Telegram Alerts <input id="cloudTelegramAlerts" type="checkbox"></label>
+        <label class="cloud-check">WhatsApp Alerts <input id="cloudWhatsappAlerts" type="checkbox"></label>
+        <label class="cloud-check">Allow Auto Resume <input id="cloudAllowAutoResume" type="checkbox"></label>
+      </div>
+      <details class="ui-group" style="margin-top:10px;">
+        <summary>Backup Thinking Thresholds</summary>
+        <div class="ui-group-body">
+          <div class="cloud-settings-grid">
+            <label>Max 9s Last 5 <input id="cloudMax9Last5" type="number" min="0" step="1" value="2"></label>
+            <label>Max 9s Last 10 <input id="cloudMax9Last10" type="number" min="0" step="1" value="2"></label>
+            <label>Max 9s Last 20 <input id="cloudMax9Last20" type="number" min="0" step="1" value="4"></label>
+            <label>9,9 Cooldown Sec <input id="cloudStreakCooldown" type="number" min="0" step="1" value="20"></label>
+          </div>
+        </div>
+      </details>
+      <div class="cloud-actions">
+        <button class="cloud-start" type="button" onclick="startCloudUnder9()">Start Cloud Bot</button>
+        <button class="cloud-stop" type="button" onclick="stopCloudUnder9()">Stop Cloud Bot</button>
+      </div>
+      <button class="cloud-save" type="button" onclick="saveCloudUnder9Settings()" style="width:100%;margin-top:10px;">Save Cloud Settings</button>
+    </section>
+  </div>
+
+  <section class="cloud-panel" style="margin-top:14px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+      <div>
+        <div class="cloud-kicker">Cloud Controls</div>
+        <h3 style="margin:4px 0 0;color:#e2e8f0;">Session Guardrails</h3>
+      </div>
+      <div class="cloud-budget-row">
+        <input id="cloudBudget" data-draft-ignore="1" type="number" min="0" step="0.01" placeholder="Budget cap">
+        <button type="button" onclick="saveProfileBudget('CLOUD')" style="background:#0ea5e9;color:#e0f2fe;padding:0 14px;">Set Budget</button>
+      </div>
+    </div>
+    <div id="cloudDecisionLog" class="cloud-log" style="margin-top:12px;">Decision log will appear here.</div>
+  </section>
+
+  <section class="cloud-panel" style="margin-top:14px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+      <h3 style="margin:0;color:#f8fafc;">Cloud Trade History</h3>
+      <button onclick="clearProfileHistory()" style="background:#334155;color:#e2e8f0;padding:8px 12px;">Clear</button>
+    </div>
+    <div class="cloud-history-stats">
+      <div data-history-filter-card="ALL" onclick="toggleTradeHistoryFilter('ALL')" role="button" tabindex="0"><div style="color:#94a3b8;font-size:12px;">Total</div><div id="profileTotalTrades" style="font-size:22px;font-weight:bold;">0</div></div>
+      <div data-history-filter-card="WIN" onclick="toggleTradeHistoryFilter('WIN')" role="button" tabindex="0"><div style="color:#94a3b8;font-size:12px;">Wins</div><div id="profileWins" style="font-size:22px;font-weight:bold;color:#22c55e;">0</div></div>
+      <div data-history-filter-card="LOSS" onclick="toggleTradeHistoryFilter('LOSS')" role="button" tabindex="0"><div style="color:#94a3b8;font-size:12px;">Losses</div><div id="profileLosses" style="font-size:22px;font-weight:bold;color:#ef4444;">0</div></div>
+      <div><div style="color:#94a3b8;font-size:12px;">Win Rate</div><div id="profileWinRate" style="font-size:22px;font-weight:bold;">0%</div><div style="font-size:12px;color:#94a3b8;margin-top:4px;">Loss: <span id="profileLossRate">0%</span></div></div>
+      <div><div style="color:#94a3b8;font-size:12px;">Net P/L</div><div id="profileNetProfitLoss" style="font-size:1rem;color:#e2e8f0;">0.00</div></div>
+    </div>
+    <div id="profileTradeList"></div>
+  </section>
+</div>

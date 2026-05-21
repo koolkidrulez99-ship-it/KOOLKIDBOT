@@ -385,6 +385,7 @@ input, select{
 .human-btn{background:#22c55e; box-shadow:0 0 20px #22c55e;}
 .unchain-btn{background:#f59e0b; box-shadow:0 0 20px #f59e0b; color:#111827;}
 .ntt-btn{background:#14b8a6; box-shadow:0 0 20px #14b8a6; color:#ecfeff;}
+.cloud-btn{background:linear-gradient(135deg,#0f172a,#0891b2 55%,#facc15); box-shadow:0 0 20px rgba(103,232,249,.55); color:#ecfeff;}
 .profile-btn.active{transform:scale(1.05); border:2px solid white;}
 .profile-btn:not(.active){opacity:0.7;}
 
@@ -1303,6 +1304,7 @@ body.mobile-only-ui #profileContainer .unchain-history-grid{
         <button id="humanBtn" class="profile-btn human-btn" onclick="setProfile('HUMAN')" {% if license_context and license_context.human_profile_blocked %}style="display:none;" disabled aria-hidden="true"{% endif %}>🧑 HUMAN</button>
         <button id="unchainBtn" class="profile-btn unchain-btn" onclick="setProfile('UNCHAIN')">⛓️ UNCHAIN</button>
         <button id="nttBtn" class="profile-btn ntt-btn" onclick="setProfile('NTT')">🎯 Mutant</button>
+        <button id="cloudBtn" class="profile-btn cloud-btn" onclick="setProfile('CLOUD')" {% if license_context and not license_context.is_full_access and not license_context.is_lifetime %}title="Cloud Trading is available for lifetime users only." data-license-locked="1" style="opacity:.58;"{% endif %}>☁️ CLOUD TRADING</button>
 
         <h4 id="profileTitle" style="margin-top:10px; color:#38bdf8;">KOOLKID MODE: OVER & UNDER</h4>
     </div>
@@ -1534,6 +1536,13 @@ function isHumanProfileBlockedByLicense(){
 }
 
 window.BotApp.isHumanProfileBlockedByLicense = isHumanProfileBlockedByLicense;
+
+function isCloudProfileBlockedByLicense(){
+    const ctx = window.LICENSE_CONTEXT || {};
+    return !(ctx.is_full_access || ctx.is_lifetime || String(ctx.access || "").toLowerCase() === "admin");
+}
+
+window.BotApp.isCloudProfileBlockedByLicense = isCloudProfileBlockedByLicense;
 
 function isMutantAvailable(){
     return !!(window.MUTANT_ACCESS && window.MUTANT_ACCESS.enabled);
@@ -2815,6 +2824,7 @@ const PROFILE_BUDGET_INPUT_IDS = {
     HUMAN: "humanBudget",
     UNCHAIN: "unchainBudget",
     NTT: "nttBudget",
+    CLOUD: "cloudBudget",
 };
 
 function normalizeProfileBudgetKey(profile){
@@ -5316,6 +5326,7 @@ function getProfileComponentFile(profile){
     if(p === "HUMAN") return "human.html";
     if(p === "UNCHAIN") return "unchain.html";
     if(p === "NTT") return "mutant.html";
+    if(p === "CLOUD") return "cloud.html";
     return "koolkid.html";
 }
 
@@ -5326,6 +5337,7 @@ function getProfileModuleScriptPath(profile){
     if(p === "HUMAN") return "/static/js/profiles/human.js";
     if(p === "UNCHAIN") return "/static/js/profiles/unchain.js";
     if(p === "NTT" && isMutantAvailable()) return "/static/js/profiles/mutant.js";
+    if(p === "CLOUD") return "/static/js/profiles/cloud.js";
     return "";
 }
 
@@ -5373,7 +5385,7 @@ function scheduleProfileAssetPrefetch(){
     __profileAssetsPrefetchStarted = true;
     const run = () => {
         try{
-            ["KOOLKID", "JOKERJOE", "HUMAN", "UNCHAIN", "NTT"].forEach((profile) => {
+            ["KOOLKID", "JOKERJOE", "HUMAN", "UNCHAIN", "NTT", "CLOUD"].forEach((profile) => {
                 const scriptPath = getProfileModuleScriptPath(profile);
                 if(scriptPath) prefetchPhase2Asset(scriptPath, "script");
                 const componentPath = `/static/components/${getProfileComponentFile(profile)}`;
@@ -5649,6 +5661,7 @@ function getSharedHowToSection(){
 function getProfileDisplayName(profile){
     const key = String(profile || "").toUpperCase();
     if(key === "NTT") return "Mutant";
+    if(key === "CLOUD") return "Cloud Trading";
     return key || "Profile";
 }
 
@@ -6990,6 +7003,10 @@ async function setProfile(profile){
         showToast("Human profile is not included with Paid Monthly users.", "error");
         return;
     }
+    if(profile === "CLOUD" && isCloudProfileBlockedByLicense()){
+        showToast("Cloud Trading is available for lifetime users only.", "error");
+        return;
+    }
     const switchSeq = ++profileSwitchSeq;
     const previousProfile = activeProfile;
     captureProfileDraft(previousProfile);
@@ -7030,6 +7047,7 @@ async function setProfile(profile){
     document.getElementById("humanBtn").classList.remove("active");
     const __unchainBtn = document.getElementById("unchainBtn"); if(__unchainBtn) __unchainBtn.classList.remove("active");
     const __nttBtn = document.getElementById("nttBtn"); if(__nttBtn) __nttBtn.classList.remove("active");
+    const __cloudBtn = document.getElementById("cloudBtn"); if(__cloudBtn) __cloudBtn.classList.remove("active");
 
     if(profile === "KOOLKID"){
         document.getElementById("koolkidBtn").classList.add("active");
@@ -7059,6 +7077,12 @@ async function setProfile(profile){
             ? "MUTANT MODE: UNDER CONSTRUCTION"
             : "MUTANT MODE: TOUCH / NO TOUCH";
         profileTitle.style.color = "#14b8a6";
+    }
+    if(profile === "CLOUD"){
+        const btn = document.getElementById("cloudBtn");
+        if(btn) btn.classList.add("active");
+        profileTitle.innerText = "CLOUD TRADING: UNDER 9 REINVEST";
+        profileTitle.style.color = "#67e8f9";
     }
 
     applyLiveTickVisibility();

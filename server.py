@@ -130,6 +130,10 @@ from bot_modules.human_manual_contracts import (
     fetch_human_manual_contracts_for_state as _module_fetch_human_manual_contracts_for_state,
     fetch_human_manual_contracts_for_symbol as _module_fetch_human_manual_contracts_for_symbol,
 )
+from cloud_alerts import CloudAlertDispatcher
+from cloud_routes import register_cloud_routes
+from cloud_session_manager import CloudPersistence, CloudSessionManager, ensure_cloud_tables
+from cloud_under9_engine import CloudProfileStrategy
 try:
     import strategies.unchain as _unchain_module
     UnchainStrategy = _unchain_module.UnchainStrategy
@@ -2208,6 +2212,7 @@ def _db_create_auth_tables(conn):
             updated_at TEXT NOT NULL
         )
         """)
+    ensure_cloud_tables(conn, is_postgres=_db_is_postgres())
 
 
 def init_db():
@@ -2549,6 +2554,14 @@ def get_user_license_context(username=None):
 def is_monthly_license_user():
     try:
         return bool(get_user_license_context().get("is_monthly"))
+    except Exception:
+        return False
+
+
+def is_lifetime_feature_user():
+    try:
+        ctx = get_user_license_context()
+        return bool(ctx.get("is_full_access") or ctx.get("is_lifetime") or str(ctx.get("access") or "").lower() == "admin")
     except Exception:
         return False
 
@@ -3024,6 +3037,20 @@ else:
     logger.info(f"🗄️ Storage mode: sqlite fallback ({DB_FILE})")
 ensure_admin_user()
 
+cloud_persistence = CloudPersistence(
+    db_connect=_db_connect,
+    db_execute=_db_execute,
+    db_fetchone=_db_fetchone,
+    db_row_to_dict=_db_row_to_dict,
+    db_commit=_db_commit,
+    utc_now_str=_utc_now_str,
+)
+cloud_manager = CloudSessionManager(
+    persistence=cloud_persistence,
+    alerts=CloudAlertDispatcher(logger=logger),
+    logger=logger,
+)
+
 
 # ---------------- HELPERS ---------------- #
 def login_required():
@@ -3349,7 +3376,7 @@ def _hard_stop_all_strategies(state):
                     pass
 
 
-PROFILE_BUDGET_KEYS = ("KOOLKID", "JOKERJOE", "HUMAN", "UNCHAIN", "NTT")
+PROFILE_BUDGET_KEYS = ("KOOLKID", "JOKERJOE", "HUMAN", "UNCHAIN", "NTT", "CLOUD")
 
 
 def _normalize_profile_budget_key(profile):
@@ -3736,10 +3763,144 @@ def _build_default_client_state():
             "HUMAN": HumanStrategy(),
             "UNCHAIN": UnchainStrategy(),
             "NTT": NTTStrategy(),
+            "CLOUD": CloudProfileStrategy(),
         },
         # PATCH A: human_keep_alive flag
         "human_keep_alive": False,
     }
+
+
+def _cloud_token_fingerprint(token):
+    token = str(token or "").strip()
+    if not token:
+        return ""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _cloud_runtime_client_id(cloud_key):
+    clean = re.sub(r"[^a-zA-Z0-9:_-]", "_", str(cloud_key or "").strip())
+    return f"cloud:{clean[:96]}"
+
+
+def _current_session_user_safe():
+    try:
+        return session.get("user") or ""
+    except Exception:
+        return ""
+
+
+def _cloud_identity_for_state(state, require_token=False):
+    state = state if isinstance(state, dict) else {}
+    token = str(state.get("api_token") or "").strip()
+    fingerprint = _cloud_token_fingerprint(token)
+    if fingerprint:
+        owner = str(state.get("username") or _current_session_user_safe() or "").strip().lower()
+        key = f"user:{owner}:token:{fingerprint}" if owner else f"token:{fingerprint}"
+        try:
+            state["cloud_session_key"] = key
+        except Exception:
+            pass
+        return {
+            "key": key,
+            "token_verified": True,
+            "token_fingerprint": fingerprint[-12:],
+            "requires_token_verification": False,
+        }
+    if require_token:
+        return {
+            "key": "",
+            "token_verified": False,
+            "token_fingerprint": "",
+            "requires_token_verification": True,
+        }
+    return {
+        "key": "",
+        "token_verified": False,
+        "token_fingerprint": "",
+        "requires_token_verification": True,
+    }
+
+
+def _cloud_key_for_state(state):
+    state = state if isinstance(state, dict) else {}
+    return str(
+        state.get("cloud_session_key")
+        or _cloud_identity_for_state(state).get("key")
+        or (state.get("username") if state.get("cloud_runtime") else "")
+        or ""
+    ).strip().lower()
+
+
+def _ensure_cloud_runtime_for_state(source_state, cloud_key, status=None):
+    source_state = source_state if isinstance(source_state, dict) else {}
+    cloud_key = str(cloud_key or "").strip().lower()
+    token = str(source_state.get("api_token") or "").strip()
+    if not cloud_key or not token:
+        return False
+    owner = str(source_state.get("username") or _current_session_user_safe() or "").strip().lower()
+    if owner:
+        owner_prefix = f"user:{owner}:token:"
+        try:
+            for other_key in cloud_manager.session_keys():
+                if other_key != cloud_key and str(other_key).startswith(owner_prefix):
+                    cloud_manager.stop(other_key, "Stopped: another Cloud API token was verified.")
+                    _stop_cloud_runtime_for_key(other_key, "cloud_single_session_per_user")
+        except Exception:
+            logger.exception("cloud_single_session_cleanup_failed owner=%s", owner)
+    runtime_cid = _cloud_runtime_client_id(cloud_key)
+    runtime = clients.get(runtime_cid)
+    if not isinstance(runtime, dict):
+        runtime = _build_default_client_state()
+        clients[runtime_cid] = runtime
+    current_market = str((status or {}).get("current_market") or source_state.get("current_symbol") or "R_10").strip() or "R_10"
+    runtime.update({
+        "username": cloud_key,
+        "cloud_runtime": True,
+        "cloud_owner_username": source_state.get("username") or _current_session_user_safe() or "",
+        "cloud_session_key": cloud_key,
+        "cloud_token_fingerprint": _cloud_token_fingerprint(token)[-12:],
+        "active_profile": "CLOUD",
+        "current_symbol": current_market,
+        "human_symbol": current_market,
+        "api_token": token,
+        "api_token_type": source_state.get("api_token_type") or ("pat" if _is_pat_token(token) else "legacy"),
+        "deriv_account_id": source_state.get("deriv_account_id") or DERIV_ACCOUNT_ID,
+        "deriv_app_id": source_state.get("deriv_app_id") or DERIV_APP_ID,
+        "last_seen": time.time(),
+    })
+    runtime.setdefault("strategies", {})["CLOUD"] = runtime.setdefault("strategies", {}).get("CLOUD") or CloudProfileStrategy()
+    thread_alive = bool(runtime.get("ws_thread") and runtime["ws_thread"].is_alive())
+    connecting = bool(runtime.get("ws_connect_started_at") or runtime.get("ws_transport_connected") or runtime.get("ws_reconnect_pending"))
+    if not runtime.get("ws_connected") and not thread_alive and not connecting:
+        _start_ws_worker_thread(runtime_cid, runtime, reason="cloud_under9_runtime")
+    elif runtime.get("ws_connected"):
+        _ensure_tick_subscription(runtime, current_market, force=False, reason="cloud_under9_runtime", client_id=runtime_cid)
+    logger.info(
+        "[%s] cloud_runtime_ensured key=%s token_fp=%s market=%s running=%s",
+        runtime_cid,
+        cloud_key[:18],
+        runtime.get("cloud_token_fingerprint"),
+        current_market,
+        bool((status or {}).get("running")),
+    )
+    return True
+
+
+def _stop_cloud_runtime_for_key(cloud_key, reason="cloud_stop"):
+    runtime_cid = _cloud_runtime_client_id(cloud_key)
+    runtime = clients.get(runtime_cid)
+    if not isinstance(runtime, dict):
+        return False
+    try:
+        _cleanup_client_runtime(runtime_cid, runtime, reason=reason)
+    except Exception:
+        logger.exception("[%s] cloud_runtime_cleanup_failed reason=%s", runtime_cid, reason)
+    try:
+        clients.pop(runtime_cid, None)
+    except Exception:
+        pass
+    logger.info("[%s] cloud_runtime_stopped reason=%s", runtime_cid, reason)
+    return True
 
 
 def disconnect_client(client_id, reason="manual", emit=True):
@@ -4040,6 +4201,9 @@ def emit_profile_snapshot(cid):
             socketio.emit("human_chart_data", strat.get_chart_data(), room=cid)
         if prof == "HUMAN" and strat and hasattr(strat, "get_human_rf_payload"):
             socketio.emit("human_rf_status", strat.get_human_rf_payload(), room=cid)
+        if prof == "CLOUD":
+            cloud_key = _cloud_key_for_state(state)
+            socketio.emit("cloud_under9_status", cloud_manager.status(cloud_key) if cloud_key else {"status": "success", "running": False, "cloud_status": "Connect the exact Deriv API token to verify this Cloud session.", "requires_token_verification": True}, room=cid)
     except Exception:
         pass
 
@@ -4641,7 +4805,7 @@ def _handle_fast_profile_trade_payload(client_id, state, payload, *, emit_balanc
     payload = payload or {}
     _log_trade_path(client_id, "fast_profile_payload", state, profile=payload.get("profile"), type=payload.get("type"), symbol=payload.get("symbol"))
     profile = str(payload.get("profile") or state.get("active_profile") or "").upper().strip()
-    if profile not in ("KOOLKID", "JOKERJOE"):
+    if profile not in ("KOOLKID", "JOKERJOE", "CLOUD"):
         return {"status": "error", "message": "Invalid profile"}
 
     contract_type = str(payload.get("type") or "").upper().strip()
@@ -4703,7 +4867,7 @@ def handle_fast_profile_trade_batch(data=None):
     cid, state = get_client_state()
     payload = data or {}
     profile = str(payload.get("profile") or state.get("active_profile") or "").upper().strip()
-    if profile not in ("KOOLKID", "JOKERJOE"):
+    if profile not in ("KOOLKID", "JOKERJOE", "CLOUD"):
         return {"status": "error", "message": "Invalid profile"}
 
     trades = payload.get("trades")
@@ -17171,6 +17335,15 @@ def _active_tick_symbols_for_state(state):
         sym = _normalize_tick_symbol(raw)
         if sym and sym not in symbols:
             symbols.append(sym)
+    try:
+        cloud_key = _cloud_key_for_state(state)
+        cloud_status = cloud_manager.status(cloud_key) if cloud_key else {}
+        raw = cloud_status.get("current_market") if cloud_status.get("running") else None
+        sym = _normalize_tick_symbol(raw)
+        if sym and sym not in symbols:
+            symbols.append(sym)
+    except Exception:
+        pass
     return symbols
 
 
@@ -17259,6 +17432,12 @@ def _symbol_needed_by_aux_streams(state, symbol):
         run = ((state.get("seqvix") or {}).get(profile) or {})
         if sym in set(run.get("owned_syms") or set()) or sym in set(run.get("active_syms") or set()):
             return True
+    try:
+        cloud_key = _cloud_key_for_state(state)
+        if cloud_key and cloud_manager.is_symbol_needed(cloud_key, sym):
+            return True
+    except Exception:
+        pass
     return False
 
 
@@ -17371,6 +17550,94 @@ def _restore_required_tick_subscriptions(client_id, state, reason):
     if restored:
         logger.info("[%s] tick_stream_restore_requested reason=%s symbols=%s", client_id, reason, ",".join(restored))
     return restored
+
+
+register_cloud_routes(
+    app,
+    cloud_manager=cloud_manager,
+    login_required=login_required,
+    get_client_state=get_client_state,
+    ensure_tick_subscription=_ensure_tick_subscription,
+    socketio=socketio,
+    get_cloud_identity=_cloud_identity_for_state,
+    ensure_cloud_runtime=_ensure_cloud_runtime_for_state,
+    stop_cloud_runtime=_stop_cloud_runtime_for_key,
+    can_use_cloud_profile=is_lifetime_feature_user,
+)
+
+
+def _handle_cloud_under9_action(client_id, state, action):
+    if not isinstance(action, dict):
+        return
+    username = _cloud_key_for_state(state) or state.get("username")
+    action_type = str(action.get("type") or "").strip().lower()
+    if action_type == "switch_market":
+        old_symbol = action.get("old_symbol")
+        new_symbol = action.get("new_symbol")
+        logger.info("[%s] cloud_under9_market_switched old=%s new=%s reason=%s", client_id, old_symbol, new_symbol, action.get("reason"))
+        _ensure_tick_subscription(state, new_symbol, force=False, reason="cloud_under9_rotation", client_id=client_id)
+        _forget_tick_subscription_if_unused(state, old_symbol, client_id=client_id, reason="cloud_under9_rotation")
+        try:
+            status = cloud_manager.status(username)
+            cloud_manager.alerts.send("cloud_market_switch", f"Cloud Under 9 switched from {old_symbol} to {new_symbol}.", status.get("settings") or {})
+            socketio.emit("cloud_under9_status", status, room=client_id)
+        except Exception:
+            pass
+        return
+    if action_type == "stopped":
+        logger.info("[%s] cloud_under9_stopped reason=%s", client_id, action.get("reason"))
+        try:
+            status = cloud_manager.status(username)
+            cloud_manager.alerts.send("cloud_stopped", f"Cloud Under 9 stopped: {action.get('reason')}", status.get("settings") or {})
+            socketio.emit("cloud_under9_status", status, room=client_id)
+        except Exception:
+            pass
+        return
+    if action_type != "trade":
+        return
+    intent = action.get("intent") or {}
+    signal_id = str(intent.get("signal_id") or "")
+    symbol = str(intent.get("symbol") or "").strip()
+    stake = float(intent.get("stake") or 0)
+    duration = int(intent.get("duration") or 1)
+    duration_unit = str(intent.get("duration_unit") or "t").strip().lower() or "t"
+    logger.info(
+        "[%s] cloud_under9_trade_attempt signal_id=%s symbol=%s stake=%s duration=%s%s",
+        client_id,
+        signal_id,
+        symbol,
+        stake,
+        duration,
+        duration_unit,
+    )
+    ok, msg = send_buy_with_profile(
+        client_id,
+        "CLOUD",
+        "UNDER",
+        stake,
+        symbol,
+        9,
+        duration=duration,
+        duration_unit=duration_unit,
+        mode="CLOUD_UNDER9",
+        emit_balance_after_send=False,
+        extra_meta={
+            "strategy_name": "Cloud Under 9",
+            "cloud_signal_id": signal_id,
+            "cloud_strategy": "under9_reinvest",
+            "button": "Cloud Under 9",
+        },
+    )
+    if ok:
+        cloud_manager.mark_trade_sent(username, signal_id)
+        logger.info("[%s] cloud_under9_trade_placed signal_id=%s", client_id, signal_id)
+    else:
+        cloud_manager.mark_trade_failed(username, msg)
+        logger.warning("[%s] cloud_under9_trade_failed signal_id=%s message=%s", client_id, signal_id, msg)
+    try:
+        socketio.emit("cloud_under9_status", cloud_manager.status(username), room=client_id)
+    except Exception:
+        pass
 
 
 def _get_tick_stream_health(client_id, state, *, self_heal=False, allow_reconnect=True):
@@ -18433,6 +18700,13 @@ def handle_on_message(client_id, ws, message, expected_nonce):
             except Exception:
                 pass
             try:
+                if str((failed_buy_meta or {}).get("profile") or "").upper() == "CLOUD":
+                    cloud_key = _cloud_key_for_state(state)
+                    cloud_manager.mark_trade_failed(cloud_key, msg)
+                    socketio.emit("cloud_under9_status", cloud_manager.status(cloud_key), room=client_id)
+            except Exception:
+                pass
+            try:
                 _handle_mutant_auto_buy_failed(state, failed_buy_meta, msg)
             except Exception:
                 logger.exception("[%s] TEMP mutant_auto_buy_failed_handler_error", client_id)
@@ -18707,6 +18981,13 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 open_contract_refresh_scheduled = True
                 try:
                     _seqvix_jokerjoe_on_buy_confirmed(state, contract_id, meta)
+                except Exception:
+                    pass
+                try:
+                    if str((meta or {}).get("profile") or "").upper() == "CLOUD":
+                        cloud_key = _cloud_key_for_state(state)
+                        cloud_manager.mark_trade_open(cloud_key, contract_id, meta)
+                        socketio.emit("cloud_under9_status", cloud_manager.status(cloud_key), room=client_id)
                 except Exception:
                     pass
                 try:
@@ -19035,9 +19316,15 @@ def process_tick(client_id, tick):
 
         is_main = (symbol_key == main_symbol_key)
         is_human = (symbol_key == human_symbol_key)
+        try:
+            cloud_key = _cloud_key_for_state(state)
+            is_cloud = bool(cloud_key and cloud_manager.is_symbol_needed(cloud_key, symbol_key))
+        except Exception:
+            cloud_key = ""
+            is_cloud = False
 
         # ignore ticks we don't care about
-        if not (is_main or is_human):
+        if not (is_main or is_human or is_cloud):
             return
 
         if is_main:
@@ -19052,7 +19339,7 @@ def process_tick(client_id, tick):
                 state["_human_tick_seq"] = 1
 
         pip_size = tick.get("pip_size", 2)
-        digit = extract_last_decimal_digit(price, pip_size) if is_main else None
+        digit = extract_last_decimal_digit(price, pip_size) if (is_main or is_cloud) else None
 
         # epoch for HUMAN candles
         try:
@@ -19108,6 +19395,20 @@ def process_tick(client_id, tick):
         if is_human:
             _maybe_force_human_pending_close(client_id, state)
 
+        if is_cloud and digit is not None:
+            try:
+                actions = cloud_manager.on_tick(
+                    cloud_key,
+                    client_id,
+                    tick,
+                    digit,
+                    balance=_get_effective_state_balance(state),
+                )
+                for action in actions or []:
+                    _handle_cloud_under9_action(client_id, state, action)
+            except Exception as exc:
+                logger.warning("[%s] cloud_under9_tick_error error=%s", client_id, exc)
+
         # Active strategy for UI only
         active_profile = state.get("active_profile", "KOOLKID")
         active_strategy = strategies.get(active_profile)
@@ -19121,7 +19422,15 @@ def process_tick(client_id, tick):
             except Exception:
                 pass
 
-        want_symbol = human_symbol_key if active_profile == "HUMAN" else main_symbol_key
+        if active_profile == "HUMAN":
+            want_symbol = human_symbol_key
+        elif active_profile == "CLOUD":
+            try:
+                want_symbol = _normalize_tick_symbol(cloud_manager.status(cloud_key).get("current_market")) if cloud_key else main_symbol_key
+            except Exception:
+                want_symbol = main_symbol_key
+        else:
+            want_symbol = main_symbol_key
         if symbol_key != want_symbol:
             return
 
@@ -19174,6 +19483,9 @@ def process_tick(client_id, tick):
                 socketio.emit("human_chart_data", strat.get_chart_data(), room=client_id)
             if strat and hasattr(strat, "get_human_rf_payload") and _should_emit_ui_event(state, "human_rf_status:tick", UI_STATUS_EMIT_MIN_SEC):
                 socketio.emit("human_rf_status", strat.get_human_rf_payload(), room=client_id)
+        if active_profile == "CLOUD" and _should_emit_ui_event(state, "cloud_under9_status:tick", UI_STATUS_EMIT_MIN_SEC):
+            if cloud_key:
+                socketio.emit("cloud_under9_status", cloud_manager.status(cloud_key), room=client_id)
 
     except Exception as e:
         logger.error(f"[{client_id}] process_tick error: {e}")
@@ -19313,6 +19625,35 @@ def process_contract(client_id, contract):
                     ntt["auto_both_enabled"] = bool(ensure_mutant_auto_state(ntt).get("enabled"))
                 except Exception:
                     pass
+        elif (
+            profile_for_contract == "CLOUD"
+            and not is_auto_session_contract
+            and str((meta or {}).get("mode") or "").upper() == "CLOUD_UNDER9"
+        ):
+            cloud_key = _cloud_key_for_state(state)
+            cloud_row = cloud_manager.on_contract_result(cloud_key, contract, meta, profit)
+            entry = {
+                "profile": "CLOUD",
+                "type": (meta or {}).get("type") or "UNDER",
+                "barrier": (meta or {}).get("barrier", 9),
+                "stake": (meta or {}).get("stake") or cloud_row.get("stake"),
+                "symbol": (meta or {}).get("symbol") or cloud_row.get("market"),
+                "time": (meta or {}).get("time") or now_time(),
+                "duration": (meta or {}).get("duration"),
+                "duration_unit": (meta or {}).get("duration_unit"),
+                "mode": (meta or {}).get("mode") or "CLOUD_UNDER9",
+                "strategy_name": "Cloud Under 9",
+                "result": cloud_row.get("result"),
+                "profit": round(float(profit), 2),
+                "status": contract.get("status"),
+                "action": cloud_row.get("action"),
+                "reinvest_step": cloud_row.get("reinvest_step"),
+                "next_stake": cloud_row.get("next_stake"),
+            }
+            try:
+                socketio.emit("cloud_under9_status", cloud_manager.status(cloud_key), room=client_id)
+            except Exception:
+                pass
         elif not is_auto_session_contract:
             strategies = state.get("strategies", {})
             strategy = strategies.get(profile_for_contract)
@@ -19451,6 +19792,24 @@ def send_stats_update(client_id):
             ),
         }
         socketio.emit("stats_update", payload, room=client_id)
+        return
+
+    if active_profile == "CLOUD":
+        cloud_key = _cloud_key_for_state(state)
+        status = cloud_manager.status(cloud_key) if cloud_key else {"wins": 0, "losses": 0, "daily_profit": 0.0, "running": False}
+        wins = int(status.get("wins", 0) or 0)
+        losses = int(status.get("losses", 0) or 0)
+        total = wins + losses
+        socketio.emit("stats_update", {
+            "profile": "CLOUD",
+            "wins": wins,
+            "losses": losses,
+            "winrate": round((wins / total) * 100, 1) if total else 0.0,
+            "loserate": round((losses / total) * 100, 1) if total else 0.0,
+            "net_pnl": float(status.get("daily_profit", 0.0) or 0.0),
+            "auto_trade": bool(status.get("running")),
+        }, room=client_id)
+        socketio.emit("cloud_under9_status", status, room=client_id)
         return
 
     strategies = state.get("strategies", {})
@@ -19958,6 +20317,7 @@ def _start_deriv_connection_for_state(cid, state, token, token_type, account_id,
     state["ws_authorize_deadline_at"] = 0.0
     state["ws_reconnect_pending"] = False
     state["ws_reconnect_attempts"] = 0
+    state["cloud_session_key"] = _cloud_identity_for_state(state).get("key", "")
     logger.info(
         "[%s] deriv_connection_start token_type=%s account_id=%s account_kind=%s app_id=%s reason=%s trade_ready=false",
         cid,
@@ -19985,6 +20345,14 @@ def _start_deriv_connection_for_state(cid, state, token, token_type, account_id,
 
     _start_ws_worker_thread(cid, state, reason=reason)
     logger.info("[%s] TEMP deriv_websocket_thread_started_from_connect reason=%s token_type=%s", cid, reason, token_type)
+    try:
+        cloud_key = state.get("cloud_session_key")
+        if cloud_key and cloud_manager.has_session(cloud_key):
+            status = cloud_manager.status(cloud_key)
+            if status.get("running"):
+                _ensure_cloud_runtime_for_state(state, cloud_key, status)
+    except Exception:
+        logger.exception("[%s] cloud_runtime_attach_after_deriv_connect_failed", cid)
 
 
 @app.route("/deriv/oauth/start", methods=["GET"])
@@ -20183,6 +20551,7 @@ def set_token():
     state["ws_authorize_deadline_at"] = 0.0
     state["ws_reconnect_pending"] = False
     state["ws_reconnect_attempts"] = 0
+    state["cloud_session_key"] = _cloud_identity_for_state(state).get("key", "")
 
     # start WS but avoid "2 instances" per browser session
     t = state.get("ws_thread")
@@ -20202,6 +20571,14 @@ def set_token():
 
     _start_ws_worker_thread(cid, state, reason="set_token")
     logger.info("[%s] TEMP deriv_websocket_thread_started_from_connect", cid)
+    try:
+        cloud_key = state.get("cloud_session_key")
+        if cloud_key and cloud_manager.has_session(cloud_key):
+            status = cloud_manager.status(cloud_key)
+            if status.get("running"):
+                _ensure_cloud_runtime_for_state(state, cloud_key, status)
+    except Exception:
+        logger.exception("[%s] cloud_runtime_attach_after_set_token_failed", cid)
 
     return jsonify({"status": "connecting", "token_type": token_type})
 
@@ -20513,12 +20890,23 @@ def clear_profile_history():
         ntt["koolkid_both_simulation"] = None
         state["_processed_ntt_contracts"] = set()
 
+    if profile == "CLOUD":
+        cloud_key = _cloud_key_for_state(state)
+        if cloud_key:
+            cloud_manager.stop(cloud_key, "Stopped")
+            cloud_manager.clear_history(cloud_key)
+            _stop_cloud_runtime_for_key(cloud_key, "clear_profile_history")
+
     if profile == state.get("active_profile"):
         send_stats_update(cid)
         if profile == "UNCHAIN":
             socketio.emit("unchain_status", _unchain_payload_response(state), room=cid)
         if profile == "NTT":
             socketio.emit("ntt_status", _ntt_payload_response(state), room=cid)
+        if profile == "CLOUD":
+            cloud_key = _cloud_key_for_state(state)
+            if cloud_key:
+                socketio.emit("cloud_under9_status", cloud_manager.status(cloud_key), room=cid)
 
     payload = None
     if profile == "UNCHAIN":
@@ -20546,13 +20934,25 @@ def set_profile():
             "error": "Human profile is not included with Paid Monthly users.",
             "license_context": license_context,
         }), 403
+    if profile == "CLOUD" and not bool(license_context.get("is_full_access") or license_context.get("is_lifetime")):
+        return jsonify({
+            "status": "error",
+            "error": "Cloud Trading is available for lifetime users only.",
+            "license_context": license_context,
+        }), 403
 
     state["active_profile"] = profile
-    if profile == "HUMAN":
+    cloud_status = None
+    if profile == "CLOUD":
+        cloud_key = _cloud_key_for_state(state)
+        cloud_status = cloud_manager.status(cloud_key) if cloud_key else {"current_market": "", "running": False, "cloud_status": "Connect the exact Deriv API token to verify this Cloud session.", "requires_token_verification": True}
+        if cloud_key:
+            _ensure_tick_subscription(state, cloud_status.get("current_market") or state.get("current_symbol"), reason="cloud_profile", client_id=cid)
+    elif profile == "HUMAN":
         _ensure_tick_subscription(state, state.get("human_symbol") or state.get("current_symbol"))
     else:
         _ensure_tick_subscription(state, state.get("current_symbol"))
-    socketio.emit("profile_update", {"profile": profile, "symbol": (state.get("human_symbol") if profile == "HUMAN" else state.get("current_symbol"))}, room=cid)
+    socketio.emit("profile_update", {"profile": profile, "symbol": (cloud_status.get("current_market") if profile == "CLOUD" and cloud_status else (state.get("human_symbol") if profile == "HUMAN" else state.get("current_symbol")))}, room=cid)
     def _finish_profile_switch_snapshot():
         try:
             if profile == "HUMAN":
@@ -20574,7 +20974,8 @@ def set_profile():
         "license_context": license_context,
         "main_symbol": state.get("current_symbol"),
         "human_symbol": state.get("human_symbol") or state.get("current_symbol"),
-        "symbol": (state.get("human_symbol") if profile == "HUMAN" else state.get("current_symbol")),
+        "symbol": (cloud_status.get("current_market") if profile == "CLOUD" and cloud_status else (state.get("human_symbol") if profile == "HUMAN" else state.get("current_symbol"))),
+        "cloud_status": cloud_status,
         **_build_balance_payload(state, profile),
     })
 
@@ -23844,6 +24245,12 @@ def heartbeat_sweeper():
         now_ts = time.time()
         stale = []
         for client_id, state in list(clients.items()):
+            if isinstance(state, dict) and state.get("cloud_runtime"):
+                try:
+                    if cloud_manager.status(state.get("username")).get("running"):
+                        continue
+                except Exception:
+                    pass
             try:
                 last_seen = float((state or {}).get("last_seen", 0.0) or 0.0)
             except Exception:
