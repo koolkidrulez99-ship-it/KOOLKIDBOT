@@ -5,16 +5,15 @@ def _tick(symbol, digit):
     return {"symbol": symbol, "quote": float(f"100.{digit}")}
 
 
-def test_cloud_under9_places_one_trade_per_fresh_99_signal():
+def test_cloud_under9_places_one_trade_when_single_9_prints_at_9_percent_or_lower():
     engine = CloudUnder9Engine("alice", "cid", {"base_stake": 10, "allowed_markets": ["R_10"]})
     engine.start("cid")
 
     actions = []
-    for i in range(98):
+    for i in range(99):
         actions.extend(engine.on_tick(_tick("R_10", i % 8), i % 8, balance=100))
     assert actions == []
 
-    assert engine.on_tick(_tick("R_10", 9), 9, balance=100) == []
     actions = engine.on_tick(_tick("R_10", 9), 9, balance=100)
 
     assert len(actions) == 1
@@ -23,8 +22,23 @@ def test_cloud_under9_places_one_trade_per_fresh_99_signal():
     assert actions[0]["intent"]["barrier"] == 9
     assert actions[0]["intent"]["stake"] == 10
 
-    # Same 9,9 cluster must not spam a second trade.
+    # A repeated 9 cannot spam another trade while this signal is locked.
     assert engine.on_tick(_tick("R_10", 9), 9, balance=100) == []
+
+
+def test_cloud_under9_blocks_single_9_when_digit9_percentage_is_above_9():
+    engine = CloudUnder9Engine("alice", "cid", {"base_stake": 10, "allowed_markets": ["R_10"]})
+    engine.start("cid")
+
+    for _ in range(10):
+        engine.on_tick(_tick("R_10", 9), 9, balance=100)
+    for i in range(89):
+        engine.on_tick(_tick("R_10", i % 8), i % 8, balance=100)
+
+    actions = engine.on_tick(_tick("R_10", 9), 9, balance=100)
+
+    assert actions == []
+    assert engine.digit9_percentage() == 11.0
 
 
 def test_cloud_under9_reinvests_full_profit_then_resets_on_loss():
@@ -87,3 +101,16 @@ def test_cloud_base_stake_save_waits_for_open_trade_then_applies():
     assert row["result"] == "WIN"
     assert engine.current_stake == 12
     assert engine.reinvest_step == 0
+
+
+def test_cloud_market_settings_remove_current_market_from_rotation():
+    engine = CloudUnder9Engine("alice", "cid", {"allowed_markets": ["R_10", "JD10", "JD25"]})
+    engine.start("cid")
+    engine.current_market = "R_10"
+    engine.tick_digits.extend([1, 2, 3])
+
+    engine.update_settings({"allowed_markets": ["JD10", "JD25"]})
+
+    assert engine.current_market == "JD10"
+    assert engine.settings["allowed_markets"] == ["JD10", "JD25"]
+    assert list(engine.tick_digits) == []

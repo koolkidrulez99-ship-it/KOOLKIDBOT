@@ -320,7 +320,7 @@ class CloudUnder9Engine:
         self.tick_digits.append(safe_digit)
         actions = []
         history = list(self.tick_digits)
-        if len(history) < 2 or history[-2:] != [9, 9]:
+        if not history or history[-1] != 9:
             self.signal_armed = True
 
         if len(history) < 100:
@@ -333,19 +333,19 @@ class CloudUnder9Engine:
         pct9 = self.digit9_percentage()
         self.last_signal = f"Digit 9 at {pct9:.1f}%"
         self.log("digit 9 percentage market=%s pct=%s", self.current_market, pct9)
-        if pct9 > 11.0:
+        if pct9 > 9.0:
             rotation = self._market_rotation_action(now_ts)
             return [rotation] if rotation else actions
 
-        if len(history) < 2 or history[-2:] != [9, 9]:
+        if safe_digit != 9:
             rotation = self._market_rotation_action(now_ts)
             return [rotation] if rotation else actions
 
         if not self.signal_armed:
-            self.last_signal = "9,9 already consumed. Waiting for a fresh setup."
+            self.last_signal = "Digit 9 print already consumed. Waiting for a fresh setup."
             return actions
         if self.trade_locked or self.open_contract_id:
-            self.last_signal = "9,9 detected but trade is already open."
+            self.last_signal = "Digit 9 printed but trade is already open."
             return actions
         if self.last_trade_at and (now_ts - self.last_trade_at) < float(self.settings["cooldown_seconds"]):
             self.last_signal = "Cooldown active after previous trade."
@@ -366,10 +366,10 @@ class CloudUnder9Engine:
 
         self.signal_armed = False
         self.trade_locked = True
-        self.pending_signal_id = f"cloud99:{self.current_market}:{self.total_ticks}:{int(now_ts * 1000)}"
+        self.pending_signal_id = f"cloud9:{self.current_market}:{self.total_ticks}:{int(now_ts * 1000)}"
         self.last_valid_setup_at = now_ts
-        self.last_signal = "9,9 detected. Under 9 trade locked and sending."
-        self.log("9,9 detected backup passed market=%s signal_id=%s stake=%s", self.current_market, self.pending_signal_id, self.current_stake)
+        self.last_signal = "Digit 9 printed with 9% or lower frequency. Under 9 trade locked and sending."
+        self.log("digit 9 signal backup passed market=%s signal_id=%s stake=%s pct9=%s", self.current_market, self.pending_signal_id, self.current_stake, pct9)
         intent = CloudTradeIntent(
             signal_id=self.pending_signal_id,
             symbol=self.current_market,

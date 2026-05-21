@@ -20,6 +20,13 @@
 #cloudProfilePanel .cloud-toggle-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px;}
 #cloudProfilePanel .cloud-check{display:flex;flex-direction:row;align-items:center;justify-content:space-between;gap:10px;border:1px solid rgba(148,163,184,.24);background:rgba(15,23,42,.78);border-radius:10px;padding:10px;}
 #cloudProfilePanel .cloud-check input{width:auto;min-height:0;}
+#cloudProfilePanel .cloud-market-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap;}
+#cloudProfilePanel .cloud-market-actions{display:flex;gap:6px;flex-wrap:wrap;}
+#cloudProfilePanel .cloud-market-actions button{min-height:30px;border:1px solid rgba(103,232,249,.25);background:#0f172a;color:#bae6fd;padding:0 9px;font-size:11px;}
+#cloudProfilePanel .cloud-market-picker{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:8px;}
+#cloudProfilePanel .cloud-market-option{display:flex;flex-direction:row;align-items:center;justify-content:space-between;gap:8px;border:1px solid rgba(148,163,184,.24);background:rgba(15,23,42,.78);border-radius:10px;padding:9px 10px;color:#e2e8f0;font-size:12px;font-weight:900;}
+#cloudProfilePanel .cloud-market-option input{width:auto;min-height:0;accent-color:#22d3ee;}
+#cloudProfilePanel .cloud-market-count{font-size:11px;color:#94a3b8;font-weight:900;}
 #cloudProfilePanel .cloud-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px;}
 #cloudProfilePanel button{border:0;border-radius:10px;min-height:42px;font-weight:900;cursor:pointer;}
 #cloudProfilePanel .cloud-start{background:linear-gradient(135deg,#22c55e,#67e8f9);color:#052e16;}
@@ -36,10 +43,10 @@
 #cloudProfilePanel .ui-group-body{padding:10px;}
 @media(max-width:900px){
   #cloudProfilePanel .cloud-shell{grid-template-columns:1fr;}
-  #cloudProfilePanel .cloud-grid,#cloudProfilePanel .cloud-settings-grid,#cloudProfilePanel .cloud-history-stats{grid-template-columns:repeat(2,minmax(0,1fr));}
+  #cloudProfilePanel .cloud-grid,#cloudProfilePanel .cloud-settings-grid,#cloudProfilePanel .cloud-history-stats,#cloudProfilePanel .cloud-market-picker{grid-template-columns:repeat(2,minmax(0,1fr));}
 }
 @media(max-width:520px){
-  #cloudProfilePanel .cloud-grid,#cloudProfilePanel .cloud-settings-grid,#cloudProfilePanel .cloud-toggle-row,#cloudProfilePanel .cloud-actions,#cloudProfilePanel .cloud-history-stats{grid-template-columns:1fr;}
+  #cloudProfilePanel .cloud-grid,#cloudProfilePanel .cloud-settings-grid,#cloudProfilePanel .cloud-toggle-row,#cloudProfilePanel .cloud-actions,#cloudProfilePanel .cloud-history-stats,#cloudProfilePanel .cloud-market-picker{grid-template-columns:1fr;}
 }
 </style>
 
@@ -48,7 +55,7 @@
     <section class="cloud-panel cloud-hero">
       <div class="cloud-kicker">Cloud Trading Engine</div>
       <h2 class="cloud-title">Under 9 Reinvest</h2>
-      <p class="cloud-sub">Scans every configured volatility and jump market for a low digit-9 setup, places exactly one Under 9 trade on a fresh 9,9 signal, and keeps running from the verified API token session.</p>
+      <p class="cloud-sub">Scans every configured volatility and jump market, waits for digit 9 frequency to be 9% or lower, then places one Under 9 trade when a fresh 9 prints.</p>
       <div class="cloud-badges">
         <span class="cloud-badge" id="cloudRunningBadge">Stopped</span>
         <span class="cloud-badge" id="cloudTokenBadge">Token not verified</span>
@@ -78,9 +85,24 @@
         <label>Max Daily Loss <input id="cloudMaxDailyLoss" type="number" min="0" step="0.01" value="0"></label>
         <label>Max Trades Per Session <input id="cloudMaxTrades" type="number" min="0" step="1" value="0"></label>
       </div>
-      <label style="margin-top:10px;">Allowed Markets
-        <textarea id="cloudAllowedMarkets">R_10,R_25,R_50,R_75,R_100,1HZ10V,1HZ25V,1HZ50V,1HZ75V,1HZ100V,JD10,JD25,JD50,JD75,JD100</textarea>
-      </label>
+      <div class="cloud-market-head">
+        <div>
+          <div class="cloud-kicker">Market Rotation</div>
+          <div class="cloud-market-count" id="cloudMarketCount">15 markets selected</div>
+        </div>
+        <div class="cloud-market-actions">
+          <button type="button" onclick="cloudSelectMarkets('ALL')">All</button>
+          <button type="button" onclick="cloudSelectMarkets('VOL')">Volatility</button>
+          <button type="button" onclick="cloudSelectMarkets('JUMP')">Jump Pairs</button>
+        </div>
+      </div>
+      <div id="cloudMarketPicker" class="cloud-market-picker"></div>
+      <details class="ui-group" style="margin-top:10px;">
+        <summary>Advanced market list</summary>
+        <div class="ui-group-body">
+          <textarea id="cloudAllowedMarkets">R_10,R_25,R_50,R_75,R_100,1HZ10V,1HZ25V,1HZ50V,1HZ75V,1HZ100V,JD10,JD25,JD50,JD75,JD100</textarea>
+        </div>
+      </details>
       <div class="cloud-toggle-row">
         <label class="cloud-check">Capital Build Mode <input id="cloudCapitalBuildMode" type="checkbox"></label>
         <label class="cloud-check">Telegram Alerts <input id="cloudTelegramAlerts" type="checkbox"></label>
@@ -94,7 +116,7 @@
             <label>Max 9s Last 5 <input id="cloudMax9Last5" type="number" min="0" step="1" value="2"></label>
             <label>Max 9s Last 10 <input id="cloudMax9Last10" type="number" min="0" step="1" value="2"></label>
             <label>Max 9s Last 20 <input id="cloudMax9Last20" type="number" min="0" step="1" value="4"></label>
-            <label>9,9 Cooldown Sec <input id="cloudStreakCooldown" type="number" min="0" step="1" value="20"></label>
+            <label>Signal Cooldown Sec <input id="cloudStreakCooldown" type="number" min="0" step="1" value="20"></label>
           </div>
         </div>
       </details>

@@ -1,7 +1,25 @@
 (function () {
   const PROFILE = "CLOUD";
   const POLL_LABEL = "cloud_under9_status_poll";
-  const DEFAULT_MARKETS = "R_10,R_25,R_50,R_75,R_100,1HZ10V,1HZ25V,1HZ50V,1HZ75V,1HZ100V,JD10,JD25,JD50,JD75,JD100";
+  const DEFAULT_MARKET_LIST = ["R_10","R_25","R_50","R_75","R_100","1HZ10V","1HZ25V","1HZ50V","1HZ75V","1HZ100V","JD10","JD25","JD50","JD75","JD100"];
+  const DEFAULT_MARKETS = DEFAULT_MARKET_LIST.join(",");
+  const MARKET_LABELS = {
+    R_10: "Vol 10",
+    R_25: "Vol 25",
+    R_50: "Vol 50",
+    R_75: "Vol 75",
+    R_100: "Vol 100",
+    "1HZ10V": "Vol 10 1s",
+    "1HZ25V": "Vol 25 1s",
+    "1HZ50V": "Vol 50 1s",
+    "1HZ75V": "Vol 75 1s",
+    "1HZ100V": "Vol 100 1s",
+    JD10: "Jump 10",
+    JD25: "Jump 25",
+    JD50: "Jump 50",
+    JD75: "Jump 75",
+    JD100: "Jump 100",
+  };
   let pollTimer = null;
   let socketBound = false;
   let latestStatus = null;
@@ -38,7 +56,68 @@
     const n = Number((byId(id) || {}).value);
     return Number.isFinite(n) ? n : fallback;
   }
+  function parseMarkets(value){
+    const raw = Array.isArray(value) ? value : String(value || "").replace(/\n/g, ",").replace(/;/g, ",").split(",");
+    const seen = new Set();
+    const out = [];
+    raw.forEach((item)=> {
+      const symbol = String(item || "").trim().toUpperCase();
+      if(symbol && !seen.has(symbol)){
+        seen.add(symbol);
+        out.push(symbol);
+      }
+    });
+    return out;
+  }
+  function selectedMarkets(){
+    const picker = byId("cloudMarketPicker");
+    if(picker && picker.dataset.built === "1"){
+      const checked = Array.from(picker.querySelectorAll("input[type='checkbox']:checked")).map((el)=> el.value);
+      return checked;
+    }
+    return parseMarkets((byId("cloudAllowedMarkets") || {}).value || DEFAULT_MARKETS);
+  }
+  function syncMarketTextarea(markDirty){
+    const markets = selectedMarkets();
+    const textarea = byId("cloudAllowedMarkets");
+    if(textarea) textarea.value = markets.join(",");
+    setText("cloudMarketCount", `${markets.length} market${markets.length === 1 ? "" : "s"} selected`);
+    if(markDirty) settingsDirty = true;
+    return markets;
+  }
+  function buildMarketPicker(){
+    const picker = byId("cloudMarketPicker");
+    if(!picker || picker.dataset.built === "1") return;
+    picker.dataset.built = "1";
+    picker.innerHTML = DEFAULT_MARKET_LIST.map((symbol)=> `
+      <label class="cloud-market-option">
+        <span>${MARKET_LABELS[symbol] || symbol}</span>
+        <input type="checkbox" value="${symbol}" checked>
+      </label>
+    `).join("");
+    picker.querySelectorAll("input[type='checkbox']").forEach((input)=> {
+      input.addEventListener("change", ()=> syncMarketTextarea(true));
+    });
+    syncMarketTextarea(false);
+  }
+  function writeMarketPicker(markets){
+    buildMarketPicker();
+    const selected = new Set(parseMarkets(markets && markets.length ? markets : DEFAULT_MARKET_LIST));
+    const picker = byId("cloudMarketPicker");
+    if(picker){
+      picker.querySelectorAll("input[type='checkbox']").forEach((input)=> {
+        input.checked = selected.has(String(input.value || "").toUpperCase());
+      });
+    }
+    const textarea = byId("cloudAllowedMarkets");
+    const list = Array.from(selected);
+    if(textarea && document.activeElement !== textarea) textarea.value = list.join(",");
+    setText("cloudMarketCount", `${list.length} market${list.length === 1 ? "" : "s"} selected`);
+  }
   function readSettings(){
+    const markets = selectedMarkets();
+    if(!markets.length) throw new Error("Choose at least one Cloud market.");
+    syncMarketTextarea(false);
     return {
       base_stake: readNumber("cloudBaseStake", 1),
       take_profit_target: readNumber("cloudTpTarget", 50),
@@ -48,7 +127,7 @@
       low_balance_stop: readNumber("cloudLowBalanceStop", 0),
       max_daily_loss: readNumber("cloudMaxDailyLoss", 0),
       max_trades_per_session: readNumber("cloudMaxTrades", 0),
-      allowed_markets: String((byId("cloudAllowedMarkets") || {}).value || DEFAULT_MARKETS),
+      allowed_markets: markets.join(","),
       capital_build_mode: !!((byId("cloudCapitalBuildMode") || {}).checked),
       enable_telegram_alerts: !!((byId("cloudTelegramAlerts") || {}).checked),
       enable_whatsapp_alerts: !!((byId("cloudWhatsappAlerts") || {}).checked),
@@ -66,7 +145,10 @@
     panel.querySelectorAll("input, textarea, select").forEach((el)=> {
       if(el && el.id !== "cloudBudget"){
         el.addEventListener("input", ()=> { settingsDirty = true; });
-        el.addEventListener("change", ()=> { settingsDirty = true; });
+        el.addEventListener("change", ()=> {
+          if(el.id === "cloudAllowedMarkets") writeMarketPicker(parseMarkets(el.value));
+          settingsDirty = true;
+        });
       }
     });
   }
@@ -96,6 +178,7 @@
     if(markets && document.activeElement !== markets && Array.isArray(settings.allowed_markets)){
       markets.value = settings.allowed_markets.join(",");
     }
+    writeMarketPicker(settings.allowed_markets);
     [["cloudCapitalBuildMode","capital_build_mode"],["cloudTelegramAlerts","enable_telegram_alerts"],["cloudWhatsappAlerts","enable_whatsapp_alerts"],["cloudAllowAutoResume","allow_auto_resume"]].forEach(([id,key])=>{
       const el = byId(id);
       if(el) el.checked = !!settings[key];
@@ -207,9 +290,23 @@
       if(typeof showToast === "function") showToast(e.message || "Cloud settings failed", "error");
     }
   };
+  window.cloudSelectMarkets = function(mode){
+    buildMarketPicker();
+    const picker = byId("cloudMarketPicker");
+    if(!picker) return;
+    const normalized = String(mode || "ALL").toUpperCase();
+    picker.querySelectorAll("input[type='checkbox']").forEach((input)=> {
+      const symbol = String(input.value || "").toUpperCase();
+      if(normalized === "ALL") input.checked = true;
+      else if(normalized === "JUMP") input.checked = symbol.startsWith("JD");
+      else if(normalized === "VOL") input.checked = !symbol.startsWith("JD");
+    });
+    syncMarketTextarea(true);
+  };
 
   async function onMount(){
     bindSocket();
+    buildMarketPicker();
     bindSettingsDirtyHandlers();
     await refreshStatus(true);
     startPoll();

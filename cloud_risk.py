@@ -78,5 +78,5 @@ def evaluate_under9_backup(
     if count20 > int(cfg["max_digit9_last20"]):
         return CloudRiskDecision(False, "Backup thinking skipped: digit 9 appeared too often in the last 20 ticks.", details)
     if seconds_since_streak is not None and seconds_since_streak < float(cfg["min_seconds_between_99_streaks"]):
-        return CloudRiskDecision(False, "Backup thinking skipped: another 9,9 streak happened too recently.", details)
+        return CloudRiskDecision(False, "Backup thinking skipped: another digit 9 signal happened too recently.", details)
     return CloudRiskDecision(True, "Backup thinking passed.", details)
