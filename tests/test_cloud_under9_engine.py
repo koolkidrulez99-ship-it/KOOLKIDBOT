@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from cloud_under9_engine import CloudUnder9Engine
 
 
@@ -114,3 +116,49 @@ def test_cloud_market_settings_remove_current_market_from_rotation():
     assert engine.current_market == "JD10"
     assert engine.settings["allowed_markets"] == ["JD10", "JD25"]
     assert list(engine.tick_digits) == []
+
+
+def test_cloud_specific_time_blocks_valid_signal_outside_jamaica_window():
+    engine = CloudUnder9Engine(
+        "alice",
+        "cid",
+        {
+            "base_stake": 10,
+            "allowed_markets": ["R_10"],
+            "specific_time_enabled": True,
+            "specific_trade_times": "09:30",
+            "specific_time_window_minutes": 0,
+        },
+    )
+    engine.start("cid")
+    for i in range(99):
+        engine.on_tick(_tick("R_10", i % 8), i % 8, balance=100)
+
+    outside_window = datetime(2026, 5, 24, 14, 29, tzinfo=timezone.utc).timestamp()
+    actions = engine.on_tick(_tick("R_10", 9), 9, balance=100, now_ts=outside_window)
+
+    assert actions == []
+    assert "Waiting for Jamaica EST trade time" in engine.last_signal
+
+
+def test_cloud_specific_time_allows_valid_signal_inside_jamaica_window():
+    engine = CloudUnder9Engine(
+        "alice",
+        "cid",
+        {
+            "base_stake": 10,
+            "allowed_markets": ["R_10"],
+            "specific_time_enabled": True,
+            "specific_trade_times": ["09:30"],
+            "specific_time_window_minutes": 0,
+        },
+    )
+    engine.start("cid")
+    for i in range(99):
+        engine.on_tick(_tick("R_10", i % 8), i % 8, balance=100)
+
+    inside_window = datetime(2026, 5, 24, 14, 30, tzinfo=timezone.utc).timestamp()
+    actions = engine.on_tick(_tick("R_10", 9), 9, balance=100, now_ts=inside_window)
+
+    assert len(actions) == 1
+    assert actions[0]["type"] == "trade"

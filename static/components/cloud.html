@@ -27,10 +27,11 @@
 #cloudProfilePanel .cloud-market-option{display:flex;flex-direction:row;align-items:center;justify-content:space-between;gap:8px;border:1px solid rgba(148,163,184,.24);background:rgba(15,23,42,.78);border-radius:10px;padding:9px 10px;color:#e2e8f0;font-size:12px;font-weight:900;}
 #cloudProfilePanel .cloud-market-option input{width:auto;min-height:0;accent-color:#22d3ee;}
 #cloudProfilePanel .cloud-market-count{font-size:11px;color:#94a3b8;font-weight:900;}
-#cloudProfilePanel .cloud-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px;}
+#cloudProfilePanel .cloud-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:12px;}
 #cloudProfilePanel button{border:0;border-radius:10px;min-height:42px;font-weight:900;cursor:pointer;}
 #cloudProfilePanel .cloud-start{background:linear-gradient(135deg,#22c55e,#67e8f9);color:#052e16;}
 #cloudProfilePanel .cloud-stop{background:linear-gradient(135deg,#7f1d1d,#ef4444);color:#fff;}
+#cloudProfilePanel .cloud-restart{background:linear-gradient(135deg,#f59e0b,#facc15);color:#422006;}
 #cloudProfilePanel .cloud-save{background:#0ea5e9;color:#e0f2fe;}
 #cloudProfilePanel .cloud-history-stats{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-top:12px;}
 #cloudProfilePanel .cloud-history-stats>div{background:#0f172a;border:1px solid #334155;border-radius:10px;padding:10px;text-align:center;}
@@ -110,6 +111,19 @@
         <label class="cloud-check">Allow Auto Resume <input id="cloudAllowAutoResume" type="checkbox"></label>
       </div>
       <details class="ui-group" style="margin-top:10px;">
+        <summary>Jamaica EST Trade Times</summary>
+        <div class="ui-group-body">
+          <div class="cloud-toggle-row">
+            <label class="cloud-check">Specific Time Trade <input id="cloudSpecificTimeEnabled" type="checkbox"></label>
+            <label>Window Minutes <input id="cloudSpecificTimeWindow" type="number" min="0" max="30" step="1" value="1"></label>
+          </div>
+          <label style="margin-top:8px;">Trade Times
+            <textarea id="cloudSpecificTradeTimes" placeholder="09:30, 14:05, 18:45"></textarea>
+          </label>
+          <div class="cloud-market-count">Times use Jamaica EST. The bot only fires a valid Under 9 signal inside these minutes.</div>
+        </div>
+      </details>
+      <details class="ui-group" style="margin-top:10px;">
         <summary>Backup Thinking Thresholds</summary>
         <div class="ui-group-body">
           <div class="cloud-settings-grid">
@@ -122,6 +136,7 @@
       </details>
       <div class="cloud-actions">
         <button class="cloud-start" type="button" onclick="startCloudUnder9()">Start Cloud Bot</button>
+        <button class="cloud-restart" type="button" onclick="restartCloudUnder9()">Restart Cloud Bot</button>
         <button class="cloud-stop" type="button" onclick="stopCloudUnder9()">Stop Cloud Bot</button>
       </div>
       <button class="cloud-save" type="button" onclick="saveCloudUnder9Settings()" style="width:100%;margin-top:10px;">Save Cloud Settings</button>

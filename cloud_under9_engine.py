@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from collections import Counter, deque
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 from cloud_market_rotation import DEFAULT_CLOUD_MARKETS, next_market, normalize_allowed_markets, normalize_cloud_symbol
 from cloud_risk import evaluate_under9_backup, merge_risk_settings
@@ -47,8 +48,61 @@ DEFAULT_CLOUD_SETTINGS = {
     "max_daily_loss": 0.0,
     "max_trades_per_session": 0,
     "low_balance_stop": 0.0,
+    "specific_time_enabled": False,
+    "specific_trade_times": [],
+    "specific_time_window_minutes": 1,
     **merge_risk_settings({}),
 }
+
+JAMAICA_TZ = timezone(timedelta(hours=-5), "EST")
+
+
+def _jamaica_now(now_ts: float | None = None) -> datetime:
+    return datetime.fromtimestamp(float(now_ts or time.time()), JAMAICA_TZ)
+
+
+def _normalize_trade_times(value) -> list[str]:
+    if value in (None, ""):
+        return []
+    if isinstance(value, (list, tuple, set)):
+        parts = list(value)
+    else:
+        text = str(value or "").replace("\n", ",").replace(";", ",").replace("|", ",")
+        parts = [part.strip() for part in text.split(",")]
+    out = []
+    seen = set()
+    for raw in parts:
+        item = str(raw or "").strip()
+        if not item:
+            continue
+        if ":" in item:
+            hh, mm = item.split(":", 1)
+        elif len(item) in (3, 4) and item.isdigit():
+            hh, mm = item[:-2], item[-2:]
+        else:
+            continue
+        try:
+            hour = int(hh)
+            minute = int(mm)
+        except Exception:
+            continue
+        if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+            continue
+        normalized = f"{hour:02d}:{minute:02d}"
+        if normalized not in seen:
+            seen.add(normalized)
+            out.append(normalized)
+    return sorted(out)
+
+
+def _time_to_minutes(value: str) -> int:
+    hour, minute = str(value).split(":", 1)
+    return int(hour) * 60 + int(minute)
+
+
+def _minute_distance(a: int, b: int) -> int:
+    diff = abs(int(a) - int(b))
+    return min(diff, 1440 - diff)
 
 
 @dataclass(frozen=True)
@@ -191,6 +245,9 @@ class CloudUnder9Engine:
         raw["max_daily_loss"] = max(0.0, _float_value(raw.get("max_daily_loss"), 0.0))
         raw["max_trades_per_session"] = max(0, _int_value(raw.get("max_trades_per_session"), 0))
         raw["low_balance_stop"] = max(0.0, _float_value(raw.get("low_balance_stop"), 0.0))
+        raw["specific_time_enabled"] = _bool_value(raw.get("specific_time_enabled"), False)
+        raw["specific_trade_times"] = _normalize_trade_times(raw.get("specific_trade_times"))
+        raw["specific_time_window_minutes"] = max(0, min(30, _int_value(raw.get("specific_time_window_minutes"), 1)))
         raw.update(merge_risk_settings(raw))
         return raw
 
@@ -296,6 +353,31 @@ class CloudUnder9Engine:
         self.cloud_status = f"Rotated to {new_market}"
         return {"type": "switch_market", "old_symbol": old_market, "new_symbol": new_market, "reason": "No valid Under 9 setup"}
 
+    def _specific_time_status(self, now_ts: float | None = None) -> dict:
+        jamaica = _jamaica_now(now_ts)
+        return {
+            "specific_time_enabled": bool(self.settings.get("specific_time_enabled")),
+            "specific_trade_times": list(self.settings.get("specific_trade_times") or []),
+            "specific_time_window_minutes": int(self.settings.get("specific_time_window_minutes") or 0),
+            "jamaica_time": jamaica.strftime("%H:%M"),
+            "jamaica_date": jamaica.strftime("%Y-%m-%d"),
+            "jamaica_timezone": "EST Jamaica",
+        }
+
+    def _specific_time_allows_trade(self, now_ts: float) -> tuple[bool, str]:
+        if not self.settings.get("specific_time_enabled"):
+            return True, ""
+        times = list(self.settings.get("specific_trade_times") or [])
+        info = self._specific_time_status(now_ts)
+        if not times:
+            return False, "Specific time trading is on. Add at least one Jamaica EST trade time."
+        current_minute = _time_to_minutes(info["jamaica_time"])
+        window = int(self.settings.get("specific_time_window_minutes") or 0)
+        for item in times:
+            if _minute_distance(current_minute, _time_to_minutes(item)) <= window:
+                return True, ""
+        return False, f"Waiting for Jamaica EST trade time. Now {info['jamaica_time']}, allowed: {', '.join(times)}"
+
     def on_tick(self, tick: dict, digit: int, *, balance: float | None = None, now_ts: float | None = None) -> list[dict]:
         if not self.running:
             return []
@@ -338,6 +420,13 @@ class CloudUnder9Engine:
             return [rotation] if rotation else actions
 
         if safe_digit != 9:
+            rotation = self._market_rotation_action(now_ts)
+            return [rotation] if rotation else actions
+
+        time_allowed, time_reason = self._specific_time_allows_trade(now_ts)
+        if not time_allowed:
+            self.last_signal = time_reason
+            self.log("specific time gate blocked market=%s reason=%s", self.current_market, time_reason)
             rotation = self._market_rotation_action(now_ts)
             return [rotation] if rotation else actions
 
@@ -493,6 +582,7 @@ class CloudUnder9Engine:
             "losses": int(self.losses),
             "session_trade_count": int(self.session_trade_count),
             "settings": dict(self.settings),
+            **self._specific_time_status(),
         }
 
     def export_state(self) -> dict:

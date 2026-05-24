@@ -3789,12 +3789,38 @@ def _current_session_user_safe():
         return ""
 
 
+def _cloud_account_id_for_state(state):
+    state = state if isinstance(state, dict) else {}
+    for key in ("deriv_account_id", "loginid", "account_id"):
+        account_id = str(state.get(key) or "").strip().upper()
+        if account_id and account_id not in {"UNKNOWN", "PAT", "OAUTH_ACCOUNT_REQUIRED"}:
+            return account_id
+    return ""
+
+
 def _cloud_identity_for_state(state, require_token=False):
     state = state if isinstance(state, dict) else {}
     token = str(state.get("api_token") or "").strip()
+    owner = str(state.get("username") or _current_session_user_safe() or "").strip().lower()
+    connection_mode = _deriv_trade_connection_mode(state)
+    account_id = _cloud_account_id_for_state(state)
+    if connection_mode in ("oauth", "pat") and account_id and token:
+        key = f"user:{owner}:account:{account_id.lower()}" if owner else f"account:{account_id.lower()}"
+        try:
+            state["cloud_session_key"] = key
+        except Exception:
+            pass
+        return {
+            "key": key,
+            "token_verified": True,
+            "token_fingerprint": "",
+            "cloud_account_id": account_id,
+            "connection_mode": connection_mode,
+            "identity_type": "account_id",
+            "requires_token_verification": False,
+        }
     fingerprint = _cloud_token_fingerprint(token)
     if fingerprint:
-        owner = str(state.get("username") or _current_session_user_safe() or "").strip().lower()
         key = f"user:{owner}:token:{fingerprint}" if owner else f"token:{fingerprint}"
         try:
             state["cloud_session_key"] = key
@@ -3804,6 +3830,9 @@ def _cloud_identity_for_state(state, require_token=False):
             "key": key,
             "token_verified": True,
             "token_fingerprint": fingerprint[-12:],
+            "cloud_account_id": account_id,
+            "connection_mode": connection_mode,
+            "identity_type": "token_fingerprint",
             "requires_token_verification": False,
         }
     if require_token:
@@ -3811,12 +3840,18 @@ def _cloud_identity_for_state(state, require_token=False):
             "key": "",
             "token_verified": False,
             "token_fingerprint": "",
+            "cloud_account_id": account_id,
+            "connection_mode": connection_mode,
+            "identity_type": "",
             "requires_token_verification": True,
         }
     return {
         "key": "",
         "token_verified": False,
         "token_fingerprint": "",
+        "cloud_account_id": account_id,
+        "connection_mode": connection_mode,
+        "identity_type": "",
         "requires_token_verification": True,
     }
 
@@ -3839,11 +3874,11 @@ def _ensure_cloud_runtime_for_state(source_state, cloud_key, status=None):
         return False
     owner = str(source_state.get("username") or _current_session_user_safe() or "").strip().lower()
     if owner:
-        owner_prefix = f"user:{owner}:token:"
+        owner_prefix = f"user:{owner}:"
         try:
             for other_key in cloud_manager.session_keys():
                 if other_key != cloud_key and str(other_key).startswith(owner_prefix):
-                    cloud_manager.stop(other_key, "Stopped: another Cloud API token was verified.")
+                    cloud_manager.stop(other_key, "Stopped: another Cloud account/session was verified.")
                     _stop_cloud_runtime_for_key(other_key, "cloud_single_session_per_user")
         except Exception:
             logger.exception("cloud_single_session_cleanup_failed owner=%s", owner)
@@ -3859,6 +3894,8 @@ def _ensure_cloud_runtime_for_state(source_state, cloud_key, status=None):
         "cloud_owner_username": source_state.get("username") or _current_session_user_safe() or "",
         "cloud_session_key": cloud_key,
         "cloud_token_fingerprint": _cloud_token_fingerprint(token)[-12:],
+        "cloud_account_id": _cloud_account_id_for_state(source_state),
+        "cloud_identity_type": _cloud_identity_for_state(source_state).get("identity_type", ""),
         "active_profile": "CLOUD",
         "current_symbol": current_market,
         "human_symbol": current_market,
@@ -7036,6 +7073,56 @@ def _guard_auto_enable(client_id, state, profile, strat, attr_name, mode_label=N
     if currently_enabled:
         return None
     return _auto_enable_connection_error_response(client_id, state, profile, mode_label or attr_name)
+
+
+def _monthly_kidgx_replacement_active():
+    try:
+        ctx = get_user_license_context()
+        return bool(ctx.get("is_monthly") and not ctx.get("is_lifetime") and not ctx.get("is_full_access"))
+    except Exception:
+        return False
+
+
+def _send_monthly_jokerjoe_kidgx_trade_now(client_id, state, strat, *, reason="kidgx_monthly"):
+    if not _monthly_kidgx_replacement_active():
+        return False, "not_monthly_kidgx"
+    if not state or not strat or not bool(getattr(strat, "kidgx_auto", False)):
+        return False, "KidGx is off"
+    try:
+        barrier = int(5 if getattr(strat, "kidgx_barrier", 5) is None else getattr(strat, "kidgx_barrier", 5))
+    except Exception:
+        barrier = 5
+    barrier = max(0, min(9, barrier))
+    try:
+        stake = float(state.get("auto_stake", 1.0) or 1.0)
+    except Exception:
+        stake = 1.0
+    symbol = str(state.get("current_symbol") or state.get("human_symbol") or "R_10").strip() or "R_10"
+    logger.info(
+        "[%s] monthly_kidgx_immediate_trade profile=JOKERJOE reason=%s symbol=%s barrier=%s stake=%s",
+        client_id,
+        reason,
+        symbol,
+        barrier,
+        stake,
+    )
+    return send_buy_with_profile(
+        client_id,
+        "JOKERJOE",
+        "DIFFERS",
+        stake,
+        symbol,
+        barrier,
+        duration=1,
+        duration_unit="t",
+        mode="KIDGX",
+        extra_meta={
+            "button": "monthly KidGx",
+            "strategy_name": "monthly KidGx",
+            "kidgx_replacement": True,
+            "kidgx_immediate_reason": reason,
+        },
+    )
 
 
 def _check_ws_connect_timeout(client_id, state, now_ts=None):
@@ -16200,23 +16287,6 @@ def run_auto_trade(client_id, state):
             duration = sig.get("duration", 1)
             duration_unit = sig.get("duration_unit", "t")
             mode = sig.get("mode")
-            is_jokerjoe_kidgx_differs = (
-                active_profile == "JOKERJOE"
-                and str(mode or "").upper() == "KIDGX"
-                and str(ctype or "").upper() in ("DIFFERS", "DIFF", "DIGITDIFF", "DIGITDIFFERS")
-            )
-            if is_jokerjoe_kidgx_differs:
-                now_ts = time.time()
-                next_allowed = float(state.get("_temp_jokerjoe_kidgx_next_differs_at", 0.0) or 0.0)
-                if now_ts < next_allowed:
-                    logger.info(
-                        "[%s] TEMP jokerjoe_kidgx_differs_throttled remaining=%.2fs barrier=%s symbol=%s",
-                        client_id,
-                        max(0.0, next_allowed - now_ts),
-                        barrier,
-                        symbol,
-                    )
-                    continue
             if str(mode or "").upper() == "KIDGX":
                 if _uses_new_deriv_trade_api(state):
                     resolved_symbol, sym_err = resolve_new_api_symbol(
@@ -16324,8 +16394,6 @@ def run_auto_trade(client_id, state):
 
             if ok:
                 logger.info(f"[{client_id}] 🤖 AUTO TRADE SENT ({active_profile}): {ctype} barrier={barrier} stake={stake} mode={sig.get('mode')}")
-                if is_jokerjoe_kidgx_differs:
-                    state["_temp_jokerjoe_kidgx_next_differs_at"] = time.time() + 5.0
                 if str(mode or "").upper() == "KIDGX":
                     logger.info("[%s] TEMP kidgx_trade_sent profile=%s symbol=%s type=%s barrier=%s", client_id, active_profile, symbol, ctype, barrier)
                 if hasattr(strategy, "on_auto_trade_sent"):
@@ -21940,6 +22008,7 @@ def toggle_kidgx_auto_route():
     if blocked:
         return blocked
 
+    monthly_replacement = _monthly_kidgx_replacement_active()
     barrier = data.get("barrier", None)
     try:
         if profile == "JOKERJOE":
@@ -21951,8 +22020,30 @@ def toggle_kidgx_auto_route():
     except TypeError:
         new_val = strat.toggle_kidgx_auto()
 
+    if monthly_replacement and bool(new_val):
+        try:
+            strat.kidgx_cooldown_seconds = 0.0
+        except Exception:
+            pass
+        if profile == "KOOLKID" and hasattr(strat, "barrier_analysis_running"):
+            try:
+                if not bool(getattr(strat, "barrier_analysis_running", False)):
+                    strat.toggle_barrier_analysis()
+            except Exception:
+                pass
+        if profile == "JOKERJOE":
+            try:
+                strat.kidgx_contract_type = "DIFFERS"
+            except Exception:
+                pass
+
     if _sync_monthly_profile_master_auto(state, profile, new_val):
         send_stats_update(cid)
+
+    immediate_ok = None
+    immediate_msg = ""
+    if monthly_replacement and profile == "JOKERJOE" and bool(new_val):
+        immediate_ok, immediate_msg = _send_monthly_jokerjoe_kidgx_trade_now(cid, state, strat, reason="toggle_on")
 
     try:
         socketio.emit("auto_mode_update", strat.get_ui_payload().get("auto_modes", {}), room=cid)
@@ -21966,6 +22057,15 @@ def toggle_kidgx_auto_route():
             pass
 
     payload = {"status": "success", "profile": profile, "kidgx_auto": bool(new_val)}
+    if monthly_replacement:
+        payload["kidgx_replacement"] = True
+        payload["message"] = "Monthly KidGx replacement active"
+        if immediate_ok is not None:
+            payload["immediate_trade_sent"] = bool(immediate_ok)
+            payload["immediate_trade_message"] = immediate_msg
+    if profile == "KOOLKID":
+        payload["barrier_analysis"] = bool(getattr(strat, "barrier_analysis_running", False))
+        payload["selected"] = getattr(strat, "barrier_analysis_selected", "")
     if profile == "JOKERJOE":
         payload["barrier"] = int(5 if getattr(strat, "kidgx_barrier", 5) is None else getattr(strat, "kidgx_barrier", 5))
     return jsonify(payload)
@@ -21984,12 +22084,21 @@ def set_kidgx_barrier_route():
 
     barrier = int(data.get("barrier", 5))
     b = strat.set_kidgx_barrier(barrier)
+    immediate_ok = None
+    immediate_msg = ""
+    if _monthly_kidgx_replacement_active() and bool(getattr(strat, "kidgx_auto", False)):
+        immediate_ok, immediate_msg = _send_monthly_jokerjoe_kidgx_trade_now(cid, state, strat, reason="barrier_changed")
     try:
         socketio.emit("digit_analysis", strat.get_ui_payload(), room=cid)
         emit_jokerjoe_modes(cid, strat)
     except Exception:
         pass
-    return jsonify({"status": "success", "barrier": int(b)})
+    payload = {"status": "success", "barrier": int(b)}
+    if immediate_ok is not None:
+        payload["kidgx_replacement"] = True
+        payload["immediate_trade_sent"] = bool(immediate_ok)
+        payload["immediate_trade_message"] = immediate_msg
+    return jsonify(payload)
 
 
 @app.route("/toggle_barrier_analysis", methods=["POST"])

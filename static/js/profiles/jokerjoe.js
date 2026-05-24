@@ -157,6 +157,12 @@ function renderTurboToggleJokerjoe() {
     const type = String((ctx && ctx.license_type) || "").toLowerCase();
     return !!(ctx && (ctx.is_lifetime || ctx.is_monthly || type === "lifetime" || type === "monthly" || type === "beta_testers"));
   }
+  function isMonthlyKidGxReplacementUserJokerjoe() {
+    const ctx = window.LICENSE_CONTEXT || (App() && App().licenseContext) || {};
+    const type = String((ctx && ctx.license_type) || "").toLowerCase();
+    const lifetime = !!(ctx && (ctx.is_lifetime || ctx.is_full_access || type === "lifetime" || type === "testers" || type === "beta_testers"));
+    return !!(ctx && !lifetime && (ctx.is_monthly || type === "monthly" || type === "paid_monthly" || type === "fifteen_day"));
+  }
   function isKid100WinsFeatureUserJokerjoe() {
     return true;
   }
@@ -4084,7 +4090,8 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     const insta2Btn = document.getElementById("insta2BtnJokerjoe");
     if (kidGxBtn) {
       const on = !!state.autoModes.kidgx;
-      kidGxBtn.innerText = on ? `⚡kidGx ${state.kidgxBarrier}: ON` : `⚡kidGx ${state.kidgxBarrier}`;
+      const barrierLabel = isMonthlyKidGxReplacementUserJokerjoe() ? `(${state.kidgxBarrier})` : `${state.kidgxBarrier}`;
+      kidGxBtn.innerText = on ? `⚡kidGx ${barrierLabel}: ON` : `⚡kidGx ${barrierLabel}`;
       kidGxBtn.style.background = on ? "#22c55e" : "#1e293b";
     }
     if (aiBtn) {
@@ -4491,7 +4498,8 @@ if (!window.__jokerjoeTurboSyncBound) {
       state.autoModes.kidgx = !!r.data.kidgx_auto;
       if (r.data.barrier !== undefined) state.kidgxBarrier = Number(r.data.barrier);
       updateButtons();
-      safeToast(`⚡kidGx ${state.autoModes.kidgx ? "ON" : "OFF"} @ ${state.kidgxBarrier}`, state.autoModes.kidgx ? "success" : "error");
+      const fireMsg = r.data.immediate_trade_sent ? " • fired now" : "";
+      safeToast(`⚡kidGx ${state.autoModes.kidgx ? "ON" : "OFF"} @ ${state.kidgxBarrier}${fireMsg}`, state.autoModes.kidgx ? "success" : "error");
     } else {
       safeToast((r.data && r.data.message) || "⚡kidGx failed", "error");
     }

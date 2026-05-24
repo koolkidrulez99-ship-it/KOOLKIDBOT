@@ -190,6 +190,17 @@
     }
   }
 
+  function isMonthlyKidGxReplacementUserKoolkid() {
+    try {
+      const ctx = window.LICENSE_CONTEXT || {};
+      const type = String(ctx.license_type || "").toLowerCase();
+      const lifetime = !!(ctx.is_lifetime || ctx.is_full_access || type === "lifetime" || type === "testers" || type === "beta_testers");
+      return !!(!lifetime && (ctx.is_monthly || type === "monthly" || type === "paid_monthly" || type === "fifteen_day"));
+    } catch (e) {
+      return false;
+    }
+  }
+
   function canUseKoolkidSingleMartingale() {
     return isLifetimeUserKoolkid() || isRegularMonthlyUserKoolkid();
   }
@@ -5205,8 +5216,15 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
     const r = await postJSON("/toggle_kidgx_auto", { profile: "KOOLKID" });
     if (r.data && r.data.status === "success") {
       state.autoModes.kidgx = !!r.data.kidgx_auto;
+      if (r.data.barrier_analysis !== undefined) {
+        if (!state.barrierAnalysis || typeof state.barrierAnalysis !== "object") state.barrierAnalysis = {};
+        state.barrierAnalysis.running = !!r.data.barrier_analysis;
+        if (r.data.selected) state.barrierAnalysis.selected = r.data.selected;
+        renderBarrierAnalysis(state.barrierAnalysis);
+      }
       updateModeButtonsFromPayload({ kidgx: state.autoModes.kidgx });
-      safeToast(`⚡kidGx ${r.data.kidgx_auto ? "ON" : "OFF"}`, r.data.kidgx_auto ? "success" : "error");
+      const monthlyMsg = isMonthlyKidGxReplacementUserKoolkid() && r.data.kidgx_auto ? " • Barrier Analysis linked" : "";
+      safeToast(`⚡kidGx ${r.data.kidgx_auto ? "ON" : "OFF"}${monthlyMsg}`, r.data.kidgx_auto ? "success" : "error");
     } else {
       safeToast((r.data && r.data.message) || "⚡kidGx failed", "error");
     }
