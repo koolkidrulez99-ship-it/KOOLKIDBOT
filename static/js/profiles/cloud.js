@@ -127,14 +127,14 @@
       low_balance_stop: readNumber("cloudLowBalanceStop", 0),
       max_daily_loss: readNumber("cloudMaxDailyLoss", 0),
       max_trades_per_session: readNumber("cloudMaxTrades", 0),
-      specific_trade_times: ((byId("cloudSpecificTradeTimes") || {}).value || ""),
-      specific_time_window_minutes: readNumber("cloudSpecificTimeWindow", 1),
+      trade_time_mode: ((byId("cloudTradeTimeMode") || {}).value || "ANYTIME"),
+      custom_trade_start_time: ((byId("cloudCustomTradeStart") || {}).value || "09:00"),
+      custom_trade_end_time: ((byId("cloudCustomTradeEnd") || {}).value || "13:00"),
       allowed_markets: markets.join(","),
       capital_build_mode: !!((byId("cloudCapitalBuildMode") || {}).checked),
       enable_telegram_alerts: !!((byId("cloudTelegramAlerts") || {}).checked),
       enable_whatsapp_alerts: !!((byId("cloudWhatsappAlerts") || {}).checked),
       allow_auto_resume: !!((byId("cloudAllowAutoResume") || {}).checked),
-      specific_time_enabled: !!((byId("cloudSpecificTimeEnabled") || {}).checked),
       max_digit9_last5: readNumber("cloudMax9Last5", 2),
       max_digit9_last10: readNumber("cloudMax9Last10", 2),
       max_digit9_last20: readNumber("cloudMax9Last20", 4),
@@ -167,7 +167,9 @@
       cloudLowBalanceStop: settings.low_balance_stop,
       cloudMaxDailyLoss: settings.max_daily_loss,
       cloudMaxTrades: settings.max_trades_per_session,
-      cloudSpecificTimeWindow: settings.specific_time_window_minutes,
+      cloudTradeTimeMode: settings.trade_time_mode,
+      cloudCustomTradeStart: settings.custom_trade_start_time,
+      cloudCustomTradeEnd: settings.custom_trade_end_time,
       cloudMax9Last5: settings.max_digit9_last5,
       cloudMax9Last10: settings.max_digit9_last10,
       cloudMax9Last20: settings.max_digit9_last20,
@@ -182,12 +184,8 @@
     if(markets && document.activeElement !== markets && Array.isArray(settings.allowed_markets)){
       markets.value = settings.allowed_markets.join(",");
     }
-    const tradeTimes = byId("cloudSpecificTradeTimes");
-    if(tradeTimes && document.activeElement !== tradeTimes && Array.isArray(settings.specific_trade_times)){
-      tradeTimes.value = settings.specific_trade_times.join(", ");
-    }
     writeMarketPicker(settings.allowed_markets);
-    [["cloudCapitalBuildMode","capital_build_mode"],["cloudTelegramAlerts","enable_telegram_alerts"],["cloudWhatsappAlerts","enable_whatsapp_alerts"],["cloudAllowAutoResume","allow_auto_resume"],["cloudSpecificTimeEnabled","specific_time_enabled"]].forEach(([id,key])=>{
+    [["cloudCapitalBuildMode","capital_build_mode"],["cloudTelegramAlerts","enable_telegram_alerts"],["cloudWhatsappAlerts","enable_whatsapp_alerts"],["cloudAllowAutoResume","allow_auto_resume"]].forEach(([id,key])=>{
       const el = byId(id);
       if(el) el.checked = !!settings[key];
     });
@@ -223,7 +221,7 @@
       `Trade lock: ${status.trade_locked ? "locked" : "open for next setup"}`,
       `Last result: ${status.last_trade_result || "none"}`,
       `Jamaica time: ${status.jamaica_time || "--:--"} ${status.jamaica_timezone || "EST Jamaica"}`,
-      `Time gate: ${status.specific_time_enabled ? ((status.specific_trade_times || []).join(", ") || "no times set") : "off"}`,
+      `Time window: ${status.trade_window_label || "Anytime"}`,
       `Cloud ID: ${status.cloud_account_id || status.token_fingerprint || "not verified"}`,
       `Token: ${status.token_verified ? "verified" : "connect the exact API token/account to view/run Cloud"}`,
     ];

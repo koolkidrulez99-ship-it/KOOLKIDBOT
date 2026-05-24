@@ -48,9 +48,9 @@ DEFAULT_CLOUD_SETTINGS = {
     "max_daily_loss": 0.0,
     "max_trades_per_session": 0,
     "low_balance_stop": 0.0,
-    "specific_time_enabled": False,
-    "specific_trade_times": [],
-    "specific_time_window_minutes": 1,
+    "trade_time_mode": "ANYTIME",
+    "custom_trade_start_time": "09:00",
+    "custom_trade_end_time": "13:00",
     **merge_risk_settings({}),
 }
 
@@ -61,38 +61,34 @@ def _jamaica_now(now_ts: float | None = None) -> datetime:
     return datetime.fromtimestamp(float(now_ts or time.time()), JAMAICA_TZ)
 
 
-def _normalize_trade_times(value) -> list[str]:
-    if value in (None, ""):
-        return []
-    if isinstance(value, (list, tuple, set)):
-        parts = list(value)
-    else:
-        text = str(value or "").replace("\n", ",").replace(";", ",").replace("|", ",")
-        parts = [part.strip() for part in text.split(",")]
-    out = []
-    seen = set()
-    for raw in parts:
-        item = str(raw or "").strip()
-        if not item:
-            continue
-        if ":" in item:
-            hh, mm = item.split(":", 1)
-        elif len(item) in (3, 4) and item.isdigit():
-            hh, mm = item[:-2], item[-2:]
-        else:
-            continue
-        try:
+def _normalize_window_time(value, fallback="09:00") -> str:
+    text = str(value or "").strip().lower().replace(" ", "")
+    if not text:
+        text = str(fallback or "09:00")
+    suffix = ""
+    if text.endswith("am") or text.endswith("pm"):
+        suffix = text[-2:]
+        text = text[:-2]
+    try:
+        if ":" in text:
+            hh, mm = text.split(":", 1)
             hour = int(hh)
-            minute = int(mm)
-        except Exception:
-            continue
+            minute = int(mm[:2])
+        elif text.isdigit():
+            hour = int(text)
+            minute = 0
+        else:
+            raise ValueError("bad time")
+        if suffix:
+            if hour == 12:
+                hour = 0
+            if suffix == "pm":
+                hour += 12
         if hour < 0 or hour > 23 or minute < 0 or minute > 59:
-            continue
-        normalized = f"{hour:02d}:{minute:02d}"
-        if normalized not in seen:
-            seen.add(normalized)
-            out.append(normalized)
-    return sorted(out)
+            raise ValueError("bad time")
+        return f"{hour:02d}:{minute:02d}"
+    except Exception:
+        return _normalize_window_time(fallback, "09:00") if str(fallback or "") != str(value or "") else "09:00"
 
 
 def _time_to_minutes(value: str) -> int:
@@ -100,9 +96,29 @@ def _time_to_minutes(value: str) -> int:
     return int(hour) * 60 + int(minute)
 
 
-def _minute_distance(a: int, b: int) -> int:
-    diff = abs(int(a) - int(b))
-    return min(diff, 1440 - diff)
+def _normalize_trade_time_mode(value) -> str:
+    mode = str(value or "").strip().upper().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "": "ANYTIME",
+        "OFF": "ANYTIME",
+        "NONE": "ANYTIME",
+        "ALL": "ANYTIME",
+        "ANY": "ANYTIME",
+        "ANY_TIME": "ANYTIME",
+        "9AM_1PM": "PRESET_9_13",
+        "09_13": "PRESET_9_13",
+        "MORNING": "PRESET_9_13",
+        "PRESET_MORNING": "PRESET_9_13",
+        "5PM_1AM": "PRESET_17_01",
+        "17_01": "PRESET_17_01",
+        "EVENING": "PRESET_17_01",
+        "NIGHT": "PRESET_17_01",
+        "PRESET_NIGHT": "PRESET_17_01",
+    }
+    mode = aliases.get(mode, mode)
+    if mode not in ("ANYTIME", "PRESET_9_13", "PRESET_17_01", "CUSTOM"):
+        mode = "ANYTIME"
+    return mode
 
 
 @dataclass(frozen=True)
@@ -245,9 +261,11 @@ class CloudUnder9Engine:
         raw["max_daily_loss"] = max(0.0, _float_value(raw.get("max_daily_loss"), 0.0))
         raw["max_trades_per_session"] = max(0, _int_value(raw.get("max_trades_per_session"), 0))
         raw["low_balance_stop"] = max(0.0, _float_value(raw.get("low_balance_stop"), 0.0))
-        raw["specific_time_enabled"] = _bool_value(raw.get("specific_time_enabled"), False)
-        raw["specific_trade_times"] = _normalize_trade_times(raw.get("specific_trade_times"))
-        raw["specific_time_window_minutes"] = max(0, min(30, _int_value(raw.get("specific_time_window_minutes"), 1)))
+        raw["trade_time_mode"] = _normalize_trade_time_mode(raw.get("trade_time_mode"))
+        raw["custom_trade_start_time"] = _normalize_window_time(raw.get("custom_trade_start_time"), "09:00")
+        raw["custom_trade_end_time"] = _normalize_window_time(raw.get("custom_trade_end_time"), "13:00")
+        for old_key in ("specific_time_enabled", "specific_trade_times", "specific_time_window_minutes"):
+            raw.pop(old_key, None)
         raw.update(merge_risk_settings(raw))
         return raw
 
@@ -353,30 +371,49 @@ class CloudUnder9Engine:
         self.cloud_status = f"Rotated to {new_market}"
         return {"type": "switch_market", "old_symbol": old_market, "new_symbol": new_market, "reason": "No valid Under 9 setup"}
 
-    def _specific_time_status(self, now_ts: float | None = None) -> dict:
+    def _trade_window_for_settings(self) -> tuple[str | None, str | None, str]:
+        mode = _normalize_trade_time_mode(self.settings.get("trade_time_mode"))
+        if mode == "PRESET_9_13":
+            return "09:00", "13:00", "9:00 AM - 1:00 PM"
+        if mode == "PRESET_17_01":
+            return "17:00", "01:00", "5:00 PM - 1:00 AM"
+        if mode == "CUSTOM":
+            start = _normalize_window_time(self.settings.get("custom_trade_start_time"), "09:00")
+            end = _normalize_window_time(self.settings.get("custom_trade_end_time"), "13:00")
+            return start, end, f"{start} - {end}"
+        return None, None, "Anytime"
+
+    def _trade_time_status(self, now_ts: float | None = None) -> dict:
         jamaica = _jamaica_now(now_ts)
+        start, end, label = self._trade_window_for_settings()
+        mode = _normalize_trade_time_mode(self.settings.get("trade_time_mode"))
         return {
-            "specific_time_enabled": bool(self.settings.get("specific_time_enabled")),
-            "specific_trade_times": list(self.settings.get("specific_trade_times") or []),
-            "specific_time_window_minutes": int(self.settings.get("specific_time_window_minutes") or 0),
+            "trade_time_mode": mode,
+            "custom_trade_start_time": self.settings.get("custom_trade_start_time", "09:00"),
+            "custom_trade_end_time": self.settings.get("custom_trade_end_time", "13:00"),
+            "trade_window_start": start or "",
+            "trade_window_end": end or "",
+            "trade_window_label": label,
             "jamaica_time": jamaica.strftime("%H:%M"),
             "jamaica_date": jamaica.strftime("%Y-%m-%d"),
             "jamaica_timezone": "EST Jamaica",
         }
 
-    def _specific_time_allows_trade(self, now_ts: float) -> tuple[bool, str]:
-        if not self.settings.get("specific_time_enabled"):
+    def _trade_window_allows_trade(self, now_ts: float) -> tuple[bool, str]:
+        start, end, label = self._trade_window_for_settings()
+        if not start or not end:
             return True, ""
-        times = list(self.settings.get("specific_trade_times") or [])
-        info = self._specific_time_status(now_ts)
-        if not times:
-            return False, "Specific time trading is on. Add at least one Jamaica EST trade time."
+        info = self._trade_time_status(now_ts)
         current_minute = _time_to_minutes(info["jamaica_time"])
-        window = int(self.settings.get("specific_time_window_minutes") or 0)
-        for item in times:
-            if _minute_distance(current_minute, _time_to_minutes(item)) <= window:
-                return True, ""
-        return False, f"Waiting for Jamaica EST trade time. Now {info['jamaica_time']}, allowed: {', '.join(times)}"
+        start_minute = _time_to_minutes(start)
+        end_minute = _time_to_minutes(end)
+        if start_minute <= end_minute:
+            allowed = start_minute <= current_minute <= end_minute
+        else:
+            allowed = current_minute >= start_minute or current_minute <= end_minute
+        if allowed:
+            return True, ""
+        return False, f"Waiting for Jamaica EST trade window. Now {info['jamaica_time']}, allowed: {label}"
 
     def on_tick(self, tick: dict, digit: int, *, balance: float | None = None, now_ts: float | None = None) -> list[dict]:
         if not self.running:
@@ -423,10 +460,10 @@ class CloudUnder9Engine:
             rotation = self._market_rotation_action(now_ts)
             return [rotation] if rotation else actions
 
-        time_allowed, time_reason = self._specific_time_allows_trade(now_ts)
+        time_allowed, time_reason = self._trade_window_allows_trade(now_ts)
         if not time_allowed:
             self.last_signal = time_reason
-            self.log("specific time gate blocked market=%s reason=%s", self.current_market, time_reason)
+            self.log("trade time window blocked market=%s reason=%s", self.current_market, time_reason)
             rotation = self._market_rotation_action(now_ts)
             return [rotation] if rotation else actions
 
@@ -582,7 +619,7 @@ class CloudUnder9Engine:
             "losses": int(self.losses),
             "session_trade_count": int(self.session_trade_count),
             "settings": dict(self.settings),
-            **self._specific_time_status(),
+            **self._trade_time_status(),
         }
 
     def export_state(self) -> dict:

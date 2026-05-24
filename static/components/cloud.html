@@ -111,16 +111,21 @@
         <label class="cloud-check">Allow Auto Resume <input id="cloudAllowAutoResume" type="checkbox"></label>
       </div>
       <details class="ui-group" style="margin-top:10px;">
-        <summary>Jamaica EST Trade Times</summary>
+        <summary>Jamaica EST Trading Window</summary>
         <div class="ui-group-body">
-          <div class="cloud-toggle-row">
-            <label class="cloud-check">Specific Time Trade <input id="cloudSpecificTimeEnabled" type="checkbox"></label>
-            <label>Window Minutes <input id="cloudSpecificTimeWindow" type="number" min="0" max="30" step="1" value="1"></label>
+          <div class="cloud-settings-grid">
+            <label>Trading Window
+              <select id="cloudTradeTimeMode">
+                <option value="ANYTIME">Anytime</option>
+                <option value="PRESET_9_13">9:00 AM - 1:00 PM</option>
+                <option value="PRESET_17_01">5:00 PM - 1:00 AM</option>
+                <option value="CUSTOM">Custom</option>
+              </select>
+            </label>
+            <label>Custom Start <input id="cloudCustomTradeStart" type="time" value="09:00"></label>
+            <label>Custom End <input id="cloudCustomTradeEnd" type="time" value="13:00"></label>
           </div>
-          <label style="margin-top:8px;">Trade Times
-            <textarea id="cloudSpecificTradeTimes" placeholder="09:30, 14:05, 18:45"></textarea>
-          </label>
-          <div class="cloud-market-count">Times use Jamaica EST. The bot only fires a valid Under 9 signal inside these minutes.</div>
+          <div class="cloud-market-count">Times use Jamaica EST. Overnight windows like 5:00 PM to 1:00 AM continue across midnight.</div>
         </div>
       </details>
       <details class="ui-group" style="margin-top:10px;">
