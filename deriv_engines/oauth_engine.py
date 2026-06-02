@@ -3,6 +3,7 @@ import json
 from .barrier_resolver import sanitize_parameters
 from .contract_resolver import contracts_for_candidates, normalize_contract_type
 from .symbol_resolver import resolve_symbol
+from .unchain_barrier import sanitize_unchain_higher_lower_barrier
 
 
 class OAuthDerivTradeEngine:
@@ -106,6 +107,29 @@ class OAuthDerivTradeEngine:
         )
         if sanitize_err:
             return self._fail("parameter_sanitizer", sanitize_err, client_id, debug, state)
+        is_unchain_higher_lower = str(intent.profile or "").upper().strip() == "UNCHAIN" and deriv_contract in ("CALL", "PUT")
+        if is_unchain_higher_lower:
+            before_unchain = dict(sanitized)
+            sanitized["barrier"] = sanitize_unchain_higher_lower_barrier(
+                sanitized.get("barrier", intent.barrier),
+                deriv_contract,
+            )
+            removed_barrier2 = None
+            if "barrier2" in sanitized:
+                removed_barrier2 = sanitized.pop("barrier2", None)
+            debug["sanitized_payload"] = sanitized
+            debug["resolved_barrier"] = sanitized.get("barrier")
+            d["logger"].info(
+                "[%s] unchain_oauth_barrier_finalized selected_market=%s contract_type=%s duration=%s duration_unit=%s original_parameters=%s final_parameters=%s removed_barrier2=%s",
+                client_id,
+                resolved_symbol,
+                deriv_contract,
+                intent.duration,
+                intent.duration_unit,
+                d["safe_payload"](before_unchain),
+                d["safe_payload"](sanitized),
+                removed_barrier2 is not None,
+            )
 
         req_meta = dict(intent.req_meta or {})
         req_meta.setdefault("profile", intent.profile or state.get("active_profile"))
@@ -200,6 +224,19 @@ class OAuthDerivTradeEngine:
             except Exception:
                 pass
         if proposal_err:
+            if is_unchain_higher_lower:
+                d["logger"].warning(
+                    "[%s] unchain_oauth_proposal_rejected selected_market=%s contract_type=%s duration=%s duration_unit=%s barrier=%s proposal_payload=%s deriv_error=%s websocket_stayed_connected=%s",
+                    client_id,
+                    resolved_symbol,
+                    deriv_contract,
+                    intent.duration,
+                    intent.duration_unit,
+                    sanitized.get("barrier"),
+                    d["safe_payload"](debug.get("proposal_payload") or {}),
+                    proposal_err,
+                    bool(state.get("ws_connected")),
+                )
             try:
                 state.get("req_meta", {}).pop(req_id, None)
             except Exception:

@@ -130,6 +130,7 @@ from bot_modules.human_manual_contracts import (
     fetch_human_manual_contracts_for_state as _module_fetch_human_manual_contracts_for_state,
     fetch_human_manual_contracts_for_symbol as _module_fetch_human_manual_contracts_for_symbol,
 )
+from deriv_engines.unchain_barrier import sanitize_unchain_higher_lower_barrier
 from cloud_alerts import CloudAlertDispatcher
 from cloud_routes import register_cloud_routes
 from cloud_session_manager import CloudPersistence, CloudSessionManager, ensure_cloud_tables
@@ -15871,12 +15872,15 @@ def _send_unchain_hl_trade(
     duration_unit = _clean_unchain_duration_unit(duration_unit)
     duration = _sanitize_unchain_duration(duration, duration_unit)
     u = _ensure_unchain_hl_state(state)
+    uses_new_api = _uses_new_deriv_trade_api(state)
     try:
         barrier_value = _format_unchain_barrier(barrier, side, duration_unit)
         if respect_half_barrier_toggle and bool(u.get("half_barrier_enabled")):
             barrier_value = _half_unchain_barrier(barrier_value, side, duration_unit)
     except Exception as e:
-        return False, str(e)
+        if not uses_new_api:
+            return False, str(e)
+        barrier_value = barrier
     safe_cycle_id = None
     if auto_cycle_id not in (None, ""):
         try:
@@ -15890,9 +15894,22 @@ def _send_unchain_hl_trade(
         except Exception:
             safe_auto_confidence = None
 
-    original_symbol = str(symbol or "").strip()
     deriv_contract = {"HIGHER": "CALL", "LOWER": "PUT"}[side]
-    if _uses_new_deriv_trade_api(state):
+    if uses_new_api:
+        original_barrier_value = barrier_value
+        barrier_value = sanitize_unchain_higher_lower_barrier(barrier_value, deriv_contract)
+        if barrier_value != original_barrier_value:
+            logger.info(
+                "[%s] unchain_oauth_barrier_sanitized side=%s contract_type=%s requested_barrier=%s sanitized_barrier=%s",
+                client_id,
+                side,
+                deriv_contract,
+                original_barrier_value,
+                barrier_value,
+            )
+
+    original_symbol = str(symbol or "").strip()
+    if uses_new_api:
         resolved_symbol, symbol_err = resolve_new_api_symbol(
             state,
             original_symbol,
