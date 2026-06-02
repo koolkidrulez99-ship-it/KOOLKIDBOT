@@ -19,48 +19,33 @@ class FakeResponse:
         return json.dumps(self.payload).encode("utf-8")
 
 
-def test_oauth_login_scope_includes_trade_and_account_manage():
+def test_oauth_login_scope_uses_trade_only():
     url = server._deriv_oauth_login_url("challenge", "state-value", "https://example.test/callback")
     query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
     scopes = set((query.get("scope") or [""])[0].split())
 
     assert "trade" in scopes
-    assert "account_manage" in scopes
+    assert "account_manage" not in scopes
 
 
-def test_ensure_oauth_demo_options_account_creates_when_missing(monkeypatch):
-    create_calls = []
+def test_oauth_accounts_are_read_with_get_only(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(server, "DERIV_ACCOUNTS_URL", "https://example.test/trading/v1/options/accounts")
 
-    def fake_create(access_token):
-        create_calls.append(access_token)
-        return {"account_id": "DOT777", "account_type": "demo", "currency": "USD", "is_virtual": True}
+    def fake_urlopen(req, timeout=20):
+        captured["url"] = req.full_url
+        captured["method"] = req.get_method()
+        captured["authorization"] = req.get_header("Authorization")
+        captured["timeout"] = timeout
+        return FakeResponse({"data": [{"account_id": "DOT111", "account_type": "demo", "currency": "USD"}]})
 
-    def fake_fetch(access_token, allow_empty=False):
-        assert allow_empty is True
-        return [{"account_id": "DOT777", "account_type": "demo", "currency": "USD", "is_virtual": True}]
+    monkeypatch.setattr(server.urllib.request, "urlopen", fake_urlopen)
 
-    monkeypatch.setattr(server, "_create_deriv_oauth_demo_options_account", fake_create)
-    monkeypatch.setattr(server, "_fetch_deriv_oauth_accounts", fake_fetch)
+    accounts = server._fetch_deriv_oauth_accounts("oauth-token")
 
-    accounts = server._ensure_deriv_oauth_demo_options_account(
-        "oauth-token",
-        [{"account_id": "CR123", "account_type": "real", "currency": "USD"}],
-    )
-
-    assert create_calls == ["oauth-token"]
-    assert any(account["account_id"] == "DOT777" for account in accounts)
-
-
-def test_ensure_oauth_demo_options_account_skips_create_when_demo_exists(monkeypatch):
-    create_calls = []
-    monkeypatch.setattr(server, "_create_deriv_oauth_demo_options_account", lambda token: create_calls.append(token))
-
-    accounts = server._ensure_deriv_oauth_demo_options_account(
-        "oauth-token",
-        [{"account_id": "DOT111", "account_type": "demo", "currency": "USD", "is_virtual": True}],
-    )
-
-    assert create_calls == []
+    assert captured["url"].endswith("/trading/v1/options/accounts")
+    assert captured["method"] == "GET"
+    assert captured["authorization"] == "Bearer oauth-token"
     assert accounts[0]["account_id"] == "DOT111"
 
 

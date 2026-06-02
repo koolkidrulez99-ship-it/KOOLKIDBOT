@@ -221,13 +221,7 @@ DERIV_OPTIONS_OTP_ENDPOINT_TEMPLATE = os.environ.get(
 )
 DERIV_OAUTH_CLIENT_SECRET = str(os.environ.get("DERIV_OAUTH_CLIENT_SECRET", "") or "").strip()
 DERIV_OAUTH_REDIRECT_URI = "https://koolkidbot.org/oauth/callback"
-_DERIV_OAUTH_SCOPE_RAW = str(os.environ.get("DERIV_OAUTH_SCOPE", "trade account_manage") or "trade account_manage").strip()
-_DERIV_OAUTH_SCOPE_PARTS = []
-for _scope_part in [*_DERIV_OAUTH_SCOPE_RAW.split(), "trade", "account_manage"]:
-    _scope_part = str(_scope_part or "").strip()
-    if _scope_part and _scope_part not in _DERIV_OAUTH_SCOPE_PARTS:
-        _DERIV_OAUTH_SCOPE_PARTS.append(_scope_part)
-DERIV_OAUTH_SCOPE = " ".join(_DERIV_OAUTH_SCOPE_PARTS)
+DERIV_OAUTH_SCOPE = "trade"
 DERIV_OAUTH_AUTH_URL = "https://auth.deriv.com/oauth2/auth"
 DERIV_OAUTH_TOKEN_URL = "https://auth.deriv.com/oauth2/token"
 DERIV_ACCOUNTS_URL = os.environ.get(
@@ -1972,80 +1966,6 @@ def _fetch_deriv_oauth_accounts(access_token, allow_empty=False):
         max(0, len(accounts) - demo_count),
         DERIV_OAUTH_APP_ID,
     )
-    return accounts
-
-
-def _create_deriv_oauth_demo_options_account(access_token):
-    body_payload = {
-        "currency": "USD",
-        "group": "row",
-        "account_type": "demo",
-    }
-    body = json.dumps(body_payload).encode("utf-8")
-    req = urllib.request.Request(
-        DERIV_ACCOUNTS_URL,
-        data=body,
-        method="POST",
-        headers={
-            "Deriv-App-ID": DERIV_OAUTH_APP_ID,
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "User-Agent": "Mozilla/5.0",
-        },
-    )
-    logger.info("[oauth] deriv_oauth_demo_options_create payload=%s app_id=%s", _safe_deriv_payload_text(body_payload), DERIV_OAUTH_APP_ID)
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            status_code = getattr(resp, "status", 200)
-            body_text = resp.read().decode("utf-8", errors="replace")
-            logger.info("[oauth] deriv_oauth_demo_options_create_response status=%s response_text=%s", status_code, _sanitize_deriv_oauth_response_text(body_text))
-            payload = json.loads(body_text or "{}")
-    except urllib.error.HTTPError as exc:
-        body_text = exc.read().decode("utf-8", errors="replace")
-        logger.warning("[oauth] deriv_oauth_demo_options_create_response status=%s response_text=%s", exc.code, _sanitize_deriv_oauth_response_text(body_text))
-        raise RuntimeError(f"Deriv demo Options account creation failed ({exc.code}): {_extract_deriv_rest_error(body_text)}") from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"Deriv demo Options account creation failed: {exc.reason}") from exc
-
-    raw = payload.get("data") if isinstance(payload, dict) else None
-    if isinstance(raw, list):
-        for item in raw:
-            entry = _normalize_deriv_options_account(item)
-            if entry:
-                return entry
-    if isinstance(raw, dict):
-        entry = _normalize_deriv_options_account(raw)
-        if entry:
-            return entry
-        for value in raw.values():
-            entry = _normalize_deriv_options_account(value)
-            if entry:
-                return entry
-    entry = _normalize_deriv_options_account(payload if isinstance(payload, dict) else {})
-    if entry:
-        return entry
-    return None
-
-
-def _ensure_deriv_oauth_demo_options_account(access_token, accounts=None):
-    accounts = [account for account in list(accounts or []) if isinstance(account, dict)]
-    if any(_oauth_account_is_demo(account) for account in accounts):
-        return accounts
-
-    created = _create_deriv_oauth_demo_options_account(access_token)
-    try:
-        refreshed = _fetch_deriv_oauth_accounts(access_token, allow_empty=True)
-        if any(_oauth_account_is_demo(account) for account in refreshed):
-            return refreshed
-        accounts = refreshed
-    except Exception as exc:
-        logger.warning("[oauth] deriv_oauth_accounts_refetch_after_demo_create_failed error=%s", exc)
-
-    if created and str(created.get("account_id") or "") not in {str(account.get("account_id") or "") for account in accounts}:
-        accounts.append(created)
-    if not any(_oauth_account_is_demo(account) for account in accounts):
-        raise RuntimeError("No demo Options account is available for this Deriv login")
     return accounts
 
 
@@ -20650,8 +20570,7 @@ def deriv_oauth_callback():
     try:
         token_payload = _exchange_deriv_oauth_code(code, code_verifier, redirect_uri)
         access_token = str(token_payload.get("access_token") or "").strip()
-        accounts = _fetch_deriv_oauth_accounts(access_token, allow_empty=True)
-        accounts = _ensure_deriv_oauth_demo_options_account(access_token, accounts)
+        accounts = _fetch_deriv_oauth_accounts(access_token)
     except Exception as exc:
         logger.warning("[oauth] deriv_oauth_exchange_failed error=%s", exc)
         return f"Deriv login failed: {exc}", 400
