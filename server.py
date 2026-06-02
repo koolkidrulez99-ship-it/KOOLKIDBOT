@@ -497,8 +497,16 @@ def _send_ws_request_for_response(client_id, state, payload, response_key, waite
     except Exception as exc:
         waiters.pop(req_id, None)
         waiters.pop(str(req_id), None)
-        if client_id:
+        if client_id and _should_force_ws_reconnect_on_send_exception(state, exc):
             _mark_ws_unhealthy_and_reconnect(client_id, state, "Deriv connection failed while validating market data. Reconnecting now...", emit_error=False)
+        elif client_id:
+            logger.warning(
+                "[%s] trade_failed_without_disconnect=true failed_at=%s_send error=%s ws_ready_state=%s",
+                client_id,
+                response_key,
+                exc,
+                _websocket_ready_state_label(state),
+            )
         return None, str(exc)
     if not waiter["event"].wait(max(0.40, float(timeout_sec))):
         waiters.pop(req_id, None)
@@ -1294,6 +1302,7 @@ def _execute_oauth_options_trade_engine(trade_request, *, state, req_id, stake, 
         "now_time": now_time,
         "stamp_latency": _stamp_trade_latency,
         "mark_ws_unhealthy": _mark_ws_unhealthy_and_reconnect,
+        "should_force_reconnect": _should_force_ws_reconnect_on_send_exception,
     }
     intent = TradeIntent.from_request(
         trade_request,
@@ -5539,6 +5548,18 @@ def send_buy(client_id, contract_type, stake, symbol, barrier, duration=1, durat
             _pull_req_meta_by_req_id(state, req_id)
         except Exception:
             pass
+        if str(mode or "").upper() == "KIDGX":
+            _reset_kidgx_trade_state(client_id, state, profile, meta=state.get("req_meta", {}).get(req_id, {}), reason="trade_send_failed")
+    elif str(mode or "").upper() == "KIDGX":
+        _mark_kidgx_trade_started(
+            client_id,
+            state,
+            profile,
+            meta=state.get("req_meta", {}).get(req_id, {}),
+            symbol=symbol,
+            contract_type=deriv_contract,
+            barrier=barrier,
+        )
     return ok, msg
 
 
@@ -5699,11 +5720,23 @@ def send_buy_with_profile(
                 _emit_balance_payload(client_id, state)
         except Exception:
             pass
+        if str(mode or "").upper() == "KIDGX":
+            _reset_kidgx_trade_state(client_id, state, profile, meta=state.get("req_meta", {}).get(req_id, {}), reason="trade_send_failed")
     elif emit_balance_after_send:
         try:
             _emit_balance_payload(client_id, state)
         except Exception:
             pass
+    if ok and str(mode or "").upper() == "KIDGX":
+        _mark_kidgx_trade_started(
+            client_id,
+            state,
+            profile,
+            meta=state.get("req_meta", {}).get(req_id, {}),
+            symbol=symbol,
+            contract_type=deriv_contract,
+            barrier=barrier,
+        )
     return ok, msg
 
 
@@ -13740,6 +13773,159 @@ def _clear_unchain_pending_request_state(state):
         pass
 
 
+def _is_kidgx_meta(meta):
+    if not isinstance(meta, dict):
+        return False
+    mode = str(meta.get("mode") or "").upper().strip()
+    return bool(mode == "KIDGX" or meta.get("kidgx_replacement"))
+
+
+def _kidgx_profile_from_meta(state, meta=None, fallback=None):
+    profile = str((meta or {}).get("profile") or fallback or (state or {}).get("active_profile") or "").upper().strip()
+    if profile in ("KOOLKID", "JOKERJOE"):
+        return profile
+    return ""
+
+
+def _kidgx_strategy_for_profile(state, profile):
+    profile = str(profile or "").upper().strip()
+    if profile not in ("KOOLKID", "JOKERJOE"):
+        return None
+    return ((state or {}).get("strategies") or {}).get(profile)
+
+
+def _mark_kidgx_trade_started(client_id, state, profile, *, meta=None, symbol=None, contract_type=None, barrier=None):
+    profile = _kidgx_profile_from_meta(state, meta, profile)
+    strat = _kidgx_strategy_for_profile(state, profile)
+    if strat:
+        for attr in ("isTrading", "tradeInProgress", "kidgx_trade_in_progress", "kidgx_is_trading"):
+            try:
+                setattr(strat, attr, True)
+            except Exception:
+                pass
+        for attr in ("waitingForResult", "kidgx_waiting_for_result"):
+            try:
+                setattr(strat, attr, True)
+            except Exception:
+                pass
+        for attr in ("activeContractId", "kidgx_active_contract_id"):
+            try:
+                setattr(strat, attr, None)
+            except Exception:
+                pass
+        for attr in ("proposalId", "kidgx_proposal_id"):
+            try:
+                setattr(strat, attr, None)
+            except Exception:
+                pass
+    logger.info(
+        "[%s] KidGx trade started profile=%s auth_mode=%s ws_state=%s account=%s symbol=%s contract_type=%s barrier=%s duration=%s duration_unit=%s stake=%s",
+        client_id,
+        profile or "?",
+        _deriv_trade_connection_mode(state),
+        _websocket_ready_state_label(state),
+        _mask_account_id((state or {}).get("deriv_account_id") or ""),
+        symbol or (meta or {}).get("symbol") or "",
+        contract_type or (meta or {}).get("deriv_contract_type") or (meta or {}).get("type") or "",
+        barrier if barrier not in (None, "") else (meta or {}).get("barrier"),
+        (meta or {}).get("duration"),
+        (meta or {}).get("duration_unit"),
+        (meta or {}).get("stake"),
+    )
+
+
+def _mark_kidgx_buy_confirmed(client_id, state, contract_id, meta=None):
+    if not _is_kidgx_meta(meta):
+        return
+    profile = _kidgx_profile_from_meta(state, meta)
+    strat = _kidgx_strategy_for_profile(state, profile)
+    if strat:
+        for attr in ("activeContractId", "kidgx_active_contract_id"):
+            try:
+                setattr(strat, attr, contract_id)
+            except Exception:
+                pass
+    logger.info(
+        "[%s] KidGx buy confirmed profile=%s contract_id=%s websocket_stayed_connected=%s",
+        client_id,
+        profile or "?",
+        contract_id,
+        bool((state or {}).get("ws_connected")),
+    )
+
+
+def _reset_kidgx_trade_state(client_id, state, profile=None, *, meta=None, contract=None, reason="reset"):
+    profile = _kidgx_profile_from_meta(state, meta, profile)
+    strat = _kidgx_strategy_for_profile(state, profile)
+    if not strat:
+        return
+    for attr in ("isTrading", "tradeInProgress", "kidgx_trade_in_progress", "kidgx_is_trading"):
+        try:
+            setattr(strat, attr, False)
+        except Exception:
+            pass
+    for attr in ("waitingForResult", "kidgx_waiting_for_result"):
+        try:
+            setattr(strat, attr, False)
+        except Exception:
+            pass
+    for attr in ("activeContractId", "proposalId", "kidgx_active_contract_id", "kidgx_proposal_id"):
+        try:
+            setattr(strat, attr, None)
+        except Exception:
+            pass
+    result = ""
+    profit = None
+    if isinstance(contract, dict):
+        try:
+            profit = float(contract.get("profit", 0) or 0)
+            result = "WIN" if profit > 0 else "LOSS"
+        except Exception:
+            result = str(contract.get("status") or "")
+    logger.info(
+        "[%s] KidGx result processed profile=%s reason=%s result=%s profit=%s websocket_stayed_connected=%s",
+        client_id,
+        profile or "?",
+        reason,
+        result or "",
+        profit if profit is not None else "",
+        bool((state or {}).get("ws_connected")),
+    )
+    logger.info("[%s] KidGx waiting for next signal profile=%s", client_id, profile or "?")
+
+
+def _maybe_log_kidgx_next_scan_started(client_id, state, profile, strat):
+    if not strat or not bool(getattr(strat, "kidgx_auto", False)):
+        return
+    if bool(
+        getattr(strat, "tradeInProgress", False)
+        or getattr(strat, "kidgx_trade_in_progress", False)
+        or getattr(strat, "waitingForResult", False)
+        or getattr(strat, "kidgx_waiting_for_result", False)
+    ):
+        return
+    key = f"_kidgx_next_scan_started_log_at:{profile}"
+    now_ts = time.time()
+    try:
+        last_ts = float((state or {}).get(key, 0.0) or 0.0)
+    except Exception:
+        last_ts = 0.0
+    if (now_ts - last_ts) < 3.0:
+        return
+    try:
+        state[key] = now_ts
+    except Exception:
+        pass
+    logger.info(
+        "[%s] KidGx next scan started profile=%s auth_mode=%s ws_state=%s symbol=%s",
+        client_id,
+        profile,
+        _deriv_trade_connection_mode(state),
+        _websocket_ready_state_label(state),
+        (state or {}).get("current_symbol"),
+    )
+
+
 def _cleanup_failed_buy_request(state, req_id):
     meta = _pull_req_meta_by_req_id(state, req_id)
     if not isinstance(meta, dict):
@@ -15704,6 +15890,42 @@ def _send_unchain_hl_trade(
         except Exception:
             safe_auto_confidence = None
 
+    original_symbol = str(symbol or "").strip()
+    deriv_contract = {"HIGHER": "CALL", "LOWER": "PUT"}[side]
+    if _uses_new_deriv_trade_api(state):
+        resolved_symbol, symbol_err = resolve_new_api_symbol(
+            state,
+            original_symbol,
+            context=f"UNCHAIN:{side}",
+            client_id=client_id,
+        )
+        if symbol_err:
+            logger.warning(
+                "[%s] unchain_oauth_trade_blocked failed_at=symbol_resolver side=%s original_symbol=%s error=%s websocket_stayed_connected=%s",
+                client_id,
+                side,
+                original_symbol,
+                symbol_err,
+                bool(state.get("ws_connected")),
+            )
+            return False, symbol_err
+        symbol = resolved_symbol
+    logger.info(
+        "[%s] unchain_trade_intent profile=UNCHAIN auth_mode=%s websocket_state=%s selected_account=%s side=%s original_symbol=%s resolved_symbol=%s contract_type=%s barrier=%s duration=%s duration_unit=%s stake=%s currency=USD",
+        client_id,
+        _deriv_trade_connection_mode(state),
+        _websocket_ready_state_label(state),
+        _mask_account_id(state.get("deriv_account_id") or ""),
+        side,
+        original_symbol,
+        symbol,
+        deriv_contract,
+        barrier_value,
+        duration,
+        duration_unit,
+        stake,
+    )
+
     budget_ok, budget_msg, budget_reservation = _reserve_profile_budget(state, "UNCHAIN", stake)
     if not budget_ok:
         return False, budget_msg
@@ -15713,12 +15935,16 @@ def _send_unchain_hl_trade(
         "profile": "UNCHAIN",
         "type": side,
         "barrier": barrier_value,
+        "requested_barrier": barrier,
+        "original_symbol": original_symbol,
         "stake": float(stake),
         "symbol": symbol,
+        "underlying_symbol": symbol,
         "time": now_time(),
         "duration": int(duration),
         "duration_unit": duration_unit,
-        "deriv_contract_type": {"HIGHER": "CALL", "LOWER": "PUT"}[side],
+        "contract_type": deriv_contract,
+        "deriv_contract_type": deriv_contract,
         "entry_source": (str(entry_source).upper().strip() if entry_source else None),
         "auto_cycle_id": safe_cycle_id,
         "auto_confidence": safe_auto_confidence,
@@ -15727,7 +15953,6 @@ def _send_unchain_hl_trade(
     }
     state.setdefault("req_meta", {})[req_id] = req_meta
     _stamp_trade_latency(req_meta, "buy_send")
-    deriv_contract = {"HIGHER": "CALL", "LOWER": "PUT"}[side]
     try:
         ok, msg = execute_deriv_trade({
             "client_id": client_id,
@@ -15753,6 +15978,16 @@ def _send_unchain_hl_trade(
                 _emit_balance_payload(client_id, state)
             except Exception:
                 pass
+            logger.warning(
+                "[%s] unchain_trade_failed_without_disconnect side=%s symbol=%s contract_type=%s barrier=%s error=%s websocket_stayed_connected=%s",
+                client_id,
+                side,
+                symbol,
+                deriv_contract,
+                barrier_value,
+                msg,
+                bool(state.get("ws_connected")),
+            )
             return False, msg
         u["last_action"] = f"{side} request sent on {symbol}"
         _emit_balance_payload(client_id, state)
@@ -15767,6 +16002,16 @@ def _send_unchain_hl_trade(
             _emit_balance_payload(client_id, state)
         except Exception:
             pass
+        logger.warning(
+            "[%s] unchain_trade_exception_without_disconnect side=%s symbol=%s contract_type=%s barrier=%s error=%s websocket_stayed_connected=%s",
+            client_id,
+            side,
+            symbol,
+            deriv_contract,
+            barrier_value,
+            e,
+            bool(state.get("ws_connected")),
+        )
         return False, str(e)
 
 
@@ -16294,6 +16539,7 @@ def run_auto_trade(client_id, state):
                 setattr(strategy, "current_auto_stake", float(state.get("auto_stake", 1.0) or 1.0))
             except Exception:
                 setattr(strategy, "current_auto_stake", 1.0)
+            _maybe_log_kidgx_next_scan_started(client_id, state, active_profile, strategy)
             auto_sig = strategy.check_auto_trade_signal()
             if auto_sig:
                 if not signals:
@@ -16329,6 +16575,21 @@ def run_auto_trade(client_id, state):
             duration_unit = sig.get("duration_unit", "t")
             mode = sig.get("mode")
             if str(mode or "").upper() == "KIDGX":
+                if _uses_new_deriv_trade_api(state) and bool(
+                    getattr(strategy, "tradeInProgress", False)
+                    or getattr(strategy, "kidgx_trade_in_progress", False)
+                    or getattr(strategy, "waitingForResult", False)
+                    or getattr(strategy, "kidgx_waiting_for_result", False)
+                ):
+                    logger.info(
+                        "[%s] KidGx duplicate signal blocked profile=%s symbol=%s type=%s barrier=%s waiting_for_result=true",
+                        client_id,
+                        active_profile,
+                        symbol,
+                        ctype,
+                        barrier,
+                    )
+                    continue
                 if _uses_new_deriv_trade_api(state):
                     resolved_symbol, sym_err = resolve_new_api_symbol(
                         state,
@@ -16452,6 +16713,12 @@ def run_auto_trade(client_id, state):
                 logger.error(f"[{client_id}] ❌ AUTO TRADE FAILED: {msg}")
                 if str(mode or "").upper() == "KIDGX":
                     logger.warning("[%s] TEMP kidgx_trade_failed profile=%s symbol=%s type=%s barrier=%s msg=%s", client_id, active_profile, symbol, ctype, barrier, msg)
+                    _reset_kidgx_trade_state(client_id, state, active_profile, meta={"profile": active_profile, "mode": "KIDGX", "type": ctype, "barrier": barrier, "symbol": symbol}, reason=f"trade_failed:{msg}")
+                    if _should_emit_ui_event(state, f"kidgx_api_error:{active_profile}:{msg}", 2.5):
+                        try:
+                            socketio.emit("api_error", {"message": str(msg)}, room=client_id)
+                        except Exception:
+                            pass
                 if hasattr(strategy, "on_auto_trade_failed"):
                     try:
                         strategy.on_auto_trade_failed(sig, msg)
@@ -18827,6 +19094,31 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 failed_buy_meta = _cleanup_failed_buy_request(state, req_id)
             except Exception:
                 pass
+            if _is_kidgx_meta(failed_buy_meta):
+                try:
+                    _reset_kidgx_trade_state(
+                        client_id,
+                        state,
+                        meta=failed_buy_meta,
+                        reason=f"deriv_error:{msg}",
+                    )
+                except Exception:
+                    pass
+            if str((failed_buy_meta or {}).get("profile") or "").upper() in ("UNCHAIN", "NTT", "JOKERJOE", "KOOLKID"):
+                logger.warning(
+                    "[%s] profile_trade_error_kept_connection profile=%s mode=%s symbol=%s contract_type=%s barrier=%s duration=%s duration_unit=%s stake=%s error=%s websocket_stayed_connected=%s",
+                    client_id,
+                    (failed_buy_meta or {}).get("profile"),
+                    (failed_buy_meta or {}).get("mode"),
+                    (failed_buy_meta or {}).get("symbol"),
+                    (failed_buy_meta or {}).get("deriv_contract_type") or (failed_buy_meta or {}).get("contract_type"),
+                    (failed_buy_meta or {}).get("barrier"),
+                    (failed_buy_meta or {}).get("duration"),
+                    (failed_buy_meta or {}).get("duration_unit"),
+                    (failed_buy_meta or {}).get("stake"),
+                    msg,
+                    bool(state.get("ws_connected")),
+                )
             retry_human_pair = False
             retry_human_pair_msg = None
             try:
@@ -19137,6 +19429,10 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 open_contract_refresh_scheduled = True
                 try:
                     _seqvix_jokerjoe_on_buy_confirmed(state, contract_id, meta)
+                except Exception:
+                    pass
+                try:
+                    _mark_kidgx_buy_confirmed(client_id, state, contract_id, meta)
                 except Exception:
                     pass
                 try:
@@ -19815,11 +20111,26 @@ def process_contract(client_id, contract):
             strategy = strategies.get(profile_for_contract)
             if not strategy:
                 return
+            is_kidgx_contract = _is_kidgx_meta(meta)
+            if is_kidgx_contract:
+                logger.info(
+                    "[%s] KidGx contract completed profile=%s contract_id=%s status=%s profit=%s",
+                    client_id,
+                    profile_for_contract,
+                    contract_id,
+                    contract.get("status"),
+                    contract.get("profit"),
+                )
             prev_block = getattr(strategy, "risk_block_reason", None)
             strategy.on_contract(contract, settled_balance)
             if hasattr(strategy, "on_contract_settled"):
                 try:
                     strategy.on_contract_settled(contract, meta=meta)
+                except Exception:
+                    pass
+            if is_kidgx_contract:
+                try:
+                    _reset_kidgx_trade_state(client_id, state, profile_for_contract, meta=meta, contract=contract, reason="contract_settled")
                 except Exception:
                     pass
             new_block = getattr(strategy, "risk_block_reason", None)
@@ -19891,6 +20202,26 @@ def process_contract(client_id, contract):
         if not is_auto_session_contract:
             if isinstance(meta, dict):
                 _log_trade_latency(client_id, meta, "trade_result_emit", contract_id=contract_id, profit=profit)
+            if str(profile_for_contract or "").upper() in ("KOOLKID", "JOKERJOE", "UNCHAIN", "NTT"):
+                logger.info(
+                    "[%s] profile_trade_result profile=%s mode=%s auth_mode=%s websocket_state=%s selected_account=%s contract_id=%s symbol=%s contract_type=%s barrier=%s duration=%s duration_unit=%s stake=%s status=%s profit=%s websocket_stayed_connected=%s",
+                    client_id,
+                    profile_for_contract,
+                    (meta or {}).get("mode"),
+                    _deriv_trade_connection_mode(state),
+                    _websocket_ready_state_label(state),
+                    _mask_account_id(state.get("deriv_account_id") or ""),
+                    contract_id,
+                    (meta or {}).get("symbol") or (meta or {}).get("underlying_symbol"),
+                    (meta or {}).get("deriv_contract_type") or (meta or {}).get("contract_type"),
+                    (meta or {}).get("barrier"),
+                    (meta or {}).get("duration"),
+                    (meta or {}).get("duration_unit"),
+                    (meta or {}).get("stake"),
+                    contract.get("status"),
+                    profit,
+                    bool(state.get("ws_connected")),
+                )
             entry["_server_event_ms"] = int(time.time() * 1000)
             socketio.emit("trade_result", entry, room=client_id)
         if profile_for_contract != "UNCHAIN" or is_auto_session_contract:

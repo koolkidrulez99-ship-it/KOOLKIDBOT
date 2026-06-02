@@ -226,7 +226,21 @@ class OAuthDerivTradeEngine:
             debug["error"] = str(exc)
             debug["failed_at"] = "buy_send"
             d["debug_log"](client_id, "oauth_buy_failed", debug)
-            d["mark_ws_unhealthy"](client_id, state, "Deriv connection failed while sending a trade. Reconnecting now...")
+            should_reconnect = True
+            try:
+                should_reconnect = bool(d.get("should_force_reconnect", lambda _state, _exc: True)(state, exc))
+            except Exception:
+                should_reconnect = True
+            if should_reconnect:
+                d["mark_ws_unhealthy"](client_id, state, "Deriv connection failed while sending a trade. Reconnecting now...")
+            else:
+                d["logger"].warning(
+                    "[%s] trade_failed_without_disconnect=true failed_at=buy_send error=%s ws_ready_state=%s otp_authenticated=%s",
+                    client_id,
+                    exc,
+                    d["ws_ready_state"](state),
+                    d["otp_authenticated"](state),
+                )
             return False, str(exc)
         d["logger"].info("[%s] oauth_engine_trade_sent proposal_id=%s buy_payload=%s", client_id, proposal_id, d["safe_payload"](buy_payload))
         return True, "Trade sent"
