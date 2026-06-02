@@ -43,7 +43,7 @@ def test_legacy_token_execute_deriv_trade_keeps_old_buy_payload(monkeypatch):
     state = _base_state("legacy")
     monkeypatch.setattr(server, "clients", {"cid-legacy": state})
     called = []
-    monkeypatch.setattr(server, "_execute_oauth_pat_trade_engine", lambda *a, **k: called.append((a, k)) or (False, "wrong path"))
+    monkeypatch.setattr(server, "_execute_oauth_options_trade_engine", lambda *a, **k: called.append((a, k)) or (False, "wrong path"))
 
     ok, msg = server.execute_deriv_trade({
         "client_id": "cid-legacy",
@@ -79,7 +79,7 @@ def test_oauth_execute_deriv_trade_routes_to_oauth_engine(monkeypatch):
         })
         return True, "oauth engine"
 
-    monkeypatch.setattr(server, "_execute_oauth_pat_trade_engine", fake_engine)
+    monkeypatch.setattr(server, "_execute_oauth_options_trade_engine", fake_engine)
 
     ok, msg = server.execute_deriv_trade({
         "client_id": "cid-oauth",
@@ -97,3 +97,29 @@ def test_oauth_execute_deriv_trade_routes_to_oauth_engine(monkeypatch):
     assert captured["state"] is state
     assert captured["stake"] == 1.0
     assert state["ws"].messages == []
+
+
+def test_pat_like_manual_token_uses_legacy_trade_path(monkeypatch):
+    state = _base_state("legacy")
+    state["api_token"] = "pat_manual_user_token"
+    monkeypatch.setattr(server, "clients", {"cid-pat": state})
+    called = []
+    monkeypatch.setattr(server, "_execute_oauth_options_trade_engine", lambda *a, **k: called.append((a, k)) or (False, "wrong path"))
+
+    ok, msg = server.execute_deriv_trade({
+        "client_id": "cid-pat",
+        "state": state,
+        "contract_type": "OVER",
+        "stake": 1.0,
+        "symbol": "R_10",
+        "barrier": 5,
+        "duration": 1,
+        "duration_unit": "t",
+    })
+
+    assert ok is True
+    assert msg == "Trade sent"
+    assert called == []
+    assert server._deriv_trade_connection_mode(state) == "legacy_token"
+    assert server._uses_new_deriv_trade_api(state) is False
+    assert state["ws"].messages[-1]["buy"] == 1

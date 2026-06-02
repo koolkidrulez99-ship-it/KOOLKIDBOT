@@ -6,7 +6,7 @@ from .symbol_resolver import resolve_symbol
 
 
 class OAuthDerivTradeEngine:
-    """Proposal-first Deriv engine for OAuth/PAT OTP WebSocket users only."""
+    """Proposal-first Deriv Options engine for OAuth OTP WebSocket users only."""
 
     def __init__(self, deps):
         self.deps = deps
