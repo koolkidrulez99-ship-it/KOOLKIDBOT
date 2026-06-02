@@ -3,7 +3,12 @@ import json
 from .barrier_resolver import sanitize_parameters
 from .contract_resolver import contracts_for_candidates, normalize_contract_type
 from .symbol_resolver import resolve_symbol
-from .unchain_barrier import sanitize_unchain_higher_lower_barrier
+from .unchain_barrier import (
+    choose_unchain_contract,
+    normalize_unchain_direction,
+    relevant_unchain_contracts,
+    resolve_unchain_higher_lower_barrier,
+)
 
 
 class OAuthDerivTradeEngine:
@@ -49,14 +54,46 @@ class OAuthDerivTradeEngine:
             d["logger"].info("[%s] skipped_invalid_symbol=%s context=%s error=%s", client_id, intent.symbol, intent.button or intent.profile or "trade", symbol_err)
             return self._fail("symbol_resolver", symbol_err, client_id, debug, state)
 
-        deriv_contract = normalize_contract_type(intent.contract_type)
+        profile_name = str(intent.profile or "").upper().strip()
+        unchain_direction = normalize_unchain_direction(
+            (intent.req_meta or {}).get("unchain_direction")
+            or (intent.req_meta or {}).get("type")
+            or intent.contract_type
+            or intent.button
+        )
+        is_unchain_higher_lower = profile_name == "UNCHAIN" and unchain_direction in ("up", "down")
+        deriv_contract = str(intent.contract_type or "").upper().strip() if is_unchain_higher_lower else normalize_contract_type(intent.contract_type)
         debug["deriv_contract_type"] = deriv_contract
         if not deriv_contract:
             return self._fail("contract_resolver", "Invalid contract type", client_id, debug, state)
         contracts_for, contracts_err = d["contracts_for"](client_id, state, resolved_symbol)
         if contracts_err:
             return self._fail("contracts_for_error", contracts_err, client_id, debug, state)
-        available = bool(contracts_for_candidates(contracts_for, deriv_contract))
+        unchain_contract_item = None
+        if is_unchain_higher_lower:
+            d["logger"].info(
+                "[%s] unchain_oauth_contracts_for_available selected_direction=%s selectedUnderlyingSymbol=%s candidates=%s",
+                client_id,
+                unchain_direction,
+                resolved_symbol,
+                d["safe_payload"](relevant_unchain_contracts(contracts_for)),
+            )
+            unchain_contract_item, choose_err = choose_unchain_contract(
+                contracts_for,
+                unchain_direction,
+                duration=intent.duration,
+                duration_unit=intent.duration_unit,
+                duration_matcher=d.get("duration_matches"),
+            )
+            if choose_err:
+                debug["contract_available"] = False
+                return self._fail("contract_resolver", choose_err, client_id, debug, state)
+            deriv_contract = str((unchain_contract_item or {}).get("contract_type") or "").upper().strip()
+            debug["deriv_contract_type"] = deriv_contract
+            debug["matched_contract"] = unchain_contract_item
+            available = bool(deriv_contract)
+        else:
+            available = bool(contracts_for_candidates(contracts_for, deriv_contract))
         debug["contract_available"] = available
         if not available:
             return self._fail("contract_resolver", f"Contract type {deriv_contract} is not available for {resolved_symbol}", client_id, debug, state)
@@ -80,62 +117,82 @@ class OAuthDerivTradeEngine:
             except Exception:
                 parameters["barrier"] = str(intent.barrier)
 
-        sanitized, sanitize_err, sanitize_meta = sanitize_parameters(
-            parameters,
-            contracts_for=contracts_for,
-            contract_type=deriv_contract,
-            requested_barrier=intent.barrier,
-            duration=intent.duration,
-            duration_unit=intent.duration_unit,
-            duration_matcher=d.get("duration_matches"),
-        )
-        debug["original_payload"] = parameters
-        debug["sanitized_payload"] = sanitized
-        debug["resolved_barrier"] = (sanitize_meta or {}).get("resolved_barrier")
-        debug["matched_contract"] = (sanitize_meta or {}).get("matched_item")
-        removed = (sanitize_meta or {}).get("removed") or {}
-        if removed:
-            debug["removed_fields"] = ",".join(sorted(removed.keys()))
-        d["logger"].info(
-            "[%s] oauth_engine_parameters_sanitized original_parameters=%s sanitized_parameters=%s removed_fields=%s resolved_barrier=%s matched_contract=%s",
-            client_id,
-            d["safe_payload"](parameters),
-            d["safe_payload"](sanitized),
-            ",".join(sorted(removed.keys())),
-            debug.get("resolved_barrier"),
-            d["safe_payload"](debug.get("matched_contract") or {}),
-        )
-        if sanitize_err:
-            return self._fail("parameter_sanitizer", sanitize_err, client_id, debug, state)
-        is_unchain_higher_lower = str(intent.profile or "").upper().strip() == "UNCHAIN" and deriv_contract in ("CALL", "PUT")
         if is_unchain_higher_lower:
-            before_unchain = dict(sanitized)
-            sanitized["barrier"] = sanitize_unchain_higher_lower_barrier(
-                sanitized.get("barrier", intent.barrier),
-                deriv_contract,
-            )
-            removed_barrier2 = None
+            sanitized = dict(parameters)
+            removed = {}
             if "barrier2" in sanitized:
-                removed_barrier2 = sanitized.pop("barrier2", None)
+                removed["barrier2"] = sanitized.pop("barrier2", None)
+            if "symbol" in sanitized:
+                removed["symbol"] = sanitized.pop("symbol", None)
+            sanitized["underlying_symbol"] = resolved_symbol
+            resolved_barrier = resolve_unchain_higher_lower_barrier(
+                intent.barrier,
+                unchain_direction,
+                unchain_contract_item,
+            )
+            if resolved_barrier in (None, "", "NaN", "nan"):
+                debug["original_payload"] = parameters
+                debug["sanitized_payload"] = sanitized
+                debug["matched_contract"] = unchain_contract_item
+                return self._fail("parameter_sanitizer", "Invalid barrier for UNCHAIN Higher/Lower", client_id, debug, state)
+            sanitized["barrier"] = resolved_barrier
+            debug["original_payload"] = parameters
             debug["sanitized_payload"] = sanitized
             debug["resolved_barrier"] = sanitized.get("barrier")
+            debug["matched_contract"] = unchain_contract_item
+            if removed:
+                debug["removed_fields"] = ",".join(sorted(removed.keys()))
             d["logger"].info(
-                "[%s] unchain_oauth_barrier_finalized selected_market=%s contract_type=%s duration=%s duration_unit=%s original_parameters=%s final_parameters=%s removed_barrier2=%s",
+                "[%s] unchain_oauth_contract_chosen selected_direction=%s selectedUnderlyingSymbol=%s chosen_contract_type=%s chosen_barrier=%s duration=%s duration_unit=%s matched_contract=%s original_parameters=%s final_parameters=%s",
                 client_id,
+                unchain_direction,
                 resolved_symbol,
                 deriv_contract,
+                resolved_barrier,
                 intent.duration,
                 intent.duration_unit,
-                d["safe_payload"](before_unchain),
+                d["safe_payload"](unchain_contract_item or {}),
+                d["safe_payload"](parameters),
                 d["safe_payload"](sanitized),
-                removed_barrier2 is not None,
             )
+        else:
+            sanitized, sanitize_err, sanitize_meta = sanitize_parameters(
+                parameters,
+                contracts_for=contracts_for,
+                contract_type=deriv_contract,
+                requested_barrier=intent.barrier,
+                duration=intent.duration,
+                duration_unit=intent.duration_unit,
+                duration_matcher=d.get("duration_matches"),
+            )
+            debug["original_payload"] = parameters
+            debug["sanitized_payload"] = sanitized
+            debug["resolved_barrier"] = (sanitize_meta or {}).get("resolved_barrier")
+            debug["matched_contract"] = (sanitize_meta or {}).get("matched_item")
+            removed = (sanitize_meta or {}).get("removed") or {}
+            if removed:
+                debug["removed_fields"] = ",".join(sorted(removed.keys()))
+            d["logger"].info(
+                "[%s] oauth_engine_parameters_sanitized original_parameters=%s sanitized_parameters=%s removed_fields=%s resolved_barrier=%s matched_contract=%s",
+                client_id,
+                d["safe_payload"](parameters),
+                d["safe_payload"](sanitized),
+                ",".join(sorted(removed.keys())),
+                debug.get("resolved_barrier"),
+                d["safe_payload"](debug.get("matched_contract") or {}),
+            )
+            if sanitize_err:
+                return self._fail("parameter_sanitizer", sanitize_err, client_id, debug, state)
 
         req_meta = dict(intent.req_meta or {})
         req_meta.setdefault("profile", intent.profile or state.get("active_profile"))
         req_meta.setdefault("type", intent.contract_type)
         req_meta.setdefault("contract_type", intent.contract_type)
         req_meta.setdefault("deriv_contract_type", deriv_contract)
+        if is_unchain_higher_lower:
+            req_meta["contract_type"] = deriv_contract
+            req_meta["deriv_contract_type"] = deriv_contract
+            req_meta["unchain_direction"] = unchain_direction
         req_meta["requested_barrier"] = intent.barrier
         req_meta["barrier"] = sanitized.get("barrier")
         req_meta["resolved_barrier"] = sanitized.get("barrier")

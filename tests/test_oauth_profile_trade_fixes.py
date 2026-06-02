@@ -104,6 +104,11 @@ def test_unchain_oauth_higher_routes_to_execute_deriv_trade(monkeypatch):
     })
     captured = {}
     monkeypatch.setattr(server, "resolve_new_api_symbol", lambda state, symbol, context="", client_id=None: ("R_10", None))
+    monkeypatch.setattr(
+        server,
+        "_get_contracts_for_symbol",
+        lambda client_id, state, symbol: ({"available": [{"contract_type": "CALL", "sentiment": "up", "contract_category": "callput", "barriers": 1}]}, None),
+    )
     monkeypatch.setattr(server.socketio, "emit", lambda *args, **kwargs: None)
 
     def fake_execute(trade_request):
@@ -151,6 +156,14 @@ def test_unchain_oauth_digit_barriers_are_sanitized_to_relative_price_barriers(m
     })
     captured = {}
     monkeypatch.setattr(server, "resolve_new_api_symbol", lambda state, symbol, context="", client_id=None: ("R_10", None))
+    monkeypatch.setattr(
+        server,
+        "_get_contracts_for_symbol",
+        lambda client_id, state, symbol: ({"available": [
+            {"contract_type": "CALL", "sentiment": "up", "contract_category": "callput", "barriers": 1},
+            {"contract_type": "PUT", "sentiment": "down", "contract_category": "callput", "barriers": 1},
+        ]}, None),
+    )
     monkeypatch.setattr(server.socketio, "emit", lambda *args, **kwargs: None)
 
     def fake_execute(trade_request):
@@ -185,6 +198,58 @@ def test_unchain_oauth_digit_barriers_are_sanitized_to_relative_price_barriers(m
     assert state["ws_connected"] is True
 
 
+def test_unchain_oauth_uses_exact_contract_type_from_contracts_for(monkeypatch):
+    cid = "cid-unchain-oauth-exact-contract"
+    server.clients.pop(cid, None)
+    server.init_client(cid)
+    state = server.clients[cid]
+    state.update({
+        "api_token_type": "oauth",
+        "api_token": "oauth-token",
+        "deriv_account_id": "DOT123",
+        "ws_connected": True,
+        "ws_transport_connected": True,
+        "ws": DummyWs(),
+        "current_symbol": "R_10",
+        "balance": 1000.0,
+        "last_live_balance": 1000.0,
+        "last_known_trade_balance": 1000.0,
+    })
+    captured = {}
+    monkeypatch.setattr(server, "resolve_new_api_symbol", lambda state, symbol, context="", client_id=None: ("R_10", None))
+    monkeypatch.setattr(
+        server,
+        "_get_contracts_for_symbol",
+        lambda client_id, state, symbol: ({"available": [
+            {"contract_type": "HIGHER", "sentiment": "up", "contract_category": "callput", "barriers": 1, "barrier": "+0.17"},
+            {"contract_type": "LOWER", "sentiment": "down", "contract_category": "callput", "barriers": 1, "barrier": "-0.17"},
+        ]}, None),
+    )
+    monkeypatch.setattr(server.socketio, "emit", lambda *args, **kwargs: None)
+
+    def fake_execute(trade_request):
+        captured.update(trade_request)
+        return True, "Trade sent"
+
+    monkeypatch.setattr(server, "execute_deriv_trade", fake_execute)
+
+    ok, _ = server._send_unchain_hl_trade(
+        cid,
+        side="HIGHER",
+        stake=1.0,
+        symbol="R_10",
+        barrier="6",
+        duration=1,
+        duration_unit="t",
+    )
+
+    assert ok is True
+    assert captured["contract_type"] == "HIGHER"
+    assert captured["barrier"] == "+0.17"
+    assert captured["req_meta"]["deriv_contract_type"] == "HIGHER"
+    assert captured["req_meta"]["underlying_symbol"] == "R_10"
+
+
 def test_unchain_barrier_sanitizer_preserves_signed_price_barrier_and_fixes_side():
     assert sanitize_unchain_higher_lower_barrier("+0.12", "CALL") == "+0.12"
     assert sanitize_unchain_higher_lower_barrier("-0.12", "CALL") == "+0.12"
@@ -210,7 +275,7 @@ def test_oauth_engine_unchain_keeps_relative_barrier_in_proposal():
         "ws_ready_state": lambda state: "OPEN",
         "otp_authenticated": lambda state: True,
         "active_symbols": lambda client_id, state: ([{"symbol": "R_10"}], None),
-        "contracts_for": lambda client_id, state, symbol: ({"available": [{"contract_type": "CALL", "barriers": 1}]}, None),
+        "contracts_for": lambda client_id, state, symbol: ({"available": [{"contract_type": "HIGHER", "sentiment": "up", "contract_category": "callput", "barriers": 1}]}, None),
         "legacy_aliases": {},
         "duration_matches": lambda item, duration, duration_unit: True,
         "safe_payload": server._safe_deriv_payload_text,
@@ -242,10 +307,12 @@ def test_oauth_engine_unchain_keeps_relative_barrier_in_proposal():
 
     assert ok is True
     assert msg == "Trade sent"
-    assert proposal_payloads[-1]["contract_type"] == "CALL"
+    assert proposal_payloads[-1]["contract_type"] == "HIGHER"
     assert proposal_payloads[-1]["barrier"] == "+0.10"
     assert proposal_payloads[-1]["duration"] == 1
     assert proposal_payloads[-1]["duration_unit"] == "t"
+    assert proposal_payloads[-1]["underlying_symbol"] == "R_10"
+    assert "symbol" not in proposal_payloads[-1]
     assert state["ws_connected"] is True
 
 

@@ -130,7 +130,13 @@ from bot_modules.human_manual_contracts import (
     fetch_human_manual_contracts_for_state as _module_fetch_human_manual_contracts_for_state,
     fetch_human_manual_contracts_for_symbol as _module_fetch_human_manual_contracts_for_symbol,
 )
-from deriv_engines.unchain_barrier import sanitize_unchain_higher_lower_barrier
+from deriv_engines.unchain_barrier import (
+    choose_unchain_contract,
+    normalize_unchain_direction,
+    relevant_unchain_contracts,
+    resolve_unchain_higher_lower_barrier,
+    sanitize_unchain_higher_lower_barrier,
+)
 from cloud_alerts import CloudAlertDispatcher
 from cloud_routes import register_cloud_routes
 from cloud_session_manager import CloudPersistence, CloudSessionManager, ensure_cloud_tables
@@ -316,6 +322,7 @@ def _proposal_payload_for_connection(state, payload):
             "loginid",
             "product_type",
             "barrier_range",
+            "landing_company_short",
             "date_start",
             "trade_risk_profile",
             "trading_period_start",
@@ -15894,19 +15901,22 @@ def _send_unchain_hl_trade(
         except Exception:
             safe_auto_confidence = None
 
-    deriv_contract = {"HIGHER": "CALL", "LOWER": "PUT"}[side]
+    unchain_direction = normalize_unchain_direction(side)
+    deriv_contract = None
     if uses_new_api:
         original_barrier_value = barrier_value
-        barrier_value = sanitize_unchain_higher_lower_barrier(barrier_value, deriv_contract)
+        barrier_value = sanitize_unchain_higher_lower_barrier(barrier_value, unchain_direction)
         if barrier_value != original_barrier_value:
             logger.info(
-                "[%s] unchain_oauth_barrier_sanitized side=%s contract_type=%s requested_barrier=%s sanitized_barrier=%s",
+                "[%s] unchain_oauth_barrier_sanitized side=%s direction=%s requested_barrier=%s sanitized_barrier=%s",
                 client_id,
                 side,
-                deriv_contract,
+                unchain_direction,
                 original_barrier_value,
                 barrier_value,
             )
+    else:
+        deriv_contract = {"HIGHER": "CALL", "LOWER": "PUT"}[side]
 
     original_symbol = str(symbol or "").strip()
     if uses_new_api:
@@ -15927,6 +15937,69 @@ def _send_unchain_hl_trade(
             )
             return False, symbol_err
         symbol = resolved_symbol
+        contracts_for, contracts_err = _get_contracts_for_symbol(client_id, state, symbol)
+        if contracts_err:
+            logger.warning(
+                "[%s] unchain_oauth_trade_blocked failed_at=contracts_for_error side=%s selectedUnderlyingSymbol=%s error=%s websocket_stayed_connected=%s",
+                client_id,
+                side,
+                symbol,
+                contracts_err,
+                bool(state.get("ws_connected")),
+            )
+            return False, contracts_err
+        logger.info(
+            "[%s] unchain_oauth_contracts_for_available selected_direction=%s selectedUnderlyingSymbol=%s candidates=%s",
+            client_id,
+            unchain_direction,
+            symbol,
+            _safe_deriv_payload_text(relevant_unchain_contracts(contracts_for)),
+        )
+        chosen_contract, choose_err = choose_unchain_contract(
+            contracts_for,
+            unchain_direction,
+            duration=duration,
+            duration_unit=duration_unit,
+            duration_matcher=_duration_matches_contracts_for,
+        )
+        if choose_err:
+            logger.warning(
+                "[%s] unchain_oauth_trade_blocked failed_at=contract_resolver side=%s selectedUnderlyingSymbol=%s error=%s websocket_stayed_connected=%s",
+                client_id,
+                side,
+                symbol,
+                choose_err,
+                bool(state.get("ws_connected")),
+            )
+            return False, choose_err
+        deriv_contract = str((chosen_contract or {}).get("contract_type") or "").upper().strip()
+        if not deriv_contract:
+            msg = "Deriv returned no contract_type for UNCHAIN Higher/Lower"
+            logger.warning(
+                "[%s] unchain_oauth_trade_blocked failed_at=contract_resolver side=%s selectedUnderlyingSymbol=%s error=%s websocket_stayed_connected=%s",
+                client_id,
+                side,
+                symbol,
+                msg,
+                bool(state.get("ws_connected")),
+            )
+            return False, msg
+        barrier_value = resolve_unchain_higher_lower_barrier(
+            barrier_value,
+            unchain_direction,
+            chosen_contract,
+        )
+        logger.info(
+            "[%s] unchain_oauth_contract_chosen selected_direction=%s selectedUnderlyingSymbol=%s chosen_contract_type=%s chosen_barrier=%s duration=%s duration_unit=%s matched_contract=%s",
+            client_id,
+            unchain_direction,
+            symbol,
+            deriv_contract,
+            barrier_value,
+            duration,
+            duration_unit,
+            _safe_deriv_payload_text(chosen_contract or {}),
+        )
     logger.info(
         "[%s] unchain_trade_intent profile=UNCHAIN auth_mode=%s websocket_state=%s selected_account=%s side=%s original_symbol=%s resolved_symbol=%s contract_type=%s barrier=%s duration=%s duration_unit=%s stake=%s currency=USD",
         client_id,
@@ -15962,6 +16035,7 @@ def _send_unchain_hl_trade(
         "duration_unit": duration_unit,
         "contract_type": deriv_contract,
         "deriv_contract_type": deriv_contract,
+        "unchain_direction": unchain_direction,
         "entry_source": (str(entry_source).upper().strip() if entry_source else None),
         "auto_cycle_id": safe_cycle_id,
         "auto_confidence": safe_auto_confidence,
@@ -15985,6 +16059,7 @@ def _send_unchain_hl_trade(
             "duration": duration,
             "duration_unit": duration_unit,
             "mode": mode,
+            "contract_type_exact": uses_new_api,
             "budget_reservation": budget_reservation,
             "req_meta": req_meta,
         })
