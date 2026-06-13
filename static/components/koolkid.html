@@ -313,6 +313,7 @@
           </summary>
           <div style="padding:10px 12px; background:rgba(15,23,42,0.82);">
             <div style="display:flex; justify-content:flex-end; align-items:center; gap:10px; flex-wrap:wrap;">
+              <button id="koolkidMartingaleCalculatorBtn" type="button" onclick="openKoolkidMartingaleCalculator()" style="background:#0f766e; min-width:96px;">Calculator</button>
               <button id="koolkidMartingaleToggleBtn" type="button" onclick="toggleKoolkidSingleMartingale()" style="background:#334155; min-width:120px;">MARTINGALE: OFF</button>
             </div>
             <div style="margin-top:10px; display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:8px;">
@@ -425,6 +426,37 @@
             <div id="koolkidMartingaleLifetimeNote" style="margin-top:8px; color:#facc15; font-size:11px;">Lifetime users only.</div>
           </div>
         </details>
+
+        <div id="koolkidMartingaleCalculatorPopup" onclick="if(event.target===this) closeKoolkidMartingaleCalculator()" style="display:none; position:fixed; inset:0; z-index:91; padding:18px; align-items:center; justify-content:center; background:rgba(2,6,23,0.76);">
+          <div style="width:min(500px,100%); background:linear-gradient(180deg,#0f172a,#020617); border:1px solid #334155; border-radius:16px; padding:14px; box-shadow:0 20px 50px rgba(0,0,0,.38);">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
+              <div>
+                <div style="font-weight:900;">Martingale Calculator</div>
+                <div style="color:#94a3b8; font-size:11px;">Preview balance coverage, double-ups, and estimated profit for the selected contract.</div>
+              </div>
+              <button type="button" onclick="closeKoolkidMartingaleCalculator()" style="height:34px; min-width:34px; border-radius:10px; background:#1e293b;">x</button>
+            </div>
+            <div style="margin-top:10px; display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:8px;">
+              <div style="padding:8px; border:1px solid #334155; border-radius:10px; background:#111827;">
+                <div style="color:#94a3b8; font-size:11px; font-weight:800;">Current Balance</div>
+                <div id="koolkidMartingaleCalculatorBalance" style="font-weight:900; margin-top:2px;">$0.00</div>
+              </div>
+              <div style="padding:8px; border:1px solid #334155; border-radius:10px; background:#111827;">
+                <div style="color:#94a3b8; font-size:11px; font-weight:800;">Selected Contract</div>
+                <div id="koolkidMartingaleCalculatorContract" style="font-weight:900; margin-top:2px;">UNDER 3</div>
+              </div>
+              <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                Custom Amount
+                <input id="koolkidMartingaleCalculatorAmount" type="number" min="0" step="0.01" placeholder="Use balance" oninput="updateKoolkidMartingaleCalculator()" style="width:100%; min-height:38px;">
+              </label>
+              <div style="padding:8px; border:1px solid #334155; border-radius:10px; background:#111827;">
+                <div style="color:#94a3b8; font-size:11px; font-weight:800;">Start Stake</div>
+                <div id="koolkidMartingaleCalculatorStartStake" style="font-weight:900; margin-top:2px;">$0.35</div>
+              </div>
+            </div>
+            <div id="koolkidMartingaleCalculatorResults" style="margin-top:10px; color:#94a3b8; font-size:12px; line-height:1.45;">Open the calculator to preview the selected martingale setup.</div>
+          </div>
+        </div>
 
         <div id="profitCalculatorPopupKoolkid" onclick="if(event.target===this) closeProfitCalculatorKoolkid()" style="display:none; position:fixed; inset:0; z-index:90; padding:18px; align-items:center; justify-content:center; background:rgba(2,6,23,0.76);">
           <div style="width:min(430px,100%); background:linear-gradient(180deg,#0f172a,#020617); border:1px solid #334155; border-radius:16px; padding:14px; box-shadow:0 20px 50px rgba(0,0,0,.38);">

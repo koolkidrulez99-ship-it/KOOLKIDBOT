@@ -1375,6 +1375,237 @@
     return Number(Math.max(0.35, stake).toFixed(2));
   }
 
+  function formatKoolkidMartingaleCalculatorMoney(value) {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return "$0.00";
+    const sign = num < 0 ? "-" : "";
+    return `${sign}$${Math.abs(num).toFixed(2)}`;
+  }
+
+  function readKoolkidDisplayedBalance() {
+    const node = document.getElementById("balance");
+    const text = node ? String(node.textContent || "") : "";
+    const matches = text.replace(/,/g, "").match(/-?\d+(?:\.\d+)?/g);
+    const value = matches && matches.length ? Number(matches[matches.length - 1]) : 0;
+    return Number.isFinite(value) ? Math.max(0, value) : 0;
+  }
+
+  function estimateKoolkidDigitProfitMultiplier(type, barrier) {
+    const key = `${String(type || "").toUpperCase()}_${Math.max(0, Math.min(9, Math.floor(Number(barrier) || 0)))}`;
+    const table = {
+      UNDER_1: 8,
+      UNDER_2: 3.33,
+      UNDER_3: 2.14,
+      UNDER_4: 1.43,
+      UNDER_5: 0.95,
+      UNDER_6: 0.63,
+      UNDER_7: 0.43,
+      UNDER_8: 0.24,
+      UNDER_9: 0.1,
+      OVER_0: 0.1,
+      OVER_1: 0.24,
+      OVER_2: 0.43,
+      OVER_3: 0.63,
+      OVER_4: 0.95,
+      OVER_5: 1.43,
+      OVER_6: 2.14,
+      OVER_7: 3.33,
+      OVER_8: 8,
+    };
+    if (table[key]) return table[key];
+    const wins = String(type || "").toUpperCase() === "UNDER" ? Number(barrier) : 9 - Number(barrier);
+    if (!Number.isFinite(wins) || wins <= 0) return 0.63;
+    return Number(Math.max(0.01, (((10 / wins) - 1) * 0.94)).toFixed(2));
+  }
+
+  function estimateKoolkidMartingaleLegProfitMultiplier(leg, settings) {
+    if (settings && settings.targetProfitMode) {
+      return readKoolkidTargetProfitMartingaleSettings().payoutMultiplier;
+    }
+    const normalized = normalizeKoolkidMartingaleAction((leg && leg.action) || (settings && settings.action));
+    return estimateKoolkidDigitProfitMultiplier((leg && leg.type) || normalized.type, (leg && leg.barrier) ?? normalized.barrier);
+  }
+
+  function koolkidMartingaleCalculatorStakeForStep(settings, step) {
+    const safeStep = Math.max(1, Math.floor(Number(step || 1) || 1));
+    let stake = settings.isPair || settings.mode === "MULTIPLIER"
+      ? settings.startStake * Math.pow(settings.multiplier, safeStep - 1)
+      : settings.startStake + ((safeStep - 1) * settings.stepAmount);
+    if (settings.maxStake !== null) stake = Math.min(stake, settings.maxStake);
+    return Number(Math.max(0.35, stake).toFixed(2));
+  }
+
+  function koolkidMartingaleCalculatorLegRows(settings, step) {
+    if (settings.targetProfitMode || !settings.legs || !settings.legs.length) {
+      const stake = koolkidMartingaleCalculatorStakeForStep(settings, step);
+      return [{
+        label: settings.label,
+        stake,
+        multiplier: estimateKoolkidMartingaleLegProfitMultiplier(null, settings),
+      }];
+    }
+    return settings.legs.map((leg) => {
+      let stake;
+      if (leg.fixedCycle) {
+        const cycleStep = ((Math.max(1, Math.floor(Number(step || 1) || 1)) - 1) % 3) + 1;
+        stake = Number((1 * Math.pow(2, cycleStep - 1)).toFixed(2));
+      } else {
+        stake = koolkidMartingaleCalculatorStakeForStep(settings, step);
+      }
+      return {
+        label: leg.label || settings.label,
+        stake,
+        multiplier: estimateKoolkidMartingaleLegProfitMultiplier(leg, settings),
+      };
+    });
+  }
+
+  function buildKoolkidMartingaleCalculatorRows(settings, amount) {
+    const available = Math.max(0, Number(amount || 0));
+    const maxConfiguredSteps = Math.max(1, Math.floor(Number(settings.maxSteps || 1) || 1));
+    const cappedSteps = settings.doubleLimit > 0 ? Math.min(maxConfiguredSteps, Number(settings.doubleLimit) + 1) : maxConfiguredSteps;
+    const hardLimit = Math.min(Math.max(1, cappedSteps), 5000);
+    const rows = [];
+    let cumulative = 0;
+    let affordableTrades = 0;
+    let affordableContracts = 0;
+
+    if (settings.targetProfitMode) {
+      const targetSettings = readKoolkidTargetProfitMartingaleSettings();
+      const targetState = getKoolkidTargetProfitMartingaleState(settings.action);
+      let stake = Number(targetState.currentStake || settings.startStake);
+      let lossBank = Number(targetState.lossBank || 0);
+      for (let step = 1; step <= hardLimit; step += 1) {
+        stake = Number(Math.max(0.35, stake).toFixed(2));
+        cumulative = Number((cumulative + stake).toFixed(2));
+        const profit = Number((stake * targetSettings.payoutMultiplier).toFixed(2));
+        const affordable = cumulative <= available + 1e-9;
+        if (affordable) {
+          affordableTrades += 1;
+          affordableContracts += 1;
+        }
+        if (rows.length < 12 || !affordable) {
+          rows.push({
+            step,
+            stake,
+            contracts: 1,
+            profit,
+            cumulative,
+            affordable,
+            details: `${settings.label}: ${formatKoolkidMartingaleCalculatorMoney(stake)}`,
+          });
+        }
+        if (!affordable) break;
+        lossBank = Number((lossBank + stake).toFixed(2));
+        stake = calculateNextKoolkidTargetProfitStake(lossBank, targetSettings.targetProfit, targetSettings.payoutMultiplier);
+      }
+      return { rows, affordableTrades, affordableContracts, cumulative, capped: cappedSteps > 5000 };
+    }
+
+    for (let step = 1; step <= hardLimit; step += 1) {
+      const legs = koolkidMartingaleCalculatorLegRows(settings, step);
+      const roundStake = Number(legs.reduce((sum, leg) => sum + Number(leg.stake || 0), 0).toFixed(2));
+      const profit = Number(legs.reduce((sum, leg) => sum + (Number(leg.stake || 0) * Number(leg.multiplier || 0)), 0).toFixed(2));
+      cumulative = Number((cumulative + roundStake).toFixed(2));
+      const affordable = cumulative <= available + 1e-9;
+      if (affordable) {
+        affordableTrades += 1;
+        affordableContracts += legs.length;
+      }
+      if (rows.length < 12 || !affordable) {
+        rows.push({
+          step,
+          stake: roundStake,
+          contracts: legs.length,
+          profit,
+          cumulative,
+          affordable,
+          details: legs.map((leg) => `${leg.label}: ${formatKoolkidMartingaleCalculatorMoney(leg.stake)}`).join(" + "),
+        });
+      }
+      if (!affordable) break;
+    }
+    return { rows, affordableTrades, affordableContracts, cumulative, capped: cappedSteps > 5000 };
+  }
+
+  function updateKoolkidMartingaleCalculator() {
+    const popup = document.getElementById("koolkidMartingaleCalculatorPopup");
+    const results = document.getElementById("koolkidMartingaleCalculatorResults");
+    if (!popup || !results) return;
+    const settings = readKoolkidSingleMartingaleSettings();
+    const balance = readKoolkidDisplayedBalance();
+    const amountEl = document.getElementById("koolkidMartingaleCalculatorAmount");
+    const customAmount = amountEl && String(amountEl.value || "").trim() !== "" ? Number(amountEl.value) : NaN;
+    const amount = Number.isFinite(customAmount) && customAmount > 0 ? customAmount : balance;
+    const balanceEl = document.getElementById("koolkidMartingaleCalculatorBalance");
+    const contractEl = document.getElementById("koolkidMartingaleCalculatorContract");
+    const startStakeEl = document.getElementById("koolkidMartingaleCalculatorStartStake");
+    if (balanceEl) balanceEl.textContent = formatKoolkidMartingaleCalculatorMoney(balance);
+    if (contractEl) contractEl.textContent = settings.label;
+    if (startStakeEl) startStakeEl.textContent = formatKoolkidMartingaleCalculatorMoney(settings.startStake);
+
+    const calc = buildKoolkidMartingaleCalculatorRows(settings, amount);
+    const noun = settings.isPair ? "rounds" : "trades";
+    const doubleUps = Math.max(0, calc.affordableTrades - 1);
+    const rows = calc.rows || [];
+    const rowHtml = rows.length
+      ? rows.map((row) => `
+        <div style="display:grid; grid-template-columns:54px 1fr 88px; gap:8px; align-items:center; padding:8px; border:1px solid ${row.affordable ? "#334155" : "#7f1d1d"}; border-radius:10px; margin-top:6px; background:${row.affordable ? "#111827" : "rgba(127,29,29,0.18)"};">
+          <div style="font-weight:900; color:${row.affordable ? "#f8fafc" : "#fca5a5"};">#${row.step}</div>
+          <div style="min-width:0;">
+            <div style="color:#e2e8f0; font-weight:800;">${escapeHtmlKoolkid(row.details || settings.label)}</div>
+            <div style="color:#94a3b8; font-size:11px;">Need ${formatKoolkidMartingaleCalculatorMoney(row.cumulative)} total - ${row.contracts} contract${row.contracts === 1 ? "" : "s"}</div>
+          </div>
+          <div style="text-align:right; color:#86efac; font-weight:900;">+${formatKoolkidMartingaleCalculatorMoney(row.profit)}</div>
+        </div>
+      `).join("")
+      : `<div style="padding:8px; border:1px solid #334155; border-radius:10px;">Enter an amount to preview this setup.</div>`;
+
+    results.innerHTML = `
+      <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:8px;">
+        <div style="padding:8px; border:1px solid #334155; border-radius:10px; background:#111827;">
+          <div style="color:#94a3b8; font-size:11px; font-weight:800;">Amount Checked</div>
+          <div style="font-weight:900; color:#f8fafc;">${formatKoolkidMartingaleCalculatorMoney(amount)}</div>
+        </div>
+        <div style="padding:8px; border:1px solid #334155; border-radius:10px; background:#111827;">
+          <div style="color:#94a3b8; font-size:11px; font-weight:800;">Can Cover</div>
+          <div style="font-weight:900; color:#f8fafc;">${calc.affordableTrades} ${noun}</div>
+        </div>
+        <div style="padding:8px; border:1px solid #334155; border-radius:10px; background:#111827;">
+          <div style="color:#94a3b8; font-size:11px; font-weight:800;">Double-Ups</div>
+          <div style="font-weight:900; color:#f8fafc;">${doubleUps}</div>
+        </div>
+        <div style="padding:8px; border:1px solid #334155; border-radius:10px; background:#111827;">
+          <div style="color:#94a3b8; font-size:11px; font-weight:800;">Contracts</div>
+          <div style="font-weight:900; color:#f8fafc;">${calc.affordableContracts}</div>
+        </div>
+      </div>
+      <div style="margin-top:8px; color:#94a3b8; font-size:11px;">Profit is an estimate from the selected digit contract payout. Live Deriv proposals can vary slightly by market.</div>
+      ${rowHtml}
+      ${calc.capped ? `<div style="margin-top:8px; color:#facc15; font-size:11px;">Preview capped at 5000 steps for performance.</div>` : ""}
+    `;
+  }
+
+  function openKoolkidMartingaleCalculator() {
+    const popup = document.getElementById("koolkidMartingaleCalculatorPopup");
+    const amountEl = document.getElementById("koolkidMartingaleCalculatorAmount");
+    if (amountEl && String(amountEl.value || "").trim() === "") {
+      amountEl.value = String(readKoolkidDisplayedBalance() || "");
+    }
+    updateKoolkidMartingaleCalculator();
+    if (popup) popup.style.display = "flex";
+  }
+
+  function closeKoolkidMartingaleCalculator() {
+    const popup = document.getElementById("koolkidMartingaleCalculatorPopup");
+    if (popup) popup.style.display = "none";
+  }
+
+  function updateKoolkidMartingaleCalculatorIfOpen() {
+    const popup = document.getElementById("koolkidMartingaleCalculatorPopup");
+    if (popup && popup.style.display !== "none") updateKoolkidMartingaleCalculator();
+  }
+
   function clearKoolkidSingleMartingalePending() {
     const st = getKoolkidSingleMartingaleState();
     st.inProgress = false;
@@ -1451,7 +1682,10 @@
     const status = document.getElementById("koolkidMartingaleStatus");
     if (status) {
       status.style.display = pairMode ? "none" : "";
-      if (pairMode) return;
+      if (pairMode) {
+        updateKoolkidMartingaleCalculatorIfOpen();
+        return;
+      }
       const currentStake = koolkidSingleMartingaleStakeForStep();
       const nextStep = nextKoolkidLimitedMartingaleStep(st.step, settings);
       const nextStake = st.enabled ? koolkidSingleMartingaleStakeForStep(nextStep) : settings.startStake;
@@ -1464,6 +1698,7 @@
         const slText = targetSettings.stopLoss > 0 ? `SL $${targetSettings.stopLoss.toFixed(2)}` : "SL off";
         status.textContent = `${st.status}. ${settings.label} - Target $${targetSettings.targetProfit.toFixed(2)} - Current stake $${current.toFixed(2)} - If loss next $${nextLoss.toFixed(2)} - Bank $${Number(targetState.lossBank || 0).toFixed(2)} - Step ${targetState.step || 1} - Session P/L $${Number(targetState.sessionProfit || 0).toFixed(2)} - ${tpText} / ${slText} - Last result: ${targetState.lastResult || st.lastResult}`;
         status.style.color = st.inProgress ? "#fbbf24" : "#94a3b8";
+        updateKoolkidMartingaleCalculatorIfOpen();
         return;
       }
       const modeLabel = settings.isPair ? `paired ${settings.multiplier}x` : (settings.mode === "STEP_005" ? `$${settings.stepAmount.toFixed(2)} step` : `${settings.multiplier}x`);
@@ -1492,6 +1727,7 @@
       status.textContent = `${st.status}. ${modeLabel}${limitLabel} - ${settings.label} - ${waitText} - Step ${st.step} - ${stakeLabel} - Last result: ${st.lastResult}`;
       status.style.color = st.inProgress ? "#fbbf24" : "#94a3b8";
     }
+    updateKoolkidMartingaleCalculatorIfOpen();
   }
 
   function setKoolkidSingleMartingaleAction(action) {
@@ -4857,6 +5093,9 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
   window.updateKoolkidSingleMartingalePanel = updateKoolkidSingleMartingalePanel;
   window.placeKoolkidSingleMartingaleTrade = placeKoolkidSingleMartingaleTrade;
   window.quickStopKoolkidSingleMartingale = quickStopKoolkidSingleMartingale;
+  window.openKoolkidMartingaleCalculator = openKoolkidMartingaleCalculator;
+  window.closeKoolkidMartingaleCalculator = closeKoolkidMartingaleCalculator;
+  window.updateKoolkidMartingaleCalculator = updateKoolkidMartingaleCalculator;
   window.startOver3Under6PairMartingaleKoolkid = startOver3Under6PairMartingaleKoolkid;
   window.stopOver3Under6PairMartingaleKoolkid = stopOver3Under6PairMartingaleKoolkid;
   window.resetOver3Under6PairMartingaleKoolkid = function () {
