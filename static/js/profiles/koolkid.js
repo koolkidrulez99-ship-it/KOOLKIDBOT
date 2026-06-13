@@ -1055,7 +1055,7 @@
   }
 
   function isKoolkidMonthlySingleMartingaleActionAllowed(action) {
-    return ["UNDER_3", "OVER_5", "OVER_6"].includes(String(action || "").toUpperCase());
+    return ["UNDER_3", "UNDER_4", "OVER_5", "OVER_6", "OVER_7"].includes(String(action || "").toUpperCase());
   }
 
   function syncKoolkidMonthlySingleMartingaleUi() {
@@ -1092,7 +1092,7 @@
     const note = document.getElementById("koolkidMartingaleLifetimeNote");
     if (note) {
       note.textContent = limited
-        ? "Monthly users: UNDER 3, OVER 5, and OVER 6 only. Multiplier martingale only."
+        ? "Monthly users: UNDER 3, UNDER 4, OVER 5, OVER 6, and OVER 7 only. Multiplier martingale only."
         : "Lifetime users only.";
     }
   }
@@ -1172,8 +1172,7 @@
   }
 
   function isOver3Under6PairModeKoolkid() {
-    const el = document.getElementById("koolkidMartingaleStrategyMode");
-    return String((el && el.value) || "NORMAL").toUpperCase() === "OVER3_UNDER6_PAIR";
+    return false;
   }
 
   function getOver3Under6PairStateKoolkid() {
@@ -1546,7 +1545,7 @@
     if (isKoolkidSingleMartingaleMonthlyLimited()) {
       const settings = readKoolkidSingleMartingaleSettings();
       if (!isKoolkidMonthlySingleMartingaleActionAllowed(settings.action)) {
-        safeToast("Monthly users can only use UNDER 3, OVER 5, or OVER 6 here.", "error");
+        safeToast("Monthly users can only use UNDER 3, UNDER 4, OVER 5, OVER 6, or OVER 7 here.", "error");
         return;
       }
     }
@@ -1712,7 +1711,7 @@
     if (st.inProgress) return;
     const settings = readKoolkidSingleMartingaleSettings();
     if (isKoolkidSingleMartingaleMonthlyLimited() && !isKoolkidMonthlySingleMartingaleActionAllowed(settings.action)) {
-      safeToast("Monthly users can only use UNDER 3, OVER 5, or OVER 6 here.", "error");
+      safeToast("Monthly users can only use UNDER 3, UNDER 4, OVER 5, OVER 6, or OVER 7 here.", "error");
       updateKoolkidSingleMartingalePanel();
       return;
     }
@@ -2018,10 +2017,18 @@
             st.pairSteps[legAction] = 1;
           }
         });
+        const hasWinningLeg = pendingItems.some((pending) => pending.outcome === "WIN");
         clearKoolkidSingleMartingalePending();
         st.step = 1;
-        st.lastResult = pendingItems.some((pending) => pending.outcome === "WIN") ? "WIN" : "LOSS";
-        if (wasMartingaleTrade && st.enabled && st.running && !st.stopRequested) {
+        st.lastResult = hasWinningLeg ? "WIN" : "LOSS";
+        if (hasWinningLeg) {
+          st.pairSteps = {};
+          st.running = false;
+          st.stopRequested = false;
+          st.waitingForTicks = false;
+          st.waitTicksRemaining = 0;
+          st.status = wasMartingaleTrade ? "Reset" : "Ready";
+        } else if (wasMartingaleTrade && st.enabled && st.running && !st.stopRequested) {
           if (st.restartTimer) clearTimeout(st.restartTimer);
           st.restartTimer = null;
           st.tickSpacing = settings.tickSpacing;
@@ -2041,9 +2048,9 @@
         clearKoolkidSingleMartingalePending();
         st.step = 1;
         st.over3Step = 1;
+        st.pairSteps = {};
         st.running = false;
         st.stopRequested = false;
-        st.enabled = false;
         st.waitingForTicks = false;
         st.waitTicksRemaining = 0;
         st.lastResult = "WIN";
@@ -2065,9 +2072,9 @@
         clearKoolkidSingleMartingalePending();
         st.step = 1;
         st.over3Step = 1;
+        st.pairSteps = {};
         st.running = false;
         st.stopRequested = false;
-        st.enabled = false;
         st.waitingForTicks = false;
         st.waitTicksRemaining = 0;
         st.lastResult = "WIN";
@@ -2134,6 +2141,12 @@
         st.waitTicksRemaining = 0;
         st.status = hitTp ? "TP reached" : "SL reached";
         safeToast(hitTp ? `${settings.label} TP reached.` : `${settings.label} SL reached.`, hitTp ? "success" : "error");
+      } else if (outcome === "WIN") {
+        st.running = false;
+        st.stopRequested = false;
+        st.waitingForTicks = false;
+        st.waitTicksRemaining = 0;
+        st.status = wasMartingaleTrade ? "Reset" : "Ready";
       } else if (wasMartingaleTrade && st.enabled && st.running && !st.stopRequested) {
         st.tickSpacing = settings.tickSpacing;
         st.waitTicksRemaining = settings.tickSpacing;
@@ -2147,9 +2160,9 @@
     }
     if (outcome === "WIN") {
       st.step = 1;
+      st.pairSteps = {};
       st.running = false;
       st.stopRequested = false;
-      st.enabled = false;
       st.waitingForTicks = false;
       st.waitTicksRemaining = 0;
       st.lastResult = "WIN";
