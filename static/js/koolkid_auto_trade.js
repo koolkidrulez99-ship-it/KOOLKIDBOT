@@ -125,6 +125,7 @@
 
   const runtime = {
     lastStatus: initialStatus || {},
+    lastDashboard: initialDashboard || {},
     chartTick: 0,
     mobileHistorySwipeOn: true,
     predictionTimer: null,
@@ -309,6 +310,7 @@
   }
 
   function renderHistory(dashboard) {
+    runtime.lastDashboard = dashboard || runtime.lastDashboard || {};
     const stats = (dashboard && dashboard.stats) || {};
     const fullHistory = Array.isArray(dashboard && dashboard.history) ? dashboard.history : [];
     const history = fullHistory.slice(0, HISTORY_RENDER_MAX_ITEMS);
@@ -376,6 +378,17 @@
       });
     }
   }
+
+  window.AutoSessionCurrencyRefresh = function () {
+    runtime.historySignature = '';
+    if (runtime.lastStatus) {
+      if (refs.balance) refs.balance.textContent = money(runtime.lastStatus.balance || 0, runtime.lastStatus);
+      if (runtime.lastStatus.koolkid_dashboard) renderHistory(runtime.lastStatus.koolkid_dashboard);
+      else renderHistory(runtime.lastDashboard || {});
+    } else {
+      renderHistory(runtime.lastDashboard || {});
+    }
+  };
 
   function predictionBreakdownText(section) {
     const higher = Number(section && section.higher_score);

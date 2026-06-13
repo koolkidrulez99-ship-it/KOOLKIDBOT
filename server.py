@@ -239,6 +239,9 @@ DERIV_ACCOUNTS_URL = os.environ.get(
 ACTIVE_BROADCAST_NOTICE = None
 BROADCAST_NOTICE_LOCK = threading.RLock()
 BROADCAST_NOTICE_TYPES = {"info", "warning", "danger", "success"}
+USD_JMD_RATE_CACHE = {"rate": None, "fetched_at": 0.0, "source": ""}
+USD_JMD_RATE_CACHE_SECONDS = 30 * 60
+USD_JMD_RATE_URL = "https://open.er-api.com/v6/latest/USD"
 
 
 def _is_pat_token(token):
@@ -4656,6 +4659,77 @@ def custom_ui_reset_route():
     if not _save_custom_ui_settings_for_user(session.get("user"), settings):
         return jsonify({"status": "error", "message": "Could not reset custom UI settings"}), 400
     return jsonify({"status": "success", "settings": settings})
+
+
+def _fetch_usd_jmd_rate():
+    now_ts = time.time()
+    cached_rate = USD_JMD_RATE_CACHE.get("rate")
+    cached_at = float(USD_JMD_RATE_CACHE.get("fetched_at") or 0.0)
+    if cached_rate and (now_ts - cached_at) < USD_JMD_RATE_CACHE_SECONDS:
+        return {
+            "ok": True,
+            "rate": float(cached_rate),
+            "cached": True,
+            "source": USD_JMD_RATE_CACHE.get("source") or USD_JMD_RATE_URL,
+            "fetched_at": cached_at,
+        }
+
+    req = urllib.request.Request(
+        USD_JMD_RATE_URL,
+        headers={"Accept": "application/json", "User-Agent": "KoolKidBot/1.0"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+        payload = json.loads(raw or "{}")
+        rate = float(((payload.get("rates") or {}).get("JMD")))
+        if not math.isfinite(rate) or rate <= 0:
+            raise ValueError("USD/JMD rate missing")
+        source = str(payload.get("provider") or USD_JMD_RATE_URL)
+        USD_JMD_RATE_CACHE.update({"rate": rate, "fetched_at": now_ts, "source": source})
+        return {
+            "ok": True,
+            "rate": rate,
+            "cached": False,
+            "source": source,
+            "fetched_at": now_ts,
+            "time_last_update_utc": payload.get("time_last_update_utc"),
+        }
+    except Exception as exc:
+        if cached_rate:
+            logger.warning("usd_jmd_rate_fetch_failed_using_cache error=%s", exc)
+            return {
+                "ok": True,
+                "rate": float(cached_rate),
+                "cached": True,
+                "stale": True,
+                "source": USD_JMD_RATE_CACHE.get("source") or USD_JMD_RATE_URL,
+                "fetched_at": cached_at,
+            }
+        raise
+
+
+@app.route("/currency/usd-jmd", methods=["GET"])
+def usd_jmd_rate_route():
+    if not login_required():
+        return jsonify({"status": "error", "message": "Unauthorized"}), 403
+    try:
+        data = _fetch_usd_jmd_rate()
+        return jsonify({
+            "status": "success",
+            "base": "USD",
+            "target": "JMD",
+            **data,
+        })
+    except Exception as exc:
+        logger.warning("usd_jmd_rate_fetch_failed error=%s", exc)
+        return jsonify({
+            "status": "error",
+            "message": "Could not load USD to JMD exchange rate",
+            "base": "USD",
+            "target": "JMD",
+        }), 502
 
 
 @app.route("/admin")

@@ -802,6 +802,35 @@ input, select{
 .trade-profit.loss{ color:#ef4444; }
 .trade-profit.pending{ color:#facc15; }
 .trade-profit.closing{ color:#facc15; }
+.balance-label-row{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    color:#94a3b8;
+}
+.jmd-toggle{
+    min-height:24px;
+    min-width:52px;
+    padding:2px 8px;
+    border:1px solid #334155;
+    border-radius:999px;
+    background:#1e293b;
+    color:#cbd5e1;
+    font-size:11px;
+    font-weight:900;
+    line-height:1;
+}
+.jmd-toggle.active{
+    border-color:#22c55e;
+    background:#14532d;
+    color:#dcfce7;
+}
+.jmd-rate-note{
+    margin-top:2px;
+    color:#64748b;
+    font-size:10px;
+    font-weight:700;
+}
 .trade-detail{ display:flex; gap:15px; color:#94a3b8; font-size:13px; }
 .trade-history-total-stake{
     display:flex;
@@ -1393,10 +1422,14 @@ body.mobile-only-ui #profileContainer .unchain-history-grid{
 
         <div style="display:flex; justify-content:space-between; align-items:center; gap:15px;">
             <div>
-                <div style="color:#94a3b8;">Balance</div>
+                <div class="balance-label-row">
+                    <span>Balance</span>
+                    <button id="jmdCurrencyToggle" class="jmd-toggle" type="button" onclick="toggleJmdCurrencyDisplay()" aria-pressed="false" title="Show balance in JMD for display only">JMD OFF</button>
+                </div>
                 <div style="font-size:2rem; font-weight:bold; color:#38bdf8;">
                     <span id="balance">0.00</span>
                 </div>
+                <div id="jmdCurrencyRateNote" class="jmd-rate-note" style="display:none;"></div>
                 <div id="totalBalanceLabel" style="display:none; margin-top:4px; color:#94a3b8; font-size:12px;"></div>
             </div>
 
@@ -2258,6 +2291,7 @@ function bindSocketHandlers(){
     });
 
     bind("stats_update", (data)=>{
+        jmdDisplayState.lastStatsPayload = data || {};
         try{ if(window.MarthaAI && typeof window.MarthaAI.observeStats === "function") window.MarthaAI.observeStats(data || {}); }catch(e){}
         const pnl = data.net_pnl || 0;
         const statsProfile = normalizeProfileName((data && data.profile) || activeProfile);
@@ -2374,6 +2408,8 @@ let humanKeepAlive = false;
 
 const apiStatus = document.getElementById("apiStatus");
 const balanceDisplay = document.getElementById("balance");
+const jmdCurrencyToggle = document.getElementById("jmdCurrencyToggle");
+const jmdCurrencyRateNote = document.getElementById("jmdCurrencyRateNote");
 const totalBalanceLabel = document.getElementById("totalBalanceLabel");
 const netPnlBox = document.getElementById("netPnlBox");
 
@@ -2404,6 +2440,7 @@ const tradeToastByProfile = {};
 const TRADE_STORE_MAX_ITEMS = 250;
 const TRADE_RENDER_MAX_ITEMS = 120;
 const TRADE_HISTORY_SESSION_STORAGE_KEY = "bot_trade_history_cache_v1";
+const JMD_DISPLAY_STORAGE_KEY = "bot_jmd_display_enabled_v1";
 const autoScanningToasts = {};
 const AUTO_SCANNING_MODE_KEYS = new Set([
     "master_auto",
@@ -2466,6 +2503,15 @@ const balanceUiCache = {
     totalDisplay: "",
     totalText: "",
     budgetSignature: "",
+};
+const jmdDisplayState = {
+    enabled: false,
+    rate: null,
+    fetching: false,
+    source: "",
+    updatedAt: 0,
+    lastBalancePayload: null,
+    lastStatsPayload: null,
 };
 
 function setNodeTextIfChanged(node, value){
@@ -2833,7 +2879,13 @@ function normalizeProfileBudgetKey(profile){
 }
 
 function getCurrencyDisplayApi(){
-    return null;
+    return {
+        isJmdEnabled: isJmdDisplayEnabled,
+        toggleJmd: toggleJmdCurrencyDisplay,
+        formatCurrencyAmount,
+        formatSignedCurrencyAmount,
+        formatBalanceCurrencyAmount,
+    };
 }
 
 function refreshCurrencyContext(payload){
@@ -2844,20 +2896,140 @@ function clearCurrencyContext(){
     return null;
 }
 
-function formatCurrencyAmount(value, payload){
+function isJmdDisplayEnabled(){
+    return !!jmdDisplayState.enabled && Number.isFinite(Number(jmdDisplayState.rate)) && Number(jmdDisplayState.rate) > 0;
+}
+
+function formatUsdAmount(value){
     const num = Number(value || 0);
     return Number.isFinite(num) ? `$${Math.abs(num).toFixed(2)}` : "—";
 }
 
+function formatSignedUsdAmount(value){
+    const num = Number(value || 0);
+    if(!Number.isFinite(num)) return "—";
+    return `${num >= 0 ? "+" : "-"}$${Math.abs(num).toFixed(2)}`;
+}
+
+function formatJmdAmount(value, signed){
+    const num = Number(value || 0);
+    const rate = Number(jmdDisplayState.rate || 0);
+    if(!Number.isFinite(num) || !Number.isFinite(rate) || rate <= 0) return "";
+    const converted = Math.round(Math.abs(num) * rate);
+    const sign = signed ? (num >= 0 ? "+" : "-") : "";
+    return `JMD ${sign}$${converted.toLocaleString("en-US")}`;
+}
+
+function formatCurrencyAmount(value, payload){
+    const num = Number(value || 0);
+    if(!Number.isFinite(num)) return "—";
+    const usd = formatUsdAmount(num);
+    return isJmdDisplayEnabled() ? `${usd} (${formatJmdAmount(num, false)})` : usd;
+}
+
 function formatSignedCurrencyAmount(value, payload){
     const num = Number(value || 0);
-    if (!Number.isFinite(num)) return "—";
-    return `${num >= 0 ? "+" : "-"}$${Math.abs(num).toFixed(2)}`;
+    if(!Number.isFinite(num)) return "—";
+    const usd = formatSignedUsdAmount(num);
+    return isJmdDisplayEnabled() ? `${usd} (${formatJmdAmount(num, true)})` : usd;
 }
 
 function formatBalanceCurrencyAmount(value, payload){
     const num = Number(value || 0);
-    return Number.isFinite(num) ? `$${Math.abs(num).toFixed(2)}` : "$0.00";
+    if(!Number.isFinite(num)) return "$0.00";
+    return isJmdDisplayEnabled() ? formatJmdAmount(num, false) : `$${Math.abs(num).toFixed(2)}`;
+}
+
+function updateJmdCurrencyToggleUi(){
+    const enabledRequested = !!jmdDisplayState.enabled;
+    const ready = isJmdDisplayEnabled();
+    if(jmdCurrencyToggle){
+        jmdCurrencyToggle.classList.toggle("active", enabledRequested);
+        jmdCurrencyToggle.setAttribute("aria-pressed", enabledRequested ? "true" : "false");
+        jmdCurrencyToggle.textContent = enabledRequested ? "JMD ON" : "JMD OFF";
+        jmdCurrencyToggle.title = enabledRequested
+            ? "Showing JMD display values only. Trades still use your account currency."
+            : "Show balance and history beside-values in JMD for display only.";
+    }
+    if(jmdCurrencyRateNote){
+        if(enabledRequested && ready){
+            jmdCurrencyRateNote.style.display = "block";
+            jmdCurrencyRateNote.textContent = `Display only: 1 USD = JMD $${Number(jmdDisplayState.rate).toFixed(2)}`;
+        }else if(enabledRequested){
+            jmdCurrencyRateNote.style.display = "block";
+            jmdCurrencyRateNote.textContent = jmdDisplayState.fetching ? "Loading USD to JMD rate..." : "JMD rate unavailable; showing USD until it loads.";
+        }else{
+            jmdCurrencyRateNote.style.display = "none";
+            jmdCurrencyRateNote.textContent = "";
+        }
+    }
+}
+
+function refreshJmdDisplayTargets(){
+    balanceUiCache.balanceText = "";
+    balanceUiCache.totalText = "";
+    balanceUiCache.budgetSignature = "";
+    if(jmdDisplayState.lastBalancePayload){
+        applyKnownApiBalance(jmdDisplayState.lastBalancePayload, false);
+    }
+    if(jmdDisplayState.lastStatsPayload && netPnlBox){
+        const pnl = jmdDisplayState.lastStatsPayload.net_pnl || 0;
+        setNodeTextIfChanged(netPnlBox, formatSignedCurrencyAmount(pnl, jmdDisplayState.lastStatsPayload));
+    }
+    try{ renderTradeList(activeProfile); }catch(e){}
+    try{
+        if(window.AutoSessionCurrencyRefresh && typeof window.AutoSessionCurrencyRefresh === "function"){
+            window.AutoSessionCurrencyRefresh();
+        }
+    }catch(e){}
+}
+
+async function loadUsdJmdRate(force){
+    if(jmdDisplayState.fetching) return;
+    const hasFreshRate = Number.isFinite(Number(jmdDisplayState.rate))
+        && (Date.now() - Number(jmdDisplayState.updatedAt || 0)) < (30 * 60 * 1000);
+    if(hasFreshRate && !force) return;
+    jmdDisplayState.fetching = true;
+    updateJmdCurrencyToggleUi();
+    try{
+        const res = await fetch("/currency/usd-jmd", { method: "GET", cache: "no-store" });
+        const data = await res.json().catch(()=>({}));
+        if(!res.ok || data.status !== "success" || !Number.isFinite(Number(data.rate))){
+            throw new Error((data && data.message) || "USD to JMD rate unavailable");
+        }
+        jmdDisplayState.rate = Number(data.rate);
+        jmdDisplayState.source = String(data.source || "");
+        jmdDisplayState.updatedAt = Date.now();
+    }catch(e){
+        console.warn("jmd_rate_load_failed", e && e.message ? e.message : e);
+        if(typeof showToast === "function") showToast("JMD rate unavailable. Showing USD until it loads.", "warn");
+    }finally{
+        jmdDisplayState.fetching = false;
+        updateJmdCurrencyToggleUi();
+        refreshJmdDisplayTargets();
+    }
+}
+
+function setJmdCurrencyDisplay(enabled){
+    jmdDisplayState.enabled = !!enabled;
+    try{ localStorage.setItem(JMD_DISPLAY_STORAGE_KEY, jmdDisplayState.enabled ? "1" : "0"); }catch(e){}
+    updateJmdCurrencyToggleUi();
+    if(jmdDisplayState.enabled) loadUsdJmdRate(false);
+    refreshJmdDisplayTargets();
+}
+
+function toggleJmdCurrencyDisplay(){
+    setJmdCurrencyDisplay(!jmdDisplayState.enabled);
+}
+
+window.toggleJmdCurrencyDisplay = toggleJmdCurrencyDisplay;
+window.getCurrencyDisplayApi = getCurrencyDisplayApi;
+try{
+    jmdDisplayState.enabled = localStorage.getItem(JMD_DISPLAY_STORAGE_KEY) === "1";
+}catch(e){}
+updateJmdCurrencyToggleUi();
+if(jmdDisplayState.enabled){
+    setTimeout(()=>loadUsdJmdRate(false), 0);
 }
 
 function formatBudgetBalanceValue(value, trimIntegers){
@@ -2948,6 +3120,7 @@ async function saveProfileBudget(profileOverride){
 window.saveProfileBudget = saveProfileBudget;
 
 function applyKnownApiBalance(data, syncMilestoneAnchor){
+    jmdDisplayState.lastBalancePayload = data || {};
     rememberProfileBudgetPayload(data || {});
     const accountBalanceRaw = Number(data && (data.account_balance ?? data.balance));
     const balance = Number.isFinite(accountBalanceRaw) ? accountBalanceRaw : Number(data && data.balance);
@@ -5110,6 +5283,8 @@ function getTradeRenderSignature(trade){
         source.open_profit,
         !!source.local_resolution_pending_confirmation,
         !!source.is_simulation,
+        isJmdDisplayEnabled(),
+        Number(jmdDisplayState.rate || 0),
     ]);
 }
 
@@ -7180,8 +7355,9 @@ async function disconnect(){
     accountDashboard.style.display = "none";
 
     clearCurrencyContext();
-    setNodeTextIfChanged(balanceDisplay, "0.00");
-    balanceUiCache.balanceText = "0.00";
+    const zeroBalanceText = formatBalanceCurrencyAmount(0, {});
+    setNodeTextIfChanged(balanceDisplay, zeroBalanceText);
+    balanceUiCache.balanceText = zeroBalanceText;
     setNodeTextIfChanged(netPnlBox, "0.00");
     setNodeStyleIfChanged(netPnlBox, "color", "white");
 
