@@ -2138,15 +2138,18 @@ function bindSocketHandlers(){
             return;
         }
         if(/insufficient|not enough balance|not enough funds/i.test(message)){
+            maybeToastMartingaleStoppedFromApiError(message, data || {});
             showToast("❌ Insufficient funds to place trade", "error");
             return;
         }
         if(/budget limit/i.test(message)){
+            maybeToastMartingaleStoppedFromApiError(message, data || {});
             showToast(message, "error");
             return;
         }
         if(message){
             console.warn("api_error:", message, data || {});
+            maybeToastMartingaleStoppedFromApiError(message, data || {});
             showToast(message, "error");
         }
     });
@@ -2221,6 +2224,7 @@ function bindSocketHandlers(){
         const placed = Object.assign({}, data || {});
         try{ if(window.TRADE_LATENCY_DEBUG || localStorage.getItem("tradeLatencyDebug") === "1") console.debug("[trade-latency] frontend trade_placed", { contract_id: placed.contract_id ?? placed.contractId, transit_ms: placed._server_event_ms ? Date.now() - Number(placed._server_event_ms) : null }); }catch(e){}
         placed.profile = resolveTradeProfile(placed, activeProfile);
+        rememberMartingaleCyclePlacement(placed);
         const hiddenBatchTrade = !!placed.hide_from_history || String(placed.mode || "").toLowerCase().startsWith("jokerjoe_match_batch_martingale");
         if(!hiddenBatchTrade){
             onTradePlacedForToast(placed);
@@ -2239,6 +2243,13 @@ function bindSocketHandlers(){
         settled.profile = resolveTradeProfile(settled, activeProfile);
         const existingTurboToastTradeLoc = findStoredTradeLocationByContractId(settled.contract_id ?? settled.contractId);
         const existingTurboToastTrade = existingTurboToastTradeLoc && existingTurboToastTradeLoc.record;
+        if(existingTurboToastTrade){
+            ["mode","action","label","source","strategy","button_label","batch_id","batchId","batch_size","batchSize","stake","amount","type","contract_type","duration","duration_unit","symbol"].forEach((key)=>{
+                if((settled[key] === undefined || settled[key] === null || settled[key] === "") && existingTurboToastTrade[key] !== undefined){
+                    settled[key] = existingTurboToastTrade[key];
+                }
+            });
+        }
         const suppressTurboDuplicateToast = !!(existingTurboToastTrade && existingTurboToastTrade.local_resolution_toast_shown);
         const settledProfile = normalizeProfileName(settled.profile);
         if(settledProfile === "KOOLKID" || settledProfile === "JOKERJOE" || settledProfile === "UNCHAIN" || settledProfile === "NTT" || settledProfile === "HUMAN"){
@@ -2247,6 +2258,9 @@ function bindSocketHandlers(){
         }
         settled.result = getTradeFinalResultLabel(settled);
         settled.pending = isTradeResultPending(settled.result);
+        if(!suppressTurboDuplicateToast){
+            handleMartingaleCycleResult(settled);
+        }
         const hiddenBatchTrade = !!settled.hide_from_history || String(settled.mode || "").toLowerCase().startsWith("jokerjoe_match_batch_martingale");
         if(!hiddenBatchTrade){
             upsertTradeInStore(settled);
@@ -2437,6 +2451,7 @@ const FAST_INTERVAL_MS_NORMAL = 120; // keep follow-up spacing tight for manual 
 const FAST_INTERVAL_MS_TURBO = 80;   // turbo follow-up spacing
 const FAST_MAX_BUY_QUEUE = 12;       // safety limit
 const tradeToastByProfile = {};
+const martingaleCycleToastState = {};
 const TRADE_STORE_MAX_ITEMS = 250;
 const TRADE_RENDER_MAX_ITEMS = 120;
 const TRADE_HISTORY_SESSION_STORAGE_KEY = "bot_trade_history_cache_v1";
@@ -3829,6 +3844,228 @@ function isTradeResultPending(label){
     );
 }
 
+function getMartingaleCycleText(trade){
+    const source = (trade && typeof trade === "object") ? trade : {};
+    return [
+        source.mode,
+        source.strategy,
+        source.source,
+        source.action,
+        source.label,
+        source.button,
+        source.button_label,
+        source.profile,
+    ].filter((part)=> part !== undefined && part !== null).join(" ").toLowerCase();
+}
+
+function isMartingaleCycleTrade(trade){
+    const text = getMartingaleCycleText(trade);
+    if(!text || text.includes("calculator")) return false;
+    return text.includes("martingale") || text.includes("recovery");
+}
+
+function normalizeMartingaleCycleFamily(trade){
+    const source = (trade && typeof trade === "object") ? trade : {};
+    const raw = String(
+        source.mode ||
+        source.strategy ||
+        source.source ||
+        source.action ||
+        source.label ||
+        "martingale"
+    ).toLowerCase();
+    let family = raw.split("|")[0].split(":")[0].trim();
+    if(!family && raw.includes("recovery")) family = "recovery";
+    if(!family && raw.includes("martingale")) family = "martingale";
+    family = family.replace(/[^a-z0-9_ -]+/g, "_").replace(/\s+/g, "_").replace(/_+/g, "_").replace(/^_|_$/g, "");
+    return family || "martingale";
+}
+
+function getMartingaleCycleKey(trade){
+    const profile = normalizeProfileName((trade && trade.profile) || activeProfile);
+    return `${profile}:${normalizeMartingaleCycleFamily(trade)}`;
+}
+
+function getMartingaleResultKey(trade){
+    const source = (trade && typeof trade === "object") ? trade : {};
+    const contractId = normalizeContractId(source.contract_id ?? source.contractId ?? source.buy_contract_id ?? source.id);
+    if(contractId) return `contract:${contractId}`;
+    return [
+        source.profile,
+        source.mode,
+        source.batch_id || source.batchId,
+        source.action,
+        source.label,
+        source.result || source.status,
+        source.profit ?? source.profit_value ?? source.pnl,
+        source._sort_ts || source.timestamp || Date.now(),
+    ].join("|");
+}
+
+function getMartingaleBatchId(trade){
+    const raw = (trade && (trade.batch_id || trade.batchId || trade.batch || trade.batchIdValue)) || "";
+    return String(raw || "").trim();
+}
+
+function getMartingaleBatchExpected(trade){
+    const source = (trade && typeof trade === "object") ? trade : {};
+    const candidates = [source.batch_size, source.batchSize, source.expected, source.expected_contracts, source.pendingExpected];
+    for(const raw of candidates){
+        const n = Math.floor(Number(raw));
+        if(Number.isFinite(n) && n > 1) return n;
+    }
+    if(getMartingaleBatchId(source)) return 2;
+    return 1;
+}
+
+function ensureMartingaleCycleState(key){
+    const now = Date.now();
+    Object.keys(martingaleCycleToastState || {}).forEach((stateKey)=>{
+        const item = martingaleCycleToastState[stateKey];
+        if(item && now - Number(item.updatedAt || 0) > 60 * 60 * 1000){
+            delete martingaleCycleToastState[stateKey];
+        }
+    });
+    if(!martingaleCycleToastState[key]){
+        martingaleCycleToastState[key] = {
+            net: 0,
+            seenResults: {},
+            activeBatchId: "",
+            expected: 0,
+            settled: 0,
+            wins: 0,
+            losses: 0,
+            updatedAt: now,
+        };
+    }
+    martingaleCycleToastState[key].updatedAt = now;
+    return martingaleCycleToastState[key];
+}
+
+function resetMartingaleBatchState(state, keepNet){
+    if(!state) return;
+    if(!keepNet) state.net = 0;
+    state.activeBatchId = "";
+    state.expected = 0;
+    state.settled = 0;
+    state.wins = 0;
+    state.losses = 0;
+    state.updatedAt = Date.now();
+}
+
+function formatMartingaleCycleTotalAmount(value, payload){
+    const num = Number(value || 0);
+    if(!Number.isFinite(num)) return "$0.00";
+    return num >= 0 ? formatCurrencyAmount(num, payload) : formatSignedCurrencyAmount(num, payload);
+}
+
+function showMartingaleCycleTotalToast(outcome, total, payload){
+    const num = Number(total || 0);
+    const positive = Number.isFinite(num) && num >= 0;
+    const amount = formatMartingaleCycleTotalAmount(num, payload || {});
+    const won = String(outcome || "").toLowerCase() === "won";
+    const message = won && positive
+        ? `Martingale Won Total Profits ${amount}`
+        : `Martingale Stopped Total Profits ${amount}`;
+    showToast(message, positive && won ? "success" : "error");
+}
+
+window.showMartingaleCycleTotalToast = showMartingaleCycleTotalToast;
+
+function rememberMartingaleCyclePlacement(trade){
+    if(!isMartingaleCycleTrade(trade)) return;
+    const key = getMartingaleCycleKey(trade);
+    const state = ensureMartingaleCycleState(key);
+    const batchId = getMartingaleBatchId(trade);
+    if(batchId && state.activeBatchId !== batchId && state.settled >= Number(state.expected || 0)){
+        resetMartingaleBatchState(state, true);
+        state.activeBatchId = batchId;
+    }else if(batchId && !state.activeBatchId){
+        state.activeBatchId = batchId;
+    }
+    state.expected = Math.max(Number(state.expected || 0), getMartingaleBatchExpected(trade));
+}
+
+function martingaleBatchRequiresAllWins(trade){
+    const text = getMartingaleCycleText(trade);
+    return text.includes("over3_under6_pair_martingale");
+}
+
+function resolveMartingaleTradePnl(trade, outcome){
+    const profit = getTradeProfitAmount(trade);
+    if(Number.isFinite(profit) && Math.abs(profit) > 1e-9) return Number(profit.toFixed(2));
+    const stake = getTradeStakeAmount(trade);
+    if(outcome === "LOSS" && Number.isFinite(stake) && stake > 0) return Number((-Math.abs(stake)).toFixed(2));
+    return Number((Number(profit || 0)).toFixed(2));
+}
+
+function handleMartingaleCycleResult(trade){
+    if(!isMartingaleCycleTrade(trade)) return;
+    const result = getTradeFinalResultLabel(trade);
+    if(isTradeResultPending(result)) return;
+    const outcome = normalizeTradeResultLabel(result, trade && trade.status);
+    if(outcome !== "WIN" && outcome !== "LOSS") return;
+    const key = getMartingaleCycleKey(trade);
+    const state = ensureMartingaleCycleState(key);
+    const resultKey = getMartingaleResultKey(trade);
+    if(resultKey && state.seenResults[resultKey]) return;
+    if(resultKey) state.seenResults[resultKey] = true;
+
+    const pnl = resolveMartingaleTradePnl(trade, outcome);
+    state.net = Number((Number(state.net || 0) + pnl).toFixed(2));
+    state.updatedAt = Date.now();
+
+    const batchId = getMartingaleBatchId(trade);
+    const expected = getMartingaleBatchExpected(trade);
+    if(batchId || expected > 1){
+        if(batchId && state.activeBatchId !== batchId){
+            resetMartingaleBatchState(state, true);
+            state.activeBatchId = batchId;
+        }
+        state.expected = Math.max(Number(state.expected || 0), expected);
+        state.settled = Math.max(0, Number(state.settled || 0)) + 1;
+        if(outcome === "WIN") state.wins = Math.max(0, Number(state.wins || 0)) + 1;
+        if(outcome === "LOSS") state.losses = Math.max(0, Number(state.losses || 0)) + 1;
+        if(state.settled < Math.max(1, Number(state.expected || expected))) return;
+
+        const wonCycle = martingaleBatchRequiresAllWins(trade)
+            ? Number(state.wins || 0) >= Math.max(1, Number(state.expected || expected))
+            : Number(state.wins || 0) > 0;
+        if(wonCycle){
+            showMartingaleCycleTotalToast("won", state.net, trade);
+            delete martingaleCycleToastState[key];
+        }else{
+            resetMartingaleBatchState(state, true);
+        }
+        return;
+    }
+
+    if(outcome === "WIN"){
+        showMartingaleCycleTotalToast("won", state.net, trade);
+        delete martingaleCycleToastState[key];
+    }
+}
+
+function maybeToastMartingaleStoppedFromApiError(message, payload){
+    const text = String(message || "").toLowerCase();
+    if(!/(insufficient|not enough balance|not enough funds|budget limit|double-up|double up|max stake|proposal limit|rate limit)/i.test(text)) return;
+    const profile = normalizeProfileName((payload && payload.profile) || activeProfile);
+    let bestKey = "";
+    let bestState = null;
+    Object.keys(martingaleCycleToastState || {}).forEach((key)=>{
+        if(!key.startsWith(`${profile}:`)) return;
+        const state = martingaleCycleToastState[key];
+        if(!state) return;
+        if(!bestState || Number(state.updatedAt || 0) > Number(bestState.updatedAt || 0)){
+            bestKey = key;
+            bestState = state;
+        }
+    });
+    if(!bestState || Number(bestState.net || 0) >= 0) return;
+    showMartingaleCycleTotalToast("stopped", bestState.net, payload || {});
+    delete martingaleCycleToastState[bestKey];
+}
+
 function formatTradeCountdownLabel(trade){
     const unit = String((trade && trade.countdown_unit) || "").toLowerCase();
     const remaining = Number(trade && trade.countdown_remaining);
@@ -4692,6 +4929,7 @@ function resolveTurboDigitTradesFromTick(data){
                 ? (hasReliableProfit ? `🏆 WIN ${formatSignedCurrencyAmount(estimatedProfit, trade)}` : "🏆 WIN")
                 : `❌ LOSS ${formatSignedCurrencyAmount(estimatedProfit, trade)}`;
             showToast(toastText, outcome === "WIN" ? "success" : "error");
+            handleMartingaleCycleResult(trade);
             changedProfiles.add(profile);
         });
     });

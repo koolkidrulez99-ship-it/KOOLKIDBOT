@@ -1327,6 +1327,7 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
           hide_from_history: true,
           batch_id: batchId,
           batch_label: settings.group.label,
+          batch_size: settings.group.digits.length,
           batch_stake: batchStake,
         },
       });

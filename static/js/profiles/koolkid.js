@@ -1478,7 +1478,9 @@
       for (let step = 1; step <= hardLimit; step += 1) {
         stake = Number(Math.max(0.35, stake).toFixed(2));
         cumulative = Number((cumulative + stake).toFixed(2));
+        const previousLosses = Number(Math.max(0, lossBank).toFixed(2));
         const profit = Number((stake * targetSettings.payoutMultiplier).toFixed(2));
+        const netProfit = Number((profit - previousLosses).toFixed(2));
         const affordable = cumulative <= available + 1e-9;
         if (affordable) {
           affordableTrades += 1;
@@ -1490,6 +1492,8 @@
             stake,
             contracts: 1,
             profit,
+            previousLosses,
+            netProfit,
             cumulative,
             affordable,
             details: `${settings.label}: ${formatKoolkidMartingaleCalculatorMoney(stake)}`,
@@ -1506,6 +1510,8 @@
       const legs = koolkidMartingaleCalculatorLegRows(settings, step);
       const roundStake = Number(legs.reduce((sum, leg) => sum + Number(leg.stake || 0), 0).toFixed(2));
       const profit = Number(legs.reduce((sum, leg) => sum + (Number(leg.stake || 0) * Number(leg.multiplier || 0)), 0).toFixed(2));
+      const previousLosses = Number(cumulative.toFixed(2));
+      const netProfit = Number((profit - previousLosses).toFixed(2));
       cumulative = Number((cumulative + roundStake).toFixed(2));
       const affordable = cumulative <= available + 1e-9;
       if (affordable) {
@@ -1518,6 +1524,8 @@
           stake: roundStake,
           contracts: legs.length,
           profit,
+          previousLosses,
+          netProfit,
           cumulative,
           affordable,
           details: legs.map((leg) => `${leg.label}: ${formatKoolkidMartingaleCalculatorMoney(leg.stake)}`).join(" + "),
@@ -1555,6 +1563,7 @@
           <div style="min-width:0;">
             <div style="color:#e2e8f0; font-weight:800;">${escapeHtmlKoolkid(row.details || settings.label)}</div>
             <div style="color:#94a3b8; font-size:11px;">Need ${formatKoolkidMartingaleCalculatorMoney(row.cumulative)} total - ${row.contracts} contract${row.contracts === 1 ? "" : "s"}</div>
+            <div style="color:${Number(row.netProfit || 0) >= 0 ? "#86efac" : "#fca5a5"}; font-size:11px;">Net after previous losses: ${formatKoolkidMartingaleCalculatorMoney(row.netProfit || 0)}</div>
           </div>
           <div style="text-align:right; color:#86efac; font-weight:900;">+${formatKoolkidMartingaleCalculatorMoney(row.profit)}</div>
         </div>
