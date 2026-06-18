@@ -418,6 +418,16 @@
                 </label>
               </div>
             </div>
+            <div id="koolkidMartingaleRiskSettings" style="margin-top:8px; display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:8px;">
+              <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                TP
+                <input id="koolkidMartingaleTP" type="number" min="0" step="0.01" value="0" oninput="updateKoolkidSingleMartingalePanel()" style="width:100%; min-height:38px;">
+              </label>
+              <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                SL
+                <input id="koolkidMartingaleSL" type="number" min="0" step="0.01" value="0" oninput="updateKoolkidSingleMartingalePanel()" style="width:100%; min-height:38px;">
+              </label>
+            </div>
             <div id="koolkidMartingaleStatus" style="margin-top:8px; color:#94a3b8; font-size:12px;">Ready. $0.05 step - Step 1 - Current stake $0.35 - Next stake $0.40 - Last result: none</div>
             <div style="margin-top:8px; display:grid; grid-template-columns:1fr 1fr; gap:8px;">
               <button id="koolkidMartingalePlaceBtn" type="button" onclick="placeKoolkidSingleMartingaleTrade()" style="background:#22c55e; color:#052e16; font-weight:900;">PLACE SELECTED CONTRACT</button>
