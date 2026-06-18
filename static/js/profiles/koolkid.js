@@ -1449,6 +1449,20 @@
     return 0;
   }
 
+  function findKoolkidMartingaleLeg(settings, action) {
+    const key = String(action || "").toUpperCase();
+    return ((settings && settings.legs) || []).find((leg) => String(leg.action || "").toUpperCase() === key) || null;
+  }
+
+  function resolveKoolkidPairRoundProfit(items, settings) {
+    return Number((items || []).reduce((sum, item) => {
+      const direct = Number(item && item.profit);
+      if (Number.isFinite(direct)) return sum + direct;
+      const leg = findKoolkidMartingaleLeg(settings, item && item.action) || item || null;
+      return sum + resolveKoolkidMartingaleProfit(null, item && item.outcome, item && item.stake, settings, leg);
+    }, 0).toFixed(2));
+  }
+
   function resetKoolkidSingleMartingaleSteps() {
     const st = getKoolkidSingleMartingaleState();
     st.step = 1;
@@ -2081,6 +2095,8 @@
               action: row.leg.action,
               label: row.leg.label,
               stake: row.legStake,
+              type: row.leg.type,
+              barrier: row.leg.barrier,
               controlsStop: row.leg.controlsStop !== false,
               outcome: "",
             };
@@ -2158,6 +2174,8 @@
         action: legAction || action,
         label: leg ? leg.label : (legAction ? legAction.replace("_", " ") : String(payload.label || st.pendingAction)),
         stake: Number(payload.stake || payload.amount || st.pendingStake || 0),
+        type: leg ? leg.type : payload.type,
+        barrier: leg ? leg.barrier : payload.barrier,
         controlsStop: !leg || leg.controlsStop !== false,
         outcome: "",
       };
@@ -2297,10 +2315,12 @@
       if (!item || item.outcome) return;
       const outcome = resolveKoolkidTradeOutcome(payload);
       if (!outcome) return;
+      const settings = readKoolkidSingleMartingaleSettings();
+      const leg = findKoolkidMartingaleLeg(settings, item.action) || item;
       item.outcome = outcome;
+      item.profit = resolveKoolkidMartingaleProfit(payload, outcome, item.stake, settings, leg);
       st.pendingSettled = Object.keys(st.pendingContracts || {}).filter((id) => st.pendingContracts[id] && st.pendingContracts[id].outcome).length;
       const wasMartingaleTrade = !!st.pendingMartingale;
-      const settings = readKoolkidSingleMartingaleSettings();
       if (item.action === "OVER_3") {
         if (outcome === "LOSS") {
           const over3Step = Math.max(1, Math.min(3, Math.floor(Number(st.over3Step || 1) || 1)));
@@ -2330,23 +2350,29 @@
           }
         });
         const hasWinningLeg = pendingItems.some((pending) => pending.outcome === "WIN");
+        const roundProfit = resolveKoolkidPairRoundProfit(pendingItems, settings);
+        st.sessionProfit = Number((Number(st.sessionProfit || 0) + roundProfit).toFixed(2));
+        const riskSettings = readKoolkidSingleMartingaleRiskSettings();
+        const hitTp = riskSettings.takeProfit > 0 && Number(st.sessionProfit || 0) >= riskSettings.takeProfit;
+        const hitSl = riskSettings.stopLoss > 0 && Number(st.sessionProfit || 0) <= -Math.abs(riskSettings.stopLoss);
         clearKoolkidSingleMartingalePending();
         st.step = 1;
-        st.lastResult = hasWinningLeg ? "WIN" : "LOSS";
-        if (hasWinningLeg) {
+        st.lastResult = hasWinningLeg || roundProfit > 0 ? "WIN" : "LOSS";
+        if (hitTp || hitSl) {
+          stopKoolkidSingleMartingaleOnRiskLimit(st, hitTp, st.sessionProfit);
+        } else if (hasWinningLeg) {
           st.pairSteps = {};
-          st.running = false;
-          st.stopRequested = false;
-          st.waitingForTicks = false;
-          st.waitTicksRemaining = 0;
-          st.status = wasMartingaleTrade ? "Reset" : "Ready";
+          if (riskSettings.active && wasMartingaleTrade && st.enabled && st.running && !st.stopRequested) {
+            scheduleKoolkidSingleMartingaleContinuation(st, settings, `Dual win reset. Waiting ${settings.tickSpacing} tick${settings.tickSpacing === 1 ? "" : "s"}`);
+          } else {
+            st.running = false;
+            st.stopRequested = false;
+            st.waitingForTicks = false;
+            st.waitTicksRemaining = 0;
+            st.status = wasMartingaleTrade ? "Reset" : "Ready";
+          }
         } else if (wasMartingaleTrade && st.enabled && st.running && !st.stopRequested) {
-          if (st.restartTimer) clearTimeout(st.restartTimer);
-          st.restartTimer = null;
-          st.tickSpacing = settings.tickSpacing;
-          st.waitTicksRemaining = settings.tickSpacing;
-          st.waitingForTicks = true;
-          st.status = `Waiting ${settings.tickSpacing} tick${settings.tickSpacing === 1 ? "" : "s"}`;
+          scheduleKoolkidSingleMartingaleContinuation(st, settings);
         } else {
           st.running = false;
           st.waitingForTicks = false;
@@ -2356,7 +2382,8 @@
         updateKoolkidSingleMartingalePanel();
         return;
       }
-      if (outcome === "WIN" && koolkidSingleMartingaleResultStops(item, payload)) {
+      const pairRiskSettings = readKoolkidSingleMartingaleRiskSettings();
+      if (outcome === "WIN" && koolkidSingleMartingaleResultStops(item, payload) && !pairRiskSettings.active) {
         clearKoolkidSingleMartingalePending();
         st.step = 1;
         st.over3Step = 1;
@@ -2380,17 +2407,33 @@
         .map((id) => st.pendingContracts[id])
         .filter((pending) => pending && koolkidSingleMartingaleResultStops(pending, null));
       const stoppingWin = stoppingLegs.some((pending) => pending.outcome === "WIN");
+      const pendingItems = Object.keys(st.pendingContracts || {})
+        .map((id) => st.pendingContracts[id])
+        .filter(Boolean);
+      const roundProfit = resolveKoolkidPairRoundProfit(pendingItems, settings);
+      st.sessionProfit = Number((Number(st.sessionProfit || 0) + roundProfit).toFixed(2));
+      const hitTp = pairRiskSettings.takeProfit > 0 && Number(st.sessionProfit || 0) >= pairRiskSettings.takeProfit;
+      const hitSl = pairRiskSettings.stopLoss > 0 && Number(st.sessionProfit || 0) <= -Math.abs(pairRiskSettings.stopLoss);
+      if (hitTp || hitSl) {
+        clearKoolkidSingleMartingalePending();
+        st.lastResult = stoppingWin || roundProfit > 0 ? "WIN" : "LOSS";
+        stopKoolkidSingleMartingaleOnRiskLimit(st, hitTp, st.sessionProfit);
+        updateKoolkidSingleMartingalePanel();
+        return;
+      }
       if (stoppingWin) {
         clearKoolkidSingleMartingalePending();
-        st.step = 1;
-        st.over3Step = 1;
-        st.pairSteps = {};
-        st.running = false;
-        st.stopRequested = false;
-        st.waitingForTicks = false;
-        st.waitTicksRemaining = 0;
+        resetKoolkidSingleMartingaleSteps();
         st.lastResult = "WIN";
-        st.status = wasMartingaleTrade ? "Reset" : "Ready";
+        if (pairRiskSettings.active && wasMartingaleTrade && st.enabled && st.running && !st.stopRequested) {
+          scheduleKoolkidSingleMartingaleContinuation(st, settings, `Dual win reset. Waiting ${settings.tickSpacing} tick${settings.tickSpacing === 1 ? "" : "s"}`);
+        } else {
+          st.running = false;
+          st.stopRequested = false;
+          st.waitingForTicks = false;
+          st.waitTicksRemaining = 0;
+          st.status = wasMartingaleTrade ? "Reset" : "Ready";
+        }
         updateKoolkidSingleMartingalePanel();
         return;
       }
