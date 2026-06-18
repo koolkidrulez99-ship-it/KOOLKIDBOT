@@ -2350,29 +2350,14 @@
           }
         });
         const hasWinningLeg = pendingItems.some((pending) => pending.outcome === "WIN");
+        const hasLosingLeg = pendingItems.some((pending) => pending.outcome === "LOSS");
         const roundProfit = resolveKoolkidPairRoundProfit(pendingItems, settings);
         st.sessionProfit = Number((Number(st.sessionProfit || 0) + roundProfit).toFixed(2));
-        const riskSettings = readKoolkidSingleMartingaleRiskSettings();
-        const hitTp = riskSettings.takeProfit > 0 && Number(st.sessionProfit || 0) >= riskSettings.takeProfit;
-        const hitSl = riskSettings.stopLoss > 0 && Number(st.sessionProfit || 0) <= -Math.abs(riskSettings.stopLoss);
         clearKoolkidSingleMartingalePending();
         st.step = 1;
-        st.lastResult = hasWinningLeg || roundProfit > 0 ? "WIN" : "LOSS";
-        if (hitTp || hitSl) {
-          stopKoolkidSingleMartingaleOnRiskLimit(st, hitTp, st.sessionProfit);
-        } else if (hasWinningLeg) {
-          st.pairSteps = {};
-          if (riskSettings.active && wasMartingaleTrade && st.enabled && st.running && !st.stopRequested) {
-            scheduleKoolkidSingleMartingaleContinuation(st, settings, `Dual win reset. Waiting ${settings.tickSpacing} tick${settings.tickSpacing === 1 ? "" : "s"}`);
-          } else {
-            st.running = false;
-            st.stopRequested = false;
-            st.waitingForTicks = false;
-            st.waitTicksRemaining = 0;
-            st.status = wasMartingaleTrade ? "Reset" : "Ready";
-          }
-        } else if (wasMartingaleTrade && st.enabled && st.running && !st.stopRequested) {
-          scheduleKoolkidSingleMartingaleContinuation(st, settings);
+        st.lastResult = hasWinningLeg && hasLosingLeg ? "MIXED" : (hasWinningLeg ? "WIN" : "LOSS");
+        if (wasMartingaleTrade && st.enabled && st.running && !st.stopRequested) {
+          scheduleKoolkidSingleMartingaleContinuation(st, settings, `Dual round settled. Waiting ${settings.tickSpacing} tick${settings.tickSpacing === 1 ? "" : "s"}`);
         } else {
           st.running = false;
           st.waitingForTicks = false;
