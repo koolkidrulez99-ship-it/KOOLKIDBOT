@@ -1056,7 +1056,7 @@
   }
 
   function isKoolkidMonthlySingleMartingaleActionAllowed(action) {
-    return ["UNDER_3", "UNDER_4", "OVER_5", "OVER_6", "OVER_7"].includes(String(action || "").toUpperCase());
+    return ["UNDER_3", "UNDER_4", "OVER_3", "OVER_4", "OVER_5", "OVER_6", "OVER_7"].includes(String(action || "").toUpperCase());
   }
 
   function syncKoolkidMonthlySingleMartingaleUi() {
@@ -1093,7 +1093,7 @@
     const note = document.getElementById("koolkidMartingaleLifetimeNote");
     if (note) {
       note.textContent = limited
-        ? "Monthly users: UNDER 3, UNDER 4, OVER 5, OVER 6, and OVER 7 only. Multiplier martingale only."
+        ? "Monthly users: UNDER 3, UNDER 4, OVER 3, OVER 4, OVER 5, OVER 6, and OVER 7 only. Multiplier martingale only."
         : "Lifetime users only.";
     }
   }
@@ -1154,6 +1154,7 @@
       UNDER_3: { action: "UNDER_3", type: "UNDER", barrier: 3, label: "UNDER 3" },
       UNDER_4: { action: "UNDER_4", type: "UNDER", barrier: 4, label: "UNDER 4" },
       UNDER_5: { action: "UNDER_5", type: "UNDER", barrier: 5, label: "UNDER 5" },
+      OVER_3: { action: "OVER_3", type: "OVER", barrier: 3, label: "OVER 3" },
       OVER_4: { action: "OVER_4", type: "OVER", barrier: 4, label: "OVER 4" },
       OVER_5: { action: "OVER_5", type: "OVER", barrier: 5, label: "OVER 5" },
       OVER_6: { action: "OVER_6", type: "OVER", barrier: 6, label: "OVER 6" },
@@ -1869,7 +1870,7 @@
     if (isKoolkidSingleMartingaleMonthlyLimited()) {
       const settings = readKoolkidSingleMartingaleSettings();
       if (!isKoolkidMonthlySingleMartingaleActionAllowed(settings.action)) {
-        safeToast("Monthly users can only use UNDER 3, UNDER 4, OVER 5, OVER 6, or OVER 7 here.", "error");
+        safeToast("Monthly users can only use UNDER 3, UNDER 4, OVER 3, OVER 4, OVER 5, OVER 6, or OVER 7 here.", "error");
         return;
       }
     }
@@ -2036,7 +2037,7 @@
     if (st.inProgress) return;
     const settings = readKoolkidSingleMartingaleSettings();
     if (isKoolkidSingleMartingaleMonthlyLimited() && !isKoolkidMonthlySingleMartingaleActionAllowed(settings.action)) {
-      safeToast("Monthly users can only use UNDER 3, UNDER 4, OVER 5, OVER 6, or OVER 7 here.", "error");
+      safeToast("Monthly users can only use UNDER 3, UNDER 4, OVER 3, OVER 4, OVER 5, OVER 6, or OVER 7 here.", "error");
       updateKoolkidSingleMartingalePanel();
       return;
     }
