@@ -845,6 +845,10 @@
                             <option value="10">10 ticks</option>
                         </select>
                     </label>
+                    <label id="humanParityMarketSwitcherWrap" style="display:flex; align-items:center; justify-content:space-between; gap:10px; min-height:38px; padding:8px 10px; border:1px solid rgba(148,163,184,0.18); border-radius:10px; background:rgba(15,23,42,0.55); color:#94a3b8; font-size:12px; font-weight:800;">
+                        <span>Market Switcher</span>
+                        <input id="humanParityMarketSwitcher" type="checkbox" onchange="updateHumanParityMartingalePanel()" style="width:18px; height:18px; accent-color:#22c55e;">
+                    </label>
                     <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
                         Take Profit
                         <input id="humanParityMartingaleTp" type="number" min="0" step="0.01" value="0" placeholder="0 = off" oninput="updateHumanParityMartingalePanel()" style="width:100%; min-height:38px;">
