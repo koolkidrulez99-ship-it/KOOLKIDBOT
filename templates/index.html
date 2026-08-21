@@ -1891,7 +1891,7 @@ function shouldKeepApiConnectedDuringIdle(){
 }
 
 function shouldBlockAutomaticApiDisconnect(reason){
-    const protectedReasons = new Set(["pagehide", "beforeunload", "inactive_20_minutes", "inactive_30_minutes", "inactive_10_minutes"]);
+    const protectedReasons = new Set(["pagehide", "beforeunload", "page_exit", "client_disconnect", "inactive_20_minutes", "inactive_30_minutes", "inactive_10_minutes"]);
     return protectedReasons.has(String(reason || "")) && shouldKeepApiConnectedDuringIdle();
 }
 
@@ -1926,7 +1926,12 @@ function sendApiDisconnectKeepalive(reason){
         if(navigator.sendBeacon && navigator.sendBeacon("/disconnect", payload)) return true;
     }catch(e){}
     try{
-        fetch("/disconnect", { method: "POST", keepalive: true }).catch(()=>{});
+        fetch("/disconnect", {
+            method: "POST",
+            keepalive: true,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ reason: reason || "page_exit" }),
+        }).catch(()=>{});
         return true;
     }catch(e){}
     return false;
@@ -7606,7 +7611,11 @@ async function connect(){
 async function disconnect(){
     clearApiConnectPending("manual_disconnect");
     stopApiConnectPolling();
-    await fetch("/disconnect", {method:"POST"});
+    await fetch("/disconnect", {
+        method:"POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: "manual_disconnect" }),
+    });
     clearBotTransientState();
 
     apiStatus.innerText = "Disconnected";

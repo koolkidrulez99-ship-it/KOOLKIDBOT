@@ -3798,6 +3798,8 @@ def _build_default_client_state():
             "confirmations": {},
             "confirmation_required": 2,
             "confidence_threshold": 70.0,
+            "last_emit": 0.0,
+            "last_subscription_sync": 0.0,
         },
         "human_parity_market_scan": {
             "running": False,
@@ -17659,6 +17661,8 @@ HUMAN_PARITY_SCAN_TIMEOUT_SEC = 6.5
 HUMAN_PARITY_SCAN_DEFAULTS = [
     "R_10", "R_25", "R_50", "R_75", "R_100",
 ]
+GOLDEN_CARD_EMIT_MIN_SEC = 0.35
+GOLDEN_CARD_SUBSCRIPTION_SYNC_MIN_SEC = 3.0
 
 def _ensure_unchain_scanner(state):
     scan = state.setdefault("unchain_scanner", {}) or {}
@@ -18515,6 +18519,8 @@ def _ensure_koolkid_golden_card_state(state):
     scan.setdefault("confirmations", {})
     scan.setdefault("confirmation_required", 2)
     scan.setdefault("confidence_threshold", 70.0)
+    scan.setdefault("last_emit", 0.0)
+    scan.setdefault("last_subscription_sync", 0.0)
     state["koolkid_golden_card"] = scan
     return scan
 
@@ -18781,8 +18787,9 @@ def _cleanup_koolkid_golden_card_subscriptions(state, preserve_scan_state=False)
     scan["running"] = False
 
 
-def _sync_koolkid_golden_card_subscriptions(state, symbols=None, *, client_id=None):
+def _sync_koolkid_golden_card_subscriptions(state, symbols=None, *, client_id=None, force=False):
     scan = _ensure_koolkid_golden_card_state(state)
+    previous_symbols = list(scan.get("symbols") or [])
     desired_symbols = []
     for sym in list(symbols or scan.get("symbols") or []):
         clean_sym = str(sym or "").upper().strip()
@@ -18807,6 +18814,15 @@ def _sync_koolkid_golden_card_subscriptions(state, symbols=None, *, client_id=No
     protected_symbols = {sym for sym in (main_symbol, human_symbol) if sym}
     current_owned = set(scan.get("owned_syms") or set())
     desired_set = set(desired_symbols)
+    unchanged = desired_symbols == previous_symbols
+    has_all_subs = all((sym in protected_symbols) or bool(tick_subs.get(sym)) for sym in desired_symbols)
+    now_ts = time.time()
+    try:
+        last_sync = float(scan.get("last_subscription_sync", 0.0) or 0.0)
+    except Exception:
+        last_sync = 0.0
+    if unchanged and has_all_subs and not force and (now_ts - last_sync) < GOLDEN_CARD_SUBSCRIPTION_SYNC_MIN_SEC:
+        return
 
     for sym in list(current_owned):
         if sym in desired_set or sym in protected_symbols:
@@ -18867,6 +18883,7 @@ def _sync_koolkid_golden_card_subscriptions(state, symbols=None, *, client_id=No
             logger.warning("[%s] golden_card_tick_subscribe_failed symbol=%s", client_id, sym)
 
     scan["owned_syms"] = next_owned
+    scan["last_subscription_sync"] = now_ts
 
 def _start_koolkid_golden_card_scan(client_id, state, *, filter_mode="BOTH", add_jump_pairs=False):
     strat = (state.get("strategies") or {}).get("KOOLKID")
@@ -18885,7 +18902,7 @@ def _start_koolkid_golden_card_scan(client_id, state, *, filter_mode="BOTH", add
     scan["running"] = True
     scan["confirmations"] = {}
     scan["market_pool_size"] = int(payload.get("market_pool_size", 0) or 0)
-    _sync_koolkid_golden_card_subscriptions(state, payload.get("symbols") or [], client_id=client_id)
+    _sync_koolkid_golden_card_subscriptions(state, payload.get("symbols") or [], client_id=client_id, force=True)
 
     payload = _emit_koolkid_golden_card(client_id, state)
     try:
@@ -19001,6 +19018,7 @@ def _process_koolkid_golden_card_tick(client_id, tick):
     scan = _ensure_koolkid_golden_card_state(state)
     if not scan.get("running"):
         return
+    state["last_seen"] = time.time()
     strat = (state.get("strategies") or {}).get("KOOLKID")
     if not strat or not hasattr(strat, "record_golden_card_tick"):
         return
@@ -19015,10 +19033,12 @@ def _process_koolkid_golden_card_tick(client_id, tick):
     payload = _enrich_koolkid_golden_card_payload(state, payload, advance_confirmation=True, checked_symbol=sym)
     scan["market_pool_size"] = int(payload.get("market_pool_size", 0) or 0)
     _sync_koolkid_golden_card_subscriptions(state, payload.get("symbols") or scan.get("symbols") or [], client_id=client_id)
-    try:
-        socketio.emit("golden_card_update", payload, room=client_id)
-    except Exception:
-        pass
+    should_emit = _should_emit_ui_event(state, "golden_card_update:tick", GOLDEN_CARD_EMIT_MIN_SEC)
+    if should_emit:
+        try:
+            socketio.emit("golden_card_update", payload, room=client_id)
+        except Exception:
+            pass
     if not payload.get("running"):
         _cleanup_koolkid_golden_card_subscriptions(state, preserve_scan_state=True)
         try:
@@ -21664,6 +21684,8 @@ def disconnect():
     protected_reasons = {
         "pagehide",
         "beforeunload",
+        "page_exit",
+        "client_disconnect",
         "inactive_20_minutes",
         "inactive_30_minutes",
         "inactive_10_minutes",
