@@ -1195,6 +1195,11 @@
     return true;
   }
 
+  function isHumanParityTpSlEnabled(){
+    const settings = readHumanParitySettings();
+    return Number(settings.takeProfit || 0) > 0 || Number(settings.stopLoss || 0) > 0;
+  }
+
   function updateHumanParityMartingaleFromResult(payload){
     const st = HUMAN_PARITY_MARTINGALE_STATE;
     if(!payload || String(payload.profile || "").toUpperCase() !== PROFILE || !st.runId) return;
@@ -1218,6 +1223,7 @@
     const stake = Math.max(0.35, Number(pending.stake || (side === "EVEN" ? st.evenStake : st.oddStake) || 1));
     const resultProfit = humanTradeNumber(payload, ["profit", "profit_value", "pnl", "net_profit", "result_profit"]);
     const limitReached = applyHumanParityTpSlAfterResult(resultProfit);
+    const waitForTpSl = isHumanParityTpSlEnabled();
     if(st.mode === "EVEN_ODD" && st.currentBatch){
       if(Number.isFinite(resultProfit)){
         st.currentBatch.totalProfit = Number((Number(st.currentBatch.totalProfit || 0) + resultProfit).toFixed(2));
@@ -1237,7 +1243,7 @@
       st[counterKey] = 0;
       if(isHumanParityPlusMode(st.mode)){
         st.plusRecoveryPending = false;
-      }else if(st.mode !== "EVEN_ODD"){
+      }else if(st.mode !== "EVEN_ODD" && !waitForTpSl){
         st.running = false;
         st.runId = "";
         st.pending = {};
