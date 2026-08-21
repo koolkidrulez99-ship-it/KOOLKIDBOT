@@ -3799,6 +3799,20 @@ def _build_default_client_state():
             "confirmation_required": 2,
             "confidence_threshold": 70.0,
         },
+        "human_parity_market_scan": {
+            "running": False,
+            "symbols": [],
+            "owned_syms": set(),
+            "buffers": {},
+            "started_at": 0.0,
+            "target_side": "",
+            "desired_parities": [],
+            "max_ticks": 10,
+            "ready_symbol": "",
+            "ready_parity": "",
+            "ready_streak": 0,
+            "status": "Ready",
+        },
         "martha_ai": normalize_martha_settings({}),
         "balance": 0.0,
         "last_live_balance": 0.0,
@@ -17639,6 +17653,12 @@ UNCHAIN_SCANNER_DEFAULT_WINDOW = 20
 UNCHAIN_SCANNER_HISTORY_TICKS = 320
 UNCHAIN_SCANNER_MIN_HISTORY = 20
 UNCHAIN_SCANNER_EMIT_INTERVAL = 2.0
+HUMAN_PARITY_SCAN_MARKET_LIMIT = 5
+HUMAN_PARITY_SCAN_MAX_TICKS = 10
+HUMAN_PARITY_SCAN_TIMEOUT_SEC = 6.5
+HUMAN_PARITY_SCAN_DEFAULTS = [
+    "R_10", "R_25", "R_50", "R_75", "R_100",
+]
 
 def _ensure_unchain_scanner(state):
     scan = state.setdefault("unchain_scanner", {}) or {}
@@ -17958,10 +17978,195 @@ def _has_active_tick_stream_warmup(state, *, now_ts=None, client_id=None):
     return found
 
 
+def _ensure_human_parity_market_scan(state):
+    scan = state.setdefault("human_parity_market_scan", {}) or {}
+    scan.setdefault("running", False)
+    scan.setdefault("symbols", [])
+    scan.setdefault("owned_syms", set())
+    scan.setdefault("buffers", {})
+    scan.setdefault("started_at", 0.0)
+    scan.setdefault("target_side", "")
+    scan.setdefault("desired_parities", [])
+    scan.setdefault("max_ticks", HUMAN_PARITY_SCAN_MAX_TICKS)
+    scan.setdefault("ready_symbol", "")
+    scan.setdefault("ready_parity", "")
+    scan.setdefault("ready_streak", 0)
+    scan.setdefault("status", "Ready")
+    if not isinstance(scan.get("owned_syms"), set):
+        scan["owned_syms"] = set(scan.get("owned_syms") or [])
+    if not isinstance(scan.get("buffers"), dict):
+        scan["buffers"] = {}
+    scan["symbols"] = [
+        _normalize_tick_symbol(sym)
+        for sym in list(scan.get("symbols") or [])
+        if _normalize_tick_symbol(sym)
+    ][:HUMAN_PARITY_SCAN_MARKET_LIMIT]
+    return scan
+
+
+def _human_parity_scan_target_parities(target_side):
+    side = str(target_side or "").upper().strip()
+    if side in ("ODD", "ODD_PLUS"):
+        return ["EVEN"]
+    if side in ("EVEN", "EVEN_PLUS"):
+        return ["ODD"]
+    return ["EVEN", "ODD"]
+
+
+def _human_parity_scan_result_rows(scan):
+    rows = []
+    desired = set(scan.get("desired_parities") or ["EVEN", "ODD"])
+    for sym in list(scan.get("symbols") or []):
+        buf = scan.get("buffers", {}).get(sym)
+        digits = list(buf or [])
+        streak = 0
+        parity = ""
+        if digits:
+            parity = "EVEN" if int(digits[-1]) % 2 == 0 else "ODD"
+            for digit in reversed(digits):
+                item_parity = "EVEN" if int(digit) % 2 == 0 else "ODD"
+                if item_parity != parity:
+                    break
+                streak += 1
+        rows.append({
+            "symbol": sym,
+            "ticks": len(digits),
+            "last_digit": digits[-1] if digits else None,
+            "parity": parity,
+            "streak": streak,
+            "candidate": bool(parity in desired and 2 <= streak <= 3),
+        })
+    return rows
+
+
+def _best_human_parity_scan_result(scan):
+    rows = _human_parity_scan_result_rows(scan)
+    candidates = [row for row in rows if row.get("candidate")]
+    if candidates:
+        return sorted(candidates, key=lambda row: (-int(row.get("streak", 0) or 0), list(scan.get("symbols") or []).index(row["symbol"])))[0]
+    desired = set(scan.get("desired_parities") or ["EVEN", "ODD"])
+    desired_rows = [row for row in rows if row.get("parity") in desired]
+    if desired_rows:
+        return sorted(desired_rows, key=lambda row: (-int(row.get("streak", 0) or 0), list(scan.get("symbols") or []).index(row["symbol"])))[0]
+    return rows[0] if rows else {}
+
+
+def _cleanup_human_parity_market_scan(state, preserve_scan_state=False):
+    scan = _ensure_human_parity_market_scan(state)
+    owned = set(scan.get("owned_syms") or set())
+    scan["running"] = False
+    scan["owned_syms"] = set()
+    if not preserve_scan_state:
+        scan["symbols"] = []
+        scan["buffers"] = {}
+        scan["ready_symbol"] = ""
+        scan["ready_parity"] = ""
+        scan["ready_streak"] = 0
+        scan["status"] = "Ready"
+    for sym in owned:
+        _forget_tick_subscription_if_unused(state, sym, client_id=_client_id_for_state(state), reason="human_parity_market_scan")
+
+
+def _start_human_parity_market_scan(client_id, state, symbols=None, target_side="", max_ticks=None):
+    scan = _ensure_human_parity_market_scan(state)
+    if scan.get("running"):
+        _cleanup_human_parity_market_scan(state)
+    if not state.get("ws_connected") or not state.get("ws"):
+        return False, "Not connected", _human_parity_scan_result_rows(scan)
+
+    requested = []
+    seen = set()
+    for raw in list(symbols or []):
+        sym = _normalize_tick_symbol(raw)
+        if sym and sym not in seen:
+            requested.append(sym)
+            seen.add(sym)
+        if len(requested) >= HUMAN_PARITY_SCAN_MARKET_LIMIT:
+            break
+    for raw in HUMAN_PARITY_SCAN_DEFAULTS:
+        if len(requested) >= HUMAN_PARITY_SCAN_MARKET_LIMIT:
+            break
+        sym = _normalize_tick_symbol(raw)
+        if sym and sym not in seen:
+            requested.append(sym)
+            seen.add(sym)
+
+    if _uses_new_deriv_trade_api(state):
+        requested = _filter_new_api_symbols(
+            state,
+            requested,
+            context="human_parity_market_scan",
+            client_id=client_id,
+            max_symbols=HUMAN_PARITY_SCAN_MARKET_LIMIT,
+        )
+    if not requested:
+        return False, "No valid scan markets available.", []
+
+    max_tick_count = max(2, min(HUMAN_PARITY_SCAN_MAX_TICKS, int(max_ticks or HUMAN_PARITY_SCAN_MAX_TICKS)))
+    scan["running"] = True
+    scan["symbols"] = requested[:HUMAN_PARITY_SCAN_MARKET_LIMIT]
+    scan["owned_syms"] = set()
+    scan["buffers"] = {sym: deque(maxlen=max_tick_count) for sym in scan["symbols"]}
+    scan["started_at"] = time.time()
+    scan["target_side"] = str(target_side or "").upper().strip()
+    scan["desired_parities"] = _human_parity_scan_target_parities(target_side)
+    scan["max_ticks"] = max_tick_count
+    scan["ready_symbol"] = ""
+    scan["ready_parity"] = ""
+    scan["ready_streak"] = 0
+    scan["status"] = "Scanning"
+
+    tick_subs = state.setdefault("tick_subs", {})
+    for sym in scan["symbols"]:
+        already_subscribed = bool(tick_subs.get(sym))
+        if _ensure_tick_subscription(state, sym, reason="human_parity_market_scan", client_id=client_id, warmup_sec=1.0) and not already_subscribed:
+            scan["owned_syms"].add(sym)
+    return True, "Scanning", _human_parity_scan_result_rows(scan)
+
+
+def _process_human_parity_market_scan_tick(client_id, tick):
+    state = clients.get(client_id)
+    if not state:
+        return
+    scan = _ensure_human_parity_market_scan(state)
+    if not scan.get("running"):
+        return
+    sym = _normalize_tick_symbol(tick.get("symbol"))
+    if not sym or sym not in set(scan.get("symbols") or []):
+        return
+    try:
+        digit = extract_last_decimal_digit(tick.get("quote"), tick.get("pip_size", 2))
+        if digit is None:
+            return
+        digit = int(digit)
+    except Exception:
+        return
+    buf = scan.setdefault("buffers", {}).setdefault(sym, deque(maxlen=int(scan.get("max_ticks") or HUMAN_PARITY_SCAN_MAX_TICKS)))
+    buf.append(digit)
+    desired = set(scan.get("desired_parities") or ["EVEN", "ODD"])
+    parity = "EVEN" if digit % 2 == 0 else "ODD"
+    streak = 0
+    for item in reversed(list(buf)):
+        item_parity = "EVEN" if int(item) % 2 == 0 else "ODD"
+        if item_parity != parity:
+            break
+        streak += 1
+    if parity in desired and 2 <= streak <= 3:
+        scan["ready_symbol"] = sym
+        scan["ready_parity"] = parity
+        scan["ready_streak"] = streak
+        scan["status"] = f"{sym} {parity} x{streak}"
+
+
 def _symbol_needed_by_aux_streams(state, symbol):
     sym = _normalize_tick_symbol(symbol)
     if not sym or not isinstance(state, dict):
         return False
+    parity_scan = _ensure_human_parity_market_scan(state)
+    if bool(parity_scan.get("running")) and sym in set(parity_scan.get("symbols") or []):
+        return True
+    if sym in set(parity_scan.get("owned_syms") or set()):
+        return True
     scan = _ensure_unchain_scanner(state)
     if bool(scan.get("running")) and sym in set(scan.get("symbols") or []):
         return True
@@ -19493,6 +19698,7 @@ def handle_on_message(client_id, ws, message, expected_nonce):
             process_seqvix_tick(client_id, tick)
             _process_unchain_scanner_tick(client_id, tick)
             _process_koolkid_golden_card_tick(client_id, tick)
+            _process_human_parity_market_scan_tick(client_id, tick)
             process_tick(client_id, tick)
 
         if "buy" in data:
@@ -24617,6 +24823,87 @@ def human_dual_market_contracts_route():
         "errors": errors,
         "batch_id": batch_id,
     }), (200 if placed else 400)
+
+
+@app.route("/human_parity_market_scan", methods=["POST"])
+def human_parity_market_scan_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    cid, state = get_client_state()
+    data = request.json or {}
+    symbols = data.get("symbols") or []
+    target_side = data.get("target_side") or data.get("side") or ""
+    try:
+        max_ticks = int(data.get("max_ticks") or HUMAN_PARITY_SCAN_MAX_TICKS)
+    except Exception:
+        max_ticks = HUMAN_PARITY_SCAN_MAX_TICKS
+    try:
+        timeout_ms = int(data.get("timeout_ms") or int(HUMAN_PARITY_SCAN_TIMEOUT_SEC * 1000))
+    except Exception:
+        timeout_ms = int(HUMAN_PARITY_SCAN_TIMEOUT_SEC * 1000)
+    timeout_sec = max(0.5, min(12.0, timeout_ms / 1000.0))
+
+    ok, message, rows = _start_human_parity_market_scan(
+        cid,
+        state,
+        symbols=symbols,
+        target_side=target_side,
+        max_ticks=max_ticks,
+    )
+    scan = _ensure_human_parity_market_scan(state)
+    if not ok:
+        _cleanup_human_parity_market_scan(state)
+        return jsonify({"status": "error", "message": message, "symbol": "", "ready": False, "results": rows}), 400
+
+    deadline = time.time() + timeout_sec
+    ready = {}
+    reason = "timeout"
+    while time.time() < deadline:
+        scan = _ensure_human_parity_market_scan(state)
+        if not scan.get("running"):
+            reason = "stopped"
+            break
+        if scan.get("ready_symbol"):
+            ready = {
+                "symbol": scan.get("ready_symbol"),
+                "parity": scan.get("ready_parity"),
+                "streak": int(scan.get("ready_streak") or 0),
+            }
+            reason = "streak"
+            break
+        rows = _human_parity_scan_result_rows(scan)
+        max_seen = max([int(row.get("ticks", 0) or 0) for row in rows] or [0])
+        if max_seen >= int(scan.get("max_ticks") or HUMAN_PARITY_SCAN_MAX_TICKS):
+            reason = "max_ticks"
+            break
+        socketio.sleep(0.05)
+
+    scan = _ensure_human_parity_market_scan(state)
+    rows = _human_parity_scan_result_rows(scan)
+    best = ready or _best_human_parity_scan_result(scan)
+    payload = {
+        "status": "success",
+        "message": message,
+        "symbol": best.get("symbol") or "",
+        "parity": best.get("parity") or "",
+        "streak": int(best.get("streak") or 0),
+        "ready": bool(ready),
+        "reason": reason,
+        "results": rows,
+        "symbols": list(scan.get("symbols") or []),
+    }
+    _cleanup_human_parity_market_scan(state)
+    return jsonify(payload)
+
+
+@app.route("/human_parity_market_scan_stop", methods=["POST"])
+def human_parity_market_scan_stop_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    _cid, state = get_client_state()
+    _cleanup_human_parity_market_scan(state)
+    return jsonify({"status": "success", "message": "Human parity market scan stopped."})
 
 
 @app.route("/human_parity_trade", methods=["POST"])

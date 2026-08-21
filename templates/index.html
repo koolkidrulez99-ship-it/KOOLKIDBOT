@@ -1883,6 +1883,13 @@ function markClientActivity(){
     clientLastActivityAt = Date.now();
 }
 
+function shouldKeepApiConnectedDuringIdle(){
+    try{
+        return !!window.__koolkidGoldenCardActive;
+    }catch(_err){}
+    return false;
+}
+
 ["pointerdown", "keydown", "input", "wheel", "touchstart"].forEach((eventName)=>{
     window.addEventListener(eventName, markClientActivity, { passive: true });
 });
@@ -1931,8 +1938,13 @@ function sendClientHeartbeat(reason){
     const now = Date.now();
     if(reason !== "start" && reason !== "visible" && document.hidden) return false;
     if((now - Number(clientLastActivityAt || now)) >= CLIENT_INACTIVE_DISCONNECT_MS){
-        sendApiDisconnectKeepalive("inactive_10_minutes");
-        return false;
+        if(shouldKeepApiConnectedDuringIdle()){
+            clientLastActivityAt = now;
+            console.info("frontend_idle_disconnect_skipped", { reason: "golden_card_active" });
+        }else{
+            sendApiDisconnectKeepalive("inactive_10_minutes");
+            return false;
+        }
     }
     try{
         if(socket && socket.connected && typeof socket.emit === "function"){

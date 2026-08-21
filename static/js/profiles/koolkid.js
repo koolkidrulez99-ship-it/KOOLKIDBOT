@@ -4518,6 +4518,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
     const results = Array.isArray(d.results) ? d.results : [];
     const filterMode = normalizeGoldenCardFilterModeKoolkid(d.filter_mode || "BOTH");
     const addJumpPairs = !!d.add_jump_pairs;
+    window.__koolkidGoldenCardActive = !!running;
 
     syncGoldenCardControlsKoolkid(d);
 
@@ -4999,6 +5000,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
       });
 
       bind("golden_card_update", (data) => {
+        window.__koolkidGoldenCardActive = !!(data && data.running);
         if (!isActive()) return;
         scheduleGoldenCardRenderKoolkid(data || {});
       });
