@@ -21658,9 +21658,20 @@ def disconnect():
     if not login_required():
         return jsonify({"error": "Unauthorized"}), 403
 
-    cid, _state = get_client_state()
+    cid, state = get_client_state()
     data = request.get_json(silent=True) or {}
     reason = str(data.get("reason") or request.args.get("reason") or "client_disconnect").strip() or "client_disconnect"
+    protected_reasons = {
+        "pagehide",
+        "beforeunload",
+        "inactive_20_minutes",
+        "inactive_30_minutes",
+        "inactive_10_minutes",
+    }
+    if reason in protected_reasons and _is_koolkid_golden_card_runtime_active(state):
+        state["last_seen"] = time.time()
+        logger.info("[%s] disconnect_ignored reason=%s protected=golden_card_active", cid, reason)
+        return jsonify({"status": "connected", "skipped": True, "reason": "golden_card_active"})
     disconnect_client(cid, reason=reason[:80], emit=True)
     return jsonify({"status": "disconnected"})
 

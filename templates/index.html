@@ -1890,12 +1890,22 @@ function shouldKeepApiConnectedDuringIdle(){
     return false;
 }
 
+function shouldBlockAutomaticApiDisconnect(reason){
+    const protectedReasons = new Set(["pagehide", "beforeunload", "inactive_20_minutes", "inactive_30_minutes", "inactive_10_minutes"]);
+    return protectedReasons.has(String(reason || "")) && shouldKeepApiConnectedDuringIdle();
+}
+
 ["pointerdown", "keydown", "input", "wheel", "touchstart"].forEach((eventName)=>{
     window.addEventListener(eventName, markClientActivity, { passive: true });
 });
 
 function sendApiDisconnectKeepalive(reason){
     if(clientExitDisconnectSent) return false;
+    if(shouldBlockAutomaticApiDisconnect(reason)){
+        clientLastActivityAt = Date.now();
+        console.info("frontend_api_disconnect_blocked", { reason: reason || "page_exit", protected: "golden_card_active" });
+        return false;
+    }
     clientExitDisconnectSent = true;
     stopClientHeartbeat();
     console.info("frontend_api_disconnect_keepalive", { reason });
