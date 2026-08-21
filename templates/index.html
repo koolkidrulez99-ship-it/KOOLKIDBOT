@@ -1891,8 +1891,9 @@ function shouldKeepApiConnectedDuringIdle(){
 }
 
 function shouldBlockAutomaticApiDisconnect(reason){
+    const normalizedReason = String(reason || "page_exit");
     const protectedReasons = new Set(["pagehide", "beforeunload", "page_exit", "client_disconnect", "inactive_20_minutes", "inactive_30_minutes", "inactive_10_minutes"]);
-    return protectedReasons.has(String(reason || "")) && shouldKeepApiConnectedDuringIdle();
+    return protectedReasons.has(normalizedReason) && shouldKeepApiConnectedDuringIdle();
 }
 
 ["pointerdown", "keydown", "input", "wheel", "touchstart"].forEach((eventName)=>{
@@ -2098,6 +2099,14 @@ function initSocket(){
         socket.on("disconnect", (reason)=>{
             console.info("frontend_socket_disconnected", { reason });
             logRuntimeCounters("socket_disconnected", true);
+            try{
+                if(shouldKeepApiConnectedDuringIdle()){
+                    fetch("/golden_card_audit_log", { cache: "no-store" })
+                        .then((res)=>res.json())
+                        .then((data)=>console.info("golden_card_audit_log", data))
+                        .catch(()=>{});
+                }
+            }catch(e){}
         });
         if(socket.io && typeof socket.io.on === "function"){
             socket.io.on("reconnect_attempt", (attempt)=>{
@@ -7613,8 +7622,8 @@ async function disconnect(){
     stopApiConnectPolling();
     await fetch("/disconnect", {
         method:"POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reason: "manual_disconnect" }),
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({reason:"manual_disconnect"}),
     });
     clearBotTransientState();
 

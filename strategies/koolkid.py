@@ -668,6 +668,7 @@ class KoolKidStrategy(BaseStrategy):
             "rotation_count": 0,
             "ticks_since_rotation": 0,
             "last_update_at": 0.0,
+            "started_at": 0.0,
             "filter_mode": "BOTH",
             "add_jump_pairs": False,
         }
@@ -1034,6 +1035,7 @@ class KoolKidStrategy(BaseStrategy):
             "rotation_count": 0,
             "ticks_since_rotation": 0,
             "last_update_at": time.time(),
+            "started_at": time.time(),
             "filter_mode": normalized_filter,
             "add_jump_pairs": bool(add_jump_pairs),
         }

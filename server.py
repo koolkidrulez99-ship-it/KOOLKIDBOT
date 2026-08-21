@@ -2090,6 +2090,7 @@ if DB_BACKEND == "postgres" and psycopg2 is None:
 # MULTI-CLIENT STATE
 # ==========================
 clients = {}
+golden_card_audit_history = {}
 
 # Browser sessions send a lightweight heartbeat; stale sessions are cleaned up so
 # Render does not keep abandoned websocket/strategy state forever.
@@ -3798,9 +3799,9 @@ def _build_default_client_state():
             "confirmations": {},
             "confirmation_required": 2,
             "confidence_threshold": 70.0,
-            "last_emit": 0.0,
-            "last_subscription_sync": 0.0,
+            "started_at": 0.0,
         },
+        "golden_card_audit_log": [],
         "human_parity_market_scan": {
             "running": False,
             "symbols": [],
@@ -4022,6 +4023,10 @@ def disconnect_client(client_id, reason="manual", emit=True):
     if not state:
         return
 
+    try:
+        _log_koolkid_golden_card_audit(client_id, state, "disconnect_client_called", reason=reason, emit=bool(emit))
+    except Exception:
+        pass
     logger.info(f"[{client_id}] 🔻 disconnect_client: reason={reason}")
 
     _cleanup_client_runtime(client_id, state, reason=reason)
@@ -7071,6 +7076,17 @@ def _mark_ws_unhealthy_and_reconnect(client_id, state, message, *, emit_error=Tr
     now_ts = time.time()
     has_token = bool(str(state.get("api_token", "") or "").strip())
     reconnecting = bool(has_token)
+    try:
+        _log_koolkid_golden_card_audit(
+            client_id,
+            state,
+            "mark_ws_unhealthy",
+            message=str(message),
+            emit_error=bool(emit_error),
+            has_token=bool(has_token),
+        )
+    except Exception:
+        pass
     logger.info(
         "[%s] TEMP reconnect_state_entered message=%s emit_error=%s has_token=%s",
         client_id,
@@ -17661,8 +17677,6 @@ HUMAN_PARITY_SCAN_TIMEOUT_SEC = 6.5
 HUMAN_PARITY_SCAN_DEFAULTS = [
     "R_10", "R_25", "R_50", "R_75", "R_100",
 ]
-GOLDEN_CARD_EMIT_MIN_SEC = 0.35
-GOLDEN_CARD_SUBSCRIPTION_SYNC_MIN_SEC = 3.0
 
 def _ensure_unchain_scanner(state):
     scan = state.setdefault("unchain_scanner", {}) or {}
@@ -18519,10 +18533,91 @@ def _ensure_koolkid_golden_card_state(state):
     scan.setdefault("confirmations", {})
     scan.setdefault("confirmation_required", 2)
     scan.setdefault("confidence_threshold", 70.0)
-    scan.setdefault("last_emit", 0.0)
-    scan.setdefault("last_subscription_sync", 0.0)
+    scan.setdefault("started_at", 0.0)
     state["koolkid_golden_card"] = scan
     return scan
+
+
+def _koolkid_golden_card_audit_context(state):
+    if not isinstance(state, dict):
+        return {}
+    now_ts = time.time()
+    scan = _ensure_koolkid_golden_card_state(state)
+    strategies = state.get("strategies") or {}
+    koolkid = strategies.get("KOOLKID")
+    active_strategy = strategies.get(state.get("active_profile", "KOOLKID"))
+    strat_scan = getattr(koolkid, "golden_card", None) if koolkid else None
+    if not isinstance(strat_scan, dict):
+        strat_scan = {}
+    started_at = 0.0
+    for raw_started in (scan.get("started_at"), strat_scan.get("started_at")):
+        try:
+            value = float(raw_started or 0.0)
+            if value > 0:
+                started_at = value
+                break
+        except Exception:
+            pass
+    try:
+        ws_last_msg_age = round(now_ts - float(state.get("ws_last_message_at", 0.0) or 0.0), 2) if state.get("ws_last_message_at") else None
+    except Exception:
+        ws_last_msg_age = None
+    try:
+        ws_authorized_age = round(now_ts - float(state.get("ws_last_authorized_at", 0.0) or 0.0), 2) if state.get("ws_last_authorized_at") else None
+    except Exception:
+        ws_authorized_age = None
+    try:
+        counts = _runtime_subscription_counts(state)
+    except Exception:
+        counts = {}
+    return {
+        "active_profile": state.get("active_profile"),
+        "api_token_type": state.get("api_token_type"),
+        "connection_mode": _deriv_trade_connection_mode(state),
+        "loginid": state.get("loginid"),
+        "ws_connected": bool(state.get("ws_connected")),
+        "ws_transport_connected": bool(state.get("ws_transport_connected")),
+        "ws_reconnect_pending": bool(state.get("ws_reconnect_pending")),
+        "ws_nonce": state.get("ws_nonce"),
+        "ws_last_msg_age_sec": ws_last_msg_age,
+        "ws_authorized_age_sec": ws_authorized_age,
+        "main_tick_seq": int(state.get("_main_tick_seq", 0) or 0),
+        "koolkid_tick_count": int(getattr(koolkid, "tick_count", 0) or 0) if koolkid else None,
+        "active_tick_count": int(getattr(active_strategy, "tick_count", 0) or 0) if active_strategy else None,
+        "current_symbol": state.get("current_symbol"),
+        "golden_running_state": bool(scan.get("running")),
+        "golden_running_strategy": bool(strat_scan.get("running")),
+        "golden_elapsed_sec": round(now_ts - started_at, 2) if started_at > 0 else None,
+        "golden_symbols": list(scan.get("symbols") or strat_scan.get("symbols") or []),
+        "golden_owned_count": len(set(scan.get("owned_syms") or set())),
+        "golden_pool_size": int(scan.get("market_pool_size", 0) or strat_scan.get("market_pool_size", 0) or len(list(strat_scan.get("market_pool") or [])) or 0),
+        "golden_rotation_count": int(strat_scan.get("rotation_count", 0) or 0),
+        "golden_ticks_since_rotation": int(strat_scan.get("ticks_since_rotation", 0) or 0),
+        "tick_subscriptions": counts.get("tick_subscriptions"),
+        "open_contract_subscriptions": counts.get("open_contract_subscriptions"),
+        "active_subscriptions": counts.get("active_subscriptions"),
+    }
+
+
+def _log_koolkid_golden_card_audit(client_id, state, event, **extra):
+    if not isinstance(state, dict):
+        return
+    try:
+        context = _koolkid_golden_card_audit_context(state)
+        context.update(extra or {})
+        context["event"] = str(event or "golden_card_audit")
+        context["ts"] = round(time.time(), 3)
+        audit_log = state.setdefault("golden_card_audit_log", [])
+        if isinstance(audit_log, list):
+            audit_log.append(dict(context))
+            if len(audit_log) > 80:
+                del audit_log[:-80]
+        if client_id:
+            global_log = golden_card_audit_history.setdefault(client_id, deque(maxlen=160))
+            global_log.append(dict(context))
+        logger.warning("[%s] golden_card_audit %s", client_id, json.dumps(context, sort_keys=True, default=str))
+    except Exception:
+        logger.exception("[%s] golden_card_audit_failed event=%s", client_id, event)
 
 
 def _safe_golden_float(value, default=0.0):
@@ -18755,12 +18850,22 @@ def _emit_koolkid_golden_card(client_id, state):
 
 def _cleanup_koolkid_golden_card_subscriptions(state, preserve_scan_state=False):
     scan = _ensure_koolkid_golden_card_state(state)
+    cid = _client_id_for_state(state)
+    if cid and (scan.get("running") or scan.get("owned_syms")):
+        _log_koolkid_golden_card_audit(
+            cid,
+            state,
+            "golden_cleanup_start",
+            preserve_scan_state=bool(preserve_scan_state),
+        )
     if not preserve_scan_state:
         scan["confirmations"] = {}
     ws = state.get("ws")
     if not state.get("ws_connected") or not ws:
         scan["owned_syms"] = set()
         scan["running"] = False
+        if cid:
+            _log_koolkid_golden_card_audit(cid, state, "golden_cleanup_done", preserve_scan_state=bool(preserve_scan_state), ws_available=False)
         return
     tick_subs = state.setdefault("tick_subs", {})
     main_symbol = state.get("current_symbol")
@@ -18785,11 +18890,14 @@ def _cleanup_koolkid_golden_card_subscriptions(state, preserve_scan_state=False)
         state.setdefault("tick_stream_warmup_reason", {}).pop(sym, None)
     scan["owned_syms"] = set()
     scan["running"] = False
+    if cid:
+        _log_koolkid_golden_card_audit(cid, state, "golden_cleanup_done", preserve_scan_state=bool(preserve_scan_state))
 
 
-def _sync_koolkid_golden_card_subscriptions(state, symbols=None, *, client_id=None, force=False):
+def _sync_koolkid_golden_card_subscriptions(state, symbols=None, *, client_id=None):
     scan = _ensure_koolkid_golden_card_state(state)
     previous_symbols = list(scan.get("symbols") or [])
+    previous_owned = set(scan.get("owned_syms") or set())
     desired_symbols = []
     for sym in list(symbols or scan.get("symbols") or []):
         clean_sym = str(sym or "").upper().strip()
@@ -18814,15 +18922,6 @@ def _sync_koolkid_golden_card_subscriptions(state, symbols=None, *, client_id=No
     protected_symbols = {sym for sym in (main_symbol, human_symbol) if sym}
     current_owned = set(scan.get("owned_syms") or set())
     desired_set = set(desired_symbols)
-    unchanged = desired_symbols == previous_symbols
-    has_all_subs = all((sym in protected_symbols) or bool(tick_subs.get(sym)) for sym in desired_symbols)
-    now_ts = time.time()
-    try:
-        last_sync = float(scan.get("last_subscription_sync", 0.0) or 0.0)
-    except Exception:
-        last_sync = 0.0
-    if unchanged and has_all_subs and not force and (now_ts - last_sync) < GOLDEN_CARD_SUBSCRIPTION_SYNC_MIN_SEC:
-        return
 
     for sym in list(current_owned):
         if sym in desired_set or sym in protected_symbols:
@@ -18883,7 +18982,16 @@ def _sync_koolkid_golden_card_subscriptions(state, symbols=None, *, client_id=No
             logger.warning("[%s] golden_card_tick_subscribe_failed symbol=%s", client_id, sym)
 
     scan["owned_syms"] = next_owned
-    scan["last_subscription_sync"] = now_ts
+    if client_id and (previous_symbols != desired_symbols or previous_owned != next_owned):
+        _log_koolkid_golden_card_audit(
+            client_id,
+            state,
+            "golden_subscription_sync",
+            previous_symbols=previous_symbols,
+            desired_symbols=desired_symbols,
+            previous_owned=sorted(previous_owned),
+            next_owned=sorted(next_owned),
+        )
 
 def _start_koolkid_golden_card_scan(client_id, state, *, filter_mode="BOTH", add_jump_pairs=False):
     strat = (state.get("strategies") or {}).get("KOOLKID")
@@ -18894,6 +19002,8 @@ def _start_koolkid_golden_card_scan(client_id, state, *, filter_mode="BOTH", add
         return False, "Connect the API before scanning markets.", {}
 
     scan = _ensure_koolkid_golden_card_state(state)
+    state["golden_card_audit_log"] = []
+    golden_card_audit_history[client_id] = deque(maxlen=160)
     _cleanup_koolkid_golden_card_subscriptions(state)
     payload = strat.start_golden_card_scan(
         filter_mode=filter_mode,
@@ -18902,7 +19012,10 @@ def _start_koolkid_golden_card_scan(client_id, state, *, filter_mode="BOTH", add
     scan["running"] = True
     scan["confirmations"] = {}
     scan["market_pool_size"] = int(payload.get("market_pool_size", 0) or 0)
-    _sync_koolkid_golden_card_subscriptions(state, payload.get("symbols") or [], client_id=client_id, force=True)
+    scan["started_at"] = float(payload.get("started_at") or time.time())
+    scan["audit_marks"] = set()
+    _sync_koolkid_golden_card_subscriptions(state, payload.get("symbols") or [], client_id=client_id)
+    _log_koolkid_golden_card_audit(client_id, state, "golden_start", filter_mode=filter_mode, add_jump_pairs=bool(add_jump_pairs))
 
     payload = _emit_koolkid_golden_card(client_id, state)
     try:
@@ -18914,6 +19027,7 @@ def _start_koolkid_golden_card_scan(client_id, state, *, filter_mode="BOTH", add
 
 
 def _stop_koolkid_golden_card_scan(client_id, state, status=None):
+    _log_koolkid_golden_card_audit(client_id, state, "golden_stop_requested", status=status or "")
     strat = (state.get("strategies") or {}).get("KOOLKID")
     if strat and hasattr(strat, "stop_golden_card_scan"):
         try:
@@ -19033,12 +19147,32 @@ def _process_koolkid_golden_card_tick(client_id, tick):
     payload = _enrich_koolkid_golden_card_payload(state, payload, advance_confirmation=True, checked_symbol=sym)
     scan["market_pool_size"] = int(payload.get("market_pool_size", 0) or 0)
     _sync_koolkid_golden_card_subscriptions(state, payload.get("symbols") or scan.get("symbols") or [], client_id=client_id)
-    should_emit = _should_emit_ui_event(state, "golden_card_update:tick", GOLDEN_CARD_EMIT_MIN_SEC)
-    if should_emit:
-        try:
-            socketio.emit("golden_card_update", payload, room=client_id)
-        except Exception:
-            pass
+    try:
+        marks = scan.setdefault("audit_marks", set())
+        if not isinstance(marks, set):
+            marks = set(marks or [])
+            scan["audit_marks"] = marks
+        tick_count = int(getattr(strat, "tick_count", 0) or 0)
+        tick_thresholds = (250, 275, 290, 295, 300, 305, 310, 325, 350)
+        for threshold in tick_thresholds:
+            key = f"tick_{threshold}"
+            if tick_count >= threshold and key not in marks:
+                marks.add(key)
+                _log_koolkid_golden_card_audit(client_id, state, "golden_tick_checkpoint", threshold=threshold, tick_symbol=sym)
+        started_at = float(scan.get("started_at") or payload.get("started_at") or 0.0)
+        if started_at > 0:
+            elapsed = time.time() - started_at
+            for threshold in (250, 275, 290, 295, 300, 305, 310, 325, 350):
+                key = f"elapsed_{threshold}"
+                if elapsed >= threshold and key not in marks:
+                    marks.add(key)
+                    _log_koolkid_golden_card_audit(client_id, state, "golden_elapsed_checkpoint", threshold=threshold, tick_symbol=sym)
+    except Exception:
+        logger.exception("[%s] golden_card_checkpoint_audit_failed", client_id)
+    try:
+        socketio.emit("golden_card_update", payload, room=client_id)
+    except Exception:
+        pass
     if not payload.get("running"):
         _cleanup_koolkid_golden_card_subscriptions(state, preserve_scan_state=True)
         try:
@@ -20795,6 +20929,16 @@ def handle_on_error(client_id, ws, error, expected_nonce):
         return
     if state.get("ws_nonce") != expected_nonce:
         return
+    try:
+        _log_koolkid_golden_card_audit(
+            client_id,
+            state,
+            "websocket_error",
+            error=str(error),
+            expected_nonce=expected_nonce,
+        )
+    except Exception:
+        pass
     logger.error(f"[{client_id}] WebSocket Error: {error}")
     if _uses_new_deriv_trade_api(state) and _is_deriv_trade_validation_error_text(error):
         logger.warning(
@@ -20829,6 +20973,16 @@ def _schedule_ws_reconnect(client_id, expected_nonce, delay_sec=2.0):
     state = clients.get(client_id)
     if not state:
         return False
+    try:
+        _log_koolkid_golden_card_audit(
+            client_id,
+            state,
+            "websocket_reconnect_schedule_requested",
+            expected_nonce=expected_nonce,
+            delay_sec=delay_sec,
+        )
+    except Exception:
+        pass
     lock = _get_ws_lifecycle_lock(state)
     with lock:
         if state.get("ws_reconnect_pending"):
@@ -20882,6 +21036,17 @@ def handle_on_close(client_id, ws, code, msg, expected_nonce):
         return
     if state.get("ws_nonce") != expected_nonce:
         return
+    try:
+        _log_koolkid_golden_card_audit(
+            client_id,
+            state,
+            "websocket_close",
+            code=code,
+            message=str(msg),
+            expected_nonce=expected_nonce,
+        )
+    except Exception:
+        pass
 
     state["ws_connected"] = False
     state["ws_transport_connected"] = False
@@ -21681,11 +21846,12 @@ def disconnect():
     cid, state = get_client_state()
     data = request.get_json(silent=True) or {}
     reason = str(data.get("reason") or request.args.get("reason") or "client_disconnect").strip() or "client_disconnect"
+    _log_koolkid_golden_card_audit(cid, state, "disconnect_route_called", reason=reason, has_json=bool(data))
     protected_reasons = {
+        "client_disconnect",
+        "page_exit",
         "pagehide",
         "beforeunload",
-        "page_exit",
-        "client_disconnect",
         "inactive_20_minutes",
         "inactive_30_minutes",
         "inactive_10_minutes",
@@ -21693,6 +21859,7 @@ def disconnect():
     if reason in protected_reasons and _is_koolkid_golden_card_runtime_active(state):
         state["last_seen"] = time.time()
         logger.info("[%s] disconnect_ignored reason=%s protected=golden_card_active", cid, reason)
+        _log_koolkid_golden_card_audit(cid, state, "disconnect_route_ignored", reason=reason)
         return jsonify({"status": "connected", "skipped": True, "reason": "golden_card_active"})
     disconnect_client(cid, reason=reason[:80], emit=True)
     return jsonify({"status": "disconnected"})
@@ -22394,6 +22561,24 @@ def stop_golden_card_koolkid_route():
     cid, state = get_client_state()
     payload = _stop_koolkid_golden_card_scan(cid, state, status="Golden Card scan paused.")
     return jsonify({"status": "success", "golden_card_data": payload})
+
+
+@app.route("/golden_card_audit_log", methods=["GET"])
+def golden_card_audit_log_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    _cid, state = get_client_state()
+    log_rows = state.get("golden_card_audit_log") or []
+    if not isinstance(log_rows, list):
+        log_rows = []
+    global_rows = list(golden_card_audit_history.get(_cid) or [])
+    return jsonify({
+        "status": "success",
+        "entries": log_rows[-80:],
+        "global_entries": global_rows[-160:],
+        "current": _koolkid_golden_card_audit_context(state),
+    })
 
 
 @app.route("/toggle_kid2vix_koolkid", methods=["POST"])
@@ -25306,9 +25491,11 @@ def heartbeat_sweeper():
             age = now_ts - last_seen
             if age >= float(HEARTBEAT_TIMEOUT_SEC):
                 if _is_koolkid_golden_card_runtime_active(state):
+                    _log_koolkid_golden_card_audit(client_id, state, "heartbeat_cleanup_skipped", age_sec=round(age, 2))
                     state["last_seen"] = now_ts
                     logger.info("[%s] heartbeat_stale_cleanup_skipped reason=golden_card_active age=%s", client_id, round(age, 2))
                     continue
+                _log_koolkid_golden_card_audit(client_id, state, "heartbeat_cleanup_selected", age_sec=round(age, 2))
                 stale.append((client_id, state, age))
 
         if stale:
