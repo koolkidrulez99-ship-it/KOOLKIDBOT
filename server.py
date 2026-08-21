@@ -2093,9 +2093,9 @@ clients = {}
 
 # Browser sessions send a lightweight heartbeat; stale sessions are cleaned up so
 # Render does not keep abandoned websocket/strategy state forever.
-HEARTBEAT_TIMEOUT_SEC = float(os.environ.get("HEARTBEAT_TIMEOUT_SEC", os.environ.get("CLIENT_STALE_AFTER_SEC", "1800")))
+HEARTBEAT_TIMEOUT_SEC = float(os.environ.get("HEARTBEAT_TIMEOUT_SEC", os.environ.get("CLIENT_STALE_AFTER_SEC", "1200")))
 HEARTBEAT_SWEEPER_INTERVAL_SEC = float(os.environ.get("HEARTBEAT_SWEEPER_INTERVAL_SEC", os.environ.get("CLIENT_SWEEP_INTERVAL_SEC", "60")))
-DERIV_WS_STALE_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_STALE_TIMEOUT_SEC", "180"))
+DERIV_WS_STALE_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_STALE_TIMEOUT_SEC", "1200"))
 DERIV_WS_PING_INTERVAL_SEC = float(os.environ.get("DERIV_WS_PING_INTERVAL_SEC", "20"))
 DERIV_WS_PING_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_PING_TIMEOUT_SEC", "10"))
 DERIV_WS_CONNECT_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_CONNECT_TIMEOUT_SEC", "75"))

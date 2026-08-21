@@ -1873,7 +1873,7 @@ window.BotApp.logActiveTimeoutCount = logActiveTimeoutCount;
 
 const CLIENT_HEARTBEAT_INTERVAL_LABEL = "client_heartbeat";
 const CLIENT_HEARTBEAT_INTERVAL_MS = 8000;
-const CLIENT_INACTIVE_DISCONNECT_MS = 30 * 60 * 1000;
+const CLIENT_INACTIVE_DISCONNECT_MS = 20 * 60 * 1000;
 let clientHeartbeatTimer = null;
 let clientLastActivityAt = Date.now();
 let clientExitDisconnectSent = false;
@@ -1899,7 +1899,7 @@ function sendApiDisconnectKeepalive(reason){
     clientExitDisconnectSent = true;
     stopClientHeartbeat();
     console.info("frontend_api_disconnect_keepalive", { reason });
-    if(reason === "inactive_30_minutes"){
+    if(reason === "inactive_20_minutes"){
         try{
             clearApiConnectPending("inactive_disconnect");
             stopApiConnectPolling();
@@ -1942,7 +1942,7 @@ function sendClientHeartbeat(reason){
             clientLastActivityAt = now;
             console.info("frontend_idle_disconnect_skipped", { reason: "golden_card_keepalive" });
         }else{
-            sendApiDisconnectKeepalive("inactive_30_minutes");
+            sendApiDisconnectKeepalive("inactive_20_minutes");
             return false;
         }
     }
