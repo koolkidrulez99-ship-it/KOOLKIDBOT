@@ -1885,7 +1885,7 @@ function markClientActivity(){
 
 function shouldKeepApiConnectedDuringIdle(){
     try{
-        return !!window.__koolkidGoldenCardActive;
+        return !!window.__koolkidGoldenCardActive || !!window.__koolkidGoldenCardPopupOpen;
     }catch(_err){}
     return false;
 }
@@ -1940,7 +1940,7 @@ function sendClientHeartbeat(reason){
     if((now - Number(clientLastActivityAt || now)) >= CLIENT_INACTIVE_DISCONNECT_MS){
         if(shouldKeepApiConnectedDuringIdle()){
             clientLastActivityAt = now;
-            console.info("frontend_idle_disconnect_skipped", { reason: "golden_card_active" });
+            console.info("frontend_idle_disconnect_skipped", { reason: "golden_card_keepalive" });
         }else{
             sendApiDisconnectKeepalive("inactive_30_minutes");
             return false;

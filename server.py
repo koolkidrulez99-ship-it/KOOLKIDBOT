@@ -25232,6 +25232,25 @@ def toggle_human_keep_alive():
     return jsonify({"enabled": bool(state["human_keep_alive"])})
 
 
+def _is_koolkid_golden_card_runtime_active(state):
+    if not isinstance(state, dict):
+        return False
+    try:
+        scan = state.get("koolkid_golden_card") or {}
+        if bool(scan.get("running")):
+            return True
+    except Exception:
+        pass
+    try:
+        strat = (state.get("strategies") or {}).get("KOOLKID")
+        golden = getattr(strat, "golden_card", None)
+        if isinstance(golden, dict) and bool(golden.get("running")):
+            return True
+    except Exception:
+        pass
+    return False
+
+
 # ---------------- HEARTBEAT SWEEPER ---------------- #
 def heartbeat_sweeper():
     while True:
@@ -25253,6 +25272,10 @@ def heartbeat_sweeper():
                 continue
             age = now_ts - last_seen
             if age >= float(HEARTBEAT_TIMEOUT_SEC):
+                if _is_koolkid_golden_card_runtime_active(state):
+                    state["last_seen"] = now_ts
+                    logger.info("[%s] heartbeat_stale_cleanup_skipped reason=golden_card_active age=%s", client_id, round(age, 2))
+                    continue
                 stale.append((client_id, state, age))
 
         if stale:

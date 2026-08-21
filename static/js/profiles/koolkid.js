@@ -5354,11 +5354,13 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
   };
 
   window.openGoldenCardPopupKoolkid = function () {
+    window.__koolkidGoldenCardPopupOpen = true;
     showCenteredPopupKoolkid("goldenCardPopupKoolkid");
     applyGoldenCardPcScrollKoolkid();
   };
 
   window.hideGoldenCardPopupKoolkid = function () {
+    window.__koolkidGoldenCardPopupOpen = false;
     state.goldenCardPopupDismissedAt = Date.now();
     hideCenteredPopupKoolkid("goldenCardPopupKoolkid");
   };
@@ -5372,6 +5374,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
     state.goldenCardAutoOn = false;
     state.goldenCardAutoLastSignalKey = "";
     state.goldenCardAutoWaitingReset = false;
+    window.__koolkidGoldenCardActive = true;
     syncGoldenCardAutoUiKoolkid();
     const options = readGoldenCardOptionsKoolkid();
     renderGoldenCardKoolkid(Object.assign({}, current, {
@@ -5394,6 +5397,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
       safeToast("Golden Card scan started", "success");
     } else {
       window.hideGoldenCardPopupKoolkid();
+      window.__koolkidGoldenCardActive = false;
       renderGoldenCardKoolkid(Object.assign({}, current, {
         running: false,
         completed: false,
@@ -5412,6 +5416,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
     state.goldenCardAutoWaitingReset = false;
     const r = await postJSON("/stop_golden_card_koolkid", {});
     if (r.data && r.data.golden_card_data) renderGoldenCardKoolkid(r.data.golden_card_data);
+    window.__koolkidGoldenCardActive = false;
     window.hideGoldenCardPopupKoolkid();
     safeToast("Golden Card turned off", "info");
   };
