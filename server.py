@@ -2101,6 +2101,8 @@ DERIV_WS_PING_INTERVAL_SEC = float(os.environ.get("DERIV_WS_PING_INTERVAL_SEC", 
 DERIV_WS_PING_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_PING_TIMEOUT_SEC", "10"))
 DERIV_WS_CONNECT_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_CONNECT_TIMEOUT_SEC", "75"))
 DERIV_WS_AUTHORIZE_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_AUTHORIZE_TIMEOUT_SEC", "60"))
+GOLDEN_CARD_WS_RECONNECT_DELAY_SEC = float(os.environ.get("GOLDEN_CARD_WS_RECONNECT_DELAY_SEC", "1.0"))
+GOLDEN_CARD_WS_UI_EMIT_INTERVAL_SEC = float(os.environ.get("GOLDEN_CARD_WS_UI_EMIT_INTERVAL_SEC", "0.35"))
 DERIV_PROPOSAL_RATE_LIMIT_COOLDOWN_SEC = float(os.environ.get("DERIV_PROPOSAL_RATE_LIMIT_COOLDOWN_SEC", "2.5"))
 TICK_STREAM_STALE_SEC = float(os.environ.get("TICK_STREAM_STALE_SEC", "20"))
 TICK_STREAM_RESUBSCRIBE_COOLDOWN_SEC = float(os.environ.get("TICK_STREAM_RESUBSCRIBE_COOLDOWN_SEC", "8"))
@@ -3676,6 +3678,17 @@ def _build_default_client_state():
         "pat_otp_ws_url": "",
         "pat_otp_reconnect_used": False,
         "golden_card_oauth_reconnect_until": 0.0,
+        "golden_card_ws": None,
+        "golden_card_ws_thread": None,
+        "golden_card_ws_stop_event": threading.Event(),
+        "golden_card_ws_lock": threading.RLock(),
+        "golden_card_ws_nonce": 0,
+        "golden_card_ws_connected": False,
+        "golden_card_ws_reconnect_pending": False,
+        "golden_card_ws_last_message_at": 0.0,
+        "golden_card_ws_last_emit_at": 0.0,
+        "golden_card_tick_subs": {},
+        "golden_card_tick_subscribe_sent_at": {},
         "ws": None,
         "ws_thread": None,
         "ws_stop_event": threading.Event(),
@@ -18535,6 +18548,7 @@ def _ensure_koolkid_golden_card_state(state):
     scan.setdefault("confirmation_required", 2)
     scan.setdefault("confidence_threshold", 70.0)
     scan.setdefault("started_at", 0.0)
+    scan.setdefault("use_dedicated_ws", True)
     state["koolkid_golden_card"] = scan
     return scan
 
@@ -18568,6 +18582,10 @@ def _koolkid_golden_card_audit_context(state):
     except Exception:
         ws_authorized_age = None
     try:
+        scanner_ws_last_msg_age = round(now_ts - float(state.get("golden_card_ws_last_message_at", 0.0) or 0.0), 2) if state.get("golden_card_ws_last_message_at") else None
+    except Exception:
+        scanner_ws_last_msg_age = None
+    try:
         counts = _runtime_subscription_counts(state)
     except Exception:
         counts = {}
@@ -18591,6 +18609,11 @@ def _koolkid_golden_card_audit_context(state):
         "golden_elapsed_sec": round(now_ts - started_at, 2) if started_at > 0 else None,
         "golden_symbols": list(scan.get("symbols") or strat_scan.get("symbols") or []),
         "golden_owned_count": len(set(scan.get("owned_syms") or set())),
+        "golden_dedicated_ws": bool(scan.get("use_dedicated_ws", True)),
+        "golden_ws_connected": bool(state.get("golden_card_ws_connected")),
+        "golden_ws_reconnect_pending": bool(state.get("golden_card_ws_reconnect_pending")),
+        "golden_ws_last_msg_age_sec": scanner_ws_last_msg_age,
+        "golden_tick_subscriptions": len(state.get("golden_card_tick_subs") or {}),
         "golden_pool_size": int(scan.get("market_pool_size", 0) or strat_scan.get("market_pool_size", 0) or len(list(strat_scan.get("market_pool") or [])) or 0),
         "golden_rotation_count": int(strat_scan.get("rotation_count", 0) or 0),
         "golden_ticks_since_rotation": int(strat_scan.get("ticks_since_rotation", 0) or 0),
@@ -18849,6 +18872,276 @@ def _emit_koolkid_golden_card(client_id, state):
     return payload
 
 
+def _get_koolkid_golden_card_ws_lock(state):
+    lock = state.get("golden_card_ws_lock") if isinstance(state, dict) else None
+    if lock is None:
+        lock = threading.RLock()
+        if isinstance(state, dict):
+            state["golden_card_ws_lock"] = lock
+    return lock
+
+
+def _close_koolkid_golden_card_ws(state, *, reason="stop"):
+    if not isinstance(state, dict):
+        return
+    try:
+        stop_event = state.get("golden_card_ws_stop_event")
+        if stop_event:
+            stop_event.set()
+    except Exception:
+        pass
+    try:
+        ws = state.get("golden_card_ws")
+        if ws:
+            ws.close()
+    except Exception:
+        pass
+    state["golden_card_ws_connected"] = False
+    state["golden_card_ws_reconnect_pending"] = False
+    state["golden_card_tick_subs"] = {}
+    state["golden_card_tick_subscribe_sent_at"] = {}
+    cid = _client_id_for_state(state)
+    if cid:
+        _log_koolkid_golden_card_audit(cid, state, "golden_scanner_ws_closed_by_server", reason=reason)
+
+
+def _subscribe_koolkid_golden_card_ws_symbols(client_id, state, symbols=None, *, force=False):
+    if not isinstance(state, dict):
+        return False
+    scan = _ensure_koolkid_golden_card_state(state)
+    ws = state.get("golden_card_ws")
+    if not scan.get("running") or not state.get("golden_card_ws_connected") or not ws:
+        return False
+    desired = []
+    for raw in list(symbols or scan.get("symbols") or []):
+        sym = _normalize_tick_symbol(raw)
+        if sym and sym not in desired:
+            desired.append(sym)
+    tick_subs = state.setdefault("golden_card_tick_subs", {})
+    sent_at = state.setdefault("golden_card_tick_subscribe_sent_at", {})
+    for sym in desired:
+        if tick_subs.get(sym) and not force:
+            continue
+        if not tick_subs.get(sym) and not force:
+            last_sent = float(sent_at.get(sym, 0.0) or 0.0)
+            if last_sent > 0.0 and (time.time() - last_sent) < 1.0:
+                continue
+        if tick_subs.get(sym) and force:
+            try:
+                ws.send(json.dumps({"forget": tick_subs.get(sym)}))
+            except Exception:
+                pass
+            tick_subs.pop(sym, None)
+        try:
+            ws.send(json.dumps({"ticks": sym, "subscribe": 1}))
+            sent_at[sym] = time.time()
+        except Exception as exc:
+            logger.warning("[%s] golden_scanner_tick_subscribe_failed symbol=%s error=%s", client_id, sym, exc)
+            return False
+    return True
+
+
+def _schedule_koolkid_golden_card_ws_reconnect(client_id, state, delay_sec=None):
+    if not isinstance(state, dict):
+        return False
+    scan = _ensure_koolkid_golden_card_state(state)
+    if not scan.get("running"):
+        return False
+    lock = _get_koolkid_golden_card_ws_lock(state)
+    with lock:
+        if state.get("golden_card_ws_reconnect_pending"):
+            return False
+        state["golden_card_ws_reconnect_pending"] = True
+    delay = GOLDEN_CARD_WS_RECONNECT_DELAY_SEC if delay_sec is None else float(delay_sec or 0.0)
+    _log_koolkid_golden_card_audit(client_id, state, "golden_scanner_ws_reconnect_scheduled", delay_sec=delay)
+
+    def _worker():
+        rescheduled = False
+        try:
+            time.sleep(max(0.0, delay))
+            live_state = clients.get(client_id)
+            if live_state is not state:
+                return
+            live_scan = _ensure_koolkid_golden_card_state(live_state)
+            if not live_scan.get("running"):
+                return
+            if live_state.get("golden_card_ws_connected"):
+                return
+            thread = live_state.get("golden_card_ws_thread")
+            if thread and thread.is_alive():
+                for _ in range(20):
+                    time.sleep(0.25)
+                    if not thread.is_alive():
+                        break
+                if thread.is_alive():
+                    logger.warning("[%s] golden_scanner_ws_reconnect_wait_timeout old_thread_still_alive", client_id)
+                    return
+            started = _start_koolkid_golden_card_ws(client_id, live_state, reason="scanner_reconnect")
+            if not started and live_scan.get("running"):
+                live_state["golden_card_ws_reconnect_pending"] = False
+                rescheduled = _schedule_koolkid_golden_card_ws_reconnect(client_id, live_state, delay_sec=3.0)
+        finally:
+            latest = clients.get(client_id)
+            if latest is not None and not rescheduled:
+                latest["golden_card_ws_reconnect_pending"] = False
+
+    threading.Thread(target=_worker, daemon=True, name=f"golden_ws_reconnect_{client_id}").start()
+    return True
+
+
+def _start_koolkid_golden_card_ws(client_id, state, *, reason="start"):
+    if not isinstance(state, dict):
+        return False
+    scan = _ensure_koolkid_golden_card_state(state)
+    if not scan.get("running"):
+        return False
+    token = str(state.get("api_token", "") or "").strip()
+    token_type = str(state.get("api_token_type") or "legacy").lower()
+    scanner_ws_url = DERIV_WS
+    scanner_authorize_token = ""
+    if _token_uses_deriv_otp_ws(token, token_type):
+        account_id = str(state.get("options_account_id") or state.get("oauth_options_account_id") or state.get("deriv_account_id") or "").strip()
+        if not account_id:
+            _log_koolkid_golden_card_audit(client_id, state, "golden_scanner_ws_account_missing")
+            _schedule_koolkid_golden_card_ws_reconnect(client_id, state, delay_sec=3.0)
+            return False
+        try:
+            scanner_ws_url = _request_oauth_options_ws_url(client_id, token, account_id, state.get("deriv_app_id"))
+        except Exception as exc:
+            _log_koolkid_golden_card_audit(client_id, state, "golden_scanner_ws_otp_url_failed", error=str(exc))
+            _schedule_koolkid_golden_card_ws_reconnect(client_id, state, delay_sec=3.0)
+            return False
+    else:
+        scanner_authorize_token = token
+    lock = _get_koolkid_golden_card_ws_lock(state)
+    with lock:
+        existing = state.get("golden_card_ws_thread")
+        if existing and existing.is_alive():
+            return True
+        try:
+            old_stop = state.get("golden_card_ws_stop_event")
+            if old_stop:
+                old_stop.set()
+        except Exception:
+            pass
+        try:
+            old_ws = state.get("golden_card_ws")
+            if old_ws:
+                old_ws.close()
+        except Exception:
+            pass
+        state["golden_card_ws_nonce"] = int(state.get("golden_card_ws_nonce", 0) or 0) + 1
+        expected_nonce = state["golden_card_ws_nonce"]
+        stop_event = threading.Event()
+        state["golden_card_ws_stop_event"] = stop_event
+        state["golden_card_ws_connected"] = False
+        state["golden_card_ws_last_message_at"] = 0.0
+        state["golden_card_tick_subs"] = {}
+        state["golden_card_tick_subscribe_sent_at"] = {}
+
+    def _on_open(ws, cid=client_id, nonce=expected_nonce):
+        live_state = clients.get(cid)
+        if live_state is not state or live_state.get("golden_card_ws_nonce") != nonce:
+            return
+        live_state["golden_card_ws_last_message_at"] = time.time()
+        if scanner_authorize_token:
+            try:
+                ws.send(json.dumps({"authorize": scanner_authorize_token}))
+                _log_koolkid_golden_card_audit(cid, live_state, "golden_scanner_ws_open_authorizing", nonce=nonce, reason=reason)
+                return
+            except Exception as exc:
+                _log_koolkid_golden_card_audit(cid, live_state, "golden_scanner_ws_authorize_send_failed", error=str(exc), nonce=nonce)
+                try:
+                    ws.close()
+                except Exception:
+                    pass
+                return
+        live_state["golden_card_ws_connected"] = True
+        _log_koolkid_golden_card_audit(cid, live_state, "golden_scanner_ws_open", nonce=nonce, reason=reason)
+        _subscribe_koolkid_golden_card_ws_symbols(cid, live_state, force=True)
+
+    def _on_message(ws, message, cid=client_id, nonce=expected_nonce):
+        live_state = clients.get(cid)
+        if live_state is not state or live_state.get("golden_card_ws_nonce") != nonce:
+            return
+        live_state["golden_card_ws_last_message_at"] = time.time()
+        try:
+            data = json.loads(message)
+        except Exception:
+            return
+        if data.get("error"):
+            _log_koolkid_golden_card_audit(cid, live_state, "golden_scanner_ws_error_payload", error=data.get("error"))
+            return
+        if data.get("authorize"):
+            live_state["golden_card_ws_connected"] = True
+            _log_koolkid_golden_card_audit(cid, live_state, "golden_scanner_ws_authorized", nonce=nonce)
+            _subscribe_koolkid_golden_card_ws_symbols(cid, live_state, force=True)
+            return
+        if "tick" not in data:
+            return
+        tick = data.get("tick") or {}
+        sub = data.get("subscription") or {}
+        sub_id = sub.get("id")
+        sym = _normalize_tick_symbol(tick.get("symbol"))
+        if sub_id and sym:
+            live_state.setdefault("golden_card_tick_subs", {})[sym] = sub_id
+        _process_koolkid_golden_card_tick(cid, tick, source="golden_card_ws")
+
+    def _on_error(ws, error, cid=client_id, nonce=expected_nonce):
+        live_state = clients.get(cid)
+        if live_state is not state or live_state.get("golden_card_ws_nonce") != nonce:
+            return
+        live_state["golden_card_ws_connected"] = False
+        _log_koolkid_golden_card_audit(cid, live_state, "golden_scanner_ws_error", error=str(error), nonce=nonce)
+
+    def _on_close(ws, code, msg, cid=client_id, nonce=expected_nonce):
+        live_state = clients.get(cid)
+        if live_state is not state or live_state.get("golden_card_ws_nonce") != nonce:
+            return
+        live_state["golden_card_ws_connected"] = False
+        live_state["golden_card_tick_subs"] = {}
+        _log_koolkid_golden_card_audit(cid, live_state, "golden_scanner_ws_close", code=code, message=str(msg), nonce=nonce)
+        if not stop_event.is_set() and _ensure_koolkid_golden_card_state(live_state).get("running"):
+            _schedule_koolkid_golden_card_ws_reconnect(cid, live_state)
+
+    ws_app = websocket.WebSocketApp(
+        scanner_ws_url,
+        on_open=_on_open,
+        on_message=_on_message,
+        on_error=_on_error,
+        on_close=_on_close,
+    )
+
+    def _runner():
+        current_thread = threading.current_thread()
+        try:
+            state["golden_card_ws"] = ws_app
+            _log_koolkid_golden_card_audit(client_id, state, "golden_scanner_ws_starting", nonce=expected_nonce, reason=reason)
+            ping_interval = max(5, int(float(DERIV_WS_PING_INTERVAL_SEC)))
+            ping_timeout = min(max(2, int(float(DERIV_WS_PING_TIMEOUT_SEC))), max(1, ping_interval - 1))
+            ws_app.run_forever(
+                ping_interval=ping_interval,
+                ping_timeout=ping_timeout,
+            )
+        except Exception as exc:
+            logger.exception("[%s] golden_scanner_ws_run_exception error=%s", client_id, exc)
+        finally:
+            live_state = clients.get(client_id)
+            if live_state is state and live_state.get("golden_card_ws_nonce") == expected_nonce:
+                live_state["golden_card_ws_connected"] = False
+                if live_state.get("golden_card_ws") is ws_app:
+                    live_state["golden_card_ws"] = None
+                if live_state.get("golden_card_ws_thread") is current_thread:
+                    live_state["golden_card_ws_thread"] = None
+                if not stop_event.is_set() and _ensure_koolkid_golden_card_state(live_state).get("running"):
+                    _schedule_koolkid_golden_card_ws_reconnect(client_id, live_state)
+
+    thread = threading.Thread(target=_runner, daemon=True, name=f"golden_card_ws_{client_id}")
+    state["golden_card_ws_thread"] = thread
+    thread.start()
+    return True
+
+
 def _cleanup_koolkid_golden_card_subscriptions(state, preserve_scan_state=False):
     scan = _ensure_koolkid_golden_card_state(state)
     cid = _client_id_for_state(state)
@@ -18861,24 +19154,19 @@ def _cleanup_koolkid_golden_card_subscriptions(state, preserve_scan_state=False)
         )
     if not preserve_scan_state:
         scan["confirmations"] = {}
-    ws = state.get("ws")
-    if not state.get("ws_connected") or not ws:
-        scan["owned_syms"] = set()
-        scan["running"] = False
-        if cid:
-            _log_koolkid_golden_card_audit(cid, state, "golden_cleanup_done", preserve_scan_state=bool(preserve_scan_state), ws_available=False)
-        return
+    _close_koolkid_golden_card_ws(state, reason="golden_cleanup")
+
+    # Clean up any scanner subscriptions that older builds may have placed on
+    # the main trade websocket before Golden Card used a dedicated data socket.
+    main_ws = state.get("ws")
     tick_subs = state.setdefault("tick_subs", {})
-    main_symbol = state.get("current_symbol")
-    human_symbol = state.get("human_symbol") or main_symbol
     for sym in list(scan.get("owned_syms") or set()):
-        if sym in (main_symbol, human_symbol):
-            continue
         sub_id = tick_subs.get(sym)
         if not sub_id:
             continue
         try:
-            ws.send(json.dumps({"forget": sub_id}))
+            if state.get("ws_connected") and main_ws:
+                main_ws.send(json.dumps({"forget": sub_id}))
         except Exception:
             pass
         tick_subs.pop(sym, None)
@@ -18901,7 +19189,7 @@ def _sync_koolkid_golden_card_subscriptions(state, symbols=None, *, client_id=No
     previous_owned = set(scan.get("owned_syms") or set())
     desired_symbols = []
     for sym in list(symbols or scan.get("symbols") or []):
-        clean_sym = str(sym or "").upper().strip()
+        clean_sym = _normalize_tick_symbol(sym)
         if clean_sym and clean_sym not in desired_symbols:
             desired_symbols.append(clean_sym)
     if _uses_new_deriv_trade_api(state):
@@ -18912,75 +19200,39 @@ def _sync_koolkid_golden_card_subscriptions(state, symbols=None, *, client_id=No
             client_id=client_id,
         )
     scan["symbols"] = desired_symbols
-    ws = state.get("ws")
-    if not state.get("ws_connected") or not ws:
-        scan["owned_syms"] = set()
-        return
+    scan["use_dedicated_ws"] = True
 
-    tick_subs = state.setdefault("tick_subs", {})
-    main_symbol = str(state.get("current_symbol") or "").upper().strip()
-    human_symbol = str((state.get("human_symbol") or main_symbol) or "").upper().strip()
-    protected_symbols = {sym for sym in (main_symbol, human_symbol) if sym}
+    ws = state.get("golden_card_ws")
+    if scan.get("running") and (not state.get("golden_card_ws_connected") or not ws):
+        _start_koolkid_golden_card_ws(client_id, state, reason="sync_start")
+
+    scanner_subs = state.setdefault("golden_card_tick_subs", {})
+    scanner_sent = state.setdefault("golden_card_tick_subscribe_sent_at", {})
     current_owned = set(scan.get("owned_syms") or set())
     desired_set = set(desired_symbols)
 
     for sym in list(current_owned):
-        if sym in desired_set or sym in protected_symbols:
+        if sym in desired_set:
             continue
-        sub_id = tick_subs.get(sym)
+        sub_id = scanner_subs.get(sym)
         if not sub_id:
             continue
         try:
-            ws.send(json.dumps({"forget": sub_id}))
+            if state.get("golden_card_ws_connected") and ws:
+                ws.send(json.dumps({"forget": sub_id}))
         except Exception:
             pass
-        tick_subs.pop(sym, None)
-        state.setdefault("tick_subscribe_sent_at", {}).pop(sym, None)
-        state.setdefault("tick_last_seen_at", {}).pop(sym, None)
-        state.setdefault("tick_resubscribe_attempted_at", {}).pop(sym, None)
-        state.setdefault("tick_stream_recovering_symbols", {}).pop(sym, None)
-        state.setdefault("tick_stream_unhealthy_since", {}).pop(sym, None)
-        state.setdefault("tick_stream_warmup_until", {}).pop(sym, None)
-        state.setdefault("tick_stream_warmup_reason", {}).pop(sym, None)
+        scanner_subs.pop(sym, None)
+        scanner_sent.pop(sym, None)
 
     next_owned = set()
+    if state.get("golden_card_ws_connected") and state.get("golden_card_ws"):
+        _subscribe_koolkid_golden_card_ws_symbols(client_id, state, desired_symbols)
+        scanner_subs = state.setdefault("golden_card_tick_subs", {})
+        scanner_sent = state.setdefault("golden_card_tick_subscribe_sent_at", {})
     for sym in desired_symbols:
-        if sym in protected_symbols:
-            _ensure_tick_subscription(
-                state,
-                sym,
-                force=False,
-                reason="koolkid_golden_card_protected",
-                client_id=client_id,
-                warmup_sec=_tick_stream_warmup_for_symbol(sym),
-            )
-            continue
-        if tick_subs.get(sym):
+        if scanner_subs.get(sym) or scanner_sent.get(sym):
             next_owned.add(sym)
-            _ensure_tick_subscription(
-                state,
-                sym,
-                force=False,
-                reason="koolkid_golden_card_existing",
-                client_id=client_id,
-                warmup_sec=_tick_stream_warmup_for_symbol(sym),
-            )
-            continue
-        try:
-            ok = _ensure_tick_subscription(
-                state,
-                sym,
-                force=False,
-                reason="koolkid_golden_card",
-                client_id=client_id,
-                warmup_sec=_tick_stream_warmup_for_symbol(sym),
-            )
-            if ok:
-                next_owned.add(sym)
-        except Exception:
-            ok = False
-        if not ok and client_id:
-            logger.warning("[%s] golden_card_tick_subscribe_failed symbol=%s", client_id, sym)
 
     scan["owned_syms"] = next_owned
     if client_id and (previous_symbols != desired_symbols or previous_owned != next_owned):
@@ -19126,18 +19378,20 @@ def _maybe_refresh_koolkid_testtrial_quotes(client_id, state, *, force=False):
         pass
 
 
-def _process_koolkid_golden_card_tick(client_id, tick):
+def _process_koolkid_golden_card_tick(client_id, tick, *, source="main_ws"):
     state = clients.get(client_id)
     if not state:
         return
     scan = _ensure_koolkid_golden_card_state(state)
     if not scan.get("running"):
         return
+    if scan.get("use_dedicated_ws", True) and source != "golden_card_ws":
+        return
     state["last_seen"] = time.time()
     strat = (state.get("strategies") or {}).get("KOOLKID")
     if not strat or not hasattr(strat, "record_golden_card_tick"):
         return
-    sym = str(tick.get("symbol") or "").upper().strip()
+    sym = _normalize_tick_symbol(tick.get("symbol"))
     if not sym or sym not in (scan.get("symbols") or []):
         return
     try:
@@ -19170,10 +19424,20 @@ def _process_koolkid_golden_card_tick(client_id, tick):
                     _log_koolkid_golden_card_audit(client_id, state, "golden_elapsed_checkpoint", threshold=threshold, tick_symbol=sym)
     except Exception:
         logger.exception("[%s] golden_card_checkpoint_audit_failed", client_id)
+    should_emit = True
     try:
-        socketio.emit("golden_card_update", payload, room=client_id)
+        last_emit = float(state.get("golden_card_ws_last_emit_at", 0.0) or 0.0)
+        now_ts = time.time()
+        should_emit = bool((now_ts - last_emit) >= float(GOLDEN_CARD_WS_UI_EMIT_INTERVAL_SEC))
+        if should_emit:
+            state["golden_card_ws_last_emit_at"] = now_ts
     except Exception:
-        pass
+        should_emit = True
+    if should_emit:
+        try:
+            socketio.emit("golden_card_update", payload, room=client_id)
+        except Exception:
+            pass
     if not payload.get("running"):
         _cleanup_koolkid_golden_card_subscriptions(state, preserve_scan_state=True)
         try:
