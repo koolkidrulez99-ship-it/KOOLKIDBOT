@@ -3190,8 +3190,9 @@ function applyKnownApiBalance(data, syncMilestoneAnchor){
             ? Number(budgetSnapshot.display_balance)
             : balance);
     const hasDisplayableAccountData = Number.isFinite(shownBalance) || Number.isFinite(balance) || Number.isFinite(totalBalance);
+    const preserveSessionDisplay = !!(data && (data.preserve_session_display || data.golden_card_oauth_reconnecting));
     if(accountDashboard){
-        accountDashboard.style.display = (apiConnected && hasDisplayableAccountData) ? "block" : "none";
+        accountDashboard.style.display = ((apiConnected || preserveSessionDisplay) && hasDisplayableAccountData) ? "block" : "none";
     }
     console.info("TEMP displayed_total_balance_computed", {
         live_account_balance: Number.isFinite(balance) ? balance : null,
@@ -3445,6 +3446,7 @@ function applyApiConnectionState(data){
     const connected = !!(data && data.connected);
     const tradeReady = isApiTradeReadyPayload(data);
     const reconnecting = !!(data && data.reconnecting);
+    const preserveSessionDisplay = !!(data && (data.preserve_session_display || data.golden_card_oauth_reconnecting));
     const tickHealthKnown = data && Object.prototype.hasOwnProperty.call(data, "tick_stream_healthy");
     const tickRecovering = !!(data && data.tick_stream_recovering);
     const tickUnhealthy = tradeReady && tickHealthKnown && data.tick_stream_healthy === false;
@@ -3499,7 +3501,7 @@ function applyApiConnectionState(data){
         apiStatus.innerText = reconnecting ? "Reconnecting..." : ((data && data.has_token) ? "Restoring..." : "Connecting...");
         apiStatus.className = "blue";
         updateApiConnectionUi("pending", reconnecting ? "RECONNECTING API..." : ((data && data.has_token) ? "RESTORING API..." : "CONNECTING API..."));
-        accountDashboard.style.display = "none";
+        if(accountDashboard && !preserveSessionDisplay) accountDashboard.style.display = "none";
         return false;
     }
 

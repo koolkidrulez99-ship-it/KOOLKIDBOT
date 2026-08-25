@@ -3675,6 +3675,7 @@ def _build_default_client_state():
         "oauth_pending_accounts": [],
         "pat_otp_ws_url": "",
         "pat_otp_reconnect_used": False,
+        "golden_card_oauth_reconnect_until": 0.0,
         "ws": None,
         "ws_thread": None,
         "ws_stop_event": threading.Event(),
@@ -19454,6 +19455,7 @@ def _complete_deriv_authenticated_session(client_id, state, ws, loginid="UNKNOWN
     state["ws_authorize_deadline_at"] = 0.0
 
     state["loginid"] = loginid
+    state["golden_card_oauth_reconnect_until"] = 0.0
     balance_known = balance is not None
     if balance_known:
         balance = float(balance or 0.0)
@@ -21012,7 +21014,13 @@ def _schedule_ws_reconnect(client_id, expected_nonce, delay_sec=2.0):
                 return
             existing = live_state.get("ws_thread")
             if existing and existing.is_alive():
-                return
+                for _ in range(20):
+                    time.sleep(0.25)
+                    if not existing.is_alive():
+                        break
+                if existing.is_alive():
+                    logger.warning("[%s] websocket_reconnect_wait_timeout old_thread_still_alive", client_id)
+                    return
             live_state["ws_reconnect_attempts"] = int(live_state.get("ws_reconnect_attempts", 0) or 0) + 1
             logger.info(
                 "[%s] websocket_reconnect count=%s",
@@ -21036,6 +21044,15 @@ def handle_on_close(client_id, ws, code, msg, expected_nonce):
         return
     if state.get("ws_nonce") != expected_nonce:
         return
+    token = str(state.get("api_token", "") or "").strip()
+    previous_loginid = str(state.get("loginid") or "").strip()
+    golden_oauth_reconnect = bool(
+        token
+        and _token_uses_deriv_otp_ws(token, state.get("api_token_type"))
+        and _is_koolkid_golden_card_runtime_active(state)
+        and previous_loginid
+        and previous_loginid != "UNKNOWN"
+    )
     try:
         _log_koolkid_golden_card_audit(
             client_id,
@@ -21044,6 +21061,7 @@ def handle_on_close(client_id, ws, code, msg, expected_nonce):
             code=code,
             message=str(msg),
             expected_nonce=expected_nonce,
+            golden_oauth_reconnect=golden_oauth_reconnect,
         )
     except Exception:
         pass
@@ -21054,7 +21072,11 @@ def handle_on_close(client_id, ws, code, msg, expected_nonce):
     state["ws_last_authorized_at"] = 0.0
     state["ws_connect_started_at"] = 0.0
     state["ws_authorize_deadline_at"] = 0.0
-    state["loginid"] = "UNKNOWN"
+    if golden_oauth_reconnect:
+        state["golden_card_oauth_reconnect_until"] = time.time() + 60.0
+    else:
+        state["loginid"] = "UNKNOWN"
+        state["golden_card_oauth_reconnect_until"] = 0.0
     try:
         ping_stop = state.get("ws_ping_stop_event")
         if ping_stop:
@@ -21070,7 +21092,7 @@ def handle_on_close(client_id, ws, code, msg, expected_nonce):
         _deriv_trade_connection_mode(state),
     )
     should_reconnect = bool(
-        str(state.get("api_token", "") or "").strip()
+        token
         and (not state.get("ws_stop_event") or not state["ws_stop_event"].is_set())
     )
     if should_reconnect:
@@ -21078,8 +21100,10 @@ def handle_on_close(client_id, ws, code, msg, expected_nonce):
     socketio.emit("connection_status", {
         "connected": False,
         "reconnecting": should_reconnect,
-        "has_token": bool(str(state.get("api_token", "") or "").strip()),
-        "loginid": "UNKNOWN",
+        "golden_card_oauth_reconnecting": bool(golden_oauth_reconnect and should_reconnect),
+        "preserve_session_display": bool(golden_oauth_reconnect and should_reconnect),
+        "has_token": bool(token),
+        "loginid": previous_loginid if golden_oauth_reconnect else "UNKNOWN",
         **_connection_trade_ready_payload(state),
         **_build_balance_payload(state),
     }, room=client_id)
@@ -21664,18 +21688,33 @@ def api_connection_status():
             pass
     tick_health = _get_tick_stream_health(_cid, state, self_heal=connected, allow_reconnect=False)
     has_token = bool(str(state.get("api_token", "") or "").strip())
-    reconnecting = bool(
+    try:
+        golden_card_oauth_reconnect_until = float(state.get("golden_card_oauth_reconnect_until", 0.0) or 0.0)
+    except Exception:
+        golden_card_oauth_reconnect_until = 0.0
+    golden_card_oauth_reconnecting = bool(
         has_token
         and not connected
-        and (
-            state.get("ws_reconnect_pending")
-            or state.get("ws_connect_started_at")
-            or state.get("ws_transport_connected")
+        and golden_card_oauth_reconnect_until > time.time()
+        and _is_koolkid_golden_card_runtime_active(state)
+    )
+    reconnecting = bool(
+        golden_card_oauth_reconnecting
+        or (
+            has_token
+            and not connected
+            and (
+                state.get("ws_reconnect_pending")
+                or state.get("ws_connect_started_at")
+                or state.get("ws_transport_connected")
+            )
         )
     )
     payload = {
         "connected": connected,
         "reconnecting": reconnecting,
+        "golden_card_oauth_reconnecting": golden_card_oauth_reconnecting,
+        "preserve_session_display": golden_card_oauth_reconnecting,
         "ws_stale": ws_stale,
         "loginid": state.get("loginid", "UNKNOWN"),
         "has_token": has_token,
