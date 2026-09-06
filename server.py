@@ -16549,6 +16549,7 @@ def _prepare_human_parity_trade_request(
     }
     return True, {
         "side": side,
+        "stake": float(stake),
         "req_id": req_id,
         "payload": payload,
         "budget_reservation": budget_reservation,
@@ -25824,27 +25825,42 @@ def human_parity_trade_route():
                 return jsonify({"status": "error", "message": msg, "placed": [], "batch_id": batch_id}), 400
             prepared.append(item)
         placed = []
-        lock = _get_ws_lifecycle_lock(state)
-        with lock:
-            for item in prepared:
+        errors = []
+        for item in prepared:
+            sent_ok, sent_msg = _send_trade_payload_with_oauth_proposal(
+                cid,
+                state,
+                item.get("req_id"),
+                item["payload"],
+                item.get("stake", 0),
+            )
+            if sent_ok:
+                placed.append(item["side"])
+                continue
+            errors.append(sent_msg)
+            try:
+                state.get("req_meta", {}).pop(item.get("req_id"), None)
+                state.get("req_meta", {}).pop(str(item.get("req_id")), None)
+                _release_profile_budget_reservation(state, item.get("budget_reservation"))
+            except Exception:
+                pass
+            for unsent in prepared[len(placed) + 1:]:
                 try:
-                    ws.send(json.dumps(item["payload"]))
-                    placed.append(item["side"])
-                except Exception as exc:
-                    for unsent in prepared[len(placed):]:
-                        try:
-                            state.get("req_meta", {}).pop(unsent.get("req_id"), None)
-                            _release_profile_budget_reservation(state, unsent.get("budget_reservation"))
-                        except Exception:
-                            pass
-                    _emit_balance_payload(cid, state)
-                    return jsonify({
-                        "status": "error",
-                        "message": str(exc),
-                        "placed": placed,
-                        "batch_id": batch_id,
-                    }), 400
+                    state.get("req_meta", {}).pop(unsent.get("req_id"), None)
+                    state.get("req_meta", {}).pop(str(unsent.get("req_id")), None)
+                    _release_profile_budget_reservation(state, unsent.get("budget_reservation"))
+                except Exception:
+                    pass
+            break
         _emit_balance_payload(cid, state)
+        if len(placed) != len(prepared):
+            status = "partial" if placed else "error"
+            return jsonify({
+                "status": status,
+                "message": "; ".join(errors or ["Even/Odd pair failed"]),
+                "placed": placed,
+                "batch_id": batch_id,
+            }), (200 if placed else 400)
         return jsonify({
             "status": "success",
             "message": f"Sent {' + '.join(placed)}",

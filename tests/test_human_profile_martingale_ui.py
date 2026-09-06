@@ -34,8 +34,13 @@ def test_rise_fall_martingale_has_tp_sl_session_controls():
     assert "waitForTpSl" in js
     assert "reconcileHumanRfPairPlacementResponse" in js
     assert "function scheduleHumanRfMartingaleRound()" in js
+    assert "function applyHumanRfPairStakeResults()" in js
+    assert "pendingLeg.result === \"WIN\"" in js
     assert "st.restartTimer = setTimeout" in js
     assert "batch_id: HUMAN_RF_MARTINGALE_STATE.batchId" in js
+    assert "pairCompletionTimer" in js
+    assert "scheduleHumanRfPairCompletionFallback" in js
+    assert "Delayed ${missing.join" in js
     assert "Partial pair sent" in js
     assert "next round will retry both" in js
     assert "Retrying next round" in js
@@ -73,7 +78,28 @@ def test_dual_market_martingale_tracks_leg_metadata_for_same_market_results():
     assert "HUMAN_DUAL_MARTINGALE_STATE" in js
     assert "updateHumanDualMarketMartingaleFromResult" in js
     assert "matchHumanDualPendingSide" in js
+    assert "scheduleHumanDualMartingaleRound" in js
+    assert "scheduleHumanDualPairCompletionFallback" in js
+    assert "HUMAN_DUAL_MARTINGALE_STATE.restartTimer" in js
+    assert "completionTimer: null" in js
+    assert "Delayed ${missing.join(\" + \") || \"Dual Market\"} result. Continuing next round." in js
     assert "dual_market_leg_index" in js
     assert "dual_market_batch_id" in js
     assert '"dual_market_leg_index": meta.get("dual_market_leg_index")' in server
     assert '"dual_market_batch_id": meta.get("dual_market_batch_id")' in server
+
+
+def test_even_odd_martingale_has_timeout_fallback_and_safe_pair_send():
+    js = HUMAN_JS.read_text(encoding="utf-8")
+    server = SERVER.read_text(encoding="utf-8")
+    parity_schedule = _function_block(js, "scheduleHumanParityMartingaleRound")
+    parity_timeout = _function_block(js, "finalizeHumanParityBatchByTimeout")
+
+    assert "st.restartTimer = setTimeout" in parity_schedule
+    assert "sendHumanParityMartingaleRound()" in parity_schedule
+    assert "st.pending = {}" in parity_timeout
+    assert "scheduleHumanParityMartingaleRound()" in parity_timeout
+    assert "Delayed ${missing.join(\" + \") || \"Even+Odd\"} result. Continuing next round." in parity_timeout
+    assert "HUMAN_PARITY_MARTINGALE_STATE.restartTimer" in js
+    assert "_send_trade_payload_with_oauth_proposal" in server
+    assert 'ws.send(json.dumps(item["payload"]))' not in server

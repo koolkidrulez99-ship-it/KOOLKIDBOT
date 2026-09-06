@@ -185,6 +185,7 @@
     running: false,
     stopRequested: false,
     restartTimer: null,
+    pairCompletionTimer: null,
     spacingWait: 0,
     lastResult: "none",
     status: "Ready",
@@ -205,6 +206,8 @@
     sessionPnl: 0,
     limitHit: false,
     stopRequested: false,
+    restartTimer: null,
+    completionTimer: null,
     pending: {},
     settledCount: 0,
     spacingWait: 0,
@@ -791,6 +794,10 @@
         HUMAN_PARITY_MARTINGALE_STATE.status = `Waiting ${HUMAN_PARITY_MARTINGALE_STATE.spacingWait} tick(s) before next round`;
         updateHumanParityMartingalePanel();
       }else if(!HUMAN_PARITY_MARTINGALE_STATE.inFlight){
+        if(HUMAN_PARITY_MARTINGALE_STATE.restartTimer){
+          clearTimeout(HUMAN_PARITY_MARTINGALE_STATE.restartTimer);
+          HUMAN_PARITY_MARTINGALE_STATE.restartTimer = null;
+        }
         HUMAN_PARITY_MARTINGALE_STATE.status = "Next round starting";
         updateHumanParityMartingalePanel();
         sendHumanParityMartingaleRound();
@@ -817,6 +824,10 @@
         HUMAN_DUAL_MARTINGALE_STATE.status = `Waiting ${HUMAN_DUAL_MARTINGALE_STATE.spacingWait} tick(s) before next round`;
         updateHumanDualMarketPanel();
       }else if(!HUMAN_DUAL_MARTINGALE_STATE.inProgress){
+        if(HUMAN_DUAL_MARTINGALE_STATE.restartTimer){
+          clearTimeout(HUMAN_DUAL_MARTINGALE_STATE.restartTimer);
+          HUMAN_DUAL_MARTINGALE_STATE.restartTimer = null;
+        }
         HUMAN_DUAL_MARTINGALE_STATE.status = "Next round starting";
         updateHumanDualMarketPanel();
         humanDualMarketPlaceBoth({ continuation: true });
@@ -1028,6 +1039,14 @@
 
   function resetHumanParityMartingaleRun(){
     const settings = readHumanParitySettings();
+    if(HUMAN_PARITY_MARTINGALE_STATE.restartTimer){
+      clearTimeout(HUMAN_PARITY_MARTINGALE_STATE.restartTimer);
+      HUMAN_PARITY_MARTINGALE_STATE.restartTimer = null;
+    }
+    if(HUMAN_PARITY_MARTINGALE_STATE.completionTimer){
+      clearTimeout(HUMAN_PARITY_MARTINGALE_STATE.completionTimer);
+      HUMAN_PARITY_MARTINGALE_STATE.completionTimer = null;
+    }
     HUMAN_PARITY_MARTINGALE_STATE.mode = settings.mode;
     HUMAN_PARITY_MARTINGALE_STATE.runId = `hpm_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
     HUMAN_PARITY_MARTINGALE_STATE.evenBaseStake = settings.startStake;
@@ -1112,14 +1131,13 @@
       return item && !item.result;
     });
     renderHumanParityBatchHistory(st.currentBatch, true);
-    st.status = `Waiting for delayed ${missing.join(" + ") || "Even+Odd"} result.`;
+    st.currentBatch = null;
+    st.pending = {};
+    st.settled = 0;
+    st.status = `Delayed ${missing.join(" + ") || "Even+Odd"} result. Continuing next round.`;
     updateHumanParityMartingalePanel();
-    if(st.running && st.runId && !st.inFlight){
-      const retryMs = 5000;
-      st.completionTimer = setTimeout(() => {
-        st.completionTimer = null;
-        finalizeHumanParityBatchByTimeout(batchId);
-      }, retryMs);
+    if(st.running && st.runId && !st.inFlight && !st.limitHit){
+      scheduleHumanParityMartingaleRound();
     }
   }
 
@@ -1213,6 +1231,17 @@
     st.spacingWait = spacing;
     st.status = `Waiting ${spacing} tick(s) before next round`;
     updateHumanParityMartingalePanel();
+    const waitMs = Number.isFinite(Number(delayMs)) && Number(delayMs) > 0
+      ? Number(delayMs)
+      : Math.max(1400, spacing * 1400);
+    st.restartTimer = setTimeout(() => {
+      st.restartTimer = null;
+      if(!st.running || st.inFlight || st.limitHit) return;
+      st.spacingWait = 0;
+      st.status = "Next round starting";
+      updateHumanParityMartingalePanel();
+      sendHumanParityMartingaleRound();
+    }, waitMs);
   }
 
   function applyHumanParityTpSlAfterResult(profitValue){
@@ -1813,6 +1842,14 @@
 
   function resetHumanDualMartingaleRun(legs, settings){
     const st = HUMAN_DUAL_MARTINGALE_STATE;
+    if(st.restartTimer){
+      clearTimeout(st.restartTimer);
+      st.restartTimer = null;
+    }
+    if(st.completionTimer){
+      clearTimeout(st.completionTimer);
+      st.completionTimer = null;
+    }
     const legA = legs && legs[0] ? legs[0] : readHumanDualLeg("A");
     const legB = legs && legs[1] ? legs[1] : readHumanDualLeg("B");
     st.runId = `hdm_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
@@ -1888,6 +1925,14 @@
 
   function quickStopHumanDualMartingale(reason){
     const st = HUMAN_DUAL_MARTINGALE_STATE;
+    if(st.restartTimer){
+      clearTimeout(st.restartTimer);
+      st.restartTimer = null;
+    }
+    if(st.completionTimer){
+      clearTimeout(st.completionTimer);
+      st.completionTimer = null;
+    }
     st.running = false;
     st.inProgress = false;
     st.enabled = false;
@@ -1899,6 +1944,59 @@
     st.batchId = "";
     st.status = reason || "Stopped";
     updateHumanDualMarketPanel();
+  }
+
+  function scheduleHumanDualMartingaleRound(delayMs){
+    const st = HUMAN_DUAL_MARTINGALE_STATE;
+    if(!st.running || st.inProgress || st.stopRequested || st.limitHit || st.restartTimer) return;
+    const spacing = readHumanTickSpacing("humanDualMartingaleTickSpacing", 1);
+    st.spacingWait = spacing;
+    st.status = `Waiting ${spacing} tick(s) before next round`;
+    updateHumanDualMarketPanel();
+    const waitMs = Number.isFinite(Number(delayMs)) && Number(delayMs) > 0
+      ? Number(delayMs)
+      : Math.max(1400, spacing * 1400);
+    st.restartTimer = setTimeout(() => {
+      st.restartTimer = null;
+      if(!st.running || st.inProgress || st.stopRequested || st.limitHit) return;
+      st.spacingWait = 0;
+      st.status = "Next round starting";
+      updateHumanDualMarketPanel();
+      humanDualMarketPlaceBoth({ continuation: true });
+    }, waitMs);
+  }
+
+  function scheduleHumanDualPairCompletionFallback(durationTicks){
+    const st = HUMAN_DUAL_MARTINGALE_STATE;
+    if(!st.inProgress) return;
+    if(st.completionTimer){
+      clearTimeout(st.completionTimer);
+      st.completionTimer = null;
+    }
+    const duration = Math.max(1, Number(durationTicks || 5));
+    const waitMs = Math.max(9000, (duration * 1200) + 8000);
+    st.completionTimer = setTimeout(() => {
+      st.completionTimer = null;
+      const expected = Object.keys(st.pending || {}).length;
+      const settled = Object.values(st.pending || {}).filter((item) => item && item.result).length;
+      if(!st.inProgress || expected <= 0 || settled >= expected) return;
+      const missing = Object.keys(st.pending || {}).filter((side) => {
+        const item = st.pending && st.pending[side];
+        return item && !item.result;
+      });
+      st.pending = {};
+      st.settledCount = 0;
+      st.inProgress = false;
+      st.batchId = "";
+      if(st.running && !st.stopRequested && !st.limitHit){
+        st.status = `Delayed ${missing.join(" + ") || "Dual Market"} result. Continuing next round.`;
+        updateHumanDualMarketPanel();
+        scheduleHumanDualMartingaleRound();
+      }else{
+        st.status = "Ready";
+        updateHumanDualMarketPanel();
+      }
+    }, waitMs);
   }
 
   function updateHumanDualMarketPanel(){
@@ -2029,6 +2127,9 @@
       }
       if(martingaleOn && data.batch_id){
         HUMAN_DUAL_MARTINGALE_STATE.batchId = String(data.batch_id);
+      }
+      if(martingaleOn){
+        scheduleHumanDualPairCompletionFallback(maxDuration || 5);
       }
       const toastType = data.status === "success" ? "success" : "warn";
       if(typeof showToast === "function"){
@@ -2447,6 +2548,10 @@
   }
 
   function resetHumanRfMartingaleSession(settings){
+    if(HUMAN_RF_MARTINGALE_STATE.pairCompletionTimer){
+      clearTimeout(HUMAN_RF_MARTINGALE_STATE.pairCompletionTimer);
+      HUMAN_RF_MARTINGALE_STATE.pairCompletionTimer = null;
+    }
     HUMAN_RF_MARTINGALE_STATE.sessionPnl = 0;
     HUMAN_RF_MARTINGALE_STATE.takeProfit = settings.takeProfit;
     HUMAN_RF_MARTINGALE_STATE.stopLoss = settings.stopLoss;
@@ -2557,6 +2662,10 @@
   }
 
   function clearHumanRfMartingalePending(){
+    if(HUMAN_RF_MARTINGALE_STATE.pairCompletionTimer){
+      clearTimeout(HUMAN_RF_MARTINGALE_STATE.pairCompletionTimer);
+      HUMAN_RF_MARTINGALE_STATE.pairCompletionTimer = null;
+    }
     HUMAN_RF_MARTINGALE_STATE.inProgress = false;
     HUMAN_RF_MARTINGALE_STATE.batchId = "";
     HUMAN_RF_MARTINGALE_STATE.pendingDirection = "";
@@ -2565,6 +2674,71 @@
     HUMAN_RF_MARTINGALE_STATE.pendingContractId = "";
     HUMAN_RF_MARTINGALE_STATE.pendingMartingale = false;
     HUMAN_RF_MARTINGALE_STATE.pendingStake = 0;
+  }
+
+  function scheduleHumanRfPairCompletionFallback(){
+    const st = HUMAN_RF_MARTINGALE_STATE;
+    if(!st.inProgress || !isHumanRfPairDirection(st.pendingDirection)) return;
+    if(st.pairCompletionTimer){
+      clearTimeout(st.pairCompletionTimer);
+      st.pairCompletionTimer = null;
+    }
+    const settings = readHumanRfMartingaleSettings();
+    const duration = Math.max(1, Number(settings.duration || 5));
+    const unit = String(settings.durationUnit || "t").toLowerCase();
+    const durationMs = unit === "s" ? duration * 1000 : duration * 1200;
+    st.pairCompletionTimer = setTimeout(() => {
+      st.pairCompletionTimer = null;
+      const expected = Object.keys(st.pendingDirections || {}).length;
+      const settled = Object.values(st.pendingDirections || {}).filter((item) => item && item.result).length;
+      if(!st.inProgress || !isHumanRfPairDirection(st.pendingDirection) || expected <= 0 || settled >= expected) return;
+      const missing = Object.keys(st.pendingDirections || {}).filter((direction) => {
+        const item = st.pendingDirections && st.pendingDirections[direction];
+        return item && !item.result;
+      });
+      st.inProgress = false;
+      st.pendingDirections = {};
+      st.settledCount = 0;
+      if(st.running && st.enabled && !st.stopRequested && !st.limitHit){
+        st.status = `Delayed ${missing.join(" + ") || "Rise/Fall"} result. Continuing next round.`;
+        updateHumanRfMartingalePanel();
+        scheduleHumanRfMartingaleRound();
+      }else{
+        st.status = "Ready";
+        updateHumanRfMartingalePanel();
+      }
+    }, Math.max(9000, durationMs + 8000));
+  }
+
+  function applyHumanRfPairStakeResults(){
+    const st = HUMAN_RF_MARTINGALE_STATE;
+    const settings = readHumanRfMartingaleSettings();
+    ["RISE", "FALL"].forEach((direction) => {
+      const pendingLeg = st.pendingDirections && st.pendingDirections[direction];
+      if(!pendingLeg || !pendingLeg.result) return;
+      const stake = Math.max(0.35, Number(pendingLeg.stake || humanRfPairStakeForDirection(direction)));
+      const countKey = direction === "FALL" ? "fallDoubleCount" : "riseDoubleCount";
+      if(pendingLeg.result === "WIN"){
+        if(direction === "RISE") st.riseStake = Number((st.riseBaseStake || settings.riseStake || 0.35).toFixed(2));
+        if(direction === "FALL") st.fallStake = Number((st.fallBaseStake || settings.fallStake || 0.35).toFixed(2));
+        st[countKey] = 0;
+        return;
+      }
+      const limit = Math.max(0, Math.floor(Number(settings.doubleLimit || 0) || 0));
+      const maxDoubleCount = Math.max(0, Math.floor(Number(settings.maxSteps || 1) || 1) - 1);
+      const currentCount = Math.max(0, Math.floor(Number(st[countKey] || 0) || 0));
+      if((limit > 0 && currentCount >= limit) || currentCount >= maxDoubleCount){
+        if(direction === "RISE") st.riseStake = Number((st.riseBaseStake || settings.riseStake || 0.35).toFixed(2));
+        if(direction === "FALL") st.fallStake = Number((st.fallBaseStake || settings.fallStake || 0.35).toFixed(2));
+        st[countKey] = 0;
+        return;
+      }
+      let next = Number((stake * Math.max(1, Number(settings.multiplier || st.multiplier || 2))).toFixed(2));
+      if(settings.maxStake !== null) next = Math.min(next, settings.maxStake);
+      if(direction === "RISE") st.riseStake = Number(Math.max(0.35, next).toFixed(2));
+      if(direction === "FALL") st.fallStake = Number(Math.max(0.35, next).toFixed(2));
+      st[countKey] = currentCount + 1;
+    });
   }
 
   function scheduleHumanRfMartingaleRound(){
@@ -2711,6 +2885,7 @@
         });
         if(isMarthaBlocked(data)) throw new Error("Trade blocked");
         const fullPairPlaced = reconcileHumanRfPairPlacementResponse(data);
+        if(fullPairPlaced) scheduleHumanRfPairCompletionFallback();
         if(typeof showToast === "function"){
           showToast(
             fullPairPlaced
@@ -3325,6 +3500,10 @@
     }
     updateHumanDualMarketPanel();
     if(expected > 0 && st.settledCount >= expected){
+      if(st.completionTimer){
+        clearTimeout(st.completionTimer);
+        st.completionTimer = null;
+      }
       const allWon = Object.values(st.pending || {}).every((item) => item && item.result === "WIN");
       st.pending = {};
       st.settledCount = 0;
@@ -3343,10 +3522,7 @@
           updateHumanDualMarketPanel();
           return;
         }
-        const spacing = readHumanTickSpacing("humanDualMartingaleTickSpacing", 1);
-        st.spacingWait = spacing;
-        st.status = `Waiting ${spacing} tick(s) before next round`;
-        updateHumanDualMarketPanel();
+        scheduleHumanDualMartingaleRound();
       }else{
         st.status = "Ready";
         updateHumanDualMarketPanel();
@@ -3408,29 +3584,6 @@
       const stake = Math.max(0.35, Number(pendingLeg.stake || humanRfPairStakeForDirection(direction)));
       const resultProfit = humanTradeNumber(payload, ["profit", "profit_value", "pnl", "net_profit", "result_profit"]);
       const limitReached = applyHumanRfTpSlAfterResult(resultProfit);
-      if(outcome === "WIN"){
-        if(direction === "RISE") HUMAN_RF_MARTINGALE_STATE.riseStake = Number((HUMAN_RF_MARTINGALE_STATE.riseBaseStake || 0.35).toFixed(2));
-        if(direction === "FALL") HUMAN_RF_MARTINGALE_STATE.fallStake = Number((HUMAN_RF_MARTINGALE_STATE.fallBaseStake || 0.35).toFixed(2));
-        if(direction === "RISE") HUMAN_RF_MARTINGALE_STATE.riseDoubleCount = 0;
-        if(direction === "FALL") HUMAN_RF_MARTINGALE_STATE.fallDoubleCount = 0;
-      }else{
-        const settings = readHumanRfMartingaleSettings();
-        const countKey = direction === "FALL" ? "fallDoubleCount" : "riseDoubleCount";
-        const limit = Math.max(0, Math.floor(Number(settings.doubleLimit || 0) || 0));
-        const maxDoubleCount = Math.max(0, Math.floor(Number(settings.maxSteps || 1) || 1) - 1);
-        const currentCount = Math.max(0, Math.floor(Number(HUMAN_RF_MARTINGALE_STATE[countKey] || 0) || 0));
-        if((limit > 0 && currentCount >= limit) || currentCount >= maxDoubleCount){
-          if(direction === "RISE") HUMAN_RF_MARTINGALE_STATE.riseStake = Number((HUMAN_RF_MARTINGALE_STATE.riseBaseStake || settings.riseStake || 0.35).toFixed(2));
-          if(direction === "FALL") HUMAN_RF_MARTINGALE_STATE.fallStake = Number((HUMAN_RF_MARTINGALE_STATE.fallBaseStake || settings.fallStake || 0.35).toFixed(2));
-          HUMAN_RF_MARTINGALE_STATE[countKey] = 0;
-        }else{
-          let next = Number((stake * Math.max(1, Number(settings.multiplier || HUMAN_RF_MARTINGALE_STATE.multiplier || 2))).toFixed(2));
-          if(settings.maxStake !== null) next = Math.min(next, settings.maxStake);
-          if(direction === "RISE") HUMAN_RF_MARTINGALE_STATE.riseStake = Number(Math.max(0.35, next).toFixed(2));
-          if(direction === "FALL") HUMAN_RF_MARTINGALE_STATE.fallStake = Number(Math.max(0.35, next).toFixed(2));
-          HUMAN_RF_MARTINGALE_STATE[countKey] = currentCount + 1;
-        }
-      }
       HUMAN_RF_MARTINGALE_STATE.lastResult = `${direction} ${outcome} at ${money(stake)}`;
       const expected = Object.keys(HUMAN_RF_MARTINGALE_STATE.pendingDirections || {}).length;
       if(!HUMAN_RF_MARTINGALE_STATE.limitHit){
@@ -3438,6 +3591,11 @@
       }
       updateHumanRfMartingalePanel();
       if(expected > 0 && HUMAN_RF_MARTINGALE_STATE.settledCount >= expected){
+        if(HUMAN_RF_MARTINGALE_STATE.pairCompletionTimer){
+          clearTimeout(HUMAN_RF_MARTINGALE_STATE.pairCompletionTimer);
+          HUMAN_RF_MARTINGALE_STATE.pairCompletionTimer = null;
+        }
+        applyHumanRfPairStakeResults();
         HUMAN_RF_MARTINGALE_STATE.inProgress = false;
         HUMAN_RF_MARTINGALE_STATE.pendingDirections = {};
         HUMAN_RF_MARTINGALE_STATE.settledCount = 0;

@@ -74,3 +74,57 @@ def test_retry_human_manual_pair_leg_after_error_resends_failed_leg(monkeypatch)
     assert 8080 in state["req_meta"]
     assert state["req_meta"][8080]["pair_retry_count"] == 1
     assert "proposal-asiand" in ws.messages[0]
+
+
+def test_human_even_odd_pair_uses_trade_send_helper(monkeypatch):
+    calls = []
+    emitted = []
+    state = server._build_default_client_state()
+    state.update({
+        "active_profile": "HUMAN",
+        "api_token_type": "pat",
+        "api_token": "pat-token",
+        "ws_connected": True,
+        "ws_transport_connected": True,
+        "ws": _DummyWs(),
+        "current_symbol": "R_10",
+        "human_symbol": "R_10",
+        "balance": 1000.0,
+        "last_live_balance": 1000.0,
+        "last_known_trade_balance": 1000.0,
+    })
+    req_ids = iter([101, 102])
+
+    monkeypatch.setattr(server, "login_required", lambda: True)
+    monkeypatch.setattr(server, "get_client_state", lambda: ("cid-human-even-odd", state))
+    monkeypatch.setattr(server, "_ensure_trade_socket_ready", lambda *_args, **_kwargs: (True, None))
+    monkeypatch.setattr(server, "_reserve_profile_budget", lambda *_args, **_kwargs: (True, "", {"reservation": len(calls) + 1}))
+    monkeypatch.setattr(server, "_emit_balance_payload", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_new_req_id", lambda: next(req_ids))
+    monkeypatch.setattr(server.socketio, "emit", lambda event, payload=None, room=None: emitted.append((event, payload, room)))
+
+    def fake_send(client_id, live_state, req_id, payload, stake):
+        calls.append((client_id, req_id, payload, stake))
+        return True, "Trade sent"
+
+    monkeypatch.setattr(server, "_send_trade_payload_with_oauth_proposal", fake_send)
+
+    with server.app.test_request_context("/human_parity_trade", method="POST", json={
+        "side": "EVEN_ODD",
+        "even_stake": 0.35,
+        "odd_stake": 0.70,
+        "symbol": "R_10",
+        "duration": 5,
+        "duration_unit": "t",
+        "mode": "human_parity_martingale:test-run",
+        "batch_id": "batch-1",
+    }):
+        response = server.human_parity_trade_route()
+
+    data = response.get_json()
+    assert data["status"] == "success"
+    assert data["placed"] == ["EVEN", "ODD"]
+    assert [call[1] for call in calls] == [101, 102]
+    assert [call[3] for call in calls] == [0.35, 0.70]
+    assert [call[2]["parameters"]["contract_type"] for call in calls] == ["DIGITEVEN", "DIGITODD"]
+    assert state["ws"].messages == []
