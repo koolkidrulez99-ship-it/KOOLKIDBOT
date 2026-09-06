@@ -1372,6 +1372,7 @@ body.mobile-only-ui #profileContainer .unchain-history-grid{
             <div class="api-left">
                 <div id="apiConnectForm" style="display:flex; flex-wrap:wrap; align-items:center; gap:10px; width:100%;">
                     <input id="token" placeholder="Enter API Token" type="password" style="flex:0 1 210px; min-width:180px; max-width:240px;">
+                    <select id="patAccountSelect" style="display:none; flex:0 1 210px; min-width:180px; max-width:240px;"></select>
                     <button id="connectBtn" onclick="connect()" style="background:#38bdf8;">Connect</button>
                     <a href="/deriv/oauth/start" class="deriv-login-btn" data-deriv-login-source="dashboard" onclick="return startDerivOAuthLogin(event, this);">Login with Deriv</a>
                     <div id="derivOAuthDebugLine" style="flex-basis:100%; font-size:11px; color:#93c5fd; display:none;"></div>
@@ -1381,6 +1382,8 @@ body.mobile-only-ui #profileContainer .unchain-history-grid{
                         <span id="apiConnectedIcon" aria-hidden="true">🔑</span>
                         <span id="apiConnectedText">API CONNECTED SUCCESSFULLY</span>
                     </div>
+                    <select id="patConnectedAccountSelect" title="Switch PAT account" style="display:none; flex:0 1 210px; min-width:180px; max-width:240px;"></select>
+                    <button id="patAccountSwitchBtn" onclick="switchPatAccount()" style="display:none; background:#22c55e;">Switch Account</button>
                     <button id="disconnectBtn" onclick="disconnect()" style="background:#ef4444;">Disconnect</button>
                 </div>
                 <div id="marketPickerRow" style="display:flex; flex-direction:column; align-items:flex-start; gap:6px; width:100%; max-width:320px; margin-top:10px;">
@@ -2471,11 +2474,14 @@ const accountDashboard = document.getElementById("accountDashboard");
 const profileTitle = document.getElementById("profileTitle");
 const apiConnectForm = document.getElementById("apiConnectForm");
 const tokenInputEl = document.getElementById("token");
+const patAccountSelectEl = document.getElementById("patAccountSelect");
 const connectBtnEl = document.getElementById("connectBtn");
 const apiConnectedPanel = document.getElementById("apiConnectedPanel");
 const apiConnectedMessage = document.getElementById("apiConnectedMessage");
 const apiConnectedIcon = document.getElementById("apiConnectedIcon");
 const apiConnectedText = document.getElementById("apiConnectedText");
+const patConnectedAccountSelectEl = document.getElementById("patConnectedAccountSelect");
+const patAccountSwitchBtnEl = document.getElementById("patAccountSwitchBtn");
 const apiStatusRow = document.getElementById("apiStatusRow");
 
 const tradeStore = { KOOLKID: [], JOKERJOE: [], HUMAN: [], UNCHAIN: [], NTT: [] };
@@ -2527,6 +2533,8 @@ let apiConnectPendingUntil = 0;
 let apiConnectSubmitting = false;
 let apiConnectRequestSeq = 0;
 let latestApiConnectionState = {};
+let patAccountSelectionActive = false;
+let patAccountSwitchSubmitting = false;
 let globalObservedTickCount = 0;
 const API_CONNECT_POLL_INTERVAL_MS = 2000;
 const API_CONNECT_POLL_MAX_ATTEMPTS = 180;
@@ -2881,6 +2889,7 @@ function updateApiConnectionUi(mode, message){
     const isPending = stateMode === "pending";
     if(apiConnectForm) apiConnectForm.style.display = isConnected || isPending ? "none" : "flex";
     if(tokenInputEl) tokenInputEl.style.display = "";
+    if(patAccountSelectEl) patAccountSelectEl.style.display = patAccountSelectionActive && !isConnected && !isPending ? "" : "none";
     if(connectBtnEl) connectBtnEl.style.display = "";
     if(apiConnectedPanel) apiConnectedPanel.style.display = isConnected || isPending ? "flex" : "none";
     if(apiStatusRow) apiStatusRow.style.display = "block";
@@ -2897,6 +2906,7 @@ function updateApiConnectionUi(mode, message){
         apiConnectedMessage.style.fontSize = isConnected ? "13px" : "13px";
         apiConnectedMessage.style.fontWeight = isConnected ? "700" : "700";
     }
+    updatePatConnectedAccountSwitch(latestApiConnectionState || {}, isConnected);
 }
 
 function isAuthApiErrorMessage(message){
@@ -3412,6 +3422,110 @@ function clearApiTokenInputAfterConnect(reason){
     }
 }
 
+function resetPatAccountSelection(){
+    patAccountSelectionActive = false;
+    if(patAccountSelectEl){
+        patAccountSelectEl.style.display = "none";
+        patAccountSelectEl.innerHTML = "";
+    }
+    if(tokenInputEl) tokenInputEl.style.display = "";
+}
+
+function showPatAccountSelection(accounts){
+    const list = Array.isArray(accounts) ? accounts : [];
+    if(!patAccountSelectEl || !list.length) return;
+    patAccountSelectionActive = true;
+    patAccountSelectEl.innerHTML = "";
+    list.forEach((account)=>{
+        const accountId = String((account && account.account_id) || "").trim();
+        if(!accountId) return;
+        const option = document.createElement("option");
+        option.value = accountId;
+        const kind = String((account && account.account_kind) || (account && account.is_virtual ? "Demo" : "Real")).trim();
+        const currency = String((account && account.currency) || "").trim();
+        option.textContent = `${accountId}${kind ? " - " + kind : ""}${currency ? " - " + currency : ""}`;
+        patAccountSelectEl.appendChild(option);
+    });
+    if(tokenInputEl){
+        tokenInputEl.value = "";
+        tokenInputEl.style.display = "none";
+    }
+    if(apiConnectForm) apiConnectForm.style.display = "flex";
+    if(apiConnectedPanel) apiConnectedPanel.style.display = "none";
+    patAccountSelectEl.style.display = "";
+    apiStatus.innerText = "Select account";
+    apiStatus.className = "blue";
+}
+
+function formatPatAccountOption(account){
+    const accountId = String((account && account.account_id) || "").trim();
+    const kind = String((account && account.account_kind) || (account && account.is_virtual ? "Demo" : "Real")).trim();
+    const currency = String((account && account.currency) || "").trim();
+    return `${accountId}${kind ? " - " + kind : ""}${currency ? " - " + currency : ""}`;
+}
+
+function getPatAccountsFromConnectionState(data){
+    const list = data && Array.isArray(data.pat_accounts) ? data.pat_accounts : [];
+    return list.filter((account)=> String((account && account.account_id) || "").trim());
+}
+
+function updatePatConnectedAccountSwitch(data, connected){
+    if(!patConnectedAccountSelectEl || !patAccountSwitchBtnEl) return;
+    const state = data || latestApiConnectionState || {};
+    const mode = String(state.connection_mode || "").toLowerCase();
+    const accounts = getPatAccountsFromConnectionState(state);
+    const currentAccountId = String(state.pat_current_account_id || state.loginid || "").trim();
+    const show = !!connected && mode === "pat" && accounts.length > 1;
+    if(!show){
+        patConnectedAccountSelectEl.style.display = "none";
+        patAccountSwitchBtnEl.style.display = "none";
+        patAccountSwitchBtnEl.disabled = false;
+        return;
+    }
+    const signature = accounts.map((account)=>[
+        String(account.account_id || ""),
+        String(account.account_kind || ""),
+        String(account.currency || "")
+    ].join(":")).join("|");
+    if(patConnectedAccountSelectEl.dataset.accountsSignature !== signature){
+        patConnectedAccountSelectEl.innerHTML = "";
+        accounts.forEach((account)=>{
+            const accountId = String((account && account.account_id) || "").trim();
+            if(!accountId) return;
+            const option = document.createElement("option");
+            option.value = accountId;
+            option.textContent = formatPatAccountOption(account);
+            patConnectedAccountSelectEl.appendChild(option);
+        });
+        patConnectedAccountSelectEl.dataset.accountsSignature = signature;
+    }
+    const optionValues = Array.from(patConnectedAccountSelectEl.options).map((option)=>option.value);
+    const selectedBeforeSync = String(patConnectedAccountSelectEl.value || "").trim();
+    const previousCurrentAccountId = String(patConnectedAccountSelectEl.dataset.currentAccountId || "").trim();
+    if(
+        currentAccountId
+        && optionValues.includes(currentAccountId)
+        && (
+            !selectedBeforeSync
+            || !optionValues.includes(selectedBeforeSync)
+            || previousCurrentAccountId !== currentAccountId
+        )
+    ){
+        patConnectedAccountSelectEl.value = currentAccountId;
+    }
+    patConnectedAccountSelectEl.dataset.currentAccountId = currentAccountId;
+    const selected = String(patConnectedAccountSelectEl.value || "").trim();
+    patConnectedAccountSelectEl.style.display = "";
+    patAccountSwitchBtnEl.style.display = "";
+    patAccountSwitchBtnEl.disabled = !!patAccountSwitchSubmitting || !selected || selected === currentAccountId;
+}
+
+if(patConnectedAccountSelectEl){
+    patConnectedAccountSelectEl.addEventListener("change", ()=>{
+        updatePatConnectedAccountSwitch(latestApiConnectionState || {}, apiConnected);
+    });
+}
+
 function isApiTradeReadyPayload(data){
     if(!data) return false;
     const keys = ["can_trade", "trade_ready", "authorized", "ws_authorized"];
@@ -3485,6 +3599,7 @@ function applyApiConnectionState(data){
         clearApiConnectPending("connected_state_success");
         stopApiConnectPolling();
         clearApiTokenInputAfterConnect("connected_state_success");
+        resetPatAccountSelection();
         apiStatus.innerText = "Connected";
         apiStatus.className = "green";
         updateApiConnectionUi("connected", "API CONNECTED SUCCESSFULLY");
@@ -3515,6 +3630,7 @@ function applyApiConnectionState(data){
 
     clearApiConnectPending("disconnected_state_applied");
     stopApiConnectPolling();
+    resetPatAccountSelection();
     apiStatus.innerText = "Not Connected";
     apiStatus.className = "red";
     updateApiConnectionUi("disconnected");
@@ -7578,7 +7694,8 @@ async function connect(){
     }
     const tokenInput = document.getElementById("token");
     const token = tokenInput ? tokenInput.value : "";
-    if(!token.trim()){
+    const selectedPatAccountId = patAccountSelectionActive && patAccountSelectEl ? String(patAccountSelectEl.value || "").trim() : "";
+    if(!token.trim() && !selectedPatAccountId){
         showToast("Enter an API token first", "error");
         return;
     }
@@ -7594,7 +7711,8 @@ async function connect(){
     apiStatus.className = "blue";
     try{
         console.info("TEMP api_connect_requested", { request_id: connectRequestId });
-        const res = await fetch("/set_token", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token})});
+        const payload = selectedPatAccountId ? {account_id: selectedPatAccountId} : {token};
+        const res = await fetch("/set_token", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
         const data = await res.json().catch(()=>({}));
         if(!res.ok){
             clearApiConnectPending("set_token_failed");
@@ -7605,6 +7723,14 @@ async function connect(){
             console.info("TEMP connect_error_emitted", { request_id: connectRequestId, status: res.status, data });
             return;
         }
+        if(data && data.pat_account_selection_required){
+            clearApiConnectPending("pat_account_selection_required");
+            showPatAccountSelection(data.accounts || []);
+            showToast(data.message || "Select a Deriv Options account to continue", "info");
+            console.info("TEMP pat_account_selection_required", { request_id: connectRequestId, account_count: (data.accounts || []).length });
+            return;
+        }
+        resetPatAccountSelection();
         startApiConnectPolling();
         setTimeout(() => { refreshApiConnectionState(true).catch(() => {}); }, 150);
     }catch(err){
@@ -7619,6 +7745,75 @@ async function connect(){
     }
 }
 
+async function switchPatAccount(){
+    if(patAccountSwitchSubmitting){
+        showToast("PAT account switch is already starting...", "info");
+        return;
+    }
+    if(!apiConnected){
+        showToast("Wait for API Connected before switching accounts", "error");
+        return;
+    }
+    const accountId = patConnectedAccountSelectEl ? String(patConnectedAccountSelectEl.value || "").trim() : "";
+    const currentAccountId = String((latestApiConnectionState && latestApiConnectionState.pat_current_account_id) || "").trim();
+    if(!accountId){
+        showToast("Select a PAT account first", "error");
+        return;
+    }
+    if(accountId === currentAccountId){
+        showToast("Already connected to that PAT account", "info");
+        updatePatConnectedAccountSwitch(latestApiConnectionState || {}, apiConnected);
+        return;
+    }
+    const switchRequestId = ++apiConnectRequestSeq;
+    const wasApiConnected = !!apiConnected;
+    patAccountSwitchSubmitting = true;
+    apiConnected = false;
+    clientExitDisconnectSent = false;
+    markClientActivity();
+    startClientHeartbeat();
+    updatePatConnectedAccountSwitch(latestApiConnectionState || {}, apiConnected);
+    setApiConnectPending("pat_account_switch", API_CONNECT_PENDING_TIMEOUT_MS);
+    updateApiConnectionUi("pending", "SWITCHING PAT ACCOUNT...");
+    apiStatus.innerText = "Switching account...";
+    apiStatus.className = "blue";
+    try{
+        console.info("TEMP pat_account_switch_requested", { request_id: switchRequestId, account_id: accountId });
+        const res = await fetch("/switch_pat_account", {
+            method:"POST",
+            headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({account_id: accountId})
+        });
+        const data = await res.json().catch(()=>({}));
+        if(!res.ok){
+            clearApiConnectPending("pat_account_switch_failed");
+            apiConnected = wasApiConnected;
+            apiStatus.innerText = wasApiConnected ? "Connected" : "Not Connected";
+            apiStatus.className = wasApiConnected ? "green" : "red";
+            updateApiConnectionUi(wasApiConnected ? "connected" : "disconnected", wasApiConnected ? "API CONNECTED SUCCESSFULLY" : "");
+            updatePatConnectedAccountSwitch(latestApiConnectionState || {}, wasApiConnected);
+            showToast(data.message || data.error || "Failed to switch PAT account", "error");
+            console.info("TEMP pat_account_switch_failed", { request_id: switchRequestId, status: res.status, data });
+            return;
+        }
+        latestApiConnectionState = Object.assign({}, latestApiConnectionState || {}, data || {});
+        startApiConnectPolling();
+        setTimeout(() => { refreshApiConnectionState(true).catch(() => {}); }, 150);
+        showToast(data.message || "Switching PAT account...", "info");
+    }catch(err){
+        clearApiConnectPending("pat_account_switch_request_failed");
+        apiConnected = wasApiConnected;
+        apiStatus.innerText = wasApiConnected ? "Connected" : "Not Connected";
+        apiStatus.className = wasApiConnected ? "green" : "red";
+        updateApiConnectionUi(wasApiConnected ? "connected" : "disconnected", wasApiConnected ? "API CONNECTED SUCCESSFULLY" : "");
+        console.error("TEMP pat_account_switch_failed", { request_id: switchRequestId, error: err });
+        showToast((err && err.message) ? err.message : "Failed to switch PAT account", "error");
+    }finally{
+        patAccountSwitchSubmitting = false;
+        updatePatConnectedAccountSwitch(latestApiConnectionState || {}, apiConnected);
+    }
+}
+
 async function disconnect(){
     clearApiConnectPending("manual_disconnect");
     stopApiConnectPolling();
@@ -7628,6 +7823,7 @@ async function disconnect(){
         body: JSON.stringify({reason:"manual_disconnect"}),
     });
     clearBotTransientState();
+    resetPatAccountSelection();
 
     apiStatus.innerText = "Disconnected";
     apiStatus.className = "red";

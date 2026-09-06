@@ -29,6 +29,13 @@
     return Number.isFinite(num) ? `$${Math.abs(num).toFixed(2)}` : "—";
   }
 
+  function signedMoney(value, payload){
+    const num = Number(value || 0);
+    if(!Number.isFinite(num)) return "-";
+    const sign = num < 0 ? "-" : "";
+    return `${sign}${money(Math.abs(num), payload)}`;
+  }
+
   function byId(id){ return document.getElementById(id); }
   function rootExists(){ return !!byId("humanRiseFallCard"); }
   function isActive(){
@@ -153,7 +160,9 @@
   };
   const HUMAN_RF_MARTINGALE_STATE = {
     direction: "RISE",
+    doBothTrades: false,
     enabled: false,
+    batchId: "",
     step: 1,
     riseDoubleCount: 0,
     fallDoubleCount: 0,
@@ -169,9 +178,35 @@
     riseStake: 0.35,
     fallStake: 0.35,
     multiplier: 2,
+    sessionPnl: 0,
+    takeProfit: 0,
+    stopLoss: 0,
+    limitHit: false,
     running: false,
     stopRequested: false,
     restartTimer: null,
+    spacingWait: 0,
+    lastResult: "none",
+    status: "Ready",
+  };
+  const HUMAN_DUAL_MARTINGALE_STATE = {
+    enabled: false,
+    running: false,
+    inProgress: false,
+    runId: "",
+    batchId: "",
+    startStakeA: 0.35,
+    startStakeB: 0.35,
+    stakeA: 0.35,
+    stakeB: 0.35,
+    multiplier: 2,
+    takeProfit: 0,
+    stopLoss: 0,
+    sessionPnl: 0,
+    limitHit: false,
+    stopRequested: false,
+    pending: {},
+    settledCount: 0,
     spacingWait: 0,
     lastResult: "none",
     status: "Ready",
@@ -769,7 +804,22 @@
       }else if(!HUMAN_RF_MARTINGALE_STATE.inProgress){
         HUMAN_RF_MARTINGALE_STATE.status = "Next round starting";
         updateHumanRfMartingalePanel();
+        if(HUMAN_RF_MARTINGALE_STATE.restartTimer){
+          clearTimeout(HUMAN_RF_MARTINGALE_STATE.restartTimer);
+          HUMAN_RF_MARTINGALE_STATE.restartTimer = null;
+        }
         placeHumanRfMartingaleTrade({ continuation: true });
+      }
+    }
+    if(HUMAN_DUAL_MARTINGALE_STATE.running && HUMAN_DUAL_MARTINGALE_STATE.spacingWait > 0){
+      HUMAN_DUAL_MARTINGALE_STATE.spacingWait = Math.max(0, HUMAN_DUAL_MARTINGALE_STATE.spacingWait - 1);
+      if(HUMAN_DUAL_MARTINGALE_STATE.spacingWait > 0){
+        HUMAN_DUAL_MARTINGALE_STATE.status = `Waiting ${HUMAN_DUAL_MARTINGALE_STATE.spacingWait} tick(s) before next round`;
+        updateHumanDualMarketPanel();
+      }else if(!HUMAN_DUAL_MARTINGALE_STATE.inProgress){
+        HUMAN_DUAL_MARTINGALE_STATE.status = "Next round starting";
+        updateHumanDualMarketPanel();
+        humanDualMarketPlaceBoth({ continuation: true });
       }
     }
   }
@@ -1734,10 +1784,132 @@
     return payload;
   }
 
+  function readHumanDualMartingaleNumber(id, fallback, min, max){
+    const el = byId(id);
+    let value = Number(el && el.value);
+    if(!Number.isFinite(value)) value = fallback;
+    if(Number.isFinite(min)) value = Math.max(min, value);
+    if(Number.isFinite(max)) value = Math.min(max, value);
+    return value;
+  }
+
+  function readHumanDualMartingaleSettings(){
+    const multiplier = Number(readHumanDualMartingaleNumber("humanDualMartingaleMultiplier", 2, 1, 100).toFixed(2));
+    const takeProfit = Number(readHumanDualMartingaleNumber("humanDualMartingaleTp", 0, 0, 100000000).toFixed(2));
+    const stopLoss = Number(readHumanDualMartingaleNumber("humanDualMartingaleSl", 0, 0, 100000000).toFixed(2));
+    const tickSpacing = readHumanTickSpacing("humanDualMartingaleTickSpacing", 1);
+    const multEl = byId("humanDualMartingaleMultiplier");
+    const tpEl = byId("humanDualMartingaleTp");
+    const slEl = byId("humanDualMartingaleSl");
+    const spacingEl = byId("humanDualMartingaleTickSpacing");
+    if(spacingEl) spacingEl.value = String(tickSpacing);
+    return { multiplier, takeProfit, stopLoss, tickSpacing };
+  }
+
+  function isHumanDualTpSlEnabled(){
+    const settings = readHumanDualMartingaleSettings();
+    return Number(settings.takeProfit || 0) > 0 || Number(settings.stopLoss || 0) > 0;
+  }
+
+  function resetHumanDualMartingaleRun(legs, settings){
+    const st = HUMAN_DUAL_MARTINGALE_STATE;
+    const legA = legs && legs[0] ? legs[0] : readHumanDualLeg("A");
+    const legB = legs && legs[1] ? legs[1] : readHumanDualLeg("B");
+    st.runId = `hdm_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
+    st.startStakeA = Number(Math.max(0.35, Number(legA.stake || 0.35)).toFixed(2));
+    st.startStakeB = Number(Math.max(0.35, Number(legB.stake || 0.35)).toFixed(2));
+    st.stakeA = st.startStakeA;
+    st.stakeB = st.startStakeB;
+    st.multiplier = settings.multiplier;
+    st.takeProfit = settings.takeProfit;
+    st.stopLoss = settings.stopLoss;
+    st.sessionPnl = 0;
+    st.limitHit = false;
+    st.stopRequested = false;
+    st.pending = {};
+    st.settledCount = 0;
+    st.spacingWait = 0;
+    st.lastResult = "none";
+    st.status = "Ready";
+  }
+
+  function applyHumanDualMartingaleStakes(legs){
+    const st = HUMAN_DUAL_MARTINGALE_STATE;
+    return (legs || []).map((leg, index) => Object.assign({}, leg, {
+      stake: Number(Math.max(0.35, Number(index === 0 ? st.stakeA : st.stakeB) || 0.35).toFixed(2)),
+    }));
+  }
+
+  function applyHumanDualTpSlAfterResult(profitValue){
+    const st = HUMAN_DUAL_MARTINGALE_STATE;
+    const profit = Number(profitValue);
+    if(Number.isFinite(profit)){
+      st.sessionPnl = Number((Number(st.sessionPnl || 0) + profit).toFixed(2));
+    }
+    if(st.limitHit) return true;
+    const settings = readHumanDualMartingaleSettings();
+    st.takeProfit = settings.takeProfit;
+    st.stopLoss = settings.stopLoss;
+    let reason = "";
+    if(settings.takeProfit > 0 && Number(st.sessionPnl || 0) >= settings.takeProfit){
+      reason = `TP reached at ${signedMoney(st.sessionPnl)}`;
+    }else if(settings.stopLoss > 0 && Number(st.sessionPnl || 0) <= -Math.abs(settings.stopLoss)){
+      reason = `SL reached at ${signedMoney(st.sessionPnl)}`;
+    }
+    if(!reason) return false;
+    st.running = false;
+    st.enabled = false;
+    st.stopRequested = true;
+    st.spacingWait = 0;
+    st.limitHit = true;
+    st.status = `${reason}. Martingale stopped.`;
+    if(typeof showToast === "function"){
+      const toastType = settings.takeProfit > 0 && Number(st.sessionPnl || 0) >= settings.takeProfit ? "success" : "error";
+      showToast(`HUMAN Dual Market ${reason}. Martingale stopped.`, toastType);
+    }
+    return true;
+  }
+
+  function toggleHumanDualMartingale(){
+    const st = HUMAN_DUAL_MARTINGALE_STATE;
+    st.enabled = !st.enabled;
+    if(st.enabled){
+      const settings = readHumanDualMartingaleSettings();
+      const legs = [readHumanDualLeg("A"), readHumanDualLeg("B")];
+      resetHumanDualMartingaleRun(legs, settings);
+      st.enabled = true;
+      st.status = "Ready";
+    }else{
+      quickStopHumanDualMartingale("Dual Market martingale stopped.");
+      return;
+    }
+    updateHumanDualMarketPanel();
+  }
+
+  function quickStopHumanDualMartingale(reason){
+    const st = HUMAN_DUAL_MARTINGALE_STATE;
+    st.running = false;
+    st.inProgress = false;
+    st.enabled = false;
+    st.stopRequested = true;
+    st.limitHit = false;
+    st.spacingWait = 0;
+    st.pending = {};
+    st.settledCount = 0;
+    st.batchId = "";
+    st.status = reason || "Stopped";
+    updateHumanDualMarketPanel();
+  }
+
   function updateHumanDualMarketPanel(){
     const status = byId("humanDualMarketStatus");
     const btn = byId("humanDualMarketPlaceBtn");
-    if(!status && !btn) return;
+    const stopBtn = byId("humanDualMarketQuickStopBtn");
+    if(!status && !btn && !stopBtn) return;
+    const settings = readHumanDualMartingaleSettings();
+    HUMAN_DUAL_MARTINGALE_STATE.multiplier = settings.multiplier;
+    HUMAN_DUAL_MARTINGALE_STATE.takeProfit = settings.takeProfit;
+    HUMAN_DUAL_MARTINGALE_STATE.stopLoss = settings.stopLoss;
     let message = "Ready. High/Low Tick uses selected tick; the other contracts use duration.";
     let color = "#94a3b8";
     try{
@@ -1746,33 +1918,83 @@
       const labelA = HUMAN_DUAL_MARKET_LABELS[a.action] || a.action.replaceAll("_", " ");
       const labelB = HUMAN_DUAL_MARKET_LABELS[b.action] || b.action.replaceAll("_", " ");
       const totalStake = Number(a.stake || 0) + Number(b.stake || 0);
-      message = `${a.symbol} ${labelA} + ${b.symbol} ${labelB} • Total stake $${totalStake.toFixed(2)}`;
-      if(a.symbol && b.symbol && a.symbol === b.symbol){
-        message = "Choose two different markets for Dual Market Contracts.";
-        color = "#fbbf24";
+      const pending = Object.keys(HUMAN_DUAL_MARTINGALE_STATE.pending || {}).length;
+      const limitLine = [
+        settings.takeProfit > 0 ? `TP ${money(settings.takeProfit)}` : "TP off",
+        settings.stopLoss > 0 ? `SL ${money(settings.stopLoss)}` : "SL off",
+        `Session P/L ${signedMoney(HUMAN_DUAL_MARTINGALE_STATE.sessionPnl || 0)}`,
+      ].join(" • ");
+      if(HUMAN_DUAL_MARTINGALE_STATE.enabled || HUMAN_DUAL_MARTINGALE_STATE.running || HUMAN_DUAL_MARTINGALE_STATE.inProgress){
+        message = [
+          `${HUMAN_DUAL_MARTINGALE_STATE.status || "Ready"} • Dual Market Martingale • ${settings.multiplier}x`,
+          `A ${a.symbol} ${labelA} stake ${money(HUMAN_DUAL_MARTINGALE_STATE.stakeA || a.stake)} • B ${b.symbol} ${labelB} stake ${money(HUMAN_DUAL_MARTINGALE_STATE.stakeB || b.stake)}`,
+          `${limitLine} • Pending: ${pending || "none"} • Last result: ${HUMAN_DUAL_MARTINGALE_STATE.lastResult || "none"}`,
+        ].join("<br>");
+        color = HUMAN_DUAL_MARTINGALE_STATE.limitHit || HUMAN_DUAL_MARTINGALE_STATE.inProgress ? "#fbbf24" : "#94a3b8";
+      }else{
+        message = `${a.symbol} ${labelA} + ${b.symbol} ${labelB} • Total stake $${totalStake.toFixed(2)} • ${settings.multiplier}x martingale ready`;
       }
     }catch(e){
       message = e.message || message;
       color = "#fca5a5";
     }
     if(status){
-      status.textContent = message;
+      status.innerHTML = message;
       status.style.color = color;
     }
     if(btn){
-      btn.disabled = false;
-      btn.style.opacity = "1";
-      btn.style.cursor = "pointer";
+      btn.disabled = HUMAN_DUAL_MARTINGALE_STATE.inProgress || HUMAN_DUAL_MARTINGALE_STATE.running;
+      btn.style.opacity = btn.disabled ? "0.55" : "1";
+      btn.style.cursor = btn.disabled ? "not-allowed" : "pointer";
+    }
+    const toggleBtn = byId("humanDualMartingaleToggleBtn");
+    if(toggleBtn){
+      toggleBtn.textContent = `MARTINGALE: ${HUMAN_DUAL_MARTINGALE_STATE.enabled ? "ON" : "OFF"}`;
+      toggleBtn.style.background = HUMAN_DUAL_MARTINGALE_STATE.enabled ? "#f59e0b" : "#334155";
+      toggleBtn.style.color = HUMAN_DUAL_MARTINGALE_STATE.enabled ? "#111827" : "#f8fafc";
+    }
+    if(stopBtn){
+      const canStop = HUMAN_DUAL_MARTINGALE_STATE.running || HUMAN_DUAL_MARTINGALE_STATE.inProgress;
+      stopBtn.disabled = !canStop;
+      stopBtn.style.opacity = canStop ? "1" : "0.55";
+      stopBtn.style.cursor = canStop ? "pointer" : "not-allowed";
     }
   }
 
-  async function humanDualMarketPlaceBoth(){
+  async function humanDualMarketPlaceBoth(options){
+    const opts = options || {};
     const btn = byId("humanDualMarketPlaceBtn");
     try{
       populateHumanDualMarketSelects();
-      const legs = [readHumanDualLeg("A"), readHumanDualLeg("B")];
+      let legs = [readHumanDualLeg("A"), readHumanDualLeg("B")];
       if(!legs[0].symbol || !legs[1].symbol) throw new Error("Select both markets first.");
-      if(legs[0].symbol === legs[1].symbol) throw new Error("Choose two different markets for this mode.");
+      const martingaleOn = !!HUMAN_DUAL_MARTINGALE_STATE.enabled;
+      const settings = readHumanDualMartingaleSettings();
+      if(martingaleOn && !opts.continuation && !HUMAN_DUAL_MARTINGALE_STATE.running){
+        resetHumanDualMartingaleRun(legs, settings);
+        HUMAN_DUAL_MARTINGALE_STATE.enabled = true;
+        HUMAN_DUAL_MARTINGALE_STATE.running = true;
+        HUMAN_DUAL_MARTINGALE_STATE.stopRequested = false;
+      }
+      if(martingaleOn){
+        if(HUMAN_DUAL_MARTINGALE_STATE.limitHit || HUMAN_DUAL_MARTINGALE_STATE.stopRequested) return;
+        HUMAN_DUAL_MARTINGALE_STATE.inProgress = true;
+        HUMAN_DUAL_MARTINGALE_STATE.batchId = `HUMAN-DUAL-${HUMAN_DUAL_MARTINGALE_STATE.runId || Date.now()}-${Date.now()}`;
+        HUMAN_DUAL_MARTINGALE_STATE.pending = {};
+        HUMAN_DUAL_MARTINGALE_STATE.settledCount = 0;
+        legs = applyHumanDualMartingaleStakes(legs);
+        legs.forEach((leg, index) => {
+          const side = index === 0 ? "A" : "B";
+          HUMAN_DUAL_MARTINGALE_STATE.pending[side] = {
+            legIndex: index + 1,
+            action: leg.action,
+            symbol: leg.symbol,
+            stake: leg.stake,
+            result: "",
+          };
+        });
+        HUMAN_DUAL_MARTINGALE_STATE.status = "Running";
+      }
       const totalStake = legs.reduce((sum, leg) => sum + Number(leg.stake || 0), 0);
       const maxDuration = legs.reduce((maxVal, leg) => Math.max(maxVal, Number(leg.duration_ticks || 0)), 0);
       if(btn){
@@ -1789,21 +2011,47 @@
         duration: maxDuration || 1,
         duration_unit: "t",
         batch_count: 2,
-      }, () => postJSON("/human_dual_market_contracts", { legs }));
-      if(isMarthaBlocked(data)) return;
+      }, () => postJSON("/human_dual_market_contracts", {
+        legs,
+        batch_id: martingaleOn ? HUMAN_DUAL_MARTINGALE_STATE.batchId : undefined,
+      }));
+      if(isMarthaBlocked(data)){
+        if(martingaleOn){
+          HUMAN_DUAL_MARTINGALE_STATE.inProgress = false;
+          HUMAN_DUAL_MARTINGALE_STATE.running = false;
+          HUMAN_DUAL_MARTINGALE_STATE.pending = {};
+          HUMAN_DUAL_MARTINGALE_STATE.status = "Stopped";
+        }
+        return;
+      }
       if(!data || (data.status !== "success" && data.status !== "partial")){
         throw new Error((data && (data.error || data.message)) || "Dual Market Contracts failed");
       }
+      if(martingaleOn && data.batch_id){
+        HUMAN_DUAL_MARTINGALE_STATE.batchId = String(data.batch_id);
+      }
       const toastType = data.status === "success" ? "success" : "warn";
-      if(typeof showToast === "function") showToast(data.message || "Dual Market Contracts sent", toastType);
+      if(typeof showToast === "function"){
+        showToast(
+          martingaleOn
+            ? `HUMAN Dual Market martingale sent: A ${money(legs[0].stake)} + B ${money(legs[1].stake)}`
+            : (data.message || "Dual Market Contracts sent"),
+          toastType
+        );
+      }
       await fetchHumanRFStatus();
     }catch(e){
+      HUMAN_DUAL_MARTINGALE_STATE.inProgress = false;
+      HUMAN_DUAL_MARTINGALE_STATE.running = false;
+      HUMAN_DUAL_MARTINGALE_STATE.stopRequested = true;
+      HUMAN_DUAL_MARTINGALE_STATE.pending = {};
+      HUMAN_DUAL_MARTINGALE_STATE.status = "Stopped";
       if(typeof showToast === "function") showToast(e.message || "Dual Market Contracts failed", "error");
     }finally{
       if(btn){
-        btn.disabled = false;
-        btn.style.opacity = "1";
-        btn.style.cursor = "pointer";
+        btn.disabled = HUMAN_DUAL_MARTINGALE_STATE.inProgress || HUMAN_DUAL_MARTINGALE_STATE.running;
+        btn.style.opacity = btn.disabled ? "0.55" : "1";
+        btn.style.cursor = btn.disabled ? "not-allowed" : "pointer";
       }
       updateHumanDualMarketPanel();
     }
@@ -2176,8 +2424,12 @@
     const startStake = direction === "FALL" ? fallStake : riseStake;
     const multiplier = Math.max(1, readHumanRfMartingaleNumber("humanRfMartingaleMultiplier", 2, 1, 100));
     const tickSpacing = readHumanTickSpacing("humanRfMartingaleTickSpacing", 1);
-    const maxSteps = Math.max(1, Math.floor(readHumanRfMartingaleNumber("humanRfMartingaleMaxSteps", 8, 1, 1000)));
+    const maxSteps = Math.max(1, Math.floor(readHumanRfMartingaleNumber("humanRfMartingaleMaxSteps", 80, 1, 1000)));
     const doubleLimit = Math.max(0, Math.floor(readHumanRfMartingaleNumber("humanRfMartingaleDoubleLimit", 0, 0, 1000000)));
+    const takeProfit = Number(readHumanRfMartingaleNumber("humanRfMartingaleTp", 0, 0, 100000000).toFixed(2));
+    const stopLoss = Number(readHumanRfMartingaleNumber("humanRfMartingaleSl", 0, 0, 100000000).toFixed(2));
+    const doBothEl = byId("humanRfMartingaleDoBothTrades");
+    const doBothTrades = !!(doBothEl && doBothEl.checked && (direction === "RISE" || direction === "FALL"));
     const capRaw = byId("humanRfMartingaleMaxStake");
     const maxStakeValue = capRaw && String(capRaw.value || "").trim() !== ""
       ? Math.max(0.35, Number(capRaw.value))
@@ -2186,7 +2438,19 @@
     if(directionEl) directionEl.value = direction;
     const spacingEl = byId("humanRfMartingaleTickSpacing");
     if(spacingEl) spacingEl.value = String(tickSpacing);
-    return { direction, duration, durationUnit, startStake, riseStake, fallStake, multiplier, tickSpacing, maxSteps, maxStake, doubleLimit };
+    return { direction, duration, durationUnit, startStake, riseStake, fallStake, multiplier, tickSpacing, maxSteps, maxStake, doubleLimit, takeProfit, stopLoss, doBothTrades };
+  }
+
+  function isHumanRfTpSlEnabled(){
+    const settings = readHumanRfMartingaleSettings();
+    return Number(settings.takeProfit || 0) > 0 || Number(settings.stopLoss || 0) > 0;
+  }
+
+  function resetHumanRfMartingaleSession(settings){
+    HUMAN_RF_MARTINGALE_STATE.sessionPnl = 0;
+    HUMAN_RF_MARTINGALE_STATE.takeProfit = settings.takeProfit;
+    HUMAN_RF_MARTINGALE_STATE.stopLoss = settings.stopLoss;
+    HUMAN_RF_MARTINGALE_STATE.limitHit = false;
   }
 
   function humanRfMartingaleStakeForStep(stepValue){
@@ -2207,6 +2471,9 @@
   function updateHumanRfMartingalePanel(){
     const settings = readHumanRfMartingaleSettings();
     HUMAN_RF_MARTINGALE_STATE.direction = settings.direction;
+    HUMAN_RF_MARTINGALE_STATE.doBothTrades = settings.doBothTrades;
+    HUMAN_RF_MARTINGALE_STATE.takeProfit = settings.takeProfit;
+    HUMAN_RF_MARTINGALE_STATE.stopLoss = settings.stopLoss;
     const toggleBtn = byId("humanRfMartingaleToggleBtn");
     if(toggleBtn){
       toggleBtn.textContent = `MARTINGALE: ${HUMAN_RF_MARTINGALE_STATE.enabled ? "ON" : "OFF"}`;
@@ -2228,27 +2495,41 @@
     }
     const status = byId("humanRfMartingaleStatus");
     if(status){
-      if(settings.direction === "BOTH" || settings.direction === "BOTH_EQUALS"){
+      const doBothPair = !!settings.doBothTrades;
+      if(settings.direction === "BOTH" || settings.direction === "BOTH_EQUALS" || doBothPair){
         if(!HUMAN_RF_MARTINGALE_STATE.running && !HUMAN_RF_MARTINGALE_STATE.inProgress){
-          HUMAN_RF_MARTINGALE_STATE.riseBaseStake = settings.riseStake;
-          HUMAN_RF_MARTINGALE_STATE.fallBaseStake = settings.fallStake;
-          HUMAN_RF_MARTINGALE_STATE.riseStake = settings.riseStake;
-          HUMAN_RF_MARTINGALE_STATE.fallStake = settings.fallStake;
+          const doBothStake = settings.startStake;
+          HUMAN_RF_MARTINGALE_STATE.riseBaseStake = doBothPair ? doBothStake : settings.riseStake;
+          HUMAN_RF_MARTINGALE_STATE.fallBaseStake = doBothPair ? doBothStake : settings.fallStake;
+          HUMAN_RF_MARTINGALE_STATE.riseStake = doBothPair ? doBothStake : settings.riseStake;
+          HUMAN_RF_MARTINGALE_STATE.fallStake = doBothPair ? doBothStake : settings.fallStake;
           HUMAN_RF_MARTINGALE_STATE.multiplier = settings.multiplier;
         }
-        const pairLabel = settings.direction === "BOTH_EQUALS" ? "Rise + Fall Equals" : "Rise + Fall";
+        const pairLabel = doBothPair
+          ? `${settings.direction} + ${settings.direction === "RISE" ? "FALL" : "RISE"} same settings`
+          : (settings.direction === "BOTH_EQUALS" ? "Rise + Fall Equals" : "Rise + Fall");
         const limitLabel = settings.doubleLimit > 0 ? ` • Limit ${settings.doubleLimit} double-up${settings.doubleLimit === 1 ? "" : "s"}` : "";
         const durationLabel = `${settings.duration} ${settings.durationUnit === "s" ? "sec" : "tick"}${settings.duration === 1 ? "" : "s"}`;
-        status.textContent = `${HUMAN_RF_MARTINGALE_STATE.status}. ${pairLabel} • ${durationLabel} • ${settings.multiplier}x${limitLabel} • Rise stake $${humanRfPairStakeForDirection("RISE").toFixed(2)} • Fall stake $${humanRfPairStakeForDirection("FALL").toFixed(2)} • Last result: ${HUMAN_RF_MARTINGALE_STATE.lastResult}`;
+        const limits = [
+          settings.takeProfit > 0 ? `TP ${money(settings.takeProfit)}` : "TP off",
+          settings.stopLoss > 0 ? `SL ${money(settings.stopLoss)}` : "SL off",
+          `Session P/L ${signedMoney(HUMAN_RF_MARTINGALE_STATE.sessionPnl || 0)}`,
+        ].join(" • ");
+        status.textContent = `${HUMAN_RF_MARTINGALE_STATE.status}. ${pairLabel} • ${durationLabel} • ${settings.multiplier}x${limitLabel} • Rise stake $${humanRfPairStakeForDirection("RISE").toFixed(2)} • Fall stake $${humanRfPairStakeForDirection("FALL").toFixed(2)} • ${limits} • Last result: ${HUMAN_RF_MARTINGALE_STATE.lastResult}`;
       }else{
         const currentStake = humanRfMartingaleStakeForStep();
         const nextStep = nextHumanLimitedMartingaleStep(HUMAN_RF_MARTINGALE_STATE.step, settings);
         const nextStake = HUMAN_RF_MARTINGALE_STATE.enabled ? humanRfMartingaleStakeForStep(nextStep) : settings.startStake;
         const limitLabel = settings.doubleLimit > 0 ? ` • Limit ${settings.doubleLimit} double-up${settings.doubleLimit === 1 ? "" : "s"}` : "";
         const durationLabel = `${settings.duration} ${settings.durationUnit === "s" ? "sec" : "tick"}${settings.duration === 1 ? "" : "s"}`;
-        status.textContent = `${HUMAN_RF_MARTINGALE_STATE.status}. ${settings.direction} • ${durationLabel}${limitLabel} • Step ${HUMAN_RF_MARTINGALE_STATE.step} • Current stake $${currentStake.toFixed(2)} • Next stake $${nextStake.toFixed(2)} • Last result: ${HUMAN_RF_MARTINGALE_STATE.lastResult}`;
+        const limits = [
+          settings.takeProfit > 0 ? `TP ${money(settings.takeProfit)}` : "TP off",
+          settings.stopLoss > 0 ? `SL ${money(settings.stopLoss)}` : "SL off",
+          `Session P/L ${signedMoney(HUMAN_RF_MARTINGALE_STATE.sessionPnl || 0)}`,
+        ].join(" • ");
+        status.textContent = `${HUMAN_RF_MARTINGALE_STATE.status}. ${settings.direction} • ${durationLabel}${limitLabel} • Step ${HUMAN_RF_MARTINGALE_STATE.step} • Current stake $${currentStake.toFixed(2)} • Next stake $${nextStake.toFixed(2)} • ${limits} • Last result: ${HUMAN_RF_MARTINGALE_STATE.lastResult}`;
       }
-      status.style.color = HUMAN_RF_MARTINGALE_STATE.inProgress ? "#fbbf24" : "#94a3b8";
+      status.style.color = HUMAN_RF_MARTINGALE_STATE.limitHit || HUMAN_RF_MARTINGALE_STATE.inProgress ? "#fbbf24" : "#94a3b8";
     }
   }
 
@@ -2265,6 +2546,7 @@
       HUMAN_RF_MARTINGALE_STATE.step = 1;
       HUMAN_RF_MARTINGALE_STATE.riseDoubleCount = 0;
       HUMAN_RF_MARTINGALE_STATE.fallDoubleCount = 0;
+      resetHumanRfMartingaleSession(readHumanRfMartingaleSettings());
       HUMAN_RF_MARTINGALE_STATE.status = "Ready";
       HUMAN_RF_MARTINGALE_STATE.lastResult = "none";
     }else{
@@ -2276,12 +2558,35 @@
 
   function clearHumanRfMartingalePending(){
     HUMAN_RF_MARTINGALE_STATE.inProgress = false;
+    HUMAN_RF_MARTINGALE_STATE.batchId = "";
     HUMAN_RF_MARTINGALE_STATE.pendingDirection = "";
     HUMAN_RF_MARTINGALE_STATE.pendingDirections = {};
     HUMAN_RF_MARTINGALE_STATE.settledCount = 0;
     HUMAN_RF_MARTINGALE_STATE.pendingContractId = "";
     HUMAN_RF_MARTINGALE_STATE.pendingMartingale = false;
     HUMAN_RF_MARTINGALE_STATE.pendingStake = 0;
+  }
+
+  function scheduleHumanRfMartingaleRound(){
+    const st = HUMAN_RF_MARTINGALE_STATE;
+    if(!st.running || !st.enabled || st.stopRequested || st.inProgress || st.limitHit) return;
+    if(st.restartTimer){
+      clearTimeout(st.restartTimer);
+      st.restartTimer = null;
+    }
+    const spacing = readHumanTickSpacing("humanRfMartingaleTickSpacing", 1);
+    st.spacingWait = spacing;
+    st.status = `Waiting ${spacing} tick(s) before next round`;
+    updateHumanRfMartingalePanel();
+    const delayMs = Math.max(1400, spacing * 1400);
+    st.restartTimer = setTimeout(() => {
+      st.restartTimer = null;
+      if(!st.running || !st.enabled || st.stopRequested || st.inProgress || st.limitHit) return;
+      st.spacingWait = 0;
+      st.status = "Next round starting";
+      updateHumanRfMartingalePanel();
+      placeHumanRfMartingaleTrade({ continuation: true });
+    }, delayMs);
   }
 
   function quickStopHumanRfMartingale(reason){
@@ -2293,6 +2598,7 @@
     HUMAN_RF_MARTINGALE_STATE.stopRequested = true;
     HUMAN_RF_MARTINGALE_STATE.enabled = false;
     HUMAN_RF_MARTINGALE_STATE.spacingWait = 0;
+    HUMAN_RF_MARTINGALE_STATE.limitHit = false;
     HUMAN_RF_MARTINGALE_STATE.riseDoubleCount = 0;
     HUMAN_RF_MARTINGALE_STATE.fallDoubleCount = 0;
     clearHumanRfMartingalePending();
@@ -2300,33 +2606,77 @@
     updateHumanRfMartingalePanel();
   }
 
+  function reconcileHumanRfPairPlacementResponse(data){
+    const st = HUMAN_RF_MARTINGALE_STATE;
+    if(!st.inProgress || !isHumanRfPairDirection(st.pendingDirection)) return true;
+    const placedRaw = Array.isArray(data && data.placed) ? data.placed : [];
+    let placed = placedRaw.map((item) => normalizeHumanRfDirection(item)).filter(Boolean);
+    if(!placed.length){
+      if(data && data.rise_ok) placed.push("RISE");
+      if(data && data.fall_ok) placed.push("FALL");
+    }
+    placed = Array.from(new Set(placed));
+    if(data && data.batch_id) st.batchId = String(data.batch_id);
+    if(placed.length >= 2) return true;
+    const nextPending = {};
+    placed.forEach((direction) => {
+      if(st.pendingDirections && st.pendingDirections[direction]){
+        nextPending[direction] = st.pendingDirections[direction];
+      }
+    });
+    st.pendingDirections = nextPending;
+    st.settledCount = 0;
+    if(!placed.length){
+      clearHumanRfMartingalePending();
+      st.running = true;
+      st.enabled = true;
+      st.stopRequested = false;
+      st.status = `${(data && (data.message || data.error)) || "Both Rise/Fall legs failed."} Retrying next round.`;
+      scheduleHumanRfMartingaleRound();
+      return false;
+    }
+    st.running = true;
+    st.enabled = true;
+    st.stopRequested = false;
+    st.status = `Partial pair sent (${placed.length}/2). Settling placed leg, then next round will retry both.`;
+    return false;
+  }
+
   async function placeHumanRfMartingaleTrade(options){
     const opts = options || {};
     if(HUMAN_RF_MARTINGALE_STATE.inProgress) return;
     const settings = readHumanRfMartingaleSettings();
-    if((settings.direction === "BOTH" || settings.direction === "BOTH_EQUALS") && HUMAN_RF_MARTINGALE_STATE.enabled && !opts.continuation){
-      HUMAN_RF_MARTINGALE_STATE.riseBaseStake = settings.riseStake;
-      HUMAN_RF_MARTINGALE_STATE.fallBaseStake = settings.fallStake;
-      HUMAN_RF_MARTINGALE_STATE.riseStake = settings.riseStake;
-      HUMAN_RF_MARTINGALE_STATE.fallStake = settings.fallStake;
+    const sameSettingsPairMode = !!settings.doBothTrades;
+    const selectedPairStake = HUMAN_RF_MARTINGALE_STATE.enabled ? humanRfMartingaleStakeForStep() : settings.startStake;
+    if((sameSettingsPairMode || settings.direction === "BOTH" || settings.direction === "BOTH_EQUALS") && HUMAN_RF_MARTINGALE_STATE.enabled && !opts.continuation){
+      HUMAN_RF_MARTINGALE_STATE.riseBaseStake = sameSettingsPairMode ? settings.startStake : settings.riseStake;
+      HUMAN_RF_MARTINGALE_STATE.fallBaseStake = sameSettingsPairMode ? settings.startStake : settings.fallStake;
+      HUMAN_RF_MARTINGALE_STATE.riseStake = sameSettingsPairMode ? selectedPairStake : settings.riseStake;
+      HUMAN_RF_MARTINGALE_STATE.fallStake = sameSettingsPairMode ? selectedPairStake : settings.fallStake;
       HUMAN_RF_MARTINGALE_STATE.multiplier = settings.multiplier;
     }
-    const pairMode = settings.direction === "BOTH" || settings.direction === "BOTH_EQUALS";
+    const pairMode = sameSettingsPairMode || settings.direction === "BOTH" || settings.direction === "BOTH_EQUALS";
     const allowEquals = settings.direction === "BOTH_EQUALS";
-    const pairPlan = pairMode
+    const pairPlan = sameSettingsPairMode
       ? [
         { direction: "RISE", stake: humanRfPairStakeForDirection("RISE") },
         { direction: "FALL", stake: humanRfPairStakeForDirection("FALL") },
       ]
-      : [];
-    const stake = HUMAN_RF_MARTINGALE_STATE.enabled ? humanRfMartingaleStakeForStep() : settings.startStake;
+      : (pairMode ? [
+        { direction: "RISE", stake: humanRfPairStakeForDirection("RISE") },
+        { direction: "FALL", stake: humanRfPairStakeForDirection("FALL") },
+      ] : []);
+    const stake = selectedPairStake;
     if(HUMAN_RF_MARTINGALE_STATE.enabled && !opts.continuation){
+      resetHumanRfMartingaleSession(settings);
       HUMAN_RF_MARTINGALE_STATE.running = true;
       HUMAN_RF_MARTINGALE_STATE.stopRequested = false;
     }
+    if(HUMAN_RF_MARTINGALE_STATE.limitHit || HUMAN_RF_MARTINGALE_STATE.stopRequested && opts.continuation) return;
     HUMAN_RF_MARTINGALE_STATE.inProgress = true;
     HUMAN_RF_MARTINGALE_STATE.spacingWait = 0;
-    HUMAN_RF_MARTINGALE_STATE.pendingDirection = settings.direction;
+    HUMAN_RF_MARTINGALE_STATE.batchId = pairMode ? `HUMAN-RF-${Date.now()}-${Math.floor(Math.random() * 10000)}` : "";
+    HUMAN_RF_MARTINGALE_STATE.pendingDirection = sameSettingsPairMode ? "BOTH" : settings.direction;
     HUMAN_RF_MARTINGALE_STATE.pendingDirections = {};
     HUMAN_RF_MARTINGALE_STATE.settledCount = 0;
     pairPlan.forEach((leg) => { HUMAN_RF_MARTINGALE_STATE.pendingDirections[leg.direction] = { stake: leg.stake, result: "" }; });
@@ -2348,16 +2698,27 @@
           duration_unit: settings.durationUnit,
           batch_count: 2,
         }, async () => {
+          const riseLeg = pairPlan.find((leg) => leg.direction === "RISE") || pairPlan[0];
+          const fallLeg = pairPlan.find((leg) => leg.direction === "FALL") || pairPlan[1] || pairPlan[0];
           return postJSON("/human_auto_rise_fall", {
-            rise_stake: pairPlan[0].stake,
-            fall_stake: pairPlan[1].stake,
+            rise_stake: riseLeg.stake,
+            fall_stake: fallLeg.stake,
             duration_ticks: settings.duration,
             duration_unit: settings.durationUnit,
             allow_equals: allowEquals,
+            batch_id: HUMAN_RF_MARTINGALE_STATE.batchId,
           });
         });
         if(isMarthaBlocked(data)) throw new Error("Trade blocked");
-        if(typeof showToast === "function") showToast(`HUMAN ${allowEquals ? "Rise + Fall Equals" : "Rise + Fall"} martingale sent: RISE $${pairPlan[0].stake.toFixed(2)} + FALL $${pairPlan[1].stake.toFixed(2)}`, "success");
+        const fullPairPlaced = reconcileHumanRfPairPlacementResponse(data);
+        if(typeof showToast === "function"){
+          showToast(
+            fullPairPlaced
+              ? `HUMAN ${allowEquals ? "Rise + Fall Equals" : "Rise + Fall"} martingale sent: RISE $${pairPlan[0].stake.toFixed(2)} + FALL $${pairPlan[1].stake.toFixed(2)}`
+              : (data && (data.message || data.error)) || "HUMAN Rise/Fall pair partially sent",
+            fullPairPlaced ? "success" : "warn"
+          );
+        }
       }else{
         const payload = {
           direction: settings.direction,
@@ -2380,11 +2741,20 @@
         if(typeof showToast === "function") showToast(`HUMAN ${settings.direction} martingale sent at $${stake.toFixed(2)}`, "success");
       }
     }catch(e){
-      HUMAN_RF_MARTINGALE_STATE.running = false;
-      HUMAN_RF_MARTINGALE_STATE.stopRequested = true;
-      clearHumanRfMartingalePending();
-      HUMAN_RF_MARTINGALE_STATE.status = "Stopped";
-      if(typeof showToast === "function") showToast(e.message || "HUMAN Rise/Fall martingale trade failed", "error");
+      const message = (e && e.message) || "HUMAN Rise/Fall martingale trade failed";
+      if(pairMode && HUMAN_RF_MARTINGALE_STATE.enabled && !HUMAN_RF_MARTINGALE_STATE.limitHit && message !== "Trade blocked"){
+        clearHumanRfMartingalePending();
+        HUMAN_RF_MARTINGALE_STATE.running = true;
+        HUMAN_RF_MARTINGALE_STATE.stopRequested = false;
+        HUMAN_RF_MARTINGALE_STATE.status = `${message}. Retrying next round.`;
+        scheduleHumanRfMartingaleRound();
+      }else{
+        HUMAN_RF_MARTINGALE_STATE.running = false;
+        HUMAN_RF_MARTINGALE_STATE.stopRequested = true;
+        clearHumanRfMartingalePending();
+        HUMAN_RF_MARTINGALE_STATE.status = "Stopped";
+      }
+      if(typeof showToast === "function") showToast(message, "error");
     }finally{
       updateHumanRfMartingalePanel();
     }
@@ -2653,8 +3023,53 @@
     return value === "BOTH" || value === "BOTH_EQUALS";
   }
 
+  function isHumanDualMarketPayload(payload){
+    return !!(
+      payload
+      && String(payload.profile || "").toUpperCase() === PROFILE
+      && String(payload.mode || "").toLowerCase() === "human_dual_market_contracts"
+    );
+  }
+
+  function matchHumanDualPendingSide(payload){
+    const st = HUMAN_DUAL_MARTINGALE_STATE;
+    if(!isHumanDualMarketPayload(payload) || !st.pending) return "";
+    const batchId = String(payload.dual_market_batch_id || payload.batch_id || "");
+    if(batchId && st.batchId && batchId !== st.batchId) return "";
+    const legIndex = Number(payload.dual_market_leg_index || payload.leg_index);
+    if(legIndex === 1 && st.pending.A) return "A";
+    if(legIndex === 2 && st.pending.B) return "B";
+    const contractId = payload.contract_id || payload.buy_contract_id || payload.id;
+    if(contractId){
+      const contractKey = String(contractId);
+      const byContract = Object.keys(st.pending).find((side) => {
+        const item = st.pending[side];
+        return item && String(item.contractId || "") === contractKey;
+      });
+      if(byContract) return byContract;
+    }
+    const action = String(payload.action || payload.leg_action || payload.type || "").toUpperCase();
+    const symbol = String(payload.symbol || "").trim();
+    return Object.keys(st.pending).find((side) => {
+      const item = st.pending[side];
+      return item && !item.result && !item.contractId && String(item.action || "").toUpperCase() === action && String(item.symbol || "").trim() === symbol;
+    }) || "";
+  }
+
+  function rememberHumanDualMarketTrade(payload){
+    const st = HUMAN_DUAL_MARTINGALE_STATE;
+    if(!st.inProgress || !isHumanDualMarketPayload(payload)) return;
+    const contractId = payload.contract_id || payload.buy_contract_id || payload.id;
+    if(!contractId) return;
+    const side = matchHumanDualPendingSide(payload);
+    if(!side || !st.pending || !st.pending[side]) return;
+    st.pending[side].contractId = String(contractId);
+    updateHumanDualMarketPanel();
+  }
+
   function rememberHumanSpecialTrade(payload){
     if(!payload || String(payload.profile || "").toUpperCase() !== PROFILE) return;
+    rememberHumanDualMarketTrade(payload);
     const activeCycle = HUMAN_SPECIAL_AUTO_STATE.running || HUMAN_SPECIAL_AUTO_STATE.firing || HUMAN_SPECIAL_AUTO_STATE.pendingCount > 0 || HUMAN_SPECIAL_AUTO_STATE.expectedCount > 0;
     const action = normalizeHumanSpecialAction([payload.pair_action, payload.action, payload.leg_action, payload.type, payload.contract_type, payload.label].filter(Boolean).join(" "))
       || (activeCycle ? (HUMAN_SPECIAL_AUTO_STATE.localOrderActions[Object.keys(HUMAN_SPECIAL_AUTO_STATE.cycleContractActions || {}).length] || "") : "");
@@ -2702,11 +3117,13 @@
       }
     }
     const rfDirection = resolveHumanRfPayloadDirection(payload);
+    const rfBatchId = String(payload.batch_id || payload.batchId || "");
     if(
       rfDirection
       && contractId
       && HUMAN_RF_MARTINGALE_STATE.inProgress
       && !HUMAN_RF_MARTINGALE_STATE.pendingContractId
+      && (!rfBatchId || !HUMAN_RF_MARTINGALE_STATE.batchId || rfBatchId === HUMAN_RF_MARTINGALE_STATE.batchId)
       && (
         rfDirection === HUMAN_RF_MARTINGALE_STATE.pendingDirection
         || (isHumanRfPairDirection(HUMAN_RF_MARTINGALE_STATE.pendingDirection) && HUMAN_RF_MARTINGALE_STATE.pendingDirections && HUMAN_RF_MARTINGALE_STATE.pendingDirections[rfDirection])
@@ -2877,12 +3294,109 @@
     updateHumanSingleMartingalePanel();
   }
 
+  function updateHumanDualMarketMartingaleFromResult(payload){
+    const st = HUMAN_DUAL_MARTINGALE_STATE;
+    if(!st.inProgress && !st.running) return;
+    if(!isHumanDualMarketPayload(payload)) return;
+    const side = matchHumanDualPendingSide(payload);
+    if(!side || !st.pending || !st.pending[side]) return;
+    const pending = st.pending[side];
+    if(pending.result) return;
+    const outcome = resolveHumanTradeOutcome(payload);
+    if(!outcome) return;
+    pending.result = outcome;
+    const stake = Math.max(0.35, Number(pending.stake || (side === "A" ? st.stakeA : st.stakeB) || 0.35));
+    const resultProfit = humanTradeNumber(payload, ["profit", "profit_value", "pnl", "net_profit", "result_profit"]);
+    const limitReached = applyHumanDualTpSlAfterResult(resultProfit);
+    const settings = readHumanDualMartingaleSettings();
+    if(outcome === "WIN"){
+      if(side === "A") st.stakeA = Number((st.startStakeA || 0.35).toFixed(2));
+      if(side === "B") st.stakeB = Number((st.startStakeB || 0.35).toFixed(2));
+    }else{
+      const next = Number((stake * Math.max(1, Number(settings.multiplier || st.multiplier || 2))).toFixed(2));
+      if(side === "A") st.stakeA = Number(Math.max(0.35, next).toFixed(2));
+      if(side === "B") st.stakeB = Number(Math.max(0.35, next).toFixed(2));
+    }
+    st.lastResult = `${side} ${outcome} at ${money(stake)}`;
+    st.settledCount = Object.values(st.pending || {}).filter((item) => item && item.result).length;
+    const expected = Object.keys(st.pending || {}).length;
+    if(!st.limitHit){
+      st.status = st.running ? `Running. Settled ${st.settledCount}/${expected}.` : "Stopped";
+    }
+    updateHumanDualMarketPanel();
+    if(expected > 0 && st.settledCount >= expected){
+      const allWon = Object.values(st.pending || {}).every((item) => item && item.result === "WIN");
+      st.pending = {};
+      st.settledCount = 0;
+      st.inProgress = false;
+      st.batchId = "";
+      if(limitReached || st.limitHit){
+        updateHumanDualMarketPanel();
+        return;
+      }
+      if(st.running && !st.stopRequested){
+        if(!isHumanDualTpSlEnabled() && allWon){
+          st.running = false;
+          st.enabled = false;
+          st.status = "Both legs won. Martingale stopped.";
+          if(typeof showToast === "function") showToast("HUMAN Dual Market martingale won and stopped", "success");
+          updateHumanDualMarketPanel();
+          return;
+        }
+        const spacing = readHumanTickSpacing("humanDualMartingaleTickSpacing", 1);
+        st.spacingWait = spacing;
+        st.status = `Waiting ${spacing} tick(s) before next round`;
+        updateHumanDualMarketPanel();
+      }else{
+        st.status = "Ready";
+        updateHumanDualMarketPanel();
+      }
+    }
+  }
+
+  function applyHumanRfTpSlAfterResult(profitValue){
+    const st = HUMAN_RF_MARTINGALE_STATE;
+    if(!st.pendingMartingale && !st.running) return false;
+    const profit = Number(profitValue);
+    if(Number.isFinite(profit)){
+      st.sessionPnl = Number((Number(st.sessionPnl || 0) + profit).toFixed(2));
+    }
+    if(st.limitHit) return true;
+    const settings = readHumanRfMartingaleSettings();
+    st.takeProfit = settings.takeProfit;
+    st.stopLoss = settings.stopLoss;
+    let reason = "";
+    if(settings.takeProfit > 0 && Number(st.sessionPnl || 0) >= settings.takeProfit){
+      reason = `TP reached at ${signedMoney(st.sessionPnl)}`;
+    }else if(settings.stopLoss > 0 && Number(st.sessionPnl || 0) <= -Math.abs(settings.stopLoss)){
+      reason = `SL reached at ${signedMoney(st.sessionPnl)}`;
+    }
+    if(!reason) return false;
+    st.running = false;
+    st.enabled = false;
+    st.stopRequested = true;
+    st.spacingWait = 0;
+    st.limitHit = true;
+    st.status = `${reason}. Martingale stopped.`;
+    if(st.restartTimer){
+      clearTimeout(st.restartTimer);
+      st.restartTimer = null;
+    }
+    if(typeof showToast === "function"){
+      const toastType = settings.takeProfit > 0 && Number(st.sessionPnl || 0) >= settings.takeProfit ? "success" : "error";
+      showToast(`HUMAN Rise/Fall ${reason}. Martingale stopped.`, toastType);
+    }
+    return true;
+  }
+
   function updateHumanRfMartingaleFromResult(payload){
     if(!payload || String(payload.profile || "").toUpperCase() !== PROFILE) return;
     if(!HUMAN_RF_MARTINGALE_STATE.inProgress && !HUMAN_RF_MARTINGALE_STATE.pendingContractId) return;
     const contractId = payload.contract_id || payload.buy_contract_id || payload.id;
     const direction = resolveHumanRfPayloadDirection(payload);
     if(isHumanRfPairDirection(HUMAN_RF_MARTINGALE_STATE.pendingDirection)){
+      const batchId = String(payload.batch_id || payload.batchId || "");
+      if(batchId && HUMAN_RF_MARTINGALE_STATE.batchId && batchId !== HUMAN_RF_MARTINGALE_STATE.batchId) return;
       if(!direction || !HUMAN_RF_MARTINGALE_STATE.pendingDirections || !HUMAN_RF_MARTINGALE_STATE.pendingDirections[direction]) return;
       const pendingLeg = HUMAN_RF_MARTINGALE_STATE.pendingDirections[direction];
       if(pendingLeg.result) return;
@@ -2892,6 +3406,8 @@
       pendingLeg.result = outcome;
       HUMAN_RF_MARTINGALE_STATE.settledCount = Object.values(HUMAN_RF_MARTINGALE_STATE.pendingDirections || {}).filter((item) => item && item.result).length;
       const stake = Math.max(0.35, Number(pendingLeg.stake || humanRfPairStakeForDirection(direction)));
+      const resultProfit = humanTradeNumber(payload, ["profit", "profit_value", "pnl", "net_profit", "result_profit"]);
+      const limitReached = applyHumanRfTpSlAfterResult(resultProfit);
       if(outcome === "WIN"){
         if(direction === "RISE") HUMAN_RF_MARTINGALE_STATE.riseStake = Number((HUMAN_RF_MARTINGALE_STATE.riseBaseStake || 0.35).toFixed(2));
         if(direction === "FALL") HUMAN_RF_MARTINGALE_STATE.fallStake = Number((HUMAN_RF_MARTINGALE_STATE.fallBaseStake || 0.35).toFixed(2));
@@ -2901,8 +3417,9 @@
         const settings = readHumanRfMartingaleSettings();
         const countKey = direction === "FALL" ? "fallDoubleCount" : "riseDoubleCount";
         const limit = Math.max(0, Math.floor(Number(settings.doubleLimit || 0) || 0));
+        const maxDoubleCount = Math.max(0, Math.floor(Number(settings.maxSteps || 1) || 1) - 1);
         const currentCount = Math.max(0, Math.floor(Number(HUMAN_RF_MARTINGALE_STATE[countKey] || 0) || 0));
-        if(limit > 0 && currentCount >= limit){
+        if((limit > 0 && currentCount >= limit) || currentCount >= maxDoubleCount){
           if(direction === "RISE") HUMAN_RF_MARTINGALE_STATE.riseStake = Number((HUMAN_RF_MARTINGALE_STATE.riseBaseStake || settings.riseStake || 0.35).toFixed(2));
           if(direction === "FALL") HUMAN_RF_MARTINGALE_STATE.fallStake = Number((HUMAN_RF_MARTINGALE_STATE.fallBaseStake || settings.fallStake || 0.35).toFixed(2));
           HUMAN_RF_MARTINGALE_STATE[countKey] = 0;
@@ -2916,20 +3433,21 @@
       }
       HUMAN_RF_MARTINGALE_STATE.lastResult = `${direction} ${outcome} at ${money(stake)}`;
       const expected = Object.keys(HUMAN_RF_MARTINGALE_STATE.pendingDirections || {}).length;
-      HUMAN_RF_MARTINGALE_STATE.status = HUMAN_RF_MARTINGALE_STATE.running ? `Running. Settled ${HUMAN_RF_MARTINGALE_STATE.settledCount}/${expected}.` : "Stopped";
+      if(!HUMAN_RF_MARTINGALE_STATE.limitHit){
+        HUMAN_RF_MARTINGALE_STATE.status = HUMAN_RF_MARTINGALE_STATE.running ? `Running. Settled ${HUMAN_RF_MARTINGALE_STATE.settledCount}/${expected}.` : "Stopped";
+      }
       updateHumanRfMartingalePanel();
       if(expected > 0 && HUMAN_RF_MARTINGALE_STATE.settledCount >= expected){
         HUMAN_RF_MARTINGALE_STATE.inProgress = false;
         HUMAN_RF_MARTINGALE_STATE.pendingDirections = {};
         HUMAN_RF_MARTINGALE_STATE.settledCount = 0;
+        if(limitReached || HUMAN_RF_MARTINGALE_STATE.limitHit){
+          updateHumanRfMartingalePanel();
+          return;
+        }
         HUMAN_RF_MARTINGALE_STATE.status = HUMAN_RF_MARTINGALE_STATE.running ? "Next round queued" : "Ready";
         updateHumanRfMartingalePanel();
-        if(HUMAN_RF_MARTINGALE_STATE.running && !HUMAN_RF_MARTINGALE_STATE.stopRequested){
-          const spacing = readHumanTickSpacing("humanRfMartingaleTickSpacing", 1);
-          HUMAN_RF_MARTINGALE_STATE.spacingWait = spacing;
-          HUMAN_RF_MARTINGALE_STATE.status = `Waiting ${spacing} tick(s) before next round`;
-          updateHumanRfMartingalePanel();
-        }
+        scheduleHumanRfMartingaleRound();
       }
       return;
     }
@@ -2942,28 +3460,35 @@
     if(!outcome) return;
 
     const wasMartingaleTrade = !!HUMAN_RF_MARTINGALE_STATE.pendingMartingale;
+    const resultProfit = humanTradeNumber(payload, ["profit", "profit_value", "pnl", "net_profit", "result_profit"]);
+    const limitReached = applyHumanRfTpSlAfterResult(resultProfit);
+    const waitForTpSl = isHumanRfTpSlEnabled();
     clearHumanRfMartingalePending();
+    if(limitReached || HUMAN_RF_MARTINGALE_STATE.limitHit){
+      updateHumanRfMartingalePanel();
+      return;
+    }
     if(won){
       HUMAN_RF_MARTINGALE_STATE.step = 1;
       HUMAN_RF_MARTINGALE_STATE.riseDoubleCount = 0;
       HUMAN_RF_MARTINGALE_STATE.fallDoubleCount = 0;
-      HUMAN_RF_MARTINGALE_STATE.running = false;
-      HUMAN_RF_MARTINGALE_STATE.stopRequested = false;
-      HUMAN_RF_MARTINGALE_STATE.enabled = false;
       HUMAN_RF_MARTINGALE_STATE.lastResult = "WIN";
-      HUMAN_RF_MARTINGALE_STATE.status = wasMartingaleTrade ? "Reset" : "Ready";
+      if(wasMartingaleTrade && waitForTpSl && HUMAN_RF_MARTINGALE_STATE.enabled){
+        HUMAN_RF_MARTINGALE_STATE.status = "Running";
+        scheduleHumanRfMartingaleRound();
+      }else{
+        HUMAN_RF_MARTINGALE_STATE.running = false;
+        HUMAN_RF_MARTINGALE_STATE.stopRequested = false;
+        HUMAN_RF_MARTINGALE_STATE.enabled = false;
+        HUMAN_RF_MARTINGALE_STATE.status = wasMartingaleTrade ? "Reset" : "Ready";
+      }
     }else if(lost){
       HUMAN_RF_MARTINGALE_STATE.lastResult = "LOSS";
       if(wasMartingaleTrade && HUMAN_RF_MARTINGALE_STATE.enabled){
         const settings = readHumanRfMartingaleSettings();
         HUMAN_RF_MARTINGALE_STATE.step = nextHumanLimitedMartingaleStep(HUMAN_RF_MARTINGALE_STATE.step, settings);
         HUMAN_RF_MARTINGALE_STATE.status = "Running";
-        if(HUMAN_RF_MARTINGALE_STATE.running && !HUMAN_RF_MARTINGALE_STATE.stopRequested){
-          if(HUMAN_RF_MARTINGALE_STATE.restartTimer) clearTimeout(HUMAN_RF_MARTINGALE_STATE.restartTimer);
-          const spacing = readHumanTickSpacing("humanRfMartingaleTickSpacing", 1);
-          HUMAN_RF_MARTINGALE_STATE.spacingWait = spacing;
-          HUMAN_RF_MARTINGALE_STATE.status = `Waiting ${spacing} tick(s) before next round`;
-        }
+        scheduleHumanRfMartingaleRound();
       }else{
         HUMAN_RF_MARTINGALE_STATE.status = "Ready";
       }
@@ -3142,6 +3667,7 @@
         bind("trade_placed", rememberHumanSpecialTrade);
         bind("trade_result", updateHumanSpecialMartingaleFromResult);
         bind("trade_result", updateHumanSingleMartingaleFromResult);
+        bind("trade_result", updateHumanDualMarketMartingaleFromResult);
         bind("trade_result", updateHumanRfMartingaleFromResult);
         bind("trade_result", updateHumanParityMartingaleFromResult);
         socketHooked = true;
@@ -3164,6 +3690,7 @@
         previous.socket.off("trade_placed", previous.handlers.placed);
         previous.socket.off("trade_result", previous.handlers.specialResult);
         previous.socket.off("trade_result", previous.handlers.singleResult);
+        if(previous.handlers.dualResult) previous.socket.off("trade_result", previous.handlers.dualResult);
         if(previous.handlers.rfResult) previous.socket.off("trade_result", previous.handlers.rfResult);
         if(previous.handlers.parityResult) previous.socket.off("trade_result", previous.handlers.parityResult);
         if(previous.handlers.tickResult) previous.socket.off("tick", previous.handlers.tickResult);
@@ -3180,6 +3707,9 @@
       const singleResult = (payload) => {
         if(payload && String(payload.profile || "").toUpperCase() === PROFILE) updateHumanSingleMartingaleFromResult(payload);
       };
+      const dualResult = (payload) => {
+        if(payload && String(payload.profile || "").toUpperCase() === PROFILE) updateHumanDualMarketMartingaleFromResult(payload);
+      };
       const rfResult = (payload) => {
         if(payload && String(payload.profile || "").toUpperCase() === PROFILE) updateHumanRfMartingaleFromResult(payload);
       };
@@ -3190,9 +3720,10 @@
       liveSocket.on("trade_placed", placed);
       liveSocket.on("trade_result", specialResult);
       liveSocket.on("trade_result", singleResult);
+      liveSocket.on("trade_result", dualResult);
       liveSocket.on("trade_result", rfResult);
       liveSocket.on("trade_result", parityResult);
-      window.__humanSpecialSocketFallback = { socket: liveSocket, handlers: { tickResult, placed, specialResult, singleResult, rfResult, parityResult } };
+      window.__humanSpecialSocketFallback = { socket: liveSocket, handlers: { tickResult, placed, specialResult, singleResult, dualResult, rfResult, parityResult } };
       return true;
     }catch(e){
       return false;
@@ -3372,6 +3903,8 @@
     window.updateHumanDualMarketPanel = updateHumanDualMarketPanel;
     window.setHumanDualStake = setHumanDualStake;
     window.humanDualMarketPlaceBoth = humanDualMarketPlaceBoth;
+    window.toggleHumanDualMartingale = toggleHumanDualMartingale;
+    window.quickStopHumanDualMartingale = quickStopHumanDualMartingale;
     window.refreshHumanManualContracts = refreshHumanManualContracts;
     window.openHumanSpecialAutoPopup = openHumanSpecialAutoPopup;
     window.closeHumanSpecialAutoPopup = closeHumanSpecialAutoPopup;
@@ -3400,6 +3933,7 @@
     startPolling();
     refreshHumanManualContracts(false);
     populateHumanDualMarketSelects();
+    updateHumanDualMarketPanel();
     syncHumanRFAllowEqualsToggle();
     updateHumanSingleMartingalePanel();
     updateHumanRfMartingalePanel();
@@ -3415,6 +3949,7 @@
     startPolling();
     refreshHumanManualContracts(false);
     populateHumanDualMarketSelects();
+    updateHumanDualMarketPanel();
     syncHumanRFAllowEqualsToggle();
     updateHumanSingleMartingalePanel();
     updateHumanRfMartingalePanel();
@@ -3432,6 +3967,7 @@
     }catch(e){}
     refreshHumanManualContracts(false);
     populateHumanDualMarketSelects();
+    updateHumanDualMarketPanel();
     syncHumanRFAllowEqualsToggle();
     updateHumanSingleMartingalePanel();
     updateHumanRfMartingalePanel();

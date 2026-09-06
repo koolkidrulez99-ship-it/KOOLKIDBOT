@@ -7,7 +7,7 @@ from .unchain_barrier import (
     choose_unchain_contract,
     normalize_unchain_direction,
     relevant_unchain_contracts,
-    resolve_unchain_higher_lower_barrier,
+    validate_unchain_higher_lower_barrier,
 )
 
 
@@ -125,16 +125,16 @@ class OAuthDerivTradeEngine:
             if "symbol" in sanitized:
                 removed["symbol"] = sanitized.pop("symbol", None)
             sanitized["underlying_symbol"] = resolved_symbol
-            resolved_barrier = resolve_unchain_higher_lower_barrier(
+            resolved_barrier, barrier_err = validate_unchain_higher_lower_barrier(
                 intent.barrier,
                 unchain_direction,
                 unchain_contract_item,
             )
-            if resolved_barrier in (None, "", "NaN", "nan"):
+            if barrier_err or resolved_barrier in (None, "", "NaN", "nan"):
                 debug["original_payload"] = parameters
                 debug["sanitized_payload"] = sanitized
                 debug["matched_contract"] = unchain_contract_item
-                return self._fail("parameter_sanitizer", "Invalid barrier for UNCHAIN Higher/Lower", client_id, debug, state)
+                return self._fail("parameter_sanitizer", barrier_err or "Invalid barrier for UNCHAIN Higher/Lower", client_id, debug, state)
             sanitized["barrier"] = resolved_barrier
             debug["original_payload"] = parameters
             debug["sanitized_payload"] = sanitized
@@ -155,6 +155,12 @@ class OAuthDerivTradeEngine:
                 d["safe_payload"](parameters),
                 d["safe_payload"](sanitized),
             )
+            d["logger"].info(
+                "[%s] unchain_final_sanitized_proposal_payload side=%s payload=%s",
+                client_id,
+                unchain_direction,
+                d["safe_payload"](sanitized),
+            )
         else:
             sanitized, sanitize_err, sanitize_meta = sanitize_parameters(
                 parameters,
@@ -172,6 +178,25 @@ class OAuthDerivTradeEngine:
             removed = (sanitize_meta or {}).get("removed") or {}
             if removed:
                 debug["removed_fields"] = ",".join(sorted(removed.keys()))
+            if self._is_plain_rise_fall(intent, deriv_contract):
+                plain_removed = {}
+                for key in ("barrier", "barrier2", "prediction", "edge_gap", "edgeGap", "calculated_edge_gap", "calculatedEdgeGap"):
+                    if key in sanitized:
+                        plain_removed[key] = sanitized.pop(key, None)
+                debug["sanitized_payload"] = sanitized
+                debug["resolved_barrier"] = None
+                if plain_removed:
+                    merged_removed = dict(removed or {})
+                    merged_removed.update(plain_removed)
+                    debug["removed_fields"] = ",".join(sorted(merged_removed.keys()))
+                sanitize_err = None
+                d["logger"].info(
+                    "[%s] human_rf_plain_callput_sanitized contract_type=%s removed_fields=%s final_parameters=%s",
+                    client_id,
+                    deriv_contract,
+                    ",".join(sorted(plain_removed.keys())),
+                    d["safe_payload"](sanitized),
+                )
             d["logger"].info(
                 "[%s] oauth_engine_parameters_sanitized original_parameters=%s sanitized_parameters=%s removed_fields=%s resolved_barrier=%s matched_contract=%s",
                 client_id,
@@ -226,10 +251,38 @@ class OAuthDerivTradeEngine:
             proposal_payload = d["proposal_payload_for_connection"](state, {"proposal": 1, "req_id": proposal_req_id, **sanitized})
             debug["proposal_payload"] = proposal_payload
             debug["proposal_attempt"] = attempt + 1
+            if self._is_plain_rise_fall(intent, deriv_contract):
+                d["logger"].info(
+                    "[%s] human_rf_final_proposal_payload direction=%s payload=%s",
+                    client_id,
+                    (intent.req_meta or {}).get("type") or intent.contract_type,
+                    d["safe_payload"](proposal_payload),
+                )
+            if is_unchain_higher_lower:
+                d["logger"].info(
+                    "[%s] unchain_final_proposal_payload direction=%s payload=%s",
+                    client_id,
+                    unchain_direction,
+                    d["safe_payload"](proposal_payload),
+                )
             d["debug_log"](client_id, "oauth_proposal_send", debug)
             proposal, proposal_err = d["request_proposal"](client_id, state, proposal_payload, timeout_sec=5.0)
             debug["proposal_response"] = proposal or {"error": proposal_err}
             debug["proposal_id"] = (proposal or {}).get("id")
+            if is_unchain_higher_lower:
+                d["logger"].info(
+                    "[%s] unchain_deriv_proposal_response direction=%s response=%s",
+                    client_id,
+                    unchain_direction,
+                    d["safe_payload"](debug["proposal_response"]),
+                )
+            if self._is_plain_rise_fall(intent, deriv_contract):
+                d["logger"].info(
+                    "[%s] human_rf_deriv_response direction=%s response=%s",
+                    client_id,
+                    (intent.req_meta or {}).get("type") or intent.contract_type,
+                    d["safe_payload"](debug["proposal_response"]),
+                )
             if proposal_err:
                 break
             if min_profit is None:
@@ -338,6 +391,19 @@ class OAuthDerivTradeEngine:
             return False, str(exc)
         d["logger"].info("[%s] oauth_engine_trade_sent proposal_id=%s buy_payload=%s", client_id, proposal_id, d["safe_payload"](buy_payload))
         return True, "Trade sent"
+
+    def _is_plain_rise_fall(self, intent, deriv_contract):
+        meta = intent.req_meta or {}
+        return bool(
+            str(intent.profile or meta.get("profile") or "").upper().strip() == "HUMAN"
+            and str(deriv_contract or "").upper().strip() in ("CALL", "PUT")
+            and (
+                meta.get("plain_rise_fall") is True
+                or meta.get("no_barrier_contract") is True
+                or str(intent.mode or meta.get("mode") or "").lower().startswith("human_rf")
+                or str(intent.mode or meta.get("mode") or "").lower() in ("human_auto_rise_fall", "human_formula_x")
+            )
+        )
 
     def _fail(self, failed_at, message, client_id, debug, state, cleanup=True):
         debug["error"] = message
