@@ -5393,7 +5393,7 @@ def mutant_js_alias():
 @app.route("/")
 def index():
     if not login_required():
-        return redirect(url_for("login"))
+        return render_template("cover.html")
     if is_admin():
         return redirect(url_for("admin_panel"))
     return render_template(
