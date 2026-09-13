@@ -1,6 +1,7 @@
 from collections import deque, Counter
 from datetime import datetime
 import time
+from bot_modules.trade_history import append_bounded_trade_history
 from strategies.digit_stats import calculate_cold_4_score
 
 SEQVIX_JOKERJOE_MARKETS = [
@@ -935,9 +936,7 @@ class JokerJoeStrategy:
             "symbol": contract.get("underlying", "")
         }
 
-        self.trade_history.append(entry)
-        if len(self.trade_history) > 200:
-            self.trade_history.pop(0)
+        append_bounded_trade_history(self.trade_history, entry)
 
         self.last_trade_entry = entry
 

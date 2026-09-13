@@ -1,6 +1,8 @@
 from collections import deque, Counter
 import time
 
+from bot_modules.trade_history import append_bounded_trade_history
+
 class BaseStrategy:
     def __init__(self):
         self.tick_count = 0
@@ -208,9 +210,7 @@ class BaseStrategy:
             "symbol": contract.get("underlying", "")
         }
 
-        self.trade_history.append(self.last_trade_entry)
-        if len(self.trade_history) > 200:
-            self.trade_history.pop(0)
+        append_bounded_trade_history(self.trade_history, self.last_trade_entry)
 
         self.enforce_tp_sl()
 

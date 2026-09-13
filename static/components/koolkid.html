@@ -321,7 +321,10 @@
                 Contract
                 <select id="koolkidMartingaleAction" onchange="setKoolkidSingleMartingaleAction(this.value)" style="width:100%; min-height:38px;">
                   <option value="UNDER_3">UNDER 3</option>
+                  <option value="UNDER_5">UNDER 5</option>
+                  <option value="UNDER_2">UNDER 2</option>
                   <option value="UNDER_3_OVER_6">UNDER 3 + OVER 6</option>
+                  <option value="UNDER_2_OVER_7">UNDER 2 + OVER 7</option>
                   <option value="OVER_4_UNDER_5">OVER 4 + UNDER 5</option>
                   <option value="OVER_3_OVER_6">OVER 3 + OVER 6</option>
                   <option value="UNDER_4">UNDER 4</option>
@@ -430,6 +433,38 @@
                 <input id="koolkidMartingaleSL" type="number" min="0" step="0.01" value="0" oninput="updateKoolkidSingleMartingalePanel()" style="width:100%; min-height:38px;">
               </label>
             </div>
+            <div id="koolkidMartingaleAdvancedSettings" style="margin-top:8px; display:grid; gap:8px;">
+              <div style="border:1px solid #334155; border-radius:8px; padding:9px; background:#0f172a;">
+                <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;">
+                  <strong style="font-size:12px;">Recovery Mode</strong>
+                  <button id="koolkidRecoveryToggle" type="button" onclick="toggleKoolkidRecoveryMode()" style="background:#334155; min-width:72px;">OFF</button>
+                </div>
+                <div id="koolkidRecoveryControls" style="display:none; margin-top:8px; grid-template-columns:repeat(auto-fit,minmax(135px,1fr)); gap:8px; align-items:end;">
+                  <div style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                    Recovery Trade
+                    <button type="button" onclick="openKoolkidDigitTradePicker('recovery')" style="background:#1e293b;">Choose Recovery Trade</button>
+                    <span id="koolkidRecoverySelected" style="color:#f8fafc;">OVER 4</span>
+                  </div>
+                  <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                    Switch After
+                    <input id="koolkidRecoveryAfter" type="number" min="1" step="1" value="4" oninput="setKoolkidRecoveryAfter(this.value)" style="width:100%; min-height:38px;">
+                  </label>
+                </div>
+              </div>
+              <div style="border:1px solid #334155; border-radius:8px; padding:9px; background:#0f172a;">
+                <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;">
+                  <strong style="font-size:12px;">Switch After Win</strong>
+                  <button id="koolkidSwitchAfterWinToggle" type="button" onclick="toggleKoolkidSwitchAfterWin()" style="background:#334155; min-width:72px;">OFF</button>
+                </div>
+                <div id="koolkidSwitchAfterWinControls" style="display:none; margin-top:8px; grid-template-columns:minmax(135px,240px); gap:8px;">
+                  <div style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                    Next Trade
+                    <button type="button" onclick="openKoolkidDigitTradePicker('switch')" style="background:#1e293b;">Choose Next Trade</button>
+                    <span id="koolkidSwitchAfterWinSelected" style="color:#f8fafc;">OVER 5</span>
+                  </div>
+                </div>
+              </div>
+            </div>
             <div id="koolkidMartingaleStatus" style="margin-top:8px; color:#94a3b8; font-size:12px;">Ready. $0.05 step - Step 1 - Current stake $0.35 - Next stake $0.40 - Last result: none</div>
             <div style="margin-top:8px; display:grid; grid-template-columns:1fr 1fr; gap:8px;">
               <button id="koolkidMartingalePlaceBtn" type="button" onclick="placeKoolkidSingleMartingaleTrade()" style="background:#22c55e; color:#052e16; font-weight:900;">PLACE SELECTED CONTRACT</button>
@@ -438,6 +473,17 @@
             <div id="koolkidMartingaleLifetimeNote" style="margin-top:8px; color:#facc15; font-size:11px;">Lifetime users only.</div>
           </div>
         </details>
+
+        <div id="koolkidDigitTradePicker" onclick="if(event.target===this) closeKoolkidDigitTradePicker()" style="display:none; position:fixed; inset:0; z-index:92; padding:18px; align-items:center; justify-content:center; background:rgba(2,6,23,0.76);">
+          <div style="width:min(420px,100%); background:#0f172a; border:1px solid #334155; border-radius:8px; padding:14px; box-shadow:0 20px 50px rgba(0,0,0,.38);">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
+              <div><strong>Choose Digit Trade</strong><div id="koolkidDigitPickerHint" style="color:#94a3b8; font-size:11px; margin-top:2px;">Choose a digit, then Under or Over.</div></div>
+              <button type="button" onclick="closeKoolkidDigitTradePicker()" aria-label="Close" style="height:34px; min-width:34px; background:#1e293b;">x</button>
+            </div>
+            <div id="koolkidDigitPickerDigits" style="display:grid; grid-template-columns:repeat(5,1fr); gap:7px; margin-top:12px;"></div>
+            <div id="koolkidDigitPickerDirections" style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:12px;"></div>
+          </div>
+        </div>
 
         <div id="koolkidMartingaleCalculatorPopup" onclick="if(event.target===this) closeKoolkidMartingaleCalculator()" style="display:none; position:fixed; inset:0; z-index:91; padding:18px; align-items:center; justify-content:center; background:rgba(2,6,23,0.76);">
           <div style="width:min(500px,100%); background:linear-gradient(180deg,#0f172a,#020617); border:1px solid #334155; border-radius:16px; padding:14px; box-shadow:0 20px 50px rgba(0,0,0,.38);">

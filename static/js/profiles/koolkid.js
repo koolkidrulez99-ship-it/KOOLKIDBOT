@@ -65,6 +65,13 @@
       waitTicksRemaining: 0,
       tickSpacing: 1,
       sessionProfit: 0,
+      cycleAttempt: 0,
+      cycleMainAction: "UNDER_3",
+      switchOriginalAction: "UNDER_3",
+      switchAlternateActive: false,
+      recoveryActive: false,
+      pendingWasRecovery: false,
+      requestGeneration: 0,
       status: "Ready",
       lastResult: "none",
       targetProfit: {
@@ -1056,7 +1063,7 @@
   }
 
   function isKoolkidMonthlySingleMartingaleActionAllowed(action) {
-    return ["UNDER_3", "UNDER_4", "OVER_3", "OVER_4", "OVER_5", "OVER_6", "OVER_7"].includes(String(action || "").toUpperCase());
+    return ["UNDER_2", "UNDER_3", "UNDER_4", "UNDER_5", "OVER_3", "OVER_4", "OVER_5", "OVER_6", "OVER_7"].includes(String(action || "").toUpperCase());
   }
 
   function syncKoolkidMonthlySingleMartingaleUi() {
@@ -1114,6 +1121,20 @@
         ],
       };
     }
+    if (compact === "UNDER_2_OVER_7") {
+      return {
+        action: "UNDER_2_OVER_7",
+        type: "PAIR",
+        barrier: null,
+        label: "UNDER 2 + OVER 7",
+        isPair: true,
+        combinedRound: true,
+        legs: [
+          { action: "UNDER_2", type: "UNDER", barrier: 2, label: "UNDER 2" },
+          { action: "OVER_7", type: "OVER", barrier: 7, label: "OVER 7" },
+        ],
+      };
+    }
     if (compact === "OVER_4_UNDER_5") {
       return {
         action: "OVER_4_UNDER_5",
@@ -1151,9 +1172,18 @@
       return { action: "OVER_3_TARGET", type: "OVER", barrier: 3, label: "OVER 3 Target Profit", targetProfitMode: true };
     }
     const map = {
+      OVER_0: { action: "OVER_0", type: "OVER", barrier: 0, label: "OVER 0" },
+      UNDER_1: { action: "UNDER_1", type: "UNDER", barrier: 1, label: "UNDER 1" },
+      OVER_1: { action: "OVER_1", type: "OVER", barrier: 1, label: "OVER 1" },
+      UNDER_2: { action: "UNDER_2", type: "UNDER", barrier: 2, label: "UNDER 2" },
+      OVER_2: { action: "OVER_2", type: "OVER", barrier: 2, label: "OVER 2" },
       UNDER_3: { action: "UNDER_3", type: "UNDER", barrier: 3, label: "UNDER 3" },
       UNDER_4: { action: "UNDER_4", type: "UNDER", barrier: 4, label: "UNDER 4" },
       UNDER_5: { action: "UNDER_5", type: "UNDER", barrier: 5, label: "UNDER 5" },
+      UNDER_6: { action: "UNDER_6", type: "UNDER", barrier: 6, label: "UNDER 6" },
+      UNDER_7: { action: "UNDER_7", type: "UNDER", barrier: 7, label: "UNDER 7" },
+      UNDER_8: { action: "UNDER_8", type: "UNDER", barrier: 8, label: "UNDER 8" },
+      UNDER_9: { action: "UNDER_9", type: "UNDER", barrier: 9, label: "UNDER 9" },
       OVER_3: { action: "OVER_3", type: "OVER", barrier: 3, label: "OVER 3" },
       OVER_4: { action: "OVER_4", type: "OVER", barrier: 4, label: "OVER 4" },
       OVER_5: { action: "OVER_5", type: "OVER", barrier: 5, label: "OVER 5" },
@@ -1171,6 +1201,96 @@
     if (Number.isFinite(Number(min))) value = Math.max(Number(min), value);
     if (Number.isFinite(Number(max))) value = Math.min(Number(max), value);
     return value;
+  }
+
+  const KOOLKID_MARTINGALE_CONFIG_KEY = "koolkid.martingale.features.v1";
+  const koolkidMartingaleConfig = loadKoolkidMartingaleFeatureConfig();
+  let koolkidDigitPickerTarget = "recovery";
+  let koolkidDigitPickerDigit = 4;
+
+  function normalizeKoolkidDigitContract(type, barrier) {
+    const contractType = String(type || "").toUpperCase();
+    const digit = Number(barrier);
+    if (!Number.isInteger(digit) || digit < 0 || digit > 9) return null;
+    if (contractType === "DIGITOVER" && digit <= 8) return { contractType, type: "OVER", barrier: digit, action: `OVER_${digit}`, label: `OVER ${digit}` };
+    if (contractType === "DIGITUNDER" && digit >= 1) return { contractType, type: "UNDER", barrier: digit, action: `UNDER_${digit}`, label: `UNDER ${digit}` };
+    return null;
+  }
+
+  function loadKoolkidMartingaleFeatureConfig() {
+    const defaults = {
+      recoveryEnabled: false,
+      recoveryType: "DIGITOVER",
+      recoveryBarrier: 4,
+      recoveryAfter: 4,
+      switchAfterWinEnabled: false,
+      switchType: "DIGITOVER",
+      switchBarrier: 5,
+    };
+    try {
+      const saved = JSON.parse(localStorage.getItem(KOOLKID_MARTINGALE_CONFIG_KEY) || "{}");
+      const recovery = normalizeKoolkidDigitContract(saved.recoveryType, Number(saved.recoveryBarrier));
+      const next = normalizeKoolkidDigitContract(saved.switchType, Number(saved.switchBarrier));
+      const recoveryAfter = Number(saved.recoveryAfter);
+      return {
+        ...defaults,
+        recoveryEnabled: saved.recoveryEnabled === true,
+        recoveryType: recovery ? recovery.contractType : defaults.recoveryType,
+        recoveryBarrier: recovery ? recovery.barrier : defaults.recoveryBarrier,
+        recoveryAfter: Number.isInteger(recoveryAfter) && recoveryAfter >= 1 ? recoveryAfter : defaults.recoveryAfter,
+        switchAfterWinEnabled: saved.switchAfterWinEnabled === true,
+        switchType: next ? next.contractType : defaults.switchType,
+        switchBarrier: next ? next.barrier : defaults.switchBarrier,
+      };
+    } catch (e) {
+      return defaults;
+    }
+  }
+
+  function saveKoolkidMartingaleFeatureConfig() {
+    try { localStorage.setItem(KOOLKID_MARTINGALE_CONFIG_KEY, JSON.stringify(koolkidMartingaleConfig)); } catch (e) {}
+  }
+
+  function selectedKoolkidFeatureTrade(prefix) {
+    return normalizeKoolkidDigitContract(koolkidMartingaleConfig[`${prefix}Type`], koolkidMartingaleConfig[`${prefix}Barrier`]);
+  }
+
+  function resetKoolkidRecoveryRuntime(st, mainAction) {
+    st.cycleAttempt = 0;
+    st.recoveryActive = false;
+    st.pendingWasRecovery = false;
+    st.cycleMainAction = normalizeKoolkidMartingaleAction(mainAction || st.action).action;
+  }
+
+  function resetKoolkidSwitchRotation(st, mainAction) {
+    const normalized = normalizeKoolkidMartingaleAction(mainAction || st.action).action;
+    st.switchOriginalAction = normalized;
+    st.switchAlternateActive = false;
+  }
+
+  function renderKoolkidMartingaleFeatureControls() {
+    const recovery = selectedKoolkidFeatureTrade("recovery");
+    const next = selectedKoolkidFeatureTrade("switch");
+    const recoveryToggle = document.getElementById("koolkidRecoveryToggle");
+    const recoveryControls = document.getElementById("koolkidRecoveryControls");
+    const recoverySelected = document.getElementById("koolkidRecoverySelected");
+    const recoveryAfter = document.getElementById("koolkidRecoveryAfter");
+    const switchToggle = document.getElementById("koolkidSwitchAfterWinToggle");
+    const switchControls = document.getElementById("koolkidSwitchAfterWinControls");
+    const switchSelected = document.getElementById("koolkidSwitchAfterWinSelected");
+    if (recoveryToggle) {
+      recoveryToggle.textContent = koolkidMartingaleConfig.recoveryEnabled ? "ON" : "OFF";
+      recoveryToggle.style.background = koolkidMartingaleConfig.recoveryEnabled ? "#f59e0b" : "#334155";
+    }
+    if (recoveryControls) recoveryControls.style.display = koolkidMartingaleConfig.recoveryEnabled ? "grid" : "none";
+    if (recoverySelected) recoverySelected.textContent = recovery ? recovery.label : "Invalid selection";
+    if (recoveryAfter && document.activeElement !== recoveryAfter) recoveryAfter.value = String(koolkidMartingaleConfig.recoveryAfter);
+    if (switchToggle) {
+      switchToggle.textContent = koolkidMartingaleConfig.switchAfterWinEnabled ? "ON" : "OFF";
+      switchToggle.style.background = koolkidMartingaleConfig.switchAfterWinEnabled ? "#f59e0b" : "#334155";
+    }
+    if (switchControls) switchControls.style.display = koolkidMartingaleConfig.switchAfterWinEnabled ? "grid" : "none";
+    if (switchSelected) switchSelected.textContent = next ? next.label : "Invalid selection";
   }
 
   function isOver3Under6PairModeKoolkid() {
@@ -1326,6 +1446,7 @@
       isPair: !!action.isPair,
       isTriple: !!action.isTriple,
       independentPair: !!action.independentPair,
+      combinedRound: !!action.combinedRound,
       targetProfitMode: !!action.targetProfitMode,
       legs: action.legs || null,
       duration,
@@ -1469,6 +1590,46 @@
     st.step = 1;
     st.over3Step = 1;
     st.pairSteps = {};
+  }
+
+  function getKoolkidExecutingMartingaleSettings(settings, st) {
+    if (!koolkidMartingaleConfig.recoveryEnabled || !st.recoveryActive) return settings;
+    const recovery = selectedKoolkidFeatureTrade("recovery");
+    if (!recovery) throw new Error("Choose a valid Recovery Trade.");
+    return {
+      ...settings,
+      action: recovery.action,
+      type: recovery.type,
+      barrier: recovery.barrier,
+      label: recovery.label,
+      isPair: false,
+      isTriple: false,
+      independentPair: false,
+      combinedRound: false,
+      targetProfitMode: false,
+      legs: null,
+    };
+  }
+
+  function applyKoolkidSwitchAfterNormalWin(st) {
+    if (!koolkidMartingaleConfig.switchAfterWinEnabled) return;
+    const alternate = selectedKoolkidFeatureTrade("switch");
+    if (!alternate) return;
+    const original = normalizeKoolkidMartingaleAction(st.switchOriginalAction || st.cycleMainAction || st.action);
+    const next = st.switchAlternateActive ? original : alternate;
+    const actionEl = document.getElementById("koolkidMartingaleAction");
+    if (actionEl && Array.from(actionEl.options || []).some((option) => option.value === next.action)) {
+      actionEl.value = next.action;
+    } else if (actionEl) {
+      const option = document.createElement("option");
+      option.value = next.action;
+      option.textContent = next.label;
+      actionEl.appendChild(option);
+      actionEl.value = next.action;
+    }
+    st.action = next.action;
+    st.cycleMainAction = next.action;
+    st.switchAlternateActive = !st.switchAlternateActive;
   }
 
   function scheduleKoolkidSingleMartingaleContinuation(st, settings, reason) {
@@ -1709,6 +1870,7 @@
     if (panel) panel.style.display = allowed ? "" : "none";
     if (!allowed) return;
     syncKoolkidMonthlySingleMartingaleUi();
+    renderKoolkidMartingaleFeatureControls();
 
     const settings = readKoolkidSingleMartingaleSettings();
     const pairMode = isOver3Under6PairModeKoolkid();
@@ -1721,7 +1883,7 @@
     if (riskSettingsWrap) riskSettingsWrap.style.display = (!pairMode && !targetMode) ? "grid" : "none";
     ["koolkidMartingaleAction", "koolkidMartingaleMode", "koolkidMartingaleStepAmount", "koolkidMartingaleMultiplier", "koolkidMartingaleMaxSteps", "koolkidMartingaleMaxStake", "koolkidMartingaleDoubleLimit", "koolkidMartingaleTickSpacing", "koolkidMartingaleStartStake"].forEach((id) => {
       const el = document.getElementById(id);
-      if (el) el.disabled = pairMode;
+      if (el) el.disabled = pairMode || !!st.inProgress;
     });
     ["koolkidMartingaleMode", "koolkidMartingaleStepAmount", "koolkidMartingaleMultiplier", "koolkidMartingaleMaxSteps", "koolkidMartingaleMaxStake", "koolkidMartingaleDoubleLimit"].forEach((id) => {
       const el = document.getElementById(id);
@@ -1811,7 +1973,8 @@
         : settings.isPair
         ? `Current stakes $${currentStake.toFixed(2)} each - Next stakes $${nextStake.toFixed(2)} each`
         : `Current stake $${currentStake.toFixed(2)} - Next stake $${nextStake.toFixed(2)}`;
-      status.textContent = `${st.status}. ${modeLabel}${limitLabel} - ${settings.label} - ${waitText} - Step ${st.step} - ${stakeLabel} - Session P/L $${Number(st.sessionProfit || 0).toFixed(2)} - ${tpText} / ${slText} - Last result: ${st.lastResult}`;
+      const recoveryText = st.recoveryActive ? ` - Recovery: ${selectedKoolkidFeatureTrade("recovery").label}` : "";
+      status.textContent = `${st.status}. ${modeLabel}${limitLabel} - ${settings.label}${recoveryText} - Attempt ${Number(st.cycleAttempt || 0) + 1} - ${waitText} - Step ${st.step} - ${stakeLabel} - Session P/L $${Number(st.sessionProfit || 0).toFixed(2)} - ${tpText} / ${slText} - Last result: ${st.lastResult}`;
       status.style.color = st.inProgress ? "#fbbf24" : "#94a3b8";
     }
     updateKoolkidMartingaleCalculatorIfOpen();
@@ -1819,14 +1982,111 @@
 
   function setKoolkidSingleMartingaleAction(action) {
     const st = getKoolkidSingleMartingaleState();
+    st.requestGeneration = Number(st.requestGeneration || 0) + 1;
     st.action = normalizeKoolkidMartingaleAction(action).action;
     st.pairSteps = {};
     st.sessionProfit = 0;
+    resetKoolkidRecoveryRuntime(st, st.action);
+    resetKoolkidSwitchRotation(st, st.action);
     if (isKoolkidTargetProfitMartingaleAction(st.action)) {
       resetKoolkidTargetProfitMartingaleAction(st.action, readKoolkidSingleMartingaleSettings().startStake);
     }
     st.status = "Ready";
     updateKoolkidSingleMartingalePanel();
+  }
+
+  function toggleKoolkidRecoveryMode() {
+    koolkidMartingaleConfig.recoveryEnabled = !koolkidMartingaleConfig.recoveryEnabled;
+    const st = getKoolkidSingleMartingaleState();
+    if (!koolkidMartingaleConfig.recoveryEnabled && !st.inProgress) resetKoolkidRecoveryRuntime(st, st.action);
+    saveKoolkidMartingaleFeatureConfig();
+    renderKoolkidMartingaleFeatureControls();
+  }
+
+  function toggleKoolkidSwitchAfterWin() {
+    koolkidMartingaleConfig.switchAfterWinEnabled = !koolkidMartingaleConfig.switchAfterWinEnabled;
+    saveKoolkidMartingaleFeatureConfig();
+    renderKoolkidMartingaleFeatureControls();
+  }
+
+  function setKoolkidRecoveryAfter(value) {
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      const input = document.getElementById("koolkidRecoveryAfter");
+      if (input) input.setCustomValidity("Switch After must be a whole number of at least 1.");
+      return false;
+    }
+    const input = document.getElementById("koolkidRecoveryAfter");
+    if (input) input.setCustomValidity("");
+    koolkidMartingaleConfig.recoveryAfter = parsed;
+    saveKoolkidMartingaleFeatureConfig();
+    return true;
+  }
+
+  function renderKoolkidDigitPickerDirections() {
+    const wrap = document.getElementById("koolkidDigitPickerDirections");
+    if (!wrap) return;
+    const digit = koolkidDigitPickerDigit;
+    wrap.innerHTML = "";
+    [
+      { type: "DIGITUNDER", label: `UNDER ${digit}`, disabled: digit === 0 },
+      { type: "DIGITOVER", label: `OVER ${digit}`, disabled: digit === 9 },
+    ].forEach((choice) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = choice.label;
+      button.disabled = choice.disabled;
+      button.style.background = choice.disabled ? "#1e293b" : "#0f766e";
+      button.style.opacity = choice.disabled ? "0.4" : "1";
+      button.style.cursor = choice.disabled ? "not-allowed" : "pointer";
+      button.onclick = () => selectKoolkidDigitTrade(choice.type, digit);
+      wrap.appendChild(button);
+    });
+  }
+
+  function openKoolkidDigitTradePicker(target, preserveDigit) {
+    koolkidDigitPickerTarget = target === "switch" ? "switch" : "recovery";
+    const current = selectedKoolkidFeatureTrade(koolkidDigitPickerTarget);
+    if (!preserveDigit) koolkidDigitPickerDigit = current ? current.barrier : 4;
+    const popup = document.getElementById("koolkidDigitTradePicker");
+    const digits = document.getElementById("koolkidDigitPickerDigits");
+    const hint = document.getElementById("koolkidDigitPickerHint");
+    if (hint) hint.textContent = koolkidDigitPickerTarget === "switch" ? "Choose the next main trade after a normal win." : "Choose the trade used after unsuccessful main attempts.";
+    if (digits) {
+      digits.innerHTML = "";
+      for (let digit = 0; digit <= 9; digit += 1) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = String(digit);
+        button.style.background = digit === koolkidDigitPickerDigit ? "#f59e0b" : "#1e293b";
+        button.onclick = () => {
+          koolkidDigitPickerDigit = digit;
+          openKoolkidDigitTradePicker(koolkidDigitPickerTarget, true);
+        };
+        digits.appendChild(button);
+      }
+    }
+    renderKoolkidDigitPickerDirections();
+    if (popup) popup.style.display = "flex";
+  }
+
+  function closeKoolkidDigitTradePicker() {
+    const popup = document.getElementById("koolkidDigitTradePicker");
+    if (popup) popup.style.display = "none";
+  }
+
+  function selectKoolkidDigitTrade(type, barrier) {
+    const selected = normalizeKoolkidDigitContract(type, Number(barrier));
+    if (!selected) {
+      safeToast("That Under/Over digit contract is not valid.", "error");
+      return false;
+    }
+    koolkidMartingaleConfig[`${koolkidDigitPickerTarget}Type`] = selected.contractType;
+    koolkidMartingaleConfig[`${koolkidDigitPickerTarget}Barrier`] = selected.barrier;
+    saveKoolkidMartingaleFeatureConfig();
+    renderKoolkidMartingaleFeatureControls();
+    closeKoolkidDigitTradePicker();
+    return true;
   }
 
   function quickStopKoolkidSingleMartingale(reason) {
@@ -1845,6 +2105,9 @@
     st.over3Step = 1;
     st.pairSteps = {};
     st.sessionProfit = 0;
+    st.requestGeneration = Number(st.requestGeneration || 0) + 1;
+    resetKoolkidRecoveryRuntime(st, st.action);
+    resetKoolkidSwitchRotation(st, st.action);
     if (isKoolkidTargetProfitMartingaleAction(st.action)) {
       resetKoolkidTargetProfitMartingaleAction(st.action, readKoolkidSingleMartingaleSettings().startStake);
       getKoolkidTargetProfitMartingaleState(st.action).sessionProfit = 0;
@@ -1881,6 +2144,9 @@
       st.over3Step = 1;
       st.pairSteps = {};
       st.sessionProfit = 0;
+      st.requestGeneration = Number(st.requestGeneration || 0) + 1;
+      resetKoolkidRecoveryRuntime(st, readKoolkidSingleMartingaleSettings().action);
+      resetKoolkidSwitchRotation(st, readKoolkidSingleMartingaleSettings().action);
       if (isKoolkidTargetProfitMartingaleAction(readKoolkidSingleMartingaleSettings().action)) {
         const settings = readKoolkidSingleMartingaleSettings();
         resetKoolkidTargetProfitMartingaleAction(settings.action, settings.startStake);
@@ -2035,7 +2301,14 @@
     const st = getKoolkidSingleMartingaleState();
     const opts = options || {};
     if (st.inProgress) return;
-    const settings = readKoolkidSingleMartingaleSettings();
+    const mainSettings = readKoolkidSingleMartingaleSettings();
+    let settings;
+    try {
+      settings = getKoolkidExecutingMartingaleSettings(mainSettings, st);
+    } catch (error) {
+      safeToast(error.message, "error");
+      return;
+    }
     if (isKoolkidSingleMartingaleMonthlyLimited() && !isKoolkidMonthlySingleMartingaleActionAllowed(settings.action)) {
       safeToast("Monthly users can only use UNDER 3, UNDER 4, OVER 3, OVER 4, OVER 5, OVER 6, or OVER 7 here.", "error");
       updateKoolkidSingleMartingalePanel();
@@ -2056,7 +2329,10 @@
     st.waitingForTicks = false;
     st.waitTicksRemaining = 0;
     st.inProgress = true;
+    const requestGeneration = Number(st.requestGeneration || 0) + 1;
+    st.requestGeneration = requestGeneration;
     st.pendingAction = settings.action;
+    st.pendingWasRecovery = !!st.recoveryActive;
     st.pendingContractId = "";
     st.pendingContracts = {};
     st.pendingExpected = settings.isPair ? (settings.legs || []).length : 1;
@@ -2066,12 +2342,23 @@
     st.pendingStake = stake;
     st.pendingMartingale = !!st.enabled;
     st.status = "Running";
+    const logicalRoundId = `koolkid-${Date.now()}-${requestGeneration}`;
+    const recoveryTrade = selectedKoolkidFeatureTrade("recovery");
+    const cycleMeta = {
+      logical_round_id: logicalRoundId,
+      logical_round_label: settings.label,
+      main_trade_action: st.cycleMainAction || mainSettings.action,
+      recovery_trade_action: recoveryTrade ? recoveryTrade.action : "",
+      recovery_active: !!st.pendingWasRecovery,
+      cycle_attempt: Math.max(0, Number(st.cycleAttempt || 0)),
+    };
     updateKoolkidSingleMartingalePanel();
     try {
       if (settings.isPair) {
         const jobs = (settings.legs || []).map((leg) => {
           const legStake = koolkidSingleMartingaleStakeForLeg(leg, st.step);
           const payload = {
+            ...cycleMeta,
             stake: legStake,
             amount: legStake,
             type: leg.type,
@@ -2087,6 +2374,7 @@
             .then((result) => ({ result, leg, legStake }));
         });
         const results = await Promise.all(jobs);
+        if (st.requestGeneration !== requestGeneration || st.stopRequested) return;
         const failed = results.find((row) => !(row && row.result && row.result.data && row.result.data.status === "success"));
         results.forEach((row) => {
           const data = row && row.result && row.result.data;
@@ -2110,6 +2398,7 @@
         return;
       }
       const payload = {
+        ...cycleMeta,
         stake,
         amount: stake,
         type: settings.type,
@@ -2121,6 +2410,7 @@
         label: settings.label,
       };
       const r = await sendFastManualTradeKoolkid(payload, { turbo: false, queue: false, fireAndForget: false });
+      if (st.requestGeneration !== requestGeneration || st.stopRequested) return;
       if (!(r && r.data && r.data.status === "success")) {
         throw new Error((r && r.data && r.data.message) || "Koolkid martingale trade failed");
       }
@@ -2322,6 +2612,7 @@
       item.profit = resolveKoolkidMartingaleProfit(payload, outcome, item.stake, settings, leg);
       st.pendingSettled = Object.keys(st.pendingContracts || {}).filter((id) => st.pendingContracts[id] && st.pendingContracts[id].outcome).length;
       const wasMartingaleTrade = !!st.pendingMartingale;
+      const wasRecoveryTrade = !!st.pendingWasRecovery;
       if (item.action === "OVER_3") {
         if (outcome === "LOSS") {
           const over3Step = Math.max(1, Math.min(3, Math.floor(Number(st.over3Step || 1) || 1)));
@@ -2363,6 +2654,54 @@
           st.running = false;
           st.waitingForTicks = false;
           st.waitTicksRemaining = 0;
+          st.status = "Ready";
+        }
+        updateKoolkidSingleMartingalePanel();
+        return;
+      }
+      if (settings.combinedRound) {
+        const expected = Math.max(2, Number(st.pendingExpected) || 2);
+        if (st.pendingSettled < expected) {
+          st.status = `Running: waiting for ${expected - st.pendingSettled} result(s)`;
+          updateKoolkidSingleMartingalePanel();
+          return;
+        }
+        const pendingItems = Object.keys(st.pendingContracts || {}).map((id) => st.pendingContracts[id]).filter(Boolean);
+        const roundProfit = resolveKoolkidPairRoundProfit(pendingItems, settings);
+        const roundOutcome = roundProfit > 0 ? "WIN" : roundProfit < 0 ? "LOSS" : "BREAKEVEN";
+        st.sessionProfit = Number((Number(st.sessionProfit || 0) + roundProfit).toFixed(2));
+        const combinedRisk = readKoolkidSingleMartingaleRiskSettings();
+        const hitTp = combinedRisk.takeProfit > 0 && st.sessionProfit >= combinedRisk.takeProfit;
+        const hitSl = combinedRisk.stopLoss > 0 && st.sessionProfit <= -Math.abs(combinedRisk.stopLoss);
+        clearKoolkidSingleMartingalePending();
+        st.lastResult = `${roundOutcome} (${settings.label} ${roundProfit >= 0 ? "+" : ""}$${roundProfit.toFixed(2)})`;
+        if (hitTp || hitSl) {
+          stopKoolkidSingleMartingaleOnRiskLimit(st, hitTp, st.sessionProfit);
+          updateKoolkidSingleMartingalePanel();
+          return;
+        }
+        if (roundOutcome === "WIN") {
+          resetKoolkidSingleMartingaleSteps();
+          resetKoolkidRecoveryRuntime(st, st.cycleMainAction || settings.action);
+          if (!wasRecoveryTrade) applyKoolkidSwitchAfterNormalWin(st);
+          if (wasMartingaleTrade && st.enabled && st.running && !st.stopRequested) {
+            scheduleKoolkidSingleMartingaleContinuation(st, readKoolkidSingleMartingaleSettings(), `Combined win reset. Waiting ${settings.tickSpacing} tick${settings.tickSpacing === 1 ? "" : "s"}`);
+          } else {
+            st.running = false;
+            st.status = wasMartingaleTrade ? "Reset" : "Ready";
+          }
+        } else if (roundOutcome === "LOSS") {
+          if (koolkidMartingaleConfig.recoveryEnabled) {
+            st.cycleAttempt = Math.max(0, Number(st.cycleAttempt || 0)) + 1;
+            if (st.cycleAttempt >= koolkidMartingaleConfig.recoveryAfter) st.recoveryActive = true;
+          }
+          if (wasMartingaleTrade && st.enabled) {
+            st.step = nextKoolkidLimitedMartingaleStep(st.step, settings);
+            if (st.running && !st.stopRequested) scheduleKoolkidSingleMartingaleContinuation(st, readKoolkidSingleMartingaleSettings());
+          } else st.status = "Ready";
+        } else if (wasMartingaleTrade && st.enabled && st.running && !st.stopRequested) {
+          scheduleKoolkidSingleMartingaleContinuation(st, readKoolkidSingleMartingaleSettings(), "Breakeven. Waiting for next round");
+        } else {
           st.status = "Ready";
         }
         updateKoolkidSingleMartingalePanel();
@@ -2449,6 +2788,7 @@
     if (!outcome) return;
 
     const wasMartingaleTrade = !!st.pendingMartingale;
+    const wasRecoveryTrade = !!st.pendingWasRecovery;
     const pendingStakeBeforeClear = Number(st.pendingStake || 0);
     clearKoolkidSingleMartingalePending();
     const settings = readKoolkidSingleMartingaleSettings();
@@ -2502,6 +2842,9 @@
       const hitTp = riskSettings.takeProfit > 0 && Number(st.sessionProfit || 0) >= riskSettings.takeProfit;
       const hitSl = riskSettings.stopLoss > 0 && Number(st.sessionProfit || 0) <= -Math.abs(riskSettings.stopLoss);
       resetKoolkidSingleMartingaleSteps();
+      const originalMain = st.cycleMainAction || settings.action;
+      resetKoolkidRecoveryRuntime(st, originalMain);
+      if (!wasRecoveryTrade) applyKoolkidSwitchAfterNormalWin(st);
       st.lastResult = "WIN";
       if (hitTp || hitSl) {
         stopKoolkidSingleMartingaleOnRiskLimit(st, hitTp, st.sessionProfit);
@@ -2520,6 +2863,10 @@
       st.sessionProfit = Number((Number(st.sessionProfit || 0) + profit).toFixed(2));
       const hitSl = riskSettings.stopLoss > 0 && Number(st.sessionProfit || 0) <= -Math.abs(riskSettings.stopLoss);
       st.lastResult = "LOSS";
+      if (koolkidMartingaleConfig.recoveryEnabled) {
+        st.cycleAttempt = Math.max(0, Number(st.cycleAttempt || 0)) + 1;
+        if (st.cycleAttempt >= koolkidMartingaleConfig.recoveryAfter) st.recoveryActive = true;
+      }
       if (hitSl) {
         stopKoolkidSingleMartingaleOnRiskLimit(st, false, st.sessionProfit);
       } else if (wasMartingaleTrade && st.enabled) {
@@ -5155,8 +5502,13 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
     pendingGoldenCardRender = null;
     mgState.running = false;
     mgState.inProgress = false;
+    mgState.stopRequested = true;
+    mgState.requestGeneration = Number(mgState.requestGeneration || 0) + 1;
     mgState.waitingForTicks = false;
     mgState.waitTicksRemaining = 0;
+    clearKoolkidSingleMartingalePending();
+    resetKoolkidRecoveryRuntime(mgState, mgState.action);
+    resetKoolkidSwitchRotation(mgState, mgState.action);
     stopKoolkidOver6ScanMartingale();
     state.socketBound = false;
     state.lastSocket = null;
@@ -5203,6 +5555,11 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
   };
 
   window.setKoolkidSingleMartingaleAction = setKoolkidSingleMartingaleAction;
+  window.toggleKoolkidRecoveryMode = toggleKoolkidRecoveryMode;
+  window.toggleKoolkidSwitchAfterWin = toggleKoolkidSwitchAfterWin;
+  window.setKoolkidRecoveryAfter = setKoolkidRecoveryAfter;
+  window.openKoolkidDigitTradePicker = openKoolkidDigitTradePicker;
+  window.closeKoolkidDigitTradePicker = closeKoolkidDigitTradePicker;
   window.toggleKoolkidSingleMartingale = toggleKoolkidSingleMartingale;
   window.updateKoolkidSingleMartingalePanel = updateKoolkidSingleMartingalePanel;
   window.placeKoolkidSingleMartingaleTrade = placeKoolkidSingleMartingaleTrade;

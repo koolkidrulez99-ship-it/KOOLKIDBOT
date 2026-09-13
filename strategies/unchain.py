@@ -6,6 +6,8 @@ import time
 import math
 import statistics
 
+from bot_modules.trade_history import append_bounded_trade_history
+
 UNCHAIN_SCANNER_WINDOW_OPTIONS = [20]
 UNCHAIN_SCANNER_DEFAULT_WINDOW = 20
 UNCHAIN_SCANNER_MIN_HISTORY = 20
@@ -1150,7 +1152,7 @@ class UnchainStrategy:
             "exit_reason": self.exit_requested_reason or ("auto" if (self.active_mode or "AUTO") == "AUTO" else "manual"),
             "ticks_elapsed": ticks_elapsed_final,
         }
-        self.trade_history.append(self.last_trade_entry)
+        append_bounded_trade_history(self.trade_history, self.last_trade_entry)
 
         # Clear active trade
         self.pending_trade_request = False

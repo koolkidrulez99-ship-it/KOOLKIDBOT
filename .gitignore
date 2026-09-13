@@ -6,3 +6,11 @@ users.db
 .env
 *.sqlite3
 .DS_Store
+node_modules/
+.koolkid-run/
+
+# MT5 local runtime terminals
+mt5_module/mt5_multi_account/data/terminals/
+mt5_module/mt5_ea_worker/data/terminals/
+__pycache__/
+*.pyc

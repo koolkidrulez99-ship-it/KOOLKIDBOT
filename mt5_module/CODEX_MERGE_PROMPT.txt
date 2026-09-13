@@ -1,0 +1,200 @@
+I have already built and tested a standalone MT5 Hub module. DO NOT rebuild it, redesign it, or merge its source into my existing Deriv files.
+
+FOLDER STRUCTURE
+
+My existing Deriv bot is the main project.
+
+The entire new MT5 feature is contained inside:
+
+/mt5_module
+
+Inside that folder are:
+
+- mt5_module/mt5_bot/
+- mt5_module/mt5_bridge/
+- mt5_module/mt5_web.py
+- mt5_module/MT5_MERGE_INSTRUCTIONS.md
+- mt5_module/CODEX_MERGE_PROMPT.txt
+- related MT5 setup/start files and documentation
+
+Treat /mt5_module as a self-contained feature.
+
+IMPORTANT:
+Keep all MT5 files inside /mt5_module.
+Do not move them into my existing Deriv folders.
+Do not reorganize the MT5 module unless a very small path/import fix is strictly required.
+
+GOAL
+
+Add the supplied MT5 Hub to my existing KOOLKID Deriv bot as a completely separate feature.
+
+On the logged-in homepage, immediately beside/after the existing KOOLKID AUTO TRADE button, add a new button whose visible text is exactly:
+
+MT5 BOT
+
+When clicked, it must navigate to:
+
+/mt5-bot
+
+and show the supplied MT5 Hub as its own full page.
+
+STRICT RULES
+
+1. Read this file and mt5_module/MT5_MERGE_INSTRUCTIONS.md before changing anything.
+
+2. DO NOT rebuild or redesign mt5_module/mt5_bot.
+
+3. DO NOT move MT5 React components into templates/, static/, strategies/, deriv_engines/, or any existing Deriv modules.
+
+4. Keep the complete MT5 feature inside /mt5_module.
+
+5. DO NOT merge mt5_module/mt5_bridge/requirements.txt into the root requirements.txt.
+
+MetaTrader5 must remain a separate Windows bridge/service.
+
+6. DO NOT change existing Deriv OAuth, PAT/token handling, API/WebSocket logic, trade execution, strategy logic, profiles, account state, cloud trading, database/authentication, risk logic, or any existing trading behavior.
+
+7. Reuse the existing homepage styling for the new MT5 BOT button where practical.
+
+Do not redesign the homepage.
+
+8. The existing homepage already uses skipDisconnectOnce when navigating to KOOLKID AUTO TRADE.
+
+The MT5 BOT navigation must also run:
+
+sessionStorage.setItem("skipDisconnectOnce", "1");
+
+before navigating to:
+
+/mt5-bot
+
+This is required so opening the MT5 Hub does not accidentally trigger the existing Deriv page-exit/disconnect behavior.
+
+9. The MT5 Flask Blueprint is located at:
+
+mt5_module/mt5_web.py
+
+Register that Blueprint from the existing server.py only after the existing login_required and is_admin helpers are available.
+
+Do not move mt5_web.py out of mt5_module.
+
+Prefer importing it as:
+
+from mt5_module.mt5_web import create_mt5_blueprint
+
+If mt5_module is not currently recognized as a Python package, add only the minimum required package file such as:
+
+mt5_module/__init__.py
+
+Do not move the MT5 files to solve an import problem.
+
+The intended Blueprint registration is:
+
+app.register_blueprint(create_mt5_blueprint(login_required, is_admin))
+
+If the supplied function signature differs, inspect mt5_module/mt5_web.py and make the smallest compatible registration change.
+
+Do not copy the MT5 page-serving implementation into server.py.
+
+10. Keep /mt5-bot protected by the same login requirement as the existing bot dashboard.
+
+11. Build the frontend located at:
+
+mt5_module/mt5_bot
+
+Use these build environment values:
+
+VITE_ROUTER_BASE=/mt5-bot
+VITE_ASSET_BASE=/mt5-bot/
+VITE_HOST_HOME_URL=/
+
+so React routing and assets work correctly under /mt5-bot.
+
+12. The MT5 Hub should contain a Back to KOOLKID control that returns the user to:
+
+/
+
+13. If the existing production deployment is Linux/Render, DO NOT attempt to install or run the MetaTrader5 Python package inside that existing web process.
+
+The MT5 bridge must remain a separate Windows service.
+
+Do not break the current Deriv deployment just to make MT5 work.
+
+14. Make the SMALLEST POSSIBLE changes to my existing project.
+
+The only existing Deriv files that should normally need modification are:
+
+- server.py
+- templates/index.html
+
+Only modify build/deployment configuration if absolutely required.
+
+15. DO NOT reorganize, clean up, refactor, rename, or rewrite unrelated existing files.
+
+16. Preserve all existing tests.
+
+17. Add a small test for the /mt5-bot route and homepage MT5 BOT button if practical.
+
+18. Run the relevant existing tests after integration.
+
+19. Fix only integration errors caused by adding MT5.
+
+Do not opportunistically fix or rewrite unrelated Deriv code.
+
+20. Keep the MT5 bridge independent.
+
+The intended architecture is:
+
+Existing KOOLKID web app
+        |
+        +-- Existing Deriv engine
+        |
+        +-- /mt5-bot
+              |
+              +-- mt5_module/mt5_bot frontend
+              |
+              +-- separate mt5_module/mt5_bridge Windows service
+                        |
+                        +-- MetaTrader 5 terminal
+
+21. Do not silently fall back to simulated MT5 data when the user has selected real bridge mode.
+
+If the real bridge is offline, show the existing offline/error state instead of pretending live MT5 data is available.
+
+22. Do not alter the supplied MT5 Hub behavior unless required for integration.
+
+This includes preserving:
+- MT5 account management
+- dynamic MT5 market discovery
+- Deriv chart workspace
+- copy trading UI/logic already supplied
+- session/workspace restore
+- individual trade profit/loss history
+- dark/light mode
+- bot library and EA upload flow
+- risk controls
+- existing simulation mode
+- existing real MT5 bridge mode
+
+EXPECTED RESULT
+
+- Existing KOOLKID Deriv bot behaves exactly as before.
+- Existing KOOLKID AUTO TRADE button remains unchanged.
+- A new MT5 BOT button appears beside/after it on the logged-in homepage.
+- Clicking MT5 BOT opens /mt5-bot.
+- /mt5-bot displays the supplied MT5 Hub.
+- All MT5 source remains inside /mt5_module.
+- MT5 bridge remains an independent Windows service.
+- Back to KOOLKID returns to the original homepage.
+- Existing Deriv trading logic is untouched.
+- Existing Deriv connections are not unnecessarily disconnected when opening MT5 BOT.
+
+AT THE END REPORT EXACTLY
+
+A. Existing files modified
+B. New files/folders added
+C. Build/test commands run and their results
+D. Any remaining integration issue
+E. Explicit confirmation that existing Deriv trading logic was not changed
+F. Exact URL/path used to open the MT5 Hub
+G. Whether the MT5 bridge remains separate from the main web process

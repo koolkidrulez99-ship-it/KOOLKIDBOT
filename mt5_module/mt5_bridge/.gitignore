@@ -1,0 +1,5 @@
+.venv/
+.env
+data/bridge_state.json
+__pycache__/
+*.pyc

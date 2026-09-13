@@ -1,0 +1,80 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>KOOLKID MT5 Multi-Account Lab</title>
+<style>
+body{margin:0;background:#07111f;color:#eef4ff;font-family:Arial,sans-serif}header{padding:18px 24px;border-bottom:1px solid #20314a}.wrap{max-width:1150px;margin:auto;padding:20px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px}.card{background:#0d1828;border:1px solid #20314a;border-radius:16px;padding:16px;margin-bottom:16px}input,select,button{width:100%;box-sizing:border-box;margin:5px 0;padding:10px;border-radius:10px;border:1px solid #334963;background:#081321;color:#eef4ff}button{cursor:pointer;background:#174378}.primary{background:#0c63d6}.danger{background:#7d2734}.row{display:flex;gap:8px}.row>*{flex:1}.tag{display:inline-block;padding:4px 8px;background:#17324a;border-radius:999px;margin:3px;font-size:12px}table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:8px;border-bottom:1px solid #22354e;text-align:left}pre{background:#07101c;padding:12px;border-radius:10px;max-height:280px;overflow:auto;white-space:pre-wrap}.muted{color:#96a9c0;font-size:13px}
+</style>
+</head>
+<body>
+<header><b>KOOLKID MT5 · Multi-Account Lab</b> <span id="health" style="float:right">checking…</span></header>
+<div class="wrap">
+<div class="grid">
+<section class="card">
+<h2>Quick simulation</h2>
+<p class="muted">Test the 10-account architecture safely without a broker.</p>
+<button class="primary" onclick="bootstrap()">Create 3 SIM accounts</button>
+<button onclick="refreshAll()">Refresh</button>
+</section>
+
+<section class="card">
+<h2>Connect real MT5 account</h2>
+<input id="account_id" placeholder="Account label e.g. acc1">
+<input id="nickname" placeholder="Nickname">
+<input id="login" type="number" placeholder="MT5 login">
+<input id="server" placeholder="Broker server">
+<input id="terminal_path" placeholder="Dedicated terminal64.exe path">
+<input id="password" type="password" placeholder="MT5 password (not stored)">
+<button class="primary" onclick="connectReal()">Connect</button>
+<p class="muted">For simultaneous real accounts, each account should use its own MT5 terminal instance/path.</p>
+</section>
+
+<section class="card">
+<h2>Master / slave copier</h2>
+<label>Master</label><select id="master"></select>
+<div id="slaveChecks"></div>
+<label>Lot mode</label>
+<select id="lot_mode">
+<option value="same">Same lot</option><option value="fixed">Fixed lot</option>
+<option value="multiplier">Multiplier</option><option value="equity_proportional">Equity proportional</option>
+</select>
+<div class="row"><input id="fixed_lot" type="number" step=".01" value=".01"><input id="multiplier" type="number" step=".1" value="1"></div>
+<label>Copy source</label>
+<select id="source_filter">
+<option value="all">All trades</option><option value="manual">Manual only</option>
+<option value="ea">EA / .ex5 only</option><option value="magic">Specific magic number</option>
+</select>
+<input id="magic_number" type="number" placeholder="Magic number">
+<div class="row"><button class="primary" onclick="startCopy()">Start copying</button><button class="danger" onclick="stopCopy()">Stop</button></div>
+</section>
+
+<section class="card">
+<h2>Manual multi-account trade</h2>
+<input id="symbol" value="EURUSD" placeholder="Symbol">
+<div class="row"><select id="side"><option value="buy">BUY</option><option value="sell">SELL</option></select><input id="volume" type="number" step=".01" value=".01"></div>
+<div class="row"><input id="sl" type="number" step="any" value="0" placeholder="SL"><input id="tp" type="number" step="any" value="0" placeholder="TP"></div>
+<div id="manualChecks"></div>
+<button class="primary" onclick="manualTrade()">COPY TRADE to selected accounts</button>
+</section>
+</div>
+
+<section class="card"><h2>Accounts</h2><div id="accounts"></div></section>
+<section class="card"><h2>All open positions</h2><button onclick="loadPositions()">Refresh</button><div id="positions"></div></section>
+<section class="card"><h2>Copy activity</h2><pre id="activity"></pre></section>
+</div>
+<script>
+async function api(path,opts={}){const r=await fetch(path,{headers:{'Content-Type':'application/json'},...opts});const d=await r.json();if(!r.ok)throw new Error(d.detail||JSON.stringify(d));return d}
+function checked(cls){return [...document.querySelectorAll(cls+':checked')].map(x=>x.value)}
+async function bootstrap(){await api('/demo/bootstrap',{method:'POST'});await refreshAll()}
+async function connectReal(){await api('/accounts/connect',{method:'POST',body:JSON.stringify({account_id:account_id.value,nickname:nickname.value,login:+login.value,server:server.value,terminal_path:terminal_path.value,password:password.value,mode:'real'})});password.value='';await refreshAll()}
+async function startCopy(){const m=master.value;const slaves=checked('.slave').filter(x=>x!==m);await api('/copy/start',{method:'POST',body:JSON.stringify({master_account_id:m,slave_account_ids:slaves,lot_mode:lot_mode.value,fixed_lot:+fixed_lot.value,multiplier:+multiplier.value,source_filter:source_filter.value,magic_number:magic_number.value?+magic_number.value:null,poll_ms:300})});await refreshAll()}
+async function stopCopy(){await api('/copy/stop',{method:'POST'});await refreshAll()}
+async function manualTrade(){const targets=checked('.manualTarget');const d=await api('/manual-trade',{method:'POST',body:JSON.stringify({target_account_ids:targets,symbol:symbol.value,side:side.value,volume:+volume.value,sl:+sl.value,tp:+tp.value})});alert(JSON.stringify(d,null,2));await refreshAll()}
+async function closePos(a,t){await api('/positions/close',{method:'POST',body:JSON.stringify({account_id:a,ticket:+t})});await loadPositions()}
+async function loadPositions(){const p=await api('/positions');const rows=p.positions||[];positions.innerHTML=rows.length?'<table><tr><th>Account</th><th>Symbol</th><th>Side</th><th>Lot</th><th>SL</th><th>TP</th><th>P/L</th><th>Source</th><th></th></tr>'+rows.map(x=>`<tr><td>${x.account_id}</td><td>${x.symbol}</td><td>${x.side??(x.type===0?'BUY':'SELL')}</td><td>${x.volume}</td><td>${x.sl||0}</td><td>${x.tp||0}</td><td>${x.profit??0}</td><td>${x.source}</td><td><button onclick="closePos('${x.account_id}',${x.ticket})">Close</button></td></tr>`).join('')+'</table>':'No open positions.'}
+async function loadCopy(){const c=await api('/copy/status');activity.textContent=JSON.stringify(c,null,2)}
+async function refreshAll(){const h=await api('/health');health.textContent=`online · ${h.connected}/10 accounts`;const a=await api('/accounts');const rows=a.accounts||[];accounts.innerHTML=rows.length?'<table><tr><th>Name</th><th>Login</th><th>Status</th><th>Role</th><th>Balance</th></tr>'+rows.map(x=>`<tr><td>${x.nickname||x.account_id}</td><td>${x.login}</td><td>${x.connected?'ONLINE':'OFFLINE'}</td><td>${x.is_master?'MASTER':(x.is_slave?'SLAVE':'INDEPENDENT')}</td><td>${x.account_info?.balance??'-'}</td></tr>`).join('')+'</table>':'No accounts yet.';master.innerHTML=rows.filter(x=>x.connected).map(x=>`<option value="${x.account_id}" ${x.is_master?'selected':''}>${x.nickname||x.account_id}</option>`).join('');slaveChecks.innerHTML=rows.filter(x=>x.connected).map(x=>`<label class="tag"><input style="width:auto" class="slave" type="checkbox" value="${x.account_id}" ${x.is_slave?'checked':''}> ${x.nickname||x.account_id}</label>`).join('');manualChecks.innerHTML=rows.filter(x=>x.connected).map(x=>`<label class="tag"><input style="width:auto" class="manualTarget" type="checkbox" value="${x.account_id}"> ${x.nickname||x.account_id}</label>`).join('');await loadPositions();await loadCopy()}
+refreshAll().catch(e=>health.textContent=e.message);setInterval(()=>loadCopy().catch(()=>{}),1500)
+</script>
+</body></html>

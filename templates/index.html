@@ -11,6 +11,11 @@
 <script src="/static/vendor/socket.io.min.js"></script>
 <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
 <script src="/static/js/martha_ai.js"></script>
+{% if license_context and (license_context.is_full_access or license_context.is_lifetime) %}
+<link rel="stylesheet" href="/static/css/ai_intelligence.css">
+<script defer src="/static/vendor/lucide.min.js"></script>
+<script defer src="/static/js/ai_intelligence.js"></script>
+{% endif %}
 
 
 <style>
@@ -1301,6 +1306,9 @@ body.mobile-only-ui #profileContainer .unchain-history-grid{
         <h1>KOOLKID AI TRADING ENGINE</h1>
     </div>
     <div class="custom-edits-toolbar">
+        {% if license_context and (license_context.is_full_access or license_context.is_lifetime) %}
+        <label class="ai-bubble-setting"><input id="aiBubblePreference" type="checkbox" checked> AI Intelligence Bubble</label>
+        {% endif %}
         <button id="customEditsOpenBtn" class="custom-edits-open-btn" type="button" onclick="window.BotApp && BotApp.openCustomUiEditor && BotApp.openCustomUiEditor()">Custom Edits</button>
     </div>
     <div id="customUiModal" class="custom-ui-modal" onclick="if(event.target===this) BotApp.closeCustomUiEditor()">
@@ -1888,7 +1896,7 @@ function markClientActivity(){
 
 function shouldKeepApiConnectedDuringIdle(){
     try{
-        return !!window.__koolkidGoldenCardActive || !!window.__koolkidGoldenCardPopupOpen;
+        return !!apiConnected || !!window.__koolkidGoldenCardActive || !!window.__koolkidGoldenCardPopupOpen;
     }catch(_err){}
     return false;
 }
@@ -1955,7 +1963,6 @@ function shouldSkipExitDisconnectOnce(){
 
 function sendClientHeartbeat(reason){
     const now = Date.now();
-    if(reason !== "start" && reason !== "visible" && document.hidden) return false;
     if((now - Number(clientLastActivityAt || now)) >= CLIENT_INACTIVE_DISCONNECT_MS){
         if(shouldKeepApiConnectedDuringIdle()){
             clientLastActivityAt = now;
@@ -2377,7 +2384,7 @@ function bindSocketHandlers(){
         const netProfitLossEl = getProfileScopedElement("profileNetProfitLoss");
         if (totalEl && statsProfile === normalizeProfileName(activeProfile)) {
             const localHistory = Array.isArray(tradeStore[statsProfile]) ? tradeStore[statsProfile] : [];
-            const preferLocalHumanHistoryStats = statsProfile === "HUMAN" && localHistory.length > 0;
+            const preferLocalHumanHistoryStats = false;
             if(preferLocalHumanHistoryStats){
                 renderTradeHistoryStatsFromStore(statsProfile, localHistory);
                 renderTradeHistoryTotalStake(statsProfile, localHistory);
@@ -2494,7 +2501,7 @@ const FAST_INTERVAL_MS_TURBO = 80;   // turbo follow-up spacing
 const FAST_MAX_BUY_QUEUE = 12;       // safety limit
 const tradeToastByProfile = {};
 const martingaleCycleToastState = {};
-const TRADE_STORE_MAX_ITEMS = 250;
+const TRADE_STORE_MAX_ITEMS = 500;
 const TRADE_RENDER_MAX_ITEMS = 120;
 const TRADE_HISTORY_SESSION_STORAGE_KEY = "bot_trade_history_cache_v1";
 const JMD_DISPLAY_STORAGE_KEY = "bot_jmd_display_enabled_v1";
@@ -4352,8 +4359,9 @@ function mergeTradeRecord(existing, incoming){
     return merged;
 }
 
-function upsertTradeInStore(trade){
+function upsertTradeInStore(trade, options){
     if(!trade || typeof trade !== "object") return null;
+    const shouldPersist = !(options && options.persist === false);
     const profile = resolveTradeProfile(trade, trade.profile || activeProfile);
     if(!tradeStore[profile]) tradeStore[profile] = [];
     const incoming = mergeTradeRecord(null, Object.assign({}, trade, { profile }));
@@ -4371,7 +4379,7 @@ function upsertTradeInStore(trade){
                 tradeStoreSequence += 1;
                 existingArr[existing.index]._store_seq = tradeStoreSequence;
             }
-            persistTradeHistoryCache();
+            if(shouldPersist) persistTradeHistoryCache();
             return existingArr[existing.index];
         }
     }
@@ -4383,7 +4391,7 @@ function upsertTradeInStore(trade){
     }
     arr.push(incoming);
     if(arr.length > TRADE_STORE_MAX_ITEMS) arr.shift();
-    persistTradeHistoryCache();
+    if(shouldPersist) persistTradeHistoryCache();
     return incoming;
 }
 
@@ -4732,23 +4740,23 @@ function applyTradeHistorySnapshotProfiles(profiles){
             ? existing.slice()
             : pendingOnly.slice();
         snapshotItems.forEach((trade)=>{
-            upsertTradeInStore(Object.assign({}, trade, { profile }));
+            upsertTradeInStore(Object.assign({}, trade, { profile }), { persist: false });
         });
         existingSettled.forEach((trade)=>{
             if(!trade || typeof trade !== "object") return;
             const cid = normalizeContractId(trade.contract_id ?? trade.contractId);
             if(!cid){
-                upsertTradeInStore(Object.assign({}, trade, { profile }));
+                upsertTradeInStore(Object.assign({}, trade, { profile }), { persist: false });
                 return;
             }
             const snapshotTrade = snapshotByContractId.get(cid);
             if(!snapshotTrade){
-                upsertTradeInStore(Object.assign({}, trade, { profile }));
+                upsertTradeInStore(Object.assign({}, trade, { profile }), { persist: false });
                 return;
             }
             const snapshotLabel = normalizeTradeResultLabel(snapshotTrade.result, snapshotTrade.status);
             if(isTradeResultPending(snapshotLabel)){
-                upsertTradeInStore(Object.assign({}, trade, { profile }));
+                upsertTradeInStore(Object.assign({}, trade, { profile }), { persist: false });
             }
         });
         changedProfiles.add(profile);
@@ -4776,7 +4784,7 @@ function useTurboPendingTradeUi(profile){
 
 function maybeSyncTradeHistoryFromStats(profile, expectedSettledCount){
     const key = normalizeProfileName(profile || activeProfile);
-    const target = Number(expectedSettledCount || 0);
+    const target = Math.min(TRADE_STORE_MAX_ITEMS, Number(expectedSettledCount || 0));
     if(target <= 0) return;
     if(countSettledTradesInStore(key) >= target) return;
     const nowTs = Date.now();
@@ -7564,7 +7572,7 @@ function openKoolkidAutoTradePlaceholder(){
     return false;
 }
 
-async function setProfile(profile){
+async function setProfile(profile, confirmedProfileData = null){
     profile = normalizeProfileName(profile);
     if(profile === "HUMAN" && isHumanProfileBlockedByLicense()){
         showToast("Human profile is not included with Paid Monthly users.", "error");
@@ -7581,6 +7589,9 @@ async function setProfile(profile){
     suppressProfileSwitchToastsUntil = Date.now() + 1800;
     let profileData = {};
     try{
+        if(confirmedProfileData && confirmedProfileData.profile === profile){
+            profileData = confirmedProfileData;
+        }else{
         const res = await fetch("/set_profile", {
             method:"POST",
             headers:{"Content-Type":"application/json"},
@@ -7594,6 +7605,7 @@ async function setProfile(profile){
         }
         if(!res.ok || String(profileData.status || "").toLowerCase() !== "success"){
             throw new Error(profileData.error || profileData.message || "Failed to change profile");
+        }
         }
     }catch(e){
         showToast((e && e.message) ? e.message : "Failed to change profile", "error");

@@ -1,0 +1,343 @@
+export type RuntimeMode = 'simulation' | 'bridge';
+export type EnvironmentBadge = 'SIMULATION' | 'DEMO' | 'LIVE';
+export type BridgeStatus = 'simulation' | 'connecting' | 'online' | 'offline' | 'reconnecting' | 'error';
+
+export interface Mt5Account {
+  id: number;
+  login: number;
+  nickname: string;
+  broker: string;
+  server: string;
+  balance: number;
+  equity: number;
+  margin: number;
+  free_margin: number;
+  floating_pl: number;
+  leverage: number;
+  currency: string;
+  status: 'connected' | 'disconnected' | 'connecting';
+  is_active: boolean;
+  account_type: 'live' | 'demo';
+  worker_id?: string | null;
+  terminal_id?: string | null;
+  connection_status?: BridgeStatus | null;
+  last_heartbeat?: string | null;
+  created_at?: string;
+  cached?: boolean;
+}
+
+export interface BotSettings {
+  risk_percent: number;
+  max_spread: number;
+  trailing_stop: boolean;
+  magic_number: number;
+  max_daily_loss: number;
+  slippage?: number;
+  max_open_positions?: number;
+  trading_session?: string;
+}
+
+export interface Mt5Bot {
+  id: number;
+  name: string;
+  description: string;
+  strategy: string;
+  symbol: string;
+  timeframe: string;
+  account_login: number | null;
+  status: 'starting' | 'running' | 'paused' | 'stopping' | 'stopped' | 'error' | 'worker_offline' | 'connecting';
+  lot_size: number;
+  win_rate: number;
+  total_trades: number;
+  net_profit: number;
+  profit_today: number;
+  version: string;
+  started_at: string | null;
+  settings: BotSettings;
+  ea_filename?: string | null;
+  preset_filename?: string | null;
+  file_status?: 'ready' | 'missing' | 'metadata-only';
+  upload_date?: string | null;
+  dll_required?: boolean;
+  recommended_timeframe?: string | null;
+  ea_storage_path?: string | null;
+  preset_storage_path?: string | null;
+  ea_size_bytes?: number | null;
+  preset_size_bytes?: number | null;
+  ea_sha256?: string | null;
+  preset_sha256?: string | null;
+  worker_id?: string | null;
+  terminal_id?: string | null;
+  process_id?: number | null;
+  terminal_status?: 'online' | 'offline' | null;
+  last_activity?: string | null;
+  last_error?: string | null;
+  account_verified?: boolean;
+  open_positions?: number;
+  current_pl?: number;
+  today_pl?: number;
+  last_trade?: { ticket: number; symbol: string; time: string } | null;
+}
+
+
+export interface Mt5Quote {
+  symbol: string;
+  resolved_symbol: string;
+  bid: number;
+  ask: number;
+  last: number;
+  digits: number;
+  point: number;
+  spread_points: number;
+  time: string;
+  trade_allowed: boolean;
+  path?: string;
+  category?: string;
+}
+
+export interface Mt5SymbolInfo {
+  symbol: string;
+  description: string;
+  digits: number;
+  point: number;
+  contract_size: number;
+  volume_min: number;
+  volume_max: number;
+  volume_step: number;
+  visible: boolean;
+  trade_allowed: boolean;
+  path?: string;
+  category?: string;
+}
+
+export interface Mt5Position {
+  id: number;
+  ticket: number;
+  account_login: number;
+  symbol: string;
+  type: 'buy' | 'sell';
+  volume: number;
+  open_price: number;
+  current_price: number;
+  sl: number | null;
+  tp: number | null;
+  profit: number;
+  swap: number;
+  commission: number;
+  open_time: string;
+  source: string;
+  magic: number | null;
+}
+
+export interface Mt5HistoryRow {
+  id: number;
+  ticket: number;
+  account_login: number;
+  symbol: string;
+  type: 'buy' | 'sell';
+  volume: number;
+  open_price: number;
+  close_price: number;
+  profit: number;
+  swap: number;
+  commission: number;
+  open_time: string;
+  close_time: string;
+  source: string;
+  net_pl?: number;
+}
+
+export interface DerivSymbol {
+  symbol: string;
+  name: string;
+  market: string;
+  subgroup?: string;
+  submarket?: string;
+  symbol_type?: string;
+  pip_size?: number;
+  exchange_is_open?: boolean;
+  is_trading_suspended?: boolean;
+}
+
+export interface DerivTick {
+  symbol: string;
+  quote: number;
+  epoch: number;
+  pip_size?: number;
+}
+
+export type CopyMode = 'same_lot' | 'fixed_lot' | 'balance_ratio' | 'risk_ratio' | 'multiplier';
+
+export interface CopyRelationship {
+  id: string;
+  name: string;
+  master_login: number;
+  follower_login: number;
+  enabled: boolean;
+  status: 'stopped' | 'armed' | 'copying' | 'blocked' | 'error';
+  copy_mode: CopyMode;
+  fixed_lot: number;
+  multiplier: number;
+  max_lot: number;
+  max_daily_loss: number;
+  max_drawdown_pct: number;
+  max_open_positions: number;
+  copy_new_trades: boolean;
+  copy_sl_tp: boolean;
+  copy_closes: boolean;
+  created_at: string;
+  last_event?: string | null;
+}
+
+export interface CopyEvent {
+  id: string;
+  relationship_id: string;
+  time: string;
+  action: 'open' | 'modify' | 'close' | 'blocked' | 'status';
+  symbol?: string;
+  side?: 'buy' | 'sell';
+  master_ticket?: number;
+  follower_ticket?: number;
+  master_volume?: number;
+  follower_volume?: number;
+  profit?: number;
+  message: string;
+}
+
+export interface CopyState {
+  relationships: CopyRelationship[];
+  events: CopyEvent[];
+  real_execution_available: boolean;
+  execution_message: string;
+}
+
+export interface EquityPoint {
+  date: string;
+  equity: number;
+  daily_pl: number;
+}
+
+export interface Mt5Stats {
+  kpis: {
+    total_balance: number;
+    total_equity: number;
+    floating: number;
+    margin: number;
+    free_margin: number;
+    margin_level: number | null;
+    realized_today: number;
+    today_pl: number;
+    trades_today: number;
+    latest_day: string | null;
+    connected_accounts: number;
+    total_accounts: number;
+    running_bots: number;
+    paused_bots: number;
+    total_bots: number;
+    open_positions: number;
+    win_rate_30d: number;
+    trades_30d: number;
+    profit_30d: number;
+    drawdown_pct: number;
+    peak_equity: number;
+  };
+  equity: EquityPoint[];
+  daily: { date: string; pl: number }[];
+  bots: Mt5Bot[];
+  symbolPnl: { symbol: string; pl: number; trades: number }[];
+  exposure: { symbol: string; volume: number; floating: number; count: number }[];
+}
+
+export interface AiInsight {
+  id: number;
+  title: string;
+  body: string;
+  category: 'risk' | 'opportunity' | 'performance' | 'market';
+  sentiment: 'positive' | 'warning' | 'critical' | 'neutral';
+  confidence: number;
+  account_login: number | null;
+  bot_id: number | null;
+  created_at: string;
+}
+
+export interface AiSettings {
+  auto_trading: boolean;
+  risk_guard: boolean;
+  sentiment_filter: boolean;
+  news_pause: boolean;
+}
+
+export interface DerivAccount {
+  id: number;
+  login: string;
+  nickname: string;
+  platform: string;
+  balance: number;
+  currency: string;
+  status: 'connected' | 'disconnected';
+  account_type: 'live' | 'demo';
+  is_active: boolean;
+}
+
+export interface BridgeInfo {
+  status: BridgeStatus;
+  mode: RuntimeMode;
+  terminal: string | null;
+  trading_enabled: boolean;
+  endpoint: string | null;
+  protocol: string | null;
+  last_heartbeat: string | null;
+  message?: string | null;
+  services?: { bridge: 'online' | 'offline' | 'error'; ea_worker: 'online' | 'offline' | 'error'; copy_worker: 'online' | 'offline' | 'error' };
+  ea_worker?: {
+    status: 'starting' | 'online' | 'offline' | 'error';
+    message: string;
+    endpoint: string;
+    running?: number;
+    terminals: { id: string; name: string; path: string }[];
+    capabilities?: { start: boolean; stop: boolean; pause: boolean; resume: boolean };
+  };
+  capabilities?: {
+    account_data: boolean;
+    quotes: boolean;
+    candles: boolean;
+    manual_trading: boolean;
+    positions: boolean;
+    history: boolean;
+    ea_launch: boolean;
+  };
+}
+
+export interface RiskSettings {
+  id: string;
+  scope: 'global' | 'account' | 'bot';
+  account_login?: number | null;
+  bot_id?: number | null;
+  max_daily_loss: number;
+  max_daily_profit: number;
+  max_drawdown_pct: number;
+  max_lot_size: number;
+  max_open_positions: number;
+  max_trades_per_day: number;
+  max_risk_per_trade: number;
+  allowed_trading_hours: string;
+  allowed_symbols: string[];
+  auto_stop: boolean;
+}
+
+export interface BotPerformance {
+  bot_id: number;
+  trades: number;
+  wins: number;
+  losses: number;
+  win_rate: number;
+  gross_profit: number;
+  gross_loss: number;
+  net_pl: number;
+  average_win: number;
+  average_loss: number;
+  largest_win: number;
+  largest_loss: number;
+  current_drawdown: number;
+  max_drawdown: number;
+}

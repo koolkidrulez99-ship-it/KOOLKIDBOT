@@ -1,0 +1,18 @@
+[
+  {
+    "case": "expired_open_contract_settlement",
+    "fixture": "representative expired/open response, not a captured full broker frame",
+    "server_accepts_as_settled": true,
+    "expected_entry_contract_id": "current-rise",
+    "actual_entry_contract_id": "previous-fall",
+    "actual_entry_contract_type": "PUT",
+    "bug_reproduced": true
+  },
+  {
+    "case": "cloud_pat_mode_copy",
+    "network_calls": 0,
+    "source_mode": "pat",
+    "actual_worker_mode": "legacy",
+    "bug_reproduced": true
+  }
+]

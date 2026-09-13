@@ -1,0 +1,6 @@
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+python-dotenv>=1.0,<2
+psutil>=6,<8
+pydantic>=2,<3
+MetaTrader5>=5.0.45

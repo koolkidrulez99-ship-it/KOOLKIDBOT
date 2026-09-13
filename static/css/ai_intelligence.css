@@ -1,0 +1,34 @@
+.ai-bubble-setting{display:inline-flex;align-items:center;gap:8px;font-size:13px;color:inherit;margin:8px}
+.ai-bubble-setting input{width:16px;height:16px;margin:0}
+#aiIntelligence{--ai-bg:#14181e;--ai-fg:#f1f5f9;--ai-muted:#a4adb8;--ai-line:#38424b;--ai-user:#16484b;--ai-accent:#72e2c1;font:14px/1.5 Arial,sans-serif;letter-spacing:0;color:var(--ai-fg)}
+#aiIntelligence [hidden]{display:none!important}
+#aiIntelligence button{font:inherit;letter-spacing:0;margin:0;cursor:pointer;box-shadow:none;min-width:0}
+#aiIntelligence button:focus-visible,#aiIntelligence textarea:focus-visible{outline:2px solid var(--ai-accent);outline-offset:3px}
+#aiIntelligence .ai-launcher{position:fixed;right:20px;bottom:20px;width:56px;height:56px;border-radius:50%;padding:4px;border:1px solid #72e2c1;background:#151d22;box-shadow:0 3px 20px #0005;z-index:9500}
+#aiIntelligence img{object-fit:contain;width:100%;height:100%}
+#aiIntelligence .ai-panel{position:fixed;right:20px;bottom:88px;width:min(410px,calc(100vw - 32px));height:min(610px,calc(100dvh - 115px));min-height:240px;display:flex;flex-direction:column;background:var(--ai-bg);border:1px solid var(--ai-line);border-radius:8px;box-shadow:0 12px 45px #0007;z-index:9501;overflow:hidden;text-align:left}
+#aiIntelligence .ai-header{display:flex;align-items:center;gap:10px;padding:14px;border-bottom:1px solid var(--ai-line);flex-shrink:0}
+#aiIntelligence .ai-header img{width:38px;height:38px}
+#aiIntelligence .ai-heading{flex:1;min-width:0}
+#aiIntelligence .ai-heading strong{display:block;font-size:16px;color:var(--ai-fg)}
+#aiIntelligence .ai-ready{font-size:12px;color:var(--ai-accent)}
+#aiIntelligence .ai-tool{background:transparent;color:var(--ai-muted);width:32px;height:32px;display:inline-grid;place-items:center;border:0;padding:6px;border-radius:4px;flex-shrink:0}
+#aiIntelligence .ai-tool:hover{background:var(--ai-line);color:var(--ai-fg)}
+#aiIntelligence .ai-tool svg{width:18px;height:18px}
+#aiIntelligence .ai-messages{padding:16px;overflow:auto;flex:1;min-height:0;overscroll-behavior:contain}
+#aiIntelligence .ai-message{max-width:94%;margin:0 0 12px;padding:10px 12px;border-radius:8px;white-space:pre-wrap;overflow-wrap:anywhere;background:#252c34;color:var(--ai-fg);text-align:left}
+#aiIntelligence .ai-user{margin-left:auto;background:var(--ai-user)}
+#aiIntelligence .ai-quick{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:12px}
+#aiIntelligence .ai-command,#aiIntelligence .ai-confirm{padding:8px 10px;border:1px solid var(--ai-line);background:transparent;color:var(--ai-fg);border-radius:4px;font-size:12px}
+#aiIntelligence .ai-confirm{display:block;background:var(--ai-accent);color:#09251e;margin:10px 0 2px;font-weight:700}
+#aiIntelligence .ai-compose{display:flex;align-items:end;gap:8px;padding:12px;border-top:1px solid var(--ai-line);flex-shrink:0}
+#aiIntelligence textarea{width:100%;min-width:0;height:68px;max-height:110px;resize:none;border:1px solid var(--ai-line);border-radius:4px;background:var(--ai-bg);color:var(--ai-fg);padding:9px;font:14px/1.5 Arial,sans-serif;margin:0}
+#aiIntelligence .ai-send{background:var(--ai-accent);color:#09251e}
+#aiIntelligence .ai-footer{display:flex;justify-content:space-between;align-items:center;padding:0 12px 10px;gap:8px}
+#aiIntelligence .ai-hide{font-size:12px;background:none;color:var(--ai-muted);padding:4px;border:0}
+#aiIntelligence .ai-emergency{font-size:12px;padding:6px 8px;background:#55272b;border:1px solid #9c555c;border-radius:4px;color:#ffdfdf}
+#aiIntelligence .ai-thinking{padding:0 16px 8px;font-size:12px;color:var(--ai-accent)}
+[data-theme="light"] #aiIntelligence,body.light-mode #aiIntelligence{--ai-bg:#fff;--ai-fg:#182126;--ai-muted:#48545c;--ai-line:#c7d2d7;--ai-user:#cff4ed;--ai-accent:#29b493}
+[data-theme="light"] #aiIntelligence .ai-message,body.light-mode #aiIntelligence .ai-message{background:#edf1f4}
+[data-theme="light"] #aiIntelligence .ai-user,body.light-mode #aiIntelligence .ai-user{background:var(--ai-user)}
+@media(max-width:600px){#aiIntelligence .ai-launcher{right:12px;bottom:max(12px,env(safe-area-inset-bottom));width:50px;height:50px}#aiIntelligence .ai-panel{right:8px;bottom:max(72px,calc(env(safe-area-inset-bottom) + 64px));width:calc(100vw - 16px);height:min(580px,calc(100dvh - 88px));min-height:180px}#aiIntelligence .ai-header{padding:10px}#aiIntelligence .ai-messages{padding:10px}}

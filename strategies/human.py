@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime
 import time
 
+from bot_modules.trade_history import append_bounded_trade_history
+
 
 @dataclass
 class Candle:
@@ -836,9 +838,7 @@ class HumanStrategy:
         if contract_id not in (None, ""):
             entry["contract_id"] = str(contract_id)
 
-        self.trade_history.append(entry)
-        if len(self.trade_history) > 200:
-            self.trade_history.pop(0)
+        append_bounded_trade_history(self.trade_history, entry)
 
         self.last_trade_entry = entry
 

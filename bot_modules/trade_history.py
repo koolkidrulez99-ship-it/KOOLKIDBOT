@@ -3,6 +3,31 @@ import hashlib
 from .time_digits import now_time
 
 
+PROFILE_TRADE_HISTORY_LIMIT = 500
+
+
+def append_bounded_trade_history(history, entry, limit=PROFILE_TRADE_HISTORY_LIMIT):
+    """Append one result while retaining a stable, bounded recent-history window."""
+    if not isinstance(history, list):
+        raise TypeError("trade history must be a list")
+    row = entry if isinstance(entry, dict) else dict(entry or {})
+    contract_id = row.get("contract_id") or row.get("id")
+    if contract_id not in (None, ""):
+        normalized_id = str(contract_id)
+        for index in range(len(history) - 1, -1, -1):
+            existing = history[index]
+            existing_id = (existing or {}).get("contract_id") or (existing or {}).get("id") if isinstance(existing, dict) else None
+            if existing_id not in (None, "") and str(existing_id) == normalized_id:
+                existing.update(row)
+                return existing
+    history.append(row)
+    safe_limit = max(1, int(limit or PROFILE_TRADE_HISTORY_LIMIT))
+    overflow = len(history) - safe_limit
+    if overflow > 0:
+        del history[:overflow]
+    return row
+
+
 def serialize_profile_trade_history_entry(profile, entry, index):
     raw = dict(entry or {}) if isinstance(entry, dict) else {}
     if not raw:
@@ -92,7 +117,7 @@ def get_profile_trade_history_snapshot(state, profile=None):
     snapshots = {}
     for prof in targets:
         strat = strategies.get(prof)
-        raw_history = list(getattr(strat, "trade_history", []) or []) if strat else []
+        raw_history = list(getattr(strat, "trade_history", []) or [])[-PROFILE_TRADE_HISTORY_LIMIT:] if strat else []
         items = []
         for idx, entry in enumerate(raw_history):
             serialized = serialize_profile_trade_history_entry(prof, entry, idx)

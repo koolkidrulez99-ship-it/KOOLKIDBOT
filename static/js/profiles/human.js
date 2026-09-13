@@ -1020,7 +1020,7 @@
       const limits = [
         settings.takeProfit > 0 ? `TP ${money(settings.takeProfit)}` : "TP off",
         settings.stopLoss > 0 ? `SL ${money(settings.stopLoss)}` : "SL off",
-        `Session P/L ${money(HUMAN_PARITY_MARTINGALE_STATE.sessionPnl || 0)}`,
+        `Session P/L ${signedMoney(HUMAN_PARITY_MARTINGALE_STATE.sessionPnl || 0)}`,
       ].join(" • ");
       const marketLine = HUMAN_PARITY_MARTINGALE_STATE.marketSwitcherEnabled
         ? `Market Switcher ON • ${HUMAN_PARITY_MARTINGALE_STATE.marketSwitcherScanStatus || "Scan before each trade"} • Trade market ${HUMAN_PARITY_MARTINGALE_STATE.activeMarket || getCurrentHumanMarketSymbol()}`
@@ -1214,7 +1214,9 @@
     }catch(e){
       clearHumanParityVisibleBatch();
       st.running = false;
-      st.runId = "";
+      st.pending = Object.fromEntries(Object.entries(st.pending || {}).filter(([, leg]) => leg && leg.contractId));
+      st.settled = Object.values(st.pending).filter((leg) => leg.result).length;
+      if(!Object.keys(st.pending).length) st.runId = "";
       st.plusRecoveryPending = false;
       st.status = (e && e.message) || "Even/Odd martingale trade failed";
       if(typeof showToast === "function") showToast(st.status, "error");
@@ -1256,9 +1258,9 @@
     st.stopLoss = settings.stopLoss;
     let reason = "";
     if(settings.takeProfit > 0 && Number(st.sessionPnl || 0) >= settings.takeProfit){
-      reason = `TP reached at ${money(st.sessionPnl)}`;
+      reason = `TP reached at ${signedMoney(st.sessionPnl)}`;
     }else if(settings.stopLoss > 0 && Number(st.sessionPnl || 0) <= -Math.abs(settings.stopLoss)){
-      reason = `SL reached at ${money(st.sessionPnl)}`;
+      reason = `SL reached at ${signedMoney(st.sessionPnl)}`;
     }
     if(!reason) return false;
     st.running = false;

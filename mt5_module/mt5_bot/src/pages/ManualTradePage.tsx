@@ -1,0 +1,325 @@
+import { useEffect, useMemo, useState } from 'react';
+import { ArrowDown, ArrowUp, Crosshair, History as HistoryIcon, Info } from 'lucide-react';
+import { useHub } from '../context/HubContext';
+import { MARKET, SYMBOL_LIST, marginFor, pipValue } from '../lib/market';
+import { fmtDateTime, fmtPrice, fmtSigned, fmtUSD, profitTone } from '../lib/format';
+import { Badge, PageHeader, Panel, Spinner, Toggle } from '../components/ui';
+import { openTrade } from '../lib/actions';
+import type { Mt5HistoryRow, Mt5Quote } from '../types';
+import { mt5HistoryService } from '../services/mt5HistoryService';
+import { mt5MarketService } from '../services/mt5MarketService';
+import { isSimulation } from '../config/runtime';
+import MarketSelect from '../components/MarketSelect';
+import { usePersistentState } from '../hooks/usePersistentState';
+
+export default function ManualTradePage() {
+  const { accounts, activeAccount, market, livePrice, liveQuote, mt5Symbols, pushToast, refresh } = useHub();
+  const connected = useMemo(() => accounts.filter((a) => a.status === 'connected'), [accounts]);
+
+  const [login, setLogin] = usePersistentState<number | ''>('manual_account_login', '');
+  const [symbol, setSymbol] = usePersistentState('manual_symbol', 'XAUUSD');
+  const [side, setSide] = usePersistentState<'buy' | 'sell'>('manual_side', 'buy');
+  const [volume, setVolume] = usePersistentState('manual_volume', '0.10');
+  const [useProtection, setUseProtection] = usePersistentState('manual_protection', true);
+  const [sl, setSl] = usePersistentState('manual_sl', '');
+  const [tp, setTp] = usePersistentState('manual_tp', '');
+  const [busy, setBusy] = useState(false);
+  const [manualHistory, setManualHistory] = useState<Mt5HistoryRow[]>([]);
+  const [selectedBridgeQuote, setSelectedBridgeQuote] = useState<Mt5Quote | null>(null);
+  const acc = accounts.find((account) => account.login === login && account.status === 'connected') || null;
+
+  useEffect(() => {
+    if (!login) {
+      const def = activeAccount && activeAccount.status === 'connected' ? activeAccount : connected[0];
+      if (def) setLogin(def.login);
+    }
+  }, [connected, activeAccount, login]);
+
+  const loadManual = () => {
+    mt5HistoryService.list()
+      .then((rows) => setManualHistory(rows.filter((r) => r.source === 'Manual').slice(0, 6)))
+      .catch(() => setManualHistory([]));
+  };
+  useEffect(loadManual, []);
+
+  useEffect(() => {
+    if (isSimulation || !mt5Symbols.length) return;
+    if (mt5Symbols.some((s) => s.symbol === symbol && s.trade_allowed)) return;
+    const preferred = mt5Symbols.find((s) => s.trade_allowed && s.symbol.toUpperCase() === 'XAUUSD')
+      || mt5Symbols.find((s) => s.trade_allowed && s.symbol.toUpperCase().startsWith('XAUUSD'))
+      || mt5Symbols.find((s) => s.trade_allowed);
+    if (preferred) setSymbol(preferred.symbol);
+  }, [mt5Symbols, symbol]);
+
+  useEffect(() => {
+    if (isSimulation || !symbol || !acc) { setSelectedBridgeQuote(null); return; }
+    let cancelled = false;
+    const load = () => mt5MarketService.quotes([symbol], acc.login).then((rows) => {
+      if (!cancelled) setSelectedBridgeQuote(rows[0] || null);
+    }).catch(() => { if (!cancelled) setSelectedBridgeQuote(null); });
+    load();
+    const id = window.setInterval(load, 1200);
+    return () => { cancelled = true; window.clearInterval(id); };
+  }, [symbol, acc?.login]);
+
+  const price = livePrice(symbol);
+  const quote = selectedBridgeQuote || liveQuote(symbol);
+  const meta = MARKET[symbol];
+  const symbolInfo = mt5Symbols.find((s) => s.symbol === symbol);
+  const bid = quote?.bid || price;
+  const ask = quote?.ask || (price + (meta?.pip || 0) * 2);
+  const entryPrice = side === 'buy' ? ask : bid;
+  const vol = Number(volume) || 0;
+  const digits = quote?.digits ?? symbolInfo?.digits ?? meta?.digits ?? 5;
+  const point = quote?.point || symbolInfo?.point || (meta ? meta.pip / (digits === 3 || digits === 5 ? 10 : 1) : 0);
+  const pipSize = meta?.pip || (point ? point * (digits === 3 || digits === 5 ? 10 : 1) : 0);
+  const contractSize = symbolInfo?.contract_size || meta?.contract || 0;
+  const marginEst = acc && contractSize ? (entryPrice * contractSize * vol) / Math.max(1, acc.leverage) : (acc ? marginFor(symbol, price, vol, acc.leverage) : 0);
+  const pipVal = meta ? pipValue(symbol, vol) : contractSize * pipSize * vol;
+
+  const slNum = Number(sl);
+  const tpNum = Number(tp);
+  const slError = useProtection && sl && side === 'buy' && slNum >= entryPrice ? 'Stop loss must sit below entry for a BUY.'
+    : useProtection && sl && side === 'sell' && slNum <= entryPrice ? 'Stop loss must sit above entry for a SELL.' : '';
+  const tpError = useProtection && tp && side === 'buy' && tpNum <= entryPrice ? 'Take profit must sit above entry for a BUY.'
+    : useProtection && tp && side === 'sell' && tpNum >= entryPrice ? 'Take profit must sit below entry for a SELL.' : '';
+
+  const slPips = sl && pipSize ? Math.abs(entryPrice - slNum) / pipSize : 0;
+  const tpPips = tp && pipSize ? Math.abs(tpNum - entryPrice) / pipSize : 0;
+
+  const submit = async () => {
+    if (!acc) {
+      pushToast('error', 'No connected account', 'Connect an MT5 account first.');
+      return;
+    }
+    const minVolume = isSimulation ? 0.01 : (symbolInfo?.volume_min || 0.01);
+    const maxVolume = isSimulation ? 50 : (symbolInfo?.volume_max || 50);
+    if (!vol || vol < minVolume || vol > maxVolume) {
+      pushToast('error', 'Invalid volume', `Volume must be between ${minVolume} and ${maxVolume} lots.`);
+      return;
+    }
+    if (slError || tpError) {
+      pushToast('error', 'Check SL/TP', slError || tpError);
+      return;
+    }
+    setBusy(true);
+    try {
+      await openTrade({
+        account_login: acc.login,
+        symbol,
+        type: side,
+        volume: vol,
+        sl: useProtection && sl ? slNum : null,
+        tp: useProtection && tp ? tpNum : null,
+        source: 'Manual',
+      });
+      pushToast('success', `${side.toUpperCase()} ${vol.toFixed(2)} ${symbol} filled`, `Account ${acc.nickname} \u00b7 market execution.`);
+      setSl('');
+      setTp('');
+      await refresh(true);
+      loadManual();
+    } catch (e) {
+      pushToast('error', 'Order rejected', e instanceof Error ? e.message : undefined);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div>
+      <PageHeader title="Manual Trading" sub={isSimulation ? 'Simulation order ticket · no broker order is sent' : 'Discretionary execution through the authenticated MT5 bridge'} />
+
+      <div className="grid grid-cols-1 xl:grid-cols-5 gap-4">
+        {/* Order ticket */}
+        <Panel className="xl:col-span-3 p-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="label">MT5 Account</label>
+              <select className="input" value={login} onChange={(e) => setLogin(Number(e.target.value))}>
+                {connected.length === 0 && <option value="">No connected accounts</option>}
+                {connected.map((a) => (
+                  <option key={a.id} value={a.login}>
+                    {a.nickname} &middot; #{a.login}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="label">Symbol</label>
+              <MarketSelect compact tradeOnly value={symbol} onChange={(next) => { setSymbol(next); setSl(''); setTp(''); }} />
+            </div>
+          </div>
+
+          <div className="mt-5 rounded-2xl bg-black/30 border border-white/[0.07] p-5 flex items-center justify-between">
+            <div>
+              <p className="text-[10px] uppercase tracking-[0.18em] text-slate-600 font-bold">{isSimulation ? 'Simulated quote' : acc ? 'Live broker quote' : 'Account disconnected'} · {symbol}</p>
+              <p className="mono text-3xl font-extrabold text-white mt-1">{acc && quote ? entryPrice.toFixed(digits) : '—'}</p>
+            </div>
+            <div className="text-right text-xs text-slate-500 space-y-1">
+              <p>Bid <span className="mono text-slate-200">{acc && quote ? bid.toFixed(digits) : '—'}</span></p>
+              <p>Ask <span className="mono text-slate-200">{acc && quote ? ask.toFixed(digits) : '—'}</span></p>
+              <p>Spread <span className="mono text-slate-200">{acc && quote ? `${quote.spread_points.toFixed(1)} pts` : '—'}</span></p>
+            </div>
+          </div>
+
+          <label className="label mt-5">Side</label>
+          <div className="grid grid-cols-2 gap-2.5">
+            {(['buy', 'sell'] as const).map((s) => (
+              <button
+                key={s}
+                disabled={!acc}
+                onClick={() => { setSide(s); setSl(''); setTp(''); }}
+                className={`rounded-xl py-3 text-sm font-extrabold uppercase tracking-wider transition-all cursor-pointer border ${
+                  side === s
+                    ? s === 'buy'
+                      ? 'bg-gain-500 text-black border-gain-400 shadow-glow-gain'
+                      : 'bg-loss-500 text-white border-loss-400 shadow-glow-loss'
+                    : 'bg-white/[0.03] text-slate-500 border-white/10 hover:text-slate-300'
+                }`}
+              >
+                {s === 'buy' ? <ArrowUp size={15} className="inline -mt-0.5 mr-1" /> : <ArrowDown size={15} className="inline -mt-0.5 mr-1" />}
+                {s}
+              </button>
+            ))}
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-5">
+            <div>
+              <label className="label">Volume (lots)</label>
+              <div className="flex items-center gap-2">
+                <button className="btn-ghost !px-3" aria-label="Decrease lot size" onClick={() => setVolume((v) => Math.max(0.01, Number(v) - 0.01).toFixed(2))}>-</button>
+                <input className="input mono text-center" value={volume} onChange={(e) => setVolume(e.target.value)} inputMode="decimal" />
+                <button className="btn-ghost !px-3" aria-label="Increase lot size" onClick={() => setVolume((v) => Math.min(50, Number(v) + 0.01).toFixed(2))}>+</button>
+              </div>
+              <div className="mt-2 flex gap-1">
+                {['0.01', '0.05', '0.10', '0.25', '0.50', '1.00'].map((v) => (
+                  <button
+                    key={v}
+                    onClick={() => setVolume(v)}
+                    className={`flex-1 rounded-lg py-1 mono text-[10px] font-bold cursor-pointer transition-colors ${
+                      volume === v ? 'bg-brand-600 text-white' : 'bg-white/[0.05] text-slate-500 hover:text-white'
+                    }`}
+                  >
+                    {v}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="md:col-span-2">
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="label !mb-0">Protection (SL / TP)</label>
+                <Toggle on={useProtection} onChange={setUseProtection} />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <input
+                    className={`input mono ${slError ? '!border-loss-500/60' : ''}`}
+                    placeholder={`Stop loss (${digits}d)`}
+                    value={sl}
+                    onChange={(e) => setSl(e.target.value)}
+                    inputMode="decimal"
+                    disabled={!useProtection}
+                  />
+                  <p className="mt-1 text-[10px] text-slate-600">{useProtection && sl && !slError ? `${slPips.toFixed(1)} pips away \u00b7 -${fmtUSD(slPips * pipVal)}` : 'Max acceptable loss'}</p>
+                  {slError && <p className="mt-1 text-[10px] text-loss-400">{slError}</p>}
+                </div>
+                <div>
+                  <input
+                    className={`input mono ${tpError ? '!border-loss-500/60' : ''}`}
+                    placeholder={`Take profit (${digits}d)`}
+                    value={tp}
+                    onChange={(e) => setTp(e.target.value)}
+                    inputMode="decimal"
+                    disabled={!useProtection}
+                  />
+                  <p className="mt-1 text-[10px] text-slate-600">{useProtection && tp && !tpError ? `${tpPips.toFixed(1)} pips away \u00b7 +${fmtUSD(tpPips * pipVal)}` : 'Target exit'}</p>
+                  {tpError && <p className="mt-1 text-[10px] text-loss-400">{tpError}</p>}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-5 grid grid-cols-3 gap-3 text-center">
+            <div className="rounded-xl bg-white/[0.03] border border-white/[0.06] py-2.5">
+              <p className="text-[9px] uppercase tracking-widest text-slate-600 font-semibold">Est. margin</p>
+              <p className="mono text-[13px] font-bold text-white mt-0.5">{fmtUSD(marginEst)}</p>
+            </div>
+            <div className="rounded-xl bg-white/[0.03] border border-white/[0.06] py-2.5">
+              <p className="text-[9px] uppercase tracking-widest text-slate-600 font-semibold">Pip value</p>
+              <p className="mono text-[13px] font-bold text-white mt-0.5">{fmtUSD(pipVal)}</p>
+            </div>
+            <div className="rounded-xl bg-white/[0.03] border border-white/[0.06] py-2.5">
+              <p className="text-[9px] uppercase tracking-widest text-slate-600 font-semibold">Leverage</p>
+              <p className="mono text-[13px] font-bold text-white mt-0.5">1:{acc?.leverage ?? '\u2014'}</p>
+            </div>
+          </div>
+
+          <button
+            onClick={submit}
+            disabled={busy || !acc || !quote}
+            className={`mt-5 w-full btn justify-center !rounded-xl !py-4 text-[15px] font-extrabold uppercase tracking-widest disabled:opacity-50 ${
+              side === 'buy' ? 'bg-gain-500 hover:bg-gain-400 text-black shadow-glow-gain' : 'bg-loss-500 hover:bg-loss-400 text-white shadow-glow-loss'
+            }`}
+          >
+            {busy ? <Spinner size={16} /> : <Crosshair size={16} />}
+            {busy ? (isSimulation ? 'Simulating order…' : 'Routing order…') : `Place ${side} · ${vol.toFixed(2)} lots ${symbol}`}
+          </button>
+          <p className="mt-3 flex items-start gap-1.5 text-[11px] text-slate-600">
+            <Info size={12} className="mt-px shrink-0" />
+            {isSimulation ? 'Simulation only: the order is stored locally and does not reach a broker or MetaTrader terminal.' : 'Orders route through the configured authenticated MT5 bridge.'}
+          </p>
+        </Panel>
+
+        {/* side column */}
+        <div className="xl:col-span-2 space-y-4">
+          <Panel className="p-5">
+            <h3 className="text-sm font-bold text-white">Watchlist</h3>
+            <div className="mt-3 space-y-1.5">
+              {SYMBOL_LIST.filter((s) => isSimulation || mt5Symbols.some((x) => x.symbol === s)).map((s) => {
+                const p = market[s] ?? MARKET[s].base;
+                const chg = ((p - MARKET[s].base) / MARKET[s].base) * 100;
+                return (
+                  <button
+                    key={s}
+                    onClick={() => setSymbol(s)}
+                    className={`w-full flex items-center justify-between rounded-xl px-3.5 py-2.5 text-left transition-colors cursor-pointer ${
+                      symbol === s ? 'bg-brand-600/15 border border-brand-500/30' : 'bg-white/[0.02] border border-transparent hover:bg-white/[0.05]'
+                    }`}
+                  >
+                    <div>
+                      <p className="text-[13px] font-bold text-white">{s}</p>
+                      <p className="text-[10px] text-slate-600">{MARKET[s].name}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="mono text-[13px] font-bold text-white">{fmtPrice(p, s)}</p>
+                      <p className={`mono text-[10px] ${chg >= 0 ? 'text-gain-400' : 'text-loss-400'}`}>{chg >= 0 ? '+' : ''}{chg.toFixed(2)}%</p>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </Panel>
+
+          <Panel className="p-5">
+            <h3 className="text-sm font-bold text-white flex items-center gap-2">
+              <HistoryIcon size={14} className="text-brand-300" /> Recent manual fills
+            </h3>
+            <div className="mt-3 space-y-2">
+              {manualHistory.length === 0 && <p className="text-xs text-slate-600 py-3">No manual fills recorded yet.</p>}
+              {manualHistory.map((r) => (
+                <div key={r.id} className="flex items-center gap-2.5 rounded-xl bg-white/[0.03] border border-white/[0.05] px-3 py-2.5">
+                  <Badge tone={r.type === 'buy' ? 'brand' : 'loss'}>{r.type}</Badge>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[12px] font-semibold text-white">{r.symbol} &middot; {Number(r.volume).toFixed(2)}</p>
+                    <p className="text-[10px] text-slate-600">{fmtDateTime(r.close_time)}</p>
+                  </div>
+                  {(() => { const net = Number(r.net_pl ?? (Number(r.profit || 0) + Number(r.swap || 0) + Number(r.commission || 0))); return <p className={`mono text-[12px] font-bold ${profitTone(net)}`}>{fmtSigned(net)}</p>; })()}
+                </div>
+              ))}
+            </div>
+          </Panel>
+        </div>
+      </div>
+    </div>
+  );
+}

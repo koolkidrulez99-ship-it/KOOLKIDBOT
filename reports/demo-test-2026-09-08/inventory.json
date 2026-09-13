@@ -1,0 +1,4765 @@
+{
+  "components": {},
+  "routes": [
+    {
+      "path": "/login",
+      "function": "login",
+      "file": "server.py",
+      "line": 4615
+    },
+    {
+      "path": "/register",
+      "function": "register",
+      "file": "server.py",
+      "line": 4645
+    },
+    {
+      "path": "/forgot_password",
+      "function": "forgot_password",
+      "file": "server.py",
+      "line": 4678
+    },
+    {
+      "path": "/reset_password",
+      "function": "reset_password",
+      "file": "server.py",
+      "line": 4709
+    },
+    {
+      "path": "/reset_password/<token>",
+      "function": "reset_password",
+      "file": "server.py",
+      "line": 4709
+    },
+    {
+      "path": "/logout",
+      "function": "logout",
+      "file": "server.py",
+      "line": 4751
+    },
+    {
+      "path": "/custom_ui_settings",
+      "function": "custom_ui_settings_route",
+      "file": "server.py",
+      "line": 4846
+    },
+    {
+      "path": "/custom_ui_reset",
+      "function": "custom_ui_reset_route",
+      "file": "server.py",
+      "line": 4860
+    },
+    {
+      "path": "/currency/usd-jmd",
+      "function": "usd_jmd_rate_route",
+      "file": "server.py",
+      "line": 4919
+    },
+    {
+      "path": "/admin",
+      "function": "admin_panel",
+      "file": "server.py",
+      "line": 4941
+    },
+    {
+      "path": "/admin/delete_user",
+      "function": "admin_delete_user",
+      "file": "server.py",
+      "line": 4958
+    },
+    {
+      "path": "/admin/license/create",
+      "function": "admin_create_license",
+      "file": "server.py",
+      "line": 4974
+    },
+    {
+      "path": "/admin/license/revoke",
+      "function": "admin_revoke_license",
+      "file": "server.py",
+      "line": 4987
+    },
+    {
+      "path": "/admin/license/renew",
+      "function": "admin_renew_license",
+      "file": "server.py",
+      "line": 5000
+    },
+    {
+      "path": "/admin/broadcast/send",
+      "function": "admin_broadcast_send",
+      "file": "server.py",
+      "line": 5013
+    },
+    {
+      "path": "/admin/broadcast/clear",
+      "function": "admin_broadcast_clear",
+      "file": "server.py",
+      "line": 5035
+    },
+    {
+      "path": "/admin/user/reset_key",
+      "function": "admin_user_reset_key",
+      "file": "server.py",
+      "line": 5044
+    },
+    {
+      "path": "/admin/user/reassign_key",
+      "function": "admin_user_reassign_key",
+      "file": "server.py",
+      "line": 5057
+    },
+    {
+      "path": "/static/components/unchain.html",
+      "function": "unchain_component_alias",
+      "file": "server.py",
+      "line": 5327
+    },
+    {
+      "path": "/static/js/profiles/unchain.js",
+      "function": "unchain_js_alias",
+      "file": "server.py",
+      "line": 5341
+    },
+    {
+      "path": "/static/components/mutant.html",
+      "function": "mutant_component_alias",
+      "file": "server.py",
+      "line": 5356
+    },
+    {
+      "path": "/static/components/ntt.html",
+      "function": "mutant_component_alias",
+      "file": "server.py",
+      "line": 5356
+    },
+    {
+      "path": "/static/js/profiles/mutant.js",
+      "function": "mutant_js_alias",
+      "file": "server.py",
+      "line": 5373
+    },
+    {
+      "path": "/static/js/profiles/ntt.js",
+      "function": "mutant_js_alias",
+      "file": "server.py",
+      "line": 5373
+    },
+    {
+      "path": "/",
+      "function": "index",
+      "file": "server.py",
+      "line": 5394
+    },
+    {
+      "path": "/koolkid-auto-trade",
+      "function": "koolkid_auto_trade",
+      "file": "server.py",
+      "line": 5412
+    },
+    {
+      "path": "/auto-session/status",
+      "function": "auto_session_status",
+      "file": "server.py",
+      "line": 5429
+    },
+    {
+      "path": "/auto-session/start",
+      "function": "auto_session_start",
+      "file": "server.py",
+      "line": 5441
+    },
+    {
+      "path": "/auto-session/stop",
+      "function": "auto_session_stop",
+      "file": "server.py",
+      "line": 5507
+    },
+    {
+      "path": "/auto-session/clear-history",
+      "function": "auto_session_clear_history",
+      "file": "server.py",
+      "line": 5516
+    },
+    {
+      "path": "/heartbeat",
+      "function": "heartbeat",
+      "file": "server.py",
+      "line": 5527
+    },
+    {
+      "path": "/profit_calculator_quote",
+      "function": "profit_calculator_quote_route",
+      "file": "server.py",
+      "line": 9236
+    },
+    {
+      "path": "/koolkid_pair_recovery_quote",
+      "function": "koolkid_pair_recovery_quote_route",
+      "file": "server.py",
+      "line": 9331
+    },
+    {
+      "path": "/deriv/oauth/start",
+      "function": "deriv_oauth_start",
+      "file": "server.py",
+      "line": 21967
+    },
+    {
+      "path": "/oauth/callback",
+      "function": "deriv_oauth_callback",
+      "file": "server.py",
+      "line": 21983
+    },
+    {
+      "path": "/deriv/oauth/callback",
+      "function": "deriv_oauth_callback",
+      "file": "server.py",
+      "line": 21983
+    },
+    {
+      "path": "/deriv/oauth/select-account",
+      "function": "deriv_oauth_select_account",
+      "file": "server.py",
+      "line": 22067
+    },
+    {
+      "path": "/set_token",
+      "function": "set_token",
+      "file": "server.py",
+      "line": 22092
+    },
+    {
+      "path": "/switch_pat_account",
+      "function": "switch_pat_account",
+      "file": "server.py",
+      "line": 22196
+    },
+    {
+      "path": "/api_connection_status",
+      "function": "api_connection_status",
+      "file": "server.py",
+      "line": 22266
+    },
+    {
+      "path": "/koolkid/over3-under6-availability",
+      "function": "koolkid_over3_under6_availability_route",
+      "file": "server.py",
+      "line": 22356
+    },
+    {
+      "path": "/profile_budget",
+      "function": "profile_budget_route",
+      "file": "server.py",
+      "line": 22402
+    },
+    {
+      "path": "/set_auto_stake",
+      "function": "set_auto_stake",
+      "file": "server.py",
+      "line": 22454
+    },
+    {
+      "path": "/disconnect",
+      "function": "disconnect",
+      "file": "server.py",
+      "line": 22482
+    },
+    {
+      "path": "/martha_ai/settings",
+      "function": "martha_ai_settings",
+      "file": "server.py",
+      "line": 22509
+    },
+    {
+      "path": "/martha_ai/emergency_reconnect",
+      "function": "martha_ai_emergency_reconnect",
+      "file": "server.py",
+      "line": 22540
+    },
+    {
+      "path": "/clear_profile_history",
+      "function": "clear_profile_history",
+      "file": "server.py",
+      "line": 22559
+    },
+    {
+      "path": "/set_profile",
+      "function": "set_profile",
+      "file": "server.py",
+      "line": 22632
+    },
+    {
+      "path": "/market_state",
+      "function": "market_state",
+      "file": "server.py",
+      "line": 22696
+    },
+    {
+      "path": "/profile_history_snapshot",
+      "function": "profile_history_snapshot",
+      "file": "server.py",
+      "line": 22712
+    },
+    {
+      "path": "/change_market",
+      "function": "change_market",
+      "file": "server.py",
+      "line": 22726
+    },
+    {
+      "path": "/change_human_market",
+      "function": "change_human_market",
+      "file": "server.py",
+      "line": 22792
+    },
+    {
+      "path": "/set_risk_controls",
+      "function": "set_risk_controls",
+      "file": "server.py",
+      "line": 22833
+    },
+    {
+      "path": "/toggle_auto",
+      "function": "toggle_auto",
+      "file": "server.py",
+      "line": 22851
+    },
+    {
+      "path": "/toggle_kidracks_auto",
+      "function": "toggle_kidracks_auto_route",
+      "file": "server.py",
+      "line": 22880
+    },
+    {
+      "path": "/toggle_koolkidspeed_auto",
+      "function": "toggle_koolkidspeed_auto_route",
+      "file": "server.py",
+      "line": 22898
+    },
+    {
+      "path": "/toggle_koolluck_auto",
+      "function": "toggle_koolluck_auto_route",
+      "file": "server.py",
+      "line": 22916
+    },
+    {
+      "path": "/toggle_auto_dollar_koolkid",
+      "function": "toggle_auto_dollar_koolkid_route",
+      "file": "server.py",
+      "line": 22934
+    },
+    {
+      "path": "/toggle_kidbagz_auto",
+      "function": "toggle_kidbagz_auto_route",
+      "file": "server.py",
+      "line": 22953
+    },
+    {
+      "path": "/toggle_mpull_auto",
+      "function": "toggle_mpull_auto_route",
+      "file": "server.py",
+      "line": 22971
+    },
+    {
+      "path": "/toggle_kidpairs_auto",
+      "function": "toggle_kidpairs_auto_route",
+      "file": "server.py",
+      "line": 22990
+    },
+    {
+      "path": "/toggle_over3_analysis_koolkid",
+      "function": "toggle_over3_analysis_koolkid_route",
+      "file": "server.py",
+      "line": 23008
+    },
+    {
+      "path": "/set_over_analysis_barrier_koolkid",
+      "function": "set_over_analysis_barrier_koolkid_route",
+      "file": "server.py",
+      "line": 23046
+    },
+    {
+      "path": "/start_golden_card_koolkid",
+      "function": "start_golden_card_koolkid_route",
+      "file": "server.py",
+      "line": 23086
+    },
+    {
+      "path": "/toggle_testtrial_koolkid",
+      "function": "toggle_testtrial_koolkid_route",
+      "file": "server.py",
+      "line": 23104
+    },
+    {
+      "path": "/set_testtrial_settings_koolkid",
+      "function": "set_testtrial_settings_koolkid_route",
+      "file": "server.py",
+      "line": 23148
+    },
+    {
+      "path": "/stop_golden_card_koolkid",
+      "function": "stop_golden_card_koolkid_route",
+      "file": "server.py",
+      "line": 23197
+    },
+    {
+      "path": "/golden_card_audit_log",
+      "function": "golden_card_audit_log_route",
+      "file": "server.py",
+      "line": 23207
+    },
+    {
+      "path": "/toggle_kid2vix_koolkid",
+      "function": "toggle_kid2vix_koolkid_route",
+      "file": "server.py",
+      "line": 23225
+    },
+    {
+      "path": "/set_kid2vix_settings_koolkid",
+      "function": "set_kid2vix_settings_koolkid_route",
+      "file": "server.py",
+      "line": 23261
+    },
+    {
+      "path": "/set_mpull_mode",
+      "function": "set_mpull_mode_route",
+      "file": "server.py",
+      "line": 23297
+    },
+    {
+      "path": "/set_kidpairs_trades",
+      "function": "set_kidpairs_trades_route",
+      "file": "server.py",
+      "line": 23311
+    },
+    {
+      "path": "/set_kidracks_settings",
+      "function": "set_kidracks_settings",
+      "file": "server.py",
+      "line": 23325
+    },
+    {
+      "path": "/set_koolkidspeed_settings",
+      "function": "set_koolkidspeed_settings",
+      "file": "server.py",
+      "line": 23340
+    },
+    {
+      "path": "/toggle_kidbrain_auto",
+      "function": "toggle_kidbrain_auto_route",
+      "file": "server.py",
+      "line": 23418
+    },
+    {
+      "path": "/toggle_edgebrain_auto",
+      "function": "toggle_edgebrain_auto_route",
+      "file": "server.py",
+      "line": 23432
+    },
+    {
+      "path": "/toggle_smartflow_auto",
+      "function": "toggle_smartflow_auto_route",
+      "file": "server.py",
+      "line": 23446
+    },
+    {
+      "path": "/toggle_metral_auto",
+      "function": "toggle_metral_auto_route",
+      "file": "server.py",
+      "line": 23460
+    },
+    {
+      "path": "/toggle_kidricks_ai_auto",
+      "function": "toggle_kidricks_ai_auto_route",
+      "file": "server.py",
+      "line": 23474
+    },
+    {
+      "path": "/set_kidbrain_settings",
+      "function": "set_kidbrain_settings",
+      "file": "server.py",
+      "line": 23488
+    },
+    {
+      "path": "/set_edgebrain_settings",
+      "function": "set_edgebrain_settings",
+      "file": "server.py",
+      "line": 23505
+    },
+    {
+      "path": "/toggle_sludgex_auto",
+      "function": "toggle_sludgex_auto_route",
+      "file": "server.py",
+      "line": 23523
+    },
+    {
+      "path": "/toggle_triplex_auto",
+      "function": "toggle_triplex_auto_route",
+      "file": "server.py",
+      "line": 23546
+    },
+    {
+      "path": "/toggle_kidx_auto",
+      "function": "toggle_kidx_auto_route",
+      "file": "server.py",
+      "line": 23567
+    },
+    {
+      "path": "/toggle_multig_auto",
+      "function": "toggle_multig_auto_route",
+      "file": "server.py",
+      "line": 23591
+    },
+    {
+      "path": "/kidgamblex",
+      "function": "kidgamblex_route",
+      "file": "server.py",
+      "line": 23612
+    },
+    {
+      "path": "/toggle_kidgx_auto",
+      "function": "toggle_kidgx_auto_route",
+      "file": "server.py",
+      "line": 23656
+    },
+    {
+      "path": "/set_kidgx_barrier",
+      "function": "set_kidgx_barrier_route",
+      "file": "server.py",
+      "line": 23737
+    },
+    {
+      "path": "/toggle_barrier_analysis",
+      "function": "toggle_barrier_analysis_route",
+      "file": "server.py",
+      "line": 23767
+    },
+    {
+      "path": "/select_barrier_analysis_barrier",
+      "function": "select_barrier_analysis_barrier_route",
+      "file": "server.py",
+      "line": 23784
+    },
+    {
+      "path": "/toggle_ai_auto_trading",
+      "function": "toggle_ai_auto_trading_route",
+      "file": "server.py",
+      "line": 23802
+    },
+    {
+      "path": "/toggle_mpull_all_digits_auto",
+      "function": "toggle_mpull_all_digits_auto_route",
+      "file": "server.py",
+      "line": 23833
+    },
+    {
+      "path": "/set_mpull_all_digits_selection",
+      "function": "set_mpull_all_digits_selection_route",
+      "file": "server.py",
+      "line": 23855
+    },
+    {
+      "path": "/insta5",
+      "function": "insta5_route",
+      "file": "server.py",
+      "line": 23872
+    },
+    {
+      "path": "/manual_trade",
+      "function": "manual_trade",
+      "file": "server.py",
+      "line": 23904
+    },
+    {
+      "path": "/manual_3_trades",
+      "function": "manual_3_trades",
+      "file": "server.py",
+      "line": 23942
+    },
+    {
+      "path": "/burst_4",
+      "function": "burst_4",
+      "file": "server.py",
+      "line": 23968
+    },
+    {
+      "path": "/koolkid_half_auto",
+      "function": "koolkid_half_auto_route",
+      "file": "server.py",
+      "line": 24021
+    },
+    {
+      "path": "/unchain_status",
+      "function": "unchain_status_route",
+      "file": "server.py",
+      "line": 24110
+    },
+    {
+      "path": "/unchain_scanner",
+      "function": "unchain_scanner_status_route",
+      "file": "server.py",
+      "line": 24119
+    },
+    {
+      "path": "/unchain_scanner/start",
+      "function": "unchain_scanner_start_route",
+      "file": "server.py",
+      "line": 24127
+    },
+    {
+      "path": "/unchain_scanner/stop",
+      "function": "unchain_scanner_stop_route",
+      "file": "server.py",
+      "line": 24143
+    },
+    {
+      "path": "/unchain_scanner/apply",
+      "function": "unchain_scanner_apply_route",
+      "file": "server.py",
+      "line": 24155
+    },
+    {
+      "path": "/unchain_both_analyze",
+      "function": "unchain_both_analyze_route",
+      "file": "server.py",
+      "line": 24169
+    },
+    {
+      "path": "/unchain_settings",
+      "function": "unchain_settings_route",
+      "file": "server.py",
+      "line": 24198
+    },
+    {
+      "path": "/unchain_refresh_barriers",
+      "function": "unchain_refresh_barriers_route",
+      "file": "server.py",
+      "line": 24218
+    },
+    {
+      "path": "/unchain_trade",
+      "function": "unchain_trade_route",
+      "file": "server.py",
+      "line": 24236
+    },
+    {
+      "path": "/unchain_expected_profit",
+      "function": "unchain_expected_profit_route",
+      "file": "server.py",
+      "line": 24333
+    },
+    {
+      "path": "/higher_lower_prediction",
+      "function": "higher_lower_prediction_route",
+      "file": "server.py",
+      "line": 24374
+    },
+    {
+      "path": "/touch_no_touch_prediction",
+      "function": "touch_no_touch_prediction_route",
+      "file": "server.py",
+      "line": 24403
+    },
+    {
+      "path": "/contract_selector_analysis",
+      "function": "contract_selector_analysis_route",
+      "file": "server.py",
+      "line": 24438
+    },
+    {
+      "path": "/ntt_status",
+      "function": "ntt_status_route",
+      "file": "server.py",
+      "line": 24490
+    },
+    {
+      "path": "/toggle_ntt_auto_both",
+      "function": "toggle_ntt_auto_both_route",
+      "file": "server.py",
+      "line": 24509
+    },
+    {
+      "path": "/toggle_ntt_koolkid_hl",
+      "function": "toggle_ntt_koolkid_hl_route",
+      "file": "server.py",
+      "line": 24520
+    },
+    {
+      "path": "/toggle_ntt_koolkid_both",
+      "function": "toggle_ntt_koolkid_both_route",
+      "file": "server.py",
+      "line": 24531
+    },
+    {
+      "path": "/ntt_settings",
+      "function": "ntt_settings_route",
+      "file": "server.py",
+      "line": 24542
+    },
+    {
+      "path": "/ntt_refresh_barriers",
+      "function": "ntt_refresh_barriers_route",
+      "file": "server.py",
+      "line": 24563
+    },
+    {
+      "path": "/ntt_trade",
+      "function": "ntt_trade_route",
+      "file": "server.py",
+      "line": 24582
+    },
+    {
+      "path": "/ntt_expected_profit",
+      "function": "ntt_expected_profit_route",
+      "file": "server.py",
+      "line": 24675
+    },
+    {
+      "path": "/ntt_close_now",
+      "function": "ntt_close_now_route",
+      "file": "server.py",
+      "line": 24718
+    },
+    {
+      "path": "/ntt_clear_active",
+      "function": "ntt_clear_active_route",
+      "file": "server.py",
+      "line": 24756
+    },
+    {
+      "path": "/toggle_unchain_auto",
+      "function": "toggle_unchain_auto_route",
+      "file": "server.py",
+      "line": 25236
+    },
+    {
+      "path": "/toggle_unchain_ai_auto_trade",
+      "function": "toggle_unchain_ai_auto_trade_route",
+      "file": "server.py",
+      "line": 25245
+    },
+    {
+      "path": "/toggle_unchain_directional_auto",
+      "function": "toggle_unchain_directional_auto_route",
+      "file": "server.py",
+      "line": 25254
+    },
+    {
+      "path": "/toggle_unchain_primordial_blue",
+      "function": "toggle_unchain_primordial_blue_route",
+      "file": "server.py",
+      "line": 25263
+    },
+    {
+      "path": "/toggle_unchain_hybrid",
+      "function": "toggle_unchain_hybrid_route",
+      "file": "server.py",
+      "line": 25272
+    },
+    {
+      "path": "/toggle_unchain_koolkid_hl",
+      "function": "toggle_unchain_koolkid_hl_route",
+      "file": "server.py",
+      "line": 25281
+    },
+    {
+      "path": "/toggle_unchain_koolkid_both",
+      "function": "toggle_unchain_koolkid_both_route",
+      "file": "server.py",
+      "line": 25290
+    },
+    {
+      "path": "/unchain_stop",
+      "function": "unchain_stop_route",
+      "file": "server.py",
+      "line": 25299
+    },
+    {
+      "path": "/unchain_manual_enter",
+      "function": "unchain_manual_enter_route",
+      "file": "server.py",
+      "line": 25345
+    },
+    {
+      "path": "/unchain_close_now",
+      "function": "unchain_close_now_route",
+      "file": "server.py",
+      "line": 25373
+    },
+    {
+      "path": "/unchain_clear_active",
+      "function": "unchain_clear_active_route",
+      "file": "server.py",
+      "line": 25405
+    },
+    {
+      "path": "/human_rf_status",
+      "function": "human_rf_status_route",
+      "file": "server.py",
+      "line": 25446
+    },
+    {
+      "path": "/human_rf_settings",
+      "function": "human_rf_settings_route",
+      "file": "server.py",
+      "line": 25464
+    },
+    {
+      "path": "/human_manual_contracts",
+      "function": "human_manual_contracts_route",
+      "file": "server.py",
+      "line": 25489
+    },
+    {
+      "path": "/human_manual_trade",
+      "function": "human_manual_trade_route",
+      "file": "server.py",
+      "line": 25514
+    },
+    {
+      "path": "/human_manual_pair_trade",
+      "function": "human_manual_pair_trade_route",
+      "file": "server.py",
+      "line": 25540
+    },
+    {
+      "path": "/human_dual_market_contracts",
+      "function": "human_dual_market_contracts_route",
+      "file": "server.py",
+      "line": 25571
+    },
+    {
+      "path": "/human_parity_market_scan",
+      "function": "human_parity_market_scan_route",
+      "file": "server.py",
+      "line": 25687
+    },
+    {
+      "path": "/human_parity_market_scan_stop",
+      "function": "human_parity_market_scan_stop_route",
+      "file": "server.py",
+      "line": 25759
+    },
+    {
+      "path": "/human_parity_trade",
+      "function": "human_parity_trade_route",
+      "file": "server.py",
+      "line": 25768
+    },
+    {
+      "path": "/human_rf_trade",
+      "function": "human_rf_trade",
+      "file": "server.py",
+      "line": 25891
+    },
+    {
+      "path": "/human_auto_rise_fall",
+      "function": "human_formula_x_route",
+      "file": "server.py",
+      "line": 25950
+    },
+    {
+      "path": "/human_formula_x",
+      "function": "human_formula_x_route",
+      "file": "server.py",
+      "line": 25950
+    },
+    {
+      "path": "/start_seqvix_jokerjoe",
+      "function": "start_seqvix_jokerjoe_route",
+      "file": "server.py",
+      "line": 26042
+    },
+    {
+      "path": "/stop_seqvix_jokerjoe",
+      "function": "stop_seqvix_jokerjoe_route",
+      "file": "server.py",
+      "line": 26058
+    },
+    {
+      "path": "/start_seqvix_koolkid",
+      "function": "start_seqvix_koolkid_route",
+      "file": "server.py",
+      "line": 26067
+    },
+    {
+      "path": "/stop_seqvix_koolkid",
+      "function": "stop_seqvix_koolkid_route",
+      "file": "server.py",
+      "line": 26083
+    },
+    {
+      "path": "/seqvix_status",
+      "function": "seqvix_status_route",
+      "file": "server.py",
+      "line": 26092
+    },
+    {
+      "path": "/human_keep_alive_status",
+      "function": "human_keep_alive_status",
+      "file": "server.py",
+      "line": 26113
+    },
+    {
+      "path": "/toggle_human_keep_alive",
+      "function": "toggle_human_keep_alive",
+      "file": "server.py",
+      "line": 26122
+    },
+    {
+      "path": "/toggle_named_ai_mode",
+      "function": "toggle_named_ai_mode_route",
+      "file": "server.py",
+      "line": 26204
+    },
+    {
+      "path": "/cloud/under9/start",
+      "function": "cloud_under9_start",
+      "file": "cloud_routes.py",
+      "line": 105
+    },
+    {
+      "path": "/cloud/under9/restart",
+      "function": "cloud_under9_restart",
+      "file": "cloud_routes.py",
+      "line": 128
+    },
+    {
+      "path": "/cloud/under9/stop",
+      "function": "cloud_under9_stop",
+      "file": "cloud_routes.py",
+      "line": 156
+    },
+    {
+      "path": "/cloud/under9/status",
+      "function": "cloud_under9_status",
+      "file": "cloud_routes.py",
+      "line": 173
+    },
+    {
+      "path": "/cloud/under9/history",
+      "function": "cloud_under9_history",
+      "file": "cloud_routes.py",
+      "line": 202
+    },
+    {
+      "path": "/cloud/under9/settings",
+      "function": "cloud_under9_settings",
+      "file": "cloud_routes.py",
+      "line": 212
+    }
+  ],
+  "static/components/cloud.html": [
+    {
+      "tag": "input",
+      "line": 80,
+      "id": "cloudBaseStake",
+      "type": "number",
+      "min": "0.35",
+      "step": "0.01"
+    },
+    {
+      "tag": "input",
+      "line": 81,
+      "id": "cloudTpTarget",
+      "type": "number",
+      "min": "0.01",
+      "step": "0.01"
+    },
+    {
+      "tag": "input",
+      "line": 82,
+      "id": "cloudMaxReinvestSteps",
+      "type": "number",
+      "min": "1",
+      "step": "1"
+    },
+    {
+      "tag": "input",
+      "line": 83,
+      "id": "cloudDuration",
+      "type": "number",
+      "min": "1",
+      "max": "10",
+      "step": "1"
+    },
+    {
+      "tag": "input",
+      "line": 84,
+      "id": "cloudMarketSwitchMinutes",
+      "type": "number",
+      "min": "1",
+      "step": "1"
+    },
+    {
+      "tag": "input",
+      "line": 85,
+      "id": "cloudLowBalanceStop",
+      "type": "number",
+      "min": "0",
+      "step": "0.01"
+    },
+    {
+      "tag": "input",
+      "line": 86,
+      "id": "cloudMaxDailyLoss",
+      "type": "number",
+      "min": "0",
+      "step": "0.01"
+    },
+    {
+      "tag": "input",
+      "line": 87,
+      "id": "cloudMaxTrades",
+      "type": "number",
+      "min": "0",
+      "step": "1"
+    },
+    {
+      "tag": "button",
+      "line": 95,
+      "type": "button",
+      "onclick": "cloudSelectMarkets('ALL')"
+    },
+    {
+      "tag": "button",
+      "line": 96,
+      "type": "button",
+      "onclick": "cloudSelectMarkets('VOL')"
+    },
+    {
+      "tag": "button",
+      "line": 97,
+      "type": "button",
+      "onclick": "cloudSelectMarkets('JUMP')"
+    },
+    {
+      "tag": "details",
+      "line": 101
+    },
+    {
+      "tag": "input",
+      "line": 108,
+      "id": "cloudCapitalBuildMode",
+      "type": "checkbox"
+    },
+    {
+      "tag": "input",
+      "line": 109,
+      "id": "cloudTelegramAlerts",
+      "type": "checkbox"
+    },
+    {
+      "tag": "input",
+      "line": 110,
+      "id": "cloudWhatsappAlerts",
+      "type": "checkbox"
+    },
+    {
+      "tag": "input",
+      "line": 111,
+      "id": "cloudAllowAutoResume",
+      "type": "checkbox"
+    },
+    {
+      "tag": "details",
+      "line": 113
+    },
+    {
+      "tag": "select",
+      "line": 118,
+      "id": "cloudTradeTimeMode"
+    },
+    {
+      "tag": "input",
+      "line": 125,
+      "id": "cloudCustomTradeStart",
+      "type": "time"
+    },
+    {
+      "tag": "input",
+      "line": 126,
+      "id": "cloudCustomTradeEnd",
+      "type": "time"
+    },
+    {
+      "tag": "details",
+      "line": 131
+    },
+    {
+      "tag": "input",
+      "line": 135,
+      "id": "cloudMax9Last5",
+      "type": "number",
+      "min": "0",
+      "step": "1"
+    },
+    {
+      "tag": "input",
+      "line": 136,
+      "id": "cloudMax9Last10",
+      "type": "number",
+      "min": "0",
+      "step": "1"
+    },
+    {
+      "tag": "input",
+      "line": 137,
+      "id": "cloudMax9Last20",
+      "type": "number",
+      "min": "0",
+      "step": "1"
+    },
+    {
+      "tag": "input",
+      "line": 138,
+      "id": "cloudStreakCooldown",
+      "type": "number",
+      "min": "0",
+      "step": "1"
+    },
+    {
+      "tag": "button",
+      "line": 143,
+      "type": "button",
+      "onclick": "startCloudUnder9()"
+    },
+    {
+      "tag": "button",
+      "line": 144,
+      "type": "button",
+      "onclick": "restartCloudUnder9()"
+    },
+    {
+      "tag": "button",
+      "line": 145,
+      "type": "button",
+      "onclick": "stopCloudUnder9()"
+    },
+    {
+      "tag": "button",
+      "line": 147,
+      "type": "button",
+      "onclick": "saveCloudUnder9Settings()"
+    },
+    {
+      "tag": "input",
+      "line": 158,
+      "id": "cloudBudget",
+      "type": "number",
+      "min": "0",
+      "step": "0.01"
+    },
+    {
+      "tag": "button",
+      "line": 159,
+      "type": "button",
+      "onclick": "saveProfileBudget('CLOUD')"
+    },
+    {
+      "tag": "button",
+      "line": 168,
+      "onclick": "clearProfileHistory()"
+    }
+  ],
+  "static/components/human.html": [
+    {
+      "tag": "button",
+      "line": 377,
+      "onclick": "humanRFTrade('AUTO')"
+    },
+    {
+      "tag": "button",
+      "line": 378,
+      "onclick": "humanRFTrade('RISE')"
+    },
+    {
+      "tag": "button",
+      "line": 379,
+      "onclick": "humanRFTrade('FALL')"
+    },
+    {
+      "tag": "button",
+      "line": 380,
+      "onclick": "humanAutoRiseFall()"
+    },
+    {
+      "tag": "button",
+      "line": 383,
+      "id": "humanRfAllowEqualsToggle",
+      "type": "button",
+      "onclick": "toggleHumanRFAllowEquals()"
+    },
+    {
+      "tag": "button",
+      "line": 392,
+      "id": "humanRfSmartBtn",
+      "onclick": "toggleHumanRFSetting('smart_assist')"
+    },
+    {
+      "tag": "button",
+      "line": 393,
+      "id": "humanRfAutoBtn",
+      "onclick": "toggleHumanRFSetting('auto_assist')"
+    },
+    {
+      "tag": "button",
+      "line": 394,
+      "id": "humanRfBiasLockBtn",
+      "onclick": "toggleHumanRFSetting('bias_lock')"
+    },
+    {
+      "tag": "button",
+      "line": 395,
+      "id": "humanRfNoTradeBtn",
+      "onclick": "toggleHumanRFSetting('no_trade_filter')"
+    },
+    {
+      "tag": "button",
+      "line": 396,
+      "id": "humanRfAdaptiveBtn",
+      "onclick": "toggleHumanRFSetting('adaptive_cooldown')"
+    },
+    {
+      "tag": "select",
+      "line": 402,
+      "id": "humanRfDuration",
+      "onchange": "saveHumanRFSettings()"
+    },
+    {
+      "tag": "input",
+      "line": 418,
+      "id": "humanRfThreshold",
+      "type": "number",
+      "min": "1",
+      "max": "100",
+      "step": "1",
+      "onchange": "saveHumanRFSettings()"
+    },
+    {
+      "tag": "button",
+      "line": 423,
+      "onclick": "saveHumanRFSettings()"
+    },
+    {
+      "tag": "input",
+      "line": 495,
+      "id": "stake",
+      "type": "number",
+      "min": "0.35",
+      "step": "0.01"
+    },
+    {
+      "tag": "button",
+      "line": 496,
+      "onclick": "humanRFSetStake()"
+    },
+    {
+      "tag": "input",
+      "line": 500,
+      "id": "tp",
+      "type": "number",
+      "step": "0.1"
+    },
+    {
+      "tag": "button",
+      "line": 501,
+      "onclick": "manualTP()"
+    },
+    {
+      "tag": "input",
+      "line": 505,
+      "id": "sl",
+      "type": "number",
+      "step": "0.1"
+    },
+    {
+      "tag": "button",
+      "line": 506,
+      "onclick": "manualSL()"
+    },
+    {
+      "tag": "input",
+      "line": 511,
+      "id": "humanBudget",
+      "type": "number",
+      "min": "0",
+      "step": "0.01"
+    },
+    {
+      "tag": "button",
+      "line": 512,
+      "type": "button",
+      "onclick": "saveProfileBudget('HUMAN')"
+    },
+    {
+      "tag": "button",
+      "line": 518,
+      "id": "autoSlBtn",
+      "onclick": "toggleAutoSL()"
+    },
+    {
+      "tag": "button",
+      "line": 519,
+      "id": "keepAliveBtn",
+      "onclick": "toggleHumanKeepAlive()"
+    },
+    {
+      "tag": "details",
+      "line": 522,
+      "id": "humanSpecialTicksDropdown"
+    },
+    {
+      "tag": "button",
+      "line": 534,
+      "type": "button",
+      "onclick": "refreshHumanManualContracts(true)"
+    },
+    {
+      "tag": "button",
+      "line": 538,
+      "id": "humanHighTickBtn",
+      "type": "button",
+      "onclick": "humanManualTrade('HIGH_TICK')"
+    },
+    {
+      "tag": "button",
+      "line": 539,
+      "id": "humanLowTickBtn",
+      "type": "button",
+      "onclick": "humanManualTrade('LOW_TICK')"
+    },
+    {
+      "tag": "button",
+      "line": 540,
+      "id": "humanOnlyUpsBtn",
+      "type": "button",
+      "onclick": "humanManualTrade('ONLY_UPS')"
+    },
+    {
+      "tag": "button",
+      "line": 541,
+      "id": "humanOnlyDownsBtn",
+      "type": "button",
+      "onclick": "humanManualTrade('ONLY_DOWNS')"
+    },
+    {
+      "tag": "button",
+      "line": 545,
+      "id": "humanAsiansPairBtn",
+      "type": "button",
+      "onclick": "humanManualAsiansPairTrade()"
+    },
+    {
+      "tag": "button",
+      "line": 549,
+      "id": "humanSpecialAutoBtn",
+      "type": "button",
+      "onclick": "openHumanSpecialAutoPopup()"
+    },
+    {
+      "tag": "input",
+      "line": 555,
+      "id": "humanSelectedTick",
+      "type": "number",
+      "min": "1",
+      "max": "5",
+      "step": "1"
+    },
+    {
+      "tag": "input",
+      "line": 560,
+      "id": "humanOnlyDuration",
+      "type": "number",
+      "min": "2",
+      "step": "1"
+    },
+    {
+      "tag": "details",
+      "line": 567,
+      "id": "humanDualMarketDropdown"
+    },
+    {
+      "tag": "select",
+      "line": 584,
+      "id": "humanDualMarketA",
+      "onchange": "populateHumanDualMarketSelects()"
+    },
+    {
+      "tag": "select",
+      "line": 588,
+      "id": "humanDualTradeA",
+      "onchange": "updateHumanDualMarketPanel()"
+    },
+    {
+      "tag": "input",
+      "line": 601,
+      "id": "humanDualStakeA",
+      "type": "number",
+      "min": "0.35",
+      "step": "0.01",
+      "oninput": "updateHumanDualMarketPanel()"
+    },
+    {
+      "tag": "select",
+      "line": 605,
+      "id": "humanDualDurationA",
+      "onchange": "updateHumanDualMarketPanel()"
+    },
+    {
+      "tag": "input",
+      "line": 620,
+      "id": "humanDualSelectedTickA",
+      "type": "number",
+      "min": "1",
+      "max": "5",
+      "step": "1",
+      "oninput": "updateHumanDualMarketPanel()"
+    },
+    {
+      "tag": "select",
+      "line": 629,
+      "id": "humanDualMarketB",
+      "onchange": "populateHumanDualMarketSelects()"
+    },
+    {
+      "tag": "select",
+      "line": 633,
+      "id": "humanDualTradeB",
+      "onchange": "updateHumanDualMarketPanel()"
+    },
+    {
+      "tag": "input",
+      "line": 646,
+      "id": "humanDualStakeB",
+      "type": "number",
+      "min": "0.35",
+      "step": "0.01",
+      "oninput": "updateHumanDualMarketPanel()"
+    },
+    {
+      "tag": "select",
+      "line": 650,
+      "id": "humanDualDurationB",
+      "onchange": "updateHumanDualMarketPanel()"
+    },
+    {
+      "tag": "input",
+      "line": 665,
+      "id": "humanDualSelectedTickB",
+      "type": "number",
+      "min": "1",
+      "max": "5",
+      "step": "1",
+      "oninput": "updateHumanDualMarketPanel()"
+    },
+    {
+      "tag": "button",
+      "line": 671,
+      "id": "humanDualMartingaleToggleBtn",
+      "type": "button",
+      "onclick": "toggleHumanDualMartingale()"
+    },
+    {
+      "tag": "input",
+      "line": 674,
+      "id": "humanDualMartingaleMultiplier",
+      "type": "number",
+      "min": "1",
+      "step": "0.05",
+      "oninput": "updateHumanDualMarketPanel()"
+    },
+    {
+      "tag": "input",
+      "line": 678,
+      "id": "humanDualMartingaleTp",
+      "type": "number",
+      "min": "0",
+      "step": "0.01",
+      "oninput": "updateHumanDualMarketPanel()"
+    },
+    {
+      "tag": "input",
+      "line": 682,
+      "id": "humanDualMartingaleSl",
+      "type": "number",
+      "min": "0",
+      "step": "0.01",
+      "oninput": "updateHumanDualMarketPanel()"
+    },
+    {
+      "tag": "select",
+      "line": 686,
+      "id": "humanDualMartingaleTickSpacing",
+      "onchange": "updateHumanDualMarketPanel()"
+    },
+    {
+      "tag": "button",
+      "line": 702,
+      "id": "humanDualMarketPlaceBtn",
+      "type": "button",
+      "onclick": "humanDualMarketPlaceBoth()"
+    },
+    {
+      "tag": "button",
+      "line": 703,
+      "id": "humanDualMarketQuickStopBtn",
+      "type": "button",
+      "onclick": "quickStopHumanDualMartingale()"
+    },
+    {
+      "tag": "details",
+      "line": 708,
+      "id": "humanSingleMartingaleDropdown"
+    },
+    {
+      "tag": "button",
+      "line": 720,
+      "id": "humanMartingaleToggleBtn",
+      "type": "button",
+      "onclick": "toggleHumanSingleMartingale()"
+    },
+    {
+      "tag": "select",
+      "line": 725,
+      "id": "humanMartingaleAction",
+      "onchange": "setHumanSingleMartingaleAction(this.value)"
+    },
+    {
+      "tag": "input",
+      "line": 739,
+      "id": "humanMartingaleDuration",
+      "type": "number",
+      "min": "2",
+      "step": "1"
+    },
+    {
+      "tag": "input",
+      "line": 743,
+      "id": "humanMartingaleSelectedTick",
+      "type": "number",
+      "min": "1",
+      "max": "5",
+      "step": "1"
+    },
+    {
+      "tag": "input",
+      "line": 747,
+      "id": "humanMartingaleStartStake",
+      "type": "number",
+      "min": "0.35",
+      "step": "0.01",
+      "oninput": "updateHumanSingleMartingalePanel()"
+    },
+    {
+      "tag": "select",
+      "line": 751,
+      "id": "humanMartingaleTickSpacing",
+      "onchange": "updateHumanSingleMartingalePanel()"
+    },
+    {
+      "tag": "select",
+      "line": 768,
+      "id": "humanMartingaleMode",
+      "onchange": "updateHumanSingleMartingalePanel()"
+    },
+    {
+      "tag": "input",
+      "line": 775,
+      "id": "humanMartingaleStepAmount",
+      "type": "number",
+      "min": "0.01",
+      "step": "0.01",
+      "oninput": "updateHumanSingleMartingalePanel()"
+    },
+    {
+      "tag": "input",
+      "line": 779,
+      "id": "humanMartingaleMultiplier",
+      "type": "number",
+      "min": "1",
+      "step": "0.05",
+      "oninput": "updateHumanSingleMartingalePanel()"
+    },
+    {
+      "tag": "input",
+      "line": 783,
+      "id": "humanMartingaleMaxSteps",
+      "type": "number",
+      "min": "1",
+      "step": "1",
+      "oninput": "updateHumanSingleMartingalePanel()"
+    },
+    {
+      "tag": "input",
+      "line": 787,
+      "id": "humanMartingaleMaxStake",
+      "type": "number",
+      "min": "0",
+      "step": "0.01",
+      "oninput": "updateHumanSingleMartingalePanel()"
+    },
+    {
+      "tag": "input",
+      "line": 791,
+      "id": "humanMartingaleDoubleLimit",
+      "type": "number",
+      "min": "0",
+      "step": "1",
+      "oninput": "updateHumanSingleMartingalePanel()"
+    },
+    {
+      "tag": "input",
+      "line": 795,
+      "id": "humanMartingaleAlwaysBoth",
+      "type": "checkbox",
+      "onchange": "updateHumanSingleMartingalePanel()"
+    },
+    {
+      "tag": "input",
+      "line": 799,
+      "id": "humanMartingaleOneWinStop",
+      "type": "checkbox",
+      "onchange": "updateHumanSingleMartingalePanel()"
+    },
+    {
+      "tag": "button",
+      "line": 804,
+      "id": "humanMartingalePlaceBtn",
+      "type": "button",
+      "onclick": "placeHumanSingleMartingaleTrade()"
+    },
+    {
+      "tag": "button",
+      "line": 805,
+      "id": "humanMartingaleQuickStopBtn",
+      "type": "button",
+      "onclick": "quickStopHumanSingleMartingale()"
+    },
+    {
+      "tag": "details",
+      "line": 810,
+      "id": "humanParityMartingaleDropdown"
+    },
+    {
+      "tag": "select",
+      "line": 833,
+      "id": "humanParityMartingaleMode",
+      "onchange": "updateHumanParityMartingalePanel()"
+    },
+    {
+      "tag": "input",
+      "line": 843,
+      "id": "humanParityMartingaleStake",
+      "type": "number",
+      "min": "0.35",
+      "step": "0.01",
+      "oninput": "updateHumanParityMartingalePanel()"
+    },
+    {
+      "tag": "input",
+      "line": 847,
+      "id": "humanParityMartingaleMultiplier",
+      "type": "number",
+      "min": "1",
+      "step": "0.05",
+      "oninput": "updateHumanParityMartingalePanel()"
+    },
+    {
+      "tag": "select",
+      "line": 851,
+      "id": "humanParityMartingaleDuration",
+      "onchange": "updateHumanParityMartingalePanel()"
+    },
+    {
+      "tag": "select",
+      "line": 866,
+      "id": "humanParityMartingaleTickSpacing",
+      "onchange": "updateHumanParityMartingalePanel()"
+    },
+    {
+      "tag": "input",
+      "line": 881,
+      "id": "humanParityMarketSwitcher",
+      "type": "checkbox",
+      "onchange": "updateHumanParityMartingalePanel()"
+    },
+    {
+      "tag": "input",
+      "line": 885,
+      "id": "humanParityMartingaleTp",
+      "type": "number",
+      "min": "0",
+      "step": "0.01",
+      "oninput": "updateHumanParityMartingalePanel()"
+    },
+    {
+      "tag": "input",
+      "line": 889,
+      "id": "humanParityMartingaleSl",
+      "type": "number",
+      "min": "0",
+      "step": "0.01",
+      "oninput": "updateHumanParityMartingalePanel()"
+    },
+    {
+      "tag": "input",
+      "line": 893,
+      "id": "humanParityMartingaleDoubleLimit",
+      "type": "number",
+      "min": "0",
+      "step": "1",
+      "oninput": "updateHumanParityMartingalePanel()"
+    },
+    {
+      "tag": "button",
+      "line": 900,
+      "id": "humanParityMartingaleStartBtn",
+      "type": "button",
+      "data-action": "human-parity-martingale-start"
+    },
+    {
+      "tag": "button",
+      "line": 901,
+      "id": "humanParityMartingaleStopBtn",
+      "type": "button",
+      "data-action": "human-parity-martingale-stop"
+    },
+    {
+      "tag": "details",
+      "line": 906,
+      "id": "humanRiseFallMartingaleDropdown"
+    },
+    {
+      "tag": "button",
+      "line": 918,
+      "id": "humanRfMartingaleToggleBtn",
+      "type": "button",
+      "onclick": "toggleHumanRfMartingale()"
+    },
+    {
+      "tag": "select",
+      "line": 923,
+      "id": "humanRfMartingaleDirection",
+      "onchange": "setHumanRfMartingaleDirection(this.value)"
+    },
+    {
+      "tag": "select",
+      "line": 932,
+      "id": "humanRfMartingaleDuration",
+      "onchange": "updateHumanRfMartingalePanel()"
+    },
+    {
+      "tag": "input",
+      "line": 963,
+      "id": "humanRfMartingaleRiseStake",
+      "type": "number",
+      "min": "0.35",
+      "step": "0.01",
+      "oninput": "updateHumanRfMartingalePanel()"
+    },
+    {
+      "tag": "input",
+      "line": 967,
+      "id": "humanRfMartingaleFallStake",
+      "type": "number",
+      "min": "0.35",
+      "step": "0.01",
+      "oninput": "updateHumanRfMartingalePanel()"
+    },
+    {
+      "tag": "input",
+      "line": 971,
+      "id": "humanRfMartingaleMultiplier",
+      "type": "number",
+      "min": "1",
+      "step": "0.05",
+      "oninput": "updateHumanRfMartingalePanel()"
+    },
+    {
+      "tag": "input",
+      "line": 977,
+      "id": "humanRfMartingaleMaxSteps",
+      "type": "number",
+      "min": "1",
+      "step": "1",
+      "oninput": "updateHumanRfMartingalePanel()"
+    },
+    {
+      "tag": "input",
+      "line": 981,
+      "id": "humanRfMartingaleMaxStake",
+      "type": "number",
+      "min": "0",
+      "step": "0.01",
+      "oninput": "updateHumanRfMartingalePanel()"
+    },
+    {
+      "tag": "input",
+      "line": 985,
+      "id": "humanRfMartingaleTp",
+      "type": "number",
+      "min": "0",
+      "step": "0.01",
+      "oninput": "updateHumanRfMartingalePanel()"
+    },
+    {
+      "tag": "input",
+      "line": 989,
+      "id": "humanRfMartingaleSl",
+      "type": "number",
+      "min": "0",
+      "step": "0.01",
+      "oninput": "updateHumanRfMartingalePanel()"
+    },
+    {
+      "tag": "input",
+      "line": 993,
+      "id": "humanRfMartingaleDoubleLimit",
+      "type": "number",
+      "min": "0",
+      "step": "1",
+      "oninput": "updateHumanRfMartingalePanel()"
+    },
+    {
+      "tag": "select",
+      "line": 997,
+      "id": "humanRfMartingaleTickSpacing",
+      "onchange": "updateHumanRfMartingalePanel()"
+    },
+    {
+      "tag": "input",
+      "line": 1011,
+      "id": "humanRfMartingaleDoBothTrades",
+      "type": "checkbox",
+      "onchange": "updateHumanRfMartingalePanel()"
+    },
+    {
+      "tag": "button",
+      "line": 1018,
+      "id": "humanRfMartingalePlaceBtn",
+      "type": "button",
+      "onclick": "placeHumanRfMartingaleTrade()"
+    },
+    {
+      "tag": "button",
+      "line": 1019,
+      "id": "humanRfMartingaleQuickStopBtn",
+      "type": "button",
+      "onclick": "quickStopHumanRfMartingale()"
+    },
+    {
+      "tag": "button",
+      "line": 1031,
+      "type": "button",
+      "onclick": "closeHumanSpecialAutoPopup()"
+    },
+    {
+      "tag": "button",
+      "line": 1034,
+      "id": "humanSpecialPairTicksBtn",
+      "type": "button",
+      "onclick": "setHumanSpecialPair('TICKS')"
+    },
+    {
+      "tag": "button",
+      "line": 1035,
+      "id": "humanSpecialPairRunsBtn",
+      "type": "button",
+      "onclick": "setHumanSpecialPair('RUNS')"
+    },
+    {
+      "tag": "input",
+      "line": 1040,
+      "id": "humanSpecialStakeA",
+      "type": "number",
+      "min": "0.35",
+      "step": "0.01"
+    },
+    {
+      "tag": "input",
+      "line": 1044,
+      "id": "humanSpecialStakeB",
+      "type": "number",
+      "min": "0.35",
+      "step": "0.01"
+    },
+    {
+      "tag": "input",
+      "line": 1049,
+      "id": "humanSpecialAutoToggle",
+      "type": "checkbox",
+      "onchange": "setHumanSpecialAutoBackToBack(this.checked)"
+    },
+    {
+      "tag": "input",
+      "line": 1052,
+      "id": "humanSpecialMartingaleToggle",
+      "type": "checkbox",
+      "onchange": "setHumanSpecialMartingale(this.checked)"
+    },
+    {
+      "tag": "button",
+      "line": 1057,
+      "id": "humanSpecialPlaceBtn",
+      "type": "button",
+      "onclick": "runHumanSpecialPair()"
+    },
+    {
+      "tag": "button",
+      "line": 1058,
+      "id": "humanSpecialQuickStopBtn",
+      "type": "button",
+      "onclick": "quickStopHumanSpecialAuto()"
+    },
+    {
+      "tag": "button",
+      "line": 1059,
+      "type": "button",
+      "onclick": "closeHumanSpecialAutoPopup()"
+    },
+    {
+      "tag": "button",
+      "line": 1069,
+      "id": "formulaXBtn",
+      "onclick": "runFormulaX()"
+    },
+    {
+      "tag": "button",
+      "line": 1079,
+      "onclick": "humanZoomOut()"
+    },
+    {
+      "tag": "button",
+      "line": 1080,
+      "onclick": "humanZoomIn()"
+    },
+    {
+      "tag": "button",
+      "line": 1081,
+      "onclick": "humanResetZoom()"
+    },
+    {
+      "tag": "button",
+      "line": 1095,
+      "onclick": "clearProfileHistory()"
+    }
+  ],
+  "static/components/jokerjoe.html": [
+    {
+      "tag": "button",
+      "line": 101,
+      "type": "button",
+      "onclick": "showBlackcardPopupJokerjoe()"
+    },
+    {
+      "tag": "input",
+      "line": 114,
+      "id": "stake",
+      "type": "number",
+      "min": "0.35",
+      "step": "0.01"
+    },
+    {
+      "tag": "input",
+      "line": 118,
+      "id": "barrier",
+      "type": "number",
+      "min": "0",
+      "max": "9",
+      "step": "1"
+    },
+    {
+      "tag": "select",
+      "line": 124,
+      "id": "durationTicks"
+    },
+    {
+      "tag": "input",
+      "line": 140,
+      "id": "jokerjoeBudget",
+      "type": "number",
+      "min": "0",
+      "step": "0.01"
+    },
+    {
+      "tag": "button",
+      "line": 141,
+      "type": "button",
+      "onclick": "saveProfileBudget('JOKERJOE')"
+    },
+    {
+      "tag": "button",
+      "line": 148,
+      "id": "turboToggleBtnJokerjoe",
+      "type": "button",
+      "onclick": "event.stopPropagation(); toggleTurboJokerjoe()"
+    },
+    {
+      "tag": "button",
+      "line": 153,
+      "type": "button",
+      "onclick": "openProfitCalculatorJokerjoe()"
+    },
+    {
+      "tag": "button",
+      "line": 163,
+      "id": "profileReinvestToggleJokerjoe",
+      "type": "button",
+      "onclick": "toggleProfileReinvestJokerjoe()"
+    },
+    {
+      "tag": "button",
+      "line": 166,
+      "type": "button",
+      "onclick": "setProfileReinvestPctJokerjoe(25)"
+    },
+    {
+      "tag": "button",
+      "line": 167,
+      "type": "button",
+      "onclick": "setProfileReinvestPctJokerjoe(50)"
+    },
+    {
+      "tag": "button",
+      "line": 168,
+      "type": "button",
+      "onclick": "setProfileReinvestPctJokerjoe(75)"
+    },
+    {
+      "tag": "button",
+      "line": 169,
+      "type": "button",
+      "onclick": "setProfileReinvestPctJokerjoe(100)"
+    },
+    {
+      "tag": "input",
+      "line": 176,
+      "id": "tp",
+      "type": "number",
+      "step": "0.01"
+    },
+    {
+      "tag": "input",
+      "line": 180,
+      "id": "sl",
+      "type": "number",
+      "step": "0.01"
+    },
+    {
+      "tag": "button",
+      "line": 184,
+      "onclick": "manualTP()"
+    },
+    {
+      "tag": "button",
+      "line": 188,
+      "id": "autoSlBtn",
+      "onclick": "toggleAutoSL()"
+    },
+    {
+      "tag": "button",
+      "line": 192,
+      "onclick": "manualSL()"
+    },
+    {
+      "tag": "button",
+      "line": 201,
+      "type": "button",
+      "onclick": "closeProfitCalculatorJokerjoe()"
+    },
+    {
+      "tag": "input",
+      "line": 206,
+      "id": "profitCalculatorStakeJokerjoe",
+      "type": "number",
+      "min": "0.35",
+      "step": "0.01"
+    },
+    {
+      "tag": "select",
+      "line": 210,
+      "id": "profitCalculatorDigitJokerjoe"
+    },
+    {
+      "tag": "button",
+      "line": 216,
+      "type": "button",
+      "onclick": "runProfitCalculatorJokerjoe()"
+    },
+    {
+      "tag": "button",
+      "line": 227,
+      "id": "matchesAnalysisBtnJokerjoe",
+      "onclick": "toggleMatchesAnalysisJokerjoe()"
+    },
+    {
+      "tag": "button",
+      "line": 259,
+      "id": "matchSniperBtnJokerjoe",
+      "onclick": "toggleMatchSniperJokerjoe()"
+    },
+    {
+      "tag": "button",
+      "line": 266,
+      "id": "matchSniper5xBtnJokerjoe",
+      "onclick": "toggleMatchSniper5xJokerjoe()"
+    },
+    {
+      "tag": "button",
+      "line": 275,
+      "type": "button",
+      "id": "matchSniper5xDigit0Jokerjoe",
+      "onclick": "toggleMatchSniper5xDigitJokerjoe(0)"
+    },
+    {
+      "tag": "button",
+      "line": 276,
+      "type": "button",
+      "id": "matchSniper5xDigit1Jokerjoe",
+      "onclick": "toggleMatchSniper5xDigitJokerjoe(1)"
+    },
+    {
+      "tag": "button",
+      "line": 277,
+      "type": "button",
+      "id": "matchSniper5xDigit2Jokerjoe",
+      "onclick": "toggleMatchSniper5xDigitJokerjoe(2)"
+    },
+    {
+      "tag": "button",
+      "line": 278,
+      "type": "button",
+      "id": "matchSniper5xDigit3Jokerjoe",
+      "onclick": "toggleMatchSniper5xDigitJokerjoe(3)"
+    },
+    {
+      "tag": "button",
+      "line": 279,
+      "type": "button",
+      "id": "matchSniper5xDigit4Jokerjoe",
+      "onclick": "toggleMatchSniper5xDigitJokerjoe(4)"
+    },
+    {
+      "tag": "button",
+      "line": 280,
+      "type": "button",
+      "id": "matchSniper5xDigit5Jokerjoe",
+      "onclick": "toggleMatchSniper5xDigitJokerjoe(5)"
+    },
+    {
+      "tag": "button",
+      "line": 281,
+      "type": "button",
+      "id": "matchSniper5xDigit6Jokerjoe",
+      "onclick": "toggleMatchSniper5xDigitJokerjoe(6)"
+    },
+    {
+      "tag": "button",
+      "line": 282,
+      "type": "button",
+      "id": "matchSniper5xDigit7Jokerjoe",
+      "onclick": "toggleMatchSniper5xDigitJokerjoe(7)"
+    },
+    {
+      "tag": "button",
+      "line": 283,
+      "type": "button",
+      "id": "matchSniper5xDigit8Jokerjoe",
+      "onclick": "toggleMatchSniper5xDigitJokerjoe(8)"
+    },
+    {
+      "tag": "button",
+      "line": 284,
+      "type": "button",
+      "id": "matchSniper5xDigit9Jokerjoe",
+      "onclick": "toggleMatchSniper5xDigitJokerjoe(9)"
+    },
+    {
+      "tag": "button",
+      "line": 305,
+      "id": "kidGxBtnJokerjoe",
+      "onclick": "toggleKidGxJokerjoe()"
+    },
+    {
+      "tag": "button",
+      "line": 306,
+      "id": "aiAutoTradingBtnJokerjoe",
+      "onclick": "toggleAIAutoTradingJokerjoe()"
+    },
+    {
+      "tag": "button",
+      "line": 309,
+      "id": "matchesFrenzyBtnJokerjoe",
+      "onclick": "toggleMatchesFrenzyJokerjoe()"
+    },
+    {
+      "tag": "button",
+      "line": 320,
+      "type": "button",
+      "onclick": "closeAIAutoModeModalJokerjoe()"
+    },
+    {
+      "tag": "button",
+      "line": 324,
+      "id": "aiAutoGoldenBtnJokerjoe",
+      "type": "button",
+      "onclick": "selectAIAutoModeJokerjoe('golden_digits')"
+    },
+    {
+      "tag": "button",
+      "line": 325,
+      "id": "aiAutoLowestBtnJokerjoe",
+      "type": "button",
+      "onclick": "openAIAutoLowestTradeCountOptionsJokerjoe()"
+    },
+    {
+      "tag": "button",
+      "line": 327,
+      "id": "aiAutoLowest5TradesBtnJokerjoe",
+      "type": "button",
+      "onclick": "selectAIAutoLowestTradeCountJokerjoe(5)"
+    },
+    {
+      "tag": "button",
+      "line": 328,
+      "id": "aiAutoLowest1TradeBtnJokerjoe",
+      "type": "button",
+      "onclick": "selectAIAutoLowestTradeCountJokerjoe(1)"
+    },
+    {
+      "tag": "button",
+      "line": 335,
+      "id": "autoBtn",
+      "onclick": "toggleAuto()"
+    },
+    {
+      "tag": "details",
+      "line": 339
+    },
+    {
+      "tag": "button",
+      "line": 343,
+      "onclick": "trade('DIFFERS')"
+    },
+    {
+      "tag": "button",
+      "line": 347,
+      "id": "insta5Btn",
+      "onclick": "insta5()"
+    },
+    {
+      "tag": "button",
+      "line": 353,
+      "id": "insta2BtnJokerjoe",
+      "onclick": "insta2Jokerjoe()"
+    },
+    {
+      "tag": "button",
+      "line": 358,
+      "id": "kidgambleXBtnJokerjoe",
+      "onclick": "kidgambleX()"
+    },
+    {
+      "tag": "button",
+      "line": 359,
+      "id": "blackcardBtnJokerjoe",
+      "onclick": "showBlackcardPopupJokerjoe()"
+    },
+    {
+      "tag": "button",
+      "line": 362,
+      "id": "kid100WinsBtnJokerjoe",
+      "type": "button",
+      "onclick": "openKid100WinsPopupJokerjoe()"
+    },
+    {
+      "tag": "button",
+      "line": 365,
+      "id": "kid100WinsQuickStopDockBtnJokerjoe",
+      "type": "button",
+      "onclick": "stopKid100WinsAutosJokerjoe()"
+    },
+    {
+      "tag": "button",
+      "line": 368,
+      "id": "jokerjoeKoolkidBtn",
+      "type": "button",
+      "onclick": "openJokerjoeKoolkidPopup()"
+    },
+    {
+      "tag": "details",
+      "line": 374
+    },
+    {
+      "tag": "button",
+      "line": 377,
+      "id": "sludgeXBtn",
+      "onclick": "toggleSludgeXAuto()"
+    },
+    {
+      "tag": "button",
+      "line": 378,
+      "id": "tripleXBtn",
+      "onclick": "toggleTripleXAuto()"
+    },
+    {
+      "tag": "button",
+      "line": 379,
+      "id": "kidXBtn",
+      "onclick": "toggleKidXAuto()"
+    },
+    {
+      "tag": "button",
+      "line": 380,
+      "id": "multiGBtn",
+      "onclick": "toggleMultiGAuto()"
+    },
+    {
+      "tag": "button",
+      "line": 381,
+      "id": "randomMatchesDiffersBtnJokerjoe",
+      "onclick": "openRandomMatchesDiffersModalJokerjoe()"
+    },
+    {
+      "tag": "button",
+      "line": 392,
+      "type": "button",
+      "onclick": "closeRandomMatchesDiffersModalJokerjoe()"
+    },
+    {
+      "tag": "button",
+      "line": 398,
+      "id": "randomMatchesOptionBtnJokerjoe",
+      "type": "button",
+      "onclick": "selectRandomMatchesDiffersModeJokerjoe('MATCHES')"
+    },
+    {
+      "tag": "button",
+      "line": 399,
+      "id": "randomDiffersOptionBtnJokerjoe",
+      "type": "button",
+      "onclick": "selectRandomMatchesDiffersModeJokerjoe('DIFFERS')"
+    },
+    {
+      "tag": "button",
+      "line": 400,
+      "id": "randomMatchesDiffersOffBtnJokerjoe",
+      "type": "button",
+      "onclick": "disableRandomMatchesDiffersJokerjoe()"
+    },
+    {
+      "tag": "details",
+      "line": 408
+    },
+    {
+      "tag": "button",
+      "line": 414,
+      "id": "kidbrainBtnJokerjoe",
+      "onclick": "toggleKidbrainJokerjoe()"
+    },
+    {
+      "tag": "button",
+      "line": 415,
+      "id": "edgeBrainBtnJokerjoe",
+      "onclick": "toggleEdgeBrainJokerjoe()"
+    },
+    {
+      "tag": "button",
+      "line": 416,
+      "id": "smartFlowBtnJokerjoe",
+      "onclick": "toggleSmartFlowJokerjoe()"
+    },
+    {
+      "tag": "button",
+      "line": 417,
+      "id": "metaAiBtnJokerjoe",
+      "onclick": "toggleMetaAIJokerjoe()"
+    },
+    {
+      "tag": "button",
+      "line": 418,
+      "id": "kidracksAiBtnJokerjoe",
+      "onclick": "toggleKidracksAIJokerjoe()"
+    },
+    {
+      "tag": "details",
+      "line": 425
+    },
+    {
+      "tag": "button",
+      "line": 428,
+      "id": "seqVixBtnJokerjoe",
+      "onclick": "toggleSeqVixJokerjoe()"
+    },
+    {
+      "tag": "details",
+      "line": 441,
+      "id": "jokerjoeBatchMartingalePanel"
+    },
+    {
+      "tag": "select",
+      "line": 447,
+      "id": "jokerjoeBatchMartingaleGroup",
+      "onchange": "updateJokerjoeBatchMartingalePanel()"
+    },
+    {
+      "tag": "button",
+      "line": 461,
+      "type": "button",
+      "onclick": "toggleJokerjoeBatchMartingaleDigit(0)"
+    },
+    {
+      "tag": "button",
+      "line": 462,
+      "type": "button",
+      "onclick": "toggleJokerjoeBatchMartingaleDigit(1)"
+    },
+    {
+      "tag": "button",
+      "line": 463,
+      "type": "button",
+      "onclick": "toggleJokerjoeBatchMartingaleDigit(2)"
+    },
+    {
+      "tag": "button",
+      "line": 464,
+      "type": "button",
+      "onclick": "toggleJokerjoeBatchMartingaleDigit(3)"
+    },
+    {
+      "tag": "button",
+      "line": 465,
+      "type": "button",
+      "onclick": "toggleJokerjoeBatchMartingaleDigit(4)"
+    },
+    {
+      "tag": "button",
+      "line": 466,
+      "type": "button",
+      "onclick": "toggleJokerjoeBatchMartingaleDigit(5)"
+    },
+    {
+      "tag": "button",
+      "line": 467,
+      "type": "button",
+      "onclick": "toggleJokerjoeBatchMartingaleDigit(6)"
+    },
+    {
+      "tag": "button",
+      "line": 468,
+      "type": "button",
+      "onclick": "toggleJokerjoeBatchMartingaleDigit(7)"
+    },
+    {
+      "tag": "button",
+      "line": 469,
+      "type": "button",
+      "onclick": "toggleJokerjoeBatchMartingaleDigit(8)"
+    },
+    {
+      "tag": "button",
+      "line": 470,
+      "type": "button",
+      "onclick": "toggleJokerjoeBatchMartingaleDigit(9)"
+    },
+    {
+      "tag": "input",
+      "line": 476,
+      "id": "jokerjoeBatchMartingaleStartStake",
+      "type": "number",
+      "min": "1.05",
+      "step": "0.03",
+      "oninput": "updateJokerjoeBatchMartingalePanel()"
+    },
+    {
+      "tag": "input",
+      "line": 480,
+      "id": "jokerjoeBatchMartingaleMaxSteps",
+      "type": "number",
+      "min": "1",
+      "step": "1",
+      "oninput": "updateJokerjoeBatchMartingalePanel()"
+    },
+    {
+      "tag": "input",
+      "line": 484,
+      "id": "jokerjoeBatchMartingaleDoubleLimit",
+      "type": "number",
+      "min": "0",
+      "step": "1",
+      "oninput": "updateJokerjoeBatchMartingalePanel()"
+    },
+    {
+      "tag": "select",
+      "line": 488,
+      "id": "jokerjoeBatchMartingaleTickSpacing",
+      "onchange": "updateJokerjoeBatchMartingalePanel()"
+    },
+    {
+      "tag": "button",
+      "line": 503,
+      "id": "jokerjoeBatchMartingaleToggleBtn",
+      "type": "button",
+      "onclick": "toggleJokerjoeBatchMartingale()"
+    },
+    {
+      "tag": "button",
+      "line": 504,
+      "id": "jokerjoeBatchMartingalePlaceBtn",
+      "type": "button",
+      "onclick": "placeJokerjoeBatchMartingaleTrade()"
+    },
+    {
+      "tag": "button",
+      "line": 506,
+      "id": "jokerjoeBatchMartingaleQuickStopBtn",
+      "type": "button",
+      "onclick": "quickStopJokerjoeBatchMartingale()"
+    },
+    {
+      "tag": "button",
+      "line": 520,
+      "type": "button",
+      "onclick": "closeJokerjoeKoolkidPopup()"
+    },
+    {
+      "tag": "button",
+      "line": 531,
+      "id": "jokerjoeKoolkidLowerProfitToggle",
+      "type": "button",
+      "onclick": "toggleJokerjoeKoolkidLowerProfits()"
+    },
+    {
+      "tag": "input",
+      "line": 535,
+      "id": "jokerjoeKoolkidMatchStake",
+      "type": "number",
+      "min": "1.05",
+      "step": "0.03",
+      "oninput": "unlockJokerjoeKoolkidStatusAndRender()"
+    },
+    {
+      "tag": "input",
+      "line": 540,
+      "id": "jokerjoeKoolkidOver3Stake",
+      "type": "number",
+      "min": "0.35",
+      "step": "0.01",
+      "oninput": "unlockJokerjoeKoolkidStatusAndRender()"
+    },
+    {
+      "tag": "button",
+      "line": 547,
+      "id": "jokerjoeKoolkidReinvestToggle",
+      "type": "button",
+      "onclick": "toggleJokerjoeKoolkidReinvest()"
+    },
+    {
+      "tag": "button",
+      "line": 554,
+      "id": "jokerjoeKoolkidReset2Toggle",
+      "type": "button",
+      "onclick": "toggleJokerjoeKoolkidResetAfter2Wins()"
+    },
+    {
+      "tag": "button",
+      "line": 556,
+      "id": "jokerjoeKoolkidPlaceBtn",
+      "type": "button",
+      "onclick": "placeJokerjoeKoolkidComboTrade()"
+    },
+    {
+      "tag": "button",
+      "line": 569,
+      "type": "button",
+      "onclick": "closeKid100WinsPopupJokerjoe()"
+    },
+    {
+      "tag": "input",
+      "line": 577,
+      "id": "kid100WinsBarrierJokerjoe",
+      "type": "number",
+      "min": "0",
+      "max": "9",
+      "step": "1"
+    },
+    {
+      "tag": "input",
+      "line": 581,
+      "id": "kid100WinsDiffersStakeJokerjoe",
+      "type": "number",
+      "min": "0.35",
+      "step": "0.01"
+    },
+    {
+      "tag": "button",
+      "line": 588,
+      "id": "kid100WinsAutoTraderToggleJokerjoe",
+      "type": "button",
+      "onclick": "toggleKid100WinsAutoTraderJokerjoe()"
+    },
+    {
+      "tag": "button",
+      "line": 595,
+      "id": "kid100WinsLowPercentToggleJokerjoe",
+      "type": "button",
+      "onclick": "toggleKid100WinsLowPercentJokerjoe()"
+    },
+    {
+      "tag": "button",
+      "line": 602,
+      "id": "kid100WinsAiDiffersToggleJokerjoe",
+      "type": "button",
+      "onclick": "toggleKid100WinsAiDiffersJokerjoe()"
+    },
+    {
+      "tag": "button",
+      "line": 609,
+      "id": "kid100WinsReinvestToggleJokerjoe",
+      "type": "button",
+      "onclick": "toggleKid100WinsReinvestProfitsJokerjoe()"
+    },
+    {
+      "tag": "button",
+      "line": 612,
+      "id": "kid100WinsReinvestPct25Jokerjoe",
+      "type": "button",
+      "onclick": "setKid100WinsReinvestPctJokerjoe(25)"
+    },
+    {
+      "tag": "button",
+      "line": 613,
+      "id": "kid100WinsReinvestPct50Jokerjoe",
+      "type": "button",
+      "onclick": "setKid100WinsReinvestPctJokerjoe(50)"
+    },
+    {
+      "tag": "button",
+      "line": 614,
+      "id": "kid100WinsReinvestPct75Jokerjoe",
+      "type": "button",
+      "onclick": "setKid100WinsReinvestPctJokerjoe(75)"
+    },
+    {
+      "tag": "button",
+      "line": 615,
+      "id": "kid100WinsReinvestPct100Jokerjoe",
+      "type": "button",
+      "onclick": "setKid100WinsReinvestPctJokerjoe(100)"
+    },
+    {
+      "tag": "button",
+      "line": 623,
+      "id": "kid100WinsStartBtnJokerjoe",
+      "type": "button",
+      "onclick": "startKid100WinsJokerjoe()"
+    },
+    {
+      "tag": "button",
+      "line": 624,
+      "id": "kid100WinsQuickStopBtnJokerjoe",
+      "type": "button",
+      "onclick": "stopKid100WinsAutosJokerjoe()"
+    },
+    {
+      "tag": "button",
+      "line": 625,
+      "type": "button",
+      "onclick": "closeKid100WinsPopupJokerjoe()"
+    },
+    {
+      "tag": "button",
+      "line": 634,
+      "onclick": "clearProfileHistory()"
+    },
+    {
+      "tag": "button",
+      "line": 686,
+      "type": "button"
+    },
+    {
+      "tag": "button",
+      "line": 687,
+      "type": "button"
+    },
+    {
+      "tag": "button",
+      "line": 688,
+      "type": "button"
+    },
+    {
+      "tag": "button",
+      "line": 689,
+      "type": "button"
+    },
+    {
+      "tag": "button",
+      "line": 690,
+      "type": "button"
+    },
+    {
+      "tag": "button",
+      "line": 691,
+      "type": "button"
+    },
+    {
+      "tag": "button",
+      "line": 692,
+      "type": "button"
+    },
+    {
+      "tag": "button",
+      "line": 693,
+      "type": "button"
+    },
+    {
+      "tag": "button",
+      "line": 694,
+      "type": "button"
+    },
+    {
+      "tag": "button",
+      "line": 695,
+      "type": "button"
+    },
+    {
+      "tag": "button",
+      "line": 697,
+      "onclick": "hideBlackcardPopupJokerjoe()"
+    }
+  ],
+  "static/components/koolkid.html": [
+    {
+      "tag": "button",
+      "line": 237,
+      "type": "button",
+      "onclick": "handleGoldenCardBtnKoolkid()"
+    },
+    {
+      "tag": "input",
+      "line": 250,
+      "id": "stake",
+      "type": "number",
+      "min": "0.35",
+      "step": "0.01"
+    },
+    {
+      "tag": "input",
+      "line": 254,
+      "id": "barrier",
+      "type": "number",
+      "min": "0",
+      "max": "9",
+      "step": "1"
+    },
+    {
+      "tag": "select",
+      "line": 260,
+      "id": "durationTicks"
+    },
+    {
+      "tag": "input",
+      "line": 276,
+      "id": "koolkidBudget",
+      "type": "number",
+      "min": "0",
+      "step": "0.01"
+    },
+    {
+      "tag": "button",
+      "line": 277,
+      "type": "button",
+      "onclick": "saveProfileBudget('KOOLKID')"
+    },
+    {
+      "tag": "button",
+      "line": 284,
+      "id": "turboToggleBtnKoolkid",
+      "type": "button",
+      "onclick": "event.stopPropagation(); toggleTurboKoolkid()"
+    },
+    {
+      "tag": "button",
+      "line": 289,
+      "type": "button",
+      "onclick": "openProfitCalculatorKoolkid()"
+    },
+    {
+      "tag": "button",
+      "line": 299,
+      "id": "profileReinvestToggleKoolkid",
+      "type": "button",
+      "onclick": "toggleProfileReinvestKoolkid()"
+    },
+    {
+      "tag": "button",
+      "line": 302,
+      "type": "button",
+      "onclick": "setProfileReinvestPctKoolkid(25)"
+    },
+    {
+      "tag": "button",
+      "line": 303,
+      "type": "button",
+      "onclick": "setProfileReinvestPctKoolkid(50)"
+    },
+    {
+      "tag": "button",
+      "line": 304,
+      "type": "button",
+      "onclick": "setProfileReinvestPctKoolkid(75)"
+    },
+    {
+      "tag": "button",
+      "line": 305,
+      "type": "button",
+      "onclick": "setProfileReinvestPctKoolkid(100)"
+    },
+    {
+      "tag": "details",
+      "line": 309,
+      "id": "koolkidSingleMartingalePanel"
+    },
+    {
+      "tag": "button",
+      "line": 316,
+      "id": "koolkidMartingaleCalculatorBtn",
+      "type": "button",
+      "onclick": "openKoolkidMartingaleCalculator()"
+    },
+    {
+      "tag": "button",
+      "line": 317,
+      "id": "koolkidMartingaleToggleBtn",
+      "type": "button",
+      "onclick": "toggleKoolkidSingleMartingale()"
+    },
+    {
+      "tag": "select",
+      "line": 322,
+      "id": "koolkidMartingaleAction",
+      "onchange": "setKoolkidSingleMartingaleAction(this.value)"
+    },
+    {
+      "tag": "select",
+      "line": 340,
+      "id": "koolkidMartingaleDuration",
+      "onchange": "updateKoolkidSingleMartingalePanel()"
+    },
+    {
+      "tag": "input",
+      "line": 355,
+      "id": "koolkidMartingaleStartStake",
+      "type": "number",
+      "min": "0.35",
+      "step": "0.01",
+      "oninput": "updateKoolkidSingleMartingalePanel()"
+    },
+    {
+      "tag": "select",
+      "line": 359,
+      "id": "koolkidMartingaleTickSpacing",
+      "onchange": "updateKoolkidSingleMartingalePanel()"
+    },
+    {
+      "tag": "select",
+      "line": 376,
+      "id": "koolkidMartingaleMode",
+      "onchange": "updateKoolkidSingleMartingalePanel()"
+    },
+    {
+      "tag": "input",
+      "line": 383,
+      "id": "koolkidMartingaleStepAmount",
+      "type": "number",
+      "min": "0.01",
+      "step": "0.01",
+      "oninput": "updateKoolkidSingleMartingalePanel()"
+    },
+    {
+      "tag": "input",
+      "line": 387,
+      "id": "koolkidMartingaleMultiplier",
+      "type": "number",
+      "min": "1",
+      "step": "0.05",
+      "oninput": "updateKoolkidSingleMartingalePanel()"
+    },
+    {
+      "tag": "input",
+      "line": 391,
+      "id": "koolkidMartingaleMaxSteps",
+      "type": "number",
+      "min": "1",
+      "step": "1",
+      "oninput": "updateKoolkidSingleMartingalePanel()"
+    },
+    {
+      "tag": "input",
+      "line": 395,
+      "id": "koolkidMartingaleMaxStake",
+      "type": "number",
+      "min": "0",
+      "step": "0.01",
+      "oninput": "updateKoolkidSingleMartingalePanel()"
+    },
+    {
+      "tag": "input",
+      "line": 399,
+      "id": "koolkidMartingaleDoubleLimit",
+      "type": "number",
+      "min": "0",
+      "step": "1",
+      "oninput": "updateKoolkidSingleMartingalePanel()"
+    },
+    {
+      "tag": "input",
+      "line": 407,
+      "id": "koolkidTargetMartingaleProfit",
+      "type": "number",
+      "min": "0.01",
+      "step": "0.01",
+      "oninput": "updateKoolkidSingleMartingalePanel()"
+    },
+    {
+      "tag": "input",
+      "line": 411,
+      "id": "koolkidTargetMartingalePayout",
+      "type": "number",
+      "min": "0.01",
+      "step": "0.01",
+      "oninput": "updateKoolkidSingleMartingalePanel()"
+    },
+    {
+      "tag": "input",
+      "line": 415,
+      "id": "koolkidTargetMartingaleTP",
+      "type": "number",
+      "min": "0",
+      "step": "0.01",
+      "oninput": "updateKoolkidSingleMartingalePanel()"
+    },
+    {
+      "tag": "input",
+      "line": 419,
+      "id": "koolkidTargetMartingaleSL",
+      "type": "number",
+      "min": "0",
+      "step": "0.01",
+      "oninput": "updateKoolkidSingleMartingalePanel()"
+    },
+    {
+      "tag": "input",
+      "line": 426,
+      "id": "koolkidMartingaleTP",
+      "type": "number",
+      "min": "0",
+      "step": "0.01",
+      "oninput": "updateKoolkidSingleMartingalePanel()"
+    },
+    {
+      "tag": "input",
+      "line": 430,
+      "id": "koolkidMartingaleSL",
+      "type": "number",
+      "min": "0",
+      "step": "0.01",
+      "oninput": "updateKoolkidSingleMartingalePanel()"
+    },
+    {
+      "tag": "button",
+      "line": 435,
+      "id": "koolkidMartingalePlaceBtn",
+      "type": "button",
+      "onclick": "placeKoolkidSingleMartingaleTrade()"
+    },
+    {
+      "tag": "button",
+      "line": 436,
+      "id": "koolkidMartingaleQuickStopBtn",
+      "type": "button",
+      "onclick": "quickStopKoolkidSingleMartingale()"
+    },
+    {
+      "tag": "button",
+      "line": 449,
+      "type": "button",
+      "onclick": "closeKoolkidMartingaleCalculator()"
+    },
+    {
+      "tag": "input",
+      "line": 462,
+      "id": "koolkidMartingaleCalculatorAmount",
+      "type": "number",
+      "min": "0",
+      "step": "0.01",
+      "oninput": "updateKoolkidMartingaleCalculator()"
+    },
+    {
+      "tag": "button",
+      "line": 477,
+      "type": "button",
+      "onclick": "closeProfitCalculatorKoolkid()"
+    },
+    {
+      "tag": "input",
+      "line": 482,
+      "id": "profitCalculatorStakeKoolkid",
+      "type": "number",
+      "min": "0.35",
+      "step": "0.01"
+    },
+    {
+      "tag": "select",
+      "line": 486,
+      "id": "profitCalculatorDigitKoolkid"
+    },
+    {
+      "tag": "button",
+      "line": 492,
+      "type": "button",
+      "onclick": "runProfitCalculatorKoolkid()"
+    },
+    {
+      "tag": "details",
+      "line": 497,
+      "id": "koolkidOver6ScanMartingalePanel"
+    },
+    {
+      "tag": "select",
+      "line": 509,
+      "id": "koolkidOver6ScanDuration",
+      "onchange": "updateKoolkidOver6ScanMartingalePanel()"
+    },
+    {
+      "tag": "input",
+      "line": 524,
+      "id": "koolkidOver6ScanMaxSteps",
+      "type": "number",
+      "min": "1",
+      "step": "1",
+      "oninput": "updateKoolkidOver6ScanMartingalePanel()"
+    },
+    {
+      "tag": "select",
+      "line": 528,
+      "id": "koolkidOver6ScanCooldown",
+      "onchange": "updateKoolkidOver6ScanMartingalePanel()"
+    },
+    {
+      "tag": "button",
+      "line": 555,
+      "id": "koolkidOver6ScanStartBtn",
+      "type": "button",
+      "onclick": "startKoolkidOver6ScanMartingale()"
+    },
+    {
+      "tag": "button",
+      "line": 556,
+      "id": "koolkidOver6ScanStopBtn",
+      "type": "button",
+      "onclick": "stopKoolkidOver6ScanMartingale()"
+    },
+    {
+      "tag": "details",
+      "line": 561,
+      "id": "koolkidBalancedRecoveryPanel"
+    },
+    {
+      "tag": "select",
+      "line": 573,
+      "id": "koolkidBalancedRecoveryPairType",
+      "onchange": "updateKoolkidBalancedRecoveryPanel()"
+    },
+    {
+      "tag": "select",
+      "line": 584,
+      "id": "koolkidBalancedRecoveryDuration",
+      "onchange": "updateKoolkidBalancedRecoveryPanel()"
+    },
+    {
+      "tag": "input",
+      "line": 599,
+      "id": "koolkidBalancedRecoveryTarget",
+      "type": "number",
+      "min": "0.01",
+      "step": "0.01",
+      "oninput": "updateKoolkidBalancedRecoveryPanel()"
+    },
+    {
+      "tag": "input",
+      "line": 603,
+      "id": "koolkidBalancedRecoveryMaxRounds",
+      "type": "number",
+      "min": "1",
+      "step": "1",
+      "oninput": "updateKoolkidBalancedRecoveryPanel()"
+    },
+    {
+      "tag": "input",
+      "line": 607,
+      "id": "koolkidBalancedRecoveryBudget",
+      "type": "number",
+      "min": "0.01",
+      "step": "0.01",
+      "oninput": "updateKoolkidBalancedRecoveryPanel()"
+    },
+    {
+      "tag": "input",
+      "line": 612,
+      "id": "koolkidBalancedRecoveryResetAfterWin",
+      "type": "checkbox",
+      "onchange": "updateKoolkidBalancedRecoveryPanel()"
+    },
+    {
+      "tag": "input",
+      "line": 616,
+      "id": "koolkidBalancedRecoveryStopAtBudget",
+      "type": "checkbox",
+      "onchange": "updateKoolkidBalancedRecoveryPanel()"
+    },
+    {
+      "tag": "input",
+      "line": 621,
+      "id": "koolkidBalancedRecoveryThinkingLogic",
+      "type": "checkbox",
+      "onchange": "toggleKoolkidBalancedRecoveryThinkingLogic(this.checked)"
+    },
+    {
+      "tag": "button",
+      "line": 626,
+      "id": "koolkidBalancedRecoveryStartBtn",
+      "type": "button",
+      "onclick": "startKoolkidBalancedRecovery()"
+    },
+    {
+      "tag": "button",
+      "line": 627,
+      "type": "button",
+      "onclick": "stopKoolkidBalancedRecovery()"
+    },
+    {
+      "tag": "input",
+      "line": 635,
+      "id": "tp",
+      "type": "number",
+      "step": "0.01"
+    },
+    {
+      "tag": "input",
+      "line": 639,
+      "id": "sl",
+      "type": "number",
+      "step": "0.01"
+    },
+    {
+      "tag": "button",
+      "line": 643,
+      "onclick": "manualTP()"
+    },
+    {
+      "tag": "button",
+      "line": 647,
+      "id": "autoSlBtn",
+      "onclick": "toggleAutoSL()"
+    },
+    {
+      "tag": "button",
+      "line": 651,
+      "onclick": "manualSL()"
+    },
+    {
+      "tag": "button",
+      "line": 688,
+      "id": "barrierAnalysisBtn",
+      "onclick": "toggleBarrierAnalysis(); setTimeout(function(){ if (window.__syncBarrierAnalysisKoolkidVisibility) window.__syncBarrierAnalysisKoolkidVisibility(); }, 0);"
+    },
+    {
+      "tag": "details",
+      "line": 696,
+      "id": "predictionSummaryDropdownKoolkid"
+    },
+    {
+      "tag": "input",
+      "line": 794,
+      "id": "over6AnalyzerUseForEntryKoolkid",
+      "type": "checkbox",
+      "onchange": "toggleOver6AnalyzerEntryKoolkid(this.checked)"
+    },
+    {
+      "tag": "button",
+      "line": 853,
+      "id": "kidGxBtnKoolkid",
+      "onclick": "toggleKidGxKoolkid()"
+    },
+    {
+      "tag": "button",
+      "line": 856,
+      "id": "aiAutoTradingBtnKoolkid",
+      "onclick": "toggleAIAutoTradingKoolkid()"
+    },
+    {
+      "tag": "button",
+      "line": 861,
+      "id": "autoBtn",
+      "onclick": "toggleAuto()"
+    },
+    {
+      "tag": "button",
+      "line": 866,
+      "id": "dual2xBtnKoolkid",
+      "onclick": "toggleDual2xKoolkid()"
+    },
+    {
+      "tag": "button",
+      "line": 871,
+      "id": "dual2xOver6Under4BtnKoolkid",
+      "onclick": "runDual2xKoolkid('OVER6_UNDER4')"
+    },
+    {
+      "tag": "button",
+      "line": 872,
+      "id": "dual2xOver5Under4BtnKoolkid",
+      "onclick": "runDual2xKoolkid('OVER5_UNDER4')"
+    },
+    {
+      "tag": "button",
+      "line": 873,
+      "id": "dual2xOver2Under1BtnKoolkid",
+      "onclick": "runDual2xKoolkid('OVER2_UNDER1')"
+    },
+    {
+      "tag": "button",
+      "line": 874,
+      "id": "dual2xOver8Under7BtnKoolkid",
+      "onclick": "runDual2xKoolkid('OVER8_UNDER7')"
+    },
+    {
+      "tag": "button",
+      "line": 875,
+      "id": "dual2xCustomComboBtnKoolkid",
+      "onclick": "openDual2xCustomPopupKoolkid()"
+    },
+    {
+      "tag": "details",
+      "line": 914
+    },
+    {
+      "tag": "button",
+      "line": 918,
+      "onclick": "take3('UNDER')"
+    },
+    {
+      "tag": "button",
+      "line": 919,
+      "onclick": "take3('OVER')"
+    },
+    {
+      "tag": "button",
+      "line": 922,
+      "onclick": "burst4('UNDER')"
+    },
+    {
+      "tag": "button",
+      "line": 923,
+      "onclick": "burst4('OVER')"
+    },
+    {
+      "tag": "button",
+      "line": 925,
+      "id": "under3SplitBtnKoolkid",
+      "onclick": "runUnder3SplitKoolkid()"
+    },
+    {
+      "tag": "button",
+      "line": 928,
+      "id": "koolkidPairRecoveryBtnKoolkid",
+      "type": "button",
+      "onclick": "openKoolkidPairRecoveryPopup()"
+    },
+    {
+      "tag": "details",
+      "line": 931,
+      "id": "koolkidPairRecoveryDropdown"
+    },
+    {
+      "tag": "select",
+      "line": 944,
+      "id": "koolkidPairRecoveryDuration",
+      "onchange": "updateKoolkidPairRecoveryPanel()"
+    },
+    {
+      "tag": "input",
+      "line": 959,
+      "id": "koolkidPairRecoveryTarget",
+      "type": "number",
+      "min": "0.01",
+      "step": "0.01",
+      "oninput": "updateKoolkidPairRecoveryPanel()"
+    },
+    {
+      "tag": "input",
+      "line": 963,
+      "id": "koolkidPairRecoveryMaxRounds",
+      "type": "number",
+      "min": "1",
+      "step": "1",
+      "oninput": "updateKoolkidPairRecoveryPanel()"
+    },
+    {
+      "tag": "input",
+      "line": 967,
+      "id": "koolkidPairRecoveryBudget",
+      "type": "number",
+      "min": "0.01",
+      "step": "0.01",
+      "oninput": "updateKoolkidPairRecoveryPanel()"
+    },
+    {
+      "tag": "input",
+      "line": 972,
+      "id": "koolkidPairRecoveryResetAfterWin",
+      "type": "checkbox",
+      "onchange": "updateKoolkidPairRecoveryPanel()"
+    },
+    {
+      "tag": "input",
+      "line": 976,
+      "id": "koolkidPairRecoveryStopAtBudget",
+      "type": "checkbox",
+      "onchange": "updateKoolkidPairRecoveryPanel()"
+    },
+    {
+      "tag": "button",
+      "line": 982,
+      "id": "koolkidPairRecoveryStartBtn",
+      "type": "button",
+      "onclick": "startKoolkidPairRecovery()"
+    },
+    {
+      "tag": "button",
+      "line": 983,
+      "type": "button",
+      "onclick": "stopKoolkidPairRecovery()"
+    },
+    {
+      "tag": "input",
+      "line": 990,
+      "id": "koolkidPairManualUnder2Stake",
+      "type": "number",
+      "min": "0.35",
+      "step": "0.01"
+    },
+    {
+      "tag": "input",
+      "line": 994,
+      "id": "koolkidPairManualOver3Stake",
+      "type": "number",
+      "min": "0.35",
+      "step": "0.01"
+    },
+    {
+      "tag": "button",
+      "line": 997,
+      "id": "koolkidPairManualPlaceBtn",
+      "type": "button",
+      "onclick": "placeKoolkidPairManualStakeTrade()"
+    },
+    {
+      "tag": "button",
+      "line": 1003,
+      "id": "g1AutoBtnKoolkid",
+      "onclick": "openG1AutoPopupKoolkid()"
+    },
+    {
+      "tag": "button",
+      "line": 1006,
+      "id": "halfAutoBtnKoolkid",
+      "onclick": "showHalfAutoPopupKoolkid()"
+    },
+    {
+      "tag": "details",
+      "line": 1012
+    },
+    {
+      "tag": "button",
+      "line": 1015,
+      "id": "kidracksBtn",
+      "onclick": "toggleKidracksAuto()"
+    },
+    {
+      "tag": "button",
+      "line": 1019,
+      "id": "koolkidspeedBtn",
+      "onclick": "toggleKoolkidspeedAuto()"
+    },
+    {
+      "tag": "button",
+      "line": 1023,
+      "id": "kidBagzBtn",
+      "onclick": "toggleKidBagzAuto()"
+    },
+    {
+      "tag": "button",
+      "line": 1027,
+      "id": "kidPairsBtn",
+      "onclick": "toggleKidPairsAuto()"
+    },
+    {
+      "tag": "button",
+      "line": 1032,
+      "id": "kidPairs1Btn",
+      "onclick": "setKidPairsTrades(1)"
+    },
+    {
+      "tag": "button",
+      "line": 1033,
+      "id": "kidPairs2Btn",
+      "onclick": "setKidPairsTrades(2)"
+    },
+    {
+      "tag": "button",
+      "line": 1036,
+      "id": "koolluckBtn",
+      "onclick": "toggleKoolluckAuto()"
+    },
+    {
+      "tag": "button",
+      "line": 1040,
+      "id": "autoDollarBtnKoolkid",
+      "onclick": "toggleAutoDollarKoolkid()"
+    },
+    {
+      "tag": "button",
+      "line": 1045,
+      "id": "kid2vixBtnKoolkid",
+      "onclick": "toggleKid2vixKoolkid()"
+    },
+    {
+      "tag": "details",
+      "line": 1052
+    },
+    {
+      "tag": "button",
+      "line": 1058,
+      "id": "kidbrainBtnKoolkid",
+      "onclick": "toggleKidbrainKoolkid()"
+    },
+    {
+      "tag": "button",
+      "line": 1059,
+      "id": "edgeBrainBtnKoolkid",
+      "onclick": "toggleEdgeBrainKoolkid()"
+    },
+    {
+      "tag": "button",
+      "line": 1060,
+      "id": "smartFlowBtnKoolkid",
+      "onclick": "toggleSmartFlowKoolkid()"
+    },
+    {
+      "tag": "button",
+      "line": 1061,
+      "id": "metaAiBtnKoolkid",
+      "onclick": "toggleMetaAIKoolkid()"
+    },
+    {
+      "tag": "button",
+      "line": 1062,
+      "id": "kidracksAiBtnKoolkid",
+      "onclick": "toggleKidracksAIKoolkid()"
+    },
+    {
+      "tag": "button",
+      "line": 1063,
+      "id": "over3AnalysisBtnKoolkid",
+      "onclick": "toggleOver3AnalysisKoolkid()"
+    },
+    {
+      "tag": "select",
+      "line": 1066,
+      "id": "overAnalysisBarrierSelectKoolkid",
+      "onchange": "setOverAnalysisBarrierKoolkid(this.value)"
+    },
+    {
+      "tag": "button",
+      "line": 1072,
+      "id": "goldenCardBtnKoolkid",
+      "onclick": "handleGoldenCardBtnKoolkid()",
+      "type": "button"
+    },
+    {
+      "tag": "details",
+      "line": 1091
+    },
+    {
+      "tag": "button",
+      "line": 1094,
+      "id": "mpullBtn",
+      "onclick": "toggleMPullAuto()"
+    },
+    {
+      "tag": "button",
+      "line": 1099,
+      "id": "mpullModeBothBtn",
+      "onclick": "setMPullMode('BOTH')"
+    },
+    {
+      "tag": "button",
+      "line": 1100,
+      "id": "mpullModeOverBtn",
+      "onclick": "setMPullMode('OVER')"
+    },
+    {
+      "tag": "button",
+      "line": 1101,
+      "id": "mpullModeUnderBtn",
+      "onclick": "setMPullMode('UNDER')"
+    },
+    {
+      "tag": "button",
+      "line": 1104,
+      "id": "mpullAllDigitsBtn",
+      "onclick": "toggleMPullAllDigitsAuto()"
+    },
+    {
+      "tag": "button",
+      "line": 1108,
+      "id": "seqVixBtnKoolkid",
+      "onclick": "toggleSeqVixKoolkid()"
+    },
+    {
+      "tag": "button",
+      "line": 1126,
+      "onclick": "clearProfileHistory()"
+    },
+    {
+      "tag": "input",
+      "line": 1168,
+      "id": "halfAutoStakeUnder1Koolkid",
+      "type": "number",
+      "min": "0.35",
+      "step": "0.01"
+    },
+    {
+      "tag": "input",
+      "line": 1172,
+      "id": "halfAutoStakeOver2Koolkid",
+      "type": "number",
+      "min": "0.35",
+      "step": "0.01"
+    },
+    {
+      "tag": "input",
+      "line": 1176,
+      "id": "halfAutoStakeOver8Koolkid",
+      "type": "number",
+      "min": "0.35",
+      "step": "0.01"
+    },
+    {
+      "tag": "input",
+      "line": 1180,
+      "id": "halfAutoStakeUnder7Koolkid",
+      "type": "number",
+      "min": "0.35",
+      "step": "0.01"
+    },
+    {
+      "tag": "button",
+      "line": 1183,
+      "onclick": "confirmHalfAutoKoolkid()"
+    },
+    {
+      "tag": "button",
+      "line": 1184,
+      "onclick": "hideHalfAutoPopupKoolkid()"
+    },
+    {
+      "tag": "select",
+      "line": 1194,
+      "id": "dual2xCustomModeKoolkid",
+      "onchange": "syncDual2xCustomPopupKoolkid()"
+    },
+    {
+      "tag": "input",
+      "line": 1202,
+      "id": "dual2xCustomStakeAKoolkid",
+      "type": "number",
+      "min": "0.35",
+      "step": "0.01"
+    },
+    {
+      "tag": "input",
+      "line": 1206,
+      "id": "dual2xCustomStakeBKoolkid",
+      "type": "number",
+      "min": "0.35",
+      "step": "0.01"
+    },
+    {
+      "tag": "button",
+      "line": 1209,
+      "onclick": "confirmDual2xCustomKoolkid()"
+    },
+    {
+      "tag": "button",
+      "line": 1210,
+      "onclick": "hideDual2xCustomPopupKoolkid()"
+    },
+    {
+      "tag": "button",
+      "line": 1222,
+      "id": "g1InstantOver1BtnKoolkid",
+      "onclick": "placeG1InstantOver1Koolkid()"
+    },
+    {
+      "tag": "button",
+      "line": 1223,
+      "id": "g1InstantOver2BtnKoolkid",
+      "onclick": "placeG1InstantOver2Koolkid()"
+    },
+    {
+      "tag": "button",
+      "line": 1224,
+      "onclick": "hideG1AutoPopupKoolkid()"
+    },
+    {
+      "tag": "select",
+      "line": 1232,
+      "id": "goldenCardTradeModeKoolkid",
+      "onchange": "updateGoldenCardSettingsKoolkid()"
+    },
+    {
+      "tag": "input",
+      "line": 1245,
+      "id": "goldenCardAddJumpPairsKoolkid",
+      "type": "checkbox",
+      "onchange": "updateGoldenCardSettingsKoolkid()"
+    },
+    {
+      "tag": "input",
+      "line": 1254,
+      "id": "goldenCardAutoTraderKoolkid",
+      "type": "checkbox",
+      "onchange": "toggleGoldenCardAutoTraderKoolkid()"
+    },
+    {
+      "tag": "input",
+      "line": 1263,
+      "id": "goldenCardReinvestProfitsKoolkid",
+      "type": "checkbox",
+      "onchange": "toggleGoldenCardReinvestProfitsKoolkid()"
+    },
+    {
+      "tag": "button",
+      "line": 1274,
+      "type": "button",
+      "onclick": "setGoldenCardReinvestPctKoolkid(25)"
+    },
+    {
+      "tag": "button",
+      "line": 1275,
+      "type": "button",
+      "onclick": "setGoldenCardReinvestPctKoolkid(50)"
+    },
+    {
+      "tag": "button",
+      "line": 1276,
+      "type": "button",
+      "onclick": "setGoldenCardReinvestPctKoolkid(75)"
+    },
+    {
+      "tag": "button",
+      "line": 1277,
+      "type": "button",
+      "onclick": "setGoldenCardReinvestPctKoolkid(100)"
+    },
+    {
+      "tag": "button",
+      "line": 1294,
+      "onclick": "hideGoldenCardPopupKoolkid()"
+    },
+    {
+      "tag": "button",
+      "line": 1295,
+      "onclick": "turnOffGoldenCardKoolkid()"
+    }
+  ],
+  "static/components/mutant.html": [
+    {
+      "tag": "button",
+      "line": 1008,
+      "id": "nttSelectorPrimaryAction",
+      "data-action": "ntt-selector-primary"
+    },
+    {
+      "tag": "input",
+      "line": 1037,
+      "id": "nttReinvestProfitsToggle",
+      "type": "checkbox"
+    },
+    {
+      "tag": "input",
+      "line": 1047,
+      "id": "nttTouchStake",
+      "type": "number",
+      "min": "0.35",
+      "step": "0.01"
+    },
+    {
+      "tag": "button",
+      "line": 1054,
+      "data-action": "ntt-barrier-step"
+    },
+    {
+      "tag": "input",
+      "line": 1055,
+      "id": "nttTouchBarrier",
+      "type": "text"
+    },
+    {
+      "tag": "button",
+      "line": 1056,
+      "data-action": "ntt-barrier-step"
+    },
+    {
+      "tag": "select",
+      "line": 1063,
+      "id": "nttTouchDuration"
+    },
+    {
+      "tag": "select",
+      "line": 1067,
+      "id": "nttTouchDurationUnit"
+    },
+    {
+      "tag": "input",
+      "line": 1081,
+      "id": "nttNoTouchStake",
+      "type": "number",
+      "min": "0.35",
+      "step": "0.01"
+    },
+    {
+      "tag": "button",
+      "line": 1088,
+      "data-action": "ntt-barrier-step"
+    },
+    {
+      "tag": "input",
+      "line": 1089,
+      "id": "nttNoTouchBarrier",
+      "type": "text"
+    },
+    {
+      "tag": "button",
+      "line": 1090,
+      "data-action": "ntt-barrier-step"
+    },
+    {
+      "tag": "select",
+      "line": 1097,
+      "id": "nttNoTouchDuration"
+    },
+    {
+      "tag": "select",
+      "line": 1101,
+      "id": "nttNoTouchDurationUnit"
+    },
+    {
+      "tag": "input",
+      "line": 1114,
+      "id": "nttUseSharedDuration",
+      "type": "checkbox"
+    },
+    {
+      "tag": "select",
+      "line": 1122,
+      "id": "nttDuration"
+    },
+    {
+      "tag": "select",
+      "line": 1126,
+      "id": "nttDurationUnit"
+    },
+    {
+      "tag": "input",
+      "line": 1136,
+      "id": "nttTp",
+      "type": "number",
+      "min": "0",
+      "step": "0.01"
+    },
+    {
+      "tag": "input",
+      "line": 1140,
+      "id": "nttSl",
+      "type": "number",
+      "min": "0",
+      "step": "0.01"
+    },
+    {
+      "tag": "input",
+      "line": 1149,
+      "id": "nttBudget",
+      "type": "number",
+      "min": "0",
+      "step": "0.01"
+    },
+    {
+      "tag": "button",
+      "line": 1150,
+      "type": "button",
+      "onclick": "saveProfileBudget('NTT')"
+    },
+    {
+      "tag": "button",
+      "line": 1154,
+      "data-action": "ntt-refresh-barriers"
+    },
+    {
+      "tag": "button",
+      "line": 1191,
+      "id": "nttAnalysisPrimaryAction",
+      "data-action": "ntt-analysis-primary"
+    },
+    {
+      "tag": "button",
+      "line": 1199,
+      "id": "nttKoolkidBtn",
+      "data-action": "ntt-koolkid-panel"
+    },
+    {
+      "tag": "button",
+      "line": 1200,
+      "id": "nttAutoBothBtn",
+      "data-action": "ntt-auto-both"
+    },
+    {
+      "tag": "button",
+      "line": 1204,
+      "id": "nttAutoQuickOffBtn",
+      "data-action": "ntt-auto-stop-quick"
+    },
+    {
+      "tag": "button",
+      "line": 1208,
+      "data-action": "ntt-trade-touch"
+    },
+    {
+      "tag": "button",
+      "line": 1212,
+      "data-action": "ntt-trade-no-touch"
+    },
+    {
+      "tag": "button",
+      "line": 1216,
+      "data-action": "ntt-trade-both"
+    },
+    {
+      "tag": "button",
+      "line": 1220,
+      "data-action": "ntt-close-all"
+    },
+    {
+      "tag": "button",
+      "line": 1232,
+      "data-action": "ntt-koolkid-close"
+    },
+    {
+      "tag": "button",
+      "line": 1236,
+      "id": "nttKoolkidTntBtn",
+      "data-action": "ntt-koolkid-tnt"
+    },
+    {
+      "tag": "button",
+      "line": 1237,
+      "id": "nttKoolkidBothBtn",
+      "data-action": "ntt-koolkid-both"
+    },
+    {
+      "tag": "input",
+      "line": 1243,
+      "id": "nttKoolkidSimDuration",
+      "type": "number",
+      "min": "1",
+      "max": "59",
+      "step": "1"
+    },
+    {
+      "tag": "select",
+      "line": 1247,
+      "id": "nttKoolkidSimDurationUnit"
+    },
+    {
+      "tag": "input",
+      "line": 1255,
+      "id": "nttKoolkidLiveDuration",
+      "type": "number",
+      "min": "1",
+      "max": "59",
+      "step": "1"
+    },
+    {
+      "tag": "select",
+      "line": 1259,
+      "id": "nttKoolkidLiveDurationUnit"
+    },
+    {
+      "tag": "select",
+      "line": 1267,
+      "id": "nttKoolkidTntLossPct"
+    },
+    {
+      "tag": "select",
+      "line": 1277,
+      "id": "nttKoolkidTntSimSide"
+    },
+    {
+      "tag": "input",
+      "line": 1289,
+      "id": "nttKoolkidReversalToggle",
+      "type": "checkbox"
+    },
+    {
+      "tag": "button",
+      "line": 1293,
+      "data-action": "ntt-koolkid-barrier-step"
+    },
+    {
+      "tag": "input",
+      "line": 1294,
+      "id": "nttKoolkidTouchBarrier",
+      "type": "text"
+    },
+    {
+      "tag": "button",
+      "line": 1295,
+      "data-action": "ntt-koolkid-barrier-step"
+    },
+    {
+      "tag": "input",
+      "line": 1300,
+      "id": "nttKoolkidHalfBarrierToggle",
+      "type": "checkbox"
+    },
+    {
+      "tag": "button",
+      "line": 1304,
+      "data-action": "ntt-koolkid-barrier-step"
+    },
+    {
+      "tag": "input",
+      "line": 1305,
+      "id": "nttKoolkidNoTouchBarrier",
+      "type": "text"
+    },
+    {
+      "tag": "button",
+      "line": 1306,
+      "data-action": "ntt-koolkid-barrier-step"
+    },
+    {
+      "tag": "button",
+      "line": 1327,
+      "data-action": "ntt-auto-close"
+    },
+    {
+      "tag": "input",
+      "line": 1334,
+      "id": "nttAutoBarrier",
+      "type": "text"
+    },
+    {
+      "tag": "input",
+      "line": 1338,
+      "id": "nttAutoBudget",
+      "type": "number",
+      "min": "0.35",
+      "step": "0.01"
+    },
+    {
+      "tag": "button",
+      "line": 1342,
+      "id": "nttAutoTouchOnlyBtn",
+      "data-action": "ntt-auto-side-touch"
+    },
+    {
+      "tag": "button",
+      "line": 1343,
+      "id": "nttAutoNoTouchOnlyBtn",
+      "data-action": "ntt-auto-side-no-touch"
+    },
+    {
+      "tag": "input",
+      "line": 1348,
+      "id": "nttAutoMartingaleToggle",
+      "type": "checkbox"
+    },
+    {
+      "tag": "input",
+      "line": 1349,
+      "id": "nttAutoStep50Toggle",
+      "type": "checkbox"
+    },
+    {
+      "tag": "button",
+      "line": 1378,
+      "id": "nttAutoStartBtn",
+      "data-action": "ntt-auto-start"
+    },
+    {
+      "tag": "button",
+      "line": 1379,
+      "id": "nttAutoStopBtn",
+      "data-action": "ntt-auto-stop"
+    },
+    {
+      "tag": "button",
+      "line": 1388,
+      "onclick": "clearProfileHistory()"
+    }
+  ],
+  "static/components/unchain.html": [
+    {
+      "tag": "button",
+      "line": 2104,
+      "id": "unchainSelectorPrimaryAction",
+      "data-action": "unchain-selector-primary"
+    },
+    {
+      "tag": "button",
+      "line": 2118,
+      "id": "unchainBothToggleBtn",
+      "data-action": "unchain-both-toggle"
+    },
+    {
+      "tag": "button",
+      "line": 2123,
+      "data-action": "unchain-both-analyze"
+    },
+    {
+      "tag": "button",
+      "line": 2124,
+      "id": "unchainBothApplyBtn",
+      "data-action": "unchain-both-apply"
+    },
+    {
+      "tag": "button",
+      "line": 2158,
+      "id": "unchainScannerStatus",
+      "data-action": "unchain-scanner-toggle",
+      "type": "button"
+    },
+    {
+      "tag": "input",
+      "line": 2203,
+      "id": "unchainReinvestProfitsToggle",
+      "type": "checkbox"
+    },
+    {
+      "tag": "input",
+      "line": 2213,
+      "id": "unchainHalfBarrierToggle",
+      "type": "checkbox"
+    },
+    {
+      "tag": "input",
+      "line": 2228,
+      "id": "unchainHigherStake",
+      "type": "number",
+      "min": "0.35",
+      "step": "0.01"
+    },
+    {
+      "tag": "button",
+      "line": 2235,
+      "data-action": "unchain-barrier-step"
+    },
+    {
+      "tag": "input",
+      "line": 2236,
+      "id": "unchainHigherBarrier",
+      "type": "text"
+    },
+    {
+      "tag": "button",
+      "line": 2237,
+      "data-action": "unchain-barrier-step"
+    },
+    {
+      "tag": "button",
+      "line": 2242,
+      "data-action": "unchain-higher-preset"
+    },
+    {
+      "tag": "button",
+      "line": 2243,
+      "data-action": "unchain-higher-preset"
+    },
+    {
+      "tag": "button",
+      "line": 2244,
+      "data-action": "unchain-higher-preset"
+    },
+    {
+      "tag": "button",
+      "line": 2245,
+      "data-action": "unchain-higher-preset"
+    },
+    {
+      "tag": "select",
+      "line": 2251,
+      "id": "unchainHigherDuration"
+    },
+    {
+      "tag": "select",
+      "line": 2255,
+      "id": "unchainHigherDurationUnit"
+    },
+    {
+      "tag": "input",
+      "line": 2270,
+      "id": "unchainLowerStake",
+      "type": "number",
+      "min": "0.35",
+      "step": "0.01"
+    },
+    {
+      "tag": "button",
+      "line": 2277,
+      "data-action": "unchain-barrier-step"
+    },
+    {
+      "tag": "input",
+      "line": 2278,
+      "id": "unchainLowerBarrier",
+      "type": "text"
+    },
+    {
+      "tag": "button",
+      "line": 2279,
+      "data-action": "unchain-barrier-step"
+    },
+    {
+      "tag": "button",
+      "line": 2284,
+      "data-action": "unchain-lower-preset"
+    },
+    {
+      "tag": "button",
+      "line": 2285,
+      "data-action": "unchain-lower-preset"
+    },
+    {
+      "tag": "button",
+      "line": 2286,
+      "data-action": "unchain-lower-preset"
+    },
+    {
+      "tag": "button",
+      "line": 2287,
+      "data-action": "unchain-lower-preset"
+    },
+    {
+      "tag": "select",
+      "line": 2293,
+      "id": "unchainLowerDuration"
+    },
+    {
+      "tag": "select",
+      "line": 2297,
+      "id": "unchainLowerDurationUnit"
+    },
+    {
+      "tag": "input",
+      "line": 2311,
+      "id": "unchainUseSharedDuration",
+      "type": "checkbox"
+    },
+    {
+      "tag": "select",
+      "line": 2319,
+      "id": "unchainDuration"
+    },
+    {
+      "tag": "select",
+      "line": 2323,
+      "id": "unchainDurationUnit"
+    },
+    {
+      "tag": "input",
+      "line": 2334,
+      "id": "unchainTp",
+      "type": "number",
+      "min": "0",
+      "step": "0.01"
+    },
+    {
+      "tag": "input",
+      "line": 2338,
+      "id": "unchainSl",
+      "type": "number",
+      "min": "0",
+      "step": "0.01"
+    },
+    {
+      "tag": "input",
+      "line": 2344,
+      "id": "unchainBudget",
+      "type": "number",
+      "min": "0",
+      "step": "0.01"
+    },
+    {
+      "tag": "button",
+      "line": 2345,
+      "type": "button",
+      "onclick": "saveProfileBudget('UNCHAIN')"
+    },
+    {
+      "tag": "button",
+      "line": 2349,
+      "data-action": "unchain-refresh-barriers"
+    },
+    {
+      "tag": "button",
+      "line": 2384,
+      "id": "unchainPredictionPrimaryAction",
+      "data-action": "unchain-trade-higher"
+    },
+    {
+      "tag": "button",
+      "line": 2392,
+      "id": "unchainKoolkidBtn",
+      "data-action": "unchain-koolkid-panel"
+    },
+    {
+      "tag": "button",
+      "line": 2393,
+      "id": "unchainAutoBothBtn",
+      "data-action": "unchain-toggle-auto-both"
+    },
+    {
+      "tag": "button",
+      "line": 2394,
+      "id": "unchainAiAutoTradeBtn",
+      "data-action": "unchain-toggle-ai-auto-trade"
+    },
+    {
+      "tag": "button",
+      "line": 2395,
+      "id": "unchainDirectionalAutoBtn",
+      "data-action": "unchain-toggle-directional-auto"
+    },
+    {
+      "tag": "button",
+      "line": 2396,
+      "id": "unchainPrimordialBlueBtn",
+      "data-action": "unchain-toggle-primordial-blue"
+    },
+    {
+      "tag": "button",
+      "line": 2397,
+      "id": "unchainHybridBtn",
+      "data-action": "unchain-toggle-hybrid"
+    },
+    {
+      "tag": "button",
+      "line": 2398,
+      "data-action": "unchain-trade-higher"
+    },
+    {
+      "tag": "button",
+      "line": 2402,
+      "data-action": "unchain-trade-lower"
+    },
+    {
+      "tag": "button",
+      "line": 2406,
+      "data-action": "unchain-trade-both"
+    },
+    {
+      "tag": "button",
+      "line": 2410,
+      "data-action": "unchain-close-all"
+    },
+    {
+      "tag": "details",
+      "line": 2412
+    },
+    {
+      "tag": "input",
+      "line": 2418,
+      "id": "unchainAutoConfidence",
+      "type": "range",
+      "min": "45",
+      "max": "80",
+      "step": "1"
+    },
+    {
+      "tag": "input",
+      "line": 2423,
+      "id": "unchainAutoMinMovement",
+      "type": "number",
+      "min": "0.00001",
+      "step": "0.00001"
+    },
+    {
+      "tag": "input",
+      "line": 2427,
+      "id": "unchainAutoMinTickSpeed",
+      "type": "number",
+      "min": "0.05",
+      "step": "0.01"
+    },
+    {
+      "tag": "input",
+      "line": 2431,
+      "id": "unchainAutoMinRange",
+      "type": "number",
+      "min": "0.00001",
+      "step": "0.00001"
+    },
+    {
+      "tag": "details",
+      "line": 2445
+    },
+    {
+      "tag": "select",
+      "line": 2454,
+      "id": "unchainSingleMartingaleAction"
+    },
+    {
+      "tag": "input",
+      "line": 2464,
+      "id": "unchainSingleMartingaleHigherStartStake",
+      "type": "number",
+      "min": "0.35",
+      "step": "0.01"
+    },
+    {
+      "tag": "input",
+      "line": 2468,
+      "id": "unchainSingleMartingaleLowerStartStake",
+      "type": "number",
+      "min": "0.35",
+      "step": "0.01"
+    },
+    {
+      "tag": "input",
+      "line": 2474,
+      "id": "unchainSingleMartingaleMultiplier",
+      "type": "number",
+      "min": "1",
+      "step": "0.05"
+    },
+    {
+      "tag": "input",
+      "line": 2478,
+      "id": "unchainSingleMartingaleMaxSteps",
+      "type": "number",
+      "min": "1",
+      "step": "1"
+    },
+    {
+      "tag": "input",
+      "line": 2482,
+      "id": "unchainSingleMartingaleMaxStake",
+      "type": "number",
+      "min": "0",
+      "step": "0.01"
+    },
+    {
+      "tag": "input",
+      "line": 2486,
+      "id": "unchainSingleMartingaleDoubleLimit",
+      "type": "number",
+      "min": "0",
+      "step": "1"
+    },
+    {
+      "tag": "select",
+      "line": 2490,
+      "id": "unchainSingleMartingaleTickSpacing"
+    },
+    {
+      "tag": "input",
+      "line": 2496,
+      "id": "unchainSingleMartingaleHigherBarrier",
+      "type": "text"
+    },
+    {
+      "tag": "input",
+      "line": 2500,
+      "id": "unchainSingleMartingaleLowerBarrier",
+      "type": "text"
+    },
+    {
+      "tag": "select",
+      "line": 2506,
+      "id": "unchainSingleMartingaleDuration"
+    },
+    {
+      "tag": "select",
+      "line": 2510,
+      "id": "unchainSingleMartingaleDurationUnit"
+    },
+    {
+      "tag": "select",
+      "line": 2520,
+      "id": "unchainSingleMartingaleWinsSide"
+    },
+    {
+      "tag": "input",
+      "line": 2530,
+      "id": "unchainSingleMartingaleFixedProfits",
+      "type": "checkbox"
+    },
+    {
+      "tag": "button",
+      "line": 2539,
+      "id": "unchainSingleMartingaleToggleBtn",
+      "type": "button",
+      "data-action": "unchain-single-martingale-toggle"
+    },
+    {
+      "tag": "button",
+      "line": 2543,
+      "type": "button",
+      "data-action": "unchain-single-martingale-place"
+    },
+    {
+      "tag": "button",
+      "line": 2544,
+      "type": "button",
+      "data-action": "unchain-single-martingale-stop"
+    },
+    {
+      "tag": "button",
+      "line": 2554,
+      "onclick": "clearProfileHistory()"
+    },
+    {
+      "tag": "button",
+      "line": 2595,
+      "data-action": "unchain-koolkid-close"
+    },
+    {
+      "tag": "button",
+      "line": 2600,
+      "id": "unchainKoolkidHlBtn",
+      "data-action": "unchain-koolkid-hl"
+    },
+    {
+      "tag": "button",
+      "line": 2601,
+      "id": "unchainKoolkidBothBtn",
+      "data-action": "unchain-koolkid-both"
+    },
+    {
+      "tag": "input",
+      "line": 2607,
+      "id": "unchainKoolkidSimDuration",
+      "type": "number",
+      "min": "1",
+      "max": "59",
+      "step": "1"
+    },
+    {
+      "tag": "select",
+      "line": 2611,
+      "id": "unchainKoolkidSimDurationUnit"
+    },
+    {
+      "tag": "input",
+      "line": 2619,
+      "id": "unchainKoolkidLiveDuration",
+      "type": "number",
+      "min": "1",
+      "max": "59",
+      "step": "1"
+    },
+    {
+      "tag": "select",
+      "line": 2623,
+      "id": "unchainKoolkidLiveDurationUnit"
+    },
+    {
+      "tag": "select",
+      "line": 2631,
+      "id": "unchainKoolkidHlLossPct"
+    },
+    {
+      "tag": "select",
+      "line": 2641,
+      "id": "unchainKoolkidHlSimSide"
+    },
+    {
+      "tag": "input",
+      "line": 2656,
+      "id": "unchainKoolkidReversalToggle",
+      "type": "checkbox"
+    },
+    {
+      "tag": "button",
+      "line": 2666,
+      "data-action": "unchain-barrier-step"
+    },
+    {
+      "tag": "input",
+      "line": 2667,
+      "id": "unchainKoolkidHigherBarrier",
+      "type": "text"
+    },
+    {
+      "tag": "button",
+      "line": 2668,
+      "data-action": "unchain-barrier-step"
+    },
+    {
+      "tag": "input",
+      "line": 2677,
+      "id": "unchainKoolkidHalfBarrierToggle",
+      "type": "checkbox"
+    },
+    {
+      "tag": "button",
+      "line": 2687,
+      "data-action": "unchain-barrier-step"
+    },
+    {
+      "tag": "input",
+      "line": 2688,
+      "id": "unchainKoolkidLowerBarrier",
+      "type": "text"
+    },
+    {
+      "tag": "button",
+      "line": 2689,
+      "data-action": "unchain-barrier-step"
+    },
+    {
+      "tag": "button",
+      "line": 2711,
+      "data-action": "unchain-directional-close"
+    },
+    {
+      "tag": "button",
+      "line": 2716,
+      "id": "unchainDirectionalAutoToggleBtn",
+      "data-action": "unchain-directional-auto-toggle"
+    },
+    {
+      "tag": "select",
+      "line": 2728,
+      "id": "unchainDirectionalAutoSide"
+    },
+    {
+      "tag": "button",
+      "line": 2737,
+      "data-action": "unchain-barrier-step"
+    },
+    {
+      "tag": "input",
+      "line": 2738,
+      "id": "unchainDirectionalAutoBarrier",
+      "type": "text"
+    },
+    {
+      "tag": "button",
+      "line": 2739,
+      "data-action": "unchain-barrier-step"
+    },
+    {
+      "tag": "input",
+      "line": 2751,
+      "id": "unchainDirectionalStableProfitsToggle",
+      "type": "checkbox"
+    },
+    {
+      "tag": "input",
+      "line": 2761,
+      "id": "unchainDirectionalBothTradesToggle",
+      "type": "checkbox"
+    }
+  ],
+  "templates/cover.html": [],
+  "templates/login.html": [
+    {
+      "tag": "form",
+      "line": 42,
+      "method": "POST",
+      "id": "loginForm"
+    },
+    {
+      "tag": "input",
+      "line": 45,
+      "type": "text",
+      "id": "loginUsername"
+    },
+    {
+      "tag": "input",
+      "line": 55,
+      "type": "password",
+      "id": "loginPassword"
+    },
+    {
+      "tag": "button",
+      "line": 58,
+      "type": "button"
+    },
+    {
+      "tag": "button",
+      "line": 94,
+      "type": "submit"
+    }
+  ],
+  "templates/register.html": [
+    {
+      "tag": "form",
+      "line": 42,
+      "method": "POST",
+      "id": "registerForm"
+    },
+    {
+      "tag": "input",
+      "line": 45,
+      "type": "text",
+      "id": "registerUsername"
+    },
+    {
+      "tag": "input",
+      "line": 51,
+      "type": "password",
+      "id": "registerPassword"
+    },
+    {
+      "tag": "button",
+      "line": 53,
+      "type": "button"
+    },
+    {
+      "tag": "input",
+      "line": 78,
+      "type": "text",
+      "id": "registerLicense"
+    },
+    {
+      "tag": "button",
+      "line": 82,
+      "type": "submit"
+    }
+  ],
+  "templates/forgot_password.html": [
+    {
+      "tag": "form",
+      "line": 44,
+      "method": "POST",
+      "id": "recoveryForm"
+    },
+    {
+      "tag": "input",
+      "line": 47,
+      "type": "text",
+      "id": "recoveryUsername"
+    },
+    {
+      "tag": "input",
+      "line": 53,
+      "type": "text",
+      "id": "recoveryLicense"
+    },
+    {
+      "tag": "button",
+      "line": 58,
+      "type": "submit"
+    }
+  ],
+  "templates/koolkid_auto_trade.html": [
+    {
+      "tag": "select",
+      "line": 386,
+      "id": "autoSessionMode"
+    },
+    {
+      "tag": "button",
+      "line": 391,
+      "id": "autoSessionModeSingleBtn",
+      "type": "button"
+    },
+    {
+      "tag": "button",
+      "line": 395,
+      "id": "autoSessionModeDualBtn",
+      "type": "button"
+    },
+    {
+      "tag": "select",
+      "line": 406,
+      "id": "autoSessionStrategy1"
+    },
+    {
+      "tag": "select",
+      "line": 415,
+      "id": "autoSessionStrategy2"
+    },
+    {
+      "tag": "input",
+      "line": 426,
+      "id": "autoSessionBudget",
+      "type": "number",
+      "min": "1",
+      "max": "2000",
+      "step": "0.01"
+    },
+    {
+      "tag": "input",
+      "line": 427,
+      "id": "autoSessionSl",
+      "type": "number",
+      "min": "0",
+      "step": "0.01"
+    },
+    {
+      "tag": "input",
+      "line": 428,
+      "id": "autoSessionTp",
+      "type": "number",
+      "min": "0",
+      "step": "0.01"
+    },
+    {
+      "tag": "button",
+      "line": 435,
+      "id": "autoSessionStartBtn",
+      "type": "button"
+    },
+    {
+      "tag": "button",
+      "line": 496,
+      "type": "button"
+    },
+    {
+      "tag": "button",
+      "line": 496,
+      "id": "autoTradeHistoryClearBtn",
+      "type": "button"
+    },
+    {
+      "tag": "button",
+      "line": 567,
+      "type": "button"
+    },
+    {
+      "tag": "button",
+      "line": 567,
+      "id": "autoTradeHistoryClearBtnMobile",
+      "type": "button"
+    }
+  ]
+}

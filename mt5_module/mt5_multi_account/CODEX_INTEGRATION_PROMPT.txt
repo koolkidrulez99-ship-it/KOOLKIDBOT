@@ -1,0 +1,27 @@
+Integrate the supplied `mt5_multi_account` folder into the existing KOOLKID MT5 Hub.
+
+Reuse this implementation instead of rebuilding it.
+
+GOAL:
+- up to 10 simultaneously active MT5 accounts
+- choose any connected account as MASTER without disconnecting the others
+- choose any/all remaining accounts as SLAVES
+- accounts can also remain INDEPENDENT
+- copy manual MT5 trades, KOOLKID manual trades and .ex5 EA trades
+- copy symbol, side, lot, SL, TP, changes and closes
+- filters: all/manual/EA/specific Magic Number
+- lot modes: same/fixed/multiplier/equity proportional
+- Manual Trade: account checkboxes + SELECT ALL + COPY TRADE
+- Positions: show all open positions across all connected accounts and allow close
+- never fake status or silently fall back to simulation
+- preserve existing LIVE safety locks
+
+Use the supplied worker-per-account architecture. For real simultaneous accounts, each account needs an isolated/dedicated MT5 terminal instance.
+
+Do NOT touch Deriv trading, OAuth, PAT, Deriv WebSockets, strategies, profiles, or the working Deriv chart.
+
+Do not remove the existing MT5 bridge or EA worker until this new path is verified.
+
+First inspect this folder and wire the minimum adapters/UI needed into the existing Hub.
+Test simulation first, then demo MT5 accounts if available.
+Report files changed and confirm Deriv code was untouched.

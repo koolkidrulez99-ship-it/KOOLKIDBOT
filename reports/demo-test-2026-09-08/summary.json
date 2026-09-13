@@ -1,0 +1,468 @@
+{
+  "status": "Paused: local server restarted and login page reopened at 2026-09-09 15:31 UTC; awaiting demo reconnection",
+  "firstLiveTest": "2026-09-08T14:31:18.603Z",
+  "baseline": 47855.27,
+  "lastRecordedBalance": 47587.13,
+  "lastCompletedLiveTest": "2026-09-09T06:06:02.189Z",
+  "placements": 32,
+  "settlements": 32,
+  "wins": 14,
+  "losses": 18,
+  "netPnl": -1.92,
+  "totalStake": 11.2,
+  "unsettledObservedIds": [],
+  "metadataMismatches": [
+    {
+      "contract_id": "12164025159",
+      "differences": [
+        "type",
+        "contract_type",
+        "mode",
+        "batch_id"
+      ],
+      "placement": {
+        "type": "RISE",
+        "contract_type": "CALL",
+        "mode": "human_auto_rise_fall",
+        "batch_id": "198292091",
+        "dual_market_batch_id": null,
+        "dual_market_leg_index": null
+      },
+      "settlement": {
+        "type": "FALL",
+        "contract_type": "PUT",
+        "mode": "human_rf",
+        "batch_id": null,
+        "dual_market_batch_id": null,
+        "dual_market_leg_index": null
+      }
+    },
+    {
+      "contract_id": "12164029519",
+      "differences": [
+        "mode",
+        "batch_id"
+      ],
+      "placement": {
+        "type": "FALL",
+        "contract_type": "PUT",
+        "mode": "human_auto_rise_fall",
+        "batch_id": "198292091",
+        "dual_market_batch_id": null,
+        "dual_market_leg_index": null
+      },
+      "settlement": {
+        "type": "FALL",
+        "contract_type": "PUT",
+        "mode": "human_rf",
+        "batch_id": null,
+        "dual_market_batch_id": null,
+        "dual_market_leg_index": null
+      }
+    },
+    {
+      "contract_id": "12164304419",
+      "differences": [
+        "type",
+        "contract_type",
+        "batch_id"
+      ],
+      "placement": {
+        "type": "RISE",
+        "contract_type": "CALL",
+        "mode": "human_auto_rise_fall",
+        "batch_id": "HUMAN-RF-1788878091849-50",
+        "dual_market_batch_id": null,
+        "dual_market_leg_index": null
+      },
+      "settlement": {
+        "type": "FALL",
+        "contract_type": "PUT",
+        "mode": "human_auto_rise_fall",
+        "batch_id": "HUMAN-RF-1788878088363-2497",
+        "dual_market_batch_id": null,
+        "dual_market_leg_index": null
+      }
+    },
+    {
+      "contract_id": "12164305019",
+      "differences": [
+        "batch_id"
+      ],
+      "placement": {
+        "type": "FALL",
+        "contract_type": "PUT",
+        "mode": "human_auto_rise_fall",
+        "batch_id": "HUMAN-RF-1788878091849-50",
+        "dual_market_batch_id": null,
+        "dual_market_leg_index": null
+      },
+      "settlement": {
+        "type": "FALL",
+        "contract_type": "PUT",
+        "mode": "human_auto_rise_fall",
+        "batch_id": "HUMAN-RF-1788878088363-2497",
+        "dual_market_batch_id": null,
+        "dual_market_leg_index": null
+      }
+    },
+    {
+      "contract_id": "12164324679",
+      "differences": [
+        "type",
+        "contract_type",
+        "batch_id"
+      ],
+      "placement": {
+        "type": "RISE",
+        "contract_type": "CALL",
+        "mode": "human_auto_rise_fall",
+        "batch_id": "HUMAN-RF-1788878102911-4867",
+        "dual_market_batch_id": null,
+        "dual_market_leg_index": null
+      },
+      "settlement": {
+        "type": "FALL",
+        "contract_type": "PUT",
+        "mode": "human_auto_rise_fall",
+        "batch_id": "HUMAN-RF-1788878088363-2497",
+        "dual_market_batch_id": null,
+        "dual_market_leg_index": null
+      }
+    },
+    {
+      "contract_id": "12164325679",
+      "differences": [
+        "batch_id"
+      ],
+      "placement": {
+        "type": "FALL",
+        "contract_type": "PUT",
+        "mode": "human_auto_rise_fall",
+        "batch_id": "HUMAN-RF-1788878102911-4867",
+        "dual_market_batch_id": null,
+        "dual_market_leg_index": null
+      },
+      "settlement": {
+        "type": "FALL",
+        "contract_type": "PUT",
+        "mode": "human_auto_rise_fall",
+        "batch_id": "HUMAN-RF-1788878088363-2497",
+        "dual_market_batch_id": null,
+        "dual_market_leg_index": null
+      }
+    },
+    {
+      "contract_id": "12164343279",
+      "differences": [
+        "type",
+        "contract_type",
+        "batch_id"
+      ],
+      "placement": {
+        "type": "RISE",
+        "contract_type": "CALL",
+        "mode": "human_auto_rise_fall",
+        "batch_id": "HUMAN-RF-1788878112840-1358",
+        "dual_market_batch_id": null,
+        "dual_market_leg_index": null
+      },
+      "settlement": {
+        "type": "FALL",
+        "contract_type": "PUT",
+        "mode": "human_auto_rise_fall",
+        "batch_id": "HUMAN-RF-1788878088363-2497",
+        "dual_market_batch_id": null,
+        "dual_market_leg_index": null
+      }
+    },
+    {
+      "contract_id": "12164343719",
+      "differences": [
+        "batch_id"
+      ],
+      "placement": {
+        "type": "FALL",
+        "contract_type": "PUT",
+        "mode": "human_auto_rise_fall",
+        "batch_id": "HUMAN-RF-1788878112840-1358",
+        "dual_market_batch_id": null,
+        "dual_market_leg_index": null
+      },
+      "settlement": {
+        "type": "FALL",
+        "contract_type": "PUT",
+        "mode": "human_auto_rise_fall",
+        "batch_id": "HUMAN-RF-1788878088363-2497",
+        "dual_market_batch_id": null,
+        "dual_market_leg_index": null
+      }
+    },
+    {
+      "contract_id": "12164361699",
+      "differences": [
+        "type",
+        "contract_type"
+      ],
+      "placement": {
+        "type": "FALL",
+        "contract_type": "PUT",
+        "mode": "human_auto_rise_fall",
+        "batch_id": "HUMAN-RF-1788878122947-6967",
+        "dual_market_batch_id": null,
+        "dual_market_leg_index": null
+      },
+      "settlement": {
+        "type": "RISE",
+        "contract_type": "CALL",
+        "mode": "human_auto_rise_fall",
+        "batch_id": "HUMAN-RF-1788878122947-6967",
+        "dual_market_batch_id": null,
+        "dual_market_leg_index": null
+      }
+    },
+    {
+      "contract_id": "12164466339",
+      "differences": [
+        "type",
+        "contract_type",
+        "dual_market_leg_index"
+      ],
+      "placement": {
+        "type": "FALL",
+        "contract_type": "PUT",
+        "mode": "human_dual_market_contracts",
+        "batch_id": null,
+        "dual_market_batch_id": "918835422",
+        "dual_market_leg_index": 2
+      },
+      "settlement": {
+        "type": "RISE",
+        "contract_type": "CALL",
+        "mode": "human_dual_market_contracts",
+        "batch_id": null,
+        "dual_market_batch_id": "918835422",
+        "dual_market_leg_index": 1
+      }
+    },
+    {
+      "contract_id": "12239342759",
+      "differences": [
+        "contract_type"
+      ],
+      "placement": {
+        "type": "TOUCH",
+        "contract_type": "ONETOUCH",
+        "mode": null,
+        "batch_id": null,
+        "dual_market_batch_id": null,
+        "dual_market_leg_index": null
+      },
+      "settlement": {
+        "type": "TOUCH",
+        "contract_type": null,
+        "mode": null,
+        "batch_id": null,
+        "dual_market_batch_id": null,
+        "dual_market_leg_index": null
+      }
+    },
+    {
+      "contract_id": "12239457739",
+      "differences": [
+        "contract_type"
+      ],
+      "placement": {
+        "type": "TOUCH",
+        "contract_type": "ONETOUCH",
+        "mode": null,
+        "batch_id": null,
+        "dual_market_batch_id": null,
+        "dual_market_leg_index": null
+      },
+      "settlement": {
+        "type": "TOUCH",
+        "contract_type": null,
+        "mode": null,
+        "batch_id": null,
+        "dual_market_batch_id": null,
+        "dual_market_leg_index": null
+      }
+    },
+    {
+      "contract_id": "12239466059",
+      "differences": [
+        "type",
+        "contract_type"
+      ],
+      "placement": {
+        "type": "NO_TOUCH",
+        "contract_type": "NOTOUCH",
+        "mode": null,
+        "batch_id": null,
+        "dual_market_batch_id": null,
+        "dual_market_leg_index": null
+      },
+      "settlement": {
+        "type": "NO TOUCH",
+        "contract_type": null,
+        "mode": null,
+        "batch_id": null,
+        "dual_market_batch_id": null,
+        "dual_market_leg_index": null
+      }
+    }
+  ],
+  "proposalErrorCount": 1426,
+  "completedCases": [
+    {
+      "name": "human-rise",
+      "at": "2026-09-08T14:31:30.694Z",
+      "balance": 47854.92,
+      "placements": 1
+    },
+    {
+      "name": "human-fall",
+      "at": "2026-09-08T14:31:47.165Z",
+      "balance": 47855.23,
+      "placements": 1
+    },
+    {
+      "name": "human-pair",
+      "at": "2026-09-08T14:32:34.397Z",
+      "balance": 47854.53,
+      "placements": 2
+    },
+    {
+      "name": "human-do-both",
+      "at": "2026-09-08T14:35:30.127Z",
+      "balance": 47854.99,
+      "placements": 10
+    },
+    {
+      "name": "human-even-odd",
+      "at": "2026-09-08T14:36:15.214Z",
+      "balance": 47854.99,
+      "placements": 0
+    },
+    {
+      "name": "human-dual-same",
+      "at": "2026-09-08T14:36:32.721Z",
+      "balance": 47854.95,
+      "placements": 2
+    },
+    {
+      "name": "human-even-odd",
+      "at": "2026-09-08T14:37:25.757Z",
+      "balance": 47854.87,
+      "placements": 4
+    },
+    {
+      "name": "unchain-higher",
+      "at": "2026-09-08T14:40:20.564Z",
+      "balance": 47854.87,
+      "placements": 0
+    },
+    {
+      "name": "unchain-lower",
+      "at": "2026-09-08T14:40:37.788Z",
+      "balance": 47854.87,
+      "placements": 0
+    },
+    {
+      "name": "unchain-both",
+      "at": "2026-09-08T14:41:05.443Z",
+      "balance": 47854.87,
+      "placements": 0
+    },
+    {
+      "name": "unchain-higher",
+      "at": "2026-09-08T14:41:48.440Z",
+      "balance": 47854.87,
+      "placements": 0
+    },
+    {
+      "name": "unchain-higher",
+      "at": "2026-09-08T14:42:41.682Z",
+      "balance": 47854.87,
+      "placements": 0
+    },
+    {
+      "name": "koolkid-three-under",
+      "at": "2026-09-09T01:13:22.810Z",
+      "balance": 47854.48,
+      "placements": 3
+    },
+    {
+      "name": "koolkid-burst-over",
+      "at": "2026-09-09T01:13:57.990Z",
+      "balance": 47853.08,
+      "placements": 4
+    },
+    {
+      "name": "koolkid-auto",
+      "at": "2026-09-09T01:15:16.273Z",
+      "balance": 47853.08,
+      "placements": 0
+    },
+    {
+      "name": "koolkid-martingale-stop",
+      "at": "2026-09-09T01:16:28.271Z",
+      "balance": 47853.56,
+      "placements": 1
+    },
+    {
+      "name": "jokerjoe-differs",
+      "at": "2026-09-09T01:17:08.656Z",
+      "balance": 47853.58,
+      "placements": 1
+    },
+    {
+      "name": "jokerjoe-match-batch",
+      "at": "2026-09-09T01:17:57.161Z",
+      "balance": 47853.58,
+      "placements": 0
+    },
+    {
+      "name": "jokerjoe-auto",
+      "at": "2026-09-09T01:23:07.542Z",
+      "balance": 47853.58,
+      "placements": 0
+    },
+    {
+      "name": "mutant-touch",
+      "at": "2026-09-09T05:50:03.327Z",
+      "balance": 47587.01,
+      "placements": 1
+    },
+    {
+      "name": "mutant-no-touch",
+      "at": "2026-09-09T05:50:26.154Z",
+      "balance": 47587.01,
+      "placements": 0
+    },
+    {
+      "name": "mutant-both",
+      "at": "2026-09-09T05:51:25.626Z",
+      "balance": 47587.13,
+      "placements": 2
+    },
+    {
+      "name": "koolkid-luck-auto",
+      "at": "2026-09-09T05:58:31.285Z",
+      "balance": 47587.13,
+      "placements": 0
+    },
+    {
+      "name": "jokerjoe-kidgx-auto",
+      "at": "2026-09-09T06:06:02.189Z",
+      "balance": 47587.13,
+      "placements": 0
+    }
+  ],
+  "remainingProfiles": [
+    "Mutant AUTO blocked by UI; manual cases already attempted",
+    "CLOUD live start blocked; read-only status/UI already inspected"
+  ],
+  "sourceFilesChanged": false
+}

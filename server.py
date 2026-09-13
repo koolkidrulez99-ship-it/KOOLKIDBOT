@@ -13,6 +13,8 @@ import secrets
 import hashlib
 import math
 import statistics
+from ai_intelligence.bridge import check_buy as _ai_check_buy, observe_response as _ai_observe_response
+from ai_intelligence.routes import register as _register_ai_intelligence
 import ipaddress
 import base64
 import urllib.error
@@ -115,6 +117,7 @@ from strategies.primordial_blue import (
 )
 from strategies.touch_no_touch_predictor import predict_touch_no_touch_percentages
 from human_profile_contracts import (
+    build_human_manual_contract_info,
     normalize_human_manual_action,
 )
 from bot_modules.time_digits import (
@@ -1176,6 +1179,9 @@ def _request_digit_proposal_for_buy(client_id, state, payload, timeout_sec=5.0):
 
 
 def _send_buy_from_proposal(client_id, state, req_id, proposal, stake):
+    ai_error = _ai_check_buy(state, req_id)
+    if ai_error:
+        return False, ai_error
     ws = state.get("ws") if isinstance(state, dict) else None
     proposal_id = (proposal or {}).get("id")
     if not ws:
@@ -2258,9 +2264,11 @@ golden_card_audit_history = {}
 # Render does not keep abandoned websocket/strategy state forever.
 HEARTBEAT_TIMEOUT_SEC = float(os.environ.get("HEARTBEAT_TIMEOUT_SEC", os.environ.get("CLIENT_STALE_AFTER_SEC", "1200")))
 HEARTBEAT_SWEEPER_INTERVAL_SEC = float(os.environ.get("HEARTBEAT_SWEEPER_INTERVAL_SEC", os.environ.get("CLIENT_SWEEP_INTERVAL_SEC", "60")))
+WS_HEALTH_SWEEPER_INTERVAL_SEC = float(os.environ.get("WS_HEALTH_SWEEPER_INTERVAL_SEC", "15"))
+WS_RECONNECT_MAX_DELAY_SEC = float(os.environ.get("WS_RECONNECT_MAX_DELAY_SEC", "30"))
 DERIV_WS_STALE_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_STALE_TIMEOUT_SEC", "1200"))
 DERIV_WS_PING_INTERVAL_SEC = float(os.environ.get("DERIV_WS_PING_INTERVAL_SEC", "20"))
-DERIV_WS_PING_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_PING_TIMEOUT_SEC", "10"))
+DERIV_WS_PING_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_PING_TIMEOUT_SEC", "25"))
 DERIV_WS_CONNECT_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_CONNECT_TIMEOUT_SEC", "75"))
 DERIV_WS_AUTHORIZE_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_AUTHORIZE_TIMEOUT_SEC", "60"))
 GOLDEN_CARD_WS_RECONNECT_DELAY_SEC = float(os.environ.get("GOLDEN_CARD_WS_RECONNECT_DELAY_SEC", "1.0"))
@@ -3291,6 +3299,10 @@ def is_admin():
         return True
     user_row = _get_user_row(session.get("user"))
     return bool(user_row and str(user_row.get("role") or "").lower() == "admin")
+
+
+from mt5_module.mt5_web import create_mt5_blueprint
+app.register_blueprint(create_mt5_blueprint(lambda: True, None))
 
 
 def get_client_id():
@@ -5153,11 +5165,49 @@ def _trade_extra_meta_from_payload(data, *, leg_action=None):
         extra["leg_action"] = str(leg).strip()
     if payload.get("hide_from_history") is not None:
         extra["hide_from_history"] = bool(payload.get("hide_from_history"))
-    for key in ("batch_id", "batch_label", "batch_stake", "batch_size", "round_number", "strategy_name", "over3_stake", "under6_stake", "minimum_profit", "minimum_profit_retries", "buy_best_available"):
+    for key in ("batch_id", "batch_label", "batch_stake", "batch_size", "round_number", "strategy_name", "over3_stake", "under6_stake", "minimum_profit", "minimum_profit_retries", "buy_best_available", "logical_round_id", "logical_round_label", "main_trade_action", "recovery_trade_action", "recovery_active", "cycle_attempt"):
         value = payload.get(key)
         if value not in (None, ""):
             extra[key] = value
     return extra or None
+
+
+def _validate_koolkid_martingale_digit_contract(payload):
+    data = payload or {}
+    mode = str(data.get("mode") or data.get("source") or "").lower()
+    if not mode.startswith("koolkid_single_martingale"):
+        return None
+    contract_type = str(data.get("type") or "").upper()
+    try:
+        barrier = int(data.get("barrier"))
+    except (TypeError, ValueError):
+        return "KOOLKID digit barrier must be a whole number from 0 to 9."
+    if barrier < 0 or barrier > 9:
+        return "KOOLKID digit barrier must be between 0 and 9."
+    if (contract_type in ("UNDER", "DIGITUNDER") and barrier == 0) or (
+        contract_type in ("OVER", "DIGITOVER") and barrier == 9
+    ):
+        return "That KOOLKID digit contract cannot win and is not allowed."
+    return None
+
+
+def _capture_koolkid_martingale_runtime(state, payload):
+    data = payload or {}
+    mode = str(data.get("mode") or data.get("source") or "").lower()
+    if not mode.startswith("koolkid_single_martingale"):
+        return
+    try:
+        cycle_attempt = max(0, int(data.get("cycle_attempt") or 0))
+    except (TypeError, ValueError):
+        cycle_attempt = 0
+    state["koolkid_martingale_runtime"] = {
+        "main_trade_action": str(data.get("main_trade_action") or data.get("action") or ""),
+        "executing_trade_action": str(data.get("leg_action") or data.get("action") or ""),
+        "recovery_trade_action": str(data.get("recovery_trade_action") or ""),
+        "recovery_active": bool(data.get("recovery_active")),
+        "cycle_attempt": cycle_attempt,
+        "logical_round_id": str(data.get("logical_round_id") or ""),
+    }
 
 
 @socketio.on("fast_profile_trade")
@@ -5181,6 +5231,11 @@ def _handle_fast_profile_trade_payload(client_id, state, payload, *, emit_balanc
     profile = str(payload.get("profile") or state.get("active_profile") or "").upper().strip()
     if profile not in ("KOOLKID", "JOKERJOE", "CLOUD"):
         return {"status": "error", "message": "Invalid profile"}
+    validation_error = _validate_koolkid_martingale_digit_contract(payload) if profile == "KOOLKID" else None
+    if validation_error:
+        return {"status": "error", "message": validation_error}
+    if profile == "KOOLKID":
+        _capture_koolkid_martingale_runtime(state, payload)
 
     contract_type = str(payload.get("type") or "").upper().strip()
     try:
@@ -6135,7 +6190,22 @@ def _fetch_human_manual_contracts_for_symbol(symbol, *, force_refresh=False):
     )
 
 
-def _fetch_human_manual_contracts_for_state(state, *, force_refresh=False):
+def _fetch_human_manual_contracts_for_state(state, *, force_refresh=False, symbol=None):
+    selected = str(symbol or state.get("human_symbol") or state.get("current_symbol") or "").strip()
+    if _deriv_connection_type(state) == "pat":
+        client_id = next((cid for cid, live_state in clients.items() if live_state is state), None)
+        if client_id is None:
+            return None, "HUMAN trading session is unavailable", selected
+        resolved, error = _resolve_deriv_underlying_symbol(client_id, state, selected)
+        if error:
+            return None, error, selected
+        contracts, error = _get_contracts_for_symbol(client_id, state, resolved, force_refresh=force_refresh)
+        if error:
+            return None, error, resolved
+        return build_human_manual_contract_info((contracts or {}).get("available") or []), None, resolved
+    if symbol:
+        info, error = _fetch_human_manual_contracts_for_symbol(symbol, force_refresh=force_refresh)
+        return info, error, selected
     return _module_fetch_human_manual_contracts_for_state(
         state,
         deriv_ws_url=DERIV_WS,
@@ -6289,7 +6359,7 @@ def place_human_manual_contract(
 
     requested_symbol = str(symbol or "").strip()
     if requested_symbol:
-        info, err, resolved_symbol = _fetch_human_manual_contracts_for_symbol(requested_symbol)
+        info, err, resolved_symbol = _fetch_human_manual_contracts_for_state(state, symbol=requested_symbol)
         symbol = resolved_symbol or requested_symbol
     else:
         info, err, symbol = _fetch_human_manual_contracts_for_state(state)
@@ -7284,7 +7354,6 @@ def _mark_ws_unhealthy_and_reconnect(client_id, state, message, *, emit_error=Tr
     state["ws_transport_connected"] = False
     state["ws_connect_started_at"] = 0.0
     state["ws_authorize_deadline_at"] = 0.0
-    state["ws_reconnect_pending"] = has_token
     state["loginid"] = "UNKNOWN"
     socketio.emit(
         "connection_status",
@@ -7351,6 +7420,9 @@ def _is_ws_ping_pong_timeout_error(error):
 
 
 def _ensure_trade_socket_ready(client_id, state, *, emit_error=True):
+    ai = (state or {}).get("_ai_intelligence")
+    if ai and ai.stopped:
+        return False, "AI emergency pause is active. Use 'Resume trading' before placing new orders."
     ready_now, not_ready_msg = _is_trade_ready(state)
     if not state:
         logger.warning("[%s] TEMP trade_path_blocked reason=%s", client_id, not_ready_msg)
@@ -10914,6 +10986,47 @@ def _entry_is_open_for_ui(entry):
     except Exception:
         return True
     return True
+
+
+def _restore_pending_contract_subscriptions(client_id, state, ws):
+    """Reconcile unresolved contracts after a fresh authenticated connection."""
+    contract_ids = set()
+    for key in ((state or {}).get("contract_meta") or {}).keys():
+        normalized = _normalize_contract_id(key)
+        if normalized:
+            contract_ids.add(normalized)
+    for key in ((state or {}).get("human_pending_contracts") or {}).keys():
+        normalized = _normalize_contract_id(key)
+        if normalized:
+            contract_ids.add(normalized)
+    for profile_key in ("unchain_hl", "ntt"):
+        for key in (((state or {}).get(profile_key) or {}).get("active_contracts") or {}).keys():
+            normalized = _normalize_contract_id(key)
+            if normalized:
+                contract_ids.add(normalized)
+
+    restored = 0
+    for contract_id in list(contract_ids)[:1000]:
+        try:
+            ws.send(json.dumps({
+                "proposal_open_contract": 1,
+                "contract_id": int(contract_id),
+                "subscribe": 1,
+            }))
+            restored += 1
+        except Exception:
+            try:
+                ws.send(json.dumps({
+                    "proposal_open_contract": 1,
+                    "contract_id": contract_id,
+                    "subscribe": 1,
+                }))
+                restored += 1
+            except Exception:
+                logger.warning("[%s] pending_contract_restore_failed contract_id=%s", client_id, contract_id)
+    if restored:
+        logger.info("[%s] pending_contract_subscriptions_restored count=%s", client_id, restored)
+    return restored
 
 
 def _pat_account_switch_block_reason(state):
@@ -16903,6 +17016,80 @@ def _maybe_unchain_exit_on_tick(client_id, state):
 
 
 # ---------------- AUTO TRADE ENGINE (PER CLIENT) ---------------- #
+def _schedule_profile_auto_trade(client_id, state, *, refresh_quotes=False):
+    # Proposal waits must not block the WebSocket reader that delivers replies.
+    lock = state.setdefault("_profile_auto_dispatch_lock", threading.Lock())
+    gate = state.setdefault("_profile_auto_dispatch_gate", threading.Lock())
+    with gate:
+        followup_timer = state.pop("_profile_auto_dispatch_followup_timer", None)
+        if followup_timer:
+            try:
+                followup_timer.cancel()
+            except Exception:
+                pass
+        if not lock.acquire(blocking=False):
+            state["_profile_auto_dispatch_pending"] = True
+            state["_profile_auto_dispatch_refresh_pending"] = bool(
+                state.get("_profile_auto_dispatch_refresh_pending") or refresh_quotes
+            )
+            return False
+        state["_profile_auto_dispatch_pending"] = False
+        state["_profile_auto_dispatch_refresh_pending"] = False
+    profile = state.get("active_profile")
+    nonce = state.get("ws_nonce")
+    symbol = state.get("current_symbol")
+
+    def _worker():
+        try:
+            if (
+                clients.get(client_id) is state
+                and state.get("ws_connected")
+                and state.get("ws_nonce") == nonce
+                and state.get("active_profile") == profile
+                and state.get("current_symbol") == symbol
+            ):
+                if refresh_quotes:
+                    try:
+                        _maybe_refresh_koolkid_testtrial_quotes(client_id, state)
+                    except Exception:
+                        pass
+                    if (
+                        clients.get(client_id) is not state
+                        or not state.get("ws_connected")
+                        or state.get("ws_nonce") != nonce
+                        or state.get("active_profile") != profile
+                        or state.get("current_symbol") != symbol
+                    ):
+                        return
+                run_auto_trade(client_id, state)
+        except Exception:
+            logger.exception("[%s] profile_auto_execution_failed profile=%s", client_id, profile)
+        finally:
+            with gate:
+                rerun = bool(state.pop("_profile_auto_dispatch_pending", False))
+                rerun_refresh = bool(state.pop("_profile_auto_dispatch_refresh_pending", False))
+                lock.release()
+            if rerun and clients.get(client_id) is state:
+                def _followup():
+                    with gate:
+                        state.pop("_profile_auto_dispatch_followup_timer", None)
+                    if clients.get(client_id) is state:
+                        _schedule_profile_auto_trade(client_id, state, refresh_quotes=rerun_refresh)
+
+                timer = threading.Timer(0.05, _followup)
+                timer.daemon = True
+                with gate:
+                    state["_profile_auto_dispatch_followup_timer"] = timer
+                timer.start()
+
+    try:
+        threading.Thread(target=_worker, daemon=True, name=f"profile_auto_{client_id}").start()
+    except Exception:
+        lock.release()
+        raise
+    return True
+
+
 def run_auto_trade(client_id, state):
     active_profile = state.get("active_profile", "KOOLKID")
 
@@ -18467,14 +18654,11 @@ def _ensure_tick_subscription(state, symbol, *, force=False, reason="", client_i
     tick_subs = state.setdefault("tick_subs", {})
     existing_sub_id = tick_subs.get(sym)
     if existing_sub_id and not force:
-        _start_tick_stream_warmup(state, sym, client_id=cid, reason=reason or "existing_subscription", warmup_sec=warmup_sec)
         return True
     sent_at = state.setdefault("tick_subscribe_sent_at", {})
     pending_sent_ts = float(sent_at.get(sym, 0.0) or 0.0)
     pending_window = max(1.0, _tick_stream_warmup_for_symbol(sym, TICK_STREAM_WARMUP_SEC if warmup_sec is None else warmup_sec))
     if not existing_sub_id and not force and pending_sent_ts > 0.0 and (time.time() - pending_sent_ts) < pending_window:
-        _start_tick_stream_warmup(state, sym, client_id=cid, reason=reason or "pending_subscription", warmup_sec=warmup_sec)
-        sent_at[sym] = pending_sent_ts
         return True
     if existing_sub_id and force:
         # For health recovery, avoid sending a forget for a possibly stale Deriv
@@ -19914,6 +20098,7 @@ def _prime_oauth_options_market_validation(client_id, state):
 def _complete_deriv_authenticated_session(client_id, state, ws, loginid="UNKNOWN", balance=0.0, source="authorize", subscribe_balance=True):
     state["ws_connected"] = True
     state["ws_last_authorized_at"] = time.time()
+    state["ws_reconnect_attempts"] = 0
     state["ws_connect_started_at"] = 0.0
     state["ws_authorize_deadline_at"] = 0.0
     state["pat_ws_pending_balance_auth"] = False
@@ -19937,6 +20122,7 @@ def _complete_deriv_authenticated_session(client_id, state, ws, loginid="UNKNOWN
     logger.info("[%s] TEMP %s_success loginid=%s live_account_balance=%s", client_id, source, loginid, balance if balance_known else "pending")
 
     _restore_required_tick_subscriptions(client_id, state, f"{source}_restore")
+    _restore_pending_contract_subscriptions(client_id, state, ws)
     tick_health = _get_tick_stream_health(client_id, state, self_heal=False)
     state["tick_stream_last_emitted_healthy"] = bool(tick_health.get("tick_stream_healthy"))
     socketio.emit("connection_status", {
@@ -19989,6 +20175,7 @@ def handle_on_message(client_id, ws, message, expected_nonce):
         if req_id in (None, ""):
             req_id = echo_req.get("req_id")
         msg_type = data.get("msg_type")
+        _ai_observe_response(state, data)
         if msg_type in ("ping", "pong") or "ping" in data or "pong" in data:
             logger.debug("[%s] deriv_keepalive_response req_id=%s msg_type=%s", client_id, req_id, msg_type)
             _resolve_request_waiter(state, "_ping_waiters", req_id, payload=data, error=None)
@@ -20012,6 +20199,16 @@ def handle_on_message(client_id, ws, message, expected_nonce):
 
         if "error" in data:
             msg = data["error"].get("message", "Unknown API Error")
+            error_code = str((data.get("error") or {}).get("code") or "").strip().lower()
+            duplicate_tick_symbol = str((echo_req or {}).get("ticks") or "").upper().strip()
+            if error_code == "alreadysubscribed" and duplicate_tick_symbol:
+                state.setdefault("tick_subscribe_sent_at", {})[duplicate_tick_symbol] = time.time()
+                logger.info(
+                    "[%s] duplicate_tick_subscription_ignored symbol=%s",
+                    client_id,
+                    duplicate_tick_symbol,
+                )
+                return
             logger.warning(
                 "[%s] deriv_raw_error token_type=%s req_id=%s msg_type=%s message=%s details=%s raw=%s",
                 client_id,
@@ -20908,12 +21105,16 @@ def process_tick(client_id, tick):
             }, room=client_id)
 
         # Digit analysis only for KOOLKID/JOKERJOE style payloads
-        if is_main:
+        if is_main and active_profile not in ("HUMAN", "KOOLKID", "JOKERJOE"):
             try:
                 _maybe_refresh_koolkid_testtrial_quotes(client_id, state)
             except Exception:
                 pass
-        run_auto_trade(client_id, state)
+        _schedule_profile_auto_trade(
+            client_id,
+            state,
+            refresh_quotes=bool(is_main and active_profile in ("HUMAN", "KOOLKID", "JOKERJOE")),
+        )
 
         if active_strategy and hasattr(active_strategy, "get_ui_payload") and _should_emit_ui_event(state, f"digit_analysis:{active_profile}", UI_ANALYSIS_EMIT_MIN_SEC):
             socketio.emit("digit_analysis", active_strategy.get_ui_payload(), room=client_id)
@@ -21133,7 +21334,14 @@ def process_contract(client_id, contract):
                     contract.get("profit"),
                 )
             prev_block = getattr(strategy, "risk_block_reason", None)
-            strategy.on_contract(contract, settled_balance)
+            tracked_profile = profile_for_contract in ("HUMAN", "KOOLKID", "JOKERJOE")
+            previous_entry = strategy.get_last_trade_entry() if hasattr(strategy, "get_last_trade_entry") else None
+            strategy_contract = contract
+            if tracked_profile:
+                # process_contract already established finality. Some broker frames
+                # still say "open" at expiry; every strategy must record that result.
+                strategy_contract = dict(contract, is_settled=True, profit=profit)
+            strategy.on_contract(strategy_contract, settled_balance)
             if hasattr(strategy, "on_contract_settled"):
                 try:
                     strategy.on_contract_settled(contract, meta=meta)
@@ -21152,8 +21360,15 @@ def process_contract(client_id, contract):
                 }, room=client_id)
             if strategy and hasattr(strategy, "get_last_trade_entry"):
                 entry = strategy.get_last_trade_entry() or {}
+                if tracked_profile and (
+                    entry is previous_entry
+                    or (entry.get("contract_id") is not None and str(entry["contract_id"]) != str(contract_id))
+                ):
+                    entry = {}
             if meta:
                 resolved_symbol = meta.get("symbol") or meta.get("underlying_symbol") or state.get("current_symbol")
+                if tracked_profile and resolved_symbol:
+                    entry["symbol"] = resolved_symbol
                 entry.setdefault("profile", meta.get("profile"))
                 entry.setdefault("type", meta.get("type"))
                 entry.setdefault("barrier", meta.get("barrier"))
@@ -21381,7 +21596,7 @@ def _start_deriv_keepalive(client_id, state, ws, expected_nonce):
     state["ws_ping_stop_event"] = stop_event
 
     def _worker():
-        while not stop_event.wait(45.0):
+        while not stop_event.wait(max(5.0, float(DERIV_WS_PING_INTERVAL_SEC))):
             live_state = clients.get(client_id)
             if not live_state or live_state.get("ws_nonce") != expected_nonce:
                 return
@@ -21401,7 +21616,7 @@ def _start_deriv_keepalive(client_id, state, ws, expected_nonce):
                 logger.warning("[%s] deriv_keepalive_send_failed error=%s", client_id, exc)
                 _mark_ws_unhealthy_and_reconnect(client_id, live_state, "Deriv keepalive failed. Reconnecting now...", emit_error=False)
                 return
-            if not waiter["event"].wait(12.0):
+            if not waiter["event"].wait(max(3.0, float(DERIV_WS_PING_TIMEOUT_SEC))):
                 live_state.get("_ping_waiters", {}).pop(req_id, None)
                 live_state.get("_ping_waiters", {}).pop(str(req_id), None)
                 logger.warning("[%s] deriv_keepalive_timeout req_id=%s", client_id, req_id)
@@ -21510,7 +21725,12 @@ def _schedule_ws_reconnect(client_id, expected_nonce, delay_sec=2.0):
                         break
                 if existing.is_alive():
                     logger.warning("[%s] websocket_reconnect_wait_timeout old_thread_still_alive", client_id)
-                    return
+                    try:
+                        old_ws = live_state.get("ws")
+                        if old_ws:
+                            old_ws.close()
+                    except Exception:
+                        pass
             live_state["ws_reconnect_attempts"] = int(live_state.get("ws_reconnect_attempts", 0) or 0) + 1
             logger.info(
                 "[%s] websocket_reconnect count=%s",
@@ -21535,6 +21755,7 @@ def handle_on_close(client_id, ws, code, msg, expected_nonce):
     if state.get("ws_nonce") != expected_nonce:
         return
     token = str(state.get("api_token", "") or "").strip()
+    pat_reconnect = bool(token and str(state.get("api_token_type") or "").lower() == "pat")
     previous_loginid = str(state.get("loginid") or "").strip()
     golden_oauth_reconnect = bool(
         token
@@ -21591,9 +21812,9 @@ def handle_on_close(client_id, ws, code, msg, expected_nonce):
         "connected": False,
         "reconnecting": should_reconnect,
         "golden_card_oauth_reconnecting": bool(golden_oauth_reconnect and should_reconnect),
-        "preserve_session_display": bool(golden_oauth_reconnect and should_reconnect),
+        "preserve_session_display": bool((golden_oauth_reconnect or pat_reconnect) and should_reconnect),
         "has_token": bool(token),
-        "loginid": previous_loginid if golden_oauth_reconnect else "UNKNOWN",
+        "loginid": previous_loginid if (golden_oauth_reconnect or pat_reconnect) else "UNKNOWN",
         **_connection_trade_ready_payload(state),
         **_build_balance_payload(state),
     }, room=client_id)
@@ -21744,6 +21965,19 @@ def start_ws_for_client(client_id):
                 state["ws_connect_started_at"] = 0.0
                 state["ws_authorize_deadline_at"] = 0.0
                 state["ws_thread"] = None
+            permanent_auth_failure = token_type == "pat" and any(marker in message for marker in ("(401)", "(403)"))
+            if token_type == "pat" and not permanent_auth_failure and str(state.get("api_token") or "").strip():
+                attempts = max(0, int(state.get("ws_reconnect_attempts", 0) or 0))
+                retry_delay = min(float(WS_RECONNECT_MAX_DELAY_SEC), 1.0 * (2 ** min(attempts, 5)))
+                retry_delay += random.uniform(0.0, min(0.5, retry_delay * 0.2))
+                logger.info(
+                    "[%s] deriv_pat_otp_retry_scheduled attempt=%s delay_sec=%.2f account_id=%s",
+                    client_id,
+                    attempts + 1,
+                    retry_delay,
+                    _mask_account_id(account_id),
+                )
+                _schedule_ws_reconnect(client_id, expected_nonce, delay_sec=retry_delay)
             return
 
     ws_app = websocket.WebSocketApp(
@@ -23915,7 +24149,14 @@ def manual_trade():
     )
 
     contract_type = data.get("type")
-    stake = float(data.get("stake", 1))
+    validation_error = _validate_koolkid_martingale_digit_contract(data)
+    if validation_error:
+        return jsonify({"status": "error", "message": validation_error}), 400
+    _capture_koolkid_martingale_runtime(state, data)
+    try:
+        stake = float(data.get("stake", 1))
+    except (TypeError, ValueError):
+        return jsonify({"status": "error", "message": "Invalid stake."}), 400
     symbol = data.get("symbol", state.get("current_symbol", "R_25"))
     barrier = int(data.get("barrier", 5))
     duration = _sanitize_digit_trade_duration(data.get("duration", 1))
@@ -26148,6 +26389,53 @@ def _is_koolkid_golden_card_runtime_active(state):
 
 
 # ---------------- HEARTBEAT SWEEPER ---------------- #
+def _run_websocket_health_check(client_id, state, now_ts=None):
+    if not isinstance(state, dict) or not str(state.get("api_token", "") or "").strip():
+        return False
+    stop_event = state.get("ws_stop_event")
+    if stop_event and stop_event.is_set():
+        return False
+    now_ts = float(now_ts if now_ts is not None else time.time())
+    if state.get("ws_connected") and state.get("ws"):
+        _get_tick_stream_health(client_id, state, self_heal=True, allow_reconnect=True)
+        return True
+
+    _check_ws_connect_timeout(client_id, state)
+    if state.get("ws_connected") or state.get("ws_reconnect_pending"):
+        return True
+    connect_started = float(state.get("ws_connect_started_at", 0.0) or 0.0)
+    if connect_started and (now_ts - connect_started) < float(DERIV_WS_CONNECT_TIMEOUT_SEC):
+        return True
+    attempts = max(0, int(state.get("ws_reconnect_attempts", 0) or 0))
+    delay = min(float(WS_RECONNECT_MAX_DELAY_SEC), 0.5 * (2 ** min(attempts, 6)))
+    delay += random.uniform(0.0, min(0.5, delay * 0.2))
+    return bool(_schedule_ws_reconnect(client_id, state.get("ws_nonce"), delay_sec=delay))
+
+
+def websocket_health_sweeper():
+    """Keep authenticated Deriv transports and their required tick streams healthy."""
+    while True:
+        time.sleep(max(5.0, float(WS_HEALTH_SWEEPER_INTERVAL_SEC)))
+        for client_id, state in list(clients.items()):
+            try:
+                _run_websocket_health_check(client_id, state)
+            except Exception:
+                logger.exception("[%s] websocket_health_sweeper_failed", client_id)
+
+
+def _client_runtime_last_activity(state):
+    try:
+        last_seen = float((state or {}).get("last_seen", 0.0) or 0.0)
+    except Exception:
+        last_seen = 0.0
+    if str((state or {}).get("api_token", "") or "").strip():
+        try:
+            last_seen = max(last_seen, float((state or {}).get("ws_last_message_at", 0.0) or 0.0))
+        except Exception:
+            pass
+    return last_seen
+
+
 def heartbeat_sweeper():
     while True:
         time.sleep(max(5.0, float(HEARTBEAT_SWEEPER_INTERVAL_SEC)))
@@ -26160,12 +26448,11 @@ def heartbeat_sweeper():
                         continue
                 except Exception:
                     pass
-            try:
-                last_seen = float((state or {}).get("last_seen", 0.0) or 0.0)
-            except Exception:
-                last_seen = 0.0
+            last_seen = _client_runtime_last_activity(state)
             if not last_seen:
                 continue
+            # Deriv traffic proves that a background trading session is alive even
+            # when the browser has throttled its JavaScript heartbeat timer.
             age = now_ts - last_seen
             if age >= float(HEARTBEAT_TIMEOUT_SEC):
                 if _is_koolkid_golden_card_runtime_active(state):
@@ -26251,7 +26538,10 @@ def toggle_named_ai_mode_route():
         "payload": payload,
     })
 
-threading.Thread(target=heartbeat_sweeper, daemon=True).start()
+ai_intelligence_bridge = _register_ai_intelligence(app, globals())
+
+threading.Thread(target=heartbeat_sweeper, daemon=True, name="client_heartbeat_sweeper").start()
+threading.Thread(target=websocket_health_sweeper, daemon=True, name="deriv_websocket_health_sweeper").start()
 
 
 if __name__ == "__main__":

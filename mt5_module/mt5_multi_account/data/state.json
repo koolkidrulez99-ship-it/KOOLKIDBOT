@@ -1,0 +1,65 @@
+{
+  "accounts": {
+    "session-202177726": {
+      "account_id": "session-202177726",
+      "nickname": "koolkid",
+      "login": 202177726,
+      "server": "Deriv-Demo",
+      "terminal_path": "C:\\Users\\jjmje\\Desktop\\deriv-bot-site\\mt5_module\\mt5_multi_account\\data\\terminals\\session-202177726\\terminal64.exe",
+      "portable": true,
+      "mode": "real",
+      "symbol_aliases": {}
+    },
+    "session-6285241": {
+      "account_id": "session-6285241",
+      "nickname": "deriv jm",
+      "login": 6285241,
+      "server": "Deriv-Demo",
+      "terminal_path": "C:\\Users\\jjmje\\Desktop\\deriv-bot-site\\mt5_module\\mt5_multi_account\\data\\terminals\\session-6285241\\terminal64.exe",
+      "portable": true,
+      "mode": "real",
+      "symbol_aliases": {}
+    },
+    "session-32321374": {
+      "account_id": "session-32321374",
+      "nickname": "MT5 #32321374",
+      "login": 32321374,
+      "server": "Deriv-Demo",
+      "terminal_path": "C:\\Users\\jjmje\\Desktop\\deriv-bot-site\\mt5_module\\mt5_multi_account\\data\\terminals\\session-32321374\\terminal64.exe",
+      "portable": true,
+      "mode": "real",
+      "symbol_aliases": {}
+    }
+  },
+  "master": "session-202177726",
+  "slaves": [
+    "session-32321374",
+    "session-6285241"
+  ],
+  "copy_map": {
+    "9799100886": {
+      "session-32321374": {
+        "ticket": 8766880022,
+        "last_sl": 0.0,
+        "last_tp": 0.0
+      },
+      "session-6285241": {
+        "ticket": 5773983716,
+        "last_sl": 0.0,
+        "last_tp": 0.0
+      }
+    },
+    "9799109973": {
+      "session-32321374": {
+        "ticket": 8766889845,
+        "last_sl": 0.0,
+        "last_tp": 0.0
+      },
+      "session-6285241": {
+        "ticket": 5773990882,
+        "last_sl": 0.0,
+        "last_tp": 0.0
+      }
+    }
+  }
+}

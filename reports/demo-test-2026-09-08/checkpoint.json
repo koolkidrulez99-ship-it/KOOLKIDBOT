@@ -1,0 +1,31 @@
+{
+  "status": "full_backtest_stopped_by_user_scope_change",
+  "updatedAt": "2026-09-09T15:31:00Z",
+  "botUrl": "http://127.0.0.1:5055/login",
+  "browser": "Codex in-app browser",
+  "browserId": "1",
+  "tabId": "1",
+  "browserControl": "CUA is now operational; use cua_repl for UI actions. Old Chrome CDP 9227 is closed.",
+  "serverPid": 5064,
+  "serverLog": "C:/Users/jjmje/AppData/Local/Temp/koolkid-demo-resume-2026-09-09-stderr.log",
+  "carriedTestNetPnl": -1.92,
+  "lastTestBalance": 47587.13,
+  "currency": "USD",
+  "maskedDemoAccount": "***8303",
+  "authorizedNetLossLimit": 10,
+  "remainingLossAllowance": 8.08,
+  "usedActiveMinutesRoundedUp": 40,
+  "remainingActiveMinutes": 20,
+  "lastCompletedTest": "jokerjoe-kidgx-auto",
+  "lastCompletedAt": "2026-09-09T06:06:02.189Z",
+  "allObservedTestPurchasesSettled": true,
+  "testAutoModesStoppedBeforePause": true,
+  "unrelatedUserLossExcluded": 266.22,
+  "userConfirmedExclusion": true,
+  "nextActions": [
+    "Do not resume the full backtest or remaining profiles. The user explicitly stopped that work.",
+    "Current scope is bug fixes for HUMAN, KOOLKID and JOKERJOE, with minimal targeted verification only.",
+    "See reports/scoped-fixes-2026-09-09.md for implemented fixes and remaining verification. Preserve the 1.92 test loss if a later demo check is requested.",
+    "Never read credential inputs or browser storage; user reconnects PAT through the bot."
+  ]
+}
