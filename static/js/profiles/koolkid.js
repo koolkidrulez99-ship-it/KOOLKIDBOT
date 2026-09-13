@@ -210,11 +210,11 @@
   }
 
   function canUseKoolkidSingleMartingale() {
-    return isLifetimeUserKoolkid() || isRegularMonthlyUserKoolkid();
+    return true;
   }
 
   function isKoolkidSingleMartingaleMonthlyLimited() {
-    return isRegularMonthlyUserKoolkid() && !isLifetimeUserKoolkid();
+    return false;
   }
 
   function fmtPct(v) {
@@ -1094,14 +1094,12 @@
     if (stepWrap) stepWrap.style.display = limited ? "none" : "grid";
     const badge = document.getElementById("koolkidMartingaleAccessBadge");
     if (badge) {
-      badge.textContent = limited ? "MONTHLY" : "LIFETIME";
-      badge.style.color = limited ? "#38bdf8" : "#facc15";
+      badge.textContent = "EVERYONE";
+      badge.style.color = "#38bdf8";
     }
     const note = document.getElementById("koolkidMartingaleLifetimeNote");
     if (note) {
-      note.textContent = limited
-        ? "Monthly users: UNDER 3, UNDER 4, OVER 3, OVER 4, OVER 5, OVER 6, and OVER 7 only. Multiplier martingale only."
-        : "Lifetime users only.";
+      note.textContent = "Available to all users.";
     }
   }
 
@@ -1146,6 +1144,20 @@
         legs: [
           { action: "OVER_4", type: "OVER", barrier: 4, label: "OVER 4" },
           { action: "UNDER_5", type: "UNDER", barrier: 5, label: "UNDER 5" },
+        ],
+      };
+    }
+    if (compact === "OVER_3_UNDER_6") {
+      return {
+        action: "OVER_3_UNDER_6",
+        type: "PAIR",
+        barrier: null,
+        label: "OVER 3 + UNDER 6",
+        isPair: true,
+        settleTogether: true,
+        legs: [
+          { action: "OVER_3", type: "OVER", barrier: 3, label: "OVER 3" },
+          { action: "UNDER_6", type: "UNDER", barrier: 6, label: "UNDER 6" },
         ],
       };
     }
@@ -1226,6 +1238,8 @@
       switchAfterWinEnabled: false,
       switchType: "DIGITOVER",
       switchBarrier: 5,
+      pairDoubleAfterLoss: false,
+      pairMultipliers: { OVER_3: 2, UNDER_6: 2 },
     };
     try {
       const saved = JSON.parse(localStorage.getItem(KOOLKID_MARTINGALE_CONFIG_KEY) || "{}");
@@ -1241,6 +1255,11 @@
         switchAfterWinEnabled: saved.switchAfterWinEnabled === true,
         switchType: next ? next.contractType : defaults.switchType,
         switchBarrier: next ? next.barrier : defaults.switchBarrier,
+        pairDoubleAfterLoss: saved.pairDoubleAfterLoss === true,
+        pairMultipliers: {
+          OVER_3: Math.max(1, Math.min(100, Number(saved.pairMultipliers && saved.pairMultipliers.OVER_3) || 2)),
+          UNDER_6: Math.max(1, Math.min(100, Number(saved.pairMultipliers && saved.pairMultipliers.UNDER_6) || 2)),
+        },
       };
     } catch (e) {
       return defaults;
@@ -1291,6 +1310,37 @@
     }
     if (switchControls) switchControls.style.display = koolkidMartingaleConfig.switchAfterWinEnabled ? "grid" : "none";
     if (switchSelected) switchSelected.textContent = next ? next.label : "Invalid selection";
+    const settings = readKoolkidSingleMartingaleSettings();
+    const pairWrap = document.getElementById("koolkidPairProgressionSettings");
+    const pairToggle = document.getElementById("koolkidPairDoubleAfterLossToggle");
+    const multiplierWrap = document.getElementById("koolkidOver3Under6Multipliers");
+    if (pairWrap) pairWrap.style.display = settings.isPair && !settings.isTriple ? "block" : "none";
+    if (pairToggle) {
+      pairToggle.textContent = koolkidMartingaleConfig.pairDoubleAfterLoss ? "ON" : "OFF";
+      pairToggle.style.background = koolkidMartingaleConfig.pairDoubleAfterLoss ? "#f59e0b" : "#334155";
+    }
+    if (multiplierWrap) multiplierWrap.style.display = settings.action === "OVER_3_UNDER_6" ? "grid" : "none";
+    const over3Multiplier = document.getElementById("koolkidOver3PairMultiplier");
+    const under6Multiplier = document.getElementById("koolkidUnder6PairMultiplier");
+    if (over3Multiplier && document.activeElement !== over3Multiplier) over3Multiplier.value = String(koolkidMartingaleConfig.pairMultipliers.OVER_3);
+    if (under6Multiplier && document.activeElement !== under6Multiplier) under6Multiplier.value = String(koolkidMartingaleConfig.pairMultipliers.UNDER_6);
+  }
+
+  function toggleKoolkidPairDoubleAfterLoss() {
+    koolkidMartingaleConfig.pairDoubleAfterLoss = !koolkidMartingaleConfig.pairDoubleAfterLoss;
+    const st = getKoolkidSingleMartingaleState();
+    if (!st.inProgress) st.pairSteps = {};
+    saveKoolkidMartingaleFeatureConfig();
+    updateKoolkidSingleMartingalePanel();
+  }
+
+  function setKoolkidPairMultiplier(action, value) {
+    const multiplier = Number(value);
+    if (!Number.isFinite(multiplier) || multiplier < 1 || multiplier > 100) return false;
+    koolkidMartingaleConfig.pairMultipliers[String(action || "").toUpperCase()] = multiplier;
+    saveKoolkidMartingaleFeatureConfig();
+    updateKoolkidSingleMartingalePanel();
+    return true;
   }
 
   function isOver3Under6PairModeKoolkid() {
@@ -1446,6 +1496,9 @@
       isPair: !!action.isPair,
       isTriple: !!action.isTriple,
       independentPair: !!action.independentPair,
+      settleTogether: !!action.settleTogether,
+      pairDoubleAfterLoss: !!(action.isPair && !action.isTriple && koolkidMartingaleConfig.pairDoubleAfterLoss),
+      pairMultipliers: { ...koolkidMartingaleConfig.pairMultipliers },
       combinedRound: !!action.combinedRound,
       targetProfitMode: !!action.targetProfitMode,
       legs: action.legs || null,
@@ -1471,11 +1524,20 @@
   function koolkidSingleMartingaleStakeForLeg(leg, stepValue) {
     const settings = readKoolkidSingleMartingaleSettings();
     const step = Math.max(1, Math.min(settings.maxSteps, Math.floor(Number(stepValue || getKoolkidSingleMartingaleState().step) || 1)));
-    if (settings.independentPair && leg && leg.action) {
+    if ((settings.independentPair || settings.pairDoubleAfterLoss) && leg && leg.action) {
       const st = getKoolkidSingleMartingaleState();
       const pairSteps = st.pairSteps || {};
       const legStep = Math.max(1, Math.min(settings.maxSteps, Math.floor(Number(pairSteps[leg.action] || 1) || 1)));
-      let stake = settings.startStake * Math.pow(settings.multiplier, legStep - 1);
+      const legMultiplier = settings.action === "OVER_3_UNDER_6"
+        ? Math.max(1, Number(settings.pairMultipliers[leg.action]) || settings.multiplier)
+        : settings.multiplier;
+      let stake = settings.startStake * Math.pow(legMultiplier, legStep - 1);
+      if (settings.maxStake !== null) stake = Math.min(stake, settings.maxStake);
+      return Number(Math.max(0.35, stake).toFixed(2));
+    }
+    if (settings.action === "OVER_3_UNDER_6" && leg && leg.action) {
+      const legMultiplier = Math.max(1, Number(settings.pairMultipliers[leg.action]) || settings.multiplier);
+      let stake = settings.startStake * Math.pow(legMultiplier, step - 1);
       if (settings.maxStake !== null) stake = Math.min(stake, settings.maxStake);
       return Number(Math.max(0.35, stake).toFixed(2));
     }
@@ -2621,7 +2683,7 @@
           st.over3Step = 1;
         }
       }
-      if (settings.independentPair) {
+      if (settings.settleTogether || settings.independentPair || settings.pairDoubleAfterLoss) {
         if (st.pendingSettled < Math.max(2, Number(st.pendingExpected) || 2)) {
           st.lastResult = outcome;
           st.status = `Running: waiting for ${Math.max(0, (Number(st.pendingExpected) || 2) - st.pendingSettled)} result(s)`;
@@ -2631,22 +2693,27 @@
         const pendingItems = Object.keys(st.pendingContracts || {})
           .map((id) => st.pendingContracts[id])
           .filter(Boolean);
-        pendingItems.forEach((pending) => {
-          const legAction = String(pending.action || "").toUpperCase();
-          if (!legAction) return;
-          if (pending.outcome === "LOSS") {
-            const currentStep = Math.max(1, Math.min(settings.maxSteps, Math.floor(Number((st.pairSteps || {})[legAction] || 1) || 1)));
-            st.pairSteps[legAction] = nextKoolkidLimitedMartingaleStep(currentStep, settings);
-          } else if (pending.outcome === "WIN") {
-            st.pairSteps[legAction] = 1;
-          }
-        });
         const hasWinningLeg = pendingItems.some((pending) => pending.outcome === "WIN");
         const hasLosingLeg = pendingItems.some((pending) => pending.outcome === "LOSS");
+        if (settings.pairDoubleAfterLoss || settings.independentPair) {
+          pendingItems.forEach((pending) => {
+            const legAction = String(pending.action || "").toUpperCase();
+            if (!legAction) return;
+            if (pending.outcome === "LOSS") {
+              const currentStep = Math.max(1, Math.min(settings.maxSteps, Math.floor(Number((st.pairSteps || {})[legAction] || 1) || 1)));
+              st.pairSteps[legAction] = nextKoolkidLimitedMartingaleStep(currentStep, settings);
+            } else if (pending.outcome === "WIN") {
+              st.pairSteps[legAction] = 1;
+            }
+          });
+          st.step = 1;
+        } else {
+          st.pairSteps = {};
+          st.step = hasWinningLeg ? 1 : nextKoolkidLimitedMartingaleStep(st.step, settings);
+        }
         const roundProfit = resolveKoolkidPairRoundProfit(pendingItems, settings);
         st.sessionProfit = Number((Number(st.sessionProfit || 0) + roundProfit).toFixed(2));
         clearKoolkidSingleMartingalePending();
-        st.step = 1;
         st.lastResult = hasWinningLeg && hasLosingLeg ? "MIXED" : (hasWinningLeg ? "WIN" : "LOSS");
         if (wasMartingaleTrade && st.enabled && st.running && !st.stopRequested) {
           scheduleKoolkidSingleMartingaleContinuation(st, settings, `Dual round settled. Waiting ${settings.tickSpacing} tick${settings.tickSpacing === 1 ? "" : "s"}`);
@@ -5557,6 +5624,8 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
   window.setKoolkidSingleMartingaleAction = setKoolkidSingleMartingaleAction;
   window.toggleKoolkidRecoveryMode = toggleKoolkidRecoveryMode;
   window.toggleKoolkidSwitchAfterWin = toggleKoolkidSwitchAfterWin;
+  window.toggleKoolkidPairDoubleAfterLoss = toggleKoolkidPairDoubleAfterLoss;
+  window.setKoolkidPairMultiplier = setKoolkidPairMultiplier;
   window.setKoolkidRecoveryAfter = setKoolkidRecoveryAfter;
   window.openKoolkidDigitTradePicker = openKoolkidDigitTradePicker;
   window.closeKoolkidDigitTradePicker = closeKoolkidDigitTradePicker;

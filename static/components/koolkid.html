@@ -326,6 +326,7 @@
                   <option value="UNDER_3_OVER_6">UNDER 3 + OVER 6</option>
                   <option value="UNDER_2_OVER_7">UNDER 2 + OVER 7</option>
                   <option value="OVER_4_UNDER_5">OVER 4 + UNDER 5</option>
+                  <option value="OVER_3_UNDER_6">OVER 3 + UNDER 6</option>
                   <option value="OVER_3_OVER_6">OVER 3 + OVER 6</option>
                   <option value="UNDER_4">UNDER 4</option>
                   <option value="OVER_2_TARGET">OVER 2 Target Profit</option>
@@ -402,6 +403,20 @@
                 <input id="koolkidMartingaleDoubleLimit" type="number" min="0" step="1" value="0" placeholder="0 = unlimited" oninput="updateKoolkidSingleMartingalePanel()" style="width:100%; min-height:38px;">
               </label>
             </div>
+            <div id="koolkidPairProgressionSettings" style="display:none; margin-top:8px; border:1px solid #334155; border-radius:8px; padding:9px; background:#0f172a;">
+              <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;">
+                <div><strong style="font-size:12px;">Double Up After a Loss</strong><div style="color:#94a3b8; font-size:11px; margin-top:2px;">Winning leg resets; losing leg continues its martingale.</div></div>
+                <button id="koolkidPairDoubleAfterLossToggle" type="button" onclick="toggleKoolkidPairDoubleAfterLoss()" style="background:#334155; min-width:72px;">OFF</button>
+              </div>
+              <div id="koolkidOver3Under6Multipliers" style="display:none; margin-top:8px; grid-template-columns:repeat(2,minmax(120px,1fr)); gap:8px;">
+                <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">OVER 3 Multiplier
+                  <input id="koolkidOver3PairMultiplier" type="number" min="1" max="100" step="0.05" value="2" oninput="setKoolkidPairMultiplier('OVER_3', this.value)" style="width:100%; min-height:38px;">
+                </label>
+                <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">UNDER 6 Multiplier
+                  <input id="koolkidUnder6PairMultiplier" type="number" min="1" max="100" step="0.05" value="2" oninput="setKoolkidPairMultiplier('UNDER_6', this.value)" style="width:100%; min-height:38px;">
+                </label>
+              </div>
+            </div>
             <div id="koolkidTargetProfitMartingaleSettings" style="display:none; margin-top:8px; border:1px solid #334155; border-radius:10px; padding:8px; background:#0f172a;">
               <div style="color:#94a3b8; font-size:11px; margin-bottom:8px;">Target-profit recovery uses the stake needed to recover losses and still aim for the target profit. A win resets stake and keeps cycling until TP or SL is hit.</div>
               <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:8px;">
@@ -470,7 +485,7 @@
               <button id="koolkidMartingalePlaceBtn" type="button" onclick="placeKoolkidSingleMartingaleTrade()" style="background:#22c55e; color:#052e16; font-weight:900;">PLACE SELECTED CONTRACT</button>
               <button id="koolkidMartingaleQuickStopBtn" type="button" onclick="quickStopKoolkidSingleMartingale()" style="background:#ef4444; color:#fff7ed; font-weight:900;">QUICK STOP</button>
             </div>
-            <div id="koolkidMartingaleLifetimeNote" style="margin-top:8px; color:#facc15; font-size:11px;">Lifetime users only.</div>
+            <div id="koolkidMartingaleLifetimeNote" style="margin-top:8px; color:#94a3b8; font-size:11px;">Available to all users.</div>
           </div>
         </details>
 

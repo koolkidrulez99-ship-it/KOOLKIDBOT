@@ -98,6 +98,30 @@ def test_combined_round_is_declared_as_two_correlated_legs():
     assert block.count('{ action: "OVER_7", type: "OVER", barrier: 7') == 1
 
 
+def test_over3_under6_pair_has_two_valid_correlated_legs():
+    assert '<option value="OVER_3_UNDER_6">OVER 3 + UNDER 6</option>' in KOOLKID_HTML
+    block = KOOLKID_JS[KOOLKID_JS.index('if (compact === "OVER_3_UNDER_6")'):]
+    block = block[:block.index('if (compact === "OVER_3_OVER_6"')]
+    assert block.count('{ action: "OVER_3", type: "OVER", barrier: 3') == 1
+    assert block.count('{ action: "UNDER_6", type: "UNDER", barrier: 6') == 1
+    assert 'settleTogether: true' in block
+
+
+def test_pair_double_after_loss_waits_for_both_and_updates_each_leg_once():
+    assert 'settings.independentPair || settings.pairDoubleAfterLoss' in KOOLKID_JS
+    assert 'st.pendingSettled < Math.max(2, Number(st.pendingExpected) || 2)' in KOOLKID_JS
+    assert 'st.pairSteps[legAction] = nextKoolkidLimitedMartingaleStep' in KOOLKID_JS
+    assert 'st.pairSteps[legAction] = 1' in KOOLKID_JS
+
+
+def test_new_pair_controls_are_persisted_and_available_to_everyone():
+    assert 'pairDoubleAfterLoss: saved.pairDoubleAfterLoss === true' in KOOLKID_JS
+    assert 'function canUseKoolkidSingleMartingale() {\n    return true;' in KOOLKID_JS
+    assert 'id="koolkidPairDoubleAfterLossToggle"' in KOOLKID_HTML
+    assert 'id="koolkidOver3PairMultiplier"' in KOOLKID_HTML
+    assert 'id="koolkidUnder6PairMultiplier"' in KOOLKID_HTML
+
+
 def test_combined_round_waits_for_both_and_uses_combined_profit_once():
     assert 'if (st.pendingSettled < expected)' in KOOLKID_JS
     assert 'const roundProfit = resolveKoolkidPairRoundProfit(pendingItems, settings);' in KOOLKID_JS
