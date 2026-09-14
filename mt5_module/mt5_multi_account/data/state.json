@@ -22,7 +22,7 @@
     },
     "session-32321374": {
       "account_id": "session-32321374",
-      "nickname": "MT5 #32321374",
+      "nickname": "nick",
       "login": 32321374,
       "server": "Deriv-Demo",
       "terminal_path": "C:\\Users\\jjmje\\Desktop\\deriv-bot-site\\mt5_module\\mt5_multi_account\\data\\terminals\\session-32321374\\terminal64.exe",
@@ -33,8 +33,7 @@
   },
   "master": "session-202177726",
   "slaves": [
-    "session-32321374",
-    "session-6285241"
+    "session-32321374"
   ],
   "copy_map": {
     "9799100886": {
@@ -57,6 +56,68 @@
       },
       "session-6285241": {
         "ticket": 5773990882,
+        "last_sl": 0.0,
+        "last_tp": 0.0
+      }
+    },
+    "9799511950": {
+      "session-32321374": {
+        "ticket": 8767246135,
+        "last_sl": 0.0,
+        "last_tp": 0.0
+      },
+      "session-6285241": {
+        "ticket": 5774259744,
+        "last_sl": 0.0,
+        "last_tp": 0.0
+      }
+    },
+    "9799515288": {
+      "session-32321374": {
+        "ticket": 8767249648,
+        "last_sl": 0.0,
+        "last_tp": 0.0
+      },
+      "session-6285241": {
+        "ticket": 5774261802,
+        "last_sl": 0.0,
+        "last_tp": 0.0
+      }
+    },
+    "9799537969": {
+      "session-32321374": {
+        "ticket": 8767271757,
+        "last_sl": 0.0,
+        "last_tp": 0.0
+      },
+      "session-6285241": {
+        "ticket": 5774276285,
+        "last_sl": 0.0,
+        "last_tp": 0.0
+      }
+    },
+    "9799556663": {
+      "session-32321374": {
+        "ticket": 8767294100,
+        "last_sl": 0.0,
+        "last_tp": 0.0
+      },
+      "session-6285241": {
+        "ticket": 5774289164,
+        "last_sl": 0.0,
+        "last_tp": 0.0
+      }
+    },
+    "9799582413": {
+      "session-32321374": {
+        "ticket": 8767317066,
+        "last_sl": 0.0,
+        "last_tp": 0.0
+      }
+    },
+    "9799584050": {
+      "session-32321374": {
+        "ticket": 8767318089,
         "last_sl": 0.0,
         "last_tp": 0.0
       }

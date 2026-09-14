@@ -1,4 +1,4 @@
-import { BOT_CATALOG, LEGACY_PLACEHOLDERS } from '../data/botCatalog';
+import { BOT_CATALOG, LEGACY_PLACEHOLDERS, PREINSTALLED_BOT_NAMES } from '../data/botCatalog';
 import { MARKET, calcProfit, marginFor } from '../lib/market';
 import type {
   AiInsight,
@@ -113,7 +113,15 @@ function normalizeState(raw: Partial<SimulationState> | null): SimulationState {
   const botsByName = new Map(persistedBots.map((b) => [b.name, b]));
   const catalogNames = new Set(BOT_CATALOG.map((b) => b.name.toLowerCase()));
   const catalogBots = BOT_CATALOG.map((catalogBot) => ({ ...catalogBot, ...(botsByName.get(catalogBot.name) || {}) }));
-  const customBots = persistedBots.filter((b) => !catalogNames.has(b.name.toLowerCase()) && !LEGACY_PLACEHOLDERS.has(b.name));
+  const customBots = persistedBots.filter((b) => {
+    const untouchedPreinstalled = b.id >= 1000 && b.id < 1020
+      && PREINSTALLED_BOT_NAMES.has(b.name)
+      && b.file_status !== 'ready'
+      && !b.upload_date;
+    return !catalogNames.has(b.name.toLowerCase())
+      && !LEGACY_PLACEHOLDERS.has(b.name)
+      && !untouchedPreinstalled;
+  });
   const bots = [...catalogBots, ...customBots];
   return {
     version: STATE_VERSION,

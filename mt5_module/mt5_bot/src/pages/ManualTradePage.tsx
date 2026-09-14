@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
-import { ArrowDown, ArrowUp, Crosshair, History as HistoryIcon, Info } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { ArrowDown, ArrowUp, ArrowRightLeft, Crosshair, History as HistoryIcon, Info } from 'lucide-react';
 import { useHub } from '../context/HubContext';
 import { MARKET, SYMBOL_LIST, marginFor, pipValue } from '../lib/market';
 import { fmtDateTime, fmtPrice, fmtSigned, fmtUSD, profitTone } from '../lib/format';
@@ -11,6 +11,8 @@ import { mt5MarketService } from '../services/mt5MarketService';
 import { isSimulation } from '../config/runtime';
 import MarketSelect from '../components/MarketSelect';
 import { usePersistentState } from '../hooks/usePersistentState';
+import Modal from '../components/Modal';
+import { mt5MultiAccountService, type MultiAccount } from '../services/mt5MultiAccountService';
 
 export default function ManualTradePage() {
   const { accounts, activeAccount, market, livePrice, liveQuote, mt5Symbols, pushToast, refresh } = useHub();
@@ -26,6 +28,13 @@ export default function ManualTradePage() {
   const [busy, setBusy] = useState(false);
   const [manualHistory, setManualHistory] = useState<Mt5HistoryRow[]>([]);
   const [selectedBridgeQuote, setSelectedBridgeQuote] = useState<Mt5Quote | null>(null);
+  const [copyOpen, setCopyOpen] = useState(false);
+  const [multiAccounts, setMultiAccounts] = useState<MultiAccount[]>([]);
+  const [configuredSlaves, setConfiguredSlaves] = useState<string[]>([]);
+  const [selectedSlaves, setSelectedSlaves] = useState<string[]>([]);
+  const [copyLotMode, setCopyLotMode] = useState<'same' | 'fixed' | 'multiplier'>('same');
+  const [copyLotValue, setCopyLotValue] = useState('1.00');
+  const routingRef = useRef(false);
   const acc = accounts.find((account) => account.login === login && account.status === 'connected') || null;
 
   useEffect(() => {
@@ -43,6 +52,18 @@ export default function ManualTradePage() {
   useEffect(loadManual, []);
 
   useEffect(() => {
+    if (isSimulation) return;
+    Promise.all([mt5MultiAccountService.accounts(), mt5MultiAccountService.copyStatus()]).then(([accountData, copyData]) => {
+      const rows = accountData.accounts || [];
+      const config = (copyData.config || {}) as { slave_account_ids?: string[] };
+      const slaves = (config.slave_account_ids || accountData.slaves || []).filter((id) => rows.some((row) => row.account_id === id && row.connected));
+      setMultiAccounts(rows);
+      setConfiguredSlaves(slaves);
+      setSelectedSlaves(slaves);
+    }).catch(() => { setMultiAccounts([]); setConfiguredSlaves([]); setSelectedSlaves([]); });
+  }, [accounts]);
+
+  useEffect(() => {
     if (isSimulation || !mt5Symbols.length) return;
     if (mt5Symbols.some((s) => s.symbol === symbol && s.trade_allowed)) return;
     const preferred = mt5Symbols.find((s) => s.trade_allowed && s.symbol.toUpperCase() === 'XAUUSD')
@@ -54,13 +75,23 @@ export default function ManualTradePage() {
   useEffect(() => {
     if (isSimulation || !symbol || !acc) { setSelectedBridgeQuote(null); return; }
     let cancelled = false;
-    const load = () => mt5MarketService.quotes([symbol], acc.login).then((rows) => {
-      if (!cancelled) setSelectedBridgeQuote(rows[0] || null);
-    }).catch(() => { if (!cancelled) setSelectedBridgeQuote(null); });
+    let inFlight = false;
+    const load = async () => {
+      if (inFlight || document.hidden || busy) return;
+      inFlight = true;
+      try {
+        const rows = await mt5MarketService.quotes([symbol], acc.login);
+        if (!cancelled) setSelectedBridgeQuote(rows[0] || null);
+      } catch {
+        if (!cancelled) setSelectedBridgeQuote(null);
+      } finally {
+        inFlight = false;
+      }
+    };
     load();
-    const id = window.setInterval(load, 1200);
+    const id = window.setInterval(load, 2500);
     return () => { cancelled = true; window.clearInterval(id); };
-  }, [symbol, acc?.login]);
+  }, [symbol, acc?.login, busy]);
 
   const price = livePrice(symbol);
   const quote = selectedBridgeQuote || liveQuote(symbol);
@@ -102,31 +133,64 @@ export default function ManualTradePage() {
       pushToast('error', 'Check SL/TP', slError || tpError);
       return;
     }
+    if (!isSimulation && configuredSlaves.length) {
+      setCopyOpen(true);
+      return;
+    }
+    await executeOrder([]);
+  };
+
+  const executeOrder = async (slaveIds: string[]) => {
+    if (!acc || routingRef.current) return;
+    routingRef.current = true;
     setBusy(true);
+    setCopyOpen(false);
+    const uiClickedAt = Date.now() / 1000;
     try {
-      await openTrade({
-        account_login: acc.login,
-        symbol,
-        type: side,
-        volume: vol,
-        sl: useProtection && sl ? slNum : null,
-        tp: useProtection && tp ? tpNum : null,
-        source: 'Manual',
-      });
-      pushToast('success', `${side.toUpperCase()} ${vol.toFixed(2)} ${symbol} filled`, `Account ${acc.nickname} \u00b7 market execution.`);
+      const master = multiAccounts.find((row) => Number(row.login) === Number(acc.login) && row.connected);
+      if (!isSimulation && master) {
+        const targetIds = [master.account_id, ...slaveIds.filter((id) => id !== master.account_id)];
+        const response = await mt5MultiAccountService.manualTrade({ target_account_ids: targetIds, symbol, side, volume: vol,
+          sl: useProtection && sl ? slNum : 0, tp: useProtection && tp ? tpNum : 0, ui_clicked_at: uiClickedAt,
+          lot_mode: copyLotMode, fixed_lot: copyLotMode === 'fixed' ? Math.max(0.01, Number(copyLotValue) || 0.01) : 0.01,
+          multiplier: copyLotMode === 'multiplier' ? Math.max(0.01, Number(copyLotValue) || 1) : 1 });
+        const rows = Object.entries(response.results || {});
+        const filled = rows.filter(([, row]) => row.ok);
+        const failed = rows.filter(([, row]) => !row.ok);
+        const elapsed = filled.map(([, row]) => Math.max(0, Number(row.timing?.backend_result_at || 0) - uiClickedAt) * 1000);
+        const names = new Map(multiAccounts.map((row) => [row.account_id, row.nickname || `#${row.login}`]));
+        const detail = rows.map(([id, row]) => `${names.get(id) || id}: ${row.ok ? `FILLED ${(Math.max(0, Number(row.timing?.backend_result_at || 0) - uiClickedAt)).toFixed(2)}s` : `FAILED ${row.error || 'Rejected'}`}`).join(' · ');
+        if (filled.length) pushToast('success', `${filled.length} account order${filled.length === 1 ? '' : 's'} filled`, `${detail}${elapsed.length > 1 ? ` · spread ${((Math.max(...elapsed) - Math.min(...elapsed)) / 1000).toFixed(3)}s` : ''}`);
+        if (failed.length) pushToast('error', `${failed.length} account order${failed.length === 1 ? '' : 's'} failed`, detail);
+        console.info('KOOLKID MT5 execution timing', { ui_clicked_at: uiClickedAt, accounts: response.results });
+      } else {
+        await openTrade({ account_login: acc.login, symbol, type: side, volume: vol,
+          sl: useProtection && sl ? slNum : null, tp: useProtection && tp ? tpNum : null, source: 'Manual' });
+        pushToast('success', `${side.toUpperCase()} ${vol.toFixed(2)} ${symbol} filled`, `Account ${acc.nickname} \u00b7 market execution.`);
+      }
       setSl('');
       setTp('');
       await refresh(true);
+      console.info('KOOLKID MT5 UI updated', { ui_updated_at: Date.now() / 1000, ui_clicked_at: uiClickedAt });
       loadManual();
     } catch (e) {
       pushToast('error', 'Order rejected', e instanceof Error ? e.message : undefined);
     } finally {
+      routingRef.current = false;
       setBusy(false);
     }
   };
 
   return (
     <div>
+      <Modal open={copyOpen} onClose={() => !busy && setCopyOpen(false)} title="Copy trade to slaves?" sub="The master and selected slaves will be dispatched concurrently." wide>
+        <div className="flex items-center justify-between"><p className="label !mb-0">Slave accounts</p><button className="text-[11px] font-bold text-brand-300" onClick={() => setSelectedSlaves(configuredSlaves)}>SELECT ALL</button></div>
+        <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
+          {configuredSlaves.map((id) => { const account = multiAccounts.find((row) => row.account_id === id); return <label key={id} className="flex items-center gap-3 rounded-xl border border-white/[0.07] bg-white/[0.03] px-3 py-3 text-xs text-slate-300"><input type="checkbox" checked={selectedSlaves.includes(id)} onChange={(event) => setSelectedSlaves(event.target.checked ? [...selectedSlaves, id] : selectedSlaves.filter((value) => value !== id))} /><span><b className="block text-white">{account?.nickname || id}</b><span className="mono text-slate-500">#{account?.login || id}</span></span></label>; })}
+        </div>
+        <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3"><div><label className="label">Slave lot mode</label><select className="input" value={copyLotMode} onChange={(event) => setCopyLotMode(event.target.value as 'same' | 'fixed' | 'multiplier')}><option value="same">Same as master</option><option value="fixed">Fixed lot</option><option value="multiplier">Multiplier</option></select></div>{copyLotMode !== 'same' && <div><label className="label">{copyLotMode === 'fixed' ? 'Fixed slave lot' : 'Lot multiplier'}</label><input className="input mono" type="number" min="0.01" step="0.01" value={copyLotValue} onChange={(event) => setCopyLotValue(event.target.value)} /></div>}</div>
+        <div className="mt-5 flex flex-col-reverse sm:flex-row sm:justify-end gap-2"><button className="btn-ghost justify-center" disabled={busy} onClick={() => executeOrder([])}>Master Only</button><button className="btn-primary justify-center" disabled={busy || !selectedSlaves.length} onClick={() => executeOrder(selectedSlaves)}><ArrowRightLeft size={14} /> Copy Trade</button></div>
+      </Modal>
       <PageHeader title="Manual Trading" sub={isSimulation ? 'Simulation order ticket · no broker order is sent' : 'Discretionary execution through the authenticated MT5 bridge'} />
 
       <div className="grid grid-cols-1 xl:grid-cols-5 gap-4">

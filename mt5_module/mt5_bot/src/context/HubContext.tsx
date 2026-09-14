@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { isSimulation } from '../config/runtime';
-import { MARKET, calcProfit } from '../lib/market';
+import { MARKET, SYMBOL_LIST, calcProfit } from '../lib/market';
 import { mt5AccountService } from '../services/mt5AccountService';
 import { mt5BotService } from '../services/mt5BotService';
 import { mt5BridgeService } from '../services/mt5BridgeService';
@@ -217,9 +217,14 @@ export function HubProvider({ children }: { children: ReactNode }) {
       return;
     }
     let cancelled = false;
+    let inFlight = false;
     const load = async () => {
+      if (inFlight || document.hidden) return;
+      inFlight = true;
       try {
-        const rows = await mt5MarketService.quotes(Object.keys(MARKET), marketAccountLogin);
+        const supported = new Set(mt5Symbols.map((item) => item.symbol));
+        const requested = SYMBOL_LIST.filter((symbol) => !supported.size || supported.has(symbol));
+        const rows = await mt5MarketService.quotes(requested, marketAccountLogin);
         if (cancelled) return;
         const bySymbol: Record<string, Mt5Quote> = {};
         const prices: Record<string, number> = {};
@@ -230,11 +235,12 @@ export function HubProvider({ children }: { children: ReactNode }) {
         setQuotes(bySymbol);
         setMarket((prev) => ({ ...prev, ...prices }));
       } catch { /* bridge status/refresh handles connection errors */ }
+      finally { inFlight = false; }
     };
     load();
-    const id = window.setInterval(load, 1500);
+    const id = window.setInterval(load, 3000);
     return () => { cancelled = true; window.clearInterval(id); };
-  }, [marketAccountLogin]);
+  }, [marketAccountLogin, mt5Symbols]);
 
   useEffect(() => {
     if (isSimulation || !marketAccountLogin) {

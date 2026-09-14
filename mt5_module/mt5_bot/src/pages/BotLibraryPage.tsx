@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
-import { BarChart3, Boxes, Cpu, FileCode2, Play, Plus, Settings2, Target, Trash2, Upload } from 'lucide-react';
+import { BarChart3, Boxes, Cpu, FileCode2, Play, Plus, ScanSearch, Settings2, Target, Trash2, Upload } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { useHub } from '../context/HubContext';
 import { fmtSigned, profitTone } from '../lib/format';
@@ -92,6 +92,17 @@ export default function BotLibraryPage() {
                   <div className="flex justify-between gap-3"><span className="text-slate-600">Preset</span><span className="mono text-slate-300 truncate">{b.preset_filename || 'None'}</span></div>
                   <div className="flex justify-between gap-3"><span className="text-slate-600">File status</span><Badge tone={b.file_status === 'ready' ? 'gain' : 'warn'}>{b.file_status || 'metadata-only'}</Badge></div>
                   <div className="flex justify-between gap-3"><span className="text-slate-600">DLL</span><span className={b.dll_required ? 'text-warn-400 font-semibold' : 'text-slate-300'}>{b.dll_required ? 'Required by metadata' : 'Not required'}</span></div>
+                </div>
+
+                <div className="mt-3 border-t border-white/[0.07] pt-3 text-[11px]">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="inline-flex items-center gap-1.5 text-slate-500"><ScanSearch size={13} /> Native EA analysis</span>
+                    <Badge tone={b.ea_verified ? 'gain' : running ? 'warn' : 'slate'}>{b.ea_verified ? 'EA verified' : running ? 'verifying' : 'awaiting launch'}</Badge>
+                  </div>
+                  <p className="mt-1.5 text-slate-500">Compiled strategy logic remains private. KOOLKID reports only verified files, MT5 runtime evidence and observed behavior.</p>
+                  {!!b.strategy_analysis?.observed_traits?.length && <p className="mt-1.5 text-slate-300">Observed: {b.strategy_analysis.observed_traits.join(' · ')}</p>}
+                  {!!b.strategy_analysis?.observed_messages?.length && <p className="mt-1.5 text-slate-500 line-clamp-2">Latest EA log: {b.strategy_analysis.observed_messages.at(-1)}</p>}
+                  {b.preset_analysis && <p className="mt-1.5 text-slate-500">Preset inputs detected: <span className="mono text-slate-300">{b.preset_analysis.input_count ?? 0}</span></p>}
                 </div>
 
                 <div className="mt-4 grid grid-cols-4 gap-2 text-center rounded-xl bg-black/25 border border-white/[0.06] p-3">

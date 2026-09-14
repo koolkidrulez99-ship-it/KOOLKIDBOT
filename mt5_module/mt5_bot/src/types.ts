@@ -37,6 +37,16 @@ export interface BotSettings {
   trading_session?: string;
 }
 
+export interface EaStrategyAnalysis {
+  ea_verified?: boolean;
+  verification_error?: string | null;
+  observed_messages?: string[];
+  observed_timeframes?: string[];
+  observed_traits?: string[];
+  last_ea_activity?: string | null;
+  analysis_scope?: string;
+}
+
 export interface Mt5Bot {
   id: number;
   name: string;
@@ -76,7 +86,24 @@ export interface Mt5Bot {
   open_positions?: number;
   current_pl?: number;
   today_pl?: number;
+  account_open_positions?: number;
+  account_current_pl?: number;
+  metrics_scope?: string | null;
+  bot_trade_count?: number;
+  bot_wins?: number;
+  bot_losses?: number;
+  bot_win_rate?: number;
+  detected_magic?: number | null;
+  attribution_status?: 'pending' | 'verified' | 'ambiguous';
   last_trade?: { ticket: number; symbol: string; time: string } | null;
+  ea_verified?: boolean;
+  ea_status?: 'active' | 'verifying' | 'stopped' | null;
+  verification_message?: string | null;
+  background_mode?: boolean;
+  metrics_error?: string | null;
+  strategy_analysis?: EaStrategyAnalysis | null;
+  file_analysis?: { format?: string; compiled?: boolean; file_verified?: boolean; strategy_visibility?: string } | null;
+  preset_analysis?: { format?: string; input_count?: number; inputs?: { name: string; value: string }[]; truncated?: boolean } | null;
 }
 
 

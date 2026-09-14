@@ -37,13 +37,26 @@ def keep_terminal_hidden(terminal_path):
         time.sleep(0.15)
 
 def plain(obj):
+    """Convert MT5 namedtuples, including nested request fields, for IPC."""
     if obj is None:
         return {}
-    if isinstance(obj, dict):
-        return dict(obj)
     if hasattr(obj, "_asdict"):
-        return dict(obj._asdict())
+        obj = obj._asdict()
+    if isinstance(obj, dict):
+        return {key: plain_value(value) for key, value in obj.items()}
     return {}
+
+
+def plain_value(value):
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if hasattr(value, "_asdict"):
+        value = value._asdict()
+    if isinstance(value, dict):
+        return {key: plain_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [plain_value(item) for item in value]
+    return str(value)
 
 def filling_candidates(mt5, info):
     candidates = []
@@ -72,10 +85,13 @@ def send_market_order(mt5, request, info):
         if int(check_data.get("retcode", 1)) != 0:
             last = str(check_data.get("comment") or "Order check failed")
             continue
+        order_send_started_at = time.time()
         result = mt5.order_send(req)
+        order_send_result_at = time.time()
         out = plain(result)
         retcode = int(out.get("retcode", -1))
         if retcode in success:
+            out["timing"] = {"order_send_started_at": order_send_started_at, "order_send_result_at": order_send_result_at}
             return out
         last = f"MT5 rejected order ({retcode}): {out.get('comment') or 'unknown error'}"
         if retcode != invalid_fill:
@@ -304,16 +320,19 @@ def run_worker(config, password, command_q, response_q):
             "deviation": 20, "magic": magic, "comment": comment,
             "type_time": mt5.ORDER_TIME_GTC,
         }
+        worker_received_at = time.time()
         out = send_market_order(mt5, req, info)
         ticket = int(out.get("order") or out.get("deal") or 0)
         # Resolve a live position ticket when possible.
-        for _ in range(8):
+        for _ in range(4):
             tagged = [x for x in positions() if x.get("symbol") == symbol and str(x.get("comment") or "").startswith(comment[:16])]
             if tagged:
                 ticket = int(tagged[-1].get("ticket") or ticket)
                 break
-            time.sleep(0.05)
+            time.sleep(0.025)
         out["ticket"] = ticket
+        out.setdefault("timing", {})["worker_received_at"] = worker_received_at
+        out["timing"]["position_confirmed_at"] = time.time()
         return out
 
     def close_position(p):
@@ -339,7 +358,11 @@ def run_worker(config, password, command_q, response_q):
             "deviation": 20, "magic": 0, "comment": "KOOLKID close",
             "type_time": mt5.ORDER_TIME_GTC,
         }
-        return send_market_order(mt5, req, info)
+        worker_received_at = time.time()
+        out = send_market_order(mt5, req, info)
+        out.setdefault("timing", {})["worker_received_at"] = worker_received_at
+        out["timing"]["position_confirmed_at"] = time.time()
+        return out
 
     def modify_position(p):
         ticket = int(p["ticket"])

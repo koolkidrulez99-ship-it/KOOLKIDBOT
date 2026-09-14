@@ -1,17 +1,29 @@
 const multiBase = String(import.meta.env.VITE_MT5_MULTI_ACCOUNT_API_BASE || 'http://127.0.0.1:8002').replace(/\/$/, '');
 
-async function multiRequest<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
-  const res = await fetch(`${multiBase}${path.startsWith('/') ? path : `/${path}`}`, {
-    method,
-    headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const err = data as { detail?: string; error?: string };
-    throw new Error(err.detail || err.error || `Multi-account request failed (${res.status})`);
+async function multiRequest<T>(path: string, method = 'GET', body?: unknown, timeoutMs = 20000): Promise<T> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${multiBase}${path.startsWith('/') ? path : `/${path}`}`, {
+      method,
+      headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: controller.signal,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = data as { detail?: string; error?: string };
+      throw new Error(err.detail || err.error || `Multi-account request failed (${res.status})`);
+    }
+    return data as T;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error('MT5 order routing timed out. Check the selected account worker and try again.');
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
   }
-  return data as T;
 }
 
 export interface MultiAccountInfo {
@@ -71,7 +83,8 @@ export interface PendingCopy {
 export interface CopyDecisionResult {
   ok: boolean;
   decision: 'master_only' | 'copied';
-  results: Record<string, { ok: boolean; ticket?: number; error?: string }>;
+  results: Record<string, { ok: boolean; ticket?: number; error?: string; elapsed_ms?: number }>;
+  fill_spread_ms?: number;
 }
 
 export const mt5MultiAccountService = {
@@ -89,7 +102,8 @@ export const mt5MultiAccountService = {
     should_copy: copy,
     slave_account_ids: slaveAccountIds,
   }),
-  manualTrade: (payload: Record<string, unknown>) => multiRequest<{ results: Record<string, { ok: boolean; result?: unknown; error?: string }> }>('/manual-trade', 'POST', payload),
+  manualTrade: (payload: Record<string, unknown>) => multiRequest<{ results: Record<string, { ok: boolean; result?: unknown; error?: string; timing?: Record<string, number> }> }>('/manual-trade', 'POST', payload, 18000),
   positions: () => multiRequest<{ positions: MultiPosition[]; errors: Record<string, string> }>('/positions'),
   closePosition: (accountId: string, ticket: number) => multiRequest<Record<string, unknown>>('/positions/close', 'POST', { account_id: accountId, ticket }),
+  closeMany: (targets: Array<{ account_id: string; ticket: number }>, uiClickedAt = Date.now() / 1000) => multiRequest<Record<string, unknown>>('/positions/close-many', 'POST', { targets, ui_clicked_at: uiClickedAt }),
 };

@@ -1,6 +1,6 @@
 import type { Mt5Bot } from '../types';
 
-const names = [
+export const PREINSTALLED_BOT_NAMES = new Set([
   'WASP',
   'PRIMORDIAL PURPLE',
   'PRIMORDIAL BLACK',
@@ -21,7 +21,7 @@ const names = [
   'TLG',
   'BOOM',
   'CRASH',
-] as const;
+]);
 
 export const LEGACY_PLACEHOLDERS = new Set([
   'Scalper Pro',
@@ -32,36 +32,4 @@ export const LEGACY_PLACEHOLDERS = new Set([
   'BTC Momentum',
 ]);
 
-export const BOT_CATALOG: Mt5Bot[] = names.map((name, index) => ({
-  id: 1000 + index,
-  name,
-  description: 'Custom EA. Strategy details are intentionally left neutral until the real EA package is attached.',
-  strategy: 'Custom EA',
-  symbol: name === 'WASP' || name === 'NICK' ? 'XAUUSD' : 'EURUSD',
-  timeframe: name === 'WASP' ? 'M1' : name === 'NICK' ? 'M5' : 'M15',
-  recommended_timeframe: name === 'WASP' ? 'M1' : name === 'NICK' ? 'M5' : null,
-  account_login: null,
-  status: 'stopped',
-  lot_size: 0.01,
-  win_rate: 0,
-  total_trades: 0,
-  net_profit: 0,
-  profit_today: 0,
-  version: '1.0.0',
-  started_at: null,
-  ea_filename: `${name.replace(/\s+/g, '_')}.ex5`,
-  preset_filename: null,
-  file_status: 'metadata-only',
-  upload_date: null,
-  dll_required: false,
-  settings: {
-    risk_percent: 1,
-    max_spread: 3.5,
-    trailing_stop: true,
-    magic_number: 510000 + index,
-    max_daily_loss: 250,
-    slippage: 1.5,
-    max_open_positions: 3,
-    trading_session: 'All Sessions',
-  },
-}));
+export const BOT_CATALOG: Mt5Bot[] = [];

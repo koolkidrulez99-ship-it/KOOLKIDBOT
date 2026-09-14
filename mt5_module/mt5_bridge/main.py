@@ -31,6 +31,7 @@ EA_LIBRARY.mkdir(parents=True, exist_ok=True)
 MAX_EA_FILE_BYTES = 25 * 1024 * 1024
 _stats_history_lock = threading.Lock()
 _stats_history_cache: dict[str, Any] = {"session_key": "", "loaded_at": 0.0, "rows": []}
+_SECRET_INPUT = re.compile(r"(?:password|passwd|token|secret|license|licence|api.?key)", re.IGNORECASE)
 
 
 def _safe_upload_name(name: str, extension: str) -> str:
@@ -50,10 +51,12 @@ async def _save_upload(file: UploadFile, dest: Path, extension: str) -> dict[str
         raise HTTPException(status_code=413, detail=f"{filename} exceeds the 25 MB upload limit.")
     if not data:
         raise HTTPException(status_code=400, detail=f"{filename} is empty.")
+    if extension == ".ex5" and not data.startswith(b"EX5"):
+        raise HTTPException(status_code=400, detail=f"{filename} is not a valid compiled MT5 EX5 file.")
     dest.mkdir(parents=True, exist_ok=True)
     path = dest / filename
     path.write_bytes(data)
-    return {
+    result = {
         "filename": filename,
         "original_filename": Path(file.filename or "").name,
         "stored_filename": path.name,
@@ -61,6 +64,33 @@ async def _save_upload(file: UploadFile, dest: Path, extension: str) -> dict[str
         "sha256": hashlib.sha256(data).hexdigest(),
         "stored_path": str(path.relative_to(ROOT)),
     }
+    if extension == ".ex5":
+        result["analysis"] = {
+            "format": "MT5 EX5", "compiled": True, "file_verified": True,
+            "strategy_visibility": "Observed runtime behavior only; compiled source logic is not readable.",
+        }
+    elif extension == ".set":
+        result["analysis"] = _analyze_set_data(data)
+    return result
+
+
+def _analyze_set_data(data: bytes) -> dict[str, Any]:
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")) or b"\x00" in data[:64]:
+        text = data.decode("utf-16", errors="ignore")
+    else:
+        text = data.decode("utf-8", errors="ignore")
+    inputs = []
+    for raw in text.splitlines():
+        line = raw.strip().lstrip("\ufeff")
+        if not line or line.startswith((";", "#")) or "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        name = name.strip()[:120]
+        value = value.split("||", 1)[0].strip()[:200]
+        if not name:
+            continue
+        inputs.append({"name": name, "value": "[redacted]" if _SECRET_INPUT.search(name) else value})
+    return {"format": "MT5 SET", "input_count": len(inputs), "inputs": inputs[:100], "truncated": len(inputs) > 100}
 app.add_middleware(
     CORSMiddleware,
     allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
@@ -135,7 +165,7 @@ def root():
 @app.get("/health")
 def health():
     copy_online = not bool(session_snapshot().get("offline"))
-    return {"ok": True, "time": datetime.now(timezone.utc).isoformat(), "copy_worker": "online" if copy_online else "offline", "ea_worker": ea_worker_client.status()}
+    return {"ok": True, "revision": "mt5-bridge-ea-v5", "time": datetime.now(timezone.utc).isoformat(), "copy_worker": "online" if copy_online else "offline", "ea_worker": ea_worker_client.status()}
 
 
 @app.get("/api/mt5/bridge/status")
@@ -286,12 +316,17 @@ def account_action(profile_id: int, payload: dict[str, Any] = Body(default_facto
 
 
 @app.get("/api/mt5/quotes")
-def get_quotes(symbols: str = Query(default="XAUUSD,EURUSD,GBPUSD,USDJPY,BTCUSD,EURGBP,US30"), account_login: int | None = None):
+def get_quotes(symbols: str = Query(default=""), account_login: int | None = None):
     requested = [x.strip() for x in symbols.split(",") if x.strip()]
+    if not requested:
+        return []
+    if not account_login:
+        raise HTTPException(status_code=422, detail="Select a connected MT5 account before requesting quotes.")
     try:
-        return multi_account_client.account_request(account_login, f"/quotes?symbols={quote(','.join(requested))}", timeout=10)
+        return multi_account_client.account_request(account_login, f"/quotes?symbols={quote(','.join(requested))}", timeout=5)
     except RuntimeError as exc:
-        session_error(exc)
+        message = str(exc)
+        raise HTTPException(status_code=504 if "timeout" in message.lower() else 503, detail=message)
 
 
 @app.get("/api/mt5/candles/{symbol}")
@@ -553,11 +588,29 @@ def bots():
                 for bot in st.get("bots", []):
                     assignment = assignments.get(int(bot.get("id", 0)))
                     if assignment:
+                        assignment_active = assignment.get("status") in {"starting", "running", "stopping"}
                         bot.update({
-                            "status": assignment["status"], "started_at": assignment.get("started_at"),
+                            "status": assignment["status"], "started_at": assignment.get("started_at") if assignment_active else None,
                             "worker_id": assignment.get("worker_id"), "terminal_id": assignment.get("terminal_id"),
-                            "process_id": assignment.get("process_id"), "terminal_status": assignment.get("terminal_status"),
+                            "process_id": assignment.get("process_id") if assignment_active else None, "terminal_status": assignment.get("terminal_status"),
                             "last_activity": assignment.get("last_activity"), "last_error": assignment.get("error"),
+                            "account_verified": assignment.get("account_verified", False) if assignment_active else False,
+                            "open_positions": assignment.get("open_positions", 0),
+                            "current_pl": assignment.get("current_pl", 0), "today_pl": assignment.get("today_pl", 0),
+                            "profit_today": assignment.get("today_pl", 0),
+                            "account_open_positions": assignment.get("account_open_positions", 0),
+                            "account_current_pl": assignment.get("account_current_pl", 0),
+                            "metrics_scope": assignment.get("metrics_scope"),
+                            "bot_trade_count": assignment.get("bot_trade_count", 0),
+                            "bot_wins": assignment.get("bot_wins", 0), "bot_losses": assignment.get("bot_losses", 0),
+                            "bot_win_rate": assignment.get("bot_win_rate", 0),
+                            "detected_magic": assignment.get("detected_magic"),
+                            "attribution_status": assignment.get("attribution_status", "pending"),
+                            "last_trade": assignment.get("last_trade"), "metrics_error": assignment.get("metrics_error"),
+                            "ea_verified": assignment.get("ea_verified", False) if assignment_active else False, "ea_status": assignment.get("ea_status"),
+                            "verification_message": assignment.get("verification_message"),
+                            "strategy_analysis": assignment.get("strategy_analysis"),
+                            "background_mode": assignment.get("background_mode", False),
                         })
                     elif bot.get("status") in {"running", "connecting", "worker_offline"}:
                         bot["status"] = "stopped"
@@ -633,11 +686,13 @@ async def upload_bot_files(
             row["ea_sha256"] = result["ea"]["sha256"]
             row["file_status"] = "ready"
             row["worker_compatibility"] = "ready"
+            row["file_analysis"] = result["ea"].get("analysis")
         if "preset" in result:
             row["preset_filename"] = result["preset"]["filename"]
             row["preset_storage_path"] = result["preset"]["stored_path"]
             row["preset_size_bytes"] = result["preset"]["size_bytes"]
             row["preset_sha256"] = result["preset"]["sha256"]
+            row["preset_analysis"] = result["preset"].get("analysis")
         row["upload_date"] = now
         return dict(row)
     try:
@@ -702,6 +757,7 @@ def start_bot(bot_id: int, payload: dict[str, Any] = Body(default_factory=dict))
         "terminal_path": payload.get("terminal_path"), "allow_live": bool(payload.get("confirm_live")),
         "bridge_terminal_path": info.get("terminal_path"), "bridge_data_path": info.get("data_path"),
         "allow_dll": bool(payload.get("allow_dll")), "dll_required": bool(bot.get("dll_required")),
+        "configured_magic": int((bot.get("settings") or {}).get("magic_number") or 0) or None,
     }
     def mark_starting(st):
         row = next(b for b in st["bots"] if int(b["id"]) == bot_id)
@@ -719,7 +775,29 @@ def start_bot(bot_id: int, payload: dict[str, Any] = Body(default_factory=dict))
         raise HTTPException(status_code=409, detail=str(exc))
     def mark_running(st):
         row = next(b for b in st["bots"] if int(b["id"]) == bot_id)
-        row.update({"status": assignment["status"], "started_at": assignment.get("started_at"), "worker_id": assignment.get("worker_id"), "terminal_id": assignment.get("terminal_id"), "process_id": assignment.get("process_id"), "last_error": None})
+        row.update({
+            "status": assignment["status"], "started_at": assignment.get("started_at"),
+            "worker_id": assignment.get("worker_id"), "terminal_id": assignment.get("terminal_id"),
+            "process_id": assignment.get("process_id"), "terminal_status": assignment.get("terminal_status"),
+            "last_activity": assignment.get("last_activity"), "last_error": assignment.get("error"),
+            "account_verified": assignment.get("account_verified", False),
+            "open_positions": assignment.get("open_positions", 0),
+            "current_pl": assignment.get("current_pl", 0), "today_pl": assignment.get("today_pl", 0),
+            "profit_today": assignment.get("today_pl", 0),
+            "account_open_positions": assignment.get("account_open_positions", 0),
+            "account_current_pl": assignment.get("account_current_pl", 0),
+            "metrics_scope": assignment.get("metrics_scope"),
+            "bot_trade_count": assignment.get("bot_trade_count", 0),
+            "bot_wins": assignment.get("bot_wins", 0), "bot_losses": assignment.get("bot_losses", 0),
+            "bot_win_rate": assignment.get("bot_win_rate", 0),
+            "detected_magic": assignment.get("detected_magic"),
+            "attribution_status": assignment.get("attribution_status", "pending"),
+            "last_trade": assignment.get("last_trade"), "metrics_error": assignment.get("metrics_error"),
+            "ea_verified": assignment.get("ea_verified", False), "ea_status": assignment.get("ea_status"),
+            "verification_message": assignment.get("verification_message"),
+            "strategy_analysis": assignment.get("strategy_analysis"),
+            "background_mode": assignment.get("background_mode", False),
+        })
         return row
     return update_state(mark_running)
 
@@ -748,6 +826,7 @@ def stop_bot(bot_id: int, payload: dict[str, Any] = Body(default_factory=dict)):
             "status": assignment.get("status", "stopped"), "started_at": None, "process_id": None,
             "terminal_status": assignment.get("terminal_status", "offline"), "account_verified": False,
             "last_activity": assignment.get("last_activity"), "last_error": assignment.get("error"),
+            "ea_verified": False, "ea_status": "stopped",
         })
         return row
     try:

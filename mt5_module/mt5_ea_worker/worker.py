@@ -5,6 +5,8 @@ import subprocess
 import threading
 import time
 import uuid
+import ctypes
+from ctypes import wintypes
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -13,12 +15,14 @@ import psutil
 
 try:
     from .config_builder import build_config
+    from .ea_observer import capture_log_offsets, inspect_ea_logs
     from .ea_manager import install_files
     from .models import StartBotRequest
     from .state import ROOT, read_state, write_state
     from .terminal_manager import discover_terminals, prepare_dedicated_terminal, select_terminal, terminal_data_dir
 except ImportError:  # direct `python main.py` execution
     from config_builder import build_config
+    from ea_observer import capture_log_offsets, inspect_ea_logs
     from ea_manager import install_files
     from models import StartBotRequest
     from state import ROOT, read_state, write_state
@@ -27,6 +31,8 @@ except ImportError:  # direct `python main.py` execution
 _LOCK = threading.RLock()
 ASSIGNMENT_DIR = ROOT / "data" / "assignments"
 DEFAULT_LIBRARY = ROOT.parent / "mt5_bridge" / "data" / "ea_library"
+COPY_MAGIC = 987654
+HUB_COMMENTS = ("kkm:", "kkcopy:", "koolkid hub", "koolkid close")
 
 
 def _now() -> str:
@@ -43,6 +49,51 @@ def _process_alive(pid: int, terminal_path: str) -> bool:
         return process.is_running() and Path(process.exe()).resolve() == Path(terminal_path).resolve()
     except (psutil.Error, OSError, ValueError):
         return False
+
+
+def _hidden_process_options() -> dict[str, Any]:
+    if os.name != "nt":
+        return {}
+    startup = subprocess.STARTUPINFO()
+    startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startup.wShowWindow = subprocess.SW_HIDE
+    return {
+        "startupinfo": startup,
+        "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+    }
+
+
+def _keep_process_windows_hidden(pid: int, terminal_path: str) -> None:
+    if os.name != "nt":
+        return
+    user32 = ctypes.windll.user32
+    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    @callback_type
+    def hide_window(hwnd, _):
+        owner = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+        if owner.value == int(pid) and user32.IsWindowVisible(hwnd):
+            user32.ShowWindow(hwnd, 0)
+        return True
+
+    while _process_alive(pid, terminal_path):
+        user32.EnumWindows(hide_window, 0)
+        time.sleep(0.25)
+
+
+def _terminate_process(pid: int) -> None:
+    try:
+        process = psutil.Process(int(pid))
+        for child in process.children(recursive=True):
+            child.terminate()
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except psutil.TimeoutExpired:
+            process.kill()
+    except (psutil.Error, ValueError):
+        pass
 
 
 def _safe_library_file(raw: str) -> Path:
@@ -66,6 +117,34 @@ def _last_activity(data_dir: str) -> str | None:
     return datetime.fromtimestamp(newest, timezone.utc).isoformat() if newest else None
 
 
+def _bot_trade_candidate(item: Any, row: dict[str, Any], baseline: set[int], expert_reason: int | None) -> bool:
+    ticket = int(getattr(item, "ticket", 0) or 0)
+    if ticket in baseline or str(getattr(item, "symbol", "")) != str(row.get("symbol") or ""):
+        return False
+    magic = int(getattr(item, "magic", 0) or 0)
+    comment = str(getattr(item, "comment", "") or "").strip().lower()
+    if magic in {0, COPY_MAGIC} or comment.startswith(HUB_COMMENTS):
+        return False
+    reason = getattr(item, "reason", None)
+    return expert_reason is not None and reason is not None and int(reason) == int(expert_reason)
+
+
+def _resolve_bot_magic(candidates: list[Any], row: dict[str, Any]) -> tuple[int | None, str]:
+    detected = int(row.get("detected_magic") or 0)
+    if detected:
+        return detected, "verified"
+    configured = int(row.get("configured_magic") or 0)
+    available = {int(getattr(item, "magic", 0) or 0) for item in candidates}
+    if configured and configured in available:
+        row["detected_magic"] = configured
+        return configured, "verified"
+    if len(available) == 1:
+        detected = available.pop()
+        row["detected_magic"] = detected
+        return detected, "verified"
+    return None, "ambiguous" if len(available) > 1 else "pending"
+
+
 def _terminal_metrics(row: dict[str, Any]) -> dict[str, Any]:
     try:
         import MetaTrader5 as mt5
@@ -83,13 +162,53 @@ def _terminal_metrics(row: dict[str, Any]) -> dict[str, Any]:
         deals = list(mt5.history_deals_get(start, datetime.now(timezone.utc)) or [])
         trade_types = {int(mt5.DEAL_TYPE_BUY), int(mt5.DEAL_TYPE_SELL)}
         trade_deals = [deal for deal in deals if int(getattr(deal, "type", -1)) in trade_types]
-        last = max(trade_deals, key=lambda deal: int(getattr(deal, "time_msc", 0) or 0), default=None)
+        baseline_positions = {int(ticket) for ticket in row.get("baseline_position_tickets", [])}
+        baseline_deals = {int(ticket) for ticket in row.get("baseline_deal_tickets", [])}
+        position_candidates = [
+            position for position in positions
+            if _bot_trade_candidate(position, row, baseline_positions, getattr(mt5, "POSITION_REASON_EXPERT", None))
+        ]
+        deal_candidates = [
+            deal for deal in trade_deals
+            if _bot_trade_candidate(deal, row, baseline_deals, getattr(mt5, "DEAL_REASON_EXPERT", None))
+        ]
+        detected_magic, attribution_status = _resolve_bot_magic(position_candidates + deal_candidates, row)
+        observed_positions = [position for position in position_candidates if detected_magic and int(getattr(position, "magic", 0) or 0) == detected_magic]
+        observed_deals = [deal for deal in deal_candidates if detected_magic and int(getattr(deal, "magic", 0) or 0) == detected_magic]
+        close_entries = {
+            int(value) for value in (
+                getattr(mt5, "DEAL_ENTRY_OUT", None), getattr(mt5, "DEAL_ENTRY_OUT_BY", None),
+                getattr(mt5, "DEAL_ENTRY_INOUT", None),
+            ) if value is not None
+        }
+        settled_deals = [deal for deal in observed_deals if int(getattr(deal, "entry", -1)) in close_entries]
+        settled_pl = [
+            float(getattr(deal, "profit", 0) or 0) + float(getattr(deal, "swap", 0) or 0)
+            + float(getattr(deal, "commission", 0) or 0) + float(getattr(deal, "fee", 0) or 0)
+            for deal in settled_deals
+        ]
+        last = max(observed_deals, key=lambda deal: int(getattr(deal, "time_msc", 0) or 0), default=None)
+        if attribution_status == "verified":
+            scope = f"Bot-only MT5 activity matched to magic number {detected_magic}."
+        elif attribution_status == "ambiguous":
+            scope = "Bot-only totals unavailable because multiple unclaimed EA magic numbers were observed."
+        else:
+            scope = "Waiting for this EA to place a trade with a unique MT5 magic number."
         return {
             "account_verified": True,
-            "open_positions": len(positions),
-            "current_pl": sum(float(getattr(pos, "profit", 0) or 0) + float(getattr(pos, "swap", 0) or 0) for pos in positions),
-            "today_pl": sum(float(getattr(deal, "profit", 0) or 0) + float(getattr(deal, "swap", 0) or 0) + float(getattr(deal, "commission", 0) or 0) + float(getattr(deal, "fee", 0) or 0) for deal in trade_deals),
+            "open_positions": len(observed_positions),
+            "current_pl": sum(float(getattr(pos, "profit", 0) or 0) + float(getattr(pos, "swap", 0) or 0) for pos in observed_positions),
+            "today_pl": sum(float(getattr(deal, "profit", 0) or 0) + float(getattr(deal, "swap", 0) or 0) + float(getattr(deal, "commission", 0) or 0) + float(getattr(deal, "fee", 0) or 0) for deal in observed_deals),
             "last_trade": ({"ticket": int(last.ticket), "symbol": str(last.symbol), "time": datetime.fromtimestamp(int(last.time), timezone.utc).isoformat()} if last else None),
+            "bot_trade_count": len(settled_deals),
+            "bot_wins": len([value for value in settled_pl if value > 0]),
+            "bot_losses": len([value for value in settled_pl if value < 0]),
+            "bot_win_rate": round(len([value for value in settled_pl if value > 0]) / len(settled_pl) * 100, 1) if settled_pl else 0.0,
+            "detected_magic": detected_magic,
+            "attribution_status": attribution_status,
+            "metrics_scope": scope,
+            "_position_tickets": [int(getattr(pos, "ticket", 0) or 0) for pos in positions],
+            "_deal_tickets": [int(getattr(deal, "ticket", 0) or 0) for deal in trade_deals],
             "metrics_checked_at": _now(),
             "metrics_error": None,
         }
@@ -106,16 +225,29 @@ def reconcile() -> list[dict[str, Any]]:
         changed = False
         for row in state.get("assignments", []):
             if row.get("status") in {"starting", "running", "stopping"}:
+                before = dict(row)
                 alive = _process_alive(int(row.get("process_id") or 0), str(row.get("terminal_path") or ""))
-                next_status = "running" if alive else "stopped"
                 row["terminal_status"] = "online" if alive else "offline"
-                row["last_activity"] = _last_activity(str(row.get("data_path") or ""))
                 if alive:
+                    observed = inspect_ea_logs(
+                        Path(str(row.get("data_path") or "")),
+                        str(row.get("ea_file") or ""),
+                        offsets=row.get("log_offsets") or None,
+                    )
+                    row["strategy_analysis"] = observed
+                    row["ea_verified"] = bool(row.get("ea_verified") or observed.get("ea_verified"))
+                    row["ea_status"] = "active" if row["ea_verified"] else "verifying"
+                    row["last_activity"] = observed.get("last_ea_activity") or _last_activity(str(row.get("data_path") or ""))
                     row.update(_terminal_metrics(row))
+                    next_status = "running" if row["ea_verified"] and row.get("account_verified") else "starting"
+                    row["error"] = None if next_status == "running" else row.get("metrics_error") or observed.get("verification_error")
+                else:
+                    next_status = "stopped"
+                    row["ea_status"] = "stopped"
                 if row.get("status") != next_status:
                     row["status"] = next_status
                     row["error"] = None if alive else "Terminal process is no longer running."
-                    changed = True
+                changed = changed or row != before
         if changed:
             write_state(state)
         return state.get("assignments", [])
@@ -159,30 +291,55 @@ def start_bot(request: StartBotRequest) -> dict[str, Any]:
             symbol=request.symbol, timeframe=request.timeframe,
             allow_trading=True, allow_dll=request.dll_required and request.allow_dll,
         )
+        log_offsets = capture_log_offsets(data_dir)
         process = subprocess.Popen(
             [str(terminal), "/portable", f"/config:{config_path}"],
             cwd=str(terminal.parent),
-            creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+            **_hidden_process_options(),
         )
-        time.sleep(5)
-        if process.poll() is not None:
-            raise RuntimeError(f"MetaTrader 5 exited during startup with code {process.returncode}.")
+        threading.Thread(
+            target=_keep_process_windows_hidden,
+            args=(process.pid, str(terminal)),
+            daemon=True,
+            name=f"KOOLKID-EA-Hide-{request.bot_id}",
+        ).start()
+        observed: dict[str, Any] = {}
+        metrics: dict[str, Any] = {}
+        deadline = time.monotonic() + 45
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                raise RuntimeError(f"MetaTrader 5 exited during startup with code {process.returncode}.")
+            observed = inspect_ea_logs(data_dir, request.ea_filename, offsets=log_offsets)
+            if observed.get("verification_error") and not observed.get("ea_verified"):
+                _terminate_process(process.pid)
+                raise RuntimeError(f"MT5 could not load {request.ea_filename}: {observed['verification_error']}")
+            if observed.get("ea_verified"):
+                metrics = _terminal_metrics({"terminal_path": str(terminal), "account_login": request.account_login})
+                if metrics.get("account_verified"):
+                    break
+            time.sleep(0.5)
+        if not observed.get("ea_verified"):
+            _terminate_process(process.pid)
+            raise RuntimeError(f"MT5 did not confirm that {request.ea_filename} loaded on {request.symbol} {request.timeframe}.")
+        if not metrics.get("account_verified"):
+            _terminate_process(process.pid)
+            raise RuntimeError(metrics.get("metrics_error") or "The assigned MT5 account could not be verified.")
         row = {
             "id": assignment_id, "worker_id": "koolkid-ea-worker", "terminal_id": terminal.parent.name,
             "account_login": request.account_login, "bot_id": request.bot_id, "ea_file": request.ea_filename,
             "symbol": request.symbol, "timeframe": request.timeframe, "preset": request.preset_filename,
             "process_id": process.pid, "status": "running", "started_at": _now(), "error": None,
-            "terminal_status": "online", "last_activity": _last_activity(str(data_dir)),
+            "terminal_status": "online", "last_activity": observed.get("last_ea_activity") or _last_activity(str(data_dir)),
             "terminal_path": str(terminal), "data_path": str(data_dir), "config_path": str(config_path),
+            "background_mode": True, "ea_verified": True, "ea_status": "active",
+            "verification_message": f"MT5 confirmed {request.ea_filename} loaded on {request.symbol} {request.timeframe}.",
+            "strategy_analysis": observed, "log_offsets": log_offsets,
+            "configured_magic": request.configured_magic,
+            "baseline_position_tickets": metrics.get("_position_tickets", []),
+            "baseline_deal_tickets": metrics.get("_deal_tickets", []),
         }
-        metrics = _terminal_metrics(row)
-        if not metrics.get("account_verified"):
-            try:
-                psutil.Process(process.pid).terminate()
-            except psutil.Error:
-                pass
-            raise RuntimeError(metrics.get("metrics_error") or "The assigned MT5 account could not be verified.")
         row.update(metrics)
+        row.update({"open_positions": 0, "current_pl": 0.0, "today_pl": 0.0, "last_trade": None})
         state = read_state()
         state["assignments"] = [x for x in state.get("assignments", []) if int(x.get("bot_id", 0)) != request.bot_id] + [row]
         write_state(state)
@@ -200,18 +357,15 @@ def stop_bot(bot_id: int) -> dict[str, Any]:
             raise KeyError("Bot assignment not found.")
         pid = int(row.get("process_id") or 0)
         if _process_alive(pid, row.get("terminal_path", "")):
-            process = psutil.Process(pid)
-            for child in process.children(recursive=True):
-                child.terminate()
-            process.terminate()
-            try:
-                process.wait(timeout=10)
-            except psutil.TimeoutExpired:
-                process.kill()
+            _terminate_process(pid)
         state = read_state()
         stored = next(x for x in state.get("assignments", []) if int(x.get("bot_id", 0)) == int(bot_id))
         stored["status"] = "stopped"
         stored["terminal_status"] = "offline"
+        stored["ea_status"] = "stopped"
+        stored["ea_verified"] = False
+        stored["account_verified"] = False
+        stored["process_id"] = None
         stored["stopped_at"] = _now()
         stored["error"] = None
         write_state(state)

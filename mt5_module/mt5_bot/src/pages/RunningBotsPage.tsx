@@ -19,7 +19,8 @@ export default function RunningBotsPage() {
   const active = useMemo(() => bots.filter((b) => b.status !== 'stopped'), [bots]);
   const running = active.filter((b) => b.status === 'running');
   const combined = running.reduce((s, b) => s + botLiveToday(b), 0);
-  const lifetime = active.reduce((s, b) => s + Number(b.net_profit || 0), 0);
+  const botOpenPositions = running.reduce((sum, bot) => sum + Number(bot.open_positions || 0), 0);
+  const botTrades = active.reduce((sum, bot) => sum + Number(bot.bot_trade_count || 0), 0);
 
   const cmd = async (b: Mt5Bot, action: 'pause' | 'resume' | 'stop' | 'restart') => {
     setBusyId(b.id);
@@ -51,8 +52,8 @@ export default function RunningBotsPage() {
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-5">
         <StatCard label="Engines Running" value={running.length} icon={Zap} tone="brand" sub={`${active.filter((b) => b.status === 'paused').length} paused`} />
-        <StatCard label={isSimulation ? "Session P/L (sim)" : "Session P/L (live)"} value={fmtSigned(combined)} icon={Timer} tone={combined >= 0 ? 'gain' : 'loss'} sub="Across running engines" />
-        <StatCard label="Lifetime Net (active set)" value={fmtSigned(lifetime, 0)} icon={Cpu} tone={lifetime >= 0 ? 'gain' : 'loss'} sub={`${active.reduce((s, b) => s + b.total_trades, 0)} lifetime fills`} />
+        <StatCard label={isSimulation ? "Bot Session P/L (sim)" : "Bot Session P/L (live)"} value={fmtSigned(combined)} icon={Timer} tone={combined >= 0 ? 'gain' : 'loss'} sub="Verified bot activity only" />
+        <StatCard label="Bot Open Positions" value={botOpenPositions} icon={Cpu} tone="brand" sub={`${botTrades} settled bot trades`} />
       </div>
 
       {active.length === 0 ? (
@@ -93,8 +94,12 @@ export default function RunningBotsPage() {
                     <p className="text-[11px] text-slate-500 mt-0.5">
                       {b.symbol} &middot; {b.timeframe} &middot; {b.lot_size.toFixed(2)} lots &middot; on <span className="text-slate-300">{accountName(b.account_login)}</span>
                     </p>
-                    <p className="text-[10px] text-slate-600 mt-1">Terminal: <span className={b.terminal_status === 'online' ? 'text-gain-400' : 'text-loss-400'}>{b.terminal_status || 'unknown'}</span>{b.last_activity ? ` · last activity ${new Date(b.last_activity).toLocaleString()}` : ''}</p>
-                    <p className="text-[10px] text-slate-600 mt-1">Open positions: <span className="text-slate-300">{b.open_positions ?? 0}</span> · Current P/L: <span className={profitTone(Number(b.current_pl || 0))}>{fmtSigned(Number(b.current_pl || 0))}</span> · Today: <span className={profitTone(Number(b.today_pl || 0))}>{fmtSigned(Number(b.today_pl || 0))}</span></p>
+                    <p className="text-[10px] text-slate-600 mt-1">Terminal: <span className={b.terminal_status === 'online' ? 'text-gain-400' : 'text-loss-400'}>{b.terminal_status || 'unknown'}</span> · EA: <span className={b.ea_verified ? 'text-gain-400' : 'text-warn-400'}>{b.ea_verified ? 'verified active' : 'verifying'}</span>{b.last_activity ? ` · last EA activity ${new Date(b.last_activity).toLocaleString()}` : ''}</p>
+                    <p className="text-[10px] text-slate-600 mt-1">Bot activity: <span className="text-slate-300">{b.open_positions ?? 0} open</span> · Floating: <span className={profitTone(Number(b.current_pl || 0))}>{fmtSigned(Number(b.current_pl || 0))}</span> · Realized: <span className={profitTone(Number(b.today_pl || 0))}>{fmtSigned(Number(b.today_pl || 0))}</span></p>
+                    {!isSimulation && b.metrics_scope && <p className={`text-[10px] mt-1 ${b.attribution_status === 'verified' ? 'text-gain-400' : 'text-warn-400'}`}>{b.metrics_scope}</p>}
+                    {!!b.strategy_analysis?.observed_traits?.length && <p className="text-[10px] text-slate-500 mt-1">Observed behavior: <span className="text-slate-300">{b.strategy_analysis.observed_traits.join(' · ')}</span></p>}
+                    {!!b.strategy_analysis?.observed_messages?.length && <p className="text-[10px] text-slate-500 mt-1 line-clamp-2">Latest EA log: {b.strategy_analysis.observed_messages.at(-1)}</p>}
+                    {b.verification_message && <p className="text-[10px] text-gain-400 mt-1">{b.verification_message}</p>}
                     {b.last_error && <p className="mt-1 text-[10px] text-loss-400">{b.last_error}</p>}
                   </div>
 
@@ -108,7 +113,7 @@ export default function RunningBotsPage() {
                   </div>
                   <div className="hidden lg:block">
                     <p className="text-[9px] uppercase tracking-widest text-slate-600 font-semibold">Win rate</p>
-                    <p className="mono text-sm font-bold text-slate-200">{b.win_rate.toFixed(1)}%</p>
+                    <p className="mono text-sm font-bold text-slate-200">{Number(b.bot_win_rate || 0).toFixed(1)}%</p>
                   </div>
                   <div className="hidden lg:block">
                     <p className="text-[9px] uppercase tracking-widest text-slate-600 font-semibold">Risk / trade</p>

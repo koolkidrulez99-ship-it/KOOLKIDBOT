@@ -5,13 +5,14 @@ import os
 import re
 import shutil
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 import uuid
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from .models import ConnectRequest, CopyRequest, CopyDecisionRequest, ManualTradeRequest, CloseRequest
+from .models import ConnectRequest, CopyRequest, CopyDecisionRequest, ManualTradeRequest, CloseRequest, MultiCloseRequest
 from .state import State
 from .pool import Pool
 from .copy_engine import CopyEngine, COPY_MAGIC
@@ -30,6 +31,23 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+def restore_saved_sessions():
+    accounts = list(STATE.load().get("accounts", {}).values())[:10]
+    for cfg in accounts:
+        if str(cfg.get("mode") or "real") != "real":
+            continue
+        for attempt in range(3):
+            try:
+                POOL.connect(dict(cfg), "")
+                break
+            except Exception:
+                if attempt < 2:
+                    time.sleep(min(8, 2 ** (attempt + 1)))
+
+@app.on_event("startup")
+def startup_restore():
+    threading.Thread(target=restore_saved_sessions, daemon=True, name="KOOLKID-MT5-Session-Restore").start()
 
 def bad(exc):
     message = str(exc)
@@ -116,7 +134,7 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "connected": len(POOL.ids()), "max_accounts": 10, "copy_status": COPY.status}
+    return {"ok": True, "revision": "mt5-routing-v4", "connected": len(POOL.ids()), "max_accounts": 10, "copy_status": COPY.status}
 
 @app.post("/demo/bootstrap")
 def demo_bootstrap():
@@ -184,20 +202,26 @@ def remove_account(account_id: str):
 @app.get("/accounts")
 def accounts():
     s = STATE.load()
-    rows = []
-    for aid, cfg in s.get("accounts", {}).items():
+    def snapshot(item):
+        aid, cfg = item
         row = dict(cfg)
         row.update(POOL.status(aid))
         row["is_master"] = s.get("master") == aid
         row["is_slave"] = aid in s.get("slaves", [])
         if row.get("connected"):
             try:
-                row["account_info"] = POOL.call(aid, "account_info", timeout=5)
+                row["account_info"] = POOL.call(aid, "account_info", timeout=2)
                 row["last_heartbeat"] = time.time()
             except Exception as exc:
-                POOL.disconnect(aid)
-                row.update({"connected": False, "connecting": False, "error": str(exc)})
-        rows.append(row)
+                status = POOL.status(aid)
+                cached = POOL.cached(aid, "account_info", {})
+                if cached:
+                    row["account_info"] = cached
+                row.update({"connected": bool(status.get("connected")), "connecting": bool(status.get("connecting")), "recovering": bool(status.get("recovering")), "busy": bool(status.get("connected")), "error": str(exc)})
+        return row
+    items = list(s.get("accounts", {}).items())[:10]
+    with ThreadPoolExecutor(max_workers=len(items) or 1) as executor:
+        rows = list(executor.map(snapshot, items))
     return {"accounts": rows, "master": s.get("master"), "slaves": s.get("slaves", [])}
 
 @app.get("/accounts/{account_id}/quotes")
@@ -270,27 +294,66 @@ def copy_decision(req: CopyDecisionRequest):
 
 @app.post("/manual-trade")
 def manual_trade(req: ManualTradeRequest):
-    out = {}
-    for aid in req.target_account_ids:
+    backend_received_at = time.time()
+    COPY.pause_for_execution(20)
+    copy_config = COPY.config if COPY.status == "running" else None
+    master_id = str((copy_config or {}).get("master_account_id") or "")
+    def submit(aid):
         tag = f"KKM:{uuid.uuid4().hex[:12]}"
         try:
-            out[aid] = {"ok": True, "result": POOL.call(aid, "open_trade", {
-                "symbol": req.symbol, "side": req.side, "volume": req.volume,
+            volume = req.volume
+            if aid != master_id:
+                if req.lot_mode == "fixed": volume = req.fixed_lot
+                elif req.lot_mode == "multiplier": volume = req.volume * req.multiplier
+            result = POOL.call(aid, "open_trade", {
+                "symbol": req.symbol, "side": req.side, "volume": volume,
                 "sl": req.sl, "tp": req.tp, "magic": 0, "comment": tag,
-            }, timeout=35)}
+            }, timeout=12)
+            return aid, {"ok": True, "result": result, "timing": {"ui_clicked_at": req.ui_clicked_at, "backend_received_at": backend_received_at, **result.get("timing", {}), "backend_result_at": time.time()}}
         except TimeoutError:
             try:
-                positions = POOL.call(aid, "positions", timeout=15)
+                positions = POOL.call(aid, "positions", timeout=3)
                 match = next((row for row in positions if str(row.get("comment") or "").startswith(tag)), None)
                 if match:
-                    out[aid] = {"ok": True, "result": {"retcode": 10009, "order": int(match.get("ticket") or 0), "ticket": int(match.get("ticket") or 0), "reconciled_after_timeout": True}}
-                else:
-                    out[aid] = {"ok": False, "error": "MT5 did not confirm the order before the safety timeout."}
+                    return aid, {"ok": True, "result": {"retcode": 10009, "ticket": int(match.get("ticket") or 0), "reconciled_after_timeout": True}}
+                return aid, {"ok": False, "error": "MT5 did not confirm the order before the safety timeout."}
             except Exception as exc:
-                out[aid] = {"ok": False, "error": f"MT5 order confirmation timed out: {exc}"}
+                return aid, {"ok": False, "error": f"MT5 order confirmation timed out: {exc}"}
         except Exception as exc:
-            out[aid] = {"ok": False, "error": str(exc)}
-    return {"results": out}
+            return aid, {"ok": False, "error": str(exc)}
+    out = {}
+    targets = list(dict.fromkeys(req.target_account_ids))[:10]
+    try:
+        with ThreadPoolExecutor(max_workers=len(targets) or 1) as executor:
+            for future in as_completed([executor.submit(submit, aid) for aid in targets]):
+                aid, result = future.result()
+                out[aid] = result
+        master_row = out.get(master_id) if master_id else None
+        master_result = (master_row or {}).get("result") or {}
+        master_ticket = int(master_result.get("ticket") or master_result.get("order") or 0)
+        if master_ticket:
+            COPY.register_concurrent_open(master_ticket, {"symbol": req.symbol, "side": req.side, "volume": req.volume, "sl": req.sl, "tp": req.tp}, {aid: row for aid, row in out.items() if aid != master_id})
+    finally:
+        COPY.resume_after_execution()
+    return {"results": out, "backend_received_at": backend_received_at, "backend_result_at": time.time()}
+
+@app.post("/positions/close-many")
+def close_many(req: MultiCloseRequest):
+    received = time.time()
+    def submit(target):
+        aid, ticket = str(target.get("account_id") or ""), int(target.get("ticket") or 0)
+        try:
+            result = POOL.call(aid, "close_position", {"ticket": ticket}, timeout=12)
+            return aid, {"ok": True, "ticket": ticket, "result": result, "timing": {"ui_clicked_at": req.ui_clicked_at, "backend_received_at": received, **result.get("timing", {}), "backend_result_at": time.time()}}
+        except Exception as exc:
+            return aid, {"ok": False, "ticket": ticket, "error": str(exc)}
+    out = {}
+    targets = req.targets[:10]
+    with ThreadPoolExecutor(max_workers=len(targets) or 1) as executor:
+        for future in as_completed([executor.submit(submit, target) for target in targets]):
+            aid, result = future.result()
+            out[aid] = result
+    return {"results": out, "backend_received_at": received, "backend_result_at": time.time()}
 
 @app.get("/positions")
 def positions():

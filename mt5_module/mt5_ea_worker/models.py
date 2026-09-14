@@ -20,3 +20,4 @@ class StartBotRequest(BaseModel):
     allow_live: bool = False
     allow_dll: bool = False
     dll_required: bool = False
+    configured_magic: int | None = None

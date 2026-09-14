@@ -11,7 +11,7 @@ DATA_DIR = ROOT / "data"
 STATE_FILE = DATA_DIR / "bridge_state.json"
 _LOCK = threading.RLock()
 
-BOT_NAMES = [
+PREINSTALLED_BOT_NAMES = [
     "WASP",
     "PRIMORDIAL PURPLE",
     "PRIMORDIAL BLACK",
@@ -35,42 +35,17 @@ BOT_NAMES = [
 ]
 
 
-def _default_bot(name: str, index: int) -> dict[str, Any]:
-    symbol = "XAUUSD" if name in {"WASP", "NICK"} else "EURUSD"
-    timeframe = "M1" if name == "WASP" else "M5" if name == "NICK" else "M15"
-    return {
-        "id": 1000 + index,
-        "name": name,
-        "description": "Custom EA. Strategy details remain neutral until the real EA package is attached.",
-        "strategy": "Custom EA",
-        "symbol": symbol,
-        "timeframe": timeframe,
-        "recommended_timeframe": timeframe if name in {"WASP", "NICK"} else None,
-        "account_login": None,
-        "status": "stopped",
-        "lot_size": 0.01,
-        "win_rate": 0,
-        "total_trades": 0,
-        "net_profit": 0,
-        "profit_today": 0,
-        "version": "1.0.0",
-        "started_at": None,
-        "ea_filename": name.replace(" ", "_") + ".ex5",
-        "preset_filename": None,
-        "file_status": "metadata-only",
-        "upload_date": None,
-        "dll_required": False,
-        "settings": {
-            "risk_percent": 1,
-            "max_spread": 3.5,
-            "trailing_stop": True,
-            "magic_number": 510000 + index,
-            "max_daily_loss": 250,
-            "slippage": 1.5,
-            "max_open_positions": 3,
-            "trading_session": "All Sessions",
-        },
-    }
+def _is_preinstalled_placeholder(bot: dict[str, Any]) -> bool:
+    try:
+        bot_id = int(bot.get("id", 0))
+    except (TypeError, ValueError):
+        return False
+    return (
+        1000 <= bot_id < 1000 + len(PREINSTALLED_BOT_NAMES)
+        and str(bot.get("name", "")).upper() in PREINSTALLED_BOT_NAMES
+        and bot.get("file_status") != "ready"
+        and not bot.get("ea_storage_path")
+    )
 
 
 def default_risk() -> dict[str, Any]:
@@ -97,7 +72,7 @@ def _default_state() -> dict[str, Any]:
         "version": 1,
         "profiles": [],
         "active_login": None,
-        "bots": [_default_bot(name, i) for i, name in enumerate(BOT_NAMES)],
+        "bots": [],
         "risk": [default_risk()],
         "ai_settings": {
             "auto_trading": False,
@@ -125,14 +100,13 @@ def _load_unlocked() -> dict[str, Any]:
         _save_unlocked(state)
         return state
 
-    existing = {str(x.get("name", "")).upper(): x for x in state.get("bots", []) if isinstance(x, dict)}
-    state["bots"] = [
-        {**_default_bot(name, i), **existing.get(name.upper(), {})}
-        for i, name in enumerate(BOT_NAMES)
-    ] + [
-        x for x in state.get("bots", [])
-        if isinstance(x, dict) and str(x.get("name", "")).upper() not in {n.upper() for n in BOT_NAMES}
-    ]
+    bots = [x for x in state.get("bots", []) if isinstance(x, dict)]
+    filtered_bots = [x for x in bots if not _is_preinstalled_placeholder(x)]
+    if len(filtered_bots) != len(bots):
+        state["bots"] = filtered_bots
+        _save_unlocked(state)
+    else:
+        state["bots"] = bots
     state.setdefault("profiles", [])
     state.setdefault("active_login", None)
     state.setdefault("risk", [default_risk()])

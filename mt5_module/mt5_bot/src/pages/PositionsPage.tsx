@@ -12,6 +12,11 @@ import type { Mt5Position } from '../types';
 
 type DisplayPosition = Mt5Position & { multiAccountId?: string; multiAccountName?: string };
 
+function openedAt(position: DisplayPosition): number {
+  const parsed = Date.parse(position.open_time);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function mapMultiPosition(row: MultiPosition, index: number): DisplayPosition {
   const side = String(row.side || row.type || '').toUpperCase();
   const type = side === 'SELL' || side === '1' ? 'sell' : 'buy';
@@ -63,10 +68,13 @@ export default function PositionsPage() {
   }, []);
 
   const shownPositions: DisplayPosition[] = useMemo(() => {
-    if (!multiOnline) return scopePositions as DisplayPosition[];
+    if (!multiOnline) {
+      return [...(scopePositions as DisplayPosition[])].sort((a, b) => openedAt(b) - openedAt(a) || b.ticket - a.ticket);
+    }
     const workerKeys = new Set(multiPositions.map((p) => `${p.account_login}:${p.ticket}`));
     const bridgeOnly = positions.filter((p) => !workerKeys.has(`${p.account_login}:${p.ticket}`));
-    return [...multiPositions, ...(bridgeOnly as DisplayPosition[])];
+    return [...multiPositions, ...(bridgeOnly as DisplayPosition[])]
+      .sort((a, b) => openedAt(b) - openedAt(a) || b.ticket - a.ticket);
   }, [multiOnline, multiPositions, positions, scopePositions]);
   const shownProfit = (p: DisplayPosition) => p.multiAccountId ? Number(p.profit || 0) : liveProfit(p);
 

@@ -13,17 +13,21 @@ class Runtime:
     qin: object
     qout: object
     lock: threading.RLock
+    cache: dict
 
     def call(self, op, payload=None, timeout=15):
-        with self.lock:
+        deadline = time.monotonic() + timeout
+        if not self.lock.acquire(timeout=max(0.01, timeout)):
+            raise TimeoutError(f"Worker busy timeout: {op}")
+        try:
             rid = uuid.uuid4().hex
             self.qin.put({"id": rid, "op": op, "payload": payload or {}})
-            deadline = time.time() + timeout
-            while time.time() < deadline:
+            while time.monotonic() < deadline:
                 if not self.process.is_alive():
                     raise RuntimeError("Account worker stopped")
                 try:
-                    msg = self.qout.get(timeout=0.25)
+                    remaining = max(0.01, deadline - time.monotonic())
+                    msg = self.qout.get(timeout=min(0.25, remaining))
                 except Exception:
                     continue
                 if msg.get("id") != rid:
@@ -32,6 +36,8 @@ class Runtime:
                     raise RuntimeError(msg.get("error") or "Worker request failed")
                 return msg.get("result")
             raise TimeoutError(f"Worker timeout: {op}")
+        finally:
+            self.lock.release()
 
 class Pool:
     def __init__(self):
@@ -40,6 +46,42 @@ class Pool:
         self.lock = threading.RLock()
         self.connect_lock = threading.Lock()
         self.pending = {}
+        self.failures = {}
+        self.recovery = {}
+        self.stopping = False
+        self.monitor = threading.Thread(target=self._monitor, daemon=True, name="KOOLKID-MT5-Session-Monitor")
+        self.monitor.start()
+
+    def _monitor(self):
+        while not self.stopping:
+            now = time.time()
+            with self.lock:
+                candidates = [(aid, dict(rt.config)) for aid, rt in self.items.items()
+                              if not rt.process.is_alive() and now >= self.recovery.get(aid, {}).get("next_at", 0)]
+            for aid, cfg in candidates:
+                self._recover(aid, cfg)
+            time.sleep(1.0)
+
+    def _recover(self, aid, cfg):
+        state = self.recovery.setdefault(aid, {"attempt": 0, "next_at": 0, "error": ""})
+        state["attempt"] += 1
+        try:
+            self.disconnect(aid, preserve_recovery=True)
+            self.connect(cfg, "")
+            self.failures[aid] = 0
+            self.recovery.pop(aid, None)
+        except Exception as exc:
+            delay = min(60, 2 ** min(state["attempt"], 6))
+            state.update({"next_at": time.time() + delay, "error": str(exc)})
+
+    def record_failure(self, aid, error):
+        count = self.failures.get(aid, 0) + 1
+        self.failures[aid] = count
+        # Timeouts can mean the terminal is busy executing an order. Recovery is
+        # reserved for a worker process that has actually exited.
+
+    def record_success(self, aid):
+        self.failures[aid] = 0
 
     def connect(self, cfg, password=""):
         aid = cfg["account_id"]
@@ -80,7 +122,7 @@ class Pool:
                 if not startup or not startup.get("ok"):
                     raise RuntimeError((startup or {}).get("error") or "Account worker failed to start")
                 with self.lock:
-                    self.items[aid] = Runtime(cfg,proc,qin,qout,threading.RLock())
+                    self.items[aid] = Runtime(cfg,proc,qin,qout,threading.RLock(),{})
                 return self.status(aid)
             except Exception:
                 try: proc.terminate()
@@ -158,7 +200,7 @@ class Pool:
         finally:
             kernel.CloseHandle(snapshot)
 
-    def disconnect(self, aid):
+    def disconnect(self, aid, preserve_recovery=False):
         rt = self.items.get(aid)
         if not rt: return
         try: rt.call("shutdown", timeout=3)
@@ -169,11 +211,26 @@ class Pool:
         finally:
             self._stop_terminal(rt.config.get("terminal_path"))
             self.items.pop(aid, None)
+            self.failures.pop(aid, None)
+            if not preserve_recovery:
+                self.recovery.pop(aid, None)
 
     def call(self, aid, op, payload=None, timeout=15):
         if aid not in self.items:
             raise RuntimeError(f"Account not connected: {aid}")
-        return self.items[aid].call(op,payload,timeout)
+        try:
+            result = self.items[aid].call(op,payload,timeout)
+            if op in {"account_info", "positions", "quotes", "symbols"}:
+                self.items[aid].cache[op] = result
+            self.record_success(aid)
+            return result
+        except Exception as exc:
+            self.record_failure(aid, exc)
+            raise
+
+    def cached(self, aid, op, default=None):
+        rt = self.items.get(aid)
+        return rt.cache.get(op, default) if rt else default
 
     def ids(self):
         return [aid for aid,rt in self.items.items() if rt.process.is_alive()]
@@ -181,8 +238,12 @@ class Pool:
     def status(self, aid):
         rt=self.items.get(aid)
         if not rt:
-            return {"account_id":aid,"connected":False,"connecting":aid in self.pending}
-        return {"account_id":aid,"connected":rt.process.is_alive(),"pid":rt.process.pid,**rt.config}
+            recovering = aid in self.recovery
+            return {"account_id":aid,"connected":False,"connecting":aid in self.pending or recovering,"recovering":recovering,"error":self.recovery.get(aid, {}).get("error")}
+        alive = rt.process.is_alive()
+        recovering = aid in self.recovery
+        return {"account_id":aid,"connected":alive and not recovering,"connecting":recovering,"recovering":recovering,"pid":rt.process.pid,**rt.config}
 
     def close_all(self):
+        self.stopping = True
         for aid in list(self.items): self.disconnect(aid)

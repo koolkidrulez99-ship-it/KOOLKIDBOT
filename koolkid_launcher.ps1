@@ -10,6 +10,8 @@ $bridgePidFile = Join-Path $runDir 'mt5-bridge.pid'
 $workerPidFile = Join-Path $runDir 'mt5-ea-worker.pid'
 $multiPidFile = Join-Path $runDir 'mt5-multi-account.pid'
 $mainPidFile = Join-Path $runDir 'koolkid-main.pid'
+$watchdogPidFile = Join-Path $runDir 'watchdog.pid'
+$watchdogStopFile = Join-Path $runDir 'watchdog.stop'
 $bridgeHealth = 'http://127.0.0.1:8000/health'
 $workerHealth = 'http://127.0.0.1:8001/health'
 $multiHealth = 'http://127.0.0.1:8002/health'
@@ -23,6 +25,25 @@ function Test-Url([string]$Url) {
     } catch {
         return $false
     }
+}
+
+function Test-Revision([string]$Url, [string]$Revision) {
+    try {
+        $response = Invoke-RestMethod -Uri $Url -TimeoutSec 2
+        return $response.ok -and $response.revision -eq $Revision
+    } catch { return $false }
+}
+
+function Stop-OutdatedListener([int]$Port, [string]$ExpectedCommand, [string]$Name) {
+    $listener = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (!$listener) { return }
+    $process = Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.OwningProcess)" -ErrorAction SilentlyContinue
+    if (!$process -or $process.CommandLine -notlike "*$ExpectedCommand*") {
+        throw "$Name on port $Port is not owned by KOOLKID; refusing to stop it."
+    }
+    Write-Host "$Name is outdated; restarting it to load the current MT5 routing code." -ForegroundColor Yellow
+    & taskkill.exe /PID $listener.OwningProcess /T /F | Out-Null
+    Start-Sleep -Seconds 2
 }
 
 function Wait-Healthy([string]$Url, [int]$Seconds, [string]$Name) {
@@ -57,6 +78,9 @@ function Stop-Tracked([string]$PidFile, [string]$ExpectedText, [string]$Label) {
 }
 
 if ($Action -eq 'Stop') {
+    New-Item -ItemType Directory -Force -Path $runDir | Out-Null
+    Set-Content -LiteralPath $watchdogStopFile -Value 'stop' -Encoding ascii
+    Stop-Tracked $watchdogPidFile 'koolkid_service_watchdog.ps1' 'KOOLKID service watchdog'
     Stop-Tracked $mainPidFile 'server.py' 'KOOLKID server'
     Stop-Tracked $multiPidFile 'mt5_multi_account.app:app' 'MT5 multi-account worker'
     Stop-Tracked $workerPidFile 'START_MT5_EA_WORKER.bat' 'MT5 EA worker'
@@ -66,6 +90,12 @@ if ($Action -eq 'Stop') {
 
 Write-Host 'Starting KOOLKID local services...'
 
+$serviceRevision = 'mt5-routing-v4'
+$bridgeRevision = 'mt5-bridge-ea-v5'
+$eaWorkerRevision = 'mt5-ea-native-v5'
+if ((Test-Url $multiHealth) -and !(Test-Revision $multiHealth $serviceRevision)) {
+    Stop-OutdatedListener 8002 'mt5_multi_account.app:app' 'MT5 multi-account worker'
+}
 if (Test-Url $multiHealth) {
     Write-Host 'MT5 multi-account worker is already healthy; using the existing process.'
 } else {
@@ -85,6 +115,10 @@ if (Test-Url $multiHealth) {
     Write-Host 'MT5 multi-account worker is healthy.'
 }
 
+if ((Test-Url $bridgeHealth) -and !(Test-Revision $bridgeHealth $bridgeRevision)) {
+    Stop-OutdatedListener 8000 'main.py' 'MT5 bridge'
+}
+
 if (Test-Url $bridgeHealth) {
     Write-Host 'MT5 bridge is already healthy; using the existing process.'
 } else {
@@ -100,6 +134,10 @@ if (Test-Url $bridgeHealth) {
         exit 1
     }
     Write-Host 'MT5 bridge is healthy.'
+}
+
+if ((Test-Url $workerHealth) -and !(Test-Revision $workerHealth $eaWorkerRevision)) {
+    Stop-OutdatedListener 8001 'main.py' 'MT5 EA worker'
 }
 
 if (Test-Url $workerHealth) {
@@ -132,6 +170,15 @@ if (Test-Url $mainUrl) {
         exit 1
     }
     Write-Host 'KOOLKID server is ready.'
+}
+
+$watchdogScript = Join-Path $root 'koolkid_service_watchdog.ps1'
+Remove-Item -LiteralPath $watchdogStopFile -Force -ErrorAction SilentlyContinue
+$existingWatchdog = if (Test-Path -LiteralPath $watchdogPidFile) { Get-Process -Id ([int](Get-Content $watchdogPidFile -Raw)) -ErrorAction SilentlyContinue } else { $null }
+if (!$existingWatchdog) {
+    $watchdog = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$watchdogScript,'-Root',$root) -WindowStyle Hidden -PassThru
+    Save-Pid $watchdog $watchdogPidFile
+    Write-Host 'MT5 service watchdog is running.'
 }
 
 Start-Process $mainUrl

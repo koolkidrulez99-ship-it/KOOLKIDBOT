@@ -37,6 +37,14 @@ class ManualTradeRequest(BaseModel):
     volume: float
     sl: float = 0.0
     tp: float = 0.0
+    ui_clicked_at: Optional[float] = None
+    lot_mode: Literal["same", "fixed", "multiplier"] = "same"
+    fixed_lot: float = 0.01
+    multiplier: float = 1.0
+
+class MultiCloseRequest(BaseModel):
+    targets: List[Dict[str, object]]
+    ui_clicked_at: Optional[float] = None
 
 class CloseRequest(BaseModel):
     account_id: str

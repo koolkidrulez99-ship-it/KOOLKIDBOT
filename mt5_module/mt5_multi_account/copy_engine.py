@@ -1,5 +1,6 @@
 from __future__ import annotations
 import threading, time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 COPY_MAGIC = 987654
 
@@ -16,6 +17,13 @@ class CopyEngine:
         self.pending = {}
         self.ignored = set()
         self.lock = threading.RLock()
+        self.pause_until = 0.0
+
+    def pause_for_execution(self, seconds=20):
+        self.pause_until = max(self.pause_until, time.time() + max(1, seconds))
+
+    def resume_after_execution(self):
+        self.pause_until = time.time()
 
     def log(self, event, **extra):
         self.activity.insert(0, {"time": time.time(), "event": event, **extra})
@@ -116,6 +124,22 @@ class CopyEngine:
         with self.lock:
             return [dict(item) for item in self.pending.values()]
 
+    def register_concurrent_open(self, master_ticket, position, slave_results):
+        ticket = str(int(master_ticket))
+        with self.lock:
+            self.ignored.add(ticket)
+            self.pending.pop(ticket, None)
+            mapped = {}
+            for slave_id, row in slave_results.items():
+                result = row.get("result") or {}
+                slave_ticket = int(result.get("ticket") or result.get("order") or 0)
+                if row.get("ok") and slave_ticket:
+                    mapped[slave_id] = {"ticket": slave_ticket, "last_sl": float(position.get("sl") or 0), "last_tp": float(position.get("tp") or 0)}
+            if mapped:
+                self.copy_map[ticket] = mapped
+                self.persist_map()
+        self.log("concurrent_open_registered", master_ticket=ticket, slaves=list(mapped))
+
     def decide(self, master_ticket, should_copy, slave_ids):
         ticket = str(int(master_ticket))
         with self.lock:
@@ -136,19 +160,32 @@ class CopyEngine:
 
         results = {}
         master_info = self.pool.call(self.config["master_account_id"], "account_info")
-        for slave_id in selected:
+        started = time.time()
+        def submit(slave_id):
+            began = time.time()
             try:
-                results[slave_id] = self._copy_to_slave(ticket, item["position"], master_info, slave_id)
+                result = self._copy_to_slave(ticket, item["position"], master_info, slave_id)
+                return slave_id, {**result, "elapsed_ms": round((time.time() - began) * 1000, 1)}
             except Exception as exc:
-                results[slave_id] = {"ok": False, "error": str(exc)}
                 self.log("copy_error", master_ticket=ticket, slave=slave_id, error=str(exc))
-        return {"ok": True, "decision": "copied", "results": results}
+                return slave_id, {"ok": False, "error": str(exc), "elapsed_ms": round((time.time() - began) * 1000, 1)}
+        with ThreadPoolExecutor(max_workers=len(selected) or 1) as executor:
+            for future in as_completed([executor.submit(submit, slave_id) for slave_id in selected]):
+                slave_id, result = future.result()
+                results[slave_id] = result
+        filled = [row["elapsed_ms"] for row in results.values() if row.get("ok")]
+        return {"ok": True, "decision": "copied", "results": results,
+                "elapsed_ms": round((time.time() - started) * 1000, 1),
+                "fill_spread_ms": round(max(filled) - min(filled), 1) if len(filled) > 1 else 0.0}
 
     def run(self):
         cfg = self.config
         try:
             while not self.stop_event.is_set():
                 try:
+                    if time.time() < self.pause_until:
+                        time.sleep(0.1)
+                        continue
                     master_positions = self.pool.call(cfg["master_account_id"], "positions")
                     master_info = self.pool.call(cfg["master_account_id"], "account_info")
                     current = {str(int(p["ticket"])): p for p in master_positions if self.passes_filter(p)}
@@ -189,20 +226,22 @@ class CopyEngine:
                     for master_ticket in list(self.copy_map):
                         if master_ticket in current:
                             continue
-                        for slave_id, meta in list(self.copy_map.get(master_ticket, {}).items()):
-                            if slave_id not in cfg["slave_account_ids"]:
-                                continue
+                        close_targets = [(slave_id, meta) for slave_id, meta in list(self.copy_map.get(master_ticket, {}).items()) if slave_id in cfg["slave_account_ids"]]
+                        def close_slave(target):
+                            slave_id, meta = target
                             try:
                                 ticket = int(meta["ticket"])
                                 try:
-                                    self.pool.call(slave_id, "close_position", {"ticket": ticket}, timeout=35)
+                                    self.pool.call(slave_id, "close_position", {"ticket": ticket}, timeout=12)
                                 except TimeoutError:
-                                    positions = self.pool.call(slave_id, "positions", timeout=15)
+                                    positions = self.pool.call(slave_id, "positions", timeout=3)
                                     if any(int(row.get("ticket") or 0) == ticket for row in positions):
                                         raise RuntimeError("MT5 did not confirm the copied close before the safety timeout.")
                                 self.log("copied_close", master_ticket=master_ticket, slave=slave_id)
                             except Exception as exc:
                                 self.log("copy_error", master_ticket=master_ticket, slave=slave_id, error=str(exc))
+                        with ThreadPoolExecutor(max_workers=len(close_targets) or 1) as executor:
+                            list(executor.map(close_slave, close_targets))
                         self.copy_map.pop(master_ticket, None)
                         self.persist_map()
 
@@ -213,7 +252,7 @@ class CopyEngine:
                                 self.ignored.add(master_ticket)
                                 self.log("approval_expired", master_ticket=master_ticket)
 
-                    time.sleep(max(0.2, int(cfg["poll_ms"]) / 1000))
+                    time.sleep(max(1.0, int(cfg["poll_ms"]) / 1000))
                 except Exception as exc:
                     self.log("engine_error", error=str(exc))
                     time.sleep(0.5)

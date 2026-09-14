@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Modal from './Modal';
 import { Spinner, Toggle } from './ui';
 import { useHub } from '../context/HubContext';
@@ -37,6 +37,7 @@ export default function BotConfigModal({
   const [allowDll, setAllowDll] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+  const initializedBotId = useRef<number | null>(null);
 
   const isLaunch = bot?.status === 'stopped' || bot?.status === 'error' || bot?.status === 'worker_offline';
   const availableSymbols = !isSimulation && mt5Symbols.length
@@ -44,7 +45,12 @@ export default function BotConfigModal({
     : [...SYMBOL_LIST];
 
   useEffect(() => {
-    if (!bot || !open) return;
+    if (!bot || !open) {
+      initializedBotId.current = null;
+      return;
+    }
+    if (initializedBotId.current === bot.id) return;
+    initializedBotId.current = bot.id;
     setSymbol(bot.symbol);
     setTimeframe((TIMEFRAMES as readonly string[]).includes(bot.timeframe) ? (bot.timeframe as Timeframe) : 'M15');
     setLot(String(bot.lot_size ?? 0.01));
@@ -59,7 +65,7 @@ export default function BotConfigModal({
     const fallback = activeAccount?.login ?? availableAccounts[0]?.login;
     setAccountLogin(bot.account_login ?? fallback ?? '');
     setErrors([]);
-  }, [bot, open, activeAccount, availableAccounts, bridge?.ea_worker?.terminals]);
+  }, [bot, open, activeAccount, availableAccounts]);
 
   if (!bot) return null;
 
@@ -79,6 +85,7 @@ export default function BotConfigModal({
     if (errs.length) return null;
 
     const settings = {
+      ...bot.settings,
       risk_percent: riskNum,
       max_spread: Number(maxSpread) || 3.5,
       max_daily_loss: Number(maxDailyLoss) || 250,
@@ -211,6 +218,14 @@ export default function BotConfigModal({
           <Toggle on={trailing} onChange={setTrailing} />
         </div>
       </div>
+
+      {!isSimulation && (
+        <div className="mt-4 border-t border-white/[0.07] pt-3 text-[11px] text-slate-500">
+          <p><span className="font-semibold text-slate-300">Native EX5 configuration:</span> account, symbol and timeframe are applied by MT5 at startup. The EA uses its compiled defaults unless an uploaded <span className="mono text-slate-300">.set</span> preset supplies its own input values.</p>
+          <p className="mt-1">Lot, risk and Hub safety fields remain visible tracking settings; KOOLKID does not claim arbitrary third-party EAs consume them unless they are present in that EA's preset.</p>
+          {bot.preset_analysis && <p className="mt-1.5 text-slate-300">Detected preset inputs: <span className="mono">{bot.preset_analysis.input_count ?? 0}</span></p>}
+        </div>
+      )}
 
       {!isSimulation && isLaunch && !eaLaunchAvailable && (
         <div className="mt-4 rounded-xl border border-warn-400/30 bg-warn-400/[0.08] px-4 py-3">

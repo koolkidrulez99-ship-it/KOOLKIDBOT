@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from .config_builder import build_config
+from .ea_observer import capture_log_offsets, inspect_ea_logs
 from .ea_manager import install_files
 from .models import StartBotRequest
 from . import worker
@@ -36,6 +37,22 @@ class ConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             with self.assertRaisesRegex(ValueError, "was not found"):
                 install_files(Path(temp) / "data", 1, Path(temp) / "missing.ex5", None)
+
+    def test_observer_uses_only_fresh_ea_log_evidence(self):
+        with tempfile.TemporaryDirectory() as temp:
+            data = Path(temp)
+            log_dir = data / "MQL5" / "Logs"
+            log_dir.mkdir(parents=True)
+            log = log_dir / "20260914.log"
+            log.write_bytes("OLD DEAR_BRUCE_PREMIUM initialization failed\n".encode("utf-16-le"))
+            offsets = capture_log_offsets(data)
+            with log.open("ab") as handle:
+                handle.write("DEAR_BRUCE_PREMIUM (USDCAD,M15) Initialized: M5 execution / H4 bias. Trendline break.\n".encode("utf-16-le"))
+            result = inspect_ea_logs(data, "DEAR_BRUCE_PREMIUM.ex5", offsets=offsets)
+            self.assertTrue(result["ea_verified"])
+            self.assertEqual(result["observed_timeframes"], ["H4", "M15", "M5"])
+            self.assertIn("Trendline logic", result["observed_traits"])
+            self.assertIn("Higher-timeframe bias", result["observed_traits"])
 
 
 class WorkerTests(unittest.TestCase):
@@ -74,6 +91,8 @@ class WorkerTests(unittest.TestCase):
                  patch.object(worker, "write_state", side_effect=fake_write), \
                  patch.object(worker.subprocess, "Popen", side_effect=fake_popen), \
                  patch.object(worker.time, "sleep"), \
+                 patch.object(worker, "capture_log_offsets", return_value={}), \
+                 patch.object(worker, "inspect_ea_logs", return_value={"ea_verified": True, "verification_error": None, "observed_messages": [], "observed_timeframes": [], "observed_traits": [], "last_ea_activity": None}), \
                  patch.object(worker, "_terminal_metrics", return_value={"account_verified": True, "open_positions": 0, "current_pl": 0, "today_pl": 0}), \
                  patch.object(worker, "reconcile", side_effect=lambda: [dict(x) for x in state["assignments"]]):
                 first = worker.start_bot(self.request(ea, terminal))
@@ -123,7 +142,9 @@ class WorkerTests(unittest.TestCase):
                  patch.object(worker, "reconcile", return_value=[]), \
                  patch.object(worker, "prepare_dedicated_terminal", return_value=(isolated, isolated_data)) as prepare, \
                  patch.object(worker.subprocess, "Popen", side_effect=fake_popen), \
-                 patch.object(worker.time, "sleep"), patch.object(worker, "_terminal_metrics", return_value={"account_verified": True}), \
+                 patch.object(worker.time, "sleep"), patch.object(worker, "capture_log_offsets", return_value={}), \
+                 patch.object(worker, "inspect_ea_logs", return_value={"ea_verified": True, "verification_error": None, "observed_messages": [], "observed_timeframes": [], "observed_traits": [], "last_ea_activity": None}), \
+                 patch.object(worker, "_terminal_metrics", return_value={"account_verified": True}), \
                  patch.object(worker, "read_state", return_value={"assignments": []}), patch.object(worker, "write_state"):
                 result = worker.start_bot(request)
             prepare.assert_called_once()

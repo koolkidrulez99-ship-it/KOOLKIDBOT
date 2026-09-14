@@ -27,7 +27,7 @@ def require_worker_token(authorization: str | None = Header(default=None)):
 
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "mt5-ea-worker", "running": len([x for x in worker.reconcile() if x.get("status") == "running"]), "capabilities": {"start": True, "stop": True, "pause": False, "resume": False}}
+    return {"ok": True, "service": "mt5-ea-worker", "revision": "mt5-ea-native-v5", "running": len([x for x in worker.reconcile() if x.get("status") == "running"]), "capabilities": {"start": True, "stop": True, "pause": False, "resume": False, "verified_ea_launch": True}}
 
 
 @app.get("/terminals")
