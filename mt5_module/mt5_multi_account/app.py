@@ -15,14 +15,18 @@ from fastapi.responses import FileResponse
 from .models import ConnectRequest, CopyRequest, CopyDecisionRequest, ManualTradeRequest, CloseRequest, MultiCloseRequest
 from .state import State
 from .pool import Pool
+from .credential_store import CredentialStore
 from .copy_engine import CopyEngine, COPY_MAGIC
 
 BASE = Path(__file__).resolve().parent
 TERMINALS = BASE / "data" / "terminals"
 TERMINAL_LOCK = threading.RLock()
 STATE = State(BASE / "data" / "state.json")
+CREDENTIALS = CredentialStore(BASE / "data" / "credentials")
 POOL = Pool()
 COPY = CopyEngine(POOL, STATE)
+_SESSION_STOP = threading.Event()
+_SESSION_BACKOFF: dict[str, dict[str, object]] = {}
 app = FastAPI(title="KOOLKID MT5 Multi-Account", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
@@ -32,22 +36,78 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def restore_saved_sessions():
-    accounts = list(STATE.load().get("accounts", {}).values())[:10]
-    for cfg in accounts:
+def _saved_real_accounts():
+    state = STATE.load()
+    rows = []
+    for cfg in list(state.get("accounts", {}).values())[:10]:
         if str(cfg.get("mode") or "real") != "real":
             continue
+        if cfg.get("auto_reconnect", True) is False:
+            continue
+        rows.append(dict(cfg))
+    return rows
+
+
+def _saved_password(cfg: dict) -> str:
+    if cfg.get("remember_session", True) is False:
+        return ""
+    return CREDENTIALS.load(str(cfg.get("account_id") or ""))
+
+
+def _connect_saved(cfg: dict) -> None:
+    aid = str(cfg.get("account_id") or "")
+    if not aid or aid in POOL.ids() or aid in POOL.pending:
+        return
+    POOL.connect(dict(cfg), _saved_password(cfg))
+
+
+def restore_saved_sessions():
+    # Startup is intentionally sequential. MT5 portable terminals are much more
+    # reliable when restored one at a time instead of all racing for IPC at boot.
+    for cfg in _saved_real_accounts():
+        aid = str(cfg.get("account_id") or "")
         for attempt in range(3):
             try:
-                POOL.connect(dict(cfg), "")
+                _connect_saved(cfg)
+                _SESSION_BACKOFF.pop(aid, None)
                 break
-            except Exception:
+            except Exception as exc:
                 if attempt < 2:
                     time.sleep(min(8, 2 ** (attempt + 1)))
+                else:
+                    _SESSION_BACKOFF[aid] = {"attempt": 1, "next_at": time.time() + 5, "error": str(exc)}
+
+
+def keep_saved_sessions_connected():
+    # If the broker/network/terminal is unavailable during startup, do not give up
+    # after three attempts. Keep trying with bounded backoff until the saved account
+    # is back online or the user explicitly disconnects/removes it.
+    while not _SESSION_STOP.wait(5):
+        now = time.time()
+        saved = {str(cfg.get("account_id") or ""): cfg for cfg in _saved_real_accounts()}
+        for aid in list(_SESSION_BACKOFF):
+            if aid not in saved:
+                _SESSION_BACKOFF.pop(aid, None)
+        for aid, cfg in saved.items():
+            if not aid or aid in POOL.ids() or aid in POOL.pending:
+                _SESSION_BACKOFF.pop(aid, None)
+                continue
+            state = _SESSION_BACKOFF.setdefault(aid, {"attempt": 0, "next_at": 0.0, "error": ""})
+            if now < float(state.get("next_at") or 0):
+                continue
+            try:
+                _connect_saved(cfg)
+                _SESSION_BACKOFF.pop(aid, None)
+            except Exception as exc:
+                attempt = int(state.get("attempt") or 0) + 1
+                delay = min(120, 2 ** min(attempt, 7))
+                state.update({"attempt": attempt, "next_at": time.time() + delay, "error": str(exc)})
+
 
 @app.on_event("startup")
 def startup_restore():
     threading.Thread(target=restore_saved_sessions, daemon=True, name="KOOLKID-MT5-Session-Restore").start()
+    threading.Thread(target=keep_saved_sessions_connected, daemon=True, name="KOOLKID-MT5-Persistent-Sessions").start()
 
 def bad(exc):
     message = str(exc)
@@ -160,26 +220,40 @@ def demo_bootstrap():
 def connect(req: ConnectRequest):
     try:
         cfg = req.model_dump(exclude={"password"})
+        cfg["auto_reconnect"] = True
         if req.mode == "real":
             cfg["terminal_path"] = isolated_terminal(req.account_id, req.terminal_path)
             cfg["portable"] = True
         if req.account_id in POOL.ids():
             info = POOL.call(req.account_id, "account_info", timeout=5)
             if int(info.get("login") or 0) == int(req.login):
-                return {**POOL.status(req.account_id), "account_info": info}
+                if req.mode == "real" and req.remember_session and req.password:
+                    CREDENTIALS.save(req.account_id, req.password)
+                return {**POOL.status(req.account_id), "account_info": info, "remembered": CREDENTIALS.has(req.account_id)}
             POOL.disconnect(req.account_id)
         POOL.connect(cfg, req.password)
+        if req.mode == "real":
+            if req.remember_session and req.password:
+                CREDENTIALS.save(req.account_id, req.password)
+            elif not req.remember_session:
+                CREDENTIALS.delete(req.account_id)
         s = STATE.load()
         s["accounts"][req.account_id] = cfg
         STATE.save(s)
-        return {**POOL.status(req.account_id), "account_info": POOL.call(req.account_id, "account_info", timeout=5)}
+        _SESSION_BACKOFF.pop(req.account_id, None)
+        return {**POOL.status(req.account_id), "account_info": POOL.call(req.account_id, "account_info", timeout=5), "remembered": CREDENTIALS.has(req.account_id)}
     except Exception as exc:
         bad(exc)
 
 @app.post("/accounts/{account_id}/disconnect")
 def disconnect(account_id: str):
     POOL.disconnect(account_id)
-    if STATE.load().get("master") == account_id:
+    s = STATE.load()
+    if account_id in s.get("accounts", {}):
+        s["accounts"][account_id]["auto_reconnect"] = False
+        STATE.save(s)
+    _SESSION_BACKOFF.pop(account_id, None)
+    if s.get("master") == account_id:
         COPY.stop()
     return {"ok": True}
 
@@ -190,6 +264,8 @@ def cancel_connect(account_id: str):
 @app.delete("/accounts/{account_id}")
 def remove_account(account_id: str):
     POOL.disconnect(account_id)
+    CREDENTIALS.delete(account_id)
+    _SESSION_BACKOFF.pop(account_id, None)
     s = STATE.load()
     s.get("accounts", {}).pop(account_id, None)
     if s.get("master") == account_id:
@@ -208,6 +284,8 @@ def accounts():
         row.update(POOL.status(aid))
         row["is_master"] = s.get("master") == aid
         row["is_slave"] = aid in s.get("slaves", [])
+        row["remembered"] = CREDENTIALS.has(aid)
+        row["auto_reconnect"] = cfg.get("auto_reconnect", True) is not False
         if row.get("connected"):
             try:
                 row["account_info"] = POOL.call(aid, "account_info", timeout=2)
@@ -392,6 +470,7 @@ def close(req: CloseRequest):
 @atexit.register
 def cleanup():
     try:
+        _SESSION_STOP.set()
         COPY.stop()
         POOL.close_all()
     except Exception:

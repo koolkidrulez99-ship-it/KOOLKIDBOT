@@ -1,0 +1,18 @@
+SESSION 2 CHANGELOG
+
+Backend
+- Added /api/mt5/ai/trial/execute
+- Added demo-only guard for AI trade execution
+- Saves last execution info in the trial snapshot
+- Upgraded trial status banner from signal-only to demo-execution available
+
+Frontend
+- Added Execute demo trade button
+- Added fixed lot input for the trial
+- Shows selected account type
+- Shows last demo execution details in the proposal panel
+
+Unchanged
+- Core Deriv logic
+- Existing MT5 copy trader
+- Existing AI insight feed outside of this trial block

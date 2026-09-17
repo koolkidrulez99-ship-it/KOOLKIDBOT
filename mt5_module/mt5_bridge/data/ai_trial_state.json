@@ -1,0 +1,105 @@
+{
+  "trial_version": "0.1-session-1",
+  "strategy": "Human Apostle Trial",
+  "mode": "SIGNAL_ONLY",
+  "execution": "SIGNAL ONLY \u2014 ORDER NOT EXECUTED.",
+  "account_login": 32321374,
+  "symbol": "XAUUSD",
+  "execution_timeframe": "M15",
+  "bias_timeframe": "H4",
+  "generated_at": "2026-09-16T16:17:07.729128+00:00",
+  "latest_completed_candle": {
+    "time": 1789574400,
+    "open": 4352.77,
+    "high": 4352.91,
+    "low": 4346.62,
+    "close": 4349.99,
+    "volume": 5326
+  },
+  "completed_candles": {
+    "execution": 699,
+    "bias": 349
+  },
+  "state": "WAITING_STRUCTURE_SHIFT",
+  "decision": "WAIT FOR STRUCTURE SHIFT",
+  "reason": "Ascending HL trendline broke on a completed close; waiting for protected HL to break.",
+  "execution_structure": "neutral",
+  "execution_structure_reason": "Confirmed swings do not yet form a clean HH/HL or LH/LL structure.",
+  "bias_structure": "neutral",
+  "bias_reason": "Confirmed swings do not yet form a clean HH/HL or LH/LL structure.",
+  "previous_structure": "bearish",
+  "last_confirmed_high": {
+    "kind": "high",
+    "index": 694,
+    "confirm_index": 696,
+    "time": 1789570800,
+    "price": 4358.11,
+    "label": "LH"
+  },
+  "last_confirmed_low": {
+    "kind": "low",
+    "index": 696,
+    "confirm_index": 698,
+    "time": 1789572600,
+    "price": 4342.84,
+    "label": "HL"
+  },
+  "trendline": {
+    "anchor_1": {
+      "kind": "low",
+      "index": 666,
+      "confirm_index": 668,
+      "time": 1789545600,
+      "price": 4323.0,
+      "label": "HL"
+    },
+    "anchor_2": {
+      "kind": "low",
+      "index": 684,
+      "confirm_index": 686,
+      "time": 1789561800,
+      "price": 4334.96,
+      "label": "HL"
+    },
+    "break_index": 691,
+    "break_time": 1789568100,
+    "line_at_break": 4339.611111111111,
+    "close": 4338.07
+  },
+  "protected_structure": 4334.96,
+  "structure_shift": {
+    "confirmed": false,
+    "index": null,
+    "time": null
+  },
+  "retest": {
+    "level": null,
+    "touched": false,
+    "same_candle_blocked": true
+  },
+  "confidence": 40,
+  "confidence_factors": [
+    "execution structure + direction: +20",
+    "opposing trendline break: +20"
+  ],
+  "proposed_trade": null,
+  "last_historical_signal": null,
+  "rules": {
+    "completed_candles_only": true,
+    "swing_left": 2,
+    "swing_right": 2,
+    "same_candle_shift_retest": false,
+    "required_sequence": [
+      "structure",
+      "opposing trendline break",
+      "protected structure break",
+      "later retest",
+      "rejection candle",
+      "H4 alignment"
+    ],
+    "take_profit_r": 2.0
+  },
+  "execution_mode": "SIGNAL_ONLY",
+  "execution_lock": "demo_only",
+  "last_execution": null
+}

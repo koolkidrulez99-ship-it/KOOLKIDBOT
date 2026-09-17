@@ -1157,15 +1157,13 @@
         action: "KOOLKID",
         type: "BATCH",
         barrier: null,
-        label: "KOOLKID (UNDER 7 + MATCH 7/8/9)",
+        label: "KOOLKID (UNDER 7 + OVER 6)",
         isPair: true,
         combinedRound: true,
         koolkidBatch: true,
         legs: [
-          { action: "UNDER_7", type: "UNDER", contractType: "DIGITUNDER", barrier: 7, label: "UNDER 7" },
-          { action: "MATCH_7", type: "MATCH", contractType: "DIGITMATCH", barrier: 7, label: "MATCH 7" },
-          { action: "MATCH_8", type: "MATCH", contractType: "DIGITMATCH", barrier: 8, label: "MATCH 8" },
-          { action: "MATCH_9", type: "MATCH", contractType: "DIGITMATCH", barrier: 9, label: "MATCH 9" },
+          { action: "UNDER_7", type: "UNDER", barrier: 7, label: "UNDER 7" },
+          { action: "OVER_6", type: "OVER", barrier: 6, label: "OVER 6" },
         ],
       };
     }
@@ -1632,10 +1630,10 @@
     const step = Math.max(1, Math.min(settings.maxSteps, Math.floor(Number(stepValue || getKoolkidSingleMartingaleState().step) || 1)));
     if (settings.action === "KOOLKID" && leg && leg.action) {
       const st = getKoolkidSingleMartingaleState();
-      const stepKey = leg.action === "UNDER_7" ? "UNDER_7" : "MATCH_GROUP";
+      const stepKey = leg.action === "UNDER_7" ? "UNDER_7" : "OVER_6";
       const legStep = Math.max(1, Math.min(settings.maxSteps, Math.floor(Number((st.pairSteps || {})[stepKey] || 1) || 1)));
       const multiplier = leg.action === "UNDER_7" ? 3.75 : 1.25;
-      const base = leg.action === "UNDER_7" ? settings.startStake : 0.35;
+      const base = settings.startStake;
       const stake = base * Math.pow(multiplier, legStep - 1);
       return Number(Math.max(0.35, Math.min(settings.maxStake === null ? stake : settings.maxStake, stake)).toFixed(2));
     }
@@ -2165,7 +2163,7 @@
         return;
       }
       const modeLabel = settings.koolkidBatch
-        ? "UNDER 7 3.75x / MATCH group 1.25x"
+        ? "UNDER 7 3.75x / OVER 6 1.25x"
         : (settings.isPair ? `paired ${settings.multiplier}x` : (settings.mode === "STEP_005" ? `$${settings.stepAmount.toFixed(2)} step` : `${settings.multiplier}x`));
       const limitLabel = settings.doubleLimit > 0 ? ` - Limit ${settings.doubleLimit} double-up${settings.doubleLimit === 1 ? "" : "s"}` : "";
       const riskSettings = readKoolkidSingleMartingaleRiskSettings();
@@ -2193,9 +2191,9 @@
         ? Number(Math.max(0.35, Math.min(settings.maxStake ?? Number.POSITIVE_INFINITY, settings.startStake * Math.pow(settings.multiplier, Math.max(0, ((st.pairSteps && st.pairSteps.UNDER_5) || 1))))).toFixed(2))
         : null;
       const koolkidUnderStake = settings.koolkidBatch ? koolkidSingleMartingaleStakeForLeg({ action: "UNDER_7" }, st.step) : null;
-      const koolkidMatchStake = settings.koolkidBatch ? koolkidSingleMartingaleStakeForLeg({ action: "MATCH_7" }, st.step) : null;
+      const koolkidOverStake = settings.koolkidBatch ? koolkidSingleMartingaleStakeForLeg({ action: "OVER_6" }, st.step) : null;
       const stakeLabel = settings.koolkidBatch
-        ? `UNDER 7 $${koolkidUnderStake.toFixed(2)} / MATCH 7,8,9 $${koolkidMatchStake.toFixed(2)} each ($${(koolkidMatchStake * 3).toFixed(2)} grouped)`
+        ? `UNDER 7 $${koolkidUnderStake.toFixed(2)} / OVER 6 $${koolkidOverStake.toFixed(2)}`
         : settings.isTriple
         ? `Main stakes $${currentStake.toFixed(2)} each / OVER 3 $${over3Current.toFixed(2)} - Next main $${nextStake.toFixed(2)} each / OVER 3 if loss $${over3Next.toFixed(2)}`
         : settings.independentPair
@@ -2577,7 +2575,7 @@
       st.stopRequested = false;
       st.sessionProfit = 0;
       st.step = 1;
-      st.pairSteps = { UNDER_7: 1, MATCH_GROUP: 1 };
+      st.pairSteps = { UNDER_7: 1, OVER_6: 1 };
     } else if (st.enabled && !opts.continuation) {
       if (!st.running) st.sessionProfit = 0;
       st.running = true;
@@ -2626,12 +2624,6 @@
             action: settings.action,
             leg_action: leg.action,
             label: `${settings.label} ${leg.label}`,
-            ...(settings.koolkidBatch && leg.type === "MATCH" ? {
-              batch_id: `${logicalRoundId}-matches`,
-              batch_label: "MATCH 7/8/9",
-              batch_size: 3,
-              batch_stake: Number((legStake * 3).toFixed(2)),
-            } : {}),
           };
           return sendFastManualTradeKoolkid(payload, { turbo: false, queue: false, fireAndForget: false })
             .then((result) => ({ result, leg, legStake }));
@@ -2885,7 +2877,7 @@
         }
       }
       if (settings.koolkidBatch) {
-        const expected = Math.max(4, Number(st.pendingExpected) || 4);
+        const expected = Math.max(2, Number(st.pendingExpected) || 2);
         if (st.pendingSettled < expected) {
           st.status = `Running: waiting for ${expected - st.pendingSettled} result(s)`;
           updateKoolkidSingleMartingalePanel();
@@ -2893,8 +2885,8 @@
         }
         const pendingItems = Object.values(st.pendingContracts || {}).filter(Boolean);
         const under = pendingItems.find((pending) => pending.action === "UNDER_7");
-        const matches = pendingItems.filter((pending) => String(pending.action || "").startsWith("MATCH_"));
-        if (!under || matches.length !== 3) {
+        const over = pendingItems.find((pending) => pending.action === "OVER_6");
+        if (!under || !over) {
           st.running = false;
           st.stopRequested = true;
           clearKoolkidSingleMartingalePending();
@@ -2903,7 +2895,7 @@
           updateKoolkidSingleMartingalePanel();
           return;
         }
-        const matchWon = matches.some((pending) => pending.outcome === "WIN");
+        const overWon = over.outcome === "WIN";
         const underWon = under.outcome === "WIN";
         const roundProfit = resolveKoolkidPairRoundProfit(pendingItems, settings);
         st.sessionProfit = Number((Number(st.sessionProfit || 0) + roundProfit).toFixed(2));
@@ -2911,15 +2903,15 @@
         st.pairSteps.UNDER_7 = underWon
           ? 1
           : nextKoolkidLimitedMartingaleStep(st.pairSteps.UNDER_7 || 1, settings);
-        st.pairSteps.MATCH_GROUP = matchWon
+        st.pairSteps.OVER_6 = overWon
           ? 1
-          : nextKoolkidLimitedMartingaleStep(st.pairSteps.MATCH_GROUP || 1, settings);
+          : nextKoolkidLimitedMartingaleStep(st.pairSteps.OVER_6 || 1, settings);
         st.step = 1;
         const risk = readKoolkidSingleMartingaleRiskSettings();
         const hitTp = risk.takeProfit > 0 && st.sessionProfit >= risk.takeProfit;
         const hitSl = risk.stopLoss > 0 && st.sessionProfit <= -Math.abs(risk.stopLoss);
         clearKoolkidSingleMartingalePending();
-        st.lastResult = `UNDER 7 ${underWon ? "WIN" : "LOSS"} / MATCH 7,8,9 ${matchWon ? "WIN" : "LOSS"}`;
+        st.lastResult = `UNDER 7 ${underWon ? "WIN" : "LOSS"} / OVER 6 ${overWon ? "WIN" : "LOSS"}`;
         if (hitTp || hitSl) {
           stopKoolkidSingleMartingaleOnRiskLimit(st, hitTp, st.sessionProfit);
         } else if (st.enabled && st.running && !st.stopRequested) {

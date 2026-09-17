@@ -1,24 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createChart, ColorType, CrosshairMode } from 'lightweight-charts';
 import type { IChartApi, ISeriesApi, CandlestickData, LineData, UTCTimestamp } from 'lightweight-charts';
-import { Activity, Camera, Eraser, FolderOpen, Minus, MousePointer2, PenLine, Radio, RefreshCw, Save, Search, SlidersHorizontal, Square, Undo2, Percent } from 'lucide-react';
+import { Activity, Camera, FolderOpen, PenLine, Radio, RefreshCw, Save, Search, SlidersHorizontal } from 'lucide-react';
 import { Badge, Panel } from './ui';
 import { derivMarketService } from '../services/derivMarketService';
 import { usePersistentState } from '../hooks/usePersistentState';
 import type { Candle } from '../lib/market';
 import type { DerivSymbol } from '../types';
 import TradingViewAdvancedChart from './TradingViewAdvancedChart';
+import { ChartMarkupOverlay, ChartMarkupToolbar, useChartMarkup } from './ChartMarkup';
 
 const RESOLUTIONS = [
   { label: '1m', seconds: 60 }, { label: '2m', seconds: 120 }, { label: '5m', seconds: 300 }, { label: '15m', seconds: 900 },
   { label: '30m', seconds: 1800 }, { label: '1H', seconds: 3600 }, { label: '2H', seconds: 7200 }, { label: '4H', seconds: 14400 }, { label: '8H', seconds: 28800 }, { label: '1D', seconds: 86400 },
 ];
-
-type DrawMode = 'cursor' | 'hline' | 'trend' | 'rect' | 'fib';
-type Point = { time: number; price: number };
-type Drawing =
-  | { id: string; type: 'hline'; price: number; label: string }
-  | { id: string; type: 'trend' | 'rect' | 'fib'; a: Point; b: Point };
 
 type Workspace = {
   symbol: string;
@@ -32,8 +27,6 @@ type Workspace = {
 };
 
 const SAVED_GRAPH_KEY = 'deriv_chart_saved_graph_v1';
-const EMPTY_DRAWINGS: Drawing[] = [];
-
 function heikinAshi(data: Candle[]): Candle[] {
   let previousOpen = data[0]?.open ?? 0;
   let previousClose = data[0]?.close ?? 0;
@@ -146,12 +139,6 @@ function applyTickToCandles(prev: Candle[], quote: number, epoch: number, second
   return prev;
 }
 
-function toolLabel(mode: DrawMode, started: boolean) {
-  if (mode === 'hline') return 'Click a price level.';
-  if (mode === 'cursor') return '';
-  return started ? 'Click the second point.' : 'Click the first point.';
-}
-
 export default function DerivAdvancedChart() {
   const wrapRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -160,8 +147,6 @@ export default function DerivAdvancedChart() {
   const needsInitialFitRef = useRef(true);
   const priceScaleFrozenRef = useRef(false);
   const extrasRef = useRef<Record<string, ISeriesApi<'Line'> | undefined>>({});
-  const drawModeRef = useRef<DrawMode>('cursor');
-  const drawStartRef = useRef<Point | null>(null);
   const chartStyleRef = useRef<Workspace['chartStyle']>('candles');
   const [symbols, setSymbols] = useState<DerivSymbol[]>([]);
   const [query, setQuery] = useState('');
@@ -171,13 +156,11 @@ export default function DerivAdvancedChart() {
   const [reloadKey, setReloadKey] = useState(0);
   const [chartRevision, setChartRevision] = useState(0);
   const [historyRevision, setHistoryRevision] = useState(0);
-  const [drawMode, setDrawMode] = useState<DrawMode>('cursor');
-  const [drawStart, setDrawStart] = useState<Point | null>(null);
   const [workspace, setWorkspace] = usePersistentState<Workspace>('deriv_chart_workspace', {
     symbol: 'R_75', seconds: 60, ema9: false, ema20: true, ema50: false, ema200: false, bollinger: false,
   });
-  const [drawingsBySymbol, setDrawingsBySymbol] = usePersistentState<Record<string, Drawing[]>>('deriv_chart_drawings_v3', {});
-  const drawings = useMemo(() => drawingsBySymbol[workspace.symbol] || EMPTY_DRAWINGS, [drawingsBySymbol, workspace.symbol]);
+  const [activeDerivLogin, setActiveDerivLogin] = useState<string>('unassigned');
+  const markup = useChartMarkup('deriv', activeDerivLogin, workspace.symbol);
   const [candles, setCandles] = useState<Candle[]>([]);
   const [chartEngine, setChartEngine] = usePersistentState<'builtin' | 'tradingview'>('deriv_chart_engine', 'builtin');
   const [officialReady, setOfficialReady] = useState(() => typeof window !== 'undefined' && Boolean((window as any).TradingView?.widget));
@@ -186,17 +169,6 @@ export default function DerivAdvancedChart() {
   useEffect(() => {
     chartStyleRef.current = chartStyle;
   }, [chartStyle]);
-
-  const setDrawings = useCallback((next: Drawing[] | ((prev: Drawing[]) => Drawing[])) => {
-    setDrawingsBySymbol((prev) => {
-      const current = prev[workspace.symbol] || [];
-      const resolved = typeof next === 'function' ? (next as (rows: Drawing[]) => Drawing[])(current) : next;
-      return { ...prev, [workspace.symbol]: resolved };
-    });
-  }, [setDrawingsBySymbol, workspace.symbol]);
-
-  useEffect(() => { drawModeRef.current = drawMode; }, [drawMode]);
-  useEffect(() => { drawStartRef.current = drawStart; }, [drawStart]);
 
   useEffect(() => {
     if (officialReady || String(import.meta.env.VITE_TRADINGVIEW_ADVANCED || '') !== '1') return;
@@ -214,6 +186,18 @@ export default function DerivAdvancedChart() {
     script.onerror = () => setOfficialReady(false);
     document.head.appendChild(script);
   }, [officialReady]);
+
+  useEffect(() => {
+    let cancelled = false;
+    derivMarketService.accounts().then((rows) => {
+      if (cancelled) return;
+      const active = rows.find((row) => row.is_active) || rows.find((row) => row.status === 'connected') || rows[0];
+      setActiveDerivLogin(active?.login ? String(active.login) : 'unassigned');
+    }).catch(() => {
+      if (!cancelled) setActiveDerivLogin('unassigned');
+    });
+    return () => { cancelled = true; };
+  }, [reloadKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -330,55 +314,11 @@ export default function DerivAdvancedChart() {
     }
     extrasRef.current = extras;
 
-    const addSegment = (a: Point, b: Point, color = '#38bdf8', width: 1 | 2 | 3 | 4 = 1) => {
-      const line = chart.addLineSeries({ lineWidth: width, color, priceLineVisible: false, lastValueVisible: false });
-      const points = a.time <= b.time ? [a, b] : [b, a];
-      line.setData(points.map((p) => ({ time: p.time as UTCTimestamp, value: p.price })));
-    };
-    for (const d of drawings) {
-      if (d.type === 'hline') {
-        cs.createPriceLine({ price: d.price, color: '#38bdf8', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: d.label || 'H-Line' });
-      } else if (d.type === 'trend') {
-        addSegment(d.a, d.b, '#38bdf8', 2);
-      } else if (d.type === 'rect') {
-        const loT = Math.min(d.a.time, d.b.time); const hiT = Math.max(d.a.time, d.b.time);
-        const loP = Math.min(d.a.price, d.b.price); const hiP = Math.max(d.a.price, d.b.price);
-        addSegment({ time: loT, price: loP }, { time: hiT, price: loP });
-        addSegment({ time: loT, price: hiP }, { time: hiT, price: hiP });
-        addSegment({ time: loT, price: loP }, { time: loT, price: hiP });
-        addSegment({ time: hiT, price: loP }, { time: hiT, price: hiP });
-      } else if (d.type === 'fib') {
-        const low = d.a.price; const diff = d.b.price - d.a.price;
-        for (const level of [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1]) {
-          cs.createPriceLine({ price: low + diff * level, color: '#a78bfa', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: `Fib ${(level * 100).toFixed(1)}%` });
-        }
-      }
-    }
-
-    const click = (param: any) => {
-      const mode = drawModeRef.current;
-      if (mode === 'cursor' || !param.point || !param.time) return;
-      const price = cs.coordinateToPrice(param.point.y);
-      if (price == null) return;
-      const point = { time: Number(param.time), price: Number(price) };
-      if (mode === 'hline') {
-        setDrawings((prev) => [...prev, { id: crypto.randomUUID(), type: 'hline', price: point.price, label: 'Price level' }]);
-        setDrawMode('cursor');
-        return;
-      }
-      const first = drawStartRef.current;
-      if (!first) {
-        drawStartRef.current = point; setDrawStart(point); return;
-      }
-      setDrawings((prev) => [...prev, { id: crypto.randomUUID(), type: mode, a: first, b: point } as Drawing]);
-      drawStartRef.current = null; setDrawStart(null); setDrawMode('cursor');
-    };
-    chart.subscribeClick(click);
     return () => {
-      chart.unsubscribeClick(click); chart.remove();
+      chart.remove();
       chartRef.current = null; candleRef.current = null; extrasRef.current = {};
     };
-  }, [workspace.symbol, workspace.seconds, workspace.ema9, workspace.ema20, workspace.ema50, workspace.ema200, workspace.bollinger, drawings, chartEngine, chartStyle, setDrawings]);
+  }, [workspace.symbol, workspace.seconds, workspace.ema9, workspace.ema20, workspace.ema50, workspace.ema200, workspace.bollinger, chartEngine, chartStyle]);
 
   useEffect(() => {
     const cs = candleRef.current;
@@ -422,13 +362,12 @@ export default function DerivAdvancedChart() {
   }, [historyRevision, chartEngine, workspace.ema9, workspace.ema20, workspace.ema50, workspace.ema200, workspace.bollinger, chartStyle, chartRevision]);
 
   const saveGraph = () => {
-    localStorage.setItem(SAVED_GRAPH_KEY, JSON.stringify({ workspace, drawingsBySymbol, savedAt: Date.now() }));
+    localStorage.setItem(SAVED_GRAPH_KEY, JSON.stringify({ workspace, savedAt: Date.now() }));
   };
   const loadGraph = () => {
     try {
       const saved = JSON.parse(localStorage.getItem(SAVED_GRAPH_KEY) || '');
       if (saved?.workspace) setWorkspace(saved.workspace);
-      if (saved?.drawingsBySymbol) setDrawingsBySymbol(saved.drawingsBySymbol);
     } catch { /* no saved graph */ }
   };
   const downloadSnapshot = () => {
@@ -450,7 +389,6 @@ export default function DerivAdvancedChart() {
   const selected = symbols.find((s) => s.symbol === workspace.symbol);
   const rsiNow = rsi(candles); const atrNow = atr(candles); const macdNow = macd(candles);
 
-  const chooseTool = (mode: DrawMode) => { setDrawMode(mode); setDrawStart(null); drawStartRef.current = null; };
 
   return (
     <div className="space-y-4">
@@ -486,16 +424,12 @@ export default function DerivAdvancedChart() {
           ] as const).map(([label, key]) => <button key={key} onClick={() => setWorkspace((w) => ({ ...w, [key]: !w[key] }))} className={`rounded-lg px-2.5 py-1.5 text-[10px] font-bold ${(workspace[key] ?? false) ? 'bg-brand-500/20 text-brand-200 border border-brand-500/30' : 'bg-white/[.04] text-slate-500 border border-transparent hover:text-white'}`}>{label}</button>)}
           <button onClick={applyIndicatorPreset} className="rounded-lg px-2.5 py-1.5 text-[10px] font-bold bg-white/[.04] text-slate-400 hover:text-white">EMA 9/20/50/200 Preset</button>
         </div>
-        <div className="flex flex-wrap items-center gap-1.5 border-t border-white/[.06] pt-3">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-600 mr-1">Markup</span>
-          <button title="Cursor" className={`btn-icon ${drawMode === 'cursor' ? '!bg-brand-600 !text-white' : ''}`} onClick={() => chooseTool('cursor')}><MousePointer2 size={14} /></button>
-          <button title="Horizontal line" className={`btn-icon ${drawMode === 'hline' ? '!bg-brand-600 !text-white' : ''}`} onClick={() => chooseTool('hline')}><Minus size={14} /></button>
-          <button title="Trend line" className={`btn-icon ${drawMode === 'trend' ? '!bg-brand-600 !text-white' : ''}`} onClick={() => chooseTool('trend')}><PenLine size={14} /></button>
-          <button title="Rectangle" className={`btn-icon ${drawMode === 'rect' ? '!bg-brand-600 !text-white' : ''}`} onClick={() => chooseTool('rect')}><Square size={14} /></button>
-          <button title="Fibonacci retracement" className={`btn-icon ${drawMode === 'fib' ? '!bg-brand-600 !text-white' : ''}`} onClick={() => chooseTool('fib')}><Percent size={14} /></button>
-          <button title="Undo last drawing" className="btn-icon" disabled={!drawings.length} onClick={() => setDrawings((prev) => prev.slice(0, -1))}><Undo2 size={14} /></button>
-          <button title="Clear drawings" className="btn-ghost !py-1.5" disabled={!drawings.length} onClick={() => { setDrawings([]); chooseTool('cursor'); }}><Eraser size={13} /> Clear</button>
-          {drawMode !== 'cursor' && <span className="text-[10px] text-warn-400 ml-2">{toolLabel(drawMode, Boolean(drawStart))}</span>}
+        <div className="border-t border-white/[.06] pt-3">
+          {chartEngine === 'builtin' ? (
+            <ChartMarkupToolbar controller={markup} scopeLabel={`Deriv ${activeDerivLogin} · ${workspace.symbol}`} />
+          ) : (
+            <p className="text-[10px] text-slate-500">TradingView Advanced uses its own native drawing toolbar.</p>
+          )}
         </div>
       </Panel>
 
@@ -508,8 +442,24 @@ export default function DerivAdvancedChart() {
           </div>
           {error && <div className="mx-3 mt-3 rounded-xl border border-loss-500/20 bg-loss-500/[.06] px-3 py-2 text-xs text-loss-300 flex items-center justify-between gap-3"><span>{error}</span><button className="btn-ghost !py-1.5" onClick={retry}>Retry</button></div>}
           {status === 'connecting' && !candles.length && <div className="h-[545px] grid place-items-center text-xs text-slate-500"><span className="inline-flex items-center gap-2"><RefreshCw size={14} className="animate-spin" /> Loading live Deriv candles…</span></div>}
-          {chartEngine === 'tradingview' && officialReady ? <TradingViewAdvancedChart symbol={workspace.symbol} seconds={workspace.seconds} /> : <div className={`${status === 'connecting' && !candles.length ? 'hidden' : ''} h-[545px] px-2`} ref={wrapRef} />}
-          <div className="px-3 pb-3 text-[10px] text-slate-600">Public chart data only. Deriv options execution remains separate from this chart feed. Built-in drawings are saved in this browser.</div>
+          {chartEngine === 'tradingview' && officialReady ? (
+            <TradingViewAdvancedChart symbol={workspace.symbol} seconds={workspace.seconds} />
+          ) : (
+            <div className={`${status === 'connecting' && !candles.length ? 'hidden' : ''} relative h-[545px] px-2`}>
+              <div className="absolute inset-0 mx-2" ref={wrapRef} />
+              <div className="absolute inset-0 mx-2">
+                <ChartMarkupOverlay
+                  controller={markup}
+                  chartRef={chartRef}
+                  seriesRef={candleRef}
+                  candleTimes={candles.map((row) => row.time)}
+                  revisionToken={chartRevision}
+                  digits={priceFormatForSymbol(symbols, workspace.symbol).precision}
+                />
+              </div>
+            </div>
+          )}
+          <div className="px-3 pb-3 text-[10px] text-slate-600">Public chart data only. Deriv options execution remains separate from this chart feed. Drawings auto-save per active Deriv account + market in this browser.</div>
         </Panel>
 
         <div className="space-y-4">
@@ -524,7 +474,7 @@ export default function DerivAdvancedChart() {
           </Panel>
           <Panel className="p-4">
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2"><PenLine size={14} className="text-brand-300" /> Built-in tools</h3>
-            <p className="mt-2 text-[10px] leading-relaxed text-slate-500">Cursor, horizontal line, trend line, rectangle, Fibonacci retracement, undo and clear are available from the toolbar above the chart.</p>
+            <p className="mt-2 text-[10px] leading-relaxed text-slate-500">Entry/SL/TP lines, trend/ray, rectangles, long/short position tools, Fibonacci, arrows, notes, measurement, undo/redo and Clear All are available above the chart. Drawings are isolated by active account + market.</p>
           </Panel>
           <Panel className="p-4">
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2"><Activity size={14} className="text-brand-300" /> TradingView Advanced</h3>

@@ -23,6 +23,7 @@ import engine
 import ea_worker_client
 import multi_account_client
 from store import default_risk, read_state, remove_profile, update_state
+from ai_trial import clear_snapshot as clear_ai_trial_snapshot, load_snapshot as load_ai_trial_snapshot, save_snapshot as save_ai_trial_snapshot, run_human_apostle_trial
 
 app = FastAPI(title="KOOLKID Local MT5 Bridge", version="1.0.0")
 
@@ -119,6 +120,17 @@ class TradePayload(BaseModel):
     sl: float | None = None
     tp: float | None = None
     source: str | None = None
+
+
+class AiTrialScanPayload(BaseModel):
+    account_login: int
+    symbol: str = Field(min_length=1, max_length=64)
+
+
+class AiTrialExecutePayload(BaseModel):
+    account_login: int
+    symbol: str = Field(min_length=1, max_length=64)
+    volume: float = Field(gt=0)
 
 
 def fail(exc: Exception, status: int = 400):
@@ -890,6 +902,104 @@ def emergency_stop_close():
     stopped = emergency_stop_bots()["stopped"]
     result = close_all_positions()
     return {"ok": True, "stopped": stopped, "closed": result["closed"], "realized": result["realized"]}
+
+
+@app.get("/api/mt5/ai/trial")
+def get_ai_trial():
+    snapshot = load_ai_trial_snapshot()
+    return {
+        "trial_version": "0.3-session-3",
+        "strategy": "Human Apostle Trial",
+        "mode": "DEMO_EXECUTION_LOCKED_TO_DEMO",
+        "execution_timeframe": "M15",
+        "bias_timeframe": "H4",
+        "snapshot": snapshot,
+        "execution": "Demo-only execution is available for current BUY/SELL signals. Live accounts stay blocked. Session 3 also adds Copy Trades From Anywhere through the existing copy link.",
+    }
+
+
+@app.post("/api/mt5/ai/trial/scan")
+def scan_ai_trial(payload: AiTrialScanPayload):
+    try:
+        execution_rows = multi_account_client.account_request(
+            payload.account_login,
+            f"/candles/{quote(payload.symbol)}?timeframe=M15&count=700",
+            timeout=20,
+        )
+        bias_rows = multi_account_client.account_request(
+            payload.account_login,
+            f"/candles/{quote(payload.symbol)}?timeframe=H4&count=350",
+            timeout=20,
+        )
+        snapshot = run_human_apostle_trial(
+            execution_rows,
+            bias_rows,
+            symbol=payload.symbol,
+            account_login=payload.account_login,
+        )
+        snapshot.setdefault("execution_mode", "SIGNAL_ONLY")
+        snapshot.setdefault("execution_lock", "demo_only")
+        snapshot.setdefault("last_execution", None)
+        return save_ai_trial_snapshot(snapshot)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except RuntimeError as exc:
+        session_error(exc)
+
+
+@app.post("/api/mt5/ai/trial/execute")
+def execute_ai_trial(payload: AiTrialExecutePayload):
+    snapshot = load_ai_trial_snapshot()
+    if not snapshot:
+        raise HTTPException(status_code=404, detail="No Apostle trial snapshot exists yet. Run a scan first.")
+    if int(snapshot.get("account_login") or 0) != int(payload.account_login) or str(snapshot.get("symbol") or "") != payload.symbol:
+        raise HTTPException(status_code=409, detail="The stored Apostle snapshot no longer matches the selected account and symbol. Run a fresh scan first.")
+    if snapshot.get("decision") not in {"BUY", "SELL"} or not snapshot.get("proposed_trade"):
+        raise HTTPException(status_code=409, detail="The current Apostle trial result is not a tradable BUY/SELL signal.")
+
+    trade_plan = snapshot["proposed_trade"]
+    previous_execution = snapshot.get("last_execution") or {}
+    if previous_execution.get("executed") and int(previous_execution.get("signal_time") or 0) == int(trade_plan.get("time") or 0):
+        raise HTTPException(status_code=409, detail="This Apostle signal was already executed once. Run a fresh scan and wait for a new completed-candle signal.")
+
+    account = next((row for row in accounts() if int(row.get("login") or 0) == int(payload.account_login)), None)
+    if not account or account.get("status") != "connected":
+        raise HTTPException(status_code=409, detail=f"MT5 account #{payload.account_login} is not connected.")
+    if str(account.get("account_type") or "demo").lower() != "demo":
+        raise HTTPException(status_code=403, detail="Session 2 only allows AI trial execution on demo MT5 accounts.")
+
+    result = trade(TradePayload(
+        account_login=payload.account_login,
+        symbol=payload.symbol,
+        type=str(trade_plan.get("direction") or "BUY").lower(),
+        volume=payload.volume,
+        sl=float(trade_plan.get("sl") or 0),
+        tp=float(trade_plan.get("tp") or 0),
+        source="ai_trial_session_2",
+    ))
+    execution_record = {
+        "executed": True,
+        "account_login": payload.account_login,
+        "symbol": payload.symbol,
+        "volume": payload.volume,
+        "direction": trade_plan.get("direction"),
+        "executed_at": datetime.now(timezone.utc).isoformat(),
+        "signal_time": int(trade_plan.get("time") or 0),
+        "mode": "DEMO_AUTO_TRADE",
+        "result": result,
+        "message": "Demo order submitted from the current Apostle signal.",
+    }
+    snapshot["execution_mode"] = "DEMO_AUTO_TRADE"
+    snapshot["last_execution"] = execution_record
+    snapshot["execution"] = "Demo execution sent to MT5. Live accounts stay blocked in Session 3."
+    save_ai_trial_snapshot(snapshot)
+    return execution_record
+
+
+@app.delete("/api/mt5/ai/trial")
+def delete_ai_trial():
+    clear_ai_trial_snapshot()
+    return {"ok": True}
 
 
 @app.get("/api/mt5/ai")

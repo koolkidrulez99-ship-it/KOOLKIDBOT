@@ -10,10 +10,11 @@ class CopyEngine:
         self.state_store = state
         self.thread = None
         self.stop_event = threading.Event()
-        self.config = None
+        saved_state = self.state_store.load()
+        self.config = saved_state.get("copy_config")
         self.status = "stopped"
         self.activity = []
-        self.copy_map = self.state_store.load().get("copy_map", {})
+        self.copy_map = saved_state.get("copy_map", {})
         self.pending = {}
         self.ignored = set()
         self.lock = threading.RLock()
@@ -48,6 +49,9 @@ class CopyEngine:
     def start(self, cfg):
         self.stop()
         self.config = cfg
+        saved = self.state_store.load()
+        saved["copy_config"] = dict(cfg)
+        self.state_store.save(saved)
         try:
             existing = self.pool.call(cfg["master_account_id"], "positions")
             self.ignored = {str(int(p["ticket"])) for p in existing}
@@ -190,7 +194,9 @@ class CopyEngine:
                     master_info = self.pool.call(cfg["master_account_id"], "account_info")
                     current = {str(int(p["ticket"])): p for p in master_positions if self.passes_filter(p)}
 
-                    # Queue new master positions for explicit user approval.
+                    # New master positions can either wait for approval (normal Copy Trading)
+                    # or copy immediately when the AI-page "Copy Trades From Anywhere" toggle
+                    # has restarted the link with approval_required=False.
                     for master_ticket, pos in current.items():
                         if master_ticket in self.copy_map or master_ticket in self.ignored:
                             continue
@@ -204,7 +210,17 @@ class CopyEngine:
                                 "position": dict(pos),
                                 "created_at": time.time(),
                             }
-                        self.log("approval_pending", master_ticket=master_ticket, symbol=pos.get("symbol"))
+                        if bool(cfg.get("approval_required", True)):
+                            self.log("approval_pending", master_ticket=master_ticket, symbol=pos.get("symbol"))
+                        else:
+                            self.log("auto_copy_detected", master_ticket=master_ticket, symbol=pos.get("symbol"))
+                            try:
+                                self.decide(int(master_ticket), True, list(cfg.get("slave_account_ids") or []))
+                            except Exception as exc:
+                                with self.lock:
+                                    self.pending.pop(master_ticket, None)
+                                    self.ignored.add(master_ticket)
+                                self.log("copy_error", master_ticket=master_ticket, error=str(exc))
 
                     # Sync SL/TP.
                     for master_ticket, pos in current.items():

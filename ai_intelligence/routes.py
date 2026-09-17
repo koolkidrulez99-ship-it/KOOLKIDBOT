@@ -5,14 +5,21 @@ import re
 import secrets
 import time
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, session
 
 from .bridge import Bridge, binding, hub
 from .commands import CommandError, READ_ACTIONS, emergency, parse, safe_input
+from .apostle import ApostleEngine, DEAR_BRUCE_BIAS, RiskSpec, SetupState, TIMEFRAMES, approve_ex5_signal, backtest, completed, confirmed_swings, market_structure
+from .intelligence_store import IntelligenceStore
+from .mt5_provider import Mt5ReadProvider
 
 
 def register(app, namespace):
     bridge = Bridge(app, namespace)
+    intelligence_store = IntelligenceStore(bridge)
+    mt5 = Mt5ReadProvider()
+    bridge.intelligence_store = intelligence_store
+    bridge.mt5_provider = mt5
     bp = Blueprint("ai_intelligence", __name__, url_prefix="/ai-intelligence")
 
     @bp.before_request
@@ -69,6 +76,157 @@ def register(app, namespace):
         _, state, ai = current()
         context_id = hashlib.sha256(repr(binding(state)).encode()).hexdigest()[:24]
         return jsonify(csrf=ai.csrf, context_id=context_id, visible=bridge.preference(), messages=ai.messages, settings=bridge.settings(state))
+
+    def intelligence_identity(account):
+        rows = mt5.accounts()
+        rows = rows.get("accounts", rows) if isinstance(rows, dict) else rows
+        allowed = {str(row.get("login")) for row in (rows or []) if row.get("connected") or row.get("status") == "connected"}
+        if str(account) not in allowed:
+            raise CommandError("Choose a currently connected MT5 account.")
+        return str(account)
+
+    @bp.get("/intelligence/status")
+    def intelligence_status():
+        current()
+        try:
+            account_payload = mt5.accounts()
+            accounts = account_payload.get("accounts", account_payload) if isinstance(account_payload, dict) else account_payload
+        except RuntimeError:
+            accounts = []
+        return jsonify(
+            status="READY",
+            execution="SIGNAL_ONLY",
+            strategies=["HUMAN APOSTLE", "DEAR BRUCE"],
+            modes=["ANALYSIS ONLY", "ALERT ONLY", "MANUAL CONFIRMATION", "AI AUTO TRADE", "EX5 + AI CONFIRMATION"],
+            auto_execution_connected=False,
+            recent=intelligence_store.recent(session["user"], 20),
+            knowledge=intelligence_store.knowledge(session["user"]),
+            dear_bruce_bias=DEAR_BRUCE_BIAS,
+            accounts=[{"login": row.get("login"), "name": row.get("name") or row.get("label") or str(row.get("login")), "connected": bool(row.get("connected") or row.get("status") == "connected")} for row in (accounts or [])],
+        )
+
+    @bp.get("/intelligence/symbols")
+    def intelligence_symbols():
+        current()
+        account = intelligence_identity(request.args.get("account"))
+        payload = mt5.symbols(account)
+        rows = payload.get("symbols", payload) if isinstance(payload, dict) else payload
+        return jsonify(symbols=[str(row.get("name") if isinstance(row, dict) else row) for row in (rows or []) if (row.get("name") if isinstance(row, dict) else row)])
+
+    @bp.post("/intelligence/evaluate")
+    def intelligence_evaluate():
+        current()
+        body = request.get_json() or {}
+        account = intelligence_identity(body.get("account"))
+        symbol = str(body.get("symbol") or "").strip()
+        timeframe = str(body.get("timeframe") or "").upper()
+        strategy = str(body.get("strategy") or "HUMAN APOSTLE").upper()
+        if not symbol or len(symbol) > 80:
+            raise CommandError("Choose an MT5 symbol.")
+        if timeframe not in TIMEFRAMES:
+            raise CommandError("Choose M1, M5, M15, M30, H1, H4, H8, or D1.")
+        if strategy not in ("HUMAN APOSTLE", "DEAR BRUCE"):
+            raise CommandError("That AI strategy is not available.")
+        mode = str(body.get("mode") or "ANALYSIS ONLY").upper()
+        if mode not in ("ANALYSIS ONLY", "ALERT ONLY", "MANUAL CONFIRMATION", "AI AUTO TRADE", "EX5 + AI CONFIRMATION"):
+            raise CommandError("Choose a supported AI operating mode.")
+        # MT5's newest bar is still forming. It is deliberately excluded.
+        raw = mt5.candles(account, symbol, timeframe, 350)
+        rows = raw.get("candles", raw) if isinstance(raw, dict) else raw
+        rows = list(rows or [])[:-1]
+        if len(rows) < 7:
+            raise CommandError("Not enough completed MT5 candles are available.")
+        bias_frames = body.get("bias_timeframes")
+        if bias_frames is None and strategy == "DEAR BRUCE":
+            bias_frames = list(DEAR_BRUCE_BIAS.get(timeframe, ()))
+        bias_frames = [str(x).upper() for x in (bias_frames or [])]
+        if any(tf not in TIMEFRAMES or tf == timeframe for tf in bias_frames) or len(bias_frames) > 3:
+            raise CommandError("Bias timeframes are invalid.")
+        bias = []
+        for tf in bias_frames:
+            payload = mt5.candles(account, symbol, tf, 220)
+            tf_rows = payload.get("candles", payload) if isinstance(payload, dict) else payload
+            tf_candles = completed(list(tf_rows or [])[:-1])
+            highs, lows = confirmed_swings(tf_candles)
+            bias.append(market_structure(tf_candles, highs, lows))
+        saved = intelligence_store.load_setup(session["user"], account, symbol, timeframe, strategy)
+        setup = SetupState(account, symbol, timeframe, strategy)
+        if saved:
+            for key in setup.__dict__:
+                if key in saved:
+                    setattr(setup, key, saved[key])
+            if setup.trendline:
+                setup.trendline = tuple(tuple(x) for x in setup.trendline)
+        engine = ApostleEngine(
+            buffer=float(body.get("buffer") or 0),
+            retest_tolerance=float(body.get("retest_tolerance") or 0),
+            confirmation=body.get("candle_confirmation", True) is True,
+            target_r=float(body.get("target_r") or 2),
+        )
+        risk = None
+        if body.get("risk"):
+            risk = RiskSpec(**{key: body["risk"][key] for key in RiskSpec.__dataclass_fields__ if key in body["risk"]})
+        result = engine.evaluate(setup, rows, bias=bias, risk=risk)
+        result.update(account=account, symbol=symbol, timeframe=timeframe, strategy=strategy, bias=bias, mode=mode, executed=False)
+        if mode in ("AI AUTO TRADE", "EX5 + AI CONFIRMATION"):
+            result["execution_note"] = "Signal evaluated, but AI MT5 execution is locked until the demo execution adapter is validated."
+        intelligence_store.save_setup(session["user"], setup)
+        intelligence_store.record_evaluation(session["user"], setup, result)
+        return jsonify(result)
+
+    @bp.post("/intelligence/ex5/evaluate")
+    def intelligence_ex5():
+        current()
+        body = request.get_json() or {}
+        signal = body.get("signal")
+        analysis = body.get("analysis")
+        if not isinstance(signal, dict) or not isinstance(analysis, dict):
+            raise CommandError("EX5 signal and AI analysis are required.")
+        return jsonify(approve_ex5_signal(signal, analysis, int(body.get("threshold") or 75)))
+
+    @bp.post("/intelligence/backtest")
+    def intelligence_backtest():
+        current()
+        body = request.get_json() or {}
+        account = intelligence_identity(body.get("account"))
+        symbol = str(body.get("symbol") or "").strip()
+        timeframe = str(body.get("timeframe") or "M15").upper()
+        strategy = str(body.get("strategy") or "HUMAN APOSTLE").upper()
+        if not symbol or timeframe not in TIMEFRAMES or strategy not in ("HUMAN APOSTLE", "DEAR BRUCE"):
+            raise CommandError("Choose a valid account, symbol, timeframe, and strategy.")
+        payload = mt5.candles(account, symbol, timeframe, min(1000, int(body.get("count") or 1000)))
+        rows = payload.get("candles", payload) if isinstance(payload, dict) else payload
+        result = backtest(list(rows or [])[:-1], account=account, symbol=symbol, timeframe=timeframe, strategy=strategy)
+        intelligence_store.save_backtest(session["user"], strategy, result)
+        return jsonify(result)
+
+    @bp.post("/intelligence/teach")
+    def intelligence_teach():
+        current()
+        body = request.get_json() or {}
+        text = safe_input(body.get("teaching"))
+        strategy = str(body.get("strategy") or "HUMAN APOSTLE").upper()
+        if strategy not in ("HUMAN APOSTLE", "DEAR BRUCE"):
+            raise CommandError("Choose Human Apostle or Dear Bruce.")
+        lower = text.lower()
+        structured = {
+            "condition": "volatility_high" if "volatility" in lower and "high" in lower else "structure",
+            "rule": text,
+            "exception": "shallower_retest" if "shallower retest" in lower else None,
+            "live_effect": False,
+        }
+        record_id = intelligence_store.teach(session["user"], strategy, text, structured, int(body.get("priority") or 50))
+        return jsonify(id=record_id, status="recorded", live_effect=False, message="Teaching stored as a versioned candidate rule. It will not change live decisions until validated and approved.")
+
+    @bp.post("/intelligence/knowledge/toggle")
+    def intelligence_knowledge_toggle():
+        current()
+        body = request.get_json() or {}
+        record_id = str(body.get("id") or "")
+        if not record_id or not isinstance(body.get("enabled"), bool):
+            raise CommandError("Knowledge ID and enabled state are required.")
+        intelligence_store.toggle_knowledge(session["user"], record_id, body["enabled"])
+        return jsonify(status="updated")
 
     @bp.post("/preferences")
     def preferences():

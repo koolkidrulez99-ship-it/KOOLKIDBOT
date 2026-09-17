@@ -14,6 +14,7 @@ class Runtime:
     qout: object
     lock: threading.RLock
     cache: dict
+    password: str = ""
 
     def call(self, op, payload=None, timeout=15):
         deadline = time.monotonic() + timeout
@@ -56,18 +57,18 @@ class Pool:
         while not self.stopping:
             now = time.time()
             with self.lock:
-                candidates = [(aid, dict(rt.config)) for aid, rt in self.items.items()
+                candidates = [(aid, dict(rt.config), rt.password) for aid, rt in self.items.items()
                               if not rt.process.is_alive() and now >= self.recovery.get(aid, {}).get("next_at", 0)]
-            for aid, cfg in candidates:
-                self._recover(aid, cfg)
+            for aid, cfg, password in candidates:
+                self._recover(aid, cfg, password)
             time.sleep(1.0)
 
-    def _recover(self, aid, cfg):
+    def _recover(self, aid, cfg, password=""):
         state = self.recovery.setdefault(aid, {"attempt": 0, "next_at": 0, "error": ""})
         state["attempt"] += 1
         try:
             self.disconnect(aid, preserve_recovery=True)
-            self.connect(cfg, "")
+            self.connect(cfg, password)
             self.failures[aid] = 0
             self.recovery.pop(aid, None)
         except Exception as exc:
@@ -122,7 +123,7 @@ class Pool:
                 if not startup or not startup.get("ok"):
                     raise RuntimeError((startup or {}).get("error") or "Account worker failed to start")
                 with self.lock:
-                    self.items[aid] = Runtime(cfg,proc,qin,qout,threading.RLock(),{})
+                    self.items[aid] = Runtime(cfg, proc, qin, qout, threading.RLock(), {}, password)
                 return self.status(aid)
             except Exception:
                 try: proc.terminate()

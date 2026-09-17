@@ -1,0 +1,26 @@
+SESSION 3 CHANGELOG
+
+AI Intelligence UI
+- Added "Copy Trades From Anywhere" toggle.
+- Added plain-language description of exactly what the toggle watches.
+- Shows whether an existing Copy Trading link is configured/active.
+- Toggle is unavailable until a master/slave copy link exists.
+- ON = automatic copying of newly detected master positions.
+- OFF = normal approval-popup behavior.
+
+Copy engine
+- approval_required=False now actually performs automatic copying instead of always creating an approval request.
+- source_filter=all allows manual, EA and other eligible positions seen on the master account.
+- Existing positions at copy-engine startup remain ignored, preventing old positions from suddenly being duplicated.
+- Copy configuration is retained by the copy engine state so the AI toggle can reuse the existing link settings.
+
+Human Apostle trial
+- Added duplicate-signal execution guard so the same completed-candle BUY/SELL cannot be submitted twice.
+- AI execution remains demo-only.
+
+Verification performed
+- Python compile passed for changed backend files.
+- Human Apostle trial tests: 8 passed.
+- Copy-anywhere automatic-copy test passed.
+- Existing approval-mode regression test passed.
+- TypeScript/TSX syntax transpilation passed for changed frontend files.

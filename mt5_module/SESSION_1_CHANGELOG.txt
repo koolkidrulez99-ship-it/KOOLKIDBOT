@@ -1,0 +1,22 @@
+KOOLKID AI Trial Session 1 changelog
+
+NEW
+- mt5_bridge/ai_trial package
+- completed-candle filter
+- confirmed fractal swing detector
+- structure classifier
+- Apostle signal-state replay engine
+- read-only scan persistence
+- GET /api/mt5/ai/trial
+- POST /api/mt5/ai/trial/scan
+- DELETE /api/mt5/ai/trial
+- AI Intelligence trial controls and monitor UI
+
+UNCHANGED BY THIS PATCH
+- copy trader
+- multi-account worker
+- EA worker / EX5 execution
+- manual trading
+- Deriv
+
+Execution mode: SIGNAL ONLY.

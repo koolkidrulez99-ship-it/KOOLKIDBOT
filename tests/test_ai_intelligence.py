@@ -453,3 +453,26 @@ def test_audit_does_not_serialize_provider_or_runtime_payloads(bot):
         bridge.audit({"action": "get_balance"}, {"status": "completed", "profile_data": {"token": "do-not-store-this"}})
         row = bridge.db("SELECT record FROM ai_intelligence_audit", fetch=True)
         assert "do-not-store-this" not in row[0]
+
+
+def test_apostle_signal_endpoint_uses_completed_mt5_candles_only(bot, monkeypatch):
+    provider = server.ai_intelligence_bridge.mt5_provider
+    monkeypatch.setattr(provider, "accounts", lambda: [{"login": 1001, "connected": True}])
+    monkeypatch.setattr(provider, "candles", lambda *a, **kw: [
+        {"time": i, "open": 10, "high": 10.5, "low": 9.5, "close": 10, "volume": 1}
+        for i in range(20)
+    ] + [{"time": 20, "open": 10, "high": 999, "low": 0, "close": 999, "volume": 1}])
+    response = bot.post("intelligence/evaluate", {"account": "1001", "symbol": "EURUSD", "timeframe": "M15", "strategy": "HUMAN APOSTLE", "mode": "ANALYSIS ONLY"})
+    assert response.status_code == 200, response.get_json()
+    result = response.get_json()
+    assert result["executed"] is False
+    assert result["decision"] == "SCANNING"
+
+
+def test_teaching_is_versioned_per_user_and_never_live_applied(bot):
+    response = bot.post("intelligence/teach", {"strategy": "HUMAN APOSTLE", "teaching": "When structure breaks, wait for a later retest."})
+    assert response.status_code == 200, response.get_json()
+    assert response.get_json()["live_effect"] is False
+    records = server.ai_intelligence_bridge.intelligence_store.knowledge("alice")
+    assert records[0]["version"] == 1 and records[0]["enabled"] is True
+    assert records[0]["structured"]["live_effect"] is False

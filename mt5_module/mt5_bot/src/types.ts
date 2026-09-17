@@ -294,6 +294,95 @@ export interface AiSettings {
   news_pause: boolean;
 }
 
+export interface AiTrialSwing {
+  kind: 'high' | 'low';
+  index: number;
+  confirm_index: number;
+  time: number;
+  price: number;
+  label: 'HH' | 'LH' | 'HL' | 'LL' | 'H' | 'L';
+}
+
+export interface AiTrialTrade {
+  direction: 'BUY' | 'SELL';
+  index: number;
+  time: number;
+  entry: number;
+  sl: number;
+  tp: number;
+  risk_distance: number;
+  r_multiple: number;
+  confidence: number;
+  confidence_factors: string[];
+  reason: string;
+}
+
+export interface AiTrialExecution {
+  executed: boolean;
+  account_login: number;
+  symbol: string;
+  volume: number;
+  direction: 'BUY' | 'SELL';
+  executed_at: string;
+  signal_time?: number;
+  mode: 'DEMO_AUTO_TRADE';
+  result: Record<string, unknown>;
+  message: string;
+}
+
+export interface AiTrialSnapshot {
+  trial_version: string;
+  strategy: string;
+  mode: 'SIGNAL_ONLY';
+  execution: string;
+  execution_mode?: 'SIGNAL_ONLY' | 'DEMO_AUTO_TRADE';
+  execution_lock?: 'demo_only';
+  account_login: number;
+  symbol: string;
+  execution_timeframe: 'M15';
+  bias_timeframe: 'H4';
+  generated_at: string;
+  latest_completed_candle: { time: number; open: number; high: number; low: number; close: number; volume: number };
+  completed_candles: { execution: number; bias: number };
+  state: string;
+  decision: string;
+  reason: string;
+  execution_structure: 'bullish' | 'bearish' | 'neutral';
+  execution_structure_reason: string;
+  bias_structure: 'bullish' | 'bearish' | 'neutral';
+  bias_reason: string;
+  previous_structure: 'bullish' | 'bearish' | 'neutral';
+  last_confirmed_high: AiTrialSwing | null;
+  last_confirmed_low: AiTrialSwing | null;
+  trendline: { anchor_1: AiTrialSwing; anchor_2: AiTrialSwing; break_index: number; break_time: number; line_at_break: number; close: number } | null;
+  protected_structure: number | null;
+  structure_shift: { confirmed: boolean; index: number | null; time: number | null };
+  retest: { level: number | null; touched: boolean; same_candle_blocked: boolean };
+  confidence: number;
+  confidence_factors: string[];
+  proposed_trade: AiTrialTrade | null;
+  last_historical_signal: AiTrialTrade | null;
+  last_execution?: AiTrialExecution | null;
+  rules: {
+    completed_candles_only: boolean;
+    swing_left: number;
+    swing_right: number;
+    same_candle_shift_retest: boolean;
+    required_sequence: string[];
+    take_profit_r: number;
+  };
+}
+
+export interface AiTrialStatus {
+  trial_version: string;
+  strategy: string;
+  mode: 'SIGNAL_ONLY' | 'DEMO_EXECUTION_LOCKED_TO_DEMO';
+  execution_timeframe: 'M15';
+  bias_timeframe: 'H4';
+  snapshot: AiTrialSnapshot | null;
+  execution: string;
+}
+
 export interface DerivAccount {
   id: number;
   login: string;

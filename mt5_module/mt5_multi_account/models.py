@@ -11,6 +11,7 @@ class ConnectRequest(BaseModel):
     terminal_path: str = ""
     portable: bool = False
     password: str = ""
+    remember_session: bool = True
     mode: Literal["real", "simulation"] = "real"
     symbol_aliases: Dict[str, str] = Field(default_factory=dict)
 

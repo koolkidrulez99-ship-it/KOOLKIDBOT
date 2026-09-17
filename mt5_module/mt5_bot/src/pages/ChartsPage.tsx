@@ -15,7 +15,7 @@ import MarketSelect from '../components/MarketSelect';
 import { usePersistentState } from '../hooks/usePersistentState';
 
 export default function ChartsPage() {
-  const { market, positions, livePrice, liveQuote, liveProfit, mt5Symbols, accounts, activeAccount, pushToast, refresh } = useHub();
+  const { market, positions, livePrice, liveQuote, liveProfit, mt5Symbols, accounts, active, activeAccount, pushToast, refresh } = useHub();
   const [source, setSource] = usePersistentState<'mt5' | 'deriv'>('charts_source', 'mt5');
   const [symbol, setSymbol] = usePersistentState('mt5_chart_symbol', 'XAUUSD');
   const [tf, setTf] = usePersistentState<Timeframe>('mt5_chart_timeframe', 'M15');
@@ -158,7 +158,7 @@ export default function ChartsPage() {
                 </span>
               </div>
             </div>
-            <CandleChart symbol={symbol} tfSeconds={TF_SECONDS[tf]} livePrice={price} positions={symbolPositions} height={440} digitsOverride={quote?.digits} />
+            <CandleChart symbol={symbol} tfSeconds={TF_SECONDS[tf]} livePrice={price} positions={symbolPositions} height={440} digitsOverride={quote?.digits} accountKey={active === 'all' ? 'all' : active} accountLabel={activeAccount?.nickname || (active === 'all' ? 'All accounts' : account?.nickname)} />
           </Panel>
 
           {/* positions on symbol */}

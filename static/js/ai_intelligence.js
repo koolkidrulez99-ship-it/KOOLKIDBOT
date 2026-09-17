@@ -10,13 +10,32 @@
     <button class="ai-launcher" type="button" title="Open AI Intelligence" aria-label="Open AI Intelligence" aria-expanded="false" hidden><img src="/static/images/logo.png" alt="KOOLKID"></button>
     <section class="ai-panel" role="dialog" aria-label="AI Intelligence chat" hidden>
       <header class="ai-header"><img src="/static/images/logo.png" alt=""><div class="ai-heading"><strong>AI Intelligence</strong><span class="ai-ready">Connecting</span></div>
+        <button class="ai-tool" data-tool="intelligence" title="Trading intelligence" aria-label="Trading intelligence"><i data-lucide="brain-circuit"></i></button>
         <button class="ai-tool" data-tool="clear" title="Clear chat" aria-label="Clear chat"><i data-lucide="trash-2"></i></button>
         <button class="ai-tool" data-tool="minimize" title="Minimize" aria-label="Minimize"><i data-lucide="minus"></i></button>
         <button class="ai-tool" data-tool="close" title="Close chat" aria-label="Close chat"><i data-lucide="x"></i></button>
       </header>
-      <div class="ai-messages" role="log" aria-live="polite"></div>
-      <div class="ai-thinking" role="status" hidden>Thinking...</div>
-      <form class="ai-compose"><textarea aria-label="Message AI Intelligence" maxlength="1200" placeholder="Ask AI Intelligence" rows="2"></textarea><button type="submit" class="ai-tool ai-send" title="Send" aria-label="Send"><i data-lucide="send"></i></button></form>
+      <nav class="ai-tabs"><button type="button" data-ai-view="chat" class="is-active">Assistant</button><button type="button" data-ai-view="monitor">Intelligence</button></nav>
+      <div class="ai-messages ai-chat-view" role="log" aria-live="polite"></div>
+      <div class="ai-thinking ai-chat-view" role="status" hidden>Thinking...</div>
+      <form class="ai-compose ai-chat-view"><textarea aria-label="Message AI Intelligence" maxlength="1200" placeholder="Ask AI Intelligence" rows="2"></textarea><button type="submit" class="ai-tool ai-send" title="Send" aria-label="Send"><i data-lucide="send"></i></button></form>
+      <section class="ai-monitor" hidden>
+        <div class="ai-monitor-head"><div><strong>Market Intelligence</strong><span class="ai-engine-mode">SIGNAL ONLY</span></div><button type="button" class="ai-refresh">Refresh</button></div>
+        <div class="ai-status-grid"><div><span>AI status</span><strong data-ai-stat="status">CONNECTING</strong></div><div><span>Decision</span><strong data-ai-stat="decision">SCANNING</strong></div><div><span>Confidence</span><strong data-ai-stat="score">0%</strong></div><div><span>Stage</span><strong data-ai-stat="stage">SCANNING</strong></div></div>
+        <form class="ai-scan-form">
+          <label>MT5 account<select name="account" required></select></label>
+          <label>Strategy<select name="strategy"><option>HUMAN APOSTLE</option><option>DEAR BRUCE</option></select></label>
+          <label>Symbol<select name="symbol" required><option value="">Choose account first</option></select></label>
+          <label>Execution timeframe<select name="timeframe"><option>M1</option><option>M5</option><option>M15</option><option>M30</option><option>H1</option><option>H4</option><option>H8</option><option>D1</option></select></label>
+          <label>Operating mode<select name="mode"><option>ANALYSIS ONLY</option><option>ALERT ONLY</option><option>MANUAL CONFIRMATION</option><option>AI AUTO TRADE</option><option>EX5 + AI CONFIRMATION</option></select></label>
+          <label>Minimum confidence<input name="threshold" type="number" min="1" max="100" value="75"></label>
+          <button type="submit" class="ai-scan">Evaluate completed candles</button>
+        </form>
+        <div class="ai-decision"><strong>Decision explanation</strong><p>No setup evaluated yet.</p></div>
+        <details open><summary>Recent AI decisions</summary><div class="ai-decisions"></div></details>
+        <details><summary>Teach AI</summary><form class="ai-teach-form"><textarea name="teaching" maxlength="1200" placeholder="Teach a trading rule without changing live rules automatically." required></textarea><button type="submit">Store candidate rule</button></form><div class="ai-knowledge"></div></details>
+        <div class="ai-future">Backtesting, approved learning models, internet context, cloud scheduling, and demo auto-execution are not connected in this milestone.</div>
+      </section>
       <footer class="ai-footer"><button class="ai-hide" type="button">Hide AI Bubble</button><button class="ai-emergency" type="button">Stop All Trading</button></footer>
     </section>`;
   document.body.append(root);
@@ -27,12 +46,15 @@
   const input = root.querySelector("textarea");
   const thinking = root.querySelector(".ai-thinking");
   const ready = root.querySelector(".ai-ready");
+  const monitor = root.querySelector(".ai-monitor");
+  const chatViews = root.querySelectorAll(".ai-chat-view");
   let csrf = "";
   let busy = false;
   let cancelled = 0;
   let lastProfile = "";
   let socketBound = null;
   let contextId = null;
+  let intelligenceLoaded = false;
 
   async function api(path, data) {
     const response = await fetch(`/ai-intelligence/${path}`, {
@@ -63,6 +85,72 @@
     launcher.setAttribute("aria-expanded", String(open));
     if (open) input.focus();
     else launcher.focus();
+  }
+
+  function showView(name) {
+    const monitoring = name === "monitor";
+    monitor.hidden = !monitoring;
+    chatViews.forEach(node => node.hidden = monitoring || (node === thinking && !busy));
+    root.querySelectorAll("[data-ai-view]").forEach(button => button.classList.toggle("is-active", button.dataset.aiView === name));
+    panel.classList.toggle("ai-panel-wide", monitoring);
+    if (monitoring && !intelligenceLoaded) loadIntelligence();
+  }
+
+  function renderIntelligence(data) {
+    intelligenceLoaded = true;
+    root.querySelector('[data-ai-stat="status"]').textContent = data.status || "READY";
+    root.querySelector(".ai-engine-mode").textContent = data.execution || "SIGNAL ONLY";
+    const account = root.querySelector('.ai-scan-form [name="account"]');
+    const previous = account.value;
+    account.replaceChildren();
+    for (const row of data.accounts || []) {
+      const option = document.createElement("option");
+      option.value = row.login;
+      option.textContent = `${row.name} (${row.login})${row.connected ? "" : " - OFFLINE"}`;
+      option.disabled = !row.connected;
+      account.append(option);
+    }
+    if (previous && [...account.options].some(option => option.value === previous && !option.disabled)) account.value = previous;
+    renderDecisionRows(data.recent || []);
+    renderKnowledge(data.knowledge || []);
+    if (account.value) loadIntelligenceSymbols(account.value);
+  }
+
+  function renderDecisionRows(rows) {
+    const wrap = root.querySelector(".ai-decisions");
+    wrap.replaceChildren();
+    for (const row of rows.slice(0, 20)) {
+      const item = document.createElement("div");
+      item.className = "ai-decision-row";
+      item.textContent = `${row.decision} · ${row.score || 0}% · ${row.state?.symbol || ""} ${row.state?.timeframe || ""} — ${row.reason || ""}`;
+      wrap.append(item);
+    }
+    if (!rows.length) wrap.textContent = "No evaluations recorded yet.";
+  }
+
+  function renderKnowledge(rows) {
+    const wrap = root.querySelector(".ai-knowledge");
+    wrap.replaceChildren();
+    for (const row of rows.slice(0, 20)) {
+      const item = document.createElement("div");
+      item.className = "ai-knowledge-row";
+      item.textContent = `${row.enabled ? "ON" : "OFF"} · ${row.strategy} · v${row.version}: ${row.rule}`;
+      wrap.append(item);
+    }
+  }
+
+  async function loadIntelligence() {
+    try { renderIntelligence(await api("intelligence/status")); }
+    catch (error) { root.querySelector('[data-ai-stat="status"]').textContent = "OFFLINE"; root.querySelector(".ai-decision p").textContent = error.message; }
+  }
+
+  async function loadIntelligenceSymbols(account) {
+    const field = root.querySelector('.ai-scan-form [name="symbol"]');
+    field.innerHTML = '<option value="">Loading symbols...</option>';
+    try {
+      const data = await api(`intelligence/symbols?account=${encodeURIComponent(account)}`);
+      field.replaceChildren(...data.symbols.map(name => Object.assign(document.createElement("option"), {value: name, textContent: name})));
+    } catch (error) { field.innerHTML = '<option value="">Symbols unavailable</option>'; }
   }
 
   function quickActions() {
@@ -252,6 +340,43 @@
   }
 
   launcher.addEventListener("click", () => show(panel.hidden));
+  root.querySelector('[data-tool="intelligence"]').addEventListener("click", () => { show(true); showView("monitor"); });
+  root.querySelectorAll("[data-ai-view]").forEach(button => button.addEventListener("click", () => showView(button.dataset.aiView)));
+  root.querySelector(".ai-refresh").addEventListener("click", loadIntelligence);
+  root.querySelector('.ai-scan-form [name="account"]').addEventListener("change", event => loadIntelligenceSymbols(event.target.value));
+  root.querySelector(".ai-scan-form").addEventListener("submit", async event => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const button = event.currentTarget.querySelector("button");
+    button.disabled = true;
+    try {
+      const result = await api("intelligence/evaluate", {
+        account: form.get("account"), symbol: form.get("symbol"), timeframe: form.get("timeframe"),
+        strategy: form.get("strategy"), mode: form.get("mode"), threshold: Number(form.get("threshold")),
+        candle_confirmation: true, target_r: 2
+      });
+      root.querySelector('[data-ai-stat="decision"]').textContent = result.decision;
+      root.querySelector('[data-ai-stat="score"]').textContent = `${result.score || 0}%`;
+      root.querySelector('[data-ai-stat="stage"]').textContent = result.state?.state || "SCANNING";
+      root.querySelector(".ai-decision p").textContent = `${result.reason}${result.execution_note ? " " + result.execution_note : ""}`;
+      await loadIntelligence();
+    } catch (error) { root.querySelector(".ai-decision p").textContent = error.message; }
+    finally { button.disabled = false; }
+  });
+  root.querySelector(".ai-teach-form").addEventListener("submit", async event => {
+    event.preventDefault();
+    const teaching = event.currentTarget.elements.teaching.value;
+    const strategy = root.querySelector('.ai-scan-form [name="strategy"]').value;
+    const button = event.currentTarget.querySelector("button");
+    button.disabled = true;
+    try {
+      const result = await api("intelligence/teach", {teaching, strategy});
+      event.currentTarget.reset();
+      root.querySelector(".ai-decision p").textContent = result.message;
+      await loadIntelligence();
+    } catch (error) { root.querySelector(".ai-decision p").textContent = error.message; }
+    finally { button.disabled = false; }
+  });
   root.querySelector("form").addEventListener("submit", e => { e.preventDefault(); send(input.value); });
   input.addEventListener("keydown", e => {
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(input.value); }

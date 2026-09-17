@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createChart, ColorType, CrosshairMode } from 'lightweight-charts';
 import type { IChartApi, ISeriesApi, CandlestickData, HistogramData, UTCTimestamp } from 'lightweight-charts';
 import { genCandles, MARKET, TF_SECONDS } from '../lib/market';
@@ -6,6 +6,7 @@ import type { Candle } from '../lib/market';
 import type { Mt5Position } from '../types';
 import { isSimulation } from '../config/runtime';
 import { mt5MarketService } from '../services/mt5MarketService';
+import { ChartMarkupOverlay, ChartMarkupToolbar, useChartMarkup } from './ChartMarkup';
 
 export default function CandleChart({
   symbol,
@@ -15,6 +16,8 @@ export default function CandleChart({
   height = 460,
   onLastCandle,
   digitsOverride,
+  accountKey,
+  accountLabel,
 }: {
   symbol: string;
   tfSeconds: number;
@@ -23,13 +26,18 @@ export default function CandleChart({
   height?: number;
   onLastCandle?: (c: Candle) => void;
   digitsOverride?: number;
+  accountKey?: string | number | null;
+  accountLabel?: string;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const volSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
   const lastRef = useRef<Candle | null>(null);
+  const [chartRevision, setChartRevision] = useState(0);
+  const [candleTimes, setCandleTimes] = useState<number[]>([]);
   const digits = digitsOverride ?? MARKET[symbol]?.digits ?? 5;
+  const markup = useChartMarkup('mt5', accountKey, symbol);
 
   const symbolPositions = useMemo(() => positions.filter((p) => p.symbol === symbol), [positions, symbol]);
 
@@ -97,11 +105,13 @@ export default function CandleChart({
       chart.timeScale().fitContent();
       chart.timeScale().scrollToPosition(4, false);
       lastRef.current = data[data.length - 1] || null;
+      setCandleTimes(data.map((row) => row.time));
     };
 
     chartRef.current = chart;
     candleSeriesRef.current = candles;
     volSeriesRef.current = vol;
+    setChartRevision((value) => value + 1);
 
     if (isSimulation) {
       applyData(genCandles(symbol, tfSeconds, 220));
@@ -134,6 +144,7 @@ export default function CandleChart({
     if (nowSlot > last.time) {
       cur = { time: nowSlot, open: last.close, high: Math.max(last.close, price), low: Math.min(last.close, price), close: price, volume: 100 };
       volSeriesRef.current?.update({ time: nowSlot as UTCTimestamp, value: 120, color: 'rgba(91,140,255,0.3)' });
+      setCandleTimes((prev) => prev[prev.length - 1] === nowSlot ? prev : [...prev.slice(-999), nowSlot]);
     } else {
       cur = { ...last, close: price, high: Math.max(last.high, price), low: Math.min(last.low, price) };
     }
@@ -173,5 +184,22 @@ export default function CandleChart({
     } catch { /* markers outside visible range in some tf - safe to ignore */ }
   }, [symbolPositions, tfSeconds, symbol]);
 
-  return <div ref={wrapRef} className="w-full" style={{ height }} />;
+  return (
+    <div className="space-y-2">
+      <div className="rounded-xl border border-white/[0.06] bg-black/15 px-2.5 py-2">
+        <ChartMarkupToolbar controller={markup} scopeLabel={`${accountLabel || `MT5 #${accountKey ?? 'unassigned'}`} · ${symbol}`} />
+      </div>
+      <div className="relative w-full" style={{ height }}>
+        <div ref={wrapRef} className="absolute inset-0 h-full w-full" />
+        <ChartMarkupOverlay
+          controller={markup}
+          chartRef={chartRef}
+          seriesRef={candleSeriesRef}
+          candleTimes={candleTimes}
+          revisionToken={chartRevision}
+          digits={digits}
+        />
+      </div>
+    </div>
+  );
 }
