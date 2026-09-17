@@ -1,12 +1,17 @@
 const multiBase = String(import.meta.env.VITE_MT5_MULTI_ACCOUNT_API_BASE || 'http://127.0.0.1:8002').replace(/\/$/, '');
 
+function authHeaders(): Record<string, string> {
+  const token = sessionStorage.getItem('koolkid_mt5_hub_token');
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 async function multiRequest<T>(path: string, method = 'GET', body?: unknown, timeoutMs = 20000): Promise<T> {
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(`${multiBase}${path.startsWith('/') ? path : `/${path}`}`, {
       method,
-      headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+      headers: { ...authHeaders(), ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: controller.signal,
     });

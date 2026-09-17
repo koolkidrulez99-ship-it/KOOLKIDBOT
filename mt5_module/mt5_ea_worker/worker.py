@@ -6,12 +6,16 @@ import threading
 import time
 import uuid
 import ctypes
+import sys
 from ctypes import wintypes
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import psutil
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from hub_auth import current_workspace
 
 try:
     from .config_builder import build_config
@@ -29,10 +33,13 @@ except ImportError:  # direct `python main.py` execution
     from terminal_manager import discover_terminals, prepare_dedicated_terminal, select_terminal, terminal_data_dir
 
 _LOCK = threading.RLock()
-ASSIGNMENT_DIR = ROOT / "data" / "assignments"
 DEFAULT_LIBRARY = ROOT.parent / "mt5_bridge" / "data" / "ea_library"
 COPY_MAGIC = 987654
 HUB_COMMENTS = ("kkm:", "kkcopy:", "koolkid hub", "koolkid close")
+
+
+def _assignment_dir() -> Path:
+    return ROOT / "data" / "workspaces" / current_workspace() / "assignments"
 
 
 def _now() -> str:
@@ -285,7 +292,7 @@ def start_bot(request: StartBotRequest) -> dict[str, Any]:
         preset_source = _safe_library_file(request.preset_path) if request.preset_path else None
         expert, preset = install_files(data_dir, request.bot_id, ea_source, preset_source)
         assignment_id = f"ea-{uuid.uuid4().hex[:12]}"
-        config_path = ASSIGNMENT_DIR / assignment_id / "startup.ini"
+        config_path = _assignment_dir() / assignment_id / "startup.ini"
         build_config(
             config_path, login=request.account_login, server=request.server, expert=expert, preset=preset,
             symbol=request.symbol, timeframe=request.timeframe,
@@ -337,6 +344,7 @@ def start_bot(request: StartBotRequest) -> dict[str, Any]:
             "configured_magic": request.configured_magic,
             "baseline_position_tickets": metrics.get("_position_tickets", []),
             "baseline_deal_tickets": metrics.get("_deal_tickets", []),
+            "restart_request": request.model_dump(),
         }
         row.update(metrics)
         row.update({"open_positions": 0, "current_pl": 0.0, "today_pl": 0.0, "last_trade": None})
@@ -374,3 +382,15 @@ def stop_bot(bot_id: int) -> dict[str, Any]:
 
 def terminals() -> list[dict[str, str]]:
     return discover_terminals()
+
+
+def restore_running_assignments() -> None:
+    """Restart saved assignments independently after a service restart."""
+    for row in list(read_state().get("assignments", [])):
+        request = row.get("restart_request")
+        if row.get("status") not in {"running", "starting"} or not isinstance(request, dict):
+            continue
+        try:
+            start_bot(StartBotRequest(**request))
+        except Exception:
+            continue

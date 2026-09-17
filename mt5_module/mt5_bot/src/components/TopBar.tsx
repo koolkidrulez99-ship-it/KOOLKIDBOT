@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
-import { ChevronsUpDown, Menu, RefreshCw, Sparkles, Check, Moon, Sun } from 'lucide-react';
+import { ChevronsUpDown, Menu, RefreshCw, Sparkles, Check, LogOut, Moon, Sun } from 'lucide-react';
 import { useHub } from '../context/HubContext';
 import type { ActiveSel } from '../context/HubContext';
 import { fmtSigned, fmtUSD } from '../lib/format';
 import { Badge, StatusDot } from './ui';
 import { isSimulation } from '../config/runtime';
 import { useTheme } from '../hooks/useTheme';
+import { hubAuthService } from '../services/hubAuthService';
 
 const TITLES: [string, string][] = [
   ['/', 'Platform Dashboard'],
@@ -168,6 +169,9 @@ export default function TopBar({ onMenu }: { onMenu: () => void }) {
         </button>
         <button onClick={() => refresh()} className="btn-icon" title="Refresh hub data">
           <RefreshCw size={15} className={refreshing ? 'animate-spin text-brand-400' : ''} />
+        </button>
+        <button onClick={() => { hubAuthService.logout(); window.location.assign('/mt5-bot'); }} className="btn-icon" title="Log out of MT5 Hub" aria-label="Log out of MT5 Hub">
+          <LogOut size={15} />
         </button>
         <span className="hidden lg:inline-flex chip !bg-brand-500/10 !border-brand-500/25">
           <Sparkles size={12} className="text-brand-300" />

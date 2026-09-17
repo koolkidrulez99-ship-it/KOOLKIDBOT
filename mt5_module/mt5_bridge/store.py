@@ -2,14 +2,20 @@ from __future__ import annotations
 
 import json
 import threading
+import sys
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
-STATE_FILE = DATA_DIR / "bridge_state.json"
+sys.path.insert(0, str(ROOT.parent))
+from hub_auth import current_workspace
 _LOCK = threading.RLock()
+
+
+def _state_file() -> Path:
+    return DATA_DIR / "workspaces" / current_workspace() / "bridge_state.json"
 
 PREINSTALLED_BOT_NAMES = [
     "WASP",
@@ -86,13 +92,14 @@ def _default_state() -> dict[str, Any]:
 
 
 def _load_unlocked() -> dict[str, Any]:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    if not STATE_FILE.exists():
+    state_file = _state_file()
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    if not state_file.exists():
         state = _default_state()
         _save_unlocked(state)
         return state
     try:
-        state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        state = json.loads(state_file.read_text(encoding="utf-8"))
         if not isinstance(state, dict) or state.get("version") != 1:
             raise ValueError("unsupported state")
     except Exception:
@@ -117,10 +124,11 @@ def _load_unlocked() -> dict[str, Any]:
 
 
 def _save_unlocked(state: dict[str, Any]) -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = STATE_FILE.with_suffix(".tmp")
+    state_file = _state_file()
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    tmp = state_file.with_suffix(".tmp")
     tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
-    tmp.replace(STATE_FILE)
+    tmp.replace(state_file)
 
 
 def read_state() -> dict[str, Any]:

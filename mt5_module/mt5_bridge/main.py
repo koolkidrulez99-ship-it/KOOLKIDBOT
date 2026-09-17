@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
+import json
 import os
 import re
+import sys
 import threading
 import time
 import uuid
@@ -12,12 +15,15 @@ from typing import Any
 from urllib.parse import quote
 
 from dotenv import load_dotenv
-from fastapi import Body, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Body, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / ".env")
+sys.path.insert(0, str(ROOT.parent))
+from hub_auth import current_workspace, issue_token, reset_workspace, set_workspace, workspace_from_authorization, workspace_ids
 
 import engine
 import ea_worker_client
@@ -31,7 +37,9 @@ EA_LIBRARY = ROOT / "data" / "ea_library"
 EA_LIBRARY.mkdir(parents=True, exist_ok=True)
 MAX_EA_FILE_BYTES = 25 * 1024 * 1024
 _stats_history_lock = threading.Lock()
-_stats_history_cache: dict[str, Any] = {"session_key": "", "loaded_at": 0.0, "rows": []}
+_stats_history_cache: dict[str, dict[str, Any]] = {}
+_AI_SCANNERS: dict[str, threading.Thread] = {}
+_AI_SCANNERS_LOCK = threading.RLock()
 _SECRET_INPUT = re.compile(r"(?:password|passwd|token|secret|license|licence|api.?key)", re.IGNORECASE)
 
 
@@ -94,11 +102,69 @@ def _analyze_set_data(data: bytes) -> dict[str, Any]:
     return {"format": "MT5 SET", "input_count": len(inputs), "inputs": inputs[:100], "truncated": len(inputs) > 100}
 app.add_middleware(
     CORSMiddleware,
+    allow_origins=["http://127.0.0.1:5055", "http://localhost:5055"],
     allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Accept"],
+    allow_headers=["Content-Type", "Accept", "Authorization"],
 )
+
+
+@app.exception_handler(Exception)
+async def unhandled_api_error(_request: Request, _exc: Exception):
+    # Returning through FastAPI's exception stack lets CORSMiddleware retain
+    # the local-origin headers even when an unexpected API error occurs.
+    return JSONResponse(status_code=500, content={"detail": "MT5 Bridge internal error."})
+
+HUB_USERS_FILE = ROOT / "data" / "mt5_hub_users.json"
+_HUB_USERS_LOCK = threading.RLock()
+
+
+def _load_hub_users() -> dict[str, Any]:
+    if not HUB_USERS_FILE.exists():
+        return {"version": 1, "users": []}
+    try:
+        data = json.loads(HUB_USERS_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) and isinstance(data.get("users"), list) else {"version": 1, "users": []}
+    except Exception:
+        return {"version": 1, "users": []}
+
+
+def _save_hub_users(data: dict[str, Any]) -> None:
+    HUB_USERS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = HUB_USERS_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    tmp.replace(HUB_USERS_FILE)
+
+
+def _password_hash(password: str, salt: bytes) -> str:
+    return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 310_000).hex()
+
+
+class HubAuthPayload(BaseModel):
+    username: str = Field(min_length=3, max_length=80)
+    password: str = Field(min_length=8, max_length=256)
+
+
+def _hub_identity(row: dict[str, Any]) -> dict[str, str]:
+    return {"user_id": str(row["id"]), "username": str(row["username"]), "workspace_id": str(row["workspace_id"])}
+
+
+@app.middleware("http")
+async def require_mt5_workspace(request: Request, call_next):
+    path = request.url.path
+    if request.method == "OPTIONS" or path == "/health":
+        return await call_next(request)
+    if not path.startswith("/api/mt5/") or path.startswith("/api/mt5/hub/auth/"):
+        return await call_next(request)
+    workspace_id = workspace_from_authorization(request.headers.get("Authorization"))
+    if not workspace_id:
+        return JSONResponse(status_code=401, content={"detail": "Sign in to your MT5 Hub workspace."})
+    context_token = set_workspace(workspace_id)
+    try:
+        return await call_next(request)
+    finally:
+        reset_workspace(context_token)
 
 
 class AccountPayload(BaseModel):
@@ -131,6 +197,59 @@ class AiTrialExecutePayload(BaseModel):
     account_login: int
     symbol: str = Field(min_length=1, max_length=64)
     volume: float = Field(gt=0)
+
+
+@app.post("/api/mt5/hub/auth/signup")
+def hub_signup(payload: HubAuthPayload):
+    username = payload.username.strip().lower()
+    if not re.fullmatch(r"[a-z0-9_.-]+", username):
+        raise HTTPException(status_code=400, detail="Use letters, numbers, dots, hyphens, or underscores for the username.")
+    with _HUB_USERS_LOCK:
+        users = _load_hub_users()
+        if any(str(row.get("username", "")).lower() == username for row in users["users"]):
+            raise HTTPException(status_code=409, detail="That MT5 Hub username already exists.")
+        salt = os.urandom(16)
+        row = {
+            "id": uuid.uuid4().hex,
+            "workspace_id": f"ws_{uuid.uuid4().hex}",
+            "username": username,
+            "password_salt": salt.hex(),
+            "password_hash": _password_hash(payload.password, salt),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        users["users"].append(row)
+        _save_hub_users(users)
+    identity = _hub_identity(row)
+    return {**identity, "token": issue_token(identity["workspace_id"], identity["user_id"])}
+
+
+@app.post("/api/mt5/hub/auth/login")
+def hub_login(payload: HubAuthPayload):
+    username = payload.username.strip().lower()
+    with _HUB_USERS_LOCK:
+        row = next((item for item in _load_hub_users()["users"] if str(item.get("username", "")).lower() == username), None)
+    if not row:
+        raise HTTPException(status_code=401, detail="Invalid MT5 Hub login.")
+    try:
+        valid = hmac.compare_digest(str(row.get("password_hash", "")), _password_hash(payload.password, bytes.fromhex(str(row.get("password_salt", "")))))
+    except ValueError:
+        valid = False
+    if not valid:
+        raise HTTPException(status_code=401, detail="Invalid MT5 Hub login.")
+    identity = _hub_identity(row)
+    return {**identity, "token": issue_token(identity["workspace_id"], identity["user_id"])}
+
+
+@app.get("/api/mt5/hub/auth/me")
+def hub_me(request: Request):
+    workspace_id = workspace_from_authorization(request.headers.get("Authorization"))
+    if not workspace_id:
+        raise HTTPException(status_code=401, detail="Sign in to your MT5 Hub workspace.")
+    with _HUB_USERS_LOCK:
+        row = next((item for item in _load_hub_users()["users"] if item.get("workspace_id") == workspace_id), None)
+    if not row:
+        raise HTTPException(status_code=401, detail="MT5 Hub workspace no longer exists.")
+    return _hub_identity(row)
 
 
 def fail(exc: Exception, status: int = 400):
@@ -167,6 +286,55 @@ def session_snapshot() -> dict[str, Any]:
         return multi_account_client.accounts()
     except RuntimeError:
         return {"accounts": [], "master": None, "slaves": [], "offline": True}
+
+
+def _run_ai_trial_scan(payload: AiTrialScanPayload) -> dict[str, Any]:
+    execution_rows = multi_account_client.account_request(payload.account_login, f"/candles/{quote(payload.symbol)}?timeframe=M15&count=700", timeout=20)
+    bias_rows = multi_account_client.account_request(payload.account_login, f"/candles/{quote(payload.symbol)}?timeframe=H4&count=350", timeout=20)
+    snapshot = run_human_apostle_trial(execution_rows, bias_rows, symbol=payload.symbol, account_login=payload.account_login)
+    snapshot.setdefault("execution_mode", "SIGNAL_ONLY")
+    snapshot.setdefault("execution_lock", "demo_only")
+    snapshot.setdefault("last_execution", None)
+    return save_ai_trial_snapshot(snapshot)
+
+
+def _start_ai_scanner(workspace_id: str) -> None:
+    with _AI_SCANNERS_LOCK:
+        existing = _AI_SCANNERS.get(workspace_id)
+        if existing and existing.is_alive():
+            return
+
+        def scan_loop():
+            context_token = set_workspace(workspace_id)
+            try:
+                while True:
+                    state = read_state()
+                    settings = state.get("ai_settings") or {}
+                    config = state.get("ai_scan_config") or {}
+                    if not settings.get("auto_trading") or not config.get("account_login") or not config.get("symbol"):
+                        return
+                    try:
+                        _run_ai_trial_scan(AiTrialScanPayload(**config))
+                        update_state(lambda st: st.pop("ai_scan_error", None))
+                    except Exception as exc:
+                        update_state(lambda st: st.update({"ai_scan_error": str(exc), "ai_scan_last_error_at": datetime.now(timezone.utc).isoformat()}))
+                    time.sleep(60)
+            finally:
+                reset_workspace(context_token)
+
+        _AI_SCANNERS[workspace_id] = threading.Thread(target=scan_loop, daemon=True, name=f"KOOLKID-AI-Scan-{workspace_id[:8]}")
+        _AI_SCANNERS[workspace_id].start()
+
+
+@app.on_event("startup")
+def restore_ai_scanners():
+    for workspace_id in workspace_ids(HUB_USERS_FILE):
+        token = set_workspace(workspace_id)
+        try:
+            if read_state().get("ai_settings", {}).get("auto_trading"):
+                _start_ai_scanner(workspace_id)
+        finally:
+            reset_workspace(token)
 
 
 @app.get("/")
@@ -428,12 +596,14 @@ def _history_for_stats(days: int = 30) -> list[dict[str, Any]]:
     sessions = [row for row in session_snapshot().get("accounts", []) if row.get("connected")]
     session_key = ",".join(sorted(str(row.get("account_id") or row.get("login") or "") for row in sessions))
     now = time.monotonic()
+    workspace_id = current_workspace()
     with _stats_history_lock:
-        if _stats_history_cache["session_key"] == session_key and now - float(_stats_history_cache["loaded_at"]) < 15:
-            return list(_stats_history_cache["rows"])
+        cache = _stats_history_cache.get(workspace_id, {})
+        if cache.get("session_key") == session_key and now - float(cache.get("loaded_at") or 0) < 15:
+            return list(cache.get("rows") or [])
     rows = history(days)
     with _stats_history_lock:
-        _stats_history_cache.update({"session_key": session_key, "loaded_at": now, "rows": list(rows)})
+        _stats_history_cache[workspace_id] = {"session_key": session_key, "loaded_at": now, "rows": list(rows)}
     return rows
 
 
@@ -677,7 +847,7 @@ async def upload_bot_files(
     if bot is None:
         raise HTTPException(status_code=404, detail="Bot not found.")
 
-    bot_dir = EA_LIBRARY / str(bot_id)
+    bot_dir = EA_LIBRARY / current_workspace() / str(bot_id)
     result: dict[str, Any] = {"bot_id": bot_id}
     if ea_file is not None:
         result["ea"] = await _save_upload(ea_file, bot_dir, ".ex5")
@@ -921,26 +1091,14 @@ def get_ai_trial():
 @app.post("/api/mt5/ai/trial/scan")
 def scan_ai_trial(payload: AiTrialScanPayload):
     try:
-        execution_rows = multi_account_client.account_request(
-            payload.account_login,
-            f"/candles/{quote(payload.symbol)}?timeframe=M15&count=700",
-            timeout=20,
-        )
-        bias_rows = multi_account_client.account_request(
-            payload.account_login,
-            f"/candles/{quote(payload.symbol)}?timeframe=H4&count=350",
-            timeout=20,
-        )
-        snapshot = run_human_apostle_trial(
-            execution_rows,
-            bias_rows,
-            symbol=payload.symbol,
-            account_login=payload.account_login,
-        )
-        snapshot.setdefault("execution_mode", "SIGNAL_ONLY")
-        snapshot.setdefault("execution_lock", "demo_only")
-        snapshot.setdefault("last_execution", None)
-        return save_ai_trial_snapshot(snapshot)
+        result = _run_ai_trial_scan(payload)
+        def save_scan_config(state):
+            state["ai_scan_config"] = {"account_login": payload.account_login, "symbol": payload.symbol}
+            return state["ai_scan_config"]
+        update_state(save_scan_config)
+        if read_state().get("ai_settings", {}).get("auto_trading"):
+            _start_ai_scanner(current_workspace())
+        return result
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     except RuntimeError as exc:
@@ -1037,7 +1195,10 @@ def save_ai(payload: dict[str, Any] = Body(...)):
     def mut(state):
         state["ai_settings"] = settings
         return settings
-    return update_state(mut)
+    result = update_state(mut)
+    if result.get("auto_trading"):
+        _start_ai_scanner(current_workspace())
+    return result
 
 
 # Deriv execution is deliberately not implemented by the MT5 bridge.

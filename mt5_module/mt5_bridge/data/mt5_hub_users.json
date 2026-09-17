@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "users": [
+    {
+      "id": "61a06c27c8174c1bab0fa03ffadd5197",
+      "workspace_id": "ws_07f90f433b0144d5bddf17c8f27e07cc",
+      "username": "koolkid8989",
+      "password_salt": "663789f4e4e2ee15daff2aaeff735719",
+      "password_hash": "1faa686689db60f5a9c8ce449e28d0ea170e2ef8bbffa6ee5087b1203c8ddeee",
+      "created_at": "2026-09-17T15:47:11.754840+00:00"
+    }
+  ]
+}

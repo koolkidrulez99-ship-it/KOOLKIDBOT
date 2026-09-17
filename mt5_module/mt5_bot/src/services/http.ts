@@ -1,5 +1,10 @@
 import { apiUrl } from '../config/runtime';
 
+function authHeaders(): Record<string, string> {
+  const token = sessionStorage.getItem('koolkid_mt5_hub_token');
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 async function parseResponse<T>(res: Response): Promise<T> {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -15,7 +20,7 @@ export async function apiRequest<T>(path: string, method = 'GET', body?: unknown
   try {
     const res = await fetch(apiUrl(path), {
       method,
-      headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+      headers: { ...authHeaders(), ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: controller?.signal,
     });
@@ -31,6 +36,6 @@ export async function apiRequest<T>(path: string, method = 'GET', body?: unknown
 }
 
 export async function apiFormRequest<T>(path: string, form: FormData, method = 'POST'): Promise<T> {
-  const res = await fetch(apiUrl(path), { method, body: form });
+  const res = await fetch(apiUrl(path), { method, headers: authHeaders(), body: form });
   return parseResponse<T>(res);
 }

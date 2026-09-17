@@ -17,11 +17,13 @@ import AIPage from './pages/AIPage';
 import SettingsPage from './pages/SettingsPage';
 import CopyTradingPage from './pages/CopyTradingPage';
 import { routerBase } from './config/runtime';
+import HubAuthGate from './components/HubAuthGate';
 
 export default function App() {
   return (
-    <HubProvider>
-      <BrowserRouter basename={routerBase || undefined}>
+    <HubAuthGate>
+      <HubProvider>
+        <BrowserRouter basename={routerBase || undefined}>
         <Routes>
           <Route element={<Shell />}>
             <Route path="/" element={<DashboardHome />} />
@@ -42,7 +44,8 @@ export default function App() {
             <Route path="*" element={<OverviewPage />} />
           </Route>
         </Routes>
-      </BrowserRouter>
-    </HubProvider>
+        </BrowserRouter>
+      </HubProvider>
+    </HubAuthGate>
   );
 }

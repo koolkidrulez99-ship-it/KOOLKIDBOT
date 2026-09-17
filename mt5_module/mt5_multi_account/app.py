@@ -9,32 +9,137 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 import uuid
 from pathlib import Path
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from .models import ConnectRequest, CopyRequest, CopyDecisionRequest, ManualTradeRequest, CloseRequest, MultiCloseRequest
 from .state import State
 from .pool import Pool
 from .credential_store import CredentialStore
 from .copy_engine import CopyEngine, COPY_MAGIC
 
+import sys
 BASE = Path(__file__).resolve().parent
+sys.path.insert(0, str(BASE.parent))
+from hub_auth import current_workspace, internal_workspace_signature, reset_workspace, set_workspace, verify_internal_workspace, workspace_from_authorization, workspace_ids
+
 TERMINALS = BASE / "data" / "terminals"
 TERMINAL_LOCK = threading.RLock()
-STATE = State(BASE / "data" / "state.json")
-CREDENTIALS = CredentialStore(BASE / "data" / "credentials")
-POOL = Pool()
-COPY = CopyEngine(POOL, STATE)
+_CORE_POOL = Pool()
 _SESSION_STOP = threading.Event()
-_SESSION_BACKOFF: dict[str, dict[str, object]] = {}
+_RUNTIMES: dict[str, "WorkspaceRuntime"] = {}
+_RUNTIMES_LOCK = threading.RLock()
+
+
+class ScopedPool:
+    def __init__(self, workspace_id: str):
+        self.workspace_id = workspace_id
+
+    def _key(self, account_id: str) -> str:
+        return f"{self.workspace_id}--{account_id}"
+
+    def _external(self, account_id: str) -> str:
+        prefix = f"{self.workspace_id}--"
+        return account_id[len(prefix):] if account_id.startswith(prefix) else account_id
+
+    @property
+    def items(self):
+        return {self._external(aid): runtime for aid, runtime in _CORE_POOL.items.items() if str(runtime.config.get("_workspace") or "") == self.workspace_id}
+
+    @property
+    def pending(self):
+        return {self._external(aid): value for aid, value in _CORE_POOL.pending.items() if aid.startswith(f"{self.workspace_id}--")}
+
+    def connect(self, cfg, password=""):
+        external = str(cfg["account_id"])
+        return self.status_from_internal(_CORE_POOL.connect({**cfg, "account_id": self._key(external), "_workspace": self.workspace_id}, password), external)
+
+    def status_from_internal(self, row, external: str):
+        result = dict(row)
+        result["account_id"] = external
+        return result
+
+    def disconnect(self, aid, preserve_recovery=False):
+        return _CORE_POOL.disconnect(self._key(str(aid)), preserve_recovery=preserve_recovery)
+
+    def cancel_connect(self, aid):
+        return _CORE_POOL.cancel_connect(self._key(str(aid)))
+
+    def call(self, aid, op, payload=None, timeout=15):
+        return _CORE_POOL.call(self._key(str(aid)), op, payload, timeout)
+
+    def cached(self, aid, op, default=None):
+        return _CORE_POOL.cached(self._key(str(aid)), op, default)
+
+    def ids(self):
+        return [self._external(aid) for aid in _CORE_POOL.ids() if aid.startswith(f"{self.workspace_id}--")]
+
+    def status(self, aid):
+        return self.status_from_internal(_CORE_POOL.status(self._key(str(aid))), str(aid))
+
+
+class WorkspaceRuntime:
+    def __init__(self, workspace_id: str):
+        root = BASE / "data" / "workspaces" / workspace_id
+        self.workspace_id = workspace_id
+        self.state = State(root / "state.json")
+        self.credentials = CredentialStore(root / "credentials")
+        self.pool = ScopedPool(workspace_id)
+        self.copy = CopyEngine(self.pool, self.state)
+        self.session_backoff: dict[str, dict[str, object]] = {}
+        self.started = False
+
+
+def _runtime() -> WorkspaceRuntime:
+    workspace_id = current_workspace()
+    with _RUNTIMES_LOCK:
+        runtime = _RUNTIMES.get(workspace_id)
+        if runtime is None:
+            runtime = WorkspaceRuntime(workspace_id)
+            _RUNTIMES[workspace_id] = runtime
+        return runtime
+
+
+class _RuntimeProxy:
+    def __init__(self, attr: str): self.attr = attr
+    def __getattr__(self, name): return getattr(getattr(_runtime(), self.attr), name)
+
+
+STATE = _RuntimeProxy("state")
+CREDENTIALS = _RuntimeProxy("credentials")
+POOL = _RuntimeProxy("pool")
+COPY = _RuntimeProxy("copy")
 app = FastAPI(title="KOOLKID MT5 Multi-Account", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
+    allow_origins=["http://127.0.0.1:5055", "http://localhost:5055"],
     allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def require_workspace(request: Request, call_next):
+    # Public health check used by START_KOOLKID.bat/service monitoring.
+    # Keep this workspace-neutral and do not expose user/account state.
+    if request.method == "OPTIONS" or request.url.path == "/health":
+        return await call_next(request)
+
+    workspace_id = workspace_from_authorization(request.headers.get("Authorization"))
+    if not workspace_id:
+        candidate = request.headers.get("X-MT5-Workspace", "")
+        if verify_internal_workspace(candidate, request.headers.get("X-MT5-Internal-Signature")):
+            workspace_id = candidate
+    if not workspace_id:
+        return JSONResponse(status_code=401, content={"detail": "Sign in to your MT5 Hub workspace."})
+    token = set_workspace(workspace_id)
+    try:
+        _start_workspace(workspace_id)
+        return await call_next(request)
+    finally:
+        reset_workspace(token)
 
 def _saved_real_accounts():
     state = STATE.load()
@@ -69,13 +174,13 @@ def restore_saved_sessions():
         for attempt in range(3):
             try:
                 _connect_saved(cfg)
-                _SESSION_BACKOFF.pop(aid, None)
+                _runtime().session_backoff.pop(aid, None)
                 break
             except Exception as exc:
                 if attempt < 2:
                     time.sleep(min(8, 2 ** (attempt + 1)))
                 else:
-                    _SESSION_BACKOFF[aid] = {"attempt": 1, "next_at": time.time() + 5, "error": str(exc)}
+                    _runtime().session_backoff[aid] = {"attempt": 1, "next_at": time.time() + 5, "error": str(exc)}
 
 
 def keep_saved_sessions_connected():
@@ -85,19 +190,20 @@ def keep_saved_sessions_connected():
     while not _SESSION_STOP.wait(5):
         now = time.time()
         saved = {str(cfg.get("account_id") or ""): cfg for cfg in _saved_real_accounts()}
-        for aid in list(_SESSION_BACKOFF):
+        backoff = _runtime().session_backoff
+        for aid in list(backoff):
             if aid not in saved:
-                _SESSION_BACKOFF.pop(aid, None)
+                backoff.pop(aid, None)
         for aid, cfg in saved.items():
             if not aid or aid in POOL.ids() or aid in POOL.pending:
-                _SESSION_BACKOFF.pop(aid, None)
+                backoff.pop(aid, None)
                 continue
-            state = _SESSION_BACKOFF.setdefault(aid, {"attempt": 0, "next_at": 0.0, "error": ""})
+            state = backoff.setdefault(aid, {"attempt": 0, "next_at": 0.0, "error": ""})
             if now < float(state.get("next_at") or 0):
                 continue
             try:
                 _connect_saved(cfg)
-                _SESSION_BACKOFF.pop(aid, None)
+                backoff.pop(aid, None)
             except Exception as exc:
                 attempt = int(state.get("attempt") or 0) + 1
                 delay = min(120, 2 ** min(attempt, 7))
@@ -106,8 +212,37 @@ def keep_saved_sessions_connected():
 
 @app.on_event("startup")
 def startup_restore():
-    threading.Thread(target=restore_saved_sessions, daemon=True, name="KOOLKID-MT5-Session-Restore").start()
-    threading.Thread(target=keep_saved_sessions_connected, daemon=True, name="KOOLKID-MT5-Persistent-Sessions").start()
+    users_file = BASE.parent / "mt5_bridge" / "data" / "mt5_hub_users.json"
+    for workspace_id in workspace_ids(users_file):
+        _start_workspace(workspace_id)
+
+
+def _start_workspace(workspace_id: str) -> None:
+    with _RUNTIMES_LOCK:
+        runtime = _RUNTIMES.get(workspace_id)
+        if runtime is None:
+            runtime = WorkspaceRuntime(workspace_id)
+            _RUNTIMES[workspace_id] = runtime
+        if runtime.started:
+            return
+        runtime.started = True
+
+    def run_in_workspace(fn, name):
+        def runner():
+            token = set_workspace(workspace_id)
+            try:
+                fn()
+                if fn is restore_saved_sessions:
+                    saved = STATE.load()
+                    cfg = saved.get("copy_config")
+                    if cfg and saved.get("copy_enabled"):
+                        COPY.start(cfg)
+            finally:
+                reset_workspace(token)
+        threading.Thread(target=runner, daemon=True, name=name).start()
+
+    run_in_workspace(restore_saved_sessions, f"KOOLKID-MT5-Session-Restore-{workspace_id[:8]}")
+    run_in_workspace(keep_saved_sessions_connected, f"KOOLKID-MT5-Persistent-Sessions-{workspace_id[:8]}")
 
 def bad(exc):
     message = str(exc)
@@ -194,7 +329,12 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "revision": "mt5-routing-v4", "connected": len(POOL.ids()), "max_accounts": 10, "copy_status": COPY.status}
+    # Public, workspace-neutral health endpoint for launcher/service checks.
+    return {
+        "ok": True,
+        "service": "mt5-multi-account-worker",
+        "revision": "mt5-routing-v4",
+    }
 
 @app.post("/demo/bootstrap")
 def demo_bootstrap():
@@ -219,10 +359,13 @@ def demo_bootstrap():
 @app.post("/accounts/connect")
 def connect(req: ConnectRequest):
     try:
+        saved = STATE.load()
+        if req.account_id not in saved.get("accounts", {}) and len(saved.get("accounts", {})) >= 10:
+            raise RuntimeError("Maximum of 10 MT5 accounts per workspace reached")
         cfg = req.model_dump(exclude={"password"})
         cfg["auto_reconnect"] = True
         if req.mode == "real":
-            cfg["terminal_path"] = isolated_terminal(req.account_id, req.terminal_path)
+            cfg["terminal_path"] = isolated_terminal(f"{current_workspace()}--{req.account_id}", req.terminal_path)
             cfg["portable"] = True
         if req.account_id in POOL.ids():
             info = POOL.call(req.account_id, "account_info", timeout=5)
@@ -240,7 +383,7 @@ def connect(req: ConnectRequest):
         s = STATE.load()
         s["accounts"][req.account_id] = cfg
         STATE.save(s)
-        _SESSION_BACKOFF.pop(req.account_id, None)
+        _runtime().session_backoff.pop(req.account_id, None)
         return {**POOL.status(req.account_id), "account_info": POOL.call(req.account_id, "account_info", timeout=5), "remembered": CREDENTIALS.has(req.account_id)}
     except Exception as exc:
         bad(exc)
@@ -252,7 +395,7 @@ def disconnect(account_id: str):
     if account_id in s.get("accounts", {}):
         s["accounts"][account_id]["auto_reconnect"] = False
         STATE.save(s)
-    _SESSION_BACKOFF.pop(account_id, None)
+    _runtime().session_backoff.pop(account_id, None)
     if s.get("master") == account_id:
         COPY.stop()
     return {"ok": True}
@@ -265,7 +408,7 @@ def cancel_connect(account_id: str):
 def remove_account(account_id: str):
     POOL.disconnect(account_id)
     CREDENTIALS.delete(account_id)
-    _SESSION_BACKOFF.pop(account_id, None)
+    _runtime().session_backoff.pop(account_id, None)
     s = STATE.load()
     s.get("accounts", {}).pop(account_id, None)
     if s.get("master") == account_id:
@@ -345,6 +488,7 @@ def start_copy(req: CopyRequest):
         COPY.start(cfg)
         s = STATE.load()
         s["master"], s["slaves"] = req.master_account_id, req.slave_account_ids
+        s["copy_enabled"] = True
         STATE.save(s)
         return COPY.snapshot()
     except Exception as exc:
@@ -353,6 +497,9 @@ def start_copy(req: CopyRequest):
 @app.post("/copy/stop")
 def stop_copy():
     COPY.stop()
+    s = STATE.load()
+    s["copy_enabled"] = False
+    STATE.save(s)
     return COPY.snapshot()
 
 @app.get("/copy/status")
@@ -471,7 +618,8 @@ def close(req: CloseRequest):
 def cleanup():
     try:
         _SESSION_STOP.set()
-        COPY.stop()
-        POOL.close_all()
+        for runtime in list(_RUNTIMES.values()):
+            runtime.copy.stop()
+        _CORE_POOL.close_all()
     except Exception:
         pass

@@ -2,18 +2,25 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 BASE_URL = os.getenv("MT5_MULTI_ACCOUNT_URL", "http://127.0.0.1:8002").rstrip("/")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from hub_auth import current_workspace, internal_workspace_signature
 
 
 def request(path: str, method: str = "GET", payload: dict[str, Any] | None = None, timeout: float = 30.0):
     body = json.dumps(payload).encode("utf-8") if payload is not None else None
+    headers = {"Content-Type": "application/json"} if body else {}
+    workspace_id = current_workspace()
+    headers.update({"X-MT5-Workspace": workspace_id, "X-MT5-Internal-Signature": internal_workspace_signature(workspace_id)})
     req = Request(
         f"{BASE_URL}{path}", data=body, method=method,
-        headers={"Content-Type": "application/json"} if body else {},
+        headers=headers,
     )
     try:
         with urlopen(req, timeout=timeout) as response:

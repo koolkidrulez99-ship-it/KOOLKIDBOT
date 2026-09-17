@@ -90,11 +90,12 @@ class Pool:
             with self.lock:
                 if aid in self.items:
                     return self.status(aid)
-                if len(self.items) >= MAX_ACCOUNTS:
+                workspace_id = str(cfg.get("_workspace") or "")
+                if sum(1 for runtime in self.items.values() if str(runtime.config.get("_workspace") or "") == workspace_id) >= MAX_ACCOUNTS:
                     raise RuntimeError("Maximum of 10 active accounts reached")
                 terminal = str(Path(cfg.get("terminal_path") or "").resolve()) if cfg.get("terminal_path") else ""
                 for existing_id, runtime in self.items.items():
-                    if int(runtime.config.get("login") or 0) == int(cfg.get("login") or 0):
+                    if str(runtime.config.get("_workspace") or "") == workspace_id and int(runtime.config.get("login") or 0) == int(cfg.get("login") or 0):
                         raise RuntimeError(f"MT5 login #{cfg.get('login')} is already owned by {existing_id}.")
                     existing_terminal = str(Path(runtime.config.get("terminal_path") or "").resolve()) if runtime.config.get("terminal_path") else ""
                     if terminal and terminal == existing_terminal:
