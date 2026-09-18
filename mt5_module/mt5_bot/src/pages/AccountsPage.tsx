@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import { Check, CheckCircle2, Copy, KeyRound, Landmark, Plus, Power, Trash2, Wallet } from 'lucide-react';
 import { useHub } from '../context/HubContext';
@@ -11,13 +11,29 @@ import { isSimulation } from '../config/runtime';
 import { mt5AccountService } from '../services/mt5AccountService';
 import type { Mt5Account } from '../types';
 
-const BROKERS = ['Deriv', 'IC Markets', 'Exness', 'FBS', 'Pepperstone', 'XM Global', 'Admiral Markets', 'FTMO', 'Other'];
+const BROKER_PRESETS = [
+  { name: 'Deriv', servers: ['Deriv-Demo', 'DerivSVG-Server'] },
+  { name: 'HFM', servers: ['HFMarketsGlobal-Demo', 'HFMarketsGlobal-Live1', 'HFMarketsGlobal-Demo3', 'HFMarketsGlobal-Live3', 'HFMarketsGlobal-Demo4', 'HFMarketsGlobal-Live4'] },
+  { name: 'Exness', servers: [] },
+  { name: 'IC Markets', servers: [] },
+  { name: 'Pepperstone', servers: [] },
+  { name: 'XM Global', servers: [] },
+  { name: 'FXTM', servers: [] },
+  { name: 'FBS', servers: [] },
+  { name: 'Eightcap', servers: [] },
+  { name: 'Admiral Markets', servers: [] },
+  { name: 'FTMO', servers: [] },
+  { name: 'Other / Custom Broker', servers: [] },
+] as const;
+
+const BROKERS = BROKER_PRESETS.map((broker) => broker.name);
 
 export default function AccountsPage() {
   const { accounts, positions, liveProfit, pushToast, refresh, setActive, active } = useHub();
   const [addOpen, setAddOpen] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<Mt5Account | null>(null);
   const [reconnectTarget, setReconnectTarget] = useState<Mt5Account | null>(null);
+  const [budgetTarget, setBudgetTarget] = useState<Mt5Account | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
 
   const accFloating = (login: number) => positions.filter((p) => p.account_login === login).reduce((s, p) => s + liveProfit(p), 0);
@@ -136,6 +152,16 @@ export default function AccountsPage() {
                   </div>
                 </div>
 
+                {a.budget_enabled && a.budget != null && (
+                  <div className="mt-3 rounded-xl border border-brand-500/20 bg-brand-500/[0.06] px-3 py-2.5 flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-[9px] uppercase tracking-widest font-bold text-brand-300">Trading Budget Active</p>
+                      <p className="text-[10px] text-slate-500">KOOLKID sizes and blocks routed entries against this allocation.</p>
+                    </div>
+                    <p className="mono text-sm font-extrabold text-white">{fmtUSD(Number(a.budget))}</p>
+                  </div>
+                )}
+
                 <div className="mt-3.5 flex items-center justify-between gap-3">
                   <div>
                     <p className="text-[10px] uppercase tracking-widest text-slate-600 font-semibold mb-1">
@@ -159,6 +185,9 @@ export default function AccountsPage() {
                   >
                     {isActive ? <><Check size={14} className="text-gain-400" /> Selected</> : 'Set Active'}
                   </button>
+                  <button className="btn-ghost !px-2 !py-1.5 !text-[10px] shrink-0" onClick={() => setBudgetTarget(a)} disabled={isSimulation} title="Set trading budget">
+                    <Wallet size={12} className={a.budget_enabled ? 'text-brand-300' : 'text-slate-500'} /> Budget
+                  </button>
                   <button className="btn-ghost" onClick={() => toggleStatus(a)} disabled={busyId === a.id || a.status === 'connecting'}>
                     {busyId === a.id ? <Spinner size={13} /> : <Power size={14} className={connected ? 'text-gain-400' : 'text-slate-500'} />}
                     {a.status === 'connecting' ? 'Connecting' : connected ? 'Disconnect' : 'Connect'}
@@ -180,6 +209,7 @@ export default function AccountsPage() {
 
       <AddAccountModal open={addOpen} onClose={() => setAddOpen(false)} />
       <ReconnectAccountModal account={reconnectTarget} onClose={() => setReconnectTarget(null)} />
+      <BudgetModal account={budgetTarget} onClose={() => setBudgetTarget(null)} />
 
       <ConfirmModal
         open={removeTarget !== null}
@@ -203,6 +233,84 @@ export default function AccountsPage() {
       />
     </div>
   );
+}
+
+function BudgetModal({ account, onClose }: { account: Mt5Account | null; onClose: () => void }) {
+  const { pushToast, refresh } = useHub();
+  const [amount, setAmount] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!account) return;
+    setAmount(account.budget_enabled && account.budget != null ? String(account.budget) : '');
+    setError('');
+  }, [account?.id, account?.budget, account?.budget_enabled]);
+
+  const save = async () => {
+    if (!account) return;
+    const value = Number(amount);
+    if (!Number.isFinite(value) || value <= 0) { setError('Enter a budget greater than zero.'); return; }
+    if (Number(account.balance) > 0 && value > Number(account.balance)) {
+      setError(`Budget cannot exceed the current MT5 balance of ${fmtUSD(Number(account.balance))}.`);
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      await mt5AccountService.setBudget(account.id, value);
+      pushToast('success', 'Trading budget set', `${account.nickname} will use ${fmtUSD(value)} as its KOOLKID allocation cap.`);
+      await refresh(true);
+      onClose();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Could not set the trading budget.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const reset = async () => {
+    if (!account) return;
+    setBusy(true);
+    setError('');
+    try {
+      await mt5AccountService.resetBudget(account.id);
+      pushToast('info', 'Budget reset', `${account.nickname} is back to its actual MT5 balance for KOOLKID-routed trading.`);
+      await refresh(true);
+      onClose();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Could not reset the trading budget.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return <Modal open={Boolean(account)} onClose={() => !busy && onClose()} title="Account Trading Budget" sub={account ? `${account.nickname} · #${account.login}` : ''}>
+    <div className="space-y-4">
+      <div className="rounded-xl border border-brand-500/20 bg-brand-500/[0.06] px-4 py-3">
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-xs text-slate-500">Actual MT5 balance</span>
+          <span className="mono font-bold text-white">{fmtUSD(Number(account?.balance || 0))}</span>
+        </div>
+        <p className="mt-2 text-[10px] leading-relaxed text-slate-500">A budget is a hard KOOLKID allocation cap. Native AI, manual orders and copy-trader orders size/check against it instead of using the full account. It does not move or withdraw money.</p>
+      </div>
+      <div>
+        <label className="label">Budget amount</label>
+        <div className="relative">
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-500">$</span>
+          <input autoFocus className="input mono !pl-7" type="number" min="0.01" step="0.01" max={account?.balance || undefined}
+            value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="100.00" />
+        </div>
+        <p className="mt-1 text-[10px] text-slate-600">Example: a $100 budget on a $1,000 account makes KOOLKID treat $100 as the maximum allocated capital.</p>
+      </div>
+      {error && <p className="rounded-lg border border-loss-500/30 bg-loss-500/10 px-3 py-2 text-xs text-loss-300">{error}</p>}
+      <div className="flex flex-wrap justify-end gap-2">
+        {account?.budget_enabled && <button className="btn-ghost" onClick={reset} disabled={busy}>Reset to Account Balance</button>}
+        <button className="btn-ghost" onClick={onClose} disabled={busy}>Cancel</button>
+        <button className="btn-primary" onClick={save} disabled={busy}>{busy ? <Spinner size={14} /> : <Wallet size={14} />} Set Budget</button>
+      </div>
+    </div>
+  </Modal>;
 }
 
 function ReconnectAccountModal({ account, onClose }: { account: Mt5Account | null; onClose: () => void }) {
@@ -258,13 +366,19 @@ function AddAccountModal({ open, onClose }: { open: boolean; onClose: () => void
     password: '',
     nickname: '',
     broker: 'Deriv',
-    server: '',
+    server: 'Deriv-Demo',
     leverage: '500',
     account_type: 'demo' as 'demo' | 'live',
     balance: '10000',
   });
 
   const set = (k: string, v: string) => { setTested(false); setForm((f) => ({ ...f, [k]: v })); };
+  const serverPresets = BROKER_PRESETS.find((broker) => broker.name === form.broker)?.servers || [];
+  const setBroker = (broker: string) => {
+    const nextServers = BROKER_PRESETS.find((item) => item.name === broker)?.servers || [];
+    setTested(false);
+    setForm((current) => ({ ...current, broker, server: nextServers[0] || '' }));
+  };
 
   const cancel = async () => {
     if (!isSimulation && (busy || testing) && /^[0-9]{4,12}$/.test(form.login)) {
@@ -319,7 +433,7 @@ function AddAccountModal({ open, onClose }: { open: boolean; onClose: () => void
       });
       pushToast('success', isSimulation ? 'Simulation account added' : 'MT5 account connected', `${form.nickname} (#${form.login}) is ready.`);
       await refresh(true);
-      setForm({ login: '', password: '', nickname: '', broker: 'Deriv', server: '', leverage: '500', account_type: 'demo', balance: '10000' });
+      setForm({ login: '', password: '', nickname: '', broker: 'Deriv', server: 'Deriv-Demo', leverage: '500', account_type: 'demo', balance: '10000' });
       setTested(false);
       onClose();
     } catch (err) {
@@ -350,7 +464,7 @@ function AddAccountModal({ open, onClose }: { open: boolean; onClose: () => void
         </div>
         <div>
           <label className="label">Broker</label>
-          <select className="input" value={form.broker} onChange={(e) => set('broker', e.target.value)}>
+          <select className="input" value={form.broker} onChange={(e) => setBroker(e.target.value)}>
             {BROKERS.map((b) => (
               <option key={b}>{b}</option>
             ))}
@@ -358,7 +472,20 @@ function AddAccountModal({ open, onClose }: { open: boolean; onClose: () => void
         </div>
         <div>
           <label className="label">Server</label>
-          <input className="input" placeholder="ICMarketsSC-Demo" value={form.server} onChange={(e) => set('server', e.target.value)} />
+          <input
+            className="input"
+            list="mt5-server-presets"
+            placeholder={serverPresets.length ? 'Choose a server or type your own' : 'Type the exact MT5 server'}
+            value={form.server}
+            onChange={(e) => set('server', e.target.value)}
+            autoComplete="off"
+          />
+          <datalist id="mt5-server-presets">
+            {serverPresets.map((server) => <option key={server} value={server} />)}
+          </datalist>
+          <p className="mt-1 text-[10px] text-slate-600">
+            {serverPresets.length ? serverPresets.length + ' known ' + form.broker + ' server presets · field stays fully editable' : 'No fixed server preset for this broker · paste or type the exact MT5 server from your broker'}
+          </p>
         </div>
         {isSimulation ? (<>
           <div>

@@ -8,7 +8,8 @@ from datetime import datetime, timedelta, timezone
 def hide_terminal_windows(terminal_path):
     if os.name != "nt" or not terminal_path:
         return
-    target = os.path.normcase(os.path.abspath(terminal_path))
+    target_dir = os.path.normcase(os.path.dirname(os.path.abspath(terminal_path)))
+    allowed = {"terminal64.exe", "metaeditor64.exe", "metatester64.exe"}
     user32, kernel = ctypes.windll.user32, ctypes.windll.kernel32
     callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 
@@ -22,19 +23,22 @@ def hide_terminal_windows(terminal_path):
                 size = wintypes.DWORD(32768)
                 buffer = ctypes.create_unicode_buffer(size.value)
                 if kernel.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
-                    if os.path.normcase(os.path.abspath(buffer.value)) == target:
+                    image = os.path.normcase(os.path.abspath(buffer.value))
+                    if os.path.dirname(image) == target_dir and os.path.basename(image).lower() in allowed:
+                        user32.ShowWindowAsync(hwnd, 0)
                         user32.ShowWindow(hwnd, 0)
+                        user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0080)
             finally:
                 kernel.CloseHandle(handle)
         return True
 
     user32.EnumWindows(hide_if_target, 0)
 
-
 def keep_terminal_hidden(terminal_path):
+    started = time.monotonic()
     while True:
         hide_terminal_windows(terminal_path)
-        time.sleep(0.15)
+        time.sleep(0.01 if time.monotonic() - started < 5 else 0.20)
 
 def plain(obj):
     """Convert MT5 namedtuples, including nested request fields, for IPC."""
@@ -283,6 +287,28 @@ def run_worker(config, password, command_q, response_q):
         steps = int((value + 1e-12) / step)
         return round(max(minimum, min(steps * step, maximum)), 8)
 
+    def margin_required(p):
+        symbol = str(p["symbol"])
+        side = str(p.get("side") or "buy").lower()
+        volume = float(p.get("volume") or 0)
+        if volume <= 0:
+            raise RuntimeError("Volume must be greater than zero.")
+        if mode == "simulation":
+            return {"margin": max(0.01, volume) * 100.0, "volume": volume, "price": 100.0}
+        info = symbol_info(symbol)
+        if not info:
+            raise RuntimeError(f"Symbol unavailable: {symbol}")
+        volume = normalize_volume(volume, info)
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is None:
+            raise RuntimeError(f"No tick for {symbol}")
+        order_type = mt5.ORDER_TYPE_BUY if side == "buy" else mt5.ORDER_TYPE_SELL
+        price = float(tick.ask if side == "buy" else tick.bid)
+        margin = mt5.order_calc_margin(order_type, symbol, volume, price)
+        if margin is None:
+            raise RuntimeError(f"Could not calculate margin for {symbol}: {mt5.last_error()}")
+        return {"margin": float(margin), "volume": volume, "price": price}
+
     def open_trade(p):
         nonlocal next_ticket
         symbol = p["symbol"]
@@ -364,6 +390,47 @@ def run_worker(config, password, command_q, response_q):
         out["timing"]["position_confirmed_at"] = time.time()
         return out
 
+    def close_partial(p):
+        ticket = int(p["ticket"])
+        requested = float(p.get("volume") or 0)
+        if requested <= 0:
+            raise RuntimeError("Partial-close volume must be greater than zero.")
+        if mode == "simulation":
+            pos = sim_positions.get(ticket)
+            if not pos:
+                raise RuntimeError(f"Position {ticket} not found")
+            current = float(pos.get("volume") or 0)
+            if requested >= current:
+                raise RuntimeError("Partial-close volume must be smaller than the open position.")
+            pos["volume"] = round(current - requested, 8)
+            return {"ticket": ticket, "closed_volume": requested, "remaining_volume": pos["volume"], "partial": True}
+
+        found = mt5.positions_get(ticket=ticket) or []
+        if not found:
+            raise RuntimeError(f"Position {ticket} not found")
+        pos = found[0]
+        info = symbol_info(pos.symbol)
+        if not info:
+            raise RuntimeError(f"Symbol unavailable: {pos.symbol}")
+        volume = normalize_volume(requested, info)
+        if volume <= 0 or volume >= float(pos.volume):
+            raise RuntimeError("Partial-close volume must be smaller than the open position after broker volume normalization.")
+        tick = mt5.symbol_info_tick(pos.symbol)
+        if tick is None:
+            raise RuntimeError(f"No tick for {pos.symbol}")
+        buy_pos = int(pos.type) == int(mt5.POSITION_TYPE_BUY)
+        req = {
+            "action": mt5.TRADE_ACTION_DEAL, "position": ticket, "symbol": pos.symbol,
+            "volume": volume, "type": mt5.ORDER_TYPE_SELL if buy_pos else mt5.ORDER_TYPE_BUY,
+            "price": float(tick.bid if buy_pos else tick.ask), "deviation": 20,
+            "magic": int(getattr(pos, "magic", 0) or 0), "comment": "KOOLKID partial",
+            "type_time": mt5.ORDER_TIME_GTC,
+        }
+        out = send_market_order(mt5, req, info)
+        out["closed_volume"] = volume
+        out["partial"] = True
+        return out
+
     def modify_position(p):
         ticket = int(p["ticket"])
         sl = float(p.get("sl") or 0)
@@ -394,8 +461,10 @@ def run_worker(config, password, command_q, response_q):
         "quotes": quotes,
         "candles": candles,
         "history": history,
+        "margin_required": margin_required,
         "open_trade": open_trade,
         "close_position": close_position,
+        "close_partial": close_partial,
         "modify_position": modify_position,
     }
 

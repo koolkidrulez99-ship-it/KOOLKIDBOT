@@ -1,0 +1,385 @@
+
+### Primordial_Black.mq5 lines 1194
+DESC: Primordial Black - Modular liquidity + price action EA | Modules: Bias -> Confluence -> Entry -> Trade Management
+INDICATORS: iATR, iHighest, iLowest
+TRADE CALLS: trade.Buy, trade.Sell, PositionClosePartial, PositionModify, CopyBuffer
+INPUTS:
+  InpMagicNumber=26033177
+  InpUseSymbolPresets=true
+  InpAllowBuy=true
+  InpAllowSell=true
+  InpOneTradePerSymbol=true
+  InpBiasTF1=PERIOD_H4
+  InpBiasTF2=PERIOD_H1
+  InpSetupTF=PERIOD_M15
+  InpEntryTF=PERIOD_M5
+  InpSwingLookbackHTF=100
+  InpSwingLookbackLTF=28
+  InpSwingWing=2
+  InpSetupExpiryM5Bars=14
+  InpRiskPercent=0.50
+  InpMaxDailyDDPercent=4.00
+  InpMaxLossesPerSymbolPerDay=2
+  InpMaxSpreadPoints=250
+  InpDisplacementATRMult=1.10
+  InpOBDisplacementATRMult=0.95
+  InpStopATRBuffer=0.25
+  InpMaxStopATR=4.00
+  InpTP_RR=2.50
+  InpPartialAtR=1.00
+  InpPartialClosePercent=50.0
+  InpBreakEvenR=1.00
+  InpTrailStartR=1.80
+  InpTrailATRMult=1.00
+  InpMicroStructureLookback=8
+  InpEntryMinScore=70.0
+  InpEntryBodyATRFrac=0.35
+  InpMaxChaseATR=0.70
+  InpRequireRejection=true
+  InpRequireBOS=true
+  InpRequireMomentumFollowThrough=true
+  InpDrawHUD=true
+  InpHudX=14
+  InpHudY=14
+FUNCTIONS: BiasToText, ZoneTypeToText, RemoveHUD, EnsureHudLabel, DrawHUD, IsNewBar, NormalizePrice, NormalizeVolumeByStep, GetAtr, CandleBull, CandleBear, CandleBody, AverageBody, FindTwoSwingHighs, FindTwoSwingLows, FindRecentSwingHigh, FindRecentSwingLow, HasBullSweep, HasBearSweep, InDiscountZone, InPremiumZone, HasDisplacement, StrongBullClose, StrongBearClose, TouchesZone, BullishZoneRejection, BearishZoneRejection, RecentMicroHigh, RecentMicroLow, BullishMomentumOK, BearishMomentumOK, SpreadOK, ApplySymbolPreset, ResetConfluence, BuildBiasModule, DetectBullFVG, DetectBearFVG, DetectBullOB, DetectBearOB, BuildConfluenceModule, FindOurPosition, DailyDrawdownHit, ResetDailyCountersIfNeeded, CalcLotsByRisk, BuildEntryModule, ExecuteEntry, TradeManagementModule, EvaluateModulesOnSetupBar, EvaluateModulesOnEntryBar, OnInit, OnDeinit, OnTick, OnTradeTransaction
+
+### Primordial_Blue.mq5 lines 1790
+DESC: Primordial Blue - Modular liquidity + price action EA with trendline break/retest entry and confluence drawing | Modules: Bias -> Confluence -> Entry -> Trade Management
+INDICATORS: iATR, iHighest, iLowest
+TRADE CALLS: trade.Buy, trade.Sell, PositionClosePartial, PositionModify, CopyBuffer
+INPUTS:
+  InpMagicNumber=26033177
+  InpUseSymbolPresets=true
+  InpAllowBuy=true
+  InpAllowSell=true
+  InpOneTradePerSymbol=true
+  InpBiasTF1=PERIOD_H4
+  InpBiasTF2=PERIOD_H1
+  InpSetupTF=PERIOD_M15
+  InpEntryTF=PERIOD_M5
+  InpSwingLookbackHTF=100
+  InpSwingLookbackLTF=28
+  InpSwingWing=2
+  InpSetupExpiryM5Bars=14
+  InpRiskPercent=0.50
+  InpMaxDailyDDPercent=4.00
+  InpMaxLossesPerSymbolPerDay=2
+  InpMaxSpreadPoints=250
+  InpDisplacementATRMult=1.10
+  InpOBDisplacementATRMult=0.95
+  InpStopATRBuffer=0.25
+  InpMaxStopATR=4.00
+  InpTP_RR=2.50
+  InpPartialAtR=1.00
+  InpPartialClosePercent=50.0
+  InpBreakEvenR=1.00
+  InpTrailStartR=1.80
+  InpTrailATRMult=1.00
+  InpMicroStructureLookback=8
+  InpEntryMinScore=70.0
+  InpEntryBodyATRFrac=0.35
+  InpMaxChaseATR=0.70
+  InpRequireRejection=true
+  InpRequireBOS=true
+  InpRequireMomentumFollowThrough=true
+  InpUseTrendlineBreakRetest=true
+  InpTrendlineTF=PERIOD_M15
+  InpTrendlineLookback=80
+  InpTrendlineBreakLookback=8
+  InpTrendlineBreakBodyATRMult=0.35
+  InpTrendlineRetestATRFrac=0.20
+  InpRequireTrendlineRetest=true
+  InpDrawConfluences=true
+  InpApplyChartTheme=true
+  InpDrawHUD=true
+  InpZoneForwardBars=40
+  InpSweepZoneATRFrac=0.10
+  InpHudX=12
+  InpHudY=16
+FUNCTIONS: IsNewBar, NormalizePrice, NormalizeVolumeByStep, GetAtr, CandleBull, CandleBear, CandleBody, AverageBody, FindTwoSwingHighs, FindTwoSwingLows, FindTwoSwingHighShifts, FindTwoSwingLowShifts, ProjectLinePrice, BullBreakCandleAt, BearBreakCandleAt, DetectBullBreakZone, DetectBearBreakZone, BuildBullTrendline, BuildBearTrendline, BullTrendlineBreakRetest, BearTrendlineBreakRetest, FindRecentSwingHigh, FindRecentSwingLow, HasBullSweep, HasBearSweep, InDiscountZone, InPremiumZone, HasDisplacement, StrongBullClose, StrongBearClose, TouchesZone, BullishZoneRejection, BearishZoneRejection, RecentMicroHigh, RecentMicroLow, BullishMomentumOK, BearishMomentumOK, SpreadOK, ApplySymbolPreset, ResetConfluence, BuildBiasModule, DetectBullFVG, DetectBearFVG, DetectBullOB, DetectBearOB, BuildConfluenceModule, FindOurPosition, DailyDrawdownHit, ResetDailyCountersIfNeeded, CalcLotsByRisk, BuildEntryModule, ExecuteEntry, TradeManagementModule, EvaluateModulesOnSetupBar, EvaluateModulesOnEntryBar, BiasToString, ZoneTypeToString, ForwardTimeFrom, DeleteVisualObject, DeleteVisualByPrefix, DrawOrUpdateRect, DrawOrUpdateRay, DrawOrUpdateHLine, DrawOrUpdateText, DrawZoneVisual, DrawTrendlineVisual, DrawActiveConfluenceVisual, DrawHTFLevels, DrawHUD, ApplyPrimordialBlueTheme, DrawVisualLayer, OnInit, OnDeinit, OnTick, OnTradeTransaction
+
+### Primordial_Emerald.mq5 lines 1134
+DESC: Primordial Emerald - Fibonacci + price action EA | Workflow: Bias -> Fib pullback -> Price action trigger -> Entry -> Trade Management
+INDICATORS: iATR
+TRADE CALLS: trade.Buy, trade.Sell, PositionClosePartial, PositionModify, CopyBuffer
+INPUTS:
+  InpMagicNumber=26033178
+  InpUseSymbolPresets=true
+  InpAllowBuy=true
+  InpAllowSell=true
+  InpOneTradePerSymbol=true
+  InpBiasTF1=PERIOD_H4
+  InpBiasTF2=PERIOD_H1
+  InpSetupTF=PERIOD_M15
+  InpEntryTF=PERIOD_M5
+  InpBiasLookback=120
+  InpSetupLookback=60
+  InpSwingWing=2
+  InpSetupExpiryM5Bars=18
+  InpRiskPercent=0.50
+  InpMaxDailyDDPercent=4.00
+  InpMaxLossesPerDay=2
+  InpMaxSpreadPoints=250
+  InpSlippagePoints=20
+  InpDisplacementATRMult=1.10
+  InpStopATRBuffer=0.25
+  InpMaxStopATR=4.00
+  InpTP_RR=2.60
+  InpPartialAtR=1.00
+  InpPartialClosePercent=50.0
+  InpBreakEvenR=1.00
+  InpTrailStartR=1.80
+  InpTrailATRMult=1.00
+  InpFib50=0.500
+  InpFib618=0.618
+  InpFib705=0.705
+  InpFib786=0.786
+  InpMicroStructureLookback=8
+  InpEntryMinScore=75.0
+  InpEntryBodyATRFrac=0.40
+  InpMaxChaseATR=0.65
+  InpRequireFreshTouch=true
+  InpRequireRejection=true
+  InpRequireBOS=true
+  InpRequireMomentum=true
+  InpRequireFibSweetSpot=true
+  InpRequireFib50Reclaim=false
+  InpDrawConfluence=true
+  InpDrawHUD=true
+  InpApplyChartTheme=true
+  InpZoneForwardBars=42
+  InpHudX=14
+  InpHudY=14
+FUNCTIONS: NormalizePrice, NormalizeLots, IsNewBar, GetAtr, CandleBody, CandleBull, CandleBear, StrongBullClose, StrongBearClose, HighestHigh, LowestLow, IsSwingHighAt, IsSwingLowAt, FindTwoSwingHighs, FindTwoSwingLows, FindMostRecentSwingLow, FindMostRecentSwingHigh, ComputeFibPriceBull, ComputeFibPriceBear, CalculatePositionSize, HasOpenPositionForSymbol, ResetTradeFlags, ApplySymbolPresets, ApplyChartTheme, DeleteVisuals, FutureTime, DrawHLine, DrawRayFromTime, DrawRectangle, DrawPriceText, DrawHUD, DrawSetup, BuildBias, BuildBullLiquiditySetup, BuildBearLiquiditySetup, BullishRejectionNearZone, BearishRejectionNearZone, BullMicroBOS, BearMicroBOS, RecentZoneTouch, FibSweetSpotTouched, Fib50Reclaimed, BuildEntrySignal, CanTradeNow, ExecuteSignal, ManageOpenPosition, ResetDailyState, OnInit, OnDeinit, OnTick, OnTradeTransaction
+
+### Primordial_Gold.mq5 lines 919
+DESC: Primordial Gold - Compression Sweep Expansion EA | Modules: Bias -> Compression/Sweep -> Entry -> Trade Management
+INDICATORS: iATR, iHighest, iLowest
+TRADE CALLS: trade.Buy, trade.Sell, PositionClosePartial, PositionModify, CopyBuffer
+INPUTS:
+  InpMagicNumber=26040101
+  InpUseSymbolPresets=true
+  InpAllowBuy=true
+  InpAllowSell=true
+  InpOneTradePerSymbol=true
+  InpBiasTF1=PERIOD_H4
+  InpBiasTF2=PERIOD_H1
+  InpSetupTF=PERIOD_M15
+  InpEntryTF=PERIOD_M5
+  InpSwingLookbackHTF=120
+  InpSwingWing=2
+  InpCompressionBars=12
+  InpSetupExpiryM5Bars=16
+  InpMicroStructureLookback=8
+  InpRiskPercent=0.50
+  InpMaxDailyDDPercent=4.00
+  InpMaxLossesPerSymbolPerDay=2
+  InpMaxSpreadPoints=250
+  InpCompressionRangeATRMult=2.20
+  InpCompressionBodyATRFrac=0.42
+  InpSweepBufferATRFrac=0.10
+  InpZoneATRFrac=0.18
+  InpStopATRBuffer=0.25
+  InpMaxStopATR=4.00
+  InpTP_RR=2.50
+  InpPartialAtR=1.00
+  InpPartialClosePercent=50.0
+  InpBreakEvenR=1.00
+  InpTrailStartR=1.80
+  InpTrailATRMult=1.00
+  InpEntryMinScore=70.0
+  InpEntryBodyATRFrac=0.35
+  InpMaxChaseATR=0.75
+  InpRequireRejection=true
+  InpRequireBOS=true
+  InpRequireMomentumFollowThrough=true
+  InpRequireReclaim=true
+  InpDrawVisuals=true
+  InpDrawHUD=true
+  InpZoneForwardBars=36
+FUNCTIONS: IsNewBar, NormalizePrice, NormalizeVolumeByStep, GetAtr, CandleBull, CandleBear, CandleBody, AverageBody, FindTwoSwingHighs, FindTwoSwingLows, ApplySymbolPresets, ResetDailyStateIfNeeded, CurrentDailyDDPercent, CountSymbolLossesToday, RiskGuardsPass, EvaluateBias, ZoneTouched, ReclaimConfirmed, RejectionConfirmed, MomentumConfirmed, BOSConfirmed, CalculateRiskLots, EvaluateEntry, PlaceTrade, ManageOpenPosition, DeleteVisual, DrawRect, DrawHLine, DrawTextLabel, ApplyChartTheme, DrawHUD, DrawVisuals, OnInit, OnDeinit, RefreshModulesOnSetupBar, OnTick
+
+### Primordial_Purple.mq5 lines 1189
+DESC: Primordial Purple - Order Block + FVG + MSS sniper EA | Modules: Bias -> OB/FVG/MSS Confluence -> Entry -> Trade Management
+INDICATORS: iATR, iHighest, iLowest
+TRADE CALLS: trade.Buy, trade.Sell, PositionClosePartial, PositionModify, CopyBuffer
+INPUTS:
+  InpMagicNumber=26040217
+  InpUseSymbolPresets=true
+  InpAllowBuy=true
+  InpAllowSell=true
+  InpOneTradePerSymbol=true
+  InpBiasTF1=PERIOD_H4
+  InpBiasTF2=PERIOD_H1
+  InpSetupTF=PERIOD_M15
+  InpEntryTF=PERIOD_M5
+  InpSwingLookbackHTF=100
+  InpSwingLookbackLTF=28
+  InpSwingWing=2
+  InpSetupExpiryM5Bars=10
+  InpRiskPercent=0.45
+  InpMaxDailyDDPercent=4.00
+  InpMaxLossesPerSymbolPerDay=2
+  InpMaxSpreadPoints=250
+  InpDisplacementATRMult=1.20
+  InpOBDisplacementATRMult=1.05
+  InpStopATRBuffer=0.25
+  InpMaxStopATR=4.00
+  InpTP_RR=2.50
+  InpPartialAtR=1.00
+  InpPartialClosePercent=50.0
+  InpBreakEvenR=1.00
+  InpTrailStartR=1.80
+  InpTrailATRMult=1.00
+  InpMicroStructureLookback=8
+  InpEntryMinScore=76.0
+  InpEntryBodyATRFrac=0.40
+  InpRequireRejection=true
+  InpRequireBOS=true
+  InpRequireMomentumFollowThrough=true
+  InpDrawHUD=true
+  InpHudX=16
+  InpHudY=16
+FUNCTIONS: BiasToText, ZoneTypeToText, RemoveHUD, EnsureHudLabel, DrawHUD, IsNewBar, NormalizePrice, NormalizeVolumeByStep, GetAtr, CandleBull, CandleBear, CandleBody, AverageBody, FindTwoSwingHighs, FindTwoSwingLows, FindRecentSwingHigh, FindRecentSwingLow, HasBullSweep, HasBearSweep, InDiscountZone, InPremiumZone, HasDisplacement, StrongBullClose, StrongBearClose, TouchesZone, BullishZoneRejection, BearishZoneRejection, RecentMicroHigh, RecentMicroLow, BullishMomentumOK, BearishMomentumOK, SpreadOK, ApplySymbolPreset, ResetConfluence, BuildBiasModule, DetectBullFVG, DetectBearFVG, DetectBullOB, DetectBearOB, BuildConfluenceModule, FindOurPosition, DailyDrawdownHit, ResetDailyCountersIfNeeded, CalcLotsByRisk, BuildEntryModule, ExecuteEntry, TradeManagementModule, EvaluateModulesOnSetupBar, EvaluateModulesOnEntryBar, OnInit, OnDeinit, OnTick, OnTradeTransaction
+
+### Primordial_Red.mq5 lines 1104
+DESC: Primordial Red - Pure liquidity + Fibonacci retracement EA | Workflow: Bias -> Liquidity Raid -> Fib Pullback -> Entry -> Trade Management
+INDICATORS: iATR
+TRADE CALLS: trade.Buy, trade.Sell, PositionClosePartial, PositionModify, CopyBuffer
+INPUTS:
+  InpMagicNumber=26033178
+  InpUseSymbolPresets=true
+  InpAllowBuy=true
+  InpAllowSell=true
+  InpOneTradePerSymbol=true
+  InpBiasTF1=PERIOD_H4
+  InpBiasTF2=PERIOD_H1
+  InpSetupTF=PERIOD_M15
+  InpEntryTF=PERIOD_M5
+  InpBiasLookback=120
+  InpSetupLookback=60
+  InpSwingWing=2
+  InpSetupExpiryM5Bars=18
+  InpRiskPercent=0.50
+  InpMaxDailyDDPercent=4.00
+  InpMaxLossesPerDay=2
+  InpMaxSpreadPoints=250
+  InpSlippagePoints=20
+  InpDisplacementATRMult=1.10
+  InpStopATRBuffer=0.25
+  InpMaxStopATR=4.00
+  InpTP_RR=2.60
+  InpPartialAtR=1.00
+  InpPartialClosePercent=50.0
+  InpBreakEvenR=1.00
+  InpTrailStartR=1.80
+  InpTrailATRMult=1.00
+  InpFib50=0.500
+  InpFib618=0.618
+  InpFib705=0.705
+  InpFib786=0.786
+  InpMicroStructureLookback=8
+  InpEntryMinScore=70.0
+  InpEntryBodyATRFrac=0.35
+  InpMaxChaseATR=0.70
+  InpRequireFreshTouch=true
+  InpRequireRejection=true
+  InpRequireBOS=true
+  InpRequireMomentum=true
+  InpDrawConfluence=true
+  InpDrawHUD=true
+  InpApplyChartTheme=true
+  InpZoneForwardBars=42
+  InpHudX=14
+  InpHudY=14
+FUNCTIONS: NormalizePrice, NormalizeLots, IsNewBar, GetAtr, CandleBody, CandleBull, CandleBear, StrongBullClose, StrongBearClose, HighestHigh, LowestLow, IsSwingHighAt, IsSwingLowAt, FindTwoSwingHighs, FindTwoSwingLows, FindMostRecentSwingLow, FindMostRecentSwingHigh, ComputeFibPriceBull, ComputeFibPriceBear, CalculatePositionSize, HasOpenPositionForSymbol, ResetTradeFlags, ApplySymbolPresets, ApplyChartTheme, DeleteVisuals, FutureTime, DrawHLine, DrawRayFromTime, DrawRectangle, DrawPriceText, DrawHUD, DrawSetup, BuildBias, BuildBullLiquiditySetup, BuildBearLiquiditySetup, BullishRejectionNearZone, BearishRejectionNearZone, BullMicroBOS, BearMicroBOS, BuildEntrySignal, CanTradeNow, ExecuteSignal, ManageOpenPosition, ResetDailyState, OnInit, OnDeinit, OnTick, OnTradeTransaction
+
+### Primordial_Silver.mq5 lines 1359
+DESC: Primordial Silver | Range / premium-discount / rejection bot with modular bias, confluence, entry and risk management
+INDICATORS: iATR
+TRADE CALLS: trade.Buy, trade.Sell, PositionClosePartial, PositionModify, CopyBuffer
+INPUTS:
+  InpMagicNumber=90412026
+  InpBiasTF=PERIOD_H1
+  InpConfluenceTF=PERIOD_M15
+  InpEntryTF=PERIOD_M5
+  InpRangeLookbackBars=24
+  InpATRPeriod=14
+  InpRiskPercent=0.50
+  InpMaxDailyDDPercent=4.00
+  InpMaxLossesPerDay=2
+  InpMinSweepATRFrac=0.20
+  InpRetestToleranceATRFrac=0.15
+  InpMaxChaseATRFrac=0.35
+  InpMinBodyATRFrac=0.35
+  InpConfirmBodyATRFrac=0.30
+  InpRetestLookbackBars=3
+  InpMinWickBodyRatio=0.70
+  InpRequireMidpointFilter=true
+  InpUseBreakEven=true
+  InpBreakEvenAtR=1.00
+  InpUsePartial=true
+  InpPartialAtR=1.00
+  InpPartialClosePct=50.0
+  InpUseTrail=true
+  InpTrailATRMult=1.20
+  InpDrawHUD=true
+  InpDrawConfluence=true
+  InpApplyChartTheme=true
+  InpZoneForwardBars=36
+  InpRRTarget=2.50
+  InpPriceZoneATRFrac=0.08
+  InpMinZonePoints=20
+FUNCTIONS: OnInit, OnDeinit, OnTick, IsNewBar, ResetDayState, ResetDayIfNeeded, CurrentDailyDD, TradingAllowed, CountTodayLosses, HasOpenPosition, BuildRange, DetermineBias, BarBody, BarRange, UpperWick, LowerWick, CloseLocation, BarTouchesZone, IsSellRetestBar, IsBuyRetestBar, IsStrongBearConfirm, IsStrongBullConfirm, HighestHighInBars, LowestLowInBars, BuildConfluenceProgress, ExecuteSetup, PlaceOrder, CalculateRiskLot, ManageOpenPositions, EnsureState, GetATR, ApplySilverTheme, DrawAll, DrawHUD, DrawHLine, DrawRect, DrawLabelAtTime, ConfluenceLabelPrice, DrawConfluenceTag, ClearConfluenceStepObjects, DrawConfluenceProgress, CleanupStateTable, FutureLabelTime, CurrentZoneHalfHeight, DrawPriceWithLabel, DrawPriceZoneWithLabel, ClearObjectIfExists, ClearConfluenceObjects, ClearPriceZoneObjects, ClearPlannedTradeObjects, ClearActiveTradeObjects, DrawProjectedTradeVisuals, DrawLiveTradeVisuals
+
+### Primordial_White.mq5 lines 1227
+DESC: Primordial White - First 4-hour opening range EA | Workflow: Bias -> Opening Range -> Confluence -> Entry -> Trade Management
+INDICATORS: iATR
+TRADE CALLS: trade.Buy, trade.Sell, PositionClosePartial, PositionModify, CopyBuffer
+INPUTS:
+  InpMagicNumber=26033179
+  InpUseSymbolPresets=true
+  InpAllowBuy=true
+  InpAllowSell=true
+  InpOneTradePerSymbol=true
+  InpBiasTF1=PERIOD_H4
+  InpBiasTF2=PERIOD_H1
+  InpRangeTF=PERIOD_M15
+  InpSetupTF=PERIOD_M15
+  InpEntryTF=PERIOD_M5
+  InpOpeningRangeHours=4
+  InpBiasLookback=120
+  InpSetupLookback=60
+  InpSwingWing=2
+  InpSetupExpiryM5Bars=18
+  InpRiskPercent=0.50
+  InpMaxDailyDDPercent=4.00
+  InpMaxLossesPerDay=2
+  InpMaxSpreadPoints=250
+  InpSlippagePoints=20
+  InpDisplacementATRMult=1.05
+  InpBreakoutBodyATRFrac=0.90
+  InpRetestATRFrac=0.18
+  InpStopATRBuffer=0.25
+  InpMaxStopATR=4.00
+  InpTP_RR=2.40
+  InpPartialAtR=1.00
+  InpPartialClosePercent=50.0
+  InpBreakEvenR=1.00
+  InpTrailStartR=1.80
+  InpTrailATRMult=1.00
+  InpMicroStructureLookback=8
+  InpEntryMinScore=72.0
+  InpEntryBodyATRFrac=0.35
+  InpMaxChaseATR=0.70
+  InpFirstRetestOnly=true
+  InpRequireRejection=true
+  InpRequireBOS=true
+  InpRequireMomentum=true
+  InpDrawConfluence=true
+  InpDrawHUD=true
+  InpApplyChartTheme=true
+  InpZoneForwardBars=40
+  InpHudX=14
+  InpHudY=14
+FUNCTIONS: NormalizePrice, NormalizeLots, IsNewBar, GetAtr, CandleBody, CandleBull, CandleBear, StrongBullClose, StrongBearClose, HighestHigh, LowestLow, IsSwingHighAt, IsSwingLowAt, FindTwoSwingHighs, FindTwoSwingLows, CalculatePositionSize, HasOpenPositionForSymbol, ResetTradeFlags, ApplySymbolPresets, ApplyChartTheme, DeleteVisuals, FutureTime, DrawHLine, DrawRectangle, DrawRayFromTime, DrawPriceText, RouteToString, DrawHUD, BuildBias, BullishRejectionNearZone, BearishRejectionNearZone, BullMicroBOS, BearMicroBOS, BuildBullSweepReclaimSetup, BuildBearSweepReclaimSetup, BuildBullBreakoutRetestSetup, BuildBearBreakoutRetestSetup, BuildEntrySignal, CanTradeNow, ExecuteSignal, ManageOpenPosition, DrawSetup, ResetDailyState, OnInit, OnDeinit, OnTick, OnTradeTransaction

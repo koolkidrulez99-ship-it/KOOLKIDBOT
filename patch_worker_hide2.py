@@ -1,0 +1,9 @@
+from pathlib import Path
+p=Path(r'C:\Users\jjmje\Desktop\deriv-bot-site\mt5_module\mt5_multi_account\worker.py')
+t=p.read_text(encoding='utf-8')
+start=t.index('def hide_terminal_windows(terminal_path):')
+end=t.index('\ndef keep_terminal_hidden(terminal_path):', start)
+new='''def hide_terminal_windows(terminal_path):\n    if os.name != "nt" or not terminal_path:\n        return\n    target_dir = os.path.normcase(os.path.dirname(os.path.abspath(terminal_path)))\n    allowed = {"terminal64.exe", "metaeditor64.exe", "metatester64.exe"}\n    user32, kernel = ctypes.windll.user32, ctypes.windll.kernel32\n    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)\n\n    @callback_type\n    def hide_if_target(hwnd, _):\n        pid = wintypes.DWORD()\n        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))\n        handle = kernel.OpenProcess(0x1000, False, pid.value)\n        if handle:\n            try:\n                size = wintypes.DWORD(32768)\n                buffer = ctypes.create_unicode_buffer(size.value)\n                if kernel.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):\n                    image = os.path.normcase(os.path.abspath(buffer.value))\n                    if os.path.dirname(image) == target_dir and os.path.basename(image).lower() in allowed:\n                        user32.ShowWindowAsync(hwnd, 0)\n                        user32.ShowWindow(hwnd, 0)\n                        user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0080)\n            finally:\n                kernel.CloseHandle(handle)\n        return True\n\n    user32.EnumWindows(hide_if_target, 0)\n\n'''
+t=t[:start]+new+t[end+1:]
+p.write_text(t,encoding='utf-8')
+print('WORKER_HIDE2_PATCHED')

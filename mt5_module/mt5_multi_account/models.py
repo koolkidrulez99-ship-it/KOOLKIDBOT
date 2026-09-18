@@ -42,6 +42,19 @@ class ManualTradeRequest(BaseModel):
     lot_mode: Literal["same", "fixed", "multiplier"] = "same"
     fixed_lot: float = 0.01
     multiplier: float = 1.0
+    magic: int = 0
+    comment: str = "KOOLKID"
+
+class ModifyPositionRequest(BaseModel):
+    account_id: str
+    ticket: int
+    sl: float = 0.0
+    tp: float = 0.0
+
+class PartialCloseRequest(BaseModel):
+    account_id: str
+    ticket: int
+    volume: float
 
 class MultiCloseRequest(BaseModel):
     targets: List[Dict[str, object]]

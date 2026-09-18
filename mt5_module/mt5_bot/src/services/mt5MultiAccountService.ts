@@ -1,4 +1,5 @@
-const multiBase = String(import.meta.env.VITE_MT5_MULTI_ACCOUNT_API_BASE || 'http://127.0.0.1:8002').replace(/\/$/, '');
+﻿const isLocalHost = window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost';
+const multiBase = String(isLocalHost ? 'http://127.0.0.1:8002' : (import.meta.env.VITE_MT5_MULTI_ACCOUNT_API_BASE || 'http://127.0.0.1:8002')).replace(/\/$/, '');
 
 function authHeaders(): Record<string, string> {
   const token = sessionStorage.getItem('koolkid_mt5_hub_token');
@@ -112,3 +113,4 @@ export const mt5MultiAccountService = {
   closePosition: (accountId: string, ticket: number) => multiRequest<Record<string, unknown>>('/positions/close', 'POST', { account_id: accountId, ticket }),
   closeMany: (targets: Array<{ account_id: string; ticket: number }>, uiClickedAt = Date.now() / 1000) => multiRequest<Record<string, unknown>>('/positions/close-many', 'POST', { targets, ui_clicked_at: uiClickedAt }),
 };
+

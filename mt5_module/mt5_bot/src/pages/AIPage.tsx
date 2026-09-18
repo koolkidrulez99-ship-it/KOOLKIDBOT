@@ -1,12 +1,13 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Activity, ArrowRightLeft, Brain, Globe, RefreshCw, ShieldAlert, Sparkles, TrendingUp, X, Zap } from 'lucide-react';
 import { useHub } from '../context/HubContext';
 import { timeAgo } from '../lib/format';
 import { Badge, PageHeader, Panel, Progress, Skel, Spinner, Toggle } from '../components/ui';
-import type { AiInsight, AiSettings, AiTrialSnapshot } from '../types';
+import type { AiAutoSelectMode, AiAutoSelectStatus, AiAutoStatus, AiInsight, AiSettings, AiTrialSnapshot } from '../types';
 import { aiControlService } from '../services/aiControlService';
 import { mt5MultiAccountService } from '../services/mt5MultiAccountService';
+import NativeAutoSelectPanel from '../components/NativeAutoSelectPanel';
 import { isSimulation } from '../config/runtime';
 
 const CATEGORY_META: Record<string, { icon: typeof Brain; cls: string }> = {
@@ -21,9 +22,8 @@ const SENTIMENT_TONE: Record<string, 'gain' | 'loss' | 'warn' | 'slate'> = {
 };
 
 const TOGGLE_DEFS: { key: keyof AiSettings; label: string; desc: string }[] = [
-  { key: 'auto_trading', label: 'AI Auto-Trading', desc: 'Existing AI control. Session 3 still keeps Apostle execution demo-only.' },
   { key: 'risk_guard', label: 'AI Risk Guard', desc: 'Surface risk warnings when account, position or drawdown limits are approached.' },
-  { key: 'sentiment_filter', label: 'Sentiment Filter', desc: 'Reserved for later external market context. It is not used by the Session 3 trial.' },
+  { key: 'sentiment_filter', label: 'Sentiment Filter', desc: 'Reserved for later external market context. It does not alter Human Apostle entries yet.' },
   { key: 'news_pause', label: 'Red-Folder News Pause', desc: 'Reserved for a later trusted news/calendar provider.' },
 ];
 
@@ -71,12 +71,20 @@ export default function AIPage() {
   const [accountLogin, setAccountLogin] = useState<number>(0);
   const [symbol, setSymbol] = useState('XAUUSD');
   const [trialVolume, setTrialVolume] = useState('0.01');
+  const [autoStatus, setAutoStatus] = useState<AiAutoStatus | null>(null);
+  const [autoBusy, setAutoBusy] = useState(false);
+  const [autoSelectStatus, setAutoSelectStatus] = useState<AiAutoSelectStatus | null>(null);
+  const [autoSelectBusy, setAutoSelectBusy] = useState(false);
+  const [autoSelectMode, setAutoSelectMode] = useState<AiAutoSelectMode>('analysis');
+  const [autoSelectBotIds, setAutoSelectBotIds] = useState<number[]>([]);
+  const autoSelectInitRef = useRef(false);
   const [copyAnywhere, setCopyAnywhere] = useState(false);
   const [copyAnywhereBusy, setCopyAnywhereBusy] = useState(false);
   const [copyStatus, setCopyStatus] = useState<CopyAnywhereStatus | null>(null);
   const [copyStatusError, setCopyStatusError] = useState('');
 
   const selectedAccount = useMemo(() => connectedAccounts.find((a) => a.login === accountLogin) || null, [connectedAccounts, accountLogin]);
+  const selectedNative = autoSelectStatus?.snapshot?.selected || null;
 
   const loadCopyAnywhere = async () => {
     if (isSimulation) return;
@@ -99,11 +107,22 @@ export default function AIPage() {
       .catch(() => pushToast('error', 'AI feed unavailable', 'Could not load the intelligence feed.'));
     if (!isSimulation) {
       aiControlService.trialGet().then((d) => setTrial(d.snapshot)).catch(() => {});
+      aiControlService.autoStatus().then(setAutoStatus).catch(() => {});
+      aiControlService.autoSelectStatus().then(setAutoSelectStatus).catch(() => {});
       loadCopyAnywhere();
     }
   };
 
   useEffect(load, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (isSimulation) return;
+    const id = window.setInterval(() => {
+      aiControlService.autoStatus().then(setAutoStatus).catch(() => {});
+      aiControlService.autoSelectStatus().then(setAutoSelectStatus).catch(() => {});
+      aiControlService.trialGet().then((d) => setTrial(d.snapshot)).catch(() => {});
+    }, 5000);
+    return () => window.clearInterval(id);
+  }, []);
   useEffect(() => {
     const id = window.setInterval(() => setScanPulse((p) => p + 1), 2400);
     return () => window.clearInterval(id);
@@ -118,9 +137,19 @@ export default function AIPage() {
     if (!symbols.includes(symbol)) setSymbol(symbols[0] || 'XAUUSD');
   }, [symbol, symbols]);
 
+  useEffect(() => {
+    if (!autoSelectStatus || autoSelectInitRef.current) return;
+    autoSelectInitRef.current = true;
+    setAutoSelectMode(autoSelectStatus.config.mode || 'analysis');
+    const configured = autoSelectStatus.config.enabled_bot_ids || [];
+    setAutoSelectBotIds(configured.length ? configured : autoSelectStatus.available_presets.filter((p) => p.ready).map((p) => p.bot_id));
+    if (autoSelectStatus.enabled && autoSelectStatus.config.account_login) setAccountLogin(autoSelectStatus.config.account_login);
+    if (autoSelectStatus.enabled && autoSelectStatus.config.symbol) setSymbol(autoSelectStatus.config.symbol);
+  }, [autoSelectStatus]);
+
   const runTrial = async () => {
     if (isSimulation) {
-      pushToast('warning', 'Real MT5 bridge required', 'The Session 3 trial reads completed M15/H4 candles from a connected MT5 account.');
+      pushToast('warning', 'Real MT5 bridge required', 'Human Apostle reads completed M15/H4 candles from a connected MT5 account.');
       return;
     }
     if (!accountLogin || !symbol) {
@@ -131,7 +160,7 @@ export default function AIPage() {
     try {
       const result = await aiControlService.trialScan(accountLogin, symbol);
       setTrial(result);
-      pushToast('success', 'Apostle trial scan complete', `${result.decision} · ${result.confidence}% confidence`);
+      pushToast('success', 'Apostle scan complete', `${result.decision} · ${result.confidence}% confidence`);
     } catch (e) {
       pushToast('error', 'Trial scan failed', e instanceof Error ? e.message : undefined);
     } finally {
@@ -149,7 +178,7 @@ export default function AIPage() {
       return;
     }
     if (selectedAccount?.account_type !== 'demo') {
-      pushToast('warning', 'Demo account required', 'Session 3 blocks live AI execution.');
+      pushToast('warning', 'Demo account required', 'Live AI execution is locked. Use a demo MT5 account.');
       return;
     }
     const volume = Number(trialVolume);
@@ -160,12 +189,145 @@ export default function AIPage() {
     setExecuting(true);
     try {
       const result = await aiControlService.trialExecute(accountLogin, symbol, volume);
-      setTrial((prev) => prev ? { ...prev, execution: 'Demo execution sent to MT5. Live accounts stay blocked in Session 3.', execution_mode: 'DEMO_AUTO_TRADE', last_execution: result } : prev);
+      setTrial((prev) => prev ? { ...prev, execution: 'Demo execution sent to MT5. Live accounts stay locked.', execution_mode: 'DEMO_AUTO_TRADE', last_execution: result } : prev);
       pushToast('success', 'Demo AI trade sent', `${result.direction} ${result.symbol} · lot ${result.volume}`);
     } catch (e) {
       pushToast('error', 'Demo AI execution failed', e instanceof Error ? e.message : undefined);
     } finally {
       setExecuting(false);
+    }
+  };
+
+  const startAutoTrading = async () => {
+    if (isSimulation) {
+      pushToast('warning', 'Real MT5 bridge required');
+      return;
+    }
+    if (!accountLogin || !symbol) {
+      pushToast('warning', 'Select an account and symbol');
+      return;
+    }
+    if (selectedAccount?.account_type !== 'demo') {
+      pushToast('warning', 'Demo account required', 'Human Apostle auto-trading is locked to demo accounts for the user trial.');
+      return;
+    }
+    if (autoSelectStatus?.enabled && autoSelectStatus.config.mode === 'auto') {
+      pushToast('warning', 'Auto Select auto mode is already active', 'Stop Auto Select automatic execution before starting Human Apostle Auto-Trading.');
+      return;
+    }
+    const volume = Number(trialVolume);
+    if (!Number.isFinite(volume) || volume <= 0) {
+      pushToast('warning', 'Enter a valid lot size');
+      return;
+    }
+    setAutoBusy(true);
+    try {
+      const status = await aiControlService.autoConfigure({ enabled: true, account_login: accountLogin, symbol, volume, scan_seconds: 30 });
+      setAutoStatus(status);
+      setSettings((prev) => prev ? { ...prev, auto_trading: true } : prev);
+      pushToast('success', 'Human Apostle Auto-Trading started', `${symbol} · demo #${accountLogin} · lot ${volume}`);
+    } catch (e) {
+      pushToast('error', 'Could not start AI Auto-Trading', e instanceof Error ? e.message : undefined);
+    } finally {
+      setAutoBusy(false);
+    }
+  };
+
+  const stopAutoTrading = async () => {
+    setAutoBusy(true);
+    try {
+      const status = await aiControlService.autoConfigure({ enabled: false });
+      setAutoStatus(status);
+      setSettings((prev) => prev ? { ...prev, auto_trading: false } : prev);
+      pushToast('info', 'Human Apostle Auto-Trading stopped', 'The server scanner will not open new AI trades.');
+    } catch (e) {
+      pushToast('error', 'Could not stop AI Auto-Trading', e instanceof Error ? e.message : undefined);
+    } finally {
+      setAutoBusy(false);
+    }
+  };
+
+  const toggleAutoSelectPreset = (botId: number) => {
+    if (autoSelectStatus?.enabled) return;
+    setAutoSelectBotIds((current) => current.includes(botId) ? current.filter((id) => id !== botId) : [...current, botId]);
+  };
+
+  const runAutoSelectScan = async () => {
+    if (isSimulation) {
+      pushToast('warning', 'Real MT5 bridge required');
+      return;
+    }
+    if (!accountLogin || !symbol || !autoSelectBotIds.length) {
+      pushToast('warning', 'Choose an account, symbol, and at least one native preset.');
+      return;
+    }
+    setAutoSelectBusy(true);
+    try {
+      const snapshot = await aiControlService.autoSelectScan(accountLogin, symbol, autoSelectBotIds);
+      const status = await aiControlService.autoSelectStatus();
+      setAutoSelectStatus({ ...status, snapshot });
+      pushToast(snapshot.selected ? 'success' : 'info', snapshot.selected ? 'Native setup selected' : 'Auto Select scan complete',
+        snapshot.selected ? `${snapshot.selected.name} · ${snapshot.selected.title} · ${snapshot.selected.selection_score.toFixed(1)} score` : 'No enabled native strategy has a fully confirmed setup yet.');
+    } catch (e) {
+      pushToast('error', 'Auto Select scan failed', e instanceof Error ? e.message : undefined);
+    } finally {
+      setAutoSelectBusy(false);
+    }
+  };
+
+  const startAutoSelect = async () => {
+    if (!accountLogin || !symbol || !autoSelectBotIds.length) {
+      pushToast('warning', 'Choose an account, symbol, and at least one native preset.');
+      return;
+    }
+    if (autoSelectMode === 'auto' && selectedAccount?.account_type !== 'demo') {
+      pushToast('warning', 'Demo account required', 'Auto Select automatic execution is locked to DEMO accounts.');
+      return;
+    }
+    setAutoSelectBusy(true);
+    try {
+      const status = await aiControlService.autoSelectConfigure({
+        enabled: true, account_login: accountLogin, symbol,
+        enabled_bot_ids: autoSelectBotIds, mode: autoSelectMode, scan_seconds: 30,
+      });
+      setAutoSelectStatus(status);
+      pushToast('success', 'AI Auto Select started', `${symbol} · ${autoSelectMode.toUpperCase()} · ${autoSelectBotIds.length} native presets`);
+    } catch (e) {
+      pushToast('error', 'Could not start Auto Select', e instanceof Error ? e.message : undefined);
+    } finally {
+      setAutoSelectBusy(false);
+    }
+  };
+
+  const stopAutoSelect = async () => {
+    setAutoSelectBusy(true);
+    try {
+      const status = await aiControlService.autoSelectConfigure({ enabled: false, mode: autoSelectMode });
+      setAutoSelectStatus(status);
+      pushToast('info', 'AI Auto Select stopped', 'No new Auto Select entries will be submitted.');
+    } catch (e) {
+      pushToast('error', 'Could not stop Auto Select', e instanceof Error ? e.message : undefined);
+    } finally {
+      setAutoSelectBusy(false);
+    }
+  };
+
+  const executeAutoSelectSelection = async () => {
+    if (selectedAccount?.account_type !== 'demo') {
+      pushToast('warning', 'Demo account required', 'Manual AI confirmation execution is DEMO-only.');
+      return;
+    }
+    setAutoSelectBusy(true);
+    try {
+      const execution = await aiControlService.autoSelectExecute();
+      const status = await aiControlService.autoSelectStatus();
+      setAutoSelectStatus(status);
+      const direction = String(execution.direction || '');
+      pushToast('success', 'Selected native setup executed', `${selectedNative?.name || 'Native strategy'} · ${direction} ${symbol}`);
+    } catch (e) {
+      pushToast('error', 'Selected setup was not executed', e instanceof Error ? e.message : undefined);
+    } finally {
+      setAutoSelectBusy(false);
     }
   };
 
@@ -240,16 +402,16 @@ export default function AIPage() {
     <div>
       <PageHeader
         title="AI Intelligence"
-        sub="Session 3 trial: Human Apostle · M15 execution + H4 bias · completed candles only · demo execution on demo accounts only"
+        sub="Human Apostle + KOOLKID native strategy intelligence · completed candles only · server-side scanning · automatic execution stays DEMO-only"
         actions={
           <div className="flex flex-wrap gap-2">
             <button className="btn-secondary" onClick={executeTrial} disabled={executing || isSimulation || !trial?.proposed_trade || !['BUY', 'SELL'].includes(trial?.decision || '') || selectedAccount?.account_type !== 'demo'}>
               {executing ? <Spinner size={15} /> : <Zap size={15} />}
-              {executing ? 'Sending demo order…' : 'Execute demo trade'}
+              {executing ? 'Sending demo order…' : 'Execute current demo signal'}
             </button>
             <button className="btn-primary" onClick={runTrial} disabled={trialLoading || isSimulation || !accountLogin}>
               {trialLoading ? <Spinner size={15} /> : <Brain size={15} />}
-              {trialLoading ? 'Scanning M15 + H4…' : 'Run Apostle Trial Scan'}
+              {trialLoading ? 'Scanning M15 + H4…' : 'Run Apostle Scan'}
             </button>
           </div>
         }
@@ -259,46 +421,100 @@ export default function AIPage() {
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <p className="text-[15px] font-extrabold text-white">Human Apostle Trial v0.3</p>
+              <p className="text-[15px] font-extrabold text-white">Human Apostle AI</p>
               <Badge tone="warn">DEMO ONLY</Badge>
-              <Badge tone={isSimulation ? 'warn' : 'gain'}>{isSimulation ? 'Bridge required' : 'Signal + demo execute'}</Badge>
+              <Badge tone={isSimulation ? 'warn' : 'gain'}>{autoStatus?.enabled ? 'AUTO RUNNING' : (isSimulation ? 'Bridge required' : 'Ready')}</Badge>
             </div>
             <p className="mt-1 text-[12px] text-slate-500 max-w-3xl">
-              Tests the sequence: market structure → opposing trendline break → protected structure break → later retest → rejection candle → H4 alignment. This trial can now execute the current BUY/SELL signal on a connected demo MT5 account only. Live accounts remain blocked.
+              Sequence: market structure → opposing trendline break → protected structure break → later retest → rejection candle → H4 alignment. You can scan manually, execute a current signal manually, or let the server keep scanning and execute fresh confirmed signals automatically on a demo account. Live AI execution remains locked.
             </p>
           </div>
-          <p className="mono text-[10px] text-slate-600">{trial?.execution || 'SIGNAL ONLY — ORDER NOT EXECUTED.'}</p>
+          <p className="mono text-[10px] text-slate-600">{trial?.execution || (autoStatus?.enabled ? 'SERVER SCANNER ACTIVE' : 'WAITING FOR SCAN')}</p>
         </div>
 
         <div className="mt-4 grid grid-cols-1 md:grid-cols-5 gap-3">
           <div>
             <label className="label">Connected account</label>
-            <select className="input" value={accountLogin || ''} onChange={(e) => setAccountLogin(Number(e.target.value))} disabled={!connectedAccounts.length}>
+            <select className="input" value={accountLogin || ''} onChange={(e) => setAccountLogin(Number(e.target.value))} disabled={!connectedAccounts.length || !!autoStatus?.enabled || !!autoSelectStatus?.enabled}>
               {!connectedAccounts.length && <option value="">No connected MT5 account</option>}
               {connectedAccounts.map((a) => <option key={a.login} value={a.login}>{a.nickname || `MT5 #${a.login}`} · #{a.login}</option>)}
             </select>
           </div>
           <div>
             <label className="label">Symbol</label>
-            <select className="input" value={symbol} onChange={(e) => setSymbol(e.target.value)}>
+            <select className="input" value={symbol} onChange={(e) => setSymbol(e.target.value)} disabled={!!autoStatus?.enabled || !!autoSelectStatus?.enabled}>
               {symbols.map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
           </div>
           <div>
-            <label className="label">Fixed lot for demo execute</label>
-            <input className="input mono" value={trialVolume} onChange={(e) => setTrialVolume(e.target.value)} placeholder="0.01" />
+            <label className="label">Fixed demo lot</label>
+            <input className="input mono" value={trialVolume} onChange={(e) => setTrialVolume(e.target.value)} placeholder="0.01" disabled={!!autoStatus?.enabled || !!autoSelectStatus?.enabled} />
           </div>
           <div>
             <label className="label">Execution timeframe</label>
-            <div className="input mono flex items-center">M15 <span className="text-slate-600 ml-2">fixed for trial</span></div>
+            <div className="input mono flex items-center">M15 <span className="text-slate-600 ml-2">fixed</span></div>
           </div>
           <div>
             <label className="label">Bias timeframe</label>
-            <div className="input mono flex items-center">H4 <span className="text-slate-600 ml-2">fixed for trial</span></div>
+            <div className="input mono flex items-center">H4 <span className="text-slate-600 ml-2">fixed</span></div>
           </div>
         </div>
-        <p className="mt-3 text-[11px] text-slate-500">Selected account type: <span className="text-white font-semibold">{selectedAccount?.account_type || '—'}</span>. Session 3 still allows Apostle execution on demo only and uses the AI signal's SL/TP with your fixed lot size.</p>
+        <p className="mt-3 text-[11px] text-slate-500">Selected account type: <span className="text-white font-semibold">{selectedAccount?.account_type || '—'}</span>. Human Apostle uses its proposed SL/TP and your fixed lot. Auto-Trading keeps running on the server even if this browser closes.</p>
+        <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-white/[0.07] pt-4">
+          <button
+            className={autoStatus?.enabled ? 'btn-secondary' : 'btn-primary'}
+            onClick={autoStatus?.enabled ? stopAutoTrading : startAutoTrading}
+            disabled={autoBusy || isSimulation || (!autoStatus?.enabled && (!accountLogin || selectedAccount?.account_type !== 'demo' || (autoSelectStatus?.enabled && autoSelectStatus.config.mode === 'auto')))}
+          >
+            {autoBusy ? <Spinner size={15} /> : <Activity size={15} />}
+            {autoBusy ? 'Updating…' : autoStatus?.enabled ? 'Stop AI Auto-Trading' : 'Start AI Auto-Trading'}
+          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge tone={autoStatus?.runtime?.status === 'running' ? 'gain' : autoStatus?.runtime?.status === 'blocked' ? 'loss' : autoStatus?.enabled ? 'warn' : 'slate'}>{autoStatus?.runtime?.status || 'stopped'}</Badge>
+            <span className="text-[10px] text-slate-600">Server scanner · 30s checks · fresh completed-candle signals only · duplicate signal protection</span>
+          </div>
+        </div>
       </Panel>
+
+      {autoStatus && (
+        <Panel className="p-5 mb-4 border border-brand-500/20">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div className="flex flex-wrap items-center gap-2"><p className="text-[14px] font-bold text-white">AI Auto-Trading Monitor</p><Badge tone={autoStatus.enabled && autoStatus.scanner_alive ? 'gain' : autoStatus.enabled ? 'warn' : 'slate'}>{autoStatus.enabled ? (autoStatus.scanner_alive ? 'SERVER ACTIVE' : 'STARTING') : 'OFF'}</Badge></div>
+              <p className="mt-1 text-[11px] text-slate-500">This is workspace-isolated and server-side. Browser logout or closing the page does not stop an enabled scanner. Restart recovery restores enabled scanners.</p>
+            </div>
+            <div className="text-right text-[10px] text-slate-600">
+              <p>{autoStatus.config?.symbol || symbol} · #{autoStatus.config?.account_login || accountLogin || '—'} · lot {autoStatus.config?.volume ?? trialVolume}</p>
+              <p>M15 execution · H4 bias · DEMO ONLY</p>
+            </div>
+          </div>
+          <div className="mt-4 grid grid-cols-2 lg:grid-cols-4 gap-2.5">
+            <div className="rounded-xl bg-black/25 border border-white/[0.06] p-3"><p className="text-[9px] uppercase tracking-widest text-slate-600">Last scan</p><p className="mt-1 text-xs font-semibold text-slate-200">{autoStatus.runtime.last_scan_at ? timeAgo(autoStatus.runtime.last_scan_at) : '—'}</p></div>
+            <div className="rounded-xl bg-black/25 border border-white/[0.06] p-3"><p className="text-[9px] uppercase tracking-widest text-slate-600">Last decision</p><p className="mt-1 text-xs font-semibold text-slate-200">{autoStatus.runtime.last_decision || '—'}{typeof autoStatus.runtime.last_confidence === 'number' ? ` · ${autoStatus.runtime.last_confidence}%` : ''}</p></div>
+            <div className="rounded-xl bg-black/25 border border-white/[0.06] p-3"><p className="text-[9px] uppercase tracking-widest text-slate-600">Last signal</p><p className="mt-1 text-xs font-semibold text-slate-200">{autoStatus.runtime.last_signal || '—'}{autoStatus.runtime.last_signal_at ? ` · ${timeAgo(autoStatus.runtime.last_signal_at)}` : ''}</p></div>
+            <div className="rounded-xl bg-black/25 border border-white/[0.06] p-3"><p className="text-[9px] uppercase tracking-widest text-slate-600">Last execution</p><p className="mt-1 text-xs font-semibold text-slate-200">{autoStatus.runtime.last_execution_at ? timeAgo(autoStatus.runtime.last_execution_at) : '—'}</p></div>
+          </div>
+          {autoStatus.runtime.last_error && <p className="mt-3 rounded-xl border border-warn-400/20 bg-warn-400/5 px-3 py-2 text-[11px] text-warn-400">{autoStatus.runtime.last_error}</p>}
+          {!!autoStatus.events?.length && <div className="mt-3 border-t border-white/[0.06] pt-3"><p className="text-[9px] uppercase tracking-widest text-slate-600 mb-2">Recent AI events</p><div className="space-y-1">{autoStatus.events.slice(0, 5).map((event, idx) => <p key={`${event.time}-${idx}`} className="text-[10px] text-slate-500"><span className="mono text-slate-600">{timeAgo(event.time)}</span> · {event.event.replaceAll('_', ' ')}{event.symbol ? ` · ${event.symbol}` : ''}{event.direction ? ` · ${event.direction}` : ''}</p>)}</div></div>}
+        </Panel>
+      )}
+
+      <NativeAutoSelectPanel
+        status={autoSelectStatus}
+        accountLogin={accountLogin}
+        accountType={selectedAccount?.account_type}
+        symbol={symbol}
+        busy={autoSelectBusy}
+        mode={autoSelectMode}
+        selectedBotIds={autoSelectBotIds}
+        simulation={isSimulation}
+        onMode={setAutoSelectMode}
+        onTogglePreset={toggleAutoSelectPreset}
+        onScan={runAutoSelectScan}
+        onStart={startAutoSelect}
+        onStop={stopAutoSelect}
+        onExecute={executeAutoSelectSelection}
+      />
 
       <Panel className="p-5 mb-4 border border-gain-500/20">
         <div className="flex flex-wrap items-start justify-between gap-4">
@@ -363,7 +579,7 @@ export default function AIPage() {
                   <span className="text-slate-500">TP</span><span className="mono text-right text-gain-400">{fmt(trial.proposed_trade.tp)}</span>
                   <span className="text-slate-500">Target</span><span className="mono text-right text-white">2.0R</span>
                 </div>
-                <p className="text-[10px] text-warn-400 border-t border-white/[0.06] pt-2">Session 3 can send this setup to a connected demo MT5 account only.</p>
+                <p className="text-[10px] text-warn-400 border-t border-white/[0.06] pt-2">This setup can be sent manually or by the server auto-trader on the selected demo account only.</p>
                 {trial.last_execution && (
                   <div className="mt-3 rounded-xl bg-black/20 border border-white/[0.06] p-3 text-[11px]">
                     <p className="text-[10px] uppercase tracking-widest text-slate-600">Last demo execution</p>
@@ -395,7 +611,7 @@ export default function AIPage() {
               <Brain size={22} />
               <motion.span key={scanPulse} className="absolute inset-0 rounded-2xl border border-brand-400/50" initial={{ opacity: 0.7, scale: 1 }} animate={{ opacity: 0, scale: 1.45 }} transition={{ duration: 1.6, ease: 'easeOut' }} />
             </span>
-            <div><p className="text-[15px] font-extrabold text-white tracking-tight">MT5 AI CONTROL</p><p className="mono text-[10px] text-slate-500">trial + existing account insight feed</p></div>
+            <div><p className="text-[15px] font-extrabold text-white tracking-tight">MT5 AI CONTROL</p><p className="mono text-[10px] text-slate-500">Human Apostle + account insight feed</p></div>
             <Badge tone={isSimulation ? 'warn' : 'gain'}>{isSimulation ? 'Simulation' : 'Online'}</Badge>
           </div>
           <div className="mt-5 grid grid-cols-3 gap-2.5 text-center">
@@ -403,7 +619,7 @@ export default function AIPage() {
             <div className="rounded-xl bg-black/25 border border-white/[0.06] p-2.5"><p className="mono text-lg font-extrabold text-white">{insights && insights.length ? Math.round(insights.reduce((s, i) => s + i.confidence, 0) / insights.length) : 0}%</p><p className="text-[9px] uppercase tracking-widest text-slate-600 font-semibold mt-0.5">Avg conf</p></div>
             <div className="rounded-xl bg-black/25 border border-white/[0.06] p-2.5"><p className="mono text-lg font-extrabold text-gain-400">{scanPulse}</p><p className="text-[9px] uppercase tracking-widest text-slate-600 font-semibold mt-0.5">Scan pulse</p></div>
           </div>
-          <p className="mt-4 flex items-center gap-2 text-[11px] text-slate-500"><Activity size={12} className="text-gain-400" />{isSimulation ? 'Simulation insight feed is active; Apostle trial requires the bridge.' : 'Connected MT5 account state is available to AI Intelligence.'}</p>
+          <p className="mt-4 flex items-center gap-2 text-[11px] text-slate-500"><Activity size={12} className="text-gain-400" />{isSimulation ? 'Simulation insight feed is active; Human Apostle requires the real MT5 bridge.' : autoStatus?.enabled ? 'Human Apostle server scanner is active for this workspace.' : 'Connected MT5 account state is available to AI Intelligence.'}</p>
           <div className="mt-5 pt-5 border-t border-white/[0.07] space-y-4">
             {TOGGLE_DEFS.map((t) => <div key={t.key} className="flex items-start justify-between gap-3"><div><p className="text-[13px] font-semibold text-slate-200">{t.label}</p><p className="text-[11px] text-slate-500 leading-snug mt-0.5">{t.desc}</p></div><Toggle on={settings ? settings[t.key] : false} onChange={(v) => updateSetting(t.key, v)} disabled={!settings} /></div>)}
           </div>

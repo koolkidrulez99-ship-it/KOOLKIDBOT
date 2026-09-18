@@ -14,3 +14,13 @@ mt5_module/mt5_multi_account/data/terminals/
 mt5_module/mt5_ea_worker/data/terminals/
 __pycache__/
 *.pyc
+
+# Local development backups - never push to Git
+_backup_*
+*.bak
+*.bak_*
+*.before-*.bak
+
+# MT5 per-user runtime state - never push
+mt5_module/mt5_bridge/data/workspaces/
+mt5_module/mt5_multi_account/data/workspaces/

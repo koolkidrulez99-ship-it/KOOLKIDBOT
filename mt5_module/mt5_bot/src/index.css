@@ -297,3 +297,17 @@ html.light-theme .nav-item.active { color: #0f172a !important; background: rgba(
 html.light-theme .tbl thead th,
 html.light-theme .tbl tbody td { border-color: rgba(71,85,105,.12) !important; }
 html.light-theme ::-webkit-scrollbar-thumb { border-color: #f3f7fc; background: rgba(71,85,105,.24); }
+
+@media (max-width: 520px) {
+  .mt5-public-head nav { gap: 7px; }
+  .mt5-public-head nav button { font-size: 10px; }
+  .mt5-public:not(.mt5-auth) .mt5-public-head nav button:nth-of-type(2),
+  .mt5-auth .mt5-public-head nav button:first-child { display: none; }
+}
+
+/* Keep public-entry controls above the decorative cover layers. */
+.mt5-public-head { position: relative; z-index: 20; }
+.mt5-public-head nav, .mt5-hero-copy, .mt5-actions, .mt5-explore { pointer-events: auto; }
+.mt5-hero-copy { z-index: 3; }
+.mt5-actions { position: relative; z-index: 4; }
+.mt5-primary, .mt5-secondary, .mt5-public-head nav a, .mt5-public-head nav button, .mt5-explore { position: relative; z-index: 5; pointer-events: auto; }

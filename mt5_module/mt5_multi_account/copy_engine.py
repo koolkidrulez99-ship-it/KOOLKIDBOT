@@ -75,7 +75,56 @@ class CopyEngine:
         if p.get("side"): return str(p["side"]).lower()
         return "buy" if int(p.get("type") or 0) == 0 else "sell"
 
-    def target_volume(self, master_pos, master_info, slave_info):
+    def account_budget(self, account_id):
+        cfg = (self.state_store.load().get("accounts") or {}).get(str(account_id)) or {}
+        value = cfg.get("budget")
+        try:
+            return float(value) if value is not None and float(value) > 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    def effective_equity(self, account_id, account_info):
+        equity = float((account_info or {}).get("equity") or 0)
+        budget = self.account_budget(account_id)
+        return min(equity, budget) if budget is not None and equity > 0 else (budget if budget is not None else equity)
+
+    def budget_status(self, account_id):
+        cfg = (self.state_store.load().get("accounts") or {}).get(str(account_id))
+        if cfg is None:
+            raise RuntimeError("MT5 account is not registered in this workspace.")
+        budget = self.account_budget(account_id)
+        info = self.pool.call(account_id, "account_info", timeout=5) if account_id in self.pool.ids() else {}
+        balance = float(info.get("balance") or 0)
+        equity = float(info.get("equity") or balance or 0)
+        margin = float(info.get("margin") or 0)
+        virtual_balance = min(balance, budget) if budget is not None and balance > 0 else (budget if budget is not None else balance)
+        virtual_equity = min(equity, budget) if budget is not None and equity > 0 else (budget if budget is not None else equity)
+        return {
+            "budget_enabled": budget is not None, "budget": budget,
+            "actual_balance": balance, "actual_equity": equity,
+            "virtual_balance": virtual_balance, "virtual_equity": virtual_equity,
+            "virtual_free_margin": max(0.0, virtual_equity - margin), "margin_used": margin,
+        }
+
+    def enforce_budget(self, account_id, order_payload):
+        budget = self.account_budget(account_id)
+        if budget is None:
+            return None
+        status = self.budget_status(account_id)
+        required = self.pool.call(account_id, "margin_required", {
+            "symbol": order_payload["symbol"], "side": order_payload.get("side") or "buy",
+            "volume": float(order_payload.get("volume") or 0),
+        }, timeout=8)
+        needed = float(required.get("margin") or 0)
+        available = float(status.get("virtual_free_margin") or 0)
+        if needed > available + 1e-9:
+            raise RuntimeError(
+                f"Budget guard blocked this trade. Required margin {needed:.2f} exceeds virtual free margin {available:.2f} "
+                f"from the {budget:.2f} account budget."
+            )
+        return {**status, "required_margin": needed}
+
+    def target_volume(self, master_pos, master_info, slave_info, master_id=None, slave_id=None):
         m = float(master_pos.get("volume") or 0.01)
         mode = self.config["lot_mode"]
         if mode == "fixed":
@@ -83,8 +132,8 @@ class CopyEngine:
         if mode == "multiplier":
             return max(0.01, m * float(self.config["multiplier"]))
         if mode == "equity_proportional":
-            me = float(master_info.get("equity") or 0)
-            se = float(slave_info.get("equity") or 0)
+            me = self.effective_equity(master_id, master_info) if master_id else float(master_info.get("equity") or 0)
+            se = self.effective_equity(slave_id, slave_info) if slave_id else float(slave_info.get("equity") or 0)
             return m if me <= 0 else max(0.01, m * (se / me))
         return m
 
@@ -93,7 +142,8 @@ class CopyEngine:
         rt = self.pool.items[slave_id]
         aliases = rt.config.get("symbol_aliases") or {}
         symbol = aliases.get(pos["symbol"], pos["symbol"])
-        volume = self.target_volume(pos, master_info, slave_info)
+        master_id = str((self.config or {}).get("master_account_id") or "")
+        volume = self.target_volume(pos, master_info, slave_info, master_id=master_id, slave_id=slave_id)
         tag = f"KKCOPY:{master_ticket}"[:31]
         payload = {
             "symbol": symbol,
@@ -105,6 +155,7 @@ class CopyEngine:
             "comment": tag,
         }
         try:
+            self.enforce_budget(slave_id, payload)
             result = self.pool.call(slave_id, "open_trade", payload, timeout=35)
         except TimeoutError:
             positions = self.pool.call(slave_id, "positions", timeout=15)

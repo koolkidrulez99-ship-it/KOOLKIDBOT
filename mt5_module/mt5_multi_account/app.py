@@ -12,7 +12,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
-from .models import ConnectRequest, CopyRequest, CopyDecisionRequest, ManualTradeRequest, CloseRequest, MultiCloseRequest
+from .models import ConnectRequest, CopyRequest, CopyDecisionRequest, ManualTradeRequest, CloseRequest, MultiCloseRequest, ModifyPositionRequest, PartialCloseRequest
 from .state import State
 from .pool import Pool
 from .credential_store import CredentialStore
@@ -24,6 +24,7 @@ sys.path.insert(0, str(BASE.parent))
 from hub_auth import current_workspace, internal_workspace_signature, reset_workspace, set_workspace, verify_internal_workspace, workspace_from_authorization, workspace_ids
 
 TERMINALS = BASE / "data" / "terminals"
+TEMPLATE_MQL5 = TERMINALS / "_worker_template" / "MQL5"
 TERMINAL_LOCK = threading.RLock()
 _CORE_POOL = Pool()
 _SESSION_STOP = threading.Event()
@@ -163,7 +164,9 @@ def _connect_saved(cfg: dict) -> None:
     aid = str(cfg.get("account_id") or "")
     if not aid or aid in POOL.ids() or aid in POOL.pending:
         return
-    POOL.connect(dict(cfg), _saved_password(cfg))
+    prepared = dict(cfg)
+    prepared["server"] = normalize_mt5_server(prepared.get("server") or "")
+    POOL.connect(prepared, _saved_password(cfg))
 
 
 def restore_saved_sessions():
@@ -256,6 +259,16 @@ def bad(exc):
     raise HTTPException(400, message)
 
 
+def normalize_mt5_server(value: str) -> str:
+    server = str(value or "").strip()
+    compact = re.sub(r"\s+", "", server).lower()
+    if compact == "deriv-demo":
+        return "Deriv-Demo"
+    if compact == "deriv-real":
+        return "Deriv-Real"
+    return server
+
+
 def source_data_dir(terminal: Path) -> Path | None:
     configured = os.getenv("MT5_ACCOUNT_DATA_PATH", "").strip().strip('"')
     if configured:
@@ -293,34 +306,46 @@ def isolated_terminal(account_id: str, requested: str) -> str:
         if source != terminal and not terminal.is_file():
             target_dir.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(source.parent, target_dir, dirs_exist_ok=True)
+            if TEMPLATE_MQL5.is_dir():
+                shutil.copytree(TEMPLATE_MQL5, target_dir / "MQL5", dirs_exist_ok=True)
         if not marker.is_file():
             _CORE_POOL._stop_terminal(str(terminal))
             source_data = source_data_dir(source)
             if source_data and source_data.resolve() != target_dir.resolve():
                 source_config = source_data / "config"
-                if source_config.is_dir():
-                    shutil.copytree(source_config, target_dir / "config", dirs_exist_ok=True)
-            marker.write_text("Account terminal seeded from the original MT5 profile.\n", encoding="ascii")
+                target_config = target_dir / "config"
+                target_config.mkdir(parents=True, exist_ok=True)
+                for name in ("servers.dat", "terminal.lic", "dnsperf.dat"):
+                    candidate = source_config / name
+                    if candidate.is_file():
+                        shutil.copy2(candidate, target_config / name)
+            marker.write_text("Account terminal seeded without account credentials.\n", encoding="ascii")
     if not terminal.is_file():
         raise RuntimeError("Could not prepare the isolated MT5 account terminal.")
     # Current MT5 builds copy the desktop MCP listener into portable clones.
     # Every clone otherwise competes for the same localhost ports (22345/22346),
     # which prevents additional account workers from completing startup.
-    assistant_ini = target_dir / "config" / "assistant.ini"
+    # Disable MetaTrader/MetaEditor MCP before the very first terminal start.
+    # Fresh portable clones do not have assistant.ini yet; waiting for the file to
+    # appear is too late because MT5 may already bind 22345/22346 and break IPC.
+    config_dir = target_dir / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    assistant_ini = config_dir / "assistant.ini"
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.optionxform = str
+    encoding = "utf-8"
     if assistant_ini.is_file():
-        parser = configparser.ConfigParser(interpolation=None)
-        parser.optionxform = str
         raw = assistant_ini.read_bytes()
         encoding = "utf-16" if raw.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig"
         parser.read_string(raw.decode(encoding))
-        changed = False
-        for section in ("MCP.MetaEditor", "MCP.MetaTrader"):
-            if parser.has_section(section) and parser.get(section, "Enable", fallback="0") != "0":
-                parser.set(section, "Enable", "0")
-                changed = True
-        if changed:
-            with assistant_ini.open("w", encoding=encoding) as handle:
-                parser.write(handle, space_around_delimiters=False)
+    for section in ("MCP.MetaEditor", "MCP.MetaTrader"):
+        if not parser.has_section(section):
+            parser.add_section(section)
+        parser.set(section, "Enable", "0")
+    if not parser.has_section("MCP.Custom"):
+        parser.add_section("MCP.Custom")
+    with assistant_ini.open("w", encoding=encoding) as handle:
+        parser.write(handle, space_around_delimiters=False)
     return str(terminal)
 
 @app.get("/")
@@ -362,8 +387,13 @@ def connect(req: ConnectRequest):
         saved = STATE.load()
         if req.account_id not in saved.get("accounts", {}) and len(saved.get("accounts", {})) >= 10:
             raise RuntimeError("Maximum of 10 MT5 accounts per workspace reached")
+        prior_cfg = dict((saved.get("accounts") or {}).get(req.account_id) or {})
         cfg = req.model_dump(exclude={"password"})
+        cfg["server"] = normalize_mt5_server(cfg.get("server") or "")
         cfg["auto_reconnect"] = True
+        for key in ("budget", "budget_updated_at"):
+            if key in prior_cfg:
+                cfg[key] = prior_cfg[key]
         if req.mode == "real":
             cfg["terminal_path"] = isolated_terminal(f"{current_workspace()}--{req.account_id}", req.terminal_path)
             cfg["portable"] = True
@@ -387,6 +417,41 @@ def connect(req: ConnectRequest):
         return {**POOL.status(req.account_id), "account_info": POOL.call(req.account_id, "account_info", timeout=5), "remembered": CREDENTIALS.has(req.account_id)}
     except Exception as exc:
         bad(exc)
+
+@app.put("/accounts/{account_id}/budget")
+def set_account_budget(account_id: str, payload: dict = None):
+    payload = payload or {}
+    s = STATE.load()
+    cfg = (s.get("accounts") or {}).get(account_id)
+    if cfg is None:
+        raise HTTPException(404, "MT5 account is not registered in this workspace.")
+    reset = bool(payload.get("reset"))
+    raw = payload.get("budget")
+    if reset or raw is None:
+        cfg.pop("budget", None)
+        cfg.pop("budget_updated_at", None)
+    else:
+        try:
+            budget = float(raw)
+        except (TypeError, ValueError):
+            raise HTTPException(422, "Budget must be a positive number.")
+        if budget <= 0:
+            raise HTTPException(422, "Budget must be greater than zero.")
+        if account_id in POOL.ids():
+            info = POOL.call(account_id, "account_info", timeout=5)
+            balance = float(info.get("balance") or 0)
+            if balance > 0 and budget > balance + 1e-9:
+                raise HTTPException(422, f"Budget cannot exceed the current MT5 balance ({balance:.2f}).")
+        cfg["budget"] = round(budget, 2)
+        cfg["budget_updated_at"] = time.time()
+    s["accounts"][account_id] = cfg
+    STATE.save(s)
+    try:
+        return COPY.budget_status(account_id)
+    except Exception:
+        budget = cfg.get("budget")
+        return {"budget_enabled": budget is not None, "budget": budget, "virtual_balance": budget}
+
 
 @app.post("/accounts/{account_id}/disconnect")
 def disconnect(account_id: str):
@@ -420,22 +485,27 @@ def remove_account(account_id: str):
 
 @app.get("/accounts")
 def accounts():
-    s = STATE.load()
+    runtime = _runtime()
+    pool = runtime.pool
+    credentials = runtime.credentials
+    s = runtime.state.load()
     def snapshot(item):
         aid, cfg = item
         row = dict(cfg)
-        row.update(POOL.status(aid))
+        row.update(pool.status(aid))
         row["is_master"] = s.get("master") == aid
         row["is_slave"] = aid in s.get("slaves", [])
-        row["remembered"] = CREDENTIALS.has(aid)
+        row["remembered"] = credentials.has(aid)
         row["auto_reconnect"] = cfg.get("auto_reconnect", True) is not False
+        row["budget"] = cfg.get("budget")
+        row["budget_enabled"] = cfg.get("budget") is not None
         if row.get("connected"):
             try:
-                row["account_info"] = POOL.call(aid, "account_info", timeout=2)
+                row["account_info"] = pool.call(aid, "account_info", timeout=2)
                 row["last_heartbeat"] = time.time()
             except Exception as exc:
-                status = POOL.status(aid)
-                cached = POOL.cached(aid, "account_info", {})
+                status = pool.status(aid)
+                cached = pool.cached(aid, "account_info", {})
                 if cached:
                     row["account_info"] = cached
                 row.update({"connected": bool(status.get("connected")), "connecting": bool(status.get("connecting")), "recovering": bool(status.get("recovering")), "busy": bool(status.get("connected")), "error": str(exc)})
@@ -457,6 +527,13 @@ def account_quotes(account_id: str, symbols: str = Query(default="")):
 def account_symbols(account_id: str, visible_only: bool = True, limit: int = 1000):
     try:
         return POOL.call(account_id, "symbols", {"visible_only": visible_only, "limit": limit}, timeout=12)
+    except Exception as exc:
+        bad(exc)
+
+@app.get("/accounts/{account_id}/symbol-info/{symbol}")
+def account_symbol_info(account_id: str, symbol: str):
+    try:
+        return POOL.call(account_id, "symbol_info", {"symbol": symbol}, timeout=8)
     except Exception as exc:
         bad(exc)
 
@@ -520,24 +597,31 @@ def copy_decision(req: CopyDecisionRequest):
 @app.post("/manual-trade")
 def manual_trade(req: ManualTradeRequest):
     backend_received_at = time.time()
-    COPY.pause_for_execution(20)
-    copy_config = COPY.config if COPY.status == "running" else None
+    runtime = _runtime()
+    pool = runtime.pool
+    copy_engine = runtime.copy
+    copy_engine.pause_for_execution(20)
+    copy_config = copy_engine.config if copy_engine.status == "running" else None
     master_id = str((copy_config or {}).get("master_account_id") or "")
     def submit(aid):
-        tag = f"KKM:{uuid.uuid4().hex[:12]}"
+        requested_comment = str(req.comment or "KOOLKID")
+        prefix = "KKM" if int(req.magic or 0) == 0 and requested_comment == "KOOLKID" else re.sub(r"[^A-Za-z0-9:_-]+", "", requested_comment)[:18] or "KOOLKID"
+        tag = f"{prefix}:{uuid.uuid4().hex[:8]}"[:31]
         try:
             volume = req.volume
             if aid != master_id:
                 if req.lot_mode == "fixed": volume = req.fixed_lot
                 elif req.lot_mode == "multiplier": volume = req.volume * req.multiplier
-            result = POOL.call(aid, "open_trade", {
+            order_payload = {
                 "symbol": req.symbol, "side": req.side, "volume": volume,
-                "sl": req.sl, "tp": req.tp, "magic": 0, "comment": tag,
-            }, timeout=12)
+                "sl": req.sl, "tp": req.tp, "magic": int(req.magic or 0), "comment": tag,
+            }
+            copy_engine.enforce_budget(aid, order_payload)
+            result = pool.call(aid, "open_trade", order_payload, timeout=12)
             return aid, {"ok": True, "result": result, "timing": {"ui_clicked_at": req.ui_clicked_at, "backend_received_at": backend_received_at, **result.get("timing", {}), "backend_result_at": time.time()}}
         except TimeoutError:
             try:
-                positions = POOL.call(aid, "positions", timeout=3)
+                positions = pool.call(aid, "positions", timeout=3)
                 match = next((row for row in positions if str(row.get("comment") or "").startswith(tag)), None)
                 if match:
                     return aid, {"ok": True, "result": {"retcode": 10009, "ticket": int(match.get("ticket") or 0), "reconciled_after_timeout": True}}
@@ -557,18 +641,33 @@ def manual_trade(req: ManualTradeRequest):
         master_result = (master_row or {}).get("result") or {}
         master_ticket = int(master_result.get("ticket") or master_result.get("order") or 0)
         if master_ticket:
-            COPY.register_concurrent_open(master_ticket, {"symbol": req.symbol, "side": req.side, "volume": req.volume, "sl": req.sl, "tp": req.tp}, {aid: row for aid, row in out.items() if aid != master_id})
+            copy_engine.register_concurrent_open(master_ticket, {"symbol": req.symbol, "side": req.side, "volume": req.volume, "sl": req.sl, "tp": req.tp}, {aid: row for aid, row in out.items() if aid != master_id})
     finally:
-        COPY.resume_after_execution()
+        copy_engine.resume_after_execution()
     return {"results": out, "backend_received_at": backend_received_at, "backend_result_at": time.time()}
+
+@app.post("/positions/modify")
+def modify_position(req: ModifyPositionRequest):
+    try:
+        return POOL.call(req.account_id, "modify_position", {"ticket": req.ticket, "sl": req.sl, "tp": req.tp}, timeout=15)
+    except Exception as exc:
+        bad(exc)
+
+@app.post("/positions/close-partial")
+def close_partial(req: PartialCloseRequest):
+    try:
+        return POOL.call(req.account_id, "close_partial", {"ticket": req.ticket, "volume": req.volume}, timeout=20)
+    except Exception as exc:
+        bad(exc)
 
 @app.post("/positions/close-many")
 def close_many(req: MultiCloseRequest):
     received = time.time()
+    pool = _runtime().pool
     def submit(target):
         aid, ticket = str(target.get("account_id") or ""), int(target.get("ticket") or 0)
         try:
-            result = POOL.call(aid, "close_position", {"ticket": ticket}, timeout=12)
+            result = pool.call(aid, "close_position", {"ticket": ticket}, timeout=12)
             return aid, {"ok": True, "ticket": ticket, "result": result, "timing": {"ui_clicked_at": req.ui_clicked_at, "backend_received_at": received, **result.get("timing", {}), "backend_result_at": time.time()}}
         except Exception as exc:
             return aid, {"ok": False, "ticket": ticket, "error": str(exc)}
@@ -591,7 +690,8 @@ def positions():
                 p["account_login"] = int(POOL.items[aid].config.get("login") or 0)
                 p["account_nickname"] = str(POOL.items[aid].config.get("nickname") or aid)
                 magic = int(p.get("magic") or 0)
-                p["source"] = "manual" if magic == 0 else ("copy" if magic == COPY_MAGIC else "ea")
+                comment = str(p.get("comment") or "")
+                p["source"] = "native" if comment.startswith("KKN") else ("manual" if magic == 0 else ("copy" if magic == COPY_MAGIC else "ea"))
                 rows.append(p)
         except Exception as exc:
             errors[aid] = str(exc)

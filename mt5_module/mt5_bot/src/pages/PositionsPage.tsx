@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Layers, ShieldAlert, X } from 'lucide-react';
+import { Layers, ShieldAlert, TrendingDown, TrendingUp, X } from 'lucide-react';
 import { useHub } from '../context/HubContext';
 import { fmtPrice, fmtSigned, profitTone, timeAgo } from '../lib/format';
 import { Badge, EmptyState, PageHeader, Panel, Spinner } from '../components/ui';
@@ -47,6 +47,7 @@ export default function PositionsPage() {
   const { positions, scopePositions, livePrice, liveProfit, accountName, pushToast, refresh, prefs, derived } = useHub();
   const [closingId, setClosingId] = useState<number | null>(null);
   const [confirmCloseAll, setConfirmCloseAll] = useState(false);
+  const [confirmBulk, setConfirmBulk] = useState<'profit' | 'loss' | null>(null);
   const [multiPositions, setMultiPositions] = useState<DisplayPosition[]>([]);
   const [multiOnline, setMultiOnline] = useState(false);
 
@@ -83,6 +84,10 @@ export default function PositionsPage() {
   const shorts = shownPositions.filter((p) => p.type === 'sell');
   const longPl = longs.reduce((s, p) => s + shownProfit(p), 0);
   const shortPl = shorts.reduce((s, p) => s + shownProfit(p), 0);
+  const profitablePositions = shownPositions.filter((p) => shownProfit(p) > 0);
+  const losingPositions = shownPositions.filter((p) => shownProfit(p) < 0);
+  const profitablePl = profitablePositions.reduce((s, p) => s + shownProfit(p), 0);
+  const losingPl = losingPositions.reduce((s, p) => s + shownProfit(p), 0);
 
   const close = async (position: DisplayPosition) => {
     const id = position.id;
@@ -101,6 +106,21 @@ export default function PositionsPage() {
       pushToast('error', 'Close failed', e instanceof Error ? e.message : undefined);
     } finally {
       setClosingId(null);
+    }
+  };
+
+  const closeSelected = async (targets: DisplayPosition[], label: string) => {
+    if (!targets.length) return;
+    try {
+      const multiTargets = targets.filter((p) => p.multiAccountId).map((p) => ({ account_id: p.multiAccountId!, ticket: p.ticket }));
+      const bridgeTargets = targets.filter((p) => !p.multiAccountId);
+      if (multiTargets.length) await mt5MultiAccountService.closeMany(multiTargets);
+      if (bridgeTargets.length) await Promise.all(bridgeTargets.map((p) => closePosition(p.id)));
+      pushToast('success', `${label}: ${targets.length} close request${targets.length === 1 ? '' : 's'} sent`);
+      if (multiOnline) await loadMultiPositions();
+      await refresh(true);
+    } catch (e) {
+      pushToast('error', `${label} failed`, e instanceof Error ? e.message : undefined);
     }
   };
 
@@ -129,9 +149,17 @@ export default function PositionsPage() {
         sub={multiOnline ? 'Open positions across all connected MT5 account workers' : isSimulation ? 'Open simulation positions · local prices update every 2s' : 'Open MT5 positions reported by the configured terminal bridge'}
         actions={
           shownPositions.length > 0 ? (
-            <button className="btn-danger" onClick={() => (prefs.confirmDanger ? setConfirmCloseAll(true) : doCloseAll())}>
-              <ShieldAlert size={15} /> Close All Positions
-            </button>
+            <div className="flex flex-wrap gap-2">
+              <button className="btn-secondary" disabled={!profitablePositions.length} onClick={() => setConfirmBulk('profit')}>
+                <TrendingUp size={15} /> Close All Profitable
+              </button>
+              <button className="btn-secondary" disabled={!losingPositions.length} onClick={() => setConfirmBulk('loss')}>
+                <TrendingDown size={15} /> Close All Losing
+              </button>
+              <button className="btn-danger" onClick={() => (prefs.confirmDanger ? setConfirmCloseAll(true) : doCloseAll())}>
+                <ShieldAlert size={15} /> Close All Positions
+              </button>
+            </div>
           ) : undefined
         }
       />
@@ -226,6 +254,20 @@ export default function PositionsPage() {
           </div>
         </Panel>
       )}
+
+      <ConfirmModal
+        open={confirmBulk !== null}
+        onClose={() => setConfirmBulk(null)}
+        title={confirmBulk === 'profit' ? 'Close all profitable positions?' : 'Close all losing positions?'}
+        tone={confirmBulk === 'profit' ? 'warning' : 'danger'}
+        confirmLabel={confirmBulk === 'profit' ? 'Close Profitable' : 'Close Losing'}
+        message={confirmBulk === 'profit'
+          ? <>All <span className="mono font-bold text-white">{profitablePositions.length}</span> positions currently above $0 floating P/L will be closed, realizing approximately <span className="mono font-bold text-gain-400">{fmtSigned(profitablePl)}</span>. Break-even and losing positions stay open.</>
+          : <>All <span className="mono font-bold text-white">{losingPositions.length}</span> positions currently below $0 floating P/L will be closed, realizing approximately <span className="mono font-bold text-loss-400">{fmtSigned(losingPl)}</span>. Break-even and profitable positions stay open.</>}
+        onConfirm={() => confirmBulk === 'profit'
+          ? closeSelected(profitablePositions, 'Close profitable')
+          : closeSelected(losingPositions, 'Close losing')}
+      />
 
       <ConfirmModal
         open={confirmCloseAll}

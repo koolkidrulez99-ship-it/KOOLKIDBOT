@@ -28,7 +28,9 @@ from hub_auth import current_workspace, issue_token, reset_workspace, set_worksp
 import engine
 import ea_worker_client
 import multi_account_client
-from store import default_risk, read_state, remove_profile, update_state
+import native_runtime
+import ai_auto_select
+from store import default_risk, read_state, remove_profile, update_state, upsert_profile
 from ai_trial import clear_snapshot as clear_ai_trial_snapshot, load_snapshot as load_ai_trial_snapshot, save_snapshot as save_ai_trial_snapshot, run_human_apostle_trial
 
 app = FastAPI(title="KOOLKID Local MT5 Bridge", version="1.0.0")
@@ -39,6 +41,8 @@ MAX_EA_FILE_BYTES = 25 * 1024 * 1024
 _stats_history_lock = threading.Lock()
 _stats_history_cache: dict[str, dict[str, Any]] = {}
 _AI_SCANNERS: dict[str, threading.Thread] = {}
+_AI_SCANNER_STOPS: dict[str, threading.Event] = {}
+_AI_EXECUTION_LOCKS: dict[str, threading.RLock] = {}
 _AI_SCANNERS_LOCK = threading.RLock()
 _SECRET_INPUT = re.compile(r"(?:password|passwd|token|secret|license|licence|api.?key)", re.IGNORECASE)
 
@@ -199,6 +203,29 @@ class AiTrialExecutePayload(BaseModel):
     volume: float = Field(gt=0)
 
 
+class AiAutoConfigPayload(BaseModel):
+    enabled: bool
+    account_login: int | None = None
+    symbol: str | None = Field(default=None, min_length=1, max_length=64)
+    volume: float | None = Field(default=None, gt=0)
+    scan_seconds: int = Field(default=30, ge=15, le=300)
+
+
+class AiAutoSelectScanPayload(BaseModel):
+    account_login: int
+    symbol: str = Field(min_length=1, max_length=64)
+    enabled_bot_ids: list[int] = Field(default_factory=list)
+
+
+class AiAutoSelectConfigPayload(BaseModel):
+    enabled: bool
+    account_login: int | None = None
+    symbol: str | None = Field(default=None, min_length=1, max_length=64)
+    enabled_bot_ids: list[int] = Field(default_factory=list)
+    mode: str = "analysis"
+    scan_seconds: int = Field(default=30, ge=15, le=300)
+
+
 @app.post("/api/mt5/hub/auth/signup")
 def hub_signup(payload: HubAuthPayload):
     username = payload.username.strip().lower()
@@ -291,11 +318,204 @@ def session_snapshot() -> dict[str, Any]:
 def _run_ai_trial_scan(payload: AiTrialScanPayload) -> dict[str, Any]:
     execution_rows = multi_account_client.account_request(payload.account_login, f"/candles/{quote(payload.symbol)}?timeframe=M15&count=700", timeout=20)
     bias_rows = multi_account_client.account_request(payload.account_login, f"/candles/{quote(payload.symbol)}?timeframe=H4&count=350", timeout=20)
+    previous = load_ai_trial_snapshot()
     snapshot = run_human_apostle_trial(execution_rows, bias_rows, symbol=payload.symbol, account_login=payload.account_login)
     snapshot.setdefault("execution_mode", "SIGNAL_ONLY")
     snapshot.setdefault("execution_lock", "demo_only")
-    snapshot.setdefault("last_execution", None)
+    if previous and int(previous.get("account_login") or 0) == int(payload.account_login) and str(previous.get("symbol") or "") == payload.symbol:
+        snapshot["last_execution"] = previous.get("last_execution")
+    else:
+        snapshot.setdefault("last_execution", None)
     return save_ai_trial_snapshot(snapshot)
+
+
+def _ai_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _ai_signal_key(snapshot: dict[str, Any]) -> str:
+    trade_plan = snapshot.get("proposed_trade") or {}
+    return ":".join([
+        str(int(snapshot.get("account_login") or 0)),
+        str(snapshot.get("symbol") or "").upper(),
+        str(int(trade_plan.get("time") or 0)),
+        str(trade_plan.get("direction") or snapshot.get("decision") or "").upper(),
+    ])
+
+
+def _ai_execution_lock(workspace_id: str) -> threading.RLock:
+    with _AI_SCANNERS_LOCK:
+        return _AI_EXECUTION_LOCKS.setdefault(workspace_id, threading.RLock())
+
+
+def _ai_event(event: str, **extra: Any) -> None:
+    row = {"time": _ai_now(), "event": event, **extra}
+    def mut(state):
+        events = state.setdefault("ai_auto_events", [])
+        events.insert(0, row)
+        del events[100:]
+        return row
+    update_state(mut)
+
+
+def _ai_runtime(**updates: Any) -> dict[str, Any]:
+    def mut(state):
+        runtime = state.setdefault("ai_auto_runtime", {})
+        runtime.update(updates)
+        return dict(runtime)
+    return update_state(mut)
+
+
+def _connected_demo_ai_account(login: int) -> dict[str, Any]:
+    # Verify DEMO/LIVE from the authoritative per-account worker, not only from the
+    # bridge profile cache. MT5 trade_mode 2 is a real-money account. If the worker
+    # cannot prove the account mode, AI execution stays locked rather than guessing.
+    workers = multi_account_client.connected_by_login()
+    worker = workers.get(int(login))
+    if not worker:
+        raise RuntimeError(f"MT5 account #{login} is disconnected. AI will keep waiting for it to reconnect.")
+    info = worker.get("account_info") or {}
+    trade_mode = info.get("trade_mode")
+    if trade_mode is None:
+        raise PermissionError("KOOLKID could not verify that this MT5 account is DEMO. AI execution remains locked.")
+    try:
+        is_live = int(trade_mode) == 2
+    except (TypeError, ValueError):
+        raise PermissionError("KOOLKID could not verify that this MT5 account is DEMO. AI execution remains locked.")
+    if is_live:
+        raise PermissionError("Human Apostle auto-trading is locked to DEMO accounts. Live AI execution is not enabled.")
+    account = next((row for row in accounts() if int(row.get("login") or 0) == int(login)), None) or {}
+    return {**account, "status": "connected", "account_type": "demo", "worker": worker}
+
+
+def _record_signal_attempt(signal_key: str, snapshot: dict[str, Any], volume: float, source: str) -> None:
+    record = {
+        "signal_key": signal_key,
+        "status": "submitting",
+        "attempted_at": _ai_now(),
+        "account_login": int(snapshot.get("account_login") or 0),
+        "symbol": str(snapshot.get("symbol") or ""),
+        "direction": str((snapshot.get("proposed_trade") or {}).get("direction") or snapshot.get("decision") or ""),
+        "signal_time": int((snapshot.get("proposed_trade") or {}).get("time") or 0),
+        "volume": float(volume),
+        "source": source,
+    }
+    def mut(state):
+        registry = state.setdefault("ai_signal_attempts", {})
+        registry[signal_key] = record
+        if len(registry) > 250:
+            oldest = sorted(registry.items(), key=lambda item: str((item[1] or {}).get("attempted_at") or ""))[: len(registry) - 250]
+            for key, _ in oldest:
+                registry.pop(key, None)
+        return record
+    update_state(mut)
+
+
+def _finish_signal_attempt(signal_key: str, status: str, **extra: Any) -> None:
+    def mut(state):
+        registry = state.setdefault("ai_signal_attempts", {})
+        row = registry.setdefault(signal_key, {"signal_key": signal_key})
+        row.update({"status": status, "finished_at": _ai_now(), **extra})
+        return dict(row)
+    update_state(mut)
+
+
+def _execute_apostle_snapshot(snapshot: dict[str, Any], volume: float, *, source: str) -> dict[str, Any]:
+    if snapshot.get("decision") not in {"BUY", "SELL"} or not snapshot.get("proposed_trade"):
+        raise HTTPException(status_code=409, detail="The current Apostle result is not a tradable BUY/SELL signal.")
+    login = int(snapshot.get("account_login") or 0)
+    symbol = str(snapshot.get("symbol") or "")
+    _connected_demo_ai_account(login)
+    trade_plan = snapshot["proposed_trade"]
+    signal_key = _ai_signal_key(snapshot)
+    workspace_id = current_workspace()
+    with _ai_execution_lock(workspace_id):
+        prior = (read_state().get("ai_signal_attempts") or {}).get(signal_key)
+        if prior:
+            raise HTTPException(status_code=409, detail="This Apostle completed-candle signal was already submitted once. KOOLKID will not duplicate it.")
+        # Mark before order submission. Even if the broker response is ambiguous, the same
+        # completed-candle signal is never retried automatically and can never double-fire.
+        _record_signal_attempt(signal_key, snapshot, volume, source)
+        try:
+            result = trade(TradePayload(
+                account_login=login,
+                symbol=symbol,
+                type=str(trade_plan.get("direction") or "BUY").lower(),
+                volume=float(volume),
+                sl=float(trade_plan.get("sl") or 0),
+                tp=float(trade_plan.get("tp") or 0),
+                source=source,
+            ))
+        except Exception as exc:
+            detail = getattr(exc, "detail", None) or str(exc)
+            _finish_signal_attempt(signal_key, "failed", error=str(detail))
+            raise
+
+        execution_record = {
+            "executed": True,
+            "account_login": login,
+            "symbol": symbol,
+            "volume": float(volume),
+            "direction": trade_plan.get("direction"),
+            "executed_at": _ai_now(),
+            "signal_time": int(trade_plan.get("time") or 0),
+            "signal_key": signal_key,
+            "mode": "DEMO_AUTO_TRADE",
+            "automatic": source == "ai_auto_human_apostle",
+            "source": source,
+            "result": result,
+            "message": "Demo order submitted automatically by Human Apostle." if source == "ai_auto_human_apostle" else "Demo order submitted from the current Apostle signal.",
+        }
+        _finish_signal_attempt(signal_key, "executed", result=result)
+        snapshot["execution_mode"] = "DEMO_AUTO_TRADE"
+        snapshot["last_execution"] = execution_record
+        snapshot["execution"] = "Demo execution sent to MT5. Live accounts stay locked."
+        save_ai_trial_snapshot(snapshot)
+        return execution_record
+
+
+def _run_ai_auto_cycle(config: dict[str, Any]) -> None:
+    login = int(config.get("account_login") or 0)
+    symbol = str(config.get("symbol") or "").strip()
+    volume = float(config.get("volume") or 0)
+    if not login or not symbol or volume <= 0:
+        raise RuntimeError("AI Auto-Trading configuration is incomplete.")
+    _connected_demo_ai_account(login)
+    snapshot = _run_ai_trial_scan(AiTrialScanPayload(account_login=login, symbol=symbol))
+    now = _ai_now()
+    runtime = {
+        "status": "running",
+        "last_scan_at": now,
+        "last_symbol": symbol,
+        "last_decision": snapshot.get("decision"),
+        "last_confidence": snapshot.get("confidence"),
+        "last_error": None,
+    }
+    _ai_runtime(**runtime)
+
+    if snapshot.get("decision") not in {"BUY", "SELL"} or not snapshot.get("proposed_trade"):
+        return
+
+    signal_key = _ai_signal_key(snapshot)
+    _ai_runtime(last_signal_at=now, last_signal_key=signal_key, last_signal=str(snapshot.get("decision")))
+    registry = read_state().get("ai_signal_attempts") or {}
+    if signal_key in registry:
+        return
+    try:
+        execution = _execute_apostle_snapshot(snapshot, volume, source="ai_auto_human_apostle")
+    except HTTPException as exc:
+        if exc.status_code == 409 and "already submitted" in str(exc.detail).lower():
+            return
+        raise
+    _ai_runtime(last_execution_at=execution["executed_at"], last_execution=execution, status="running")
+    _ai_event("auto_trade_executed", symbol=symbol, direction=execution.get("direction"), signal_time=execution.get("signal_time"), volume=volume)
+
+
+def _stop_ai_scanner(workspace_id: str) -> None:
+    with _AI_SCANNERS_LOCK:
+        event = _AI_SCANNER_STOPS.get(workspace_id)
+        if event:
+            event.set()
 
 
 def _start_ai_scanner(workspace_id: str) -> None:
@@ -303,27 +523,64 @@ def _start_ai_scanner(workspace_id: str) -> None:
         existing = _AI_SCANNERS.get(workspace_id)
         if existing and existing.is_alive():
             return
+        stop_event = threading.Event()
+        _AI_SCANNER_STOPS[workspace_id] = stop_event
 
         def scan_loop():
             context_token = set_workspace(workspace_id)
             try:
-                while True:
+                _ai_runtime(status="starting", started_at=_ai_now(), last_error=None)
+                while not stop_event.is_set():
                     state = read_state()
-                    settings = state.get("ai_settings") or {}
-                    config = state.get("ai_scan_config") or {}
-                    if not settings.get("auto_trading") or not config.get("account_login") or not config.get("symbol"):
+                    config = state.get("ai_auto_config") or {}
+                    if not config.get("enabled"):
+                        _ai_runtime(status="stopped", stopped_at=_ai_now())
                         return
+                    interval = max(15, min(int(config.get("scan_seconds") or 30), 300))
                     try:
-                        _run_ai_trial_scan(AiTrialScanPayload(**config))
-                        update_state(lambda st: st.pop("ai_scan_error", None))
+                        _run_ai_auto_cycle(config)
+                    except PermissionError as exc:
+                        _ai_runtime(status="blocked", last_error=str(exc), last_error_at=_ai_now())
                     except Exception as exc:
-                        update_state(lambda st: st.update({"ai_scan_error": str(exc), "ai_scan_last_error_at": datetime.now(timezone.utc).isoformat()}))
-                    time.sleep(60)
+                        detail = getattr(exc, "detail", None) or str(exc)
+                        _ai_runtime(status="waiting", last_error=str(detail), last_error_at=_ai_now())
+                    if stop_event.wait(interval):
+                        break
+                _ai_runtime(status="stopped", stopped_at=_ai_now())
             finally:
                 reset_workspace(context_token)
+                with _AI_SCANNERS_LOCK:
+                    if _AI_SCANNERS.get(workspace_id) is threading.current_thread():
+                        _AI_SCANNERS.pop(workspace_id, None)
+                        _AI_SCANNER_STOPS.pop(workspace_id, None)
 
-        _AI_SCANNERS[workspace_id] = threading.Thread(target=scan_loop, daemon=True, name=f"KOOLKID-AI-Scan-{workspace_id[:8]}")
-        _AI_SCANNERS[workspace_id].start()
+        thread = threading.Thread(target=scan_loop, daemon=True, name=f"KOOLKID-AI-Scan-{workspace_id[:8]}")
+        _AI_SCANNERS[workspace_id] = thread
+        thread.start()
+
+
+def _ai_auto_status() -> dict[str, Any]:
+    workspace_id = current_workspace()
+    state = read_state()
+    config = dict(state.get("ai_auto_config") or {})
+    runtime = dict(state.get("ai_auto_runtime") or {})
+    with _AI_SCANNERS_LOCK:
+        thread = _AI_SCANNERS.get(workspace_id)
+        alive = bool(thread and thread.is_alive())
+    enabled = bool(config.get("enabled"))
+    if not enabled and not alive:
+        runtime["status"] = "stopped"
+    return {
+        "strategy": "Human Apostle",
+        "execution_lock": "demo_only",
+        "execution_timeframe": "M15",
+        "bias_timeframe": "H4",
+        "enabled": enabled,
+        "scanner_alive": alive,
+        "config": config,
+        "runtime": runtime,
+        "events": list(state.get("ai_auto_events") or [])[:50],
+    }
 
 
 @app.on_event("startup")
@@ -331,8 +588,11 @@ def restore_ai_scanners():
     for workspace_id in workspace_ids(HUB_USERS_FILE):
         token = set_workspace(workspace_id)
         try:
-            if read_state().get("ai_settings", {}).get("auto_trading"):
+            config = read_state().get("ai_auto_config") or {}
+            if config.get("enabled"):
                 _start_ai_scanner(workspace_id)
+            ai_auto_select.restore(workspace_id)
+            native_runtime.restore(workspace_id)
         finally:
             reset_workspace(token)
 
@@ -389,6 +649,11 @@ def accounts():
     sessions = {int(item.get("login") or 0): item for item in snapshot.get("accounts", [])}
     for row in rows:
         session = sessions.get(int(row.get("login") or 0))
+        if session:
+            row["budget"] = session.get("budget")
+            row["budget_enabled"] = bool(session.get("budget_enabled") or session.get("budget") is not None)
+        else:
+            row["budget_enabled"] = bool(row.get("budget_enabled") and row.get("budget") is not None)
         if not session or not session.get("connected"):
             row.update({"status": "connecting" if session and session.get("connecting") else "disconnected", "connection_status": "offline", "worker_id": None, "cached": True})
             continue
@@ -444,6 +709,31 @@ def cancel_account_connect(payload: dict[str, Any] = Body(...)):
         return {"ok": bool(result.get("ok"))}
     except RuntimeError as exc:
         session_error(exc)
+
+
+@app.put("/api/mt5/accounts/{profile_id}/budget")
+def set_account_budget(profile_id: int, payload: dict[str, Any] = Body(default_factory=dict)):
+    state = read_state()
+    profile = next((x for x in state.get("profiles", []) if int(x.get("id", 0)) == profile_id), None)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Account profile not found.")
+    login = int(profile.get("login") or 0)
+    try:
+        result = multi_account_client.request(
+            f"/accounts/session-{login}/budget", "PUT",
+            {"budget": payload.get("budget"), "reset": bool(payload.get("reset"))}, timeout=10,
+        )
+    except RuntimeError as exc:
+        session_error(exc)
+    updated = dict(profile)
+    updated["budget"] = result.get("budget")
+    updated["budget_enabled"] = bool(result.get("budget_enabled"))
+    updated["budget_virtual_balance"] = result.get("virtual_balance")
+    updated["budget_virtual_equity"] = result.get("virtual_equity")
+    updated["budget_virtual_free_margin"] = result.get("virtual_free_margin")
+    upsert_profile(updated, make_active=False)
+    row = next((x for x in accounts() if int(x.get("id", 0)) == profile_id), updated)
+    return {**row, **{k: v for k, v in result.items() if k.startswith("budget") or k.startswith("virtual_") or k.startswith("actual_") or k == "margin_used"}}
 
 
 @app.delete("/api/mt5/accounts/{profile_id}")
@@ -768,6 +1058,8 @@ def bots():
             assignments = {int(x["bot_id"]): x for x in ea_worker_client.request("/bots")}
             def sync(st):
                 for bot in st.get("bots", []):
+                    if bot.get("native_engine"):
+                        continue
                     assignment = assignments.get(int(bot.get("id", 0)))
                     if assignment:
                         assignment_active = assignment.get("status") in {"starting", "running", "stopping"}
@@ -804,6 +1096,8 @@ def bots():
     elif any(bot.get("status") in {"running", "connecting"} for bot in state.get("bots", [])):
         def offline(st):
             for bot in st.get("bots", []):
+                if bot.get("native_engine"):
+                    continue
                 if bot.get("status") in {"running", "connecting"}:
                     bot["status"] = "worker_offline"
             return st.get("bots", [])
@@ -815,7 +1109,7 @@ def bots():
 def create_bot(payload: dict[str, Any] = Body(...)):
     def mut(state):
         bots = state.setdefault("bots", [])
-        next_id = max([int(x.get("id", 0)) for x in bots] + [999]) + 1
+        next_id = max([int(x.get("id", 0)) for x in bots] + [1999]) + 1
         name = str(payload.get("name") or f"Custom EA {next_id}").strip()
         row = {
             "id": next_id, "name": name, "description": "Custom EA metadata.", "strategy": "Custom EA",
@@ -846,6 +1140,8 @@ async def upload_bot_files(
     bot = next((b for b in state.get("bots", []) if int(b.get("id", 0)) == bot_id), None)
     if bot is None:
         raise HTTPException(status_code=404, detail="Bot not found.")
+    if bot.get("system_preset"):
+        raise HTTPException(status_code=403, detail="KOOLKID system preset files cannot be replaced by users.")
 
     bot_dir = EA_LIBRARY / current_workspace() / str(bot_id)
     result: dict[str, Any] = {"bot_id": bot_id}
@@ -889,7 +1185,11 @@ def update_bot(bot_id: int, payload: dict[str, Any] = Body(...)):
     def mut(state):
         for i, bot in enumerate(state.get("bots", [])):
             if int(bot.get("id", 0)) == bot_id:
-                safe = {k: v for k, v in payload.items() if k not in {"id", "status", "started_at"}}
+                if bot.get("system_preset"):
+                    allowed = {"account_login", "symbol", "timeframe", "lot_size", "settings"}
+                    safe = {k: v for k, v in payload.items() if k in allowed}
+                else:
+                    safe = {k: v for k, v in payload.items() if k not in {"id", "status", "started_at"}}
                 state["bots"][i] = {**bot, **safe}
                 return state["bots"][i]
         raise KeyError
@@ -901,6 +1201,10 @@ def update_bot(bot_id: int, payload: dict[str, Any] = Body(...)):
 
 @app.delete("/api/mt5/bots/{bot_id}")
 def delete_bot(bot_id: int):
+    state = read_state()
+    bot = next((b for b in state.get("bots", []) if int(b.get("id", 0)) == bot_id), None)
+    if bot and bot.get("system_preset"):
+        raise HTTPException(status_code=403, detail="KOOLKID system presets cannot be deleted.")
     def mut(state):
         before = len(state.get("bots", []))
         state["bots"] = [b for b in state.get("bots", []) if int(b.get("id", 0)) != bot_id]
@@ -927,6 +1231,28 @@ def start_bot(bot_id: int, payload: dict[str, Any] = Body(default_factory=dict))
     available = {row["symbol"] for row in normalize_http_errors(lambda: multi_account_client.account_request(login, "/symbols?visible_only=false&limit=5000", timeout=15))}
     if symbol not in available:
         raise HTTPException(status_code=400, detail=f"Symbol {symbol} is unavailable on the selected MT5 account.")
+
+    if bot.get("native_engine"):
+        if not bot.get("native_ready"):
+            raise HTTPException(status_code=409, detail=f"{bot.get('name') or 'This preset'} needs its MQ5 source before native execution can be enabled.")
+        def save_native_config(st):
+            row = next(b for b in st["bots"] if int(b["id"]) == bot_id)
+            if isinstance(payload.get("settings"), dict):
+                row["settings"] = {**dict(row.get("settings") or {}), **dict(payload["settings"])}
+            row.update({"account_login": login, "symbol": symbol, "timeframe": "M5", "lot_size": float(payload.get("lot_size") or row.get("lot_size") or 0.01)})
+            return dict(row)
+        update_state(save_native_config)
+        try:
+            return native_runtime.start(
+                current_workspace(), bot_id, login, symbol,
+                allow_live=bool(payload.get("confirm_live")),
+                scan_seconds=int(payload.get("scan_seconds") or 20),
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
     ea_rel = bot.get("ea_storage_path")
     if not ea_rel or not (ROOT / ea_rel).is_file():
         raise HTTPException(status_code=409, detail="Uploaded .ex5 file was not found. Upload the EA before starting it.")
@@ -996,6 +1322,15 @@ def resume_bot(bot_id: int, payload: dict[str, Any] = Body(default_factory=dict)
 
 @app.post("/api/mt5/bots/{bot_id}/stop")
 def stop_bot(bot_id: int, payload: dict[str, Any] = Body(default_factory=dict)):
+    state = read_state()
+    bot = next((b for b in state.get("bots", []) if int(b.get("id", 0)) == bot_id), None)
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot not found.")
+    if bot.get("native_engine"):
+        try:
+            return native_runtime.stop(current_workspace(), bot_id)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
     try:
         assignment = ea_worker_client.request(f"/bots/{bot_id}/stop", "POST", {}, timeout=15)
     except RuntimeError as exc:
@@ -1024,7 +1359,11 @@ def bot_performance(bot_id: int):
     if not bot:
         raise HTTPException(status_code=404, detail="Bot not found.")
     rows = history(30)
-    tagged = [r for r in rows if str(r.get("source", "")).upper() == str(bot.get("name", "")).upper()]
+    if bot.get("native_engine"):
+        prefix = f"KKN{int(bot_id)}"
+        tagged = [r for r in rows if str(r.get("source", "")).startswith(prefix)]
+    else:
+        tagged = [r for r in rows if str(r.get("source", "")).upper() == str(bot.get("name", "")).upper()]
     pnl = [float(r["profit"]) + float(r["swap"]) + float(r["commission"]) for r in tagged]
     wins = [x for x in pnl if x > 0]
     losses = [x for x in pnl if x < 0]
@@ -1078,13 +1417,13 @@ def emergency_stop_close():
 def get_ai_trial():
     snapshot = load_ai_trial_snapshot()
     return {
-        "trial_version": "0.3-session-3",
-        "strategy": "Human Apostle Trial",
+        "trial_version": "1.0-user-trial",
+        "strategy": "Human Apostle",
         "mode": "DEMO_EXECUTION_LOCKED_TO_DEMO",
         "execution_timeframe": "M15",
         "bias_timeframe": "H4",
         "snapshot": snapshot,
-        "execution": "Demo-only execution is available for current BUY/SELL signals. Live accounts stay blocked. Session 3 also adds Copy Trades From Anywhere through the existing copy link.",
+        "execution": "Human Apostle can scan manually or run continuously on the server. Demo execution only; live AI execution stays locked.",
     }
 
 
@@ -1096,8 +1435,6 @@ def scan_ai_trial(payload: AiTrialScanPayload):
             state["ai_scan_config"] = {"account_login": payload.account_login, "symbol": payload.symbol}
             return state["ai_scan_config"]
         update_state(save_scan_config)
-        if read_state().get("ai_settings", {}).get("auto_trading"):
-            _start_ai_scanner(current_workspace())
         return result
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
@@ -1109,55 +1446,114 @@ def scan_ai_trial(payload: AiTrialScanPayload):
 def execute_ai_trial(payload: AiTrialExecutePayload):
     snapshot = load_ai_trial_snapshot()
     if not snapshot:
-        raise HTTPException(status_code=404, detail="No Apostle trial snapshot exists yet. Run a scan first.")
+        raise HTTPException(status_code=404, detail="No Apostle snapshot exists yet. Run a scan first.")
     if int(snapshot.get("account_login") or 0) != int(payload.account_login) or str(snapshot.get("symbol") or "") != payload.symbol:
         raise HTTPException(status_code=409, detail="The stored Apostle snapshot no longer matches the selected account and symbol. Run a fresh scan first.")
-    if snapshot.get("decision") not in {"BUY", "SELL"} or not snapshot.get("proposed_trade"):
-        raise HTTPException(status_code=409, detail="The current Apostle trial result is not a tradable BUY/SELL signal.")
-
-    trade_plan = snapshot["proposed_trade"]
-    previous_execution = snapshot.get("last_execution") or {}
-    if previous_execution.get("executed") and int(previous_execution.get("signal_time") or 0) == int(trade_plan.get("time") or 0):
-        raise HTTPException(status_code=409, detail="This Apostle signal was already executed once. Run a fresh scan and wait for a new completed-candle signal.")
-
-    account = next((row for row in accounts() if int(row.get("login") or 0) == int(payload.account_login)), None)
-    if not account or account.get("status") != "connected":
-        raise HTTPException(status_code=409, detail=f"MT5 account #{payload.account_login} is not connected.")
-    if str(account.get("account_type") or "demo").lower() != "demo":
-        raise HTTPException(status_code=403, detail="Session 2 only allows AI trial execution on demo MT5 accounts.")
-
-    result = trade(TradePayload(
-        account_login=payload.account_login,
-        symbol=payload.symbol,
-        type=str(trade_plan.get("direction") or "BUY").lower(),
-        volume=payload.volume,
-        sl=float(trade_plan.get("sl") or 0),
-        tp=float(trade_plan.get("tp") or 0),
-        source="ai_trial_session_2",
-    ))
-    execution_record = {
-        "executed": True,
-        "account_login": payload.account_login,
-        "symbol": payload.symbol,
-        "volume": payload.volume,
-        "direction": trade_plan.get("direction"),
-        "executed_at": datetime.now(timezone.utc).isoformat(),
-        "signal_time": int(trade_plan.get("time") or 0),
-        "mode": "DEMO_AUTO_TRADE",
-        "result": result,
-        "message": "Demo order submitted from the current Apostle signal.",
-    }
-    snapshot["execution_mode"] = "DEMO_AUTO_TRADE"
-    snapshot["last_execution"] = execution_record
-    snapshot["execution"] = "Demo execution sent to MT5. Live accounts stay blocked in Session 3."
-    save_ai_trial_snapshot(snapshot)
-    return execution_record
+    try:
+        execution = _execute_apostle_snapshot(snapshot, payload.volume, source="ai_manual_demo")
+        _ai_event("manual_ai_trade_executed", symbol=payload.symbol, direction=execution.get("direction"), signal_time=execution.get("signal_time"), volume=payload.volume)
+        return execution
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except RuntimeError as exc:
+        session_error(exc)
 
 
 @app.delete("/api/mt5/ai/trial")
 def delete_ai_trial():
     clear_ai_trial_snapshot()
     return {"ok": True}
+
+
+@app.get("/api/mt5/ai/auto-select")
+def get_ai_auto_select():
+    return ai_auto_select.status(current_workspace())
+
+
+@app.post("/api/mt5/ai/auto-select/scan")
+def scan_ai_auto_select(payload: AiAutoSelectScanPayload):
+    try:
+        return ai_auto_select.scan_and_store(payload.account_login, payload.symbol, payload.enabled_bot_ids or None)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except RuntimeError as exc:
+        session_error(exc)
+
+
+@app.put("/api/mt5/ai/auto-select")
+def configure_ai_auto_select(payload: AiAutoSelectConfigPayload):
+    try:
+        return ai_auto_select.configure(current_workspace(), payload.model_dump())
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except RuntimeError as exc:
+        session_error(exc)
+
+
+@app.post("/api/mt5/ai/auto-select/execute")
+def execute_ai_auto_select():
+    try:
+        return ai_auto_select.manual_execute()
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@app.get("/api/mt5/ai/auto")
+def get_ai_auto():
+    return _ai_auto_status()
+
+
+@app.put("/api/mt5/ai/auto")
+def configure_ai_auto(payload: AiAutoConfigPayload):
+    workspace_id = current_workspace()
+    if payload.enabled:
+        if not payload.account_login or not payload.symbol or not payload.volume:
+            raise HTTPException(status_code=422, detail="Choose a connected demo account, symbol, and fixed lot size before starting AI Auto-Trading.")
+        auto_select_cfg = read_state().get("ai_auto_select_config") or {}
+        if auto_select_cfg.get("enabled") and str(auto_select_cfg.get("mode") or "").lower() == "auto":
+            raise HTTPException(status_code=409, detail="Stop Auto Select automatic execution before starting Human Apostle Auto-Trading.")
+        try:
+            _connected_demo_ai_account(payload.account_login)
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
+        except RuntimeError as exc:
+            session_error(exc)
+        config = {
+            "enabled": True,
+            "strategy": "human_apostle",
+            "account_login": int(payload.account_login),
+            "symbol": str(payload.symbol).strip(),
+            "volume": float(payload.volume),
+            "scan_seconds": int(payload.scan_seconds),
+            "execution_timeframe": "M15",
+            "bias_timeframe": "H4",
+            "demo_only": True,
+            "updated_at": _ai_now(),
+        }
+        def enable(st):
+            st["ai_auto_config"] = config
+            settings = st.setdefault("ai_settings", {})
+            settings["auto_trading"] = True
+            runtime = st.setdefault("ai_auto_runtime", {})
+            runtime.update({"status": "starting", "last_error": None})
+            return config
+        update_state(enable)
+        _ai_event("auto_trading_started", account_login=config["account_login"], symbol=config["symbol"], volume=config["volume"])
+        _start_ai_scanner(workspace_id)
+    else:
+        def disable(st):
+            config = st.setdefault("ai_auto_config", {})
+            config["enabled"] = False
+            config["updated_at"] = _ai_now()
+            st.setdefault("ai_settings", {})["auto_trading"] = False
+            st.setdefault("ai_auto_runtime", {})["status"] = "stopping"
+            return config
+        update_state(disable)
+        _ai_event("auto_trading_stopped")
+        _stop_ai_scanner(workspace_id)
+    return _ai_auto_status()
 
 
 @app.get("/api/mt5/ai")
@@ -1196,7 +1592,16 @@ def save_ai(payload: dict[str, Any] = Body(...)):
         state["ai_settings"] = settings
         return settings
     result = update_state(mut)
-    if result.get("auto_trading"):
+    state = read_state()
+    auto_config = state.get("ai_auto_config") or {}
+    if not result.get("auto_trading") and auto_config.get("enabled"):
+        def disable_auto(st):
+            st.setdefault("ai_auto_config", {})["enabled"] = False
+            st.setdefault("ai_auto_runtime", {})["status"] = "stopping"
+            return st["ai_settings"]
+        result = update_state(disable_auto)
+        _stop_ai_scanner(current_workspace())
+    elif result.get("auto_trading") and auto_config.get("enabled"):
         _start_ai_scanner(current_workspace())
     return result
 

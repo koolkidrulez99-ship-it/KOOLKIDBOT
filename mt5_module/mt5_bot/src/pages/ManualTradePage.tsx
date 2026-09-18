@@ -35,14 +35,14 @@ export default function ManualTradePage() {
   const [copyLotMode, setCopyLotMode] = useState<'same' | 'fixed' | 'multiplier'>('same');
   const [copyLotValue, setCopyLotValue] = useState('1.00');
   const routingRef = useRef(false);
-  const acc = accounts.find((account) => account.login === login && account.status === 'connected') || null;
+  const acc = connected.find((account) => Number(account.login) === Number(login)) || null;
 
   useEffect(() => {
-    if (!login) {
-      const def = activeAccount && activeAccount.status === 'connected' ? activeAccount : connected[0];
-      if (def) setLogin(def.login);
-    }
-  }, [connected, activeAccount, login]);
+    if (acc) return;
+    const def = activeAccount && activeAccount.status === 'connected' ? activeAccount : connected[0];
+    if (def) setLogin(Number(def.login));
+    else if (login !== '') setLogin('');
+  }, [acc, connected, activeAccount, login]);
 
   const loadManual = () => {
     mt5HistoryService.list()

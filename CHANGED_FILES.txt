@@ -1,0 +1,10 @@
+REPLACED:
+- mt5_module/mt5_bridge/main.py
+- mt5_module/mt5_bot/src/pages/AIPage.tsx
+- mt5_module/mt5_bot/src/services/aiControlService.ts
+- mt5_module/mt5_bot/src/types.ts
+
+ADDED:
+- mt5_module/mt5_bridge/ai_trial/test_auto_trader.py
+- README_INSTALL.txt
+- CHANGED_FILES.txt

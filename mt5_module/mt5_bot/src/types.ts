@@ -24,6 +24,11 @@ export interface Mt5Account {
   last_heartbeat?: string | null;
   created_at?: string;
   cached?: boolean;
+  budget?: number | null;
+  budget_enabled?: boolean;
+  budget_virtual_balance?: number | null;
+  budget_virtual_equity?: number | null;
+  budget_virtual_free_margin?: number | null;
 }
 
 export interface BotSettings {
@@ -66,9 +71,22 @@ export interface Mt5Bot {
   settings: BotSettings;
   ea_filename?: string | null;
   preset_filename?: string | null;
-  file_status?: 'ready' | 'missing' | 'metadata-only';
+  file_status?: 'ready' | 'missing' | 'metadata-only' | 'native' | 'source-required';
   upload_date?: string | null;
   dll_required?: boolean;
+  display_title?: string | null;
+  display_subtitle?: string | null;
+  native_engine?: boolean;
+  native_key?: string | null;
+  native_ready?: boolean;
+  native_source?: string | null;
+  engine_type?: 'native' | 'ex5' | 'source_required' | string;
+  bias_timeframe?: string | null;
+  legacy_ex5_available?: boolean;
+  native_config?: Record<string, unknown> | null;
+  native_runtime?: Record<string, unknown> | null;
+  native_signal?: Record<string, unknown> | null;
+  native_last_execution?: Record<string, unknown> | null;
   recommended_timeframe?: string | null;
   ea_storage_path?: string | null;
   preset_storage_path?: string | null;
@@ -104,6 +122,8 @@ export interface Mt5Bot {
   strategy_analysis?: EaStrategyAnalysis | null;
   file_analysis?: { format?: string; compiled?: boolean; file_verified?: boolean; strategy_visibility?: string } | null;
   preset_analysis?: { format?: string; input_count?: number; inputs?: { name: string; value: string }[]; truncated?: boolean } | null;
+  system_preset?: boolean;
+  locked?: boolean;
 }
 
 
@@ -326,6 +346,9 @@ export interface AiTrialExecution {
   executed_at: string;
   signal_time?: number;
   mode: 'DEMO_AUTO_TRADE';
+  automatic?: boolean;
+  source?: 'ai_manual_demo' | 'ai_auto_human_apostle' | string;
+  signal_key?: string;
   result: Record<string, unknown>;
   message: string;
 }
@@ -381,6 +404,125 @@ export interface AiTrialStatus {
   bias_timeframe: 'H4';
   snapshot: AiTrialSnapshot | null;
   execution: string;
+}
+
+export interface AiAutoConfig {
+  enabled?: boolean;
+  strategy?: 'human_apostle';
+  account_login?: number;
+  symbol?: string;
+  volume?: number;
+  scan_seconds?: number;
+  execution_timeframe?: 'M15';
+  bias_timeframe?: 'H4';
+  demo_only?: boolean;
+  updated_at?: string;
+}
+
+export interface AiAutoRuntime {
+  status?: 'starting' | 'running' | 'waiting' | 'blocked' | 'stopping' | 'stopped' | string;
+  started_at?: string;
+  stopped_at?: string;
+  last_scan_at?: string;
+  last_signal_at?: string;
+  last_execution_at?: string;
+  last_error_at?: string;
+  last_error?: string | null;
+  last_symbol?: string;
+  last_decision?: string;
+  last_confidence?: number;
+  last_signal?: 'BUY' | 'SELL' | string;
+  last_signal_key?: string;
+  last_execution?: AiTrialExecution | null;
+}
+
+export interface AiAutoEvent {
+  time: string;
+  event: string;
+  account_login?: number;
+  symbol?: string;
+  direction?: 'BUY' | 'SELL' | string;
+  signal_time?: number;
+  volume?: number;
+}
+
+export interface AiAutoStatus {
+  strategy: 'Human Apostle';
+  execution_lock: 'demo_only';
+  execution_timeframe: 'M15';
+  bias_timeframe: 'H4';
+  enabled: boolean;
+  scanner_alive: boolean;
+  config: AiAutoConfig;
+  runtime: AiAutoRuntime;
+  events: AiAutoEvent[];
+}
+
+export type AiAutoSelectMode = 'analysis' | 'alert' | 'manual' | 'auto';
+
+export interface AiAutoSelectCandidate {
+  bot_id: number;
+  name: string;
+  title: string;
+  subtitle?: string;
+  decision: 'APPROVE' | 'WAIT' | 'REJECT';
+  stage: string;
+  score: number;
+  selection_score: number;
+  reason: string;
+  history: { trades: number; wins: number; losses: number; win_rate: number; net_pl: number; selection_bonus: number };
+  signal: Record<string, unknown> | null;
+}
+
+export interface AiAutoSelectSnapshot {
+  generated_at: string;
+  account_login: number;
+  account_mode: 'demo' | 'live' | 'unknown';
+  symbol: string;
+  decision: 'APPROVE' | 'WAIT';
+  selected: AiAutoSelectCandidate | null;
+  results: AiAutoSelectCandidate[];
+  rules: {
+    completed_candles_only: boolean;
+    confidence_cannot_complete_setup: boolean;
+    history_is_tiebreaker_only: boolean;
+    live_auto_execution: boolean;
+  };
+}
+
+export interface AiAutoSelectStatus {
+  enabled: boolean;
+  scanner_alive: boolean;
+  config: {
+    enabled?: boolean;
+    mode?: AiAutoSelectMode;
+    account_login?: number;
+    symbol?: string;
+    enabled_bot_ids?: number[];
+    scan_seconds?: number;
+    demo_only_auto_execution?: boolean;
+  };
+  runtime: {
+    status?: string;
+    started_at?: string;
+    stopped_at?: string;
+    last_scan_at?: string;
+    last_error?: string | null;
+    selected_bot_id?: number | null;
+    selected_name?: string | null;
+    selected_title?: string | null;
+    selected_score?: number | null;
+    selected_stage?: string | null;
+    last_execution_at?: string | null;
+    last_execution?: Record<string, unknown> | null;
+  };
+  snapshot: AiAutoSelectSnapshot | null;
+  events: Array<Record<string, unknown> & { time?: string; event?: string }>;
+  available_presets: Array<{
+    bot_id: number; name: string; title: string; subtitle?: string; ready: boolean;
+    source?: string | null; entry_tf?: string | null; bias_tf?: string | null;
+  }>;
+  execution_lock: 'demo_only_auto_execution';
 }
 
 export interface DerivAccount {

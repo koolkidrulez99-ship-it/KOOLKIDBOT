@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
-import { ChevronsUpDown, Menu, RefreshCw, Sparkles, Check, LogOut, Moon, Sun } from 'lucide-react';
+import { Bot, ChevronsUpDown, Menu, RefreshCw, Sparkles, Check, LogOut, Moon, Sun } from 'lucide-react';
 import { useHub } from '../context/HubContext';
 import type { ActiveSel } from '../context/HubContext';
 import { fmtSigned, fmtUSD } from '../lib/format';
 import { Badge, StatusDot } from './ui';
-import { isSimulation } from '../config/runtime';
+import { hostHomeUrl, isSimulation } from '../config/runtime';
 import { useTheme } from '../hooks/useTheme';
 import { hubAuthService } from '../services/hubAuthService';
 
@@ -52,8 +52,18 @@ export default function TopBar({ onMenu }: { onMenu: () => void }) {
   const connected = accounts.filter((account) => account.status === 'connected').length;
   const totalAcc = accounts.length;
   const activeIsLive = activeAcc?.status === 'connected';
-  const displayBalance = activeAcc ? (activeIsLive ? Number(activeAcc.balance || 0) : 0) : derived.balance;
-  const displayEquity = activeAcc ? (activeIsLive ? Number(activeAcc.equity || 0) : 0) : derived.equity;
+  const virtualBalance = (account: typeof accounts[number]) =>
+    account.budget_enabled && Number(account.budget || 0) > 0 ? Number(account.budget) : Number(account.balance || 0);
+  const virtualEquity = (account: typeof accounts[number]) =>
+    account.budget_enabled && Number(account.budget || 0) > 0
+      ? Number(account.budget) + Number(account.floating_pl || 0)
+      : Number(account.equity || 0);
+  const displayBalance = activeAcc
+    ? (activeIsLive ? virtualBalance(activeAcc) : 0)
+    : accounts.reduce((sum, account) => sum + virtualBalance(account), 0);
+  const displayEquity = activeAcc
+    ? (activeIsLive ? virtualEquity(activeAcc) : 0)
+    : accounts.reduce((sum, account) => sum + virtualEquity(account), 0);
   const displayTodayPl = derived.todayPl;
   const plTone = displayTodayPl > 0 ? 'text-gain-400' : displayTodayPl < 0 ? 'text-loss-400' : 'text-slate-400';
 
@@ -169,6 +179,9 @@ export default function TopBar({ onMenu }: { onMenu: () => void }) {
         </button>
         <button onClick={() => refresh()} className="btn-icon" title="Refresh hub data">
           <RefreshCw size={15} className={refreshing ? 'animate-spin text-brand-400' : ''} />
+        </button>
+        <button onClick={() => window.location.assign(hostHomeUrl || '/')} className="hidden md:inline-flex btn-ghost !py-2 !px-3 !text-[11px]" title="Return to KOOLKID AI Bot">
+          <Bot size={14} /> KOOLKID AI BOT
         </button>
         <button onClick={() => { hubAuthService.logout(); window.location.assign('/mt5-bot'); }} className="btn-icon" title="Log out of MT5 Hub" aria-label="Log out of MT5 Hub">
           <LogOut size={15} />

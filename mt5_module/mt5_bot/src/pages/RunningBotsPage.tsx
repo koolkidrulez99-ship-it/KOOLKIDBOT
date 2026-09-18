@@ -92,9 +92,17 @@ export default function RunningBotsPage() {
                       <Badge tone={runningNow ? 'gain' : 'warn'}>{b.status}</Badge>
                     </div>
                     <p className="text-[11px] text-slate-500 mt-0.5">
-                      {b.symbol} &middot; {b.timeframe} &middot; {b.lot_size.toFixed(2)} lots &middot; on <span className="text-slate-300">{accountName(b.account_login)}</span>
+                      {b.symbol} &middot; {b.timeframe} &middot; {b.native_engine ? 'source risk sizing' : `${b.lot_size.toFixed(2)} lots`} &middot; on <span className="text-slate-300">{accountName(b.account_login)}</span>
                     </p>
-                    <p className="text-[10px] text-slate-600 mt-1">Terminal: <span className={b.terminal_status === 'online' ? 'text-gain-400' : 'text-loss-400'}>{b.terminal_status || 'unknown'}</span> · EA: <span className={b.ea_verified ? 'text-gain-400' : 'text-warn-400'}>{b.ea_verified ? 'verified active' : 'verifying'}</span>{b.last_activity ? ` · last EA activity ${new Date(b.last_activity).toLocaleString()}` : ''}</p>
+                    {b.native_engine ? (
+                      <p className="text-[10px] text-slate-600 mt-1">
+                        Engine: <span className="text-gain-400">KOOLKID Native</span>
+                        {' · '}Scanner: <span className={b.status === 'running' ? 'text-gain-400' : 'text-warn-400'}>{String((b.native_runtime as { status?: string } | null)?.status || b.status || 'starting')}</span>
+                        {' · '}Setup: <span className="text-slate-300">{String((b.native_signal as { stage?: string } | null)?.stage || 'SCANNING')}</span>
+                      </p>
+                    ) : (
+                      <p className="text-[10px] text-slate-600 mt-1">Terminal: <span className={b.terminal_status === 'online' ? 'text-gain-400' : 'text-loss-400'}>{b.terminal_status || 'unknown'}</span> · EA: <span className={b.ea_verified ? 'text-gain-400' : 'text-warn-400'}>{b.ea_verified ? 'verified active' : 'verifying'}</span>{b.last_activity ? ` · last EA activity ${new Date(b.last_activity).toLocaleString()}` : ''}</p>
+                    )}
                     <p className="text-[10px] text-slate-600 mt-1">Bot activity: <span className="text-slate-300">{b.open_positions ?? 0} open</span> · Floating: <span className={profitTone(Number(b.current_pl || 0))}>{fmtSigned(Number(b.current_pl || 0))}</span> · Realized: <span className={profitTone(Number(b.today_pl || 0))}>{fmtSigned(Number(b.today_pl || 0))}</span></p>
                     {!isSimulation && b.metrics_scope && <p className={`text-[10px] mt-1 ${b.attribution_status === 'verified' ? 'text-gain-400' : 'text-warn-400'}`}>{b.metrics_scope}</p>}
                     {!!b.strategy_analysis?.observed_traits?.length && <p className="text-[10px] text-slate-500 mt-1">Observed behavior: <span className="text-slate-300">{b.strategy_analysis.observed_traits.join(' · ')}</span></p>}

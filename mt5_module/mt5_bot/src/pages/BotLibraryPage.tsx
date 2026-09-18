@@ -15,7 +15,18 @@ import { isSimulation } from '../config/runtime';
 import { mt5BotService } from '../services/mt5BotService';
 import type { Mt5Bot } from '../types';
 
-const STRATEGIES = ['Custom EA'];
+const STRATEGIES = ['System Preset', 'Custom EA'];
+
+const PRESET_ACCENTS: Record<number, { icon: string; border: string; glow: string }> = {
+  1000: { icon: 'text-slate-100 bg-slate-500/10 border-slate-400/25', border: '!border-slate-400/15', glow: 'from-slate-300/10' },
+  1001: { icon: 'text-sky-300 bg-sky-500/10 border-sky-400/25', border: '!border-sky-400/15', glow: 'from-sky-400/10' },
+  1002: { icon: 'text-emerald-300 bg-emerald-500/10 border-emerald-400/25', border: '!border-emerald-400/15', glow: 'from-emerald-400/10' },
+  1003: { icon: 'text-amber-300 bg-amber-500/10 border-amber-400/25', border: '!border-amber-400/15', glow: 'from-amber-400/10' },
+  1004: { icon: 'text-violet-300 bg-violet-500/10 border-violet-400/25', border: '!border-violet-400/15', glow: 'from-violet-400/10' },
+  1005: { icon: 'text-rose-300 bg-rose-500/10 border-rose-400/25', border: '!border-rose-400/15', glow: 'from-rose-400/10' },
+  1006: { icon: 'text-zinc-200 bg-zinc-400/10 border-zinc-300/25', border: '!border-zinc-300/15', glow: 'from-zinc-300/10' },
+  1007: { icon: 'text-white bg-white/[0.06] border-white/20', border: '!border-white/15', glow: 'from-white/[0.06]' },
+};
 
 export default function BotLibraryPage() {
   const { bots, bridge, accountName, botLiveToday, pushToast, refresh } = useHub();
@@ -35,7 +46,7 @@ export default function BotLibraryPage() {
     <div>
       <PageHeader
         title="Bot Library"
-        sub={isSimulation ? 'KOOLKID MT5 EA catalog · file execution is disabled in simulation' : eaLaunchAvailable ? 'Expert advisors can be launched through the connected MT5 worker' : 'EA Worker Offline · start the local system with START_KOOLKID.bat'}
+        sub={isSimulation ? 'KOOLKID native strategy presets + custom MT5 EAs' : 'KOOLKID native presets run server-side through the MT5 account worker · uploaded custom EAs use the EA Worker'}
         actions={
           <>
             <select className="input !w-auto !py-2 text-xs" value={strategyFilter} onChange={(e) => setStrategyFilter(e.target.value)}>
@@ -49,9 +60,9 @@ export default function BotLibraryPage() {
 
       <Panel className="mb-4 px-4 py-3 !border-brand-500/20 bg-brand-500/[0.04]">
         <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-[11px] text-slate-400">
-          <span className="inline-flex items-center gap-2"><FileCode2 size={14} className="text-brand-300" /> EA package: <b className="mono text-slate-200">.ex5</b></span>
-          <span>Optional preset: <b className="mono text-slate-200">.set</b></span>
-          <span>{isSimulation ? 'Simulation keeps EA metadata only. Start with the real bridge to upload actual .ex5 bytes.' : eaLaunchAvailable ? 'EA launching is available through the assigned worker.' : 'Actual .ex5/.set files upload to the local bridge. Automatic EA attachment needs the separate MT5 EA worker.'}</span>
+          <span className="inline-flex items-center gap-2"><Cpu size={14} className="text-brand-300" /> Built-in presets: <b className="text-slate-200">KOOLKID Native Engine</b></span>
+          <span>Server-side · no chart attachment · no EA Worker</span>
+          <span className="inline-flex items-center gap-2"><FileCode2 size={14} className="text-slate-500" /> Custom uploads: <b className="mono text-slate-200">.ex5 / .set</b> via EA Worker {eaLaunchAvailable ? '· online' : '· currently offline'}</span>
         </div>
       </Panel>
 
@@ -63,47 +74,84 @@ export default function BotLibraryPage() {
             const running = b.status === 'running';
             const paused = b.status === 'paused';
             const today = botLiveToday(b);
-            const isCatalog = b.id >= 1000 && b.id < 1020;
+            const isCatalog = Boolean(b.system_preset);
+            const isNative = Boolean(b.native_engine);
+            const sourceRequired = isNative && b.native_ready === false;
+            const accent = PRESET_ACCENTS[b.id] || { icon: 'text-brand-300 bg-brand-500/10 border-brand-500/25', border: '', glow: 'from-brand-500/[0.06]' };
+            const nativeSignal = (b.native_signal || {}) as { stage?: string; score?: number; reason?: string };
+            const nativeRuntime = (b.native_runtime || {}) as { status?: string; last_scan_at?: string; last_error?: string | null };
             return (
-              <Panel key={b.id} hover className="p-5 flex flex-col">
+              <Panel key={b.id} hover className={`p-5 flex flex-col relative overflow-hidden ${isCatalog ? accent.border : ''}`}>
+                {isCatalog && <span className={`pointer-events-none absolute inset-0 bg-gradient-to-br ${accent.glow} via-transparent to-transparent opacity-70`} />}
+                <div className="relative z-[1] flex flex-col h-full">
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex items-center gap-3 min-w-0">
-                    <span className={`grid h-11 w-11 shrink-0 place-items-center rounded-xl border ${running ? 'bg-gain-500/10 border-gain-500/25 text-gain-400' : paused ? 'bg-warn-400/10 border-warn-400/25 text-warn-400' : 'bg-brand-500/10 border-brand-500/25 text-brand-300'}`}>
-                      <Cpu size={19} />
+                    <span className={`grid h-12 w-12 shrink-0 place-items-center rounded-2xl border ${isCatalog ? accent.icon : running ? 'bg-gain-500/10 border-gain-500/25 text-gain-400' : paused ? 'bg-warn-400/10 border-warn-400/25 text-warn-400' : 'bg-brand-500/10 border-brand-500/25 text-brand-300'}`}>
+                      <Cpu size={20} />
                     </span>
                     <div className="min-w-0">
-                      <p className="text-[15px] font-bold text-white truncate">{b.name}</p>
+                      {isCatalog ? <p className="text-[9px] font-extrabold tracking-[0.20em] text-slate-500">{b.name}</p> : null}
+                      <p className={`${isCatalog ? 'text-[17px]' : 'text-[15px]'} font-extrabold text-white truncate tracking-tight`}>{isCatalog ? (b.display_title || b.name) : b.name}</p>
                       <p className="mono text-[10px] text-slate-500">v{b.version} · magic {b.settings?.magic_number ?? '—'}</p>
                     </div>
                   </div>
-                  <Badge tone={running ? 'gain' : paused ? 'warn' : b.status === 'error' ? 'loss' : 'slate'}>{b.status}</Badge>
+                  <div className="flex flex-col items-end gap-1.5">
+                    <Badge tone={running ? 'gain' : paused ? 'warn' : b.status === 'error' ? 'loss' : 'slate'}>{b.status}</Badge>
+                    {isNative && <Badge tone={sourceRequired ? 'warn' : 'brand'}>{sourceRequired ? 'SOURCE REQUIRED' : 'KOOLKID NATIVE'}</Badge>}
+                  </div>
                 </div>
 
-                <p className="mt-3 text-xs leading-relaxed text-slate-500 line-clamp-2 min-h-[32px]">{b.description}</p>
+                <p className="mt-3 text-xs leading-relaxed text-slate-400 min-h-[32px]">{isCatalog ? (b.display_subtitle || b.description) : b.description}</p>
 
                 <div className="mt-3 flex flex-wrap items-center gap-1.5">
-                  <Badge tone="slate">{b.strategy}</Badge>
+                  <Badge tone="slate">{b.strategy}</Badge>{isCatalog && <Badge tone="brand">BUILT-IN PRESET</Badge>}
                   <span className="chip mono !text-[11px]"><Target size={11} className="text-brand-300" /> {b.symbol} · {b.timeframe}</span>
-                  <span className="chip mono !text-[11px]">{b.lot_size.toFixed(2)} lots</span>
+                  {isNative ? <span className="chip !text-[11px]">Source risk sizing</span> : <span className="chip mono !text-[11px]">{b.lot_size.toFixed(2)} lots</span>}
                 </div>
 
-                <div className="mt-3 rounded-xl bg-black/25 border border-white/[0.06] p-3 space-y-1.5 text-[11px]">
-                  <div className="flex justify-between gap-3"><span className="text-slate-600">EA file</span><span className="mono text-slate-300 truncate">{b.ea_filename || 'Not assigned'}</span></div>
-                  <div className="flex justify-between gap-3"><span className="text-slate-600">Preset</span><span className="mono text-slate-300 truncate">{b.preset_filename || 'None'}</span></div>
-                  <div className="flex justify-between gap-3"><span className="text-slate-600">File status</span><Badge tone={b.file_status === 'ready' ? 'gain' : 'warn'}>{b.file_status || 'metadata-only'}</Badge></div>
-                  <div className="flex justify-between gap-3"><span className="text-slate-600">DLL</span><span className={b.dll_required ? 'text-warn-400 font-semibold' : 'text-slate-300'}>{b.dll_required ? 'Required by metadata' : 'Not required'}</span></div>
-                </div>
-
-                <div className="mt-3 border-t border-white/[0.07] pt-3 text-[11px]">
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="inline-flex items-center gap-1.5 text-slate-500"><ScanSearch size={13} /> Native EA analysis</span>
-                    <Badge tone={b.ea_verified ? 'gain' : running ? 'warn' : 'slate'}>{b.ea_verified ? 'EA verified' : running ? 'verifying' : 'awaiting launch'}</Badge>
+                {isNative ? (
+                  <div className="mt-3 rounded-xl bg-black/25 border border-white/[0.06] p-3 space-y-1.5 text-[11px]">
+                    <div className="flex justify-between gap-3"><span className="text-slate-600">Engine</span><span className="font-semibold text-slate-200">{sourceRequired ? 'Native source unavailable' : 'KOOLKID Native · server-side'}</span></div>
+                    <div className="flex justify-between gap-3"><span className="text-slate-600">Execution</span><span className="text-slate-300">8002 account worker · no chart attachment</span></div>
+                    <div className="flex justify-between gap-3"><span className="text-slate-600">Flow</span><span className="mono text-slate-300">{b.bias_timeframe || 'HTF'} → {b.timeframe}</span></div>
+                    <div className="flex justify-between gap-3"><span className="text-slate-600">Source</span><span className="mono text-slate-400 truncate">{b.native_source || 'MQ5 source required'}</span></div>
                   </div>
-                  <p className="mt-1.5 text-slate-500">Compiled strategy logic remains private. KOOLKID reports only verified files, MT5 runtime evidence and observed behavior.</p>
-                  {!!b.strategy_analysis?.observed_traits?.length && <p className="mt-1.5 text-slate-300">Observed: {b.strategy_analysis.observed_traits.join(' · ')}</p>}
-                  {!!b.strategy_analysis?.observed_messages?.length && <p className="mt-1.5 text-slate-500 line-clamp-2">Latest EA log: {b.strategy_analysis.observed_messages.at(-1)}</p>}
-                  {b.preset_analysis && <p className="mt-1.5 text-slate-500">Preset inputs detected: <span className="mono text-slate-300">{b.preset_analysis.input_count ?? 0}</span></p>}
-                </div>
+                ) : (
+                  <div className="mt-3 rounded-xl bg-black/25 border border-white/[0.06] p-3 space-y-1.5 text-[11px]">
+                    <div className="flex justify-between gap-3"><span className="text-slate-600">EA file</span><span className="mono text-slate-300 truncate">{b.ea_filename || 'Not assigned'}</span></div>
+                    <div className="flex justify-between gap-3"><span className="text-slate-600">Preset</span><span className="mono text-slate-300 truncate">{b.preset_filename || 'None'}</span></div>
+                    <div className="flex justify-between gap-3"><span className="text-slate-600">File status</span><Badge tone={b.file_status === 'ready' ? 'gain' : 'warn'}>{b.file_status || 'metadata-only'}</Badge></div>
+                    <div className="flex justify-between gap-3"><span className="text-slate-600">DLL</span><span className={b.dll_required ? 'text-warn-400 font-semibold' : 'text-slate-300'}>{b.dll_required ? 'Required by metadata' : 'Not required'}</span></div>
+                  </div>
+                )}
+
+                {isNative ? (
+                  <div className="mt-3 border-t border-white/[0.07] pt-3 text-[11px]">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="inline-flex items-center gap-1.5 text-slate-500"><ScanSearch size={13} /> Native strategy monitor</span>
+                      <Badge tone={sourceRequired ? 'warn' : running && nativeRuntime.status === 'running' ? 'gain' : running ? 'warn' : 'slate'}>{sourceRequired ? 'source required' : nativeRuntime.status || (running ? 'starting' : 'ready')}</Badge>
+                    </div>
+                    {sourceRequired ? (
+                      <p className="mt-1.5 text-warn-400">MQ5 source is required before this preset can run natively. The legacy EX5 is not decoded or used as a substitute.</p>
+                    ) : (
+                      <>
+                        <p className="mt-1.5 text-slate-300">{nativeSignal.stage ? `${nativeSignal.stage}${typeof nativeSignal.score === 'number' ? ` · ${nativeSignal.score.toFixed(0)} score` : ''}` : 'Server-side strategy engine ready.'}</p>
+                        <p className="mt-1 text-slate-500 line-clamp-2">{nativeRuntime.last_error || nativeSignal.reason || 'Runs continuously while KOOLKID services are online, even with the browser closed.'}</p>
+                      </>
+                    )}
+                  </div>
+                ) : (
+                  <div className="mt-3 border-t border-white/[0.07] pt-3 text-[11px]">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="inline-flex items-center gap-1.5 text-slate-500"><ScanSearch size={13} /> Compiled EA runtime analysis</span>
+                      <Badge tone={b.ea_verified ? 'gain' : running ? 'warn' : 'slate'}>{b.ea_verified ? 'EA verified' : running ? 'verifying' : 'awaiting launch'}</Badge>
+                    </div>
+                    <p className="mt-1.5 text-slate-500">Compiled strategy logic remains private. KOOLKID reports only verified files, MT5 runtime evidence and observed behavior.</p>
+                    {!!b.strategy_analysis?.observed_traits?.length && <p className="mt-1.5 text-slate-300">Observed: {b.strategy_analysis.observed_traits.join(' · ')}</p>}
+                    {!!b.strategy_analysis?.observed_messages?.length && <p className="mt-1.5 text-slate-500 line-clamp-2">Latest EA log: {b.strategy_analysis.observed_messages.at(-1)}</p>}
+                    {b.preset_analysis && <p className="mt-1.5 text-slate-500">Preset inputs detected: <span className="mono text-slate-300">{b.preset_analysis.input_count ?? 0}</span></p>}
+                  </div>
+                )}
 
                 <div className="mt-4 grid grid-cols-4 gap-2 text-center rounded-xl bg-black/25 border border-white/[0.06] p-3">
                   <div><p className="text-[9px] uppercase tracking-widest text-slate-600 font-semibold">Win rate</p><p className="mono text-[13px] font-bold text-white mt-1">{b.total_trades ? `${b.win_rate.toFixed(1)}%` : '—'}</p></div>
@@ -120,14 +168,29 @@ export default function BotLibraryPage() {
                 <p className="mt-3 text-[11px] text-slate-500">Assignment: <span className="text-slate-300 font-medium">{accountName(b.account_login)}</span>{b.account_login === null && ' · pick an account at launch'}</p>
 
                 <div className="mt-auto pt-4 flex flex-wrap items-center gap-2">
-                  {['stopped', 'error', 'worker_offline'].includes(b.status) ? (
+                  {isNative ? (
+                    sourceRequired ? (
+                      <button className="btn-ghost flex-1 opacity-60 cursor-not-allowed" disabled><FileCode2 size={14} /> MQ5 Source Required</button>
+                    ) : running ? (
+                      <>
+                        <button className="btn-danger flex-1" onClick={async () => {
+                          try { await botControl(b.id, 'stop'); pushToast('info', `${b.name} stopped`, 'Native scanner stopped. Existing open trades are not force-closed.'); await refresh(true); }
+                          catch (e) { pushToast('error', 'Stop failed', e instanceof Error ? e.message : undefined); }
+                        }}><Settings2 size={14} /> Stop Native Bot</button>
+                        <button className="btn-ghost !px-3" title="Configure native preset" onClick={() => setConfigBot(b)}><Settings2 size={15} /></button>
+                      </>
+                    ) : (
+                      <button className="btn-primary flex-1" onClick={() => setConfigBot(b)}><Play size={14} /> Start Native Bot</button>
+                    )
+                  ) : ['stopped', 'error', 'worker_offline'].includes(b.status) ? (
                     <button className="btn-primary flex-1" onClick={() => setConfigBot(b)}><Play size={14} /> Start Bot</button>
                   ) : (
                     <button className="btn-ghost flex-1" onClick={() => setConfigBot(b)}><Settings2 size={14} /> Configure</button>
                   )}
-                  <button className="btn-ghost !px-3" title="Upload or update actual EA file" onClick={() => setFileTarget(b)}><FileCode2 size={15} /></button>
+                  {!isCatalog && <button className="btn-ghost !px-3" title="Upload or update actual EA file" onClick={() => setFileTarget(b)}><FileCode2 size={15} /></button>}
                   <Link className="btn-ghost !px-3" to={`/mt5/bots/${b.id}`} title="View performance"><BarChart3 size={15} /></Link>
                   {!isCatalog && <button className="btn-icon hover:!text-loss-400" title="Delete custom bot" onClick={() => setRemoveTarget(b)}><Trash2 size={15} /></button>}
+                </div>
                 </div>
               </Panel>
             );
