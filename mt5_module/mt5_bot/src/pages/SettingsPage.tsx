@@ -1,10 +1,13 @@
-import { DatabaseBackup, FileDown, RefreshCw, Server, ShieldCheck, Timer, Moon, Sun } from 'lucide-react';
+import { useState } from 'react';
+import { Bell, DatabaseBackup, FileDown, RefreshCw, Server, ShieldCheck, Timer, Moon, Sun } from 'lucide-react';
 import { useHub } from '../context/HubContext';
 import { PageHeader, Panel, Toggle, Badge, StatusDot } from '../components/ui';
 import { isSimulation } from '../config/runtime';
 import { mt5HistoryService } from '../services/mt5HistoryService';
 import { simReset } from '../services/simulationStore';
 import { useTheme } from '../hooks/useTheme';
+import { notificationPermission, requestNotificationPermission } from '../services/notificationService';
+import type { NotificationAlertKey } from '../services/notificationService';
 
 const POLL_OPTIONS = [
   { label: '3 seconds', value: 3000 },
@@ -15,9 +18,41 @@ const POLL_OPTIONS = [
   { label: '2 minutes', value: 120000 },
 ];
 
+const ALERT_OPTIONS: Array<{ key: NotificationAlertKey; title: string; description: string }> = [
+  { key: 'tradeOpened', title: 'Trade opened', description: 'Alert when a new MT5 position opens.' },
+  { key: 'tradeClosed', title: 'Trade closed / result', description: 'Alert when a position closes, including profit or loss when available.' },
+  { key: 'accountStatus', title: 'Account connection', description: 'Alert when an MT5 account connects or disconnects.' },
+  { key: 'botStatus', title: 'Bot / EA status', description: 'Alert when a bot starts, stops, errors, or its worker goes offline.' },
+  { key: 'copyTrader', title: 'Copy Trader', description: 'Alert for link status, pending approvals, and copy errors.' },
+  { key: 'riskAlerts', title: 'Risk / system alerts', description: 'Alert if trading, the bridge, or the EA worker becomes unavailable.' },
+  { key: 'aiAlerts', title: 'AI Intelligence', description: 'Alert for AI signals, executions, starts/stops, and errors.' },
+];
+
 export default function SettingsPage() {
   const { prefs, setPrefs, accounts, bridge, pushToast, refresh } = useHub();
   const { theme, setTheme } = useTheme();
+  const [permission, setPermission] = useState(() => notificationPermission());
+
+  const setNotificationsEnabled = async (enabled: boolean) => {
+    if (!enabled) {
+      setPrefs({ notifications: { ...prefs.notifications, enabled: false } });
+      pushToast('info', 'Notifications off', 'KOOLKID browser alerts are disabled.');
+      return;
+    }
+    const nextPermission = await requestNotificationPermission();
+    setPermission(nextPermission);
+    if (nextPermission === 'granted') {
+      setPrefs({ notifications: { ...prefs.notifications, enabled: true } });
+      pushToast('success', 'Notifications enabled', 'KOOLKID will alert you for the categories selected below.');
+    } else {
+      setPrefs({ notifications: { ...prefs.notifications, enabled: false } });
+      pushToast('warning', 'Notification permission needed', 'Allow notifications in your browser/site settings, then try again.');
+    }
+  };
+
+  const setAlert = (key: NotificationAlertKey, enabled: boolean) => {
+    setPrefs({ notifications: { ...prefs.notifications, [key]: enabled } });
+  };
 
   const exportAll = async () => {
     try {
@@ -119,6 +154,40 @@ export default function SettingsPage() {
         </Panel>
 
         <div className="space-y-4">
+          <Panel className="p-6">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <Bell size={15} className="text-brand-300" /> Notifications
+              </h3>
+              <Badge tone={permission === 'granted' ? 'gain' : permission === 'denied' ? 'loss' : 'slate'}>
+                {permission === 'unsupported' ? 'UNSUPPORTED' : permission.toUpperCase()}
+              </Badge>
+            </div>
+            <div className="mt-4 flex items-start justify-between gap-4 rounded-xl bg-white/[0.03] border border-white/[0.06] p-4">
+              <div>
+                <p className="text-[13px] font-semibold text-slate-200">Browser notifications</p>
+                <p className="text-[11px] text-slate-500 mt-0.5">Master switch for KOOLKID MT5 alerts on this browser/device.</p>
+              </div>
+              <Toggle on={prefs.notifications.enabled && permission === 'granted'} onChange={setNotificationsEnabled} />
+            </div>
+            <div className="mt-3 space-y-2">
+              {ALERT_OPTIONS.map((option) => (
+                <div key={option.key} className="flex items-start justify-between gap-4 rounded-xl bg-white/[0.025] border border-white/[0.05] px-4 py-3">
+                  <div>
+                    <p className="text-[12px] font-semibold text-slate-300">{option.title}</p>
+                    <p className="text-[10px] text-slate-600 mt-0.5">{option.description}</p>
+                  </div>
+                  <Toggle on={prefs.notifications[option.key]} onChange={(value) => setAlert(option.key, value)} />
+                </div>
+              ))}
+            </div>
+            {permission === 'denied' && (
+              <p className="mt-3 rounded-lg border border-warn-400/20 bg-warn-400/[0.05] px-3 py-2 text-[11px] text-warn-300">
+                Notifications are blocked by the browser. Re-enable them in this site's browser permissions, then turn the master switch on again.
+              </p>
+            )}
+          </Panel>
+
           <Panel className="p-6">
             <div className="flex items-center justify-between gap-3">
               <h3 className="text-sm font-bold text-white flex items-center gap-2">

@@ -13,6 +13,7 @@ class ConnectRequest(BaseModel):
     portable: bool = False
     password: str = ""
     remember_session: bool = True
+    access_mode: Literal["trading", "investor"] = "trading"
     mode: Literal["real", "simulation"] = "real"
     symbol_aliases: Dict[str, str] = Field(default_factory=dict)
 

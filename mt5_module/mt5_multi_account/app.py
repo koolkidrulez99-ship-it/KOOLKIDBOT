@@ -266,6 +266,8 @@ def normalize_mt5_server(value: str) -> str:
         return "Deriv-Demo"
     if compact == "deriv-real":
         return "Deriv-Real"
+    if compact in {"qberxcapital-server", "qberxcaptial-server"}:
+        return "QberxCapital-Server"
     return server
 
 
@@ -274,11 +276,40 @@ def broker_terminal_source(broker: str, requested: str = "") -> str:
     explicit = str(requested or "").strip().strip('"')
     if explicit:
         return explicit
-    slug = re.sub(r"[^A-Za-z0-9]+", "_", str(broker or "").strip()).strip("_").upper()
+
+    broker_name = str(broker or "").strip()
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", broker_name).strip("_").upper()
     if slug:
         broker_specific = os.getenv(f"MT5_TERMINAL_{slug}", "").strip().strip('"')
         if broker_specific:
             return broker_specific
+
+    aliases = {
+        "hfm": ("hfm", "hf markets", "hfmarkets", "hotforex"),
+        "xm global": ("xm global", "xmglobal", "xm mt5"),
+        "qberx capital": ("qberx", "qberx capital", "qb capital"),
+        "exness": ("exness",),
+        "ic markets": ("ic markets", "icmarkets"),
+        "pepperstone": ("pepperstone",),
+        "fxtm": ("fxtm",),
+        "fbs": ("fbs",),
+        "eightcap": ("eightcap",),
+        "admiral markets": ("admiral",),
+        "ftmo": ("ftmo",),
+    }
+    hints = aliases.get(broker_name.lower(), ())
+    if hints and os.name == "nt":
+        for env_name in ("ProgramFiles", "ProgramFiles(x86)"):
+            root = os.getenv(env_name)
+            if not root or not Path(root).is_dir():
+                continue
+            for folder in Path(root).iterdir():
+                label = folder.name.lower()
+                if any(hint in label for hint in hints):
+                    candidate = folder / "terminal64.exe"
+                    if candidate.is_file():
+                        return str(candidate)
+
     return os.getenv("MT5_TERMINAL_PATH", "").strip().strip('"')
 
 
@@ -344,7 +375,7 @@ def isolated_terminal(account_id: str, requested: str) -> str:
     config_dir = target_dir / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
     assistant_ini = config_dir / "assistant.ini"
-    parser = configparser.ConfigParser(interpolation=None)
+    parser = configparser.ConfigParser(interpolation=None, strict=False)
     parser.optionxform = str
     encoding = "utf-8"
     if assistant_ini.is_file():
@@ -421,7 +452,9 @@ def connect(req: ConnectRequest):
                 or ":" in requested_server
                 or requested_server.replace(" ", "").lower() == actual_server.replace(" ", "").lower()
             )
-            if int(info.get("login") or 0) == int(req.login) and named_server_matches:
+            existing_access_mode = str(POOL.items[req.account_id].config.get("access_mode") or "trading")
+            requested_access_mode = str(cfg.get("access_mode") or "trading")
+            if int(info.get("login") or 0) == int(req.login) and named_server_matches and existing_access_mode == requested_access_mode:
                 if req.mode == "real" and req.remember_session and req.password:
                     CREDENTIALS.save(req.account_id, req.password)
                 saved["accounts"][req.account_id] = cfg
@@ -520,6 +553,8 @@ def accounts():
         row["is_master"] = s.get("master") == aid
         row["is_slave"] = aid in s.get("slaves", [])
         row["remembered"] = credentials.has(aid)
+        row["access_mode"] = str(cfg.get("access_mode") or "trading")
+        row["read_only"] = row["access_mode"] == "investor"
         row["auto_reconnect"] = cfg.get("auto_reconnect", True) is not False
         row["budget"] = cfg.get("budget")
         row["budget_enabled"] = cfg.get("budget") is not None
@@ -585,6 +620,9 @@ def start_copy(req: CopyRequest):
         for aid in req.slave_account_ids:
             if aid not in POOL.ids():
                 raise RuntimeError(f"Slave not connected: {aid}")
+            slave_cfg = POOL.items[aid].config
+            if str(slave_cfg.get("access_mode") or "trading").lower() == "investor":
+                raise RuntimeError(f"Investor/read-only account cannot be used as a Copy Trader slave: {aid}")
         cfg = req.model_dump()
         COPY.start(cfg)
         s = STATE.load()
@@ -597,11 +635,21 @@ def start_copy(req: CopyRequest):
 
 @app.post("/copy/stop")
 def stop_copy():
-    COPY.stop()
-    s = STATE.load()
+    runtime = _runtime()
+    runtime.copy.stop()
+    runtime.copy.config = None
+    with runtime.copy.lock:
+        runtime.copy.copy_map.clear()
+        runtime.copy.pending.clear()
+        runtime.copy.ignored.clear()
+    s = runtime.state.load()
     s["copy_enabled"] = False
-    STATE.save(s)
-    return COPY.snapshot()
+    s["copy_config"] = None
+    s["copy_map"] = {}
+    s["master"] = None
+    s["slaves"] = []
+    runtime.state.save(s)
+    return runtime.copy.snapshot()
 
 @app.get("/copy/status")
 def copy_status():

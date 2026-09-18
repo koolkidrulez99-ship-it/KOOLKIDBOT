@@ -14,10 +14,11 @@ import type { Mt5Account } from '../types';
 const BROKER_PRESETS = [
   { name: 'Deriv', servers: ['Deriv-Demo', 'DerivSVG-Server'] },
   { name: 'HFM', servers: ['HFMarketsGlobal-Demo', 'HFMarketsGlobal-Demo3', 'HFMarketsGlobal-Demo4', 'HFMarketsGlobal-Live1', 'HFMarketsGlobal-Live3', 'HFMarketsGlobal-Live4', 'HFMarketsGlobal-Live5', 'HFMarketsGlobal-Live7', 'HFMarketsGlobal-Live8', 'HFMarketsGlobal-Live9', 'HFMarketsGlobal-Live10', 'HFMarketsGlobal-Live11', 'HFMarketsGlobal-Live12', 'HFMarketsGlobal-Live13', 'HFMarketsGlobal-Live14', 'HFMarketsGlobal-Live15', 'HFMarketsGlobal-Live16', 'HFMarketsGlobal-Live17', 'HFMarketsGlobal-Live18', 'HFMarketsGlobal-Live19', 'HFMarketsGlobal-Live20'] },
+  { name: 'XM Global', servers: ['XMGlobal-MT5', 'XMGlobal-MT5 2', 'XMGlobal-MT5 4', 'XMGlobal-MT5 5', 'XMGlobal-MT5 6', 'XMGlobal-MT5 7', 'XMGlobal-MT5 8', 'XMGlobal-MT5 9', 'XMGlobal-MT5 10', 'XMGlobal-MT5 11', 'XMGlobal-MT5 12', 'XMGlobal-MT5 13', 'XMGlobal-MT5 14', 'XMGlobal-MT5 15', 'XMGlobal-MT5 16', 'XMGlobal-MT5 17', 'XMGlobal-MT5 18', 'XMGlobal-MT5 19', 'XMGlobal-MT5 20'] },
+  { name: 'Qberx Capital', servers: ['QberxCapital-Server'] },
   { name: 'Exness', servers: [] },
   { name: 'IC Markets', servers: [] },
   { name: 'Pepperstone', servers: [] },
-  { name: 'XM Global', servers: [] },
   { name: 'FXTM', servers: [] },
   { name: 'FBS', servers: [] },
   { name: 'Eightcap', servers: [] },
@@ -108,6 +109,7 @@ export default function AccountsPage() {
                   </div>
                   <div className="flex items-center gap-1.5">
                     <Badge tone={a.account_type === 'live' ? 'loss' : 'warn'}>{a.account_type}</Badge>
+                    {(a.read_only || a.access_mode === 'investor') && <Badge tone="slate">INVESTOR</Badge>}
                     {isActive && <Badge tone={connected ? 'brand' : 'slate'}>{connected ? 'Active' : 'Selected'}</Badge>}
                   </div>
                 </div>
@@ -347,8 +349,8 @@ function ReconnectAccountModal({ account, onClose }: { account: Mt5Account | nul
 
   return <Modal open={Boolean(account)} onClose={cancel} title={`Connect ${account?.nickname || 'MT5 account'}`} sub={`Authenticate login #${account?.login || ''} on ${account?.server || 'the saved server'}.`}>
     <div className="space-y-4">
-      <div><label className="label">MT5 Password</label><div className="relative"><KeyRound size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" /><input autoFocus type="password" className="input !pl-9" placeholder="Enter MT5 password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') connect(); }} /></div></div>
-      <p className="text-[11px] text-slate-500">The password is used for this connection only and is not stored by KOOLKID.</p>
+      <div><label className="label">{account?.access_mode === 'investor' ? 'MT5 Investor Password' : 'MT5 Trading Password'}</label><div className="relative"><KeyRound size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" /><input autoFocus type="password" className="input !pl-9" placeholder={account?.access_mode === 'investor' ? 'Enter investor/read-only password' : 'Enter trading password'} autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') connect(); }} /></div></div>
+      <p className="text-[11px] text-slate-500">{account?.access_mode === 'investor' ? 'This account reconnects in read-only investor mode. KOOLKID will not submit or modify orders on it.' : 'The password is used for this connection only and is not stored by KOOLKID.'}</p>
       {error && <p className="rounded-lg border border-loss-500/30 bg-loss-500/10 px-3 py-2 text-xs text-loss-300">{error}</p>}
       <div className="flex justify-end gap-2"><button className="btn-ghost" onClick={cancel}>Cancel</button><button className="btn-primary" onClick={connect} disabled={busy}>{busy ? <Spinner size={14} /> : <Power size={14} />} {busy ? 'Connecting…' : 'Connect'}</button></div>
     </div>
@@ -368,6 +370,7 @@ function AddAccountModal({ open, onClose }: { open: boolean; onClose: () => void
     nickname: '',
     broker: 'Deriv',
     server: 'Deriv-Demo',
+    access_mode: 'trading' as 'trading' | 'investor',
     leverage: '500',
     account_type: 'demo' as 'demo' | 'live',
     balance: '10000',
@@ -417,7 +420,7 @@ function AddAccountModal({ open, onClose }: { open: boolean; onClose: () => void
     setTesting(true);
     setTested(false);
     try {
-      const result = await testAccount({ login: form.login, broker: form.broker, server: form.server, ...(isSimulation ? {} : { password: form.password }) });
+      const result = await testAccount({ login: form.login, broker: form.broker, server: form.server, access_mode: form.access_mode, ...(isSimulation ? {} : { password: form.password }) });
       setTested(Boolean(result.ok));
       pushToast('success', isSimulation ? 'Simulation check passed' : 'Connection test passed', result.message);
     } catch (err) {
@@ -438,6 +441,7 @@ function AddAccountModal({ open, onClose }: { open: boolean; onClose: () => void
         nickname: form.nickname,
         broker: form.broker,
         server: form.server,
+        access_mode: form.access_mode,
         leverage: Number(form.leverage),
         account_type: form.account_type,
         balance: Number(form.balance),
@@ -445,7 +449,7 @@ function AddAccountModal({ open, onClose }: { open: boolean; onClose: () => void
       });
       pushToast('success', isSimulation ? 'Simulation account added' : 'MT5 account connected', `${form.nickname} (#${form.login}) is ready.`);
       await refresh(true);
-      setForm({ login: '', password: '', nickname: '', broker: 'Deriv', server: 'Deriv-Demo', leverage: '500', account_type: 'demo', balance: '10000' });
+      setForm({ login: '', password: '', nickname: '', broker: 'Deriv', server: 'Deriv-Demo', access_mode: 'trading', leverage: '500', account_type: 'demo', balance: '10000' });
       setCustomServer(false);
       setTested(false);
       onClose();
@@ -464,13 +468,23 @@ function AddAccountModal({ open, onClose }: { open: boolean; onClose: () => void
           <input className="input mono" placeholder="51284763" value={form.login} onChange={(e) => set('login', e.target.value.replace(/[^0-9]/g, ''))} inputMode="numeric" />
         </div>
         <div>
-          <label className="label">MT5 Password</label>
+          <label className="label">{form.access_mode === 'investor' ? 'MT5 Investor Password' : 'MT5 Trading Password'}</label>
           <div className="relative">
             <KeyRound size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" />
-            <input type="password" className="input !pl-9" placeholder="Enter MT5 password" autoComplete="current-password" value={form.password} onChange={(e) => set('password', e.target.value)} />
+            <input type="password" className="input !pl-9" placeholder={form.access_mode === 'investor' ? 'Enter investor/read-only password' : 'Enter trading password'} autoComplete="current-password" value={form.password} onChange={(e) => set('password', e.target.value)} />
           </div>
-          <p className="mt-1 text-[10px] text-slate-600">{isSimulation ? 'Simulation mode: this password stays only in this form and is never stored or transmitted.' : 'The password is sent only to the configured backend bridge over your deployment transport; this frontend never persists it.'}</p>
+          <p className="mt-1 text-[10px] text-slate-600">{isSimulation ? 'Simulation mode: this password stays only in this form and is never stored or transmitted.' : form.access_mode === 'investor' ? 'Investor sessions are read-only in KOOLKID: balances, charts, positions and history work, but order actions are blocked.' : 'The password is sent only to the configured backend bridge over your deployment transport; this frontend never persists it.'}</p>
         </div>
+        {!isSimulation && (
+          <div className="sm:col-span-2">
+            <label className="label">Login access</label>
+            <div className="grid grid-cols-2 gap-2">
+              <button type="button" className={form.access_mode === 'trading' ? 'btn-primary justify-center' : 'btn-ghost justify-center'} onClick={() => set('access_mode', 'trading')}>Trading Password</button>
+              <button type="button" className={form.access_mode === 'investor' ? 'btn-primary justify-center' : 'btn-ghost justify-center'} onClick={() => set('access_mode', 'investor')}>Investor / Read-only</button>
+            </div>
+            <p className="mt-1 text-[10px] text-slate-600">Investor accounts can be monitored and used as a Copy Trader master, but cannot be a slave or receive KOOLKID orders.</p>
+          </div>
+        )}
         <div>
           <label className="label">Nickname</label>
           <input className="input" placeholder="My Deriv MT5" value={form.nickname} onChange={(e) => set('nickname', e.target.value)} />

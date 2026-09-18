@@ -32,8 +32,8 @@ export default function CopyTradingPage() {
       setError('');
       const configuredMaster = rows.find((row) => row.account_id === accountData.master)?.login;
       const configuredSlaves = rows.filter((row) => (accountData.slaves || []).includes(row.account_id)).map((row) => Number(row.login));
-      if (configuredMaster) setMaster(Number(configuredMaster));
-      if (configuredSlaves.length) setSlaves(configuredSlaves);
+      setMaster(configuredMaster ? Number(configuredMaster) : null);
+      setSlaves(configuredSlaves);
       const config = (copyData.config || null) as { lot_mode?: LotMode; fixed_lot?: number; multiplier?: number } | null;
       if (config?.lot_mode) setLotMode(config.lot_mode);
       if (config?.fixed_lot) setFixedLot(String(config.fixed_lot));
@@ -117,14 +117,15 @@ export default function CopyTradingPage() {
               const worker = workerByLogin.get(account.login);
               const isMaster = master === account.login;
               const isSlave = slaves.includes(account.login);
+              const readOnly = Boolean(account.read_only || account.access_mode === 'investor');
               return <div key={account.id} className={`rounded-xl border p-4 ${isMaster ? 'border-brand-500/45 bg-brand-500/[0.08]' : isSlave ? 'border-gain-500/35 bg-gain-500/[0.05]' : 'border-white/[0.07] bg-white/[0.03]'}`}>
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex items-center gap-3 min-w-0"><span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-white/[0.05] text-brand-300"><Landmark size={18} /></span><div className="min-w-0"><p className="font-bold text-white truncate">{account.nickname}</p><p className="mono text-[11px] text-slate-500">#{account.login} · {account.server}</p></div></div>
-                  <Badge tone={account.status === 'connected' ? 'gain' : 'slate'}>{account.status === 'connected' ? 'CONNECTED' : 'OFFLINE'}</Badge>
+                  <div className="flex flex-col items-end gap-1"><Badge tone={account.status === 'connected' ? 'gain' : 'slate'}>{account.status === 'connected' ? 'CONNECTED' : 'OFFLINE'}</Badge>{readOnly && <Badge tone="slate">INVESTOR</Badge>}</div>
                 </div>
                 <div className="mt-4 grid grid-cols-2 gap-2">
                   <button className={isMaster ? 'btn-primary justify-center' : 'btn-ghost justify-center'} onClick={() => chooseMaster(account.login)}>Master</button>
-                  <button className={isSlave ? 'btn-primary justify-center' : 'btn-ghost justify-center'} disabled={isMaster} onClick={() => toggleSlave(account.login)}>Slave</button>
+                  <button className={isSlave ? 'btn-primary justify-center' : 'btn-ghost justify-center'} disabled={isMaster || readOnly} title={readOnly ? 'Investor/read-only accounts can be a master, but cannot receive copied trades.' : undefined} onClick={() => toggleSlave(account.login)}>Slave</button>
                 </div>
               </div>;
             })}

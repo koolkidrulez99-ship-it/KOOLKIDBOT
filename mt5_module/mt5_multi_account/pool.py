@@ -105,13 +105,18 @@ class Pool:
                 # A forced service stop can leave this account's portable terminal
                 # behind even though its worker is gone. Clear only that isolated
                 # terminal before starting a replacement so MT5 IPC cannot attach
-                # to a stale process.
-                self._stop_terminal(cfg.get("terminal_path"))
+                # to a stale process. Exception: during one-time broker bootstrap,
+                # the user completes the broker login in that exact private terminal
+                # and the retry must attach to the still-running process.
+                terminal_path = str(cfg.get("terminal_path") or "")
+                bootstrap_marker = Path(terminal_path).parent / ".koolkid-broker-bootstrap-required" if terminal_path else None
+                if not (bootstrap_marker and bootstrap_marker.is_file()):
+                    self._stop_terminal(terminal_path)
                 qin, qout = self.ctx.Queue(), self.ctx.Queue()
                 proc = self.ctx.Process(target=run_worker, args=(cfg,password,qin,qout), daemon=True)
                 proc.start()
             try:
-                deadline = time.time()+35
+                deadline = time.time()+75
                 startup = None
                 while time.time()<deadline:
                     if cancel.is_set():
@@ -122,14 +127,19 @@ class Pool:
                     except Exception:
                         if not proc.is_alive(): break
                 if not startup or not startup.get("ok"):
-                    raise RuntimeError((startup or {}).get("error") or "Account worker failed to start")
+                    if startup and startup.get("error"):
+                        raise RuntimeError(startup["error"])
+                    if proc.is_alive():
+                        raise RuntimeError("MT5 account worker startup timed out before broker authentication finished.")
+                    raise RuntimeError(f"MT5 account worker exited during startup (exit code {proc.exitcode}).")
                 with self.lock:
                     self.items[aid] = Runtime(cfg, proc, qin, qout, threading.RLock(), {}, password)
                 return self.status(aid)
-            except Exception:
+            except Exception as exc:
                 try: proc.terminate()
                 except Exception: pass
-                self._stop_terminal(cfg.get("terminal_path"))
+                if "mt5 broker setup required" not in str(exc).lower():
+                    self._stop_terminal(cfg.get("terminal_path"))
                 raise
             finally:
                 with self.lock:

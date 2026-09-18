@@ -45,6 +45,7 @@ def connect(profile: dict[str, Any], password: str) -> dict[str, Any]:
         "account_id": f"session-{login}", "nickname": profile.get("nickname") or f"MT5 #{login}",
         "login": login, "broker": profile.get("broker") or "MetaTrader 5",
         "server": profile.get("server") or "", "password": password,
+        "access_mode": profile.get("access_mode") or "trading",
         "mode": "real", "symbol_aliases": {},
     }, timeout=90)
 

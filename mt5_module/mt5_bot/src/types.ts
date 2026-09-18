@@ -18,6 +18,8 @@ export interface Mt5Account {
   status: 'connected' | 'disconnected' | 'connecting';
   is_active: boolean;
   account_type: 'live' | 'demo';
+  access_mode?: 'trading' | 'investor';
+  read_only?: boolean;
   worker_id?: string | null;
   terminal_id?: string | null;
   connection_status?: BridgeStatus | null;
@@ -71,7 +73,15 @@ export interface Mt5Bot {
   settings: BotSettings;
   ea_filename?: string | null;
   preset_filename?: string | null;
-  file_status?: 'ready' | 'missing' | 'metadata-only' | 'native' | 'source-required';
+  file_status?: 'ready' | 'missing' | 'metadata-only' | 'native' | 'source-required' | 'compile-error';
+  source_filename?: string | null;
+  source_storage_path?: string | null;
+  source_sha256?: string | null;
+  compile_status?: 'success' | 'failed' | null;
+  compile_errors?: number | null;
+  compile_warnings?: number | null;
+  compile_log?: string | null;
+  compile_date?: string | null;
   upload_date?: string | null;
   dll_required?: boolean;
   display_title?: string | null;

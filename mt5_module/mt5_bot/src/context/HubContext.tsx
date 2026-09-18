@@ -2,16 +2,28 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { ReactNode } from 'react';
 import { isSimulation } from '../config/runtime';
 import { MARKET, SYMBOL_LIST, calcProfit } from '../lib/market';
+import { aiControlService } from '../services/aiControlService';
 import { mt5AccountService } from '../services/mt5AccountService';
 import { mt5BotService } from '../services/mt5BotService';
 import { mt5BridgeService } from '../services/mt5BridgeService';
 import { mt5HistoryService } from '../services/mt5HistoryService';
 import { mt5MarketService } from '../services/mt5MarketService';
+import { mt5MultiAccountService } from '../services/mt5MultiAccountService';
 import { mt5PositionService } from '../services/mt5PositionService';
+import { DEFAULT_NOTIFICATION_PREFS, showBrowserNotification } from '../services/notificationService';
+import type { NotificationPrefs } from '../services/notificationService';
 import type { BridgeInfo, Mt5Account, Mt5Bot, Mt5Position, Mt5Quote, Mt5Stats, Mt5SymbolInfo } from '../types';
 import { workspaceService } from '../services/workspaceService';
 
 export type ActiveSel = number | 'all';
+
+export interface HubPreferences {
+  pollMs: number;
+  confirmDanger: boolean;
+  restoreWorkspace: boolean;
+  reconnectOnStartup: boolean;
+  notifications: NotificationPrefs;
+}
 
 export interface Toast {
   id: number;
@@ -55,8 +67,8 @@ interface HubCtx {
   refresh: (silent?: boolean) => Promise<void>;
   refreshPositions: () => Promise<void>;
   accountName: (login: number | null | undefined) => string;
-  prefs: { pollMs: number; confirmDanger: boolean; restoreWorkspace: boolean; reconnectOnStartup: boolean };
-  setPrefs: (p: Partial<{ pollMs: number; confirmDanger: boolean; restoreWorkspace: boolean; reconnectOnStartup: boolean }>) => void;
+  prefs: HubPreferences;
+  setPrefs: (p: Partial<HubPreferences>) => void;
   toasts: Toast[];
   pushToast: (tone: Toast['tone'], title: string, message?: string) => void;
   dismissToast: (id: number) => void;
@@ -78,12 +90,22 @@ export function HubProvider({ children }: { children: ReactNode }) {
   const [active, setActiveState] = useState<ActiveSel>(() => workspaceService.getRaw<ActiveSel>('active_account', 'all'));
   const [toasts, setToasts] = useState<Toast[]>([]);
 
-  const [prefs, setPrefsState] = useState<{ pollMs: number; confirmDanger: boolean; restoreWorkspace: boolean; reconnectOnStartup: boolean }>(() => {
+  const [prefs, setPrefsState] = useState<HubPreferences>(() => {
+    const defaults: HubPreferences = {
+      pollMs: isSimulation ? 15000 : 5000,
+      confirmDanger: true,
+      restoreWorkspace: true,
+      reconnectOnStartup: true,
+      notifications: DEFAULT_NOTIFICATION_PREFS,
+    };
     try {
       const raw = localStorage.getItem('koolkid_mt5_prefs');
-      if (raw) return { pollMs: isSimulation ? 15000 : 5000, confirmDanger: true, restoreWorkspace: true, reconnectOnStartup: true, ...JSON.parse(raw) };
+      if (raw) {
+        const saved = JSON.parse(raw) as Partial<HubPreferences>;
+        return { ...defaults, ...saved, notifications: { ...DEFAULT_NOTIFICATION_PREFS, ...(saved.notifications || {}) } };
+      }
     } catch { /* ignore */ }
-    return { pollMs: isSimulation ? 15000 : 5000, confirmDanger: true, restoreWorkspace: true, reconnectOnStartup: true };
+    return defaults;
   });
 
   const [market, setMarket] = useState<Record<string, number>>(() => {
@@ -94,6 +116,13 @@ export function HubProvider({ children }: { children: ReactNode }) {
   const [quotes, setQuotes] = useState<Record<string, Mt5Quote>>({});
   const [mt5Symbols, setMt5Symbols] = useState<Mt5SymbolInfo[]>([]);
   const [botDrift, setBotDrift] = useState<Record<number, number>>({});
+  const notificationBaselineRef = useRef(false);
+  const previousAccountsRef = useRef<Map<number, string>>(new Map());
+  const previousPositionsRef = useRef<Map<string, Mt5Position>>(new Map());
+  const previousBotsRef = useRef<Map<number, string>>(new Map());
+  const previousBridgeRef = useRef<{ status?: string; trading?: boolean; ea?: string }>({});
+  const copyNotificationRef = useRef<{ ready: boolean; status?: string; pending?: number; activity?: string }>({ ready: false });
+  const aiNotificationRef = useRef<{ ready: boolean; autoEvent?: string; selectEvent?: string }>({ ready: false });
 
   const pushToast = useCallback((tone: Toast['tone'], title: string, message?: string) => {
     const id = toastSeq++;
@@ -252,6 +281,170 @@ export function HubProvider({ children }: { children: ReactNode }) {
     return () => { cancelled = true; };
   }, [marketAccountLogin]);
 
+  useEffect(() => {
+    if (loading) return;
+    const accountMap = new Map(accounts.map((account) => [account.login, account.status]));
+    const positionMap = new Map(positions.map((position) => [`${position.account_login}:${position.ticket}`, position]));
+    const botMap = new Map(bots.map((bot) => [bot.id, bot.status]));
+    const bridgeState = {
+      status: bridge?.status,
+      trading: bridge?.trading_enabled,
+      ea: bridge?.ea_worker?.status,
+    };
+
+    if (!notificationBaselineRef.current) {
+      previousAccountsRef.current = accountMap;
+      previousPositionsRef.current = positionMap;
+      previousBotsRef.current = botMap;
+      previousBridgeRef.current = bridgeState;
+      notificationBaselineRef.current = true;
+      return;
+    }
+
+    const n = prefs.notifications;
+    if (n.enabled) {
+      if (n.accountStatus) {
+        for (const account of accounts) {
+          const before = previousAccountsRef.current.get(account.login);
+          if (before && before !== account.status) {
+            const title = account.status === 'connected' ? 'MT5 account connected' : 'MT5 account disconnected';
+            void showBrowserNotification(title, `${account.nickname} (#${account.login}) is now ${account.status}.`, `account-${account.login}`);
+          }
+        }
+      }
+
+      if (n.tradeOpened) {
+        for (const [key, position] of positionMap) {
+          if (!previousPositionsRef.current.has(key)) {
+            void showBrowserNotification(
+              'Trade opened',
+              `${position.type.toUpperCase()} ${position.symbol} · ${position.volume} lot · #${position.ticket}`,
+              `trade-open-${key}`,
+            );
+          }
+        }
+      }
+
+      if (n.tradeClosed) {
+        const closed = [...previousPositionsRef.current.entries()].filter(([key]) => !positionMap.has(key));
+        if (closed.length) {
+          void mt5HistoryService.list().then((rows) => {
+            for (const [key, position] of closed) {
+              const row = rows.find((item) => item.ticket === position.ticket && item.account_login === position.account_login);
+              const net = row ? Number(row.net_pl ?? Number(row.profit || 0) + Number(row.swap || 0) + Number(row.commission || 0)) : null;
+              const result = net == null ? 'Position closed' : `${net >= 0 ? 'Profit' : 'Loss'} ${net >= 0 ? '+' : ''}${net.toFixed(2)}`;
+              void showBrowserNotification('Trade closed', `${position.symbol} #${position.ticket} · ${result}`, `trade-close-${key}`);
+            }
+          }).catch(() => {
+            for (const [key, position] of closed) {
+              void showBrowserNotification('Trade closed', `${position.symbol} #${position.ticket} was closed.`, `trade-close-${key}`);
+            }
+          });
+        }
+      }
+
+      if (n.botStatus) {
+        for (const bot of bots) {
+          const before = previousBotsRef.current.get(bot.id);
+          if (before && before !== bot.status) {
+            const isProblem = bot.status === 'error' || bot.status === 'worker_offline';
+            void showBrowserNotification(
+              isProblem ? 'Bot/EA problem' : 'Bot/EA status changed',
+              `${bot.name} is now ${bot.status.replace('_', ' ')}.`,
+              `bot-${bot.id}`,
+            );
+          }
+        }
+      }
+
+      if (n.riskAlerts) {
+        if (previousBridgeRef.current.status && previousBridgeRef.current.status !== bridgeState.status && bridgeState.status !== 'online') {
+          void showBrowserNotification('MT5 bridge alert', `Bridge status changed to ${bridgeState.status || 'unknown'}.`, 'bridge-status');
+        }
+        if (previousBridgeRef.current.trading === true && bridgeState.trading === false) {
+          void showBrowserNotification('Trading disabled', 'MT5 trading is no longer enabled for the active bridge.', 'trading-disabled');
+        }
+        if (previousBridgeRef.current.ea === 'online' && bridgeState.ea && bridgeState.ea !== 'online') {
+          void showBrowserNotification('EA worker alert', `EA worker status changed to ${bridgeState.ea}.`, 'ea-worker');
+        }
+      }
+    }
+
+    previousAccountsRef.current = accountMap;
+    previousPositionsRef.current = positionMap;
+    previousBotsRef.current = botMap;
+    previousBridgeRef.current = bridgeState;
+  }, [accounts, bots, bridge, loading, positions, prefs.notifications]);
+
+  useEffect(() => {
+    if (!prefs.notifications.enabled || !prefs.notifications.copyTrader) {
+      copyNotificationRef.current = { ready: false };
+      return;
+    }
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const snapshot = await mt5MultiAccountService.copyStatus();
+        if (cancelled) return;
+        const status = String(snapshot.status || 'stopped');
+        const pending = Number(snapshot.pending_count || 0);
+        const activity = Array.isArray(snapshot.activity) ? snapshot.activity[0] as Record<string, unknown> | undefined : undefined;
+        const activityKey = activity ? `${String(activity.time || '')}:${String(activity.event || '')}` : '';
+        const previous = copyNotificationRef.current;
+        if (previous.ready) {
+          if (previous.status !== status) {
+            void showBrowserNotification('Copy Trader status', `Copy Trader is now ${status}.`, 'copy-status');
+          }
+          if (pending > Number(previous.pending || 0)) {
+            void showBrowserNotification('Copy approval waiting', `${pending} copied trade${pending === 1 ? '' : 's'} waiting for approval.`, 'copy-pending');
+          }
+          if (activityKey && activityKey !== previous.activity && /error|fail|reject/i.test(String(activity?.event || ''))) {
+            void showBrowserNotification('Copy Trader alert', String(activity?.error || activity?.event || 'Copy Trader reported an error.'), 'copy-error');
+          }
+        }
+        copyNotificationRef.current = { ready: true, status, pending, activity: activityKey };
+      } catch { /* copy worker availability is already surfaced in its page */ }
+    };
+    void load();
+    const id = window.setInterval(load, Math.max(3000, prefs.pollMs));
+    return () => { cancelled = true; window.clearInterval(id); };
+  }, [prefs.notifications.copyTrader, prefs.notifications.enabled, prefs.pollMs]);
+
+  useEffect(() => {
+    if (isSimulation || !prefs.notifications.enabled || !prefs.notifications.aiAlerts) {
+      aiNotificationRef.current = { ready: false };
+      return;
+    }
+    let cancelled = false;
+    const eventKey = (row: Record<string, unknown> | undefined) => row ? `${String(row.time || '')}:${String(row.event || '')}` : '';
+    const interesting = (rows: Array<Record<string, unknown>>) =>
+      rows.find((row) => /execut|error|signal|start|stop/i.test(String(row.event || '')));
+    const load = async () => {
+      try {
+        const [auto, select] = await Promise.all([aiControlService.autoStatus(), aiControlService.autoSelectStatus()]);
+        if (cancelled) return;
+        const autoEvent = interesting(auto.events as unknown as Array<Record<string, unknown>>);
+        const selectEvent = interesting(select.events);
+        const autoKey = eventKey(autoEvent);
+        const selectKey = eventKey(selectEvent);
+        const previous = aiNotificationRef.current;
+        if (previous.ready) {
+          if (autoKey && autoKey !== previous.autoEvent) {
+            void showBrowserNotification('AI trading alert', String(autoEvent?.event || 'Human Apostle AI update'), 'ai-auto');
+          }
+          if (selectKey && selectKey !== previous.selectEvent) {
+            const label = String(selectEvent?.event || 'AI Intelligence update').replaceAll('_', ' ');
+            void showBrowserNotification('AI Intelligence alert', label, 'ai-select');
+          }
+        }
+        aiNotificationRef.current = { ready: true, autoEvent: autoKey, selectEvent: selectKey };
+      } catch { /* AI pages already surface API errors */ }
+    };
+    void load();
+    const id = window.setInterval(load, Math.max(5000, prefs.pollMs));
+    return () => { cancelled = true; window.clearInterval(id); };
+  }, [prefs.notifications.aiAlerts, prefs.notifications.enabled, prefs.pollMs]);
+
   const liveQuote = useCallback((symbol: string) => quotes[symbol] || null, [quotes]);
   const livePrice = useCallback((symbol: string) => {
     const q = quotes[symbol];
@@ -277,9 +470,13 @@ export function HubProvider({ children }: { children: ReactNode }) {
     try { await mt5AccountService.action(acc.id, 'set_active'); } catch { /* local-first */ }
   }, [accounts]);
 
-  const setPrefs = useCallback((p: Partial<{ pollMs: number; confirmDanger: boolean; restoreWorkspace: boolean; reconnectOnStartup: boolean }>) => {
+  const setPrefs = useCallback((p: Partial<HubPreferences>) => {
     setPrefsState((prev) => {
-      const next = { ...prev, ...p };
+      const next: HubPreferences = {
+        ...prev,
+        ...p,
+        notifications: p.notifications ? { ...prev.notifications, ...p.notifications } : prev.notifications,
+      };
       try { localStorage.setItem('koolkid_mt5_prefs', JSON.stringify(next)); } catch { /* ignore */ }
       return next;
     });

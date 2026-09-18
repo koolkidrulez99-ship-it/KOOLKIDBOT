@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
-import { BarChart3, Boxes, Cpu, FileCode2, Play, Plus, ScanSearch, Settings2, Target, Trash2, Upload } from 'lucide-react';
+import { BarChart3, Boxes, Cpu, Download, FileCode2, Play, Plus, ScanSearch, Settings2, Target, Trash2, Upload } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { useHub } from '../context/HubContext';
 import { fmtSigned, profitTone } from '../lib/format';
@@ -35,12 +35,33 @@ export default function BotLibraryPage() {
   const [addOpen, setAddOpen] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<Mt5Bot | null>(null);
   const [fileTarget, setFileTarget] = useState<Mt5Bot | null>(null);
+  const [downloadId, setDownloadId] = useState<number | null>(null);
   const [strategyFilter, setStrategyFilter] = useState<string>('all');
 
   const filtered = useMemo(
     () => (strategyFilter === 'all' ? bots : bots.filter((b) => b.strategy === strategyFilter)),
     [bots, strategyFilter]
   );
+
+  const downloadCompiled = async (bot: Mt5Bot) => {
+    setDownloadId(bot.id);
+    try {
+      const blob = await mt5BotService.downloadEx5(bot.id);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = bot.ea_filename || `${bot.name.replace(/[^A-Za-z0-9._-]+/g, '_')}.ex5`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      pushToast('success', 'EX5 downloaded', anchor.download);
+    } catch (error) {
+      pushToast('error', 'Download failed', error instanceof Error ? error.message : undefined);
+    } finally {
+      setDownloadId(null);
+    }
+  };
 
   return (
     <div>
@@ -53,7 +74,7 @@ export default function BotLibraryPage() {
               <option value="all">All bots</option>
               {STRATEGIES.map((s) => <option key={s}>{s}</option>)}
             </select>
-            <button className="btn-primary" onClick={() => setAddOpen(true)}><Upload size={15} /> Upload EA</button>
+            <button className="btn-primary" onClick={() => setAddOpen(true)}><Upload size={15} /> Upload / Compile EA</button>
           </>
         }
       />
@@ -62,7 +83,7 @@ export default function BotLibraryPage() {
         <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-[11px] text-slate-400">
           <span className="inline-flex items-center gap-2"><Cpu size={14} className="text-brand-300" /> Built-in presets: <b className="text-slate-200">KOOLKID Native Engine</b></span>
           <span>Server-side · no chart attachment · no EA Worker</span>
-          <span className="inline-flex items-center gap-2"><FileCode2 size={14} className="text-slate-500" /> Custom uploads: <b className="mono text-slate-200">.ex5 / .set</b> via EA Worker {eaLaunchAvailable ? '· online' : '· currently offline'}</span>
+          <span className="inline-flex items-center gap-2"><FileCode2 size={14} className="text-slate-500" /> Custom EAs: <b className="mono text-slate-200">.mq5 → server compile · .ex5 / .set</b> · EA Worker {eaLaunchAvailable ? 'online' : 'currently offline'}</span>
         </div>
       </Panel>
 
@@ -119,6 +140,8 @@ export default function BotLibraryPage() {
                 ) : (
                   <div className="mt-3 rounded-xl bg-black/25 border border-white/[0.06] p-3 space-y-1.5 text-[11px]">
                     <div className="flex justify-between gap-3"><span className="text-slate-600">EA file</span><span className="mono text-slate-300 truncate">{b.ea_filename || 'Not assigned'}</span></div>
+                    {b.source_filename && <div className="flex justify-between gap-3"><span className="text-slate-600">MQ5 source</span><span className="mono text-slate-300 truncate">{b.source_filename}</span></div>}
+                    {b.compile_status && <div className="flex justify-between gap-3"><span className="text-slate-600">Compile</span><span className={b.compile_status === 'success' ? 'text-gain-400' : 'text-loss-400'}>{b.compile_status === 'success' ? `Success${b.compile_warnings ? ` · ${b.compile_warnings} warning(s)` : ''}` : `Failed · ${b.compile_errors || 0} error(s)`}</span></div>}
                     <div className="flex justify-between gap-3"><span className="text-slate-600">Preset</span><span className="mono text-slate-300 truncate">{b.preset_filename || 'None'}</span></div>
                     <div className="flex justify-between gap-3"><span className="text-slate-600">File status</span><Badge tone={b.file_status === 'ready' ? 'gain' : 'warn'}>{b.file_status || 'metadata-only'}</Badge></div>
                     <div className="flex justify-between gap-3"><span className="text-slate-600">DLL</span><span className={b.dll_required ? 'text-warn-400 font-semibold' : 'text-slate-300'}>{b.dll_required ? 'Required by metadata' : 'Not required'}</span></div>
@@ -188,6 +211,7 @@ export default function BotLibraryPage() {
                     <button className="btn-ghost flex-1" onClick={() => setConfigBot(b)}><Settings2 size={14} /> Configure</button>
                   )}
                   {!isCatalog && <button className="btn-ghost !px-3" title="Upload or update actual EA file" onClick={() => setFileTarget(b)}><FileCode2 size={15} /></button>}
+                  {!isCatalog && b.compile_status === 'success' && b.ea_filename && <button className="btn-ghost !px-3" title={`Download ${b.ea_filename}`} disabled={downloadId === b.id} onClick={() => downloadCompiled(b)}>{downloadId === b.id ? <Spinner size={14} /> : <Download size={15} />}</button>}
                   <Link className="btn-ghost !px-3" to={`/mt5/bots/${b.id}`} title="View performance"><BarChart3 size={15} /></Link>
                   {!isCatalog && <button className="btn-icon hover:!text-loss-400" title="Delete custom bot" onClick={() => setRemoveTarget(b)}><Trash2 size={15} /></button>}
                 </div>
@@ -243,8 +267,11 @@ function UpdateEaModal({ bot, open, onClose }: { bot: Mt5Bot | null; open: boole
 
   const onEaFile = (file?: File) => {
     if (!file) return;
-    if (!file.name.toLowerCase().endsWith('.ex5')) { setError('EA files must use the .ex5 extension.'); return; }
-    setError(''); setEaFilename(file.name); setEaFile(file);
+    const lower = file.name.toLowerCase();
+    if (!lower.endsWith('.ex5') && !lower.endsWith('.mq5')) { setError('Choose an MT5 .mq5 source file or compiled .ex5 file.'); return; }
+    setError('');
+    setEaFilename(lower.endsWith('.mq5') ? file.name.replace(/\.mq5$/i, '.ex5') : file.name);
+    setEaFile(file);
   };
   const onPreset = (file?: File) => {
     if (!file) return;
@@ -257,9 +284,19 @@ function UpdateEaModal({ bot, open, onClose }: { bot: Mt5Bot | null; open: boole
     if (!eaFilename.toLowerCase().endsWith('.ex5')) { setError('Choose a valid .ex5 filename before saving.'); return; }
     setBusy(true); setError('');
     try {
-      if (!isSimulation && (eaFile || presetFile)) {
-        await mt5BotService.uploadFiles(bot.id, eaFile, presetFile);
+      const sourceUpload = Boolean(eaFile?.name.toLowerCase().endsWith('.mq5'));
+      if (isSimulation && sourceUpload) throw new Error('MQ5 compilation requires the real MT5 bridge.');
+      let compileWarnings = 0;
+      if (!isSimulation && eaFile) {
+        if (sourceUpload) {
+          const compiled = await mt5BotService.compileSource(bot.id, eaFile);
+          if (!compiled.success) throw new Error(compiled.log || `Compilation failed with ${compiled.errors} error(s).`);
+          compileWarnings = compiled.warnings;
+        } else {
+          await mt5BotService.uploadFiles(bot.id, eaFile, null);
+        }
       }
+      if (!isSimulation && presetFile) await mt5BotService.uploadFiles(bot.id, null, presetFile);
       await botControl(bot.id, 'update', {
         ea_filename: eaFilename,
         preset_filename: presetFilename || null,
@@ -270,10 +307,12 @@ function UpdateEaModal({ bot, open, onClose }: { bot: Mt5Bot | null; open: boole
       });
       pushToast(
         'success',
-        isSimulation ? 'EA metadata updated' : 'EA files saved',
+        isSimulation ? 'EA metadata updated' : sourceUpload ? 'MQ5 compiled' : 'EA files saved',
         isSimulation
           ? `${bot.name}: filename metadata saved. Simulation mode never executes the file.`
-          : `${bot.name}: ${eaFile ? eaFile.name + ' uploaded to the local MT5 bridge' : 'metadata updated'}${presetFile ? ' with ' + presetFile.name : ''}.`
+          : sourceUpload
+            ? `${eaFile?.name} compiled to ${eaFilename}${compileWarnings ? ` with ${compileWarnings} warning(s)` : ''}.`
+            : `${bot.name}: ${eaFile ? eaFile.name + ' uploaded to the MT5 bridge' : 'metadata updated'}${presetFile ? ' with ' + presetFile.name : ''}.`
       );
       await refresh(true); onClose();
     } catch (err) { setError(err instanceof Error ? err.message : 'Update failed.'); }
@@ -281,15 +320,15 @@ function UpdateEaModal({ bot, open, onClose }: { bot: Mt5Bot | null; open: boole
   };
 
   return (
-    <Modal open={open} onClose={busy ? () => {} : onClose} title={`Update ${bot.name}`} sub={isSimulation ? 'Update EA metadata. Simulation mode never executes files.' : 'Upload the actual .ex5/.set files into the local MT5 bridge library.'} wide>
+    <Modal open={open} onClose={busy ? () => {} : onClose} title={`Update ${bot.name}`} sub={isSimulation ? 'Update EA metadata. Simulation mode never executes files.' : 'Upload .mq5 to compile server-side, or replace the compiled .ex5/.set files.'} wide>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <div className="sm:col-span-2 rounded-xl border border-warn-400/20 bg-warn-400/[0.05] px-4 py-3 text-[11px] text-slate-400">{isSimulation ? 'Simulation security: only filenames and metadata are retained. Switch to real bridge mode to upload the actual file bytes.' : 'The selected .ex5/.set file is copied into the local bridge EA library. Uploading does not grant DLL permission and does not execute the EA by itself.'}</div>
-        <div><label className="label">Replace EA (.ex5)</label><input className="input" type="file" accept=".ex5" onChange={(e) => onEaFile(e.target.files?.[0])} /><p className="mt-1 text-[10px] text-slate-600">Registered: {eaFilename || bot.ea_filename || 'none'}</p></div>
+        <div className="sm:col-span-2 rounded-xl border border-warn-400/20 bg-warn-400/[0.05] px-4 py-3 text-[11px] text-slate-400">{isSimulation ? 'Simulation security: only filenames and metadata are retained.' : 'MQ5 source is compiled by MetaEditor on the KOOLKID server. The resulting EX5 is saved to this bot; compilation never starts the EA.'}</div>
+        <div><label className="label">Replace / compile EA (.mq5 / .ex5)</label><input className="input" type="file" accept=".mq5,.ex5" onChange={(e) => onEaFile(e.target.files?.[0])} /><p className="mt-1 text-[10px] text-slate-600">{eaFile ? `Selected: ${eaFile.name}${eaFile.name.toLowerCase().endsWith('.mq5') ? ` → ${eaFilename}` : ''}` : `Registered: ${eaFilename || bot.ea_filename || 'none'}`}</p></div>
         <div><label className="label">Replace preset (.set)</label><input className="input" type="file" accept=".set" onChange={(e) => onPreset(e.target.files?.[0])} /><p className="mt-1 text-[10px] text-slate-600">Registered: {presetFilename || 'none'}</p></div>
         <div><label className="label">Version</label><input className="input mono" value={version} onChange={(e) => setVersion(e.target.value)} /></div>
         <label className="flex items-center gap-3 rounded-xl bg-white/[0.03] border border-white/[0.06] px-4 py-3 cursor-pointer"><input type="checkbox" checked={dllRequired} onChange={(e) => setDllRequired(e.target.checked)} /><span><span className="block text-[12px] font-semibold text-slate-200">DLL required by EA metadata</span><span className="block text-[10px] text-slate-600">Does not grant DLL permission.</span></span></label>
         {error && <div className="sm:col-span-2 rounded-xl border border-loss-500/30 bg-loss-500/10 px-4 py-3"><p className="text-xs text-loss-300">{error}</p></div>}
-        <div className="sm:col-span-2 flex justify-end gap-2.5"><button className="btn-ghost" onClick={onClose} disabled={busy}>Cancel</button><button className="btn-primary" onClick={save} disabled={busy}>{busy ? <Spinner size={14} /> : <FileCode2 size={15} />}{busy ? 'Saving…' : 'Update EA'}</button></div>
+        <div className="sm:col-span-2 flex justify-end gap-2.5"><button className="btn-ghost" onClick={onClose} disabled={busy}>Cancel</button><button className="btn-primary" onClick={save} disabled={busy}>{busy ? <Spinner size={14} /> : <FileCode2 size={15} />}{busy ? (eaFile?.name.toLowerCase().endsWith('.mq5') ? 'Compiling…' : 'Saving…') : eaFile?.name.toLowerCase().endsWith('.mq5') ? 'Compile & Update' : 'Update EA'}</button></div>
       </div>
     </Modal>
   );
@@ -308,10 +347,12 @@ function AddBotModal({ open, onClose }: { open: boolean; onClose: () => void }) 
 
   const onEaFile = (file?: File) => {
     if (!file) return;
-    if (!file.name.toLowerCase().endsWith('.ex5')) { setError('EA files must use the .ex5 extension.'); return; }
+    const lower = file.name.toLowerCase();
+    if (!lower.endsWith('.ex5') && !lower.endsWith('.mq5')) { setError('Choose an MT5 .mq5 source file or compiled .ex5 file.'); return; }
     setError('');
     setEaFile(file);
-    setForm((f) => ({ ...f, ea_filename: file.name, name: f.name || file.name.replace(/\.ex5$/i, '') }));
+    const compiledName = lower.endsWith('.mq5') ? file.name.replace(/\.mq5$/i, '.ex5') : file.name;
+    setForm((f) => ({ ...f, ea_filename: compiledName, name: f.name || file.name.replace(/\.(mq5|ex5)$/i, '') }));
   };
   const onPreset = (file?: File) => {
     if (!file) return;
@@ -324,31 +365,54 @@ function AddBotModal({ open, onClose }: { open: boolean; onClose: () => void }) 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     if (!form.name.trim()) { setError('Bot name is required.'); return; }
-    if (!eaFile) { setError('Choose the .ex5 EA file you want to add.'); return; }
+    if (!eaFile) { setError('Choose the .mq5 source or .ex5 EA file you want to add.'); return; }
     setError(''); setBusy(true);
+    const sourceUpload = eaFile.name.toLowerCase().endsWith('.mq5');
+    let createdId: number | null = null;
     try {
+      if (isSimulation && sourceUpload) throw new Error('MQ5 compilation is available only when the real MT5 bridge is running.');
       const created = await createBot({ ...form, file_status: isSimulation ? 'metadata-only' : 'missing' });
-      if (!isSimulation) await mt5BotService.uploadFiles(created.id, eaFile, presetFile);
+      createdId = created.id;
+      let compileWarnings = 0;
+      if (!isSimulation) {
+        if (sourceUpload) {
+          const compiled = await mt5BotService.compileSource(created.id, eaFile);
+          if (!compiled.success) throw new Error(compiled.log || `Compilation failed with ${compiled.errors} error(s).`);
+          compileWarnings = compiled.warnings;
+          if (presetFile) await mt5BotService.uploadFiles(created.id, null, presetFile);
+        } else {
+          await mt5BotService.uploadFiles(created.id, eaFile, presetFile);
+        }
+      }
       pushToast(
         'success',
-        isSimulation ? 'EA registered in simulation' : 'EA uploaded',
-        isSimulation ? `${form.name} metadata was added. Actual bytes are not retained in simulation.` : `${eaFile.name} was saved to the local MT5 bridge EA library.`
+        isSimulation ? 'EA registered in simulation' : sourceUpload ? 'MQ5 compiled' : 'EA uploaded',
+        isSimulation
+          ? `${form.name} metadata was added. Actual bytes are not retained in simulation.`
+          : sourceUpload
+            ? `${eaFile.name} compiled server-side to ${form.ea_filename}${compileWarnings ? ` with ${compileWarnings} warning(s)` : ''}.`
+            : `${eaFile.name} was saved to the MT5 bridge EA library.`
       );
       await refresh(true);
       setForm({ name: '', description: '', strategy: 'Custom EA', symbol: 'EURUSD', timeframe: 'M15', version: '1.0.0', ea_filename: '', preset_filename: '', dll_required: false });
       setEaFile(null); setPresetFile(null);
       onClose();
-    } catch (err) { setError(err instanceof Error ? err.message : 'Import failed.'); }
+    } catch (err) {
+      if (!isSimulation && sourceUpload && createdId !== null) {
+        try { await mt5BotService.remove(createdId); } catch { /* keep the original compile error */ }
+      }
+      setError(err instanceof Error ? err.message : 'Import failed.');
+    }
     finally { setBusy(false); }
   };
 
   return (
-    <Modal open={open} onClose={busy ? () => {} : onClose} title="Upload MT5 Bot" sub={isSimulation ? 'Register a bot in simulation mode.' : 'Upload the actual .ex5 file and optional .set preset to the local MT5 bridge.'} wide>
+    <Modal open={open} onClose={busy ? () => {} : onClose} title="Upload MT5 Bot" sub={isSimulation ? 'Register a compiled EA in simulation mode.' : 'Upload .mq5 source to compile server-side, or upload an already compiled .ex5.'} wide>
       <form onSubmit={submit} className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div className="sm:col-span-2 rounded-xl border border-warn-400/20 bg-warn-400/[0.05] px-4 py-3 text-[11px] text-slate-400">
-          {isSimulation ? 'Simulation mode keeps only file metadata. Start the Hub with the real MT5 bridge to store the actual .ex5 file.' : 'The actual file is sent only to your local bridge on 127.0.0.1 and stored in its EA library. It is not automatically executed just because it was uploaded.'}
+          {isSimulation ? 'Simulation mode keeps only file metadata. MQ5 compilation requires the real bridge.' : 'MQ5 source is compiled by MetaEditor on the KOOLKID server and the resulting EX5 is stored in your workspace. Uploading or compiling does not start the EA.'}
         </div>
-        <div><label className="label">EA file (.ex5)</label><input className="input" type="file" accept=".ex5" onChange={(e) => onEaFile(e.target.files?.[0])} /><p className="mt-1 text-[10px] text-slate-600">Selected: {form.ea_filename || 'none'}</p></div>
+        <div><label className="label">EA source / compiled file (.mq5 / .ex5)</label><input className="input" type="file" accept=".mq5,.ex5" onChange={(e) => onEaFile(e.target.files?.[0])} /><p className="mt-1 text-[10px] text-slate-600">Selected: {eaFile?.name || 'none'}{eaFile?.name.toLowerCase().endsWith('.mq5') ? ` → ${form.ea_filename}` : ''}</p></div>
         <div><label className="label">Preset (.set) optional</label><input className="input" type="file" accept=".set" onChange={(e) => onPreset(e.target.files?.[0])} /><p className="mt-1 text-[10px] text-slate-600">Selected: {form.preset_filename || 'none'}</p></div>
         <div><label className="label">Bot name</label><input className="input" placeholder="My EA" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></div>
         <div><label className="label">Version</label><input className="input mono" value={form.version} onChange={(e) => setForm({ ...form, version: e.target.value })} /></div>
@@ -357,7 +421,7 @@ function AddBotModal({ open, onClose }: { open: boolean; onClose: () => void }) 
         <div className="sm:col-span-2"><label className="label">Description (optional)</label><textarea className="input min-h-[72px] resize-none" placeholder="Leave blank to keep strategy information neutral." value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></div>
         <label className="sm:col-span-2 flex items-center gap-3 rounded-xl bg-white/[0.03] border border-white/[0.06] px-4 py-3 cursor-pointer"><input type="checkbox" checked={form.dll_required} onChange={(e) => setForm({ ...form, dll_required: e.target.checked })} /><span><span className="block text-[12px] font-semibold text-slate-200">EA metadata says DLL access is required</span><span className="block text-[10px] text-slate-600">DLL access remains disabled until a future worker explicitly allows it.</span></span></label>
         {error && <div className="sm:col-span-2 rounded-xl border border-loss-500/30 bg-loss-500/10 px-4 py-3"><p className="text-xs text-loss-300">{error}</p></div>}
-        <div className="sm:col-span-2 flex justify-end gap-2.5"><button type="button" className="btn-ghost" onClick={onClose} disabled={busy}>Cancel</button><button type="submit" className="btn-primary" disabled={busy}>{busy ? <Spinner size={14} /> : <Plus size={15} />}{busy ? 'Uploading…' : isSimulation ? 'Register EA' : 'Upload EA'}</button></div>
+        <div className="sm:col-span-2 flex justify-end gap-2.5"><button type="button" className="btn-ghost" onClick={onClose} disabled={busy}>Cancel</button><button type="submit" className="btn-primary" disabled={busy}>{busy ? <Spinner size={14} /> : <Plus size={15} />}{busy ? (eaFile?.name.toLowerCase().endsWith('.mq5') ? 'Compiling…' : 'Uploading…') : isSimulation ? 'Register EA' : eaFile?.name.toLowerCase().endsWith('.mq5') ? 'Compile & Add' : 'Upload EA'}</button></div>
       </form>
     </Modal>
   );

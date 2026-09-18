@@ -83,6 +83,7 @@ function writeScope(scopeKey: string, rows: MarkupDrawing[]) {
 
 function toolPrompt(tool: MarkupTool, count: number) {
   if (tool === 'cursor') return '';
+  if (tool === 'rect') return 'Drag from one corner to the other.';
   if (['hline', 'entry', 'sl', 'tp', 'vline', 'text'].includes(tool)) return 'Click the chart.';
   if (tool === 'long' || tool === 'short') {
     if (count === 0) return 'Click entry.';
@@ -275,15 +276,17 @@ export function ChartMarkupToolbar({ controller, scopeLabel }: { controller: Cha
   );
 }
 
-function eventPoint(
-  e: ReactPointerEvent<SVGSVGElement>,
+function eventPointAt(
+  clientX: number,
+  clientY: number,
+  svg: SVGSVGElement,
   chart: IChartApi,
   series: any,
   candleTimes: number[],
 ): MarkupPoint | null {
-  const rect = e.currentTarget.getBoundingClientRect();
-  const x = e.clientX - rect.left;
-  const y = e.clientY - rect.top;
+  const rect = svg.getBoundingClientRect();
+  const x = clientX - rect.left;
+  const y = clientY - rect.top;
   const price = series?.coordinateToPrice?.(y);
   let time = chart.timeScale().coordinateToTime(x) as any;
   if (time && typeof time === 'object' && 'year' in time) {
@@ -302,6 +305,38 @@ function eventPoint(
   }
   if (typeof price !== 'number' || !Number.isFinite(price) || typeof time !== 'number' || !Number.isFinite(time)) return null;
   return { time, price };
+}
+
+function eventPoint(
+  e: ReactPointerEvent<SVGSVGElement>,
+  chart: IChartApi,
+  series: any,
+  candleTimes: number[],
+): MarkupPoint | null {
+  return eventPointAt(e.clientX, e.clientY, e.currentTarget, chart, series, candleTimes);
+}
+
+function moveDrawing(d: MarkupDrawing, deltaTime: number, deltaPrice: number): MarkupDrawing {
+  const movePoint = (p: MarkupPoint): MarkupPoint => ({ time: p.time + deltaTime, price: p.price + deltaPrice });
+  if (d.type === 'hline' || d.type === 'entry' || d.type === 'sl' || d.type === 'tp') return { ...d, price: d.price + deltaPrice };
+  if (d.type === 'vline') return { ...d, time: d.time + deltaTime };
+  if (d.type === 'text') return { ...d, at: movePoint(d.at) };
+  if (d.type === 'long' || d.type === 'short') return { ...d, entry: movePoint(d.entry), stop: movePoint(d.stop), target: movePoint(d.target) };
+  const twoPoint = d as DrawingBase & { type: 'trend' | 'ray' | 'rect' | 'fib' | 'arrow' | 'measure'; a: MarkupPoint; b: MarkupPoint };
+  return { ...twoPoint, a: movePoint(twoPoint.a), b: movePoint(twoPoint.b) };
+}
+
+type DragMode = 'move' | 'rect-a' | 'rect-b' | 'rect-ab' | 'rect-ba';
+type DrawingDrag = { pointerId: number; start: MarkupPoint; original: MarkupDrawing; mode: DragMode };
+
+function resizeRectangle(d: MarkupDrawing, mode: DragMode, point: MarkupPoint): MarkupDrawing {
+  if (d.type !== 'rect') return d;
+  const rect = d as DrawingBase & { type: 'rect'; a: MarkupPoint; b: MarkupPoint };
+  if (mode === 'rect-a') return { ...rect, a: point };
+  if (mode === 'rect-b') return { ...rect, b: point };
+  if (mode === 'rect-ab') return { ...rect, a: { ...rect.a, price: point.price }, b: { ...rect.b, time: point.time } };
+  if (mode === 'rect-ba') return { ...rect, a: { ...rect.a, time: point.time }, b: { ...rect.b, price: point.price } };
+  return rect;
 }
 
 function nearestTimeCoordinate(chart: IChartApi, target: number, candleTimes: number[]) {
@@ -347,7 +382,11 @@ export function ChartMarkupOverlay({
   const c = controller;
   const [layoutRevision, setLayoutRevision] = useState(0);
   const [hoverPoint, setHoverPoint] = useState<MarkupPoint | null>(null);
+  const [dragPreview, setDragPreview] = useState<MarkupDrawing | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
+  const dragRef = useRef<DrawingDrag | null>(null);
+  const rectPointerRef = useRef<number | null>(null);
+  const rectStartClientRef = useRef<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
     const chart = chartRef.current;
@@ -414,36 +453,96 @@ export function ChartMarkupOverlay({
     if (!point) return;
     e.preventDefault();
     e.stopPropagation();
+    if (c.tool === 'rect') {
+      c.setDraftPoints([point]);
+      setHoverPoint(point);
+      rectPointerRef.current = e.pointerId;
+      rectStartClientRef.current = { x: e.clientX, y: e.clientY };
+      e.currentTarget.setPointerCapture?.(e.pointerId);
+      return;
+    }
     addPoint(point);
   };
 
   const pointerMove = (e: ReactPointerEvent<SVGSVGElement>) => {
-    if (c.tool === 'cursor' || !c.draftPoints.length) return;
     const chart = chartRef.current;
     const series = seriesRef.current;
-    if (!chart || !series) return;
+    const svg = svgRef.current;
+    if (!chart || !series || !svg) return;
+    if (c.tool === 'cursor' && dragRef.current) {
+      const point = eventPointAt(e.clientX, e.clientY, svg, chart, series, candleTimes);
+      if (!point) return;
+      const drag = dragRef.current;
+      const preview = drag.mode === 'move'
+        ? moveDrawing(drag.original, point.time - drag.start.time, point.price - drag.start.price)
+        : resizeRectangle(drag.original, drag.mode, point);
+      setDragPreview(preview);
+      return;
+    }
+    if (c.tool === 'cursor' || !c.draftPoints.length) return;
     setHoverPoint(eventPoint(e, chart, series, candleTimes));
+  };
+
+  const pointerUp = (e: ReactPointerEvent<SVGSVGElement>) => {
+    const chart = chartRef.current;
+    const series = seriesRef.current;
+    const svg = svgRef.current;
+    if (c.tool === 'rect' && rectPointerRef.current === e.pointerId) {
+      const start = c.draftPoints[0];
+      const end = chart && series && svg ? eventPointAt(e.clientX, e.clientY, svg, chart, series, candleTimes) : null;
+      const startClient = rectStartClientRef.current;
+      const moved = startClient ? Math.hypot(e.clientX - startClient.x, e.clientY - startClient.y) >= 4 : false;
+      if (start && end && moved) {
+        c.addDrawing({ id: makeId(), type: 'rect', a: start, b: end });
+        c.setTool('cursor');
+      } else {
+        c.setDraftPoints([]);
+        setHoverPoint(null);
+      }
+      rectPointerRef.current = null;
+      rectStartClientRef.current = null;
+      try { e.currentTarget.releasePointerCapture?.(e.pointerId); } catch { /* already released */ }
+      return;
+    }
+    const drag = dragRef.current;
+    if (c.tool === 'cursor' && drag && drag.pointerId === e.pointerId) {
+      const finalDrawing = dragPreview;
+      if (finalDrawing) c.commit((rows) => rows.map((row) => row.id === finalDrawing.id ? finalDrawing : row));
+      dragRef.current = null;
+      setDragPreview(null);
+      try { e.currentTarget.releasePointerCapture?.(e.pointerId); } catch { /* already released */ }
+    }
   };
 
   const chart = chartRef.current;
   const series = seriesRef.current;
   if (!chart || !series || c.hiddenAll) {
-    return c.tool === 'cursor' ? null : <svg ref={svgRef} className="absolute inset-0 z-20 h-full w-full" style={{ pointerEvents: 'auto', cursor: 'crosshair' }} onPointerDown={pointerDown} onPointerMove={pointerMove} />;
+    return c.tool === 'cursor' ? null : <svg ref={svgRef} className="absolute inset-0 z-20 h-full w-full" style={{ pointerEvents: 'auto', cursor: 'crosshair', touchAction: 'none' }} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerUp} />;
   }
 
   const priceLabel = (price: number) => Number(price).toFixed(Math.max(0, Math.min(8, digits)));
   const selectedStroke = (id: string, fallback: string) => id === c.selectedId ? '#f8fafc' : fallback;
-  const clickSelect = (id: string, locked?: boolean) => (e: ReactPointerEvent<SVGElement>) => {
+
+  const startDrag = (drawing: MarkupDrawing, mode: DragMode = 'move') => (e: ReactPointerEvent<SVGElement>) => {
     e.stopPropagation();
-    if (!locked) c.setSelectedId(id);
-    else c.setSelectedId(id);
+    c.setSelectedId(drawing.id);
+    if (drawing.locked || c.tool !== 'cursor') return;
+    const svg = svgRef.current;
+    if (!svg) return;
+    const point = eventPointAt(e.clientX, e.clientY, svg, chart, series, candleTimes);
+    if (!point) return;
+    e.preventDefault();
+    dragRef.current = { pointerId: e.pointerId, start: point, original: drawing, mode };
+    setDragPreview(drawing);
+    svg.setPointerCapture?.(e.pointerId);
   };
 
-  const renderLineHit = (id: string, x1: number, y1: number, x2: number, y2: number, locked?: boolean) => (
-    <line key={`${id}-hit`} x1={x1} y1={y1} x2={x2} y2={y2} stroke="transparent" strokeWidth={12} style={{ pointerEvents: 'stroke', cursor: locked ? 'not-allowed' : 'pointer' }} onPointerDown={clickSelect(id, locked)} />
+  const renderLineHit = (drawing: MarkupDrawing, x1: number, y1: number, x2: number, y2: number) => (
+    <line key={`${drawing.id}-hit`} x1={x1} y1={y1} x2={x2} y2={y2} stroke="transparent" strokeWidth={14} style={{ pointerEvents: 'stroke', cursor: drawing.locked ? 'not-allowed' : 'grab' }} onPointerDown={startDrag(drawing)} />
   );
 
-  const renderDrawing = (d: MarkupDrawing) => {
+  const renderDrawing = (stored: MarkupDrawing) => {
+    const d = dragPreview?.id === stored.id ? dragPreview : stored;
     if (d.hidden) return null;
     const selected = d.id === c.selectedId;
     if (d.type === 'hline' || d.type === 'entry' || d.type === 'sl' || d.type === 'tp') {
@@ -456,19 +555,19 @@ export function ChartMarkupOverlay({
           <line x1={0} y1={y} x2={dimensions.width} y2={y} stroke={selectedStroke(d.id, color)} strokeWidth={selected ? 2.5 : 1.5} strokeDasharray={d.type === 'hline' ? '6 5' : '8 4'} />
           <rect x={Math.max(2, dimensions.width - 112)} y={y - 10} width={108} height={20} rx={5} fill="rgba(2,6,23,.82)" stroke={color} strokeWidth="1" />
           <text x={Math.max(8, dimensions.width - 106)} y={y + 4} fontSize="10" fontFamily="JetBrains Mono, monospace" fill={color}>{title} {priceLabel(d.price)}</text>
-          {renderLineHit(d.id, 0, y, dimensions.width, y, d.locked)}
+          {renderLineHit(d, 0, y, dimensions.width, y)}
         </g>
       );
     }
     if (d.type === 'vline') {
       const x = nearestTimeCoordinate(chart, d.time, candleTimes);
       if (x == null) return null;
-      return <g key={d.id}><line x1={x} y1={0} x2={x} y2={dimensions.height} stroke={selectedStroke(d.id, '#64748b')} strokeWidth={selected ? 2.5 : 1.5} strokeDasharray="5 5" />{renderLineHit(d.id, x, 0, x, dimensions.height, d.locked)}</g>;
+      return <g key={d.id}><line x1={x} y1={0} x2={x} y2={dimensions.height} stroke={selectedStroke(d.id, '#64748b')} strokeWidth={selected ? 2.5 : 1.5} strokeDasharray="5 5" />{renderLineHit(d, x, 0, x, dimensions.height)}</g>;
     }
     if (d.type === 'text') {
       const p = pointToXY(chart, series, d.at, candleTimes);
       if (!p) return null;
-      return <g key={d.id} style={{ pointerEvents: 'all', cursor: 'pointer' }} onPointerDown={clickSelect(d.id, d.locked)}><rect x={p.x - 4} y={p.y - 17} width={Math.max(50, d.text.length * 7)} height={22} rx={5} fill="rgba(2,6,23,.82)" stroke={selected ? '#f8fafc' : '#a78bfa'} /><text x={p.x + 3} y={p.y - 2} fontSize="11" fill="#e2e8f0">{d.text}</text></g>;
+      return <g key={d.id} style={{ pointerEvents: 'all', cursor: d.locked ? 'not-allowed' : 'grab' }} onPointerDown={startDrag(d)}><rect x={p.x - 4} y={p.y - 17} width={Math.max(50, d.text.length * 7)} height={22} rx={5} fill="rgba(2,6,23,.82)" stroke={selected ? '#f8fafc' : '#a78bfa'} /><text x={p.x + 3} y={p.y - 2} fontSize="11" fill="#e2e8f0">{d.text}</text></g>;
     }
     if (d.type === 'long' || d.type === 'short') {
       const entry = pointToXY(chart, series, d.entry, candleTimes);
@@ -482,7 +581,7 @@ export function ChartMarkupOverlay({
       const reward = Math.abs(d.target.price - d.entry.price);
       const rr = risk > 0 ? reward / risk : 0;
       return (
-        <g key={d.id} style={{ pointerEvents: 'all', cursor: 'pointer' }} onPointerDown={clickSelect(d.id, d.locked)}>
+        <g key={d.id} style={{ pointerEvents: 'all', cursor: d.locked ? 'not-allowed' : 'grab' }} onPointerDown={startDrag(d)}>
           <rect x={x1} y={Math.min(entry.y, target.y)} width={Math.max(1, x2 - x1)} height={Math.abs(entry.y - target.y)} fill={colors.target} stroke="none" />
           <rect x={x1} y={Math.min(entry.y, stop.y)} width={Math.max(1, x2 - x1)} height={Math.abs(entry.y - stop.y)} fill={colors.stop} stroke="none" />
           <line x1={x1} y1={entry.y} x2={x2} y2={entry.y} stroke={selectedStroke(d.id, colors.border)} strokeWidth={selected ? 2.5 : 1.5} />
@@ -501,13 +600,26 @@ export function ChartMarkupOverlay({
     if (d.type === 'rect') {
       const x = Math.min(a.x, b.x); const y = Math.min(a.y, b.y);
       const w = Math.abs(a.x - b.x); const h = Math.abs(a.y - b.y);
-      return <g key={d.id} style={{ pointerEvents: 'all', cursor: 'pointer' }} onPointerDown={clickSelect(d.id, d.locked)}><rect x={x} y={y} width={Math.max(1, w)} height={Math.max(1, h)} fill="rgba(56,189,248,.10)" stroke={selectedStroke(d.id, '#38bdf8')} strokeWidth={selected ? 2.5 : 1.5} /></g>;
+      const handles = [
+        { x: a.x, y: a.y, mode: 'rect-a' as DragMode },
+        { x: b.x, y: b.y, mode: 'rect-b' as DragMode },
+        { x: b.x, y: a.y, mode: 'rect-ab' as DragMode },
+        { x: a.x, y: b.y, mode: 'rect-ba' as DragMode },
+      ];
+      return (
+        <g key={d.id} style={{ pointerEvents: 'all', cursor: d.locked ? 'not-allowed' : 'grab', touchAction: 'none' }} onPointerDown={startDrag(d)}>
+          <rect x={x} y={y} width={Math.max(1, w)} height={Math.max(1, h)} fill="rgba(56,189,248,.10)" stroke={selectedStroke(d.id, '#38bdf8')} strokeWidth={selected ? 2.5 : 1.5} />
+          {selected && !d.locked && handles.map((handle) => (
+            <circle key={handle.mode} cx={handle.x} cy={handle.y} r={5} fill="#0f172a" stroke="#f8fafc" strokeWidth={1.5} style={{ cursor: 'nwse-resize', pointerEvents: 'all' }} onPointerDown={(event) => { event.stopPropagation(); startDrag(d, handle.mode)(event); }} />
+          ))}
+        </g>
+      );
     }
     if (d.type === 'fib') {
       const levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
       const x1 = Math.min(a.x, b.x); const x2 = Math.max(a.x, b.x);
       return (
-        <g key={d.id} style={{ pointerEvents: 'all', cursor: 'pointer' }} onPointerDown={clickSelect(d.id, d.locked)}>
+        <g key={d.id} style={{ pointerEvents: 'all', cursor: d.locked ? 'not-allowed' : 'grab' }} onPointerDown={startDrag(d)}>
           {levels.map((level) => {
             const price = d.a.price + (d.b.price - d.a.price) * level;
             const y = series.priceToCoordinate(price);
@@ -522,18 +634,18 @@ export function ChartMarkupOverlay({
       const slope = (b.y - a.y) / dx;
       const endX = dx >= 0 ? dimensions.width : 0;
       const endY = a.y + (endX - a.x) * slope;
-      return <g key={d.id}><line x1={a.x} y1={a.y} x2={endX} y2={endY} stroke={selectedStroke(d.id, '#38bdf8')} strokeWidth={selected ? 2.5 : 2} />{renderLineHit(d.id, a.x, a.y, endX, endY, d.locked)}</g>;
+      return <g key={d.id}><line x1={a.x} y1={a.y} x2={endX} y2={endY} stroke={selectedStroke(d.id, '#38bdf8')} strokeWidth={selected ? 2.5 : 2} />{renderLineHit(d, a.x, a.y, endX, endY)}</g>;
     }
     if (d.type === 'arrow') {
-      return <g key={d.id}><line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={selectedStroke(d.id, '#f59e0b')} strokeWidth={selected ? 2.5 : 2} markerEnd="url(#kk-arrow)" />{renderLineHit(d.id, a.x, a.y, b.x, b.y, d.locked)}</g>;
+      return <g key={d.id}><line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={selectedStroke(d.id, '#f59e0b')} strokeWidth={selected ? 2.5 : 2} markerEnd="url(#kk-arrow)" />{renderLineHit(d, a.x, a.y, b.x, b.y)}</g>;
     }
     if (d.type === 'measure') {
       const delta = d.b.price - d.a.price;
       const pct = d.a.price ? (delta / d.a.price) * 100 : 0;
       const midX = (a.x + b.x) / 2; const midY = (a.y + b.y) / 2;
-      return <g key={d.id}><line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={selectedStroke(d.id, '#22d3ee')} strokeWidth={selected ? 2.5 : 1.5} strokeDasharray="5 4" />{renderLineHit(d.id, a.x, a.y, b.x, b.y, d.locked)}<rect x={midX - 70} y={midY - 24} width={140} height={20} rx={5} fill="rgba(2,6,23,.86)" /><text x={midX - 64} y={midY - 10} fontSize="10" fill="#67e8f9">Δ {delta.toFixed(digits)} · {pct.toFixed(2)}%</text></g>;
+      return <g key={d.id}><line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={selectedStroke(d.id, '#22d3ee')} strokeWidth={selected ? 2.5 : 1.5} strokeDasharray="5 4" />{renderLineHit(d, a.x, a.y, b.x, b.y)}<rect x={midX - 70} y={midY - 24} width={140} height={20} rx={5} fill="rgba(2,6,23,.86)" /><text x={midX - 64} y={midY - 10} fontSize="10" fill="#67e8f9">Δ {delta.toFixed(digits)} · {pct.toFixed(2)}%</text></g>;
     }
-    return <g key={d.id}><line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={selectedStroke(d.id, '#38bdf8')} strokeWidth={selected ? 2.5 : 2} />{renderLineHit(d.id, a.x, a.y, b.x, b.y, d.locked)}</g>;
+    return <g key={d.id}><line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={selectedStroke(d.id, '#38bdf8')} strokeWidth={selected ? 2.5 : 2} />{renderLineHit(d, a.x, a.y, b.x, b.y)}</g>;
   };
 
   const preview = (() => {
@@ -556,10 +668,12 @@ export function ChartMarkupOverlay({
     <svg
       ref={svgRef}
       className="absolute inset-0 z-20 h-full w-full"
-      style={{ pointerEvents: c.tool === 'cursor' ? 'none' : 'auto', cursor: c.tool === 'cursor' ? 'default' : 'crosshair' }}
+      style={{ pointerEvents: c.tool === 'cursor' ? 'none' : 'auto', cursor: c.tool === 'cursor' ? 'default' : 'crosshair', touchAction: c.tool === 'cursor' ? 'auto' : 'none' }}
       onPointerDown={pointerDown}
       onPointerMove={pointerMove}
-      onPointerLeave={() => setHoverPoint(null)}
+      onPointerUp={pointerUp}
+      onPointerCancel={pointerUp}
+      onPointerLeave={() => { if (!dragRef.current && rectPointerRef.current == null) setHoverPoint(null); }}
     >
       <defs>
         <marker id="kk-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="#f59e0b" /></marker>

@@ -1,6 +1,6 @@
 from __future__ import annotations
 import configparser
-import ctypes, os, queue, threading, time, traceback
+import ctypes, json, os, queue, threading, time, traceback
 from collections import defaultdict
 from ctypes import wintypes
 from datetime import datetime, timedelta, timezone
@@ -91,38 +91,55 @@ def plain_value(value):
     return str(value)
 
 HFM_SERVER_ENDPOINTS = {
-    "HFMarketsGlobal-Demo": "mt5-europe1.dcglobalfarm.com:1950",
-    "HFMarketsGlobal-Demo3": "mt5-global3.dcglobalfarm.com:40305",
-    "HFMarketsGlobal-Demo4": "mt5-ga-9.dcglobalfarm.com:40401",
-    "HFMarketsGlobal-Live1": "mt5-europe1.dcglobalfarm.com:1951",
-    "HFMarketsGlobal-Live3": "mt5-global3.dcglobalfarm.com:709",
-    "HFMarketsGlobal-Live4": "mt5-global4.dcglobalfarm.com:20401",
-    "HFMarketsGlobal-Live5": "mt5-global5.dcglobalfarm.com:20501",
-    "HFMarketsGlobal-Live7": "mt5-global7.dcglobalfarm.com:20701",
-    "HFMarketsGlobal-Live8": "mt5-global8.dcglobalfarm.com:20801",
-    "HFMarketsGlobal-Live9": "mt5-global9.dcglobalfarm.com:20901",
-    "HFMarketsGlobal-Live10": "mt5-global10.dcglobalfarm.com:21001",
-    "HFMarketsGlobal-Live11": "mt5-global11.dcglobalfarm.com:21101",
-    "HFMarketsGlobal-Live12": "mt5-ga-6.dcglobalfarm.com:21201",
-    "HFMarketsGlobal-Live13": "mt5-ga-5.dcglobalfarm.com:21301",
-    "HFMarketsGlobal-Live14": "mt5-ga-5.dcglobalfarm.com:21401",
-    "HFMarketsGlobal-Live15": "mt5-ga-8.dcglobalfarm.com:21501",
-    "HFMarketsGlobal-Live16": "mt5-ga-7.dcglobalfarm.com:21601",
-    "HFMarketsGlobal-Live17": "mt5-ga-8.dcglobalfarm.com:21701",
-    "HFMarketsGlobal-Live18": "mt5-ga-9.dcglobalfarm.com:21801",
-    "HFMarketsGlobal-Live19": "mt5-ga-9.dcglobalfarm.com:21901",
-    "HFMarketsGlobal-Live20": "mt5-ga-10.dcglobalfarm.com:22001",
+    "HFMarketsGlobal-Demo": ["mt5-europe1.dcglobalfarm.com:1950", "mt5-europe2.dcglobalfarm.com:1950", "mt5-samerica.dcglobalfarm.com:1950", "mt5-asia1.dcglobalfarm.com:1950", "mt5-europe4.dcglobalfarm.com:1950", "mt5-asia7.dcglobalfarm.com:1950", "mt5-asia8.dcglobalfarm.com:1950"],
+    "HFMarketsGlobal-Demo3": ["mt5-global3.dcglobalfarm.com:40305", "mt5-global3.dcglobalfarm.com:40306"],
+    "HFMarketsGlobal-Demo4": ["mt5-ga-9.dcglobalfarm.com:40401", "mt5-ga-9.dcglobalfarm.com:40402", "mt5ds4dc.dcglobalfarm.com:40403"],
+    "HFMarketsGlobal-Live1": ["mt5-europe1.dcglobalfarm.com:1951", "mt5-europe2.dcglobalfarm.com:1951", "mt5-samerica.dcglobalfarm.com:1951", "mt5-asia1.dcglobalfarm.com:1951", "mt5-europe4.dcglobalfarm.com:1951", "mt5-global.dcglobalfarm.com:450", "mt5-global.dcglobalfarm.com:451", "mt5-global.dcglobalfarm.com:452", "mt5-global.dcglobalfarm.com:453", "mt5-global.dcglobalfarm.com:550", "mt5-global.dcglobalfarm.com:551", "mt5-global.dcglobalfarm.com:552", "mt5-global.dcglobalfarm.com:553", "mt5-global.dcglobalfarm.com:1951"],
+    "HFMarketsGlobal-Live3": ["mt5-global3.dcglobalfarm.com:709", "mt5-global3.dcglobalfarm.com:710", "mt5-global3.dcglobalfarm.com:20301", "mt5-global3.dcglobalfarm.com:20302"],
+    "HFMarketsGlobal-Live4": ["mt5-global4.dcglobalfarm.com:20401", "mt5-global4.dcglobalfarm.com:20402", "mt5-live4-eu1.dcglobalfarm.com:20403"],
+    "HFMarketsGlobal-Live5": ["mt5-global5.dcglobalfarm.com:20501", "mt5-global5.dcglobalfarm.com:20502"],
+    "HFMarketsGlobal-Live7": ["mt5-global7.dcglobalfarm.com:20701", "mt5-global7.dcglobalfarm.com:20702"],
+    "HFMarketsGlobal-Live8": ["mt5-global8.dcglobalfarm.com:20801", "mt5-global8.dcglobalfarm.com:20802"],
+    "HFMarketsGlobal-Live9": ["mt5-global9.dcglobalfarm.com:20901", "mt5-global9.dcglobalfarm.com:20902"],
+    "HFMarketsGlobal-Live10": ["mt5-global10.dcglobalfarm.com:21001", "mt5-global10.dcglobalfarm.com:21002"],
+    "HFMarketsGlobal-Live11": ["mt5-global11.dcglobalfarm.com:21101", "mt5-global11.dcglobalfarm.com:21102"],
+    "HFMarketsGlobal-Live12": ["mt5-ga-6.dcglobalfarm.com:21201", "mt5-ga-6.dcglobalfarm.com:21202", "mt5ls12dc.dcglobalfarm.com:21203"],
+    "HFMarketsGlobal-Live13": ["mt5-ga-5.dcglobalfarm.com:21301", "mt5-ga-5.dcglobalfarm.com:21302", "mt5ls13dc.dcglobalfarm.com:21303"],
+    "HFMarketsGlobal-Live14": ["mt5-ga-5.dcglobalfarm.com:21401", "mt5-ga-5.dcglobalfarm.com:21402", "mt5ls14dc.dcglobalfarm.com:21403"],
+    "HFMarketsGlobal-Live15": ["mt5-ga-8.dcglobalfarm.com:21501", "mt5-ga-8.dcglobalfarm.com:21502", "mt5ls15dc.dcglobalfarm.com:21503"],
+    "HFMarketsGlobal-Live16": ["mt5-ga-7.dcglobalfarm.com:21601", "mt5-ga-7.dcglobalfarm.com:21602", "mt5ls16dc.dcglobalfarm.com:21603"],
+    "HFMarketsGlobal-Live17": ["mt5-ga-8.dcglobalfarm.com:21701", "mt5-ga-8.dcglobalfarm.com:21702", "mt5ls17dc.dcglobalfarm.com:21703"],
+    "HFMarketsGlobal-Live18": ["mt5-ga-9.dcglobalfarm.com:21801", "mt5-ga-9.dcglobalfarm.com:21802", "mt5ls18dc.dcglobalfarm.com:21803"],
+    "HFMarketsGlobal-Live19": ["mt5-ga-9.dcglobalfarm.com:21901", "mt5-ga-9.dcglobalfarm.com:21902", "mt5ls19dc.dcglobalfarm.com:21903"],
+    "HFMarketsGlobal-Live20": ["mt5-ga-10.dcglobalfarm.com:22001", "mt5-ga-10.dcglobalfarm.com:22002", "mt5ls20dc.dcglobalfarm.com:22003"],
 }
+
+
+def configured_server_endpoints(broker, server):
+    raw = os.getenv("MT5_SERVER_ENDPOINTS_JSON", "").strip()
+    if not raw:
+        return []
+    try:
+        mapping = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    broker_name = str(broker or "").strip()
+    broker_map = mapping.get(broker_name) or mapping.get(broker_name.lower()) or {}
+    value = broker_map.get(str(server or "").strip()) if isinstance(broker_map, dict) else None
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
 
 
 def mt5_server_candidates(broker, server):
     requested = str(server or "").strip()
     rows = [requested] if requested else [""]
     if str(broker or "").strip().lower() == "hfm":
-        endpoint = HFM_SERVER_ENDPOINTS.get(requested)
-        if endpoint and endpoint not in rows:
-            rows.append(endpoint)
-    return rows
+        rows.extend(HFM_SERVER_ENDPOINTS.get(requested, []))
+    rows.extend(configured_server_endpoints(broker, requested))
+    return list(dict.fromkeys(rows))
 
 
 def filling_candidates(mt5, info):
@@ -167,6 +184,7 @@ def send_market_order(mt5, request, info):
 
 def run_worker(config, password, command_q, response_q):
     mode = config["mode"]
+    read_only = str(config.get("access_mode") or "trading").lower() == "investor"
     sim_positions = {}
     next_ticket = 100000
     mt5 = None
@@ -176,14 +194,12 @@ def run_worker(config, password, command_q, response_q):
             import MetaTrader5 as mt5_mod
             mt5 = mt5_mod
             terminal_path = config.get("terminal_path")
-            if terminal_path:
+            if terminal_path and not read_only:
                 ensure_terminal_trading_permissions(terminal_path)
-            if os.name == "nt" and terminal_path:
-                threading.Thread(target=keep_terminal_hidden, args=(terminal_path,), daemon=True).start()
             requested_server = str(config.get("server") or "").strip()
             kwargs = {
                 "login": int(config["login"]),
-                "timeout": int(os.getenv("MT5_WORKER_IPC_TIMEOUT_MS", "30000")),
+                "timeout": int(os.getenv("MT5_WORKER_IPC_TIMEOUT_MS", "12000")),
             }
             if terminal_path:
                 kwargs["path"] = terminal_path
@@ -194,7 +210,8 @@ def run_worker(config, password, command_q, response_q):
 
             def initialize_once():
                 last_error = None
-                for server_candidate in mt5_server_candidates(config.get("broker"), requested_server):
+                server_candidates = mt5_server_candidates(config.get("broker"), requested_server)
+                for server_candidate in server_candidates:
                     attempt = dict(kwargs)
                     if server_candidate:
                         attempt["server"] = server_candidate
@@ -205,11 +222,64 @@ def run_worker(config, password, command_q, response_q):
                         mt5.shutdown()
                     except Exception:
                         pass
-                raise RuntimeError(f"MT5 initialize failed: {last_error}")
+
+                # Some broker servers are not present in the generic terminal's
+                # local directory. Start the private terminal first, then ask
+                # MetaTrader to authenticate against the exact server separately.
+                base_kwargs = {"timeout": kwargs["timeout"]}
+                if terminal_path:
+                    base_kwargs["path"] = terminal_path
+                if config.get("portable"):
+                    base_kwargs["portable"] = True
+                if mt5.initialize(**base_kwargs):
+                    try:
+                        for server_candidate in server_candidates:
+                            login_kwargs = {
+                                "login": int(config["login"]),
+                                "password": password or "",
+                                "timeout": kwargs["timeout"],
+                            }
+                            if server_candidate:
+                                login_kwargs["server"] = server_candidate
+                            if mt5.login(**login_kwargs):
+                                return server_candidate
+                            last_error = mt5.last_error()
+                    finally:
+                        if mt5.account_info() is None:
+                            try:
+                                mt5.shutdown()
+                            except Exception:
+                                pass
+                else:
+                    last_error = mt5.last_error()
+
+                error_code = last_error[0] if isinstance(last_error, (tuple, list)) and last_error else None
+                error_text = str(last_error).lower()
+                if terminal_path and (error_code == -10005 or "ipc timeout" in error_text):
+                    try:
+                        marker = os.path.join(os.path.dirname(os.path.abspath(terminal_path)), ".koolkid-broker-bootstrap-required")
+                        with open(marker, "w", encoding="utf-8") as handle:
+                            handle.write(f"{config.get('broker') or 'MT5'}|{requested_server}|{config.get('login')}\n")
+                    except Exception:
+                        pass
+                    raise RuntimeError(
+                        "MT5 broker setup required. In the MT5 window that opened, log in once using this account "
+                        f"and server '{requested_server}'. Keep that window open, then click Connect again in KOOLKID."
+                    )
+                raise RuntimeError(f"MT5 initialize/login failed: {last_error}")
 
             initialize_once()
+            if terminal_path:
+                try:
+                    os.remove(os.path.join(os.path.dirname(os.path.abspath(terminal_path)), ".koolkid-broker-bootstrap-required"))
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    pass
+            if os.name == "nt" and terminal_path:
+                threading.Thread(target=keep_terminal_hidden, args=(terminal_path,), daemon=True).start()
             terminal_state = mt5.terminal_info()
-            if terminal_path and terminal_state is not None and (
+            if not read_only and terminal_path and terminal_state is not None and (
                 not bool(getattr(terminal_state, "trade_allowed", True))
                 or bool(getattr(terminal_state, "tradeapi_disabled", False))
             ):
@@ -254,6 +324,8 @@ def run_worker(config, password, command_q, response_q):
                 "balance": 10000.0,
                 "equity": 10000.0,
                 "currency": "USD",
+                "access_mode": "investor" if read_only else "trading",
+                "read_only": read_only,
             }
         info = mt5.account_info()
         terminal = mt5.terminal_info()
@@ -265,6 +337,8 @@ def run_worker(config, password, command_q, response_q):
             "data_path": str(getattr(terminal, "data_path", "") or ""),
             "terminal_trade_allowed": bool(getattr(terminal, "trade_allowed", False)),
             "tradeapi_disabled": bool(getattr(terminal, "tradeapi_disabled", False)),
+            "access_mode": "investor" if read_only else "trading",
+            "read_only": read_only,
         })
         return result
 
@@ -386,6 +460,10 @@ def run_worker(config, password, command_q, response_q):
         rows.sort(key=lambda row: row["close_time"], reverse=True)
         return rows
 
+    def require_trading_access():
+        if read_only:
+            raise RuntimeError("This MT5 account is connected with an investor password and is read-only.")
+
     def normalize_volume(volume, info):
         minimum = float(info.get("volume_min") or 0.01)
         maximum = float(info.get("volume_max") or max(volume, minimum))
@@ -418,6 +496,7 @@ def run_worker(config, password, command_q, response_q):
 
     def open_trade(p):
         nonlocal next_ticket
+        require_trading_access()
         symbol = p["symbol"]
         side = p["side"]
         volume = float(p["volume"])
@@ -469,6 +548,7 @@ def run_worker(config, password, command_q, response_q):
         return out
 
     def close_position(p):
+        require_trading_access()
         ticket = int(p["ticket"])
         if mode == "simulation":
             if ticket not in sim_positions:
@@ -498,6 +578,7 @@ def run_worker(config, password, command_q, response_q):
         return out
 
     def close_partial(p):
+        require_trading_access()
         ticket = int(p["ticket"])
         requested = float(p.get("volume") or 0)
         if requested <= 0:
@@ -539,6 +620,7 @@ def run_worker(config, password, command_q, response_q):
         return out
 
     def modify_position(p):
+        require_trading_access()
         ticket = int(p["ticket"])
         sl = float(p.get("sl") or 0)
         tp = float(p.get("tp") or 0)

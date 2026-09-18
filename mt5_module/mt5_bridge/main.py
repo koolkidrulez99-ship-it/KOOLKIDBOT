@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -17,7 +18,7 @@ from urllib.parse import quote
 from dotenv import load_dotenv
 from fastapi import Body, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 ROOT = Path(__file__).resolve().parent
@@ -30,6 +31,7 @@ import ea_worker_client
 import multi_account_client
 import native_runtime
 import ai_auto_select
+import mq5_compiler
 from store import default_risk, read_state, remove_profile, update_state, upsert_profile
 from ai_trial import clear_snapshot as clear_ai_trial_snapshot, load_snapshot as load_ai_trial_snapshot, save_snapshot as save_ai_trial_snapshot, run_human_apostle_trial
 
@@ -38,6 +40,7 @@ app = FastAPI(title="KOOLKID Local MT5 Bridge", version="1.0.0")
 EA_LIBRARY = ROOT / "data" / "ea_library"
 EA_LIBRARY.mkdir(parents=True, exist_ok=True)
 MAX_EA_FILE_BYTES = 25 * 1024 * 1024
+MAX_MQ5_FILE_BYTES = 5 * 1024 * 1024
 _stats_history_lock = threading.Lock()
 _stats_history_cache: dict[str, dict[str, Any]] = {}
 _AI_SCANNERS: dict[str, threading.Thread] = {}
@@ -177,6 +180,7 @@ class AccountPayload(BaseModel):
     server: str | None = None
     nickname: str | None = None
     broker: str | None = None
+    access_mode: str | None = None
     account_type: str | None = None
     leverage: int | None = None
     balance: float | None = None
@@ -621,7 +625,8 @@ def bridge_status():
         "last_heartbeat": datetime.now(timezone.utc).isoformat(),
         "message": f"MT5 coordinator online. {len(connected)} verified account session(s).",
         "services": {"bridge": "online", "ea_worker": worker["status"], "copy_worker": "online" if copy_online else "offline"},
-        "capabilities": {"account_data": copy_online, "quotes": bool(connected), "candles": bool(connected), "manual_trading": bool(connected), "positions": copy_online, "history": bool(connected), "ea_launch": worker["status"] == "online"},
+        "capabilities": {"account_data": copy_online, "quotes": bool(connected), "candles": bool(connected), "manual_trading": bool(connected), "positions": copy_online, "history": bool(connected), "ea_launch": worker["status"] == "online", "mq5_compile": mq5_compiler.compiler_status()["available"]},
+        "compiler": mq5_compiler.compiler_status(),
         "ea_worker": worker,
     }
 
@@ -638,7 +643,8 @@ def accounts():
                 continue
             engine.upsert_profile({
                 "login": login, "nickname": saved.get("nickname") or f"MT5 #{login}",
-                "broker": saved.get("broker") or "MetaTrader 5", "server": saved.get("server") or "", "balance": 0,
+                "broker": saved.get("broker") or "MetaTrader 5", "server": saved.get("server") or "",
+                "access_mode": saved.get("access_mode") or "trading", "balance": 0,
                 "equity": 0, "margin": 0, "free_margin": 0, "floating_pl": 0,
                 "leverage": 0, "currency": "USD", "status": "disconnected",
                 "is_active": False, "account_type": "demo", "connection_status": "offline",
@@ -650,8 +656,11 @@ def accounts():
     for row in rows:
         session = sessions.get(int(row.get("login") or 0))
         if session:
+            info = session.get("account_info") or {}
             row["budget"] = session.get("budget")
             row["budget_enabled"] = bool(session.get("budget_enabled") or session.get("budget") is not None)
+            row["access_mode"] = session.get("access_mode") or info.get("access_mode") or row.get("access_mode") or "trading"
+            row["read_only"] = bool(info.get("read_only") or row["access_mode"] == "investor")
         else:
             row["budget_enabled"] = bool(row.get("budget_enabled") and row.get("budget") is not None)
         if not session or not session.get("connected"):
@@ -678,7 +687,8 @@ def test_account(payload: AccountPayload):
     try:
         engine.shutdown_terminal()
         result = multi_account_client.connect(profile, payload.password)
-        return {"ok": True, "mode": "bridge", "message": f"Connected to {payload.server or 'MT5'} as #{payload.login}.", "session": result}
+        mode_label = "investor/read-only" if access_mode == "investor" else "trading"
+        return {"ok": True, "mode": "bridge", "message": f"Connected to {payload.server or 'MT5'} as #{payload.login} using {mode_label} access.", "session": result}
     except RuntimeError as exc:
         session_error(exc)
 
@@ -687,14 +697,15 @@ def test_account(payload: AccountPayload):
 def connect_account(payload: AccountPayload):
     if not payload.password:
         raise HTTPException(status_code=400, detail="MT5 password is required when adding a new account. KOOLKID does not persist it.")
-    profile = {"login": payload.login, "nickname": payload.nickname or f"MT5 #{payload.login}", "server": payload.server or "", "broker": payload.broker or "MetaTrader 5"}
+    access_mode = "investor" if str(payload.access_mode or "").lower() == "investor" else "trading"
+    profile = {"login": payload.login, "nickname": payload.nickname or f"MT5 #{payload.login}", "server": payload.server or "", "broker": payload.broker or "MetaTrader 5", "access_mode": access_mode}
     try:
         engine.shutdown_terminal()
         session = multi_account_client.connect(profile, payload.password or "")
     except RuntimeError as exc:
         session_error(exc)
     info = session.get("account_info") or {}
-    profile.update({"balance": float(info.get("balance") or 0), "equity": float(info.get("equity") or 0), "margin": float(info.get("margin") or 0), "free_margin": float(info.get("margin_free") or 0), "floating_pl": float(info.get("profit") or 0), "leverage": int(info.get("leverage") or 0), "currency": info.get("currency") or "USD", "status": "connected", "connection_status": "online", "account_type": "live" if int(info.get("trade_mode") or 0) == 2 else "demo"})
+    profile.update({"balance": float(info.get("balance") or 0), "equity": float(info.get("equity") or 0), "margin": float(info.get("margin") or 0), "free_margin": float(info.get("margin_free") or 0), "floating_pl": float(info.get("profit") or 0), "leverage": int(info.get("leverage") or 0), "currency": info.get("currency") or "USD", "status": "connected", "connection_status": "online", "account_type": "live" if int(info.get("trade_mode") or 0) == 2 else "demo", "access_mode": access_mode, "read_only": access_mode == "investor"})
     engine.upsert_profile(profile)
     return next((row for row in accounts() if int(row.get("login", 0)) == payload.login), profile)
 
@@ -1178,6 +1189,100 @@ async def upload_bot_files(
     except KeyError:
         raise HTTPException(status_code=404, detail="Bot not found.")
     return result
+
+
+@app.post("/api/mt5/bots/{bot_id}/compile")
+async def compile_bot_source(bot_id: int, source_file: UploadFile = File(...)):
+    filename = _safe_upload_name(source_file.filename or "", ".mq5")
+    data = await source_file.read(MAX_MQ5_FILE_BYTES + 1)
+    if len(data) > MAX_MQ5_FILE_BYTES:
+        raise HTTPException(status_code=413, detail=f"{filename} exceeds the 5 MB MQ5 source limit.")
+    if not data:
+        raise HTTPException(status_code=400, detail=f"{filename} is empty.")
+
+    state = read_state()
+    bot = next((b for b in state.get("bots", []) if int(b.get("id", 0)) == bot_id), None)
+    if bot is None:
+        raise HTTPException(status_code=404, detail="Bot not found.")
+    if bot.get("system_preset"):
+        raise HTTPException(status_code=403, detail="KOOLKID system presets cannot be replaced by users.")
+
+    bot_dir = EA_LIBRARY / current_workspace() / str(bot_id)
+    try:
+        compiled = await asyncio.to_thread(mq5_compiler.compile_mq5, data, filename, bot_dir)
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+    now = datetime.now(timezone.utc).isoformat()
+    source_path = bot_dir / filename
+    result = {k: v for k, v in compiled.items() if k != "ex5_path"}
+    result["bot_id"] = bot_id
+
+    def mut(st):
+        row = next((b for b in st.get("bots", []) if int(b.get("id", 0)) == bot_id), None)
+        if row is None:
+            raise KeyError
+        row["source_filename"] = filename
+        row["source_storage_path"] = str(source_path.relative_to(ROOT))
+        row["source_sha256"] = hashlib.sha256(data).hexdigest()
+        row["compile_status"] = "success" if compiled["success"] else "failed"
+        row["compile_errors"] = int(compiled.get("errors") or 0)
+        row["compile_warnings"] = int(compiled.get("warnings") or 0)
+        row["compile_log"] = str(compiled.get("log") or "")[-12000:]
+        row["compile_date"] = now
+        row["upload_date"] = now
+        if compiled["success"]:
+            ex5_path = Path(str(compiled["ex5_path"]))
+            ex5_data = ex5_path.read_bytes()
+            row["ea_filename"] = ex5_path.name
+            row["ea_storage_path"] = str(ex5_path.relative_to(ROOT))
+            row["ea_size_bytes"] = len(ex5_data)
+            row["ea_sha256"] = hashlib.sha256(ex5_data).hexdigest()
+            row["file_status"] = "ready"
+            row["worker_compatibility"] = "ready"
+            row["file_analysis"] = {
+                "format": "MT5 EX5", "compiled": True, "file_verified": True,
+                "compiled_from_mq5": filename,
+                "strategy_visibility": "Source was compiled server-side; EX5 is not decoded or reverse engineered.",
+            }
+        else:
+            # A failed source update must not destroy an already working EX5.
+            # New bots without a compiled artifact are marked compile-error.
+            if not row.get("ea_storage_path"):
+                row["file_status"] = "compile-error"
+                row["worker_compatibility"] = "compile-error"
+        return dict(row)
+
+    try:
+        result["bot"] = update_state(mut)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Bot not found.")
+    return result
+
+
+@app.get("/api/mt5/bots/{bot_id}/download")
+def download_bot_ex5(bot_id: int):
+    state = read_state()
+    bot = next((b for b in state.get("bots", []) if int(b.get("id", 0)) == bot_id), None)
+    if bot is None:
+        raise HTTPException(status_code=404, detail="Bot not found.")
+    if bot.get("system_preset"):
+        raise HTTPException(status_code=403, detail="KOOLKID system preset files are not available through user downloads.")
+
+    filename = Path(str(bot.get("ea_filename") or "")).name
+    if not filename.lower().endswith(".ex5"):
+        raise HTTPException(status_code=404, detail="This bot does not have a compiled EX5 file.")
+
+    bot_dir = (EA_LIBRARY / current_workspace() / str(bot_id)).resolve()
+    ex5_path = (bot_dir / filename).resolve()
+    if ex5_path.parent != bot_dir or not ex5_path.is_file():
+        raise HTTPException(status_code=404, detail="The compiled EX5 file is not available.")
+
+    return FileResponse(
+        path=ex5_path,
+        media_type="application/octet-stream",
+        filename=filename,
+    )
 
 
 @app.put("/api/mt5/bots/{bot_id}")
