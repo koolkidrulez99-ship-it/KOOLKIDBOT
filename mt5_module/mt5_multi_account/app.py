@@ -269,6 +269,19 @@ def normalize_mt5_server(value: str) -> str:
     return server
 
 
+def broker_terminal_source(broker: str, requested: str = "") -> str:
+    """Resolve the MT5 installation/template for the selected broker."""
+    explicit = str(requested or "").strip().strip('"')
+    if explicit:
+        return explicit
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", str(broker or "").strip()).strip("_").upper()
+    if slug:
+        broker_specific = os.getenv(f"MT5_TERMINAL_{slug}", "").strip().strip('"')
+        if broker_specific:
+            return broker_specific
+    return os.getenv("MT5_TERMINAL_PATH", "").strip().strip('"')
+
+
 def source_data_dir(terminal: Path) -> Path | None:
     configured = os.getenv("MT5_ACCOUNT_DATA_PATH", "").strip().strip('"')
     if configured:
@@ -395,14 +408,25 @@ def connect(req: ConnectRequest):
             if key in prior_cfg:
                 cfg[key] = prior_cfg[key]
         if req.mode == "real":
-            cfg["terminal_path"] = isolated_terminal(f"{current_workspace()}--{req.account_id}", req.terminal_path)
+            terminal_source = broker_terminal_source(req.broker, req.terminal_path)
+            cfg["terminal_path"] = isolated_terminal(f"{current_workspace()}--{req.account_id}", terminal_source)
             cfg["portable"] = True
         if req.account_id in POOL.ids():
             info = POOL.call(req.account_id, "account_info", timeout=5)
-            if int(info.get("login") or 0) == int(req.login):
+            actual_server = str(info.get("server") or "").strip()
+            requested_server = str(cfg.get("server") or "").strip()
+            named_server_matches = (
+                not requested_server
+                or "." in requested_server
+                or ":" in requested_server
+                or requested_server.replace(" ", "").lower() == actual_server.replace(" ", "").lower()
+            )
+            if int(info.get("login") or 0) == int(req.login) and named_server_matches:
                 if req.mode == "real" and req.remember_session and req.password:
                     CREDENTIALS.save(req.account_id, req.password)
-                return {**POOL.status(req.account_id), "account_info": info, "remembered": CREDENTIALS.has(req.account_id)}
+                saved["accounts"][req.account_id] = cfg
+                STATE.save(saved)
+                return {**POOL.status(req.account_id), "broker": req.broker, "server": cfg.get("server"), "account_info": info, "remembered": CREDENTIALS.has(req.account_id)}
             POOL.disconnect(req.account_id)
         POOL.connect(cfg, req.password)
         if req.mode == "real":

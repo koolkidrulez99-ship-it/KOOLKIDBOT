@@ -1,4 +1,5 @@
 from __future__ import annotations
+import configparser
 import ctypes, os, queue, threading, time, traceback
 from collections import defaultdict
 from ctypes import wintypes
@@ -40,6 +41,33 @@ def keep_terminal_hidden(terminal_path):
         hide_terminal_windows(terminal_path)
         time.sleep(0.01 if time.monotonic() - started < 5 else 0.20)
 
+
+def ensure_terminal_trading_permissions(terminal_path):
+    """Prepare a private terminal for KOOLKID API/algo trading before MT5 starts."""
+    if not terminal_path:
+        return
+    config_dir = os.path.join(os.path.dirname(os.path.abspath(terminal_path)), "config")
+    os.makedirs(config_dir, exist_ok=True)
+    common_ini = os.path.join(config_dir, "common.ini")
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.optionxform = str
+    encoding = "utf-16"
+    if os.path.isfile(common_ini):
+        raw = open(common_ini, "rb").read()
+        encoding = "utf-16" if raw.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig"
+        if raw:
+            parser.read_string(raw.decode(encoding, errors="strict"))
+    if not parser.has_section("Experts"):
+        parser.add_section("Experts")
+    # MT5 common.ini: Enabled=1 turns Algo Trading on; Api=0 keeps external
+    # Python API trading enabled. These are terminal permissions, not a bypass
+    # of broker/account-side restrictions.
+    parser.set("Experts", "Enabled", "1")
+    parser.set("Experts", "Api", "0")
+    with open(common_ini, "w", encoding=encoding) as handle:
+        parser.write(handle, space_around_delimiters=False)
+
+
 def plain(obj):
     """Convert MT5 namedtuples, including nested request fields, for IPC."""
     if obj is None:
@@ -61,6 +89,41 @@ def plain_value(value):
     if isinstance(value, (list, tuple)):
         return [plain_value(item) for item in value]
     return str(value)
+
+HFM_SERVER_ENDPOINTS = {
+    "HFMarketsGlobal-Demo": "mt5-europe1.dcglobalfarm.com:1950",
+    "HFMarketsGlobal-Demo3": "mt5-global3.dcglobalfarm.com:40305",
+    "HFMarketsGlobal-Demo4": "mt5-ga-9.dcglobalfarm.com:40401",
+    "HFMarketsGlobal-Live1": "mt5-europe1.dcglobalfarm.com:1951",
+    "HFMarketsGlobal-Live3": "mt5-global3.dcglobalfarm.com:709",
+    "HFMarketsGlobal-Live4": "mt5-global4.dcglobalfarm.com:20401",
+    "HFMarketsGlobal-Live5": "mt5-global5.dcglobalfarm.com:20501",
+    "HFMarketsGlobal-Live7": "mt5-global7.dcglobalfarm.com:20701",
+    "HFMarketsGlobal-Live8": "mt5-global8.dcglobalfarm.com:20801",
+    "HFMarketsGlobal-Live9": "mt5-global9.dcglobalfarm.com:20901",
+    "HFMarketsGlobal-Live10": "mt5-global10.dcglobalfarm.com:21001",
+    "HFMarketsGlobal-Live11": "mt5-global11.dcglobalfarm.com:21101",
+    "HFMarketsGlobal-Live12": "mt5-ga-6.dcglobalfarm.com:21201",
+    "HFMarketsGlobal-Live13": "mt5-ga-5.dcglobalfarm.com:21301",
+    "HFMarketsGlobal-Live14": "mt5-ga-5.dcglobalfarm.com:21401",
+    "HFMarketsGlobal-Live15": "mt5-ga-8.dcglobalfarm.com:21501",
+    "HFMarketsGlobal-Live16": "mt5-ga-7.dcglobalfarm.com:21601",
+    "HFMarketsGlobal-Live17": "mt5-ga-8.dcglobalfarm.com:21701",
+    "HFMarketsGlobal-Live18": "mt5-ga-9.dcglobalfarm.com:21801",
+    "HFMarketsGlobal-Live19": "mt5-ga-9.dcglobalfarm.com:21901",
+    "HFMarketsGlobal-Live20": "mt5-ga-10.dcglobalfarm.com:22001",
+}
+
+
+def mt5_server_candidates(broker, server):
+    requested = str(server or "").strip()
+    rows = [requested] if requested else [""]
+    if str(broker or "").strip().lower() == "hfm":
+        endpoint = HFM_SERVER_ENDPOINTS.get(requested)
+        if endpoint and endpoint not in rows:
+            rows.append(endpoint)
+    return rows
+
 
 def filling_candidates(mt5, info):
     candidates = []
@@ -113,27 +176,71 @@ def run_worker(config, password, command_q, response_q):
             import MetaTrader5 as mt5_mod
             mt5 = mt5_mod
             terminal_path = config.get("terminal_path")
+            if terminal_path:
+                ensure_terminal_trading_permissions(terminal_path)
             if os.name == "nt" and terminal_path:
                 threading.Thread(target=keep_terminal_hidden, args=(terminal_path,), daemon=True).start()
+            requested_server = str(config.get("server") or "").strip()
             kwargs = {
                 "login": int(config["login"]),
                 "timeout": int(os.getenv("MT5_WORKER_IPC_TIMEOUT_MS", "30000")),
             }
             if terminal_path:
                 kwargs["path"] = terminal_path
-            if config.get("server"):
-                kwargs["server"] = config["server"]
             if password:
                 kwargs["password"] = password
             if config.get("portable"):
                 kwargs["portable"] = True
-            if not mt5.initialize(**kwargs):
-                raise RuntimeError(f"MT5 initialize failed: {mt5.last_error()}")
+
+            def initialize_once():
+                last_error = None
+                for server_candidate in mt5_server_candidates(config.get("broker"), requested_server):
+                    attempt = dict(kwargs)
+                    if server_candidate:
+                        attempt["server"] = server_candidate
+                    if mt5.initialize(**attempt):
+                        return server_candidate
+                    last_error = mt5.last_error()
+                    try:
+                        mt5.shutdown()
+                    except Exception:
+                        pass
+                raise RuntimeError(f"MT5 initialize failed: {last_error}")
+
+            initialize_once()
+            terminal_state = mt5.terminal_info()
+            if terminal_path and terminal_state is not None and (
+                not bool(getattr(terminal_state, "trade_allowed", True))
+                or bool(getattr(terminal_state, "tradeapi_disabled", False))
+            ):
+                # Some MT5 builds rewrite common.ini during first launch. Apply
+                # the KOOLKID terminal policy once more and restart this private
+                # terminal before accepting the account session.
+                mt5.shutdown()
+                ensure_terminal_trading_permissions(terminal_path)
+                time.sleep(0.25)
+                initialize_once()
+                terminal_state = mt5.terminal_info()
+                if terminal_state is not None and (
+                    not bool(getattr(terminal_state, "trade_allowed", True))
+                    or bool(getattr(terminal_state, "tradeapi_disabled", False))
+                ):
+                    mt5.shutdown()
+                    raise RuntimeError("MT5 terminal could not enable algorithmic/API trading for this private KOOLKID session.")
+
             connected = mt5.account_info()
             actual_login = int(getattr(connected, "login", 0) or 0) if connected is not None else 0
             if actual_login != int(config["login"]):
                 mt5.shutdown()
                 raise RuntimeError(f"MT5 worker connected account #{actual_login or 'none'} instead of #{config['login']}.")
+            actual_server = str(getattr(connected, "server", "") or "").strip() if connected is not None else ""
+            # Named server selections from the UI must resolve to that exact MT5
+            # server. Direct host:port entries are allowed to resolve to the
+            # broker's canonical server name after authentication.
+            if requested_server and "." not in requested_server and ":" not in requested_server:
+                if requested_server.replace(" ", "").lower() != actual_server.replace(" ", "").lower():
+                    mt5.shutdown()
+                    raise RuntimeError(f"MT5 connected to '{actual_server or 'unknown'}' instead of selected server '{requested_server}'.")
         response_q.put({"id": "__startup__", "ok": True})
     except Exception as exc:
         response_q.put({"id": "__startup__", "ok": False, "error": str(exc)})

@@ -13,7 +13,7 @@ import type { Mt5Account } from '../types';
 
 const BROKER_PRESETS = [
   { name: 'Deriv', servers: ['Deriv-Demo', 'DerivSVG-Server'] },
-  { name: 'HFM', servers: ['HFMarketsGlobal-Demo', 'HFMarketsGlobal-Live1', 'HFMarketsGlobal-Demo3', 'HFMarketsGlobal-Live3', 'HFMarketsGlobal-Demo4', 'HFMarketsGlobal-Live4'] },
+  { name: 'HFM', servers: ['HFMarketsGlobal-Demo', 'HFMarketsGlobal-Demo3', 'HFMarketsGlobal-Demo4', 'HFMarketsGlobal-Live1', 'HFMarketsGlobal-Live3', 'HFMarketsGlobal-Live4', 'HFMarketsGlobal-Live5', 'HFMarketsGlobal-Live7', 'HFMarketsGlobal-Live8', 'HFMarketsGlobal-Live9', 'HFMarketsGlobal-Live10', 'HFMarketsGlobal-Live11', 'HFMarketsGlobal-Live12', 'HFMarketsGlobal-Live13', 'HFMarketsGlobal-Live14', 'HFMarketsGlobal-Live15', 'HFMarketsGlobal-Live16', 'HFMarketsGlobal-Live17', 'HFMarketsGlobal-Live18', 'HFMarketsGlobal-Live19', 'HFMarketsGlobal-Live20'] },
   { name: 'Exness', servers: [] },
   { name: 'IC Markets', servers: [] },
   { name: 'Pepperstone', servers: [] },
@@ -361,6 +361,7 @@ function AddAccountModal({ open, onClose }: { open: boolean; onClose: () => void
   const [errors, setErrors] = useState<string[]>([]);
   const [tested, setTested] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [customServer, setCustomServer] = useState(false);
   const [form, setForm] = useState({
     login: '',
     password: '',
@@ -373,11 +374,22 @@ function AddAccountModal({ open, onClose }: { open: boolean; onClose: () => void
   });
 
   const set = (k: string, v: string) => { setTested(false); setForm((f) => ({ ...f, [k]: v })); };
-  const serverPresets = BROKER_PRESETS.find((broker) => broker.name === form.broker)?.servers || [];
+  const serverPresets: readonly string[] = BROKER_PRESETS.find((broker) => broker.name === form.broker)?.servers || [];
   const setBroker = (broker: string) => {
-    const nextServers = BROKER_PRESETS.find((item) => item.name === broker)?.servers || [];
+    const nextServers: readonly string[] = BROKER_PRESETS.find((item) => item.name === broker)?.servers || [];
     setTested(false);
+    setCustomServer(nextServers.length === 0);
     setForm((current) => ({ ...current, broker, server: nextServers[0] || '' }));
+  };
+  const setServerChoice = (value: string) => {
+    setTested(false);
+    if (value === '__custom__') {
+      setCustomServer(true);
+      setForm((current) => ({ ...current, server: '' }));
+      return;
+    }
+    setCustomServer(false);
+    setForm((current) => ({ ...current, server: value }));
   };
 
   const cancel = async () => {
@@ -434,6 +446,7 @@ function AddAccountModal({ open, onClose }: { open: boolean; onClose: () => void
       pushToast('success', isSimulation ? 'Simulation account added' : 'MT5 account connected', `${form.nickname} (#${form.login}) is ready.`);
       await refresh(true);
       setForm({ login: '', password: '', nickname: '', broker: 'Deriv', server: 'Deriv-Demo', leverage: '500', account_type: 'demo', balance: '10000' });
+      setCustomServer(false);
       setTested(false);
       onClose();
     } catch (err) {
@@ -472,20 +485,35 @@ function AddAccountModal({ open, onClose }: { open: boolean; onClose: () => void
         </div>
         <div>
           <label className="label">Server</label>
-          <input
-            className="input"
-            list="mt5-server-presets"
-            placeholder={serverPresets.length ? 'Choose a server or type your own' : 'Type the exact MT5 server'}
-            value={form.server}
-            onChange={(e) => set('server', e.target.value)}
-            autoComplete="off"
-          />
-          <datalist id="mt5-server-presets">
-            {serverPresets.map((server) => <option key={server} value={server} />)}
-          </datalist>
-          <p className="mt-1 text-[10px] text-slate-600">
-            {serverPresets.length ? serverPresets.length + ' known ' + form.broker + ' server presets · field stays fully editable' : 'No fixed server preset for this broker · paste or type the exact MT5 server from your broker'}
-          </p>
+          {serverPresets.length > 0 ? (
+            <>
+              <select className="input" value={customServer ? '__custom__' : form.server} onChange={(e) => setServerChoice(e.target.value)}>
+                {serverPresets.map((server) => <option key={server} value={server}>{server}</option>)}
+                <option value="__custom__">Other / Exact server…</option>
+              </select>
+              {customServer && (
+                <input
+                  className="input mt-2"
+                  placeholder="Enter the exact MT5 server or host:port"
+                  value={form.server}
+                  onChange={(e) => set('server', e.target.value)}
+                  autoComplete="off"
+                />
+              )}
+              <p className="mt-1 text-[10px] text-slate-600">Choose the exact {form.broker} MT5 server assigned to this account.</p>
+            </>
+          ) : (
+            <>
+              <input
+                className="input"
+                placeholder="Enter the exact MT5 server from your broker"
+                value={form.server}
+                onChange={(e) => set('server', e.target.value)}
+                autoComplete="off"
+              />
+              <p className="mt-1 text-[10px] text-slate-600">Paste or type the exact MT5 server shown by your broker.</p>
+            </>
+          )}
         </div>
         {isSimulation ? (<>
           <div>

@@ -638,7 +638,7 @@ def accounts():
                 continue
             engine.upsert_profile({
                 "login": login, "nickname": saved.get("nickname") or f"MT5 #{login}",
-                "broker": "Deriv", "server": saved.get("server") or "", "balance": 0,
+                "broker": saved.get("broker") or "MetaTrader 5", "server": saved.get("server") or "", "balance": 0,
                 "equity": 0, "margin": 0, "free_margin": 0, "floating_pl": 0,
                 "leverage": 0, "currency": "USD", "status": "disconnected",
                 "is_active": False, "account_type": "demo", "connection_status": "offline",

@@ -36,7 +36,8 @@ def connect(profile: dict[str, Any], password: str) -> dict[str, Any]:
     login = int(profile["login"])
     return request("/accounts/connect", "POST", {
         "account_id": f"session-{login}", "nickname": profile.get("nickname") or f"MT5 #{login}",
-        "login": login, "server": profile.get("server") or "", "password": password,
+        "login": login, "broker": profile.get("broker") or "MetaTrader 5",
+        "server": profile.get("server") or "", "password": password,
         "mode": "real", "symbol_aliases": {},
     }, timeout=90)
 

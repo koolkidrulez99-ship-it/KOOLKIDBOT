@@ -7,6 +7,7 @@ class ConnectRequest(BaseModel):
     account_id: str
     nickname: str = ""
     login: int
+    broker: str = "MetaTrader 5"
     server: str = ""
     terminal_path: str = ""
     portable: bool = False
