@@ -1,4 +1,4 @@
-﻿import type { RuntimeMode } from '../types';
+import type { RuntimeMode } from '../types';
 
 const requested = String(import.meta.env.VITE_MT5_MODE || 'simulation').toLowerCase();
 
@@ -14,4 +14,3 @@ export function apiUrl(path: string): string {
   if (!path.startsWith('/')) path = `/${path}`;
   return `${apiBase}${path}`;
 }
-
