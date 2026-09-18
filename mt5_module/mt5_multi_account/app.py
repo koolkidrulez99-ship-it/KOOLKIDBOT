@@ -294,7 +294,7 @@ def isolated_terminal(account_id: str, requested: str) -> str:
             target_dir.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(source.parent, target_dir, dirs_exist_ok=True)
         if not marker.is_file():
-            POOL._stop_terminal(str(terminal))
+            _CORE_POOL._stop_terminal(str(terminal))
             source_data = source_data_dir(source)
             if source_data and source_data.resolve() != target_dir.resolve():
                 source_config = source_data / "config"
