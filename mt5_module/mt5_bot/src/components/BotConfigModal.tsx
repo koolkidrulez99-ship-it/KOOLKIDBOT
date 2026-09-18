@@ -24,7 +24,12 @@ export default function BotConfigModal({
   const nativePreset = Boolean(bot?.native_engine);
   const nativeReady = !nativePreset || bot?.native_ready !== false;
   const launchAvailable = nativePreset ? nativeReady : eaLaunchAvailable;
-  const availableAccounts = useMemo(() => accounts, [accounts]);
+  const availableAccounts = useMemo(
+    () => nativePreset
+      ? accounts.filter((account) => !account.read_only && account.access_mode !== 'investor')
+      : accounts,
+    [accounts, nativePreset],
+  );
 
   const [accountLogin, setAccountLogin] = useState<number | ''>('');
   const [symbol, setSymbol] = useState('EURUSD');
@@ -97,7 +102,8 @@ export default function BotConfigModal({
       trading_session: tradingSession,
       trailing_stop: trailing,
     };
-    return { symbol, timeframe: nativePreset ? 'M5' : timeframe, lot_size: nativePreset ? (bot.lot_size || 0.01) : lotNum, account_login: accountLogin, settings, confirm_live: confirmLive, allow_dll: nativePreset ? false : allowDll };
+    const nativeTimeframe = bot.native_key === 'human_apostle' ? 'M15' : 'M5';
+    return { symbol, timeframe: nativePreset ? nativeTimeframe : timeframe, lot_size: nativePreset ? (bot.lot_size || 0.01) : lotNum, account_login: accountLogin, settings, confirm_live: confirmLive, allow_dll: nativePreset ? false : allowDll };
   };
 
   const save = async () => {
@@ -176,7 +182,10 @@ export default function BotConfigModal({
         <div>
           <label className="label">Timeframe</label>
           {nativePreset ? (
-            <div className="input mono flex items-center justify-between"><span>M5 entry</span><span className="text-slate-600">source fixed</span></div>
+            <div className="input mono flex items-center justify-between">
+              <span>{bot.native_key === 'human_apostle' ? 'M15 entry' : 'M5 entry'}</span>
+              <span className="text-slate-600">{bot.bias_timeframe ? `${bot.bias_timeframe} bias` : 'source fixed'}</span>
+            </div>
           ) : (
             <div className="flex flex-wrap gap-1.5">
               {TIMEFRAMES.map((tf) => (

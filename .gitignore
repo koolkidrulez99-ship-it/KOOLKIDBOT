@@ -28,3 +28,6 @@ mt5_module/mt5_multi_account/data/workspaces/
 # Local MT5 login/debug helpers and per-workspace EA runtime - never push
 .koolkid-*.ps1
 mt5_module/mt5_bridge/data/ea_library/ws_*/
+
+# Persistent global MT5 trial clock - never replace during deploys
+mt5_module/mt5_bridge/data/mt5_global_trial.json

@@ -25,6 +25,7 @@ from hub_auth import current_workspace, internal_workspace_signature, reset_work
 
 TERMINALS = BASE / "data" / "terminals"
 TEMPLATE_MQL5 = TERMINALS / "_worker_template" / "MQL5"
+BROKER_SEEDS = BASE / "broker_seeds"
 TERMINAL_LOCK = threading.RLock()
 _CORE_POOL = Pool()
 _SESSION_STOP = threading.Event()
@@ -166,6 +167,12 @@ def _connect_saved(cfg: dict) -> None:
         return
     prepared = dict(cfg)
     prepared["server"] = normalize_mt5_server(prepared.get("server") or "")
+    if str(prepared.get("mode") or "real") == "real":
+        broker = str(prepared.get("broker") or "")
+        terminal_source = broker_terminal_source(broker, prepared.get("terminal_path") or "")
+        prepared["terminal_path"] = isolated_terminal(f"{current_workspace()}--{aid}", terminal_source, broker)
+        prepared["portable"] = True
+        prepared["broker_seeded"] = broker_seed_dir(broker) is not None
     POOL.connect(prepared, _saved_password(cfg))
 
 
@@ -337,7 +344,31 @@ def source_data_dir(terminal: Path) -> Path | None:
         return terminal.parent
     return None
 
-def isolated_terminal(account_id: str, requested: str) -> str:
+def broker_seed_dir(broker: str) -> Path | None:
+    slug = re.sub(r"[^a-z0-9]+", "_", str(broker or "").strip().lower()).strip("_")
+    if not slug:
+        return None
+    seed = BROKER_SEEDS / slug
+    return seed if seed.is_dir() else None
+
+
+def apply_broker_seed(target_dir: Path, broker: str) -> None:
+    seed = broker_seed_dir(broker)
+    if not seed:
+        return
+    seed_config = seed / "config"
+    if seed_config.is_dir():
+        target_config = target_dir / "config"
+        target_config.mkdir(parents=True, exist_ok=True)
+        for candidate in seed_config.iterdir():
+            if candidate.is_file():
+                shutil.copy2(candidate, target_config / candidate.name)
+    seed_bases = seed / "Bases"
+    if seed_bases.is_dir():
+        shutil.copytree(seed_bases, target_dir / "Bases", dirs_exist_ok=True)
+
+
+def isolated_terminal(account_id: str, requested: str, broker: str = "") -> str:
     source = Path(requested).expanduser().resolve() if requested else Path(os.getenv("ProgramFiles", "C:/Program Files")) / "MetaTrader 5" / "terminal64.exe"
     source = source.resolve()
     if source.name.lower() != "terminal64.exe" or not source.is_file():
@@ -364,6 +395,12 @@ def isolated_terminal(account_id: str, requested: str) -> str:
                     if candidate.is_file():
                         shutil.copy2(candidate, target_config / name)
             marker.write_text("Account terminal seeded without account credentials.\n", encoding="ascii")
+        apply_broker_seed(target_dir, broker)
+        if broker_seed_dir(broker):
+            try:
+                (target_dir / ".koolkid-broker-bootstrap-required").unlink()
+            except FileNotFoundError:
+                pass
     if not terminal.is_file():
         raise RuntimeError("Could not prepare the isolated MT5 account terminal.")
     # Current MT5 builds copy the desktop MCP listener into portable clones.
@@ -440,8 +477,9 @@ def connect(req: ConnectRequest):
                 cfg[key] = prior_cfg[key]
         if req.mode == "real":
             terminal_source = broker_terminal_source(req.broker, req.terminal_path)
-            cfg["terminal_path"] = isolated_terminal(f"{current_workspace()}--{req.account_id}", terminal_source)
+            cfg["terminal_path"] = isolated_terminal(f"{current_workspace()}--{req.account_id}", terminal_source, req.broker)
             cfg["portable"] = True
+            cfg["broker_seeded"] = broker_seed_dir(req.broker) is not None
         if req.account_id in POOL.ids():
             info = POOL.call(req.account_id, "account_info", timeout=5)
             actual_server = str(info.get("server") or "").strip()

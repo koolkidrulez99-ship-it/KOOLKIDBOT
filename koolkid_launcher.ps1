@@ -160,7 +160,7 @@ if (Test-Url $workerHealth) {
 if (Test-Url $mainUrl) {
     Write-Host "KOOLKID server is already running at $mainUrl"
 } else {
-    $mainCommand = "cd /d `"$root`" && set `"PORT=$mainPort`" && python server.py"
+    $mainCommand = "cd /d `"$root`" && set `"PORT=$mainPort`" && set `"MT5_BRIDGE_PROXY_URL=http://127.0.0.1:8000`" && set `"MT5_MULTI_PROXY_URL=http://127.0.0.1:8002`" && python server.py"
     $mainProcess = Start-Process -FilePath $env:ComSpec -ArgumentList @('/k', $mainCommand) -WorkingDirectory $root -PassThru
     Save-Pid $mainProcess $mainPidFile
     if (!(Wait-Healthy $mainUrl 60 'KOOLKID server')) {

@@ -62,6 +62,8 @@ def _connected_worker(login: int) -> dict[str, Any]:
 def _verify_account(login: int, allow_live: bool) -> tuple[dict[str, Any], dict[str, Any]]:
     worker = _connected_worker(login)
     info = dict(worker.get("account_info") or {})
+    if bool(info.get("read_only")) or str(info.get("access_mode") or "").lower() == "investor":
+        raise PermissionError("Native preset execution is blocked on investor/read-only MT5 accounts.")
     trade_mode = info.get("trade_mode")
     if trade_mode is None:
         raise RuntimeError("KOOLKID could not verify the MT5 account mode.")
@@ -157,22 +159,29 @@ def _daily_guard(bot: dict[str, Any], info: dict[str, Any], positions: list[dict
     if day.get("date") != today or float(day.get("start_equity") or 0) <= 0:
         day = {"date": today, "start_equity": equity, "updated_at": _now()}
         _patch_bot(int(bot["id"]), native_day_state=day)
+    preset = _preset(int(bot["id"])) or {}
     start_equity = float(day.get("start_equity") or equity or 0)
+    source_daily_loss = float(preset.get("max_daily_loss_percent") or 4.0)
     if start_equity > 0 and equity > 0:
         dd = max(0.0, (start_equity - equity) / start_equity * 100.0)
-        if dd >= 4.0:
-            return False, f"Daily drawdown guard active ({dd:.2f}%)."
+        if dd >= source_daily_loss:
+            return False, f"Daily drawdown guard active ({dd:.2f}% / {source_daily_loss:.2f}% limit)."
     prefix = _source_prefix(int(bot["id"]))
     losses = 0
+    trades = 0
     for row in _history(int(bot.get("account_login") or 0), 2):
         if not str(row.get("close_time") or "").startswith(today):
             continue
         if not str(row.get("source") or "").startswith(prefix):
             continue
+        trades += 1
         if float(row.get("net_pl") or 0) < 0:
             losses += 1
+    max_trades = int(preset.get("max_trades_per_day") or 0)
+    if max_trades > 0 and trades >= max_trades:
+        return False, f"Source max-trades-per-day cap reached ({trades}/{max_trades})."
     if losses >= 2:
-        return False, "Source daily loss cap reached."
+        return False, "KOOLKID native daily loss-streak cap reached."
     if _has_position_conflict(int(bot["id"]), str(bot.get("symbol") or ""), positions):
         managed = dict(bot.get("native_managed_position") or {})
         ticket = int(managed.get("ticket") or 0)
@@ -268,15 +277,21 @@ def _manage_open_position(bot: dict[str, Any], positions: list[dict[str, Any]], 
         changed = True
 
     trail_start = float(management.get("trail_start_r") or 0)
+    trail_distance_r = float(management.get("trail_distance_r") or 0)
     trail_mult = float(management.get("trail_atr_mult") or 0)
     av = atr(m5, 14, 1)
-    if trail_start > 0 and trail_mult > 0 and av > 0 and progress_r >= trail_start:
-        candidate = current - av * trail_mult if side == "buy" else current + av * trail_mult
-        favorable = (side == "buy" and candidate > current_sl and candidate < current) or (side == "sell" and (current_sl == 0 or candidate < current_sl) and candidate > current)
-        if favorable:
-            multi_account_client.request("/positions/modify", "POST", {"account_id": account_id, "ticket": ticket, "sl": candidate, "tp": current_tp}, timeout=15)
-            managed["last_trail_sl"] = candidate
-            changed = True
+    if trail_start > 0 and progress_r >= trail_start:
+        candidate = None
+        if trail_distance_r > 0:
+            candidate = current - initial_risk * trail_distance_r if side == "buy" else current + initial_risk * trail_distance_r
+        elif trail_mult > 0 and av > 0:
+            candidate = current - av * trail_mult if side == "buy" else current + av * trail_mult
+        if candidate is not None:
+            favorable = (side == "buy" and candidate > current_sl and candidate < current) or (side == "sell" and (current_sl == 0 or candidate < current_sl) and candidate > current)
+            if favorable:
+                multi_account_client.request("/positions/modify", "POST", {"account_id": account_id, "ticket": ticket, "sl": candidate, "tp": current_tp}, timeout=15)
+                managed["last_trail_sl"] = candidate
+                changed = True
     if changed:
         managed["last_managed_at"] = _now()
         _patch_bot(int(bot["id"]), native_managed_position=managed)

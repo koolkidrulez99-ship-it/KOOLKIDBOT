@@ -31,8 +31,8 @@ SYSTEM_BOT_PRESETS = [
     {"id": 1005, "name": "PRIMORDIAL RED", "file": "Primordial_Red.ex5", "version": "1.10", "magic": 26033178},
     {"id": 1006, "name": "PRIMORDIAL SILVER", "file": "Primordial_Silver.ex5", "version": "1.20", "magic": 90412026},
     {"id": 1007, "name": "PRIMORDIAL WHITE", "file": "Primordial_White.ex5", "version": "1.10", "magic": 26033179},
-    {"id": 1008, "name": "BLACK ROCK", "file": "Black_Rock.ex5", "version": "1.0.0", "magic": 511008},
-    {"id": 1009, "name": "DEAR BRUCE PREMIUM", "file": "DEAR_BRUCE_PREMIUM.ex5", "version": "1.0.0", "magic": 511009},
+    {"id": 1008, "name": "HUMAN APOSTLE", "file": "HumanApostle_EA.ex5", "version": "1.00", "magic": 4152026},
+    {"id": 1009, "name": "DEAR BRUCE", "file": "DEAR_BRUCE_PREMIUM.ex5", "version": "2.20", "magic": 22082605},
 ]
 
 
@@ -47,19 +47,21 @@ def _merge_system_bots(existing: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for preset in SYSTEM_BOT_PRESETS:
         bot_id = int(preset["id"])
         path = _system_ea_library() / str(preset["file"])
-        legacy_ready = path.is_file()
         native = dict(NATIVE_PRESETS.get(bot_id) or {})
         native_ready = bool(native.get("ready"))
+        # Ready system presets are KOOLKID-native. Do not expose or advertise
+        # any legacy EX5 path/hash even if an old private system file exists.
+        legacy_ready = path.is_file() and not native_ready
         canonical = {
             "id": bot_id, "name": preset["name"],
             "display_title": native.get("title") or "KOOLKID System Strategy",
             "display_subtitle": native.get("subtitle") or "Built-in KOOLKID trading strategy",
-            "description": native.get("subtitle") or "KOOLKID built-in trading strategy.",
+            "description": native.get("description") or native.get("subtitle") or "KOOLKID built-in trading strategy.",
             "strategy": "System Preset", "symbol": "XAUUSD", "timeframe": native.get("entry_tf") or "M5",
             "account_login": None, "status": "stopped", "lot_size": 0.01,
             "win_rate": 0, "total_trades": 0, "net_profit": 0, "profit_today": 0,
             "version": preset["version"], "started_at": None,
-            "ea_filename": preset["file"], "preset_filename": None,
+            "ea_filename": None if native_ready else preset["file"], "preset_filename": None,
             "file_status": "native" if native_ready else "source-required", "dll_required": False,
             "ea_storage_path": str(path.relative_to(ROOT)) if legacy_ready else None,
             "ea_size_bytes": path.stat().st_size if legacy_ready else None,
@@ -68,23 +70,28 @@ def _merge_system_bots(existing: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "system_preset": True, "locked": True,
             "native_engine": True, "native_key": native.get("key"),
             "native_ready": native_ready, "native_source": native.get("source"),
+            "native_source_sha256": native.get("source_sha256"),
             "engine_type": "native" if native_ready else "source_required",
             "bias_timeframe": native.get("bias_tf"),
-            "settings": {"risk_percent": 0.5, "max_spread": 3.5, "trailing_stop": True,
+            "settings": {"risk_percent": float(native.get("risk_percent") or 0.5), "max_spread": 3.5, "trailing_stop": True,
                          "magic_number": int(native.get("magic") or preset["magic"]), "max_daily_loss": 250, "max_open_positions": 3},
         }
         current = by_id.get(bot_id, {})
+        identity_changed = bool(current) and (
+            str(current.get("native_key") or "") != str(canonical.get("native_key") or "")
+            or str(current.get("native_source_sha256") or "") != str(canonical.get("native_source_sha256") or "")
+        )
         row = {**canonical, **current}
         for key in (
-            "id", "name", "display_title", "display_subtitle", "description", "strategy", "version",
+            "id", "name", "display_title", "display_subtitle", "description", "strategy", "version", "timeframe",
             "ea_filename", "preset_filename", "file_status", "dll_required",
             "ea_storage_path", "ea_size_bytes", "ea_sha256", "legacy_ex5_available",
             "system_preset", "locked", "native_engine", "native_key", "native_ready",
-            "native_source", "engine_type", "bias_timeframe",
+            "native_source", "native_source_sha256", "engine_type", "bias_timeframe",
         ):
             row[key] = canonical[key]
         current_settings = current.get("settings") if isinstance(current.get("settings"), dict) else {}
-        row["settings"] = {**canonical["settings"], **current_settings}
+        row["settings"] = dict(canonical["settings"]) if identity_changed else {**canonical["settings"], **current_settings}
         row["settings"]["magic_number"] = canonical["settings"]["magic_number"]
         rows.append(row)
     rows.sort(key=lambda row: (0 if row.get("system_preset") else 1, int(row.get("id", 0))))

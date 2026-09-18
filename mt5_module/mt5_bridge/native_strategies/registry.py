@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from .apostle import evaluate_dear_bruce, evaluate_human_apostle
 from .catalog import NATIVE_PRESETS
 from .fib import evaluate_emerald, evaluate_red
 from .gold import evaluate_gold
@@ -21,6 +22,8 @@ EVALUATORS: dict[str, Evaluator] = {
     "primordial_red": evaluate_red,
     "primordial_silver": evaluate_silver,
     "primordial_white": evaluate_white,
+    "human_apostle": evaluate_human_apostle,
+    "dear_bruce": evaluate_dear_bruce,
 }
 def preset_for_bot(bot_id: int) -> dict[str, Any] | None:
     row = NATIVE_PRESETS.get(int(bot_id))

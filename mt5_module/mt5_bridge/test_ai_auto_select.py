@@ -90,6 +90,8 @@ def test_history_only_breaks_tie_between_valid_setups():
 
 def test_source_required_is_rejected():
     originals = with_scan_fakes(lambda key, market: FakeSignal(base_signal(key, 100, True)))
+    original_ready = mod.NATIVE_PRESETS[1008].get("ready")
+    mod.NATIVE_PRESETS[1008]["ready"] = False
     try:
         result = mod.scan_once(1, "XAUUSD", [1008])
         row = result["results"][0]
@@ -97,6 +99,7 @@ def test_source_required_is_rejected():
         assert row["stage"] == "SOURCE_REQUIRED"
         assert result["selected"] is None
     finally:
+        mod.NATIVE_PRESETS[1008]["ready"] = original_ready
         restore_scan_fakes(originals)
 def test_live_execution_is_blocked():
     original_mode = mod._account_mode

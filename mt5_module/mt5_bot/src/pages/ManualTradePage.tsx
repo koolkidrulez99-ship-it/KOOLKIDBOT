@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDown, ArrowUp, ArrowRightLeft, Crosshair, History as HistoryIcon, Info } from 'lucide-react';
+import { ArrowDown, ArrowUp, ArrowRightLeft, Crosshair, Gauge, History as HistoryIcon, Info } from 'lucide-react';
 import { useHub } from '../context/HubContext';
 import { MARKET, SYMBOL_LIST, marginFor, pipValue } from '../lib/market';
 import { fmtDateTime, fmtPrice, fmtSigned, fmtUSD, profitTone } from '../lib/format';
@@ -14,6 +14,28 @@ import { usePersistentState } from '../hooks/usePersistentState';
 import Modal from '../components/Modal';
 import { mt5MultiAccountService, type MultiAccount } from '../services/mt5MultiAccountService';
 
+interface ExecutionLatencySample {
+  at: number;
+  accounts: number;
+  clickToBackendMs: number;
+  backendToWorkerMs: number;
+  orderSendMs: number;
+  confirmMs: number;
+  backendTotalMs: number;
+  uiTotalMs: number;
+  fillSpreadMs: number;
+}
+
+function avg(values: number[]) {
+  return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
+}
+
+function diffMs(later: unknown, earlier: unknown) {
+  const end = Number(later || 0);
+  const start = Number(earlier || 0);
+  return end > 0 && start > 0 && end >= start ? (end - start) * 1000 : 0;
+}
+
 export default function ManualTradePage() {
   const { accounts, activeAccount, market, livePrice, liveQuote, mt5Symbols, pushToast, refresh } = useHub();
   const connected = useMemo(() => accounts.filter((a) => a.status === 'connected'), [accounts]);
@@ -25,6 +47,7 @@ export default function ManualTradePage() {
   const [useProtection, setUseProtection] = usePersistentState('manual_protection', true);
   const [sl, setSl] = usePersistentState('manual_sl', '');
   const [tp, setTp] = usePersistentState('manual_tp', '');
+  const [latencySamples, setLatencySamples] = usePersistentState<ExecutionLatencySample[]>('manual_execution_latency_ms', []);
   const [busy, setBusy] = useState(false);
   const [manualHistory, setManualHistory] = useState<Mt5HistoryRow[]>([]);
   const [selectedBridgeQuote, setSelectedBridgeQuote] = useState<Mt5Quote | null>(null);
@@ -36,6 +59,14 @@ export default function ManualTradePage() {
   const [copyLotValue, setCopyLotValue] = useState('1.00');
   const routingRef = useRef(false);
   const acc = connected.find((account) => Number(account.login) === Number(login)) || null;
+  const latestLatency = latencySamples[0] || null;
+  const medianLatency = useMemo(() => {
+    if (!latencySamples.length) return 0;
+    const values = latencySamples.map((sample) => sample.uiTotalMs).filter((value) => Number.isFinite(value)).sort((a, b) => a - b);
+    if (!values.length) return 0;
+    const mid = Math.floor(values.length / 2);
+    return values.length % 2 ? values[mid] : (values[mid - 1] + values[mid]) / 2;
+  }, [latencySamples]);
 
   useEffect(() => {
     if (acc) return;
@@ -146,6 +177,7 @@ export default function ManualTradePage() {
     setBusy(true);
     setCopyOpen(false);
     const uiClickedAt = Date.now() / 1000;
+    let timingDraft: Omit<ExecutionLatencySample, 'at' | 'uiTotalMs'> | null = null;
     try {
       const master = multiAccounts.find((row) => Number(row.login) === Number(acc.login) && row.connected);
       if (!isSimulation && master) {
@@ -158,9 +190,23 @@ export default function ManualTradePage() {
         const filled = rows.filter(([, row]) => row.ok);
         const failed = rows.filter(([, row]) => !row.ok);
         const elapsed = filled.map(([, row]) => Math.max(0, Number(row.timing?.backend_result_at || 0) - uiClickedAt) * 1000);
+        const timingRows = filled.map(([, row]) => row.timing || {});
+        const backendReceived = timingRows.map((timing) => Number(timing.backend_received_at || 0)).filter(Boolean);
+        const backendResults = timingRows.map((timing) => Number(timing.backend_result_at || 0)).filter(Boolean);
+        if (timingRows.length && backendResults.length) {
+          timingDraft = {
+            accounts: filled.length,
+            clickToBackendMs: backendReceived.length ? diffMs(Math.min(...backendReceived), uiClickedAt) : 0,
+            backendToWorkerMs: avg(timingRows.map((timing) => diffMs(timing.worker_received_at, timing.backend_received_at)).filter(Boolean)),
+            orderSendMs: avg(timingRows.map((timing) => diffMs(timing.order_send_result_at, timing.order_send_started_at)).filter(Boolean)),
+            confirmMs: avg(timingRows.map((timing) => diffMs(timing.position_confirmed_at, timing.order_send_result_at)).filter(Boolean)),
+            backendTotalMs: diffMs(Math.max(...backendResults), uiClickedAt),
+            fillSpreadMs: elapsed.length > 1 ? Math.max(...elapsed) - Math.min(...elapsed) : 0,
+          };
+        }
         const names = new Map(multiAccounts.map((row) => [row.account_id, row.nickname || `#${row.login}`]));
-        const detail = rows.map(([id, row]) => `${names.get(id) || id}: ${row.ok ? `FILLED ${(Math.max(0, Number(row.timing?.backend_result_at || 0) - uiClickedAt)).toFixed(2)}s` : `FAILED ${row.error || 'Rejected'}`}`).join(' · ');
-        if (filled.length) pushToast('success', `${filled.length} account order${filled.length === 1 ? '' : 's'} filled`, `${detail}${elapsed.length > 1 ? ` · spread ${((Math.max(...elapsed) - Math.min(...elapsed)) / 1000).toFixed(3)}s` : ''}`);
+        const detail = rows.map(([id, row]) => `${names.get(id) || id}: ${row.ok ? `FILLED ${Math.round(Math.max(0, Number(row.timing?.backend_result_at || 0) - uiClickedAt) * 1000)}ms` : `FAILED ${row.error || 'Rejected'}`}`).join(' · ');
+        if (filled.length) pushToast('success', `${filled.length} account order${filled.length === 1 ? '' : 's'} filled`, `${detail}${elapsed.length > 1 ? ` · fill spread ${(Math.max(...elapsed) - Math.min(...elapsed)).toFixed(1)}ms` : ''}`);
         if (failed.length) pushToast('error', `${failed.length} account order${failed.length === 1 ? '' : 's'} failed`, detail);
         console.info('KOOLKID MT5 execution timing', { ui_clicked_at: uiClickedAt, accounts: response.results });
       } else {
@@ -171,7 +217,16 @@ export default function ManualTradePage() {
       setSl('');
       setTp('');
       await refresh(true);
-      console.info('KOOLKID MT5 UI updated', { ui_updated_at: Date.now() / 1000, ui_clicked_at: uiClickedAt });
+      const uiUpdatedAt = Date.now() / 1000;
+      if (timingDraft) {
+        const sample: ExecutionLatencySample = {
+          ...timingDraft,
+          at: Date.now(),
+          uiTotalMs: diffMs(uiUpdatedAt, uiClickedAt),
+        };
+        setLatencySamples((previous) => [sample, ...previous].slice(0, 30));
+      }
+      console.info('KOOLKID MT5 UI updated', { ui_updated_at: uiUpdatedAt, ui_clicked_at: uiClickedAt });
       loadManual();
     } catch (e) {
       pushToast('error', 'Order rejected', e instanceof Error ? e.message : undefined);
@@ -336,6 +391,51 @@ export default function ManualTradePage() {
 
         {/* side column */}
         <div className="xl:col-span-2 space-y-4">
+          <Panel className="p-5">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="text-sm font-bold text-white flex items-center gap-2"><Gauge size={15} className="text-brand-300" /> Execution latency</h3>
+              <Badge tone={latestLatency && latestLatency.uiTotalMs <= 250 ? 'gain' : latestLatency && latestLatency.uiTotalMs <= 750 ? 'warn' : latestLatency ? 'loss' : 'slate'}>
+                {latestLatency ? `${Math.round(latestLatency.uiTotalMs)} MS` : 'NO SAMPLE'}
+              </Badge>
+            </div>
+            {latestLatency ? (
+              <>
+                <div className="mt-4 grid grid-cols-3 gap-2 text-center">
+                  <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] px-2 py-3">
+                    <p className="text-[9px] uppercase tracking-widest text-slate-600 font-semibold">Latest</p>
+                    <p className="mono mt-1 text-lg font-extrabold text-white">{Math.round(latestLatency.uiTotalMs)}<span className="ml-1 text-[10px] text-slate-500">ms</span></p>
+                  </div>
+                  <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] px-2 py-3">
+                    <p className="text-[9px] uppercase tracking-widest text-slate-600 font-semibold">Median</p>
+                    <p className="mono mt-1 text-lg font-extrabold text-white">{Math.round(medianLatency)}<span className="ml-1 text-[10px] text-slate-500">ms</span></p>
+                  </div>
+                  <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] px-2 py-3">
+                    <p className="text-[9px] uppercase tracking-widest text-slate-600 font-semibold">Fill spread</p>
+                    <p className="mono mt-1 text-lg font-extrabold text-white">{latestLatency.fillSpreadMs.toFixed(1)}<span className="ml-1 text-[10px] text-slate-500">ms</span></p>
+                  </div>
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-[11px]">
+                  <div className="flex justify-between gap-3"><span className="text-slate-500">Click → backend</span><span className="mono text-slate-300">{latestLatency.clickToBackendMs.toFixed(1)} ms</span></div>
+                  <div className="flex justify-between gap-3"><span className="text-slate-500">Backend → worker</span><span className="mono text-slate-300">{latestLatency.backendToWorkerMs.toFixed(1)} ms</span></div>
+                  <div className="flex justify-between gap-3"><span className="text-slate-500">MT5 order_send</span><span className="mono text-slate-300">{latestLatency.orderSendMs.toFixed(1)} ms</span></div>
+                  <div className="flex justify-between gap-3"><span className="text-slate-500">Position confirm</span><span className="mono text-slate-300">{latestLatency.confirmMs.toFixed(1)} ms</span></div>
+                  <div className="flex justify-between gap-3"><span className="text-slate-500">Backend result</span><span className="mono text-slate-300">{latestLatency.backendTotalMs.toFixed(1)} ms</span></div>
+                  <div className="flex justify-between gap-3"><span className="text-slate-500">UI updated</span><span className="mono text-slate-300">{latestLatency.uiTotalMs.toFixed(1)} ms</span></div>
+                </div>
+                <div className="mt-4 flex h-14 items-end gap-1 rounded-xl border border-white/[0.05] bg-black/20 px-2 py-2">
+                  {latencySamples.slice(0, 16).reverse().map((sample, index, values) => {
+                    const peak = Math.max(1, ...values.map((item) => item.uiTotalMs));
+                    const height = Math.max(8, Math.round((sample.uiTotalMs / peak) * 100));
+                    return <div key={`${sample.at}-${index}`} title={`${sample.uiTotalMs.toFixed(1)} ms`} className="flex-1 rounded-sm bg-brand-500/70" style={{ height: `${height}%` }} />;
+                  })}
+                </div>
+                <p className="mt-2 text-[10px] text-slate-600">Real measured path: click → backend → worker → MT5 order_send → position confirmation → refreshed UI. Last {latencySamples.length} sample{latencySamples.length === 1 ? '' : 's'}.</p>
+              </>
+            ) : (
+              <p className="mt-3 text-xs leading-relaxed text-slate-600">No real execution timing yet. The first routed MT5 order will populate Latest, Median, stage timings and copy fill spread.</p>
+            )}
+          </Panel>
+
           <Panel className="p-5">
             <h3 className="text-sm font-bold text-white">Watchlist</h3>
             <div className="mt-3 space-y-1.5">

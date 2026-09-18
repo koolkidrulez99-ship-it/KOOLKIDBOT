@@ -55,7 +55,16 @@ export default function CopyTradeApproval() {
         const rows = Object.entries(result.results || {});
         const passed = rows.filter(([, row]) => row.ok);
         const failed = rows.filter(([, row]) => !row.ok);
-        if (passed.length) pushToast('success', `Copied to ${passed.length} slave account${passed.length === 1 ? '' : 's'}`, `${String(current.position.side || current.position.type).toUpperCase()} ${current.position.symbol}`);
+        if (passed.length) {
+          const timings = passed.map(([id, row]) => `${accountById.get(id)?.nickname || id} ${Number(row.elapsed_ms || 0).toFixed(1)}ms`).join(' · ');
+          const total = Number(result.elapsed_ms || 0).toFixed(1);
+          const spread = Number(result.fill_spread_ms || 0).toFixed(1);
+          pushToast(
+            'success',
+            `Copied to ${passed.length} slave account${passed.length === 1 ? '' : 's'} · ${total}ms`,
+            `${String(current.position.side || current.position.type).toUpperCase()} ${current.position.symbol} · ${timings} · fill spread ${spread}ms`,
+          );
+        }
         if (failed.length) pushToast('error', `${failed.length} slave order${failed.length === 1 ? '' : 's'} failed`, failed.map(([id, row]) => `${accountById.get(id)?.nickname || id}: ${row.error || 'Rejected'}`).join(' · '));
       }
       setPending((items) => items.filter((item) => item.master_ticket !== current.master_ticket));

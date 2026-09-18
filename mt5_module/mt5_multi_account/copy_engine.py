@@ -36,11 +36,17 @@ class CopyEngine:
         self.state_store.save(s)
 
     def stop(self):
-        if self.thread and self.thread.is_alive():
+        thread = self.thread
+        if thread and thread.is_alive():
             self.stop_event.set()
-            self.thread.join(timeout=3)
-        self.thread = None
-        self.stop_event.clear()
+            # Stop must return quickly for the web request, but never clear the
+            # event while a slow MT5 call is still unwinding. The old thread
+            # keeps its stop signal and exits as soon as that call returns.
+            thread.join(timeout=0.25)
+            if not thread.is_alive():
+                self.thread = None
+        else:
+            self.thread = None
         self.status = "stopped"
         with self.lock:
             self.pending.clear()
@@ -48,6 +54,10 @@ class CopyEngine:
 
     def start(self, cfg):
         self.stop()
+        if self.thread and self.thread.is_alive():
+            raise RuntimeError("Copy Trader is still stopping the previous session. Try again in a few seconds.")
+        self.thread = None
+        self.stop_event = threading.Event()
         self.config = cfg
         saved = self.state_store.load()
         saved["copy_config"] = dict(cfg)
@@ -229,9 +239,19 @@ class CopyEngine:
                 slave_id, result = future.result()
                 results[slave_id] = result
         filled = [row["elapsed_ms"] for row in results.values() if row.get("ok")]
+        elapsed_ms = round((time.time() - started) * 1000, 1)
+        fill_spread_ms = round(max(filled) - min(filled), 1) if len(filled) > 1 else 0.0
+        self.log(
+            "copy_completed",
+            master_ticket=ticket,
+            elapsed_ms=elapsed_ms,
+            fill_spread_ms=fill_spread_ms,
+            slave_count=len(selected),
+            filled_count=sum(1 for row in results.values() if row.get("ok")),
+            results=results,
+        )
         return {"ok": True, "decision": "copied", "results": results,
-                "elapsed_ms": round((time.time() - started) * 1000, 1),
-                "fill_spread_ms": round(max(filled) - min(filled), 1) if len(filled) > 1 else 0.0}
+                "elapsed_ms": elapsed_ms, "fill_spread_ms": fill_spread_ms}
 
     def run(self):
         cfg = self.config
@@ -242,13 +262,19 @@ class CopyEngine:
                         time.sleep(0.1)
                         continue
                     master_positions = self.pool.call(cfg["master_account_id"], "positions")
+                    if self.stop_event.is_set():
+                        return
                     master_info = self.pool.call(cfg["master_account_id"], "account_info")
+                    if self.stop_event.is_set():
+                        return
                     current = {str(int(p["ticket"])): p for p in master_positions if self.passes_filter(p)}
 
                     # New master positions can either wait for approval (normal Copy Trading)
                     # or copy immediately when the AI-page "Copy Trades From Anywhere" toggle
                     # has restarted the link with approval_required=False.
                     for master_ticket, pos in current.items():
+                        if self.stop_event.is_set():
+                            return
                         if master_ticket in self.copy_map or master_ticket in self.ignored:
                             continue
                         with self.lock:

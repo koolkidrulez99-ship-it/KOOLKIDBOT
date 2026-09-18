@@ -90,6 +90,7 @@ export interface CopyDecisionResult {
   ok: boolean;
   decision: 'master_only' | 'copied';
   results: Record<string, { ok: boolean; ticket?: number; error?: string; elapsed_ms?: number }>;
+  elapsed_ms?: number;
   fill_spread_ms?: number;
 }
 

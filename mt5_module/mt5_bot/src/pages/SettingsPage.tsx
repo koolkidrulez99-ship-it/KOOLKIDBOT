@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Bell, DatabaseBackup, FileDown, RefreshCw, Server, ShieldCheck, Timer, Moon, Sun } from 'lucide-react';
+import { Bell, DatabaseBackup, FileDown, Headphones, RefreshCw, Server, ShieldCheck, Timer, Moon, Sun } from 'lucide-react';
 import { useHub } from '../context/HubContext';
 import { PageHeader, Panel, Toggle, Badge, StatusDot } from '../components/ui';
 import { isSimulation } from '../config/runtime';
@@ -8,6 +8,7 @@ import { simReset } from '../services/simulationStore';
 import { useTheme } from '../hooks/useTheme';
 import { notificationPermission, requestNotificationPermission } from '../services/notificationService';
 import type { NotificationAlertKey } from '../services/notificationService';
+import { CONTACT_SUPPORT_OPEN_EVENT } from '../components/ContactSupport';
 
 const POLL_OPTIONS = [
   { label: '3 seconds', value: 3000 },
@@ -154,6 +155,28 @@ export default function SettingsPage() {
         </Panel>
 
         <div className="space-y-4">
+          <Panel className="p-6">
+            <div className="flex items-start gap-3">
+              <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-brand-500/15 text-brand-300 ring-1 ring-brand-500/25">
+                <Headphones size={18} />
+              </span>
+              <div className="min-w-0 flex-1">
+                <h3 className="text-sm font-bold text-white">Contact Us</h3>
+                <p className="mt-1 text-xs leading-relaxed text-slate-500">Need help or more information? Reopen the KOOLKID contact card for Telegram and WhatsApp support.</p>
+                <button
+                  type="button"
+                  className="btn-primary mt-4"
+                  onClick={() => {
+                    window.dispatchEvent(new Event(CONTACT_SUPPORT_OPEN_EVENT));
+                    pushToast('info', 'Contact Us opened', 'Telegram and WhatsApp support is available in the contact card.');
+                  }}
+                >
+                  <Headphones size={14} /> Contact Us
+                </button>
+              </div>
+            </div>
+          </Panel>
+
           <Panel className="p-6">
             <div className="flex items-center justify-between gap-3">
               <h3 className="text-sm font-bold text-white flex items-center gap-2">

@@ -23,10 +23,11 @@ Status: source analysis blueprint before native runtime implementation.
 | PRIMORDIAL PURPLE | Primordial_Purple.mq5 | Ready |
 | PRIMORDIAL RED | Primordial_Red.mq5 | Ready |
 | PRIMORDIAL SILVER | Primordial_Silver.mq5 | Ready |
-| PRIMORDIAL WHITE | Primordial_White.mq5 | Ready || BLACK ROCK | Black_Rock.mq5 | BLOCKED: MQ5 source not found |
-| DEAR BRUCE PREMIUM | Dear_Bruce_Premium.mq5 | BLOCKED: MQ5 source not found |
+| PRIMORDIAL WHITE | Primordial_White.mq5 | Ready |
+| HUMAN APOSTLE | HumanApostle_EA.mq5 | Ready |
+| DEAR BRUCE | DEAR_BRUCE_PREMIUM.mq5 | Ready |
 
-The compiled EX5 files for BLACK ROCK and DEAR BRUCE PREMIUM are present, but they will not be reverse-engineered. Exact native ports require their MQ5 source or a complete written strategy specification.
+Human Apostle replaces the former BLACK ROCK preset slot (ID 1008). Dear Bruce keeps preset slot 1009. Both are native KOOLKID strategies: users do not receive MQ5/EX5 files and neither preset is launched through the EA Worker.
 
 ## Shared Primordial behavior
 
@@ -173,7 +174,7 @@ Open Positions will add `Close All Profitable` and `Close All Losing`. Profitabl
 6. Add Bot Library native Start/Stop/status without EA Worker assignment for system presets.
 7. Add profitable/losing bulk-close controls.
 8. Add AI strategy selector, then Auto Select after individual strategy parity tests pass.
-9. Add BLACK ROCK and DEAR BRUCE PREMIUM only after source/specification is available.
+9. Human Apostle and Dear Bruce are now source-backed native presets and run through the KOOLKID account-worker path.
 
 ## Fidelity tests required
 

@@ -122,7 +122,7 @@ export default function BotLibraryPage() {
                   </div>
                 </div>
 
-                <p className="mt-3 text-xs leading-relaxed text-slate-400 min-h-[32px]">{isCatalog ? (b.display_subtitle || b.description) : b.description}</p>
+                <p className="mt-3 text-xs leading-relaxed text-slate-400 min-h-[48px]">{isCatalog ? (b.description || b.display_subtitle) : b.description}</p>
 
                 <div className="mt-3 flex flex-wrap items-center gap-1.5">
                   <Badge tone="slate">{b.strategy}</Badge>{isCatalog && <Badge tone="brand">BUILT-IN PRESET</Badge>}

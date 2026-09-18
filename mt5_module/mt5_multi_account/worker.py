@@ -1,6 +1,6 @@
 from __future__ import annotations
 import configparser
-import ctypes, json, os, queue, threading, time, traceback
+import ctypes, json, os, queue, shlex, shutil, subprocess, threading, time, traceback
 from collections import defaultdict
 from ctypes import wintypes
 from datetime import datetime, timedelta, timezone
@@ -40,6 +40,65 @@ def keep_terminal_hidden(terminal_path):
     while True:
         hide_terminal_windows(terminal_path)
         time.sleep(0.01 if time.monotonic() - started < 5 else 0.20)
+
+
+def write_bootstrap_config(terminal_path, login, server, credential):
+    terminal_dir = os.path.dirname(os.path.abspath(terminal_path))
+    config_dir = os.path.join(terminal_dir, "config")
+    os.makedirs(config_dir, exist_ok=True)
+    config_path = os.path.join(config_dir, f".koolkid-bootstrap-{os.getpid()}-{threading.get_ident()}.ini")
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.optionxform = str
+    parser.add_section("Common")
+    parser.set("Common", "Login", str(int(login)))
+    parser.set("Common", "Server", str(server))
+    parser.set("Common", "Password", str(credential))
+    parser.set("Common", "ProxyEnable", "0")
+    parser.set("Common", "KeepPrivate", "0")
+    parser.set("Common", "NewsEnable", "0")
+    with open(config_path, "w", encoding="utf-8") as handle:
+        parser.write(handle, space_around_delimiters=False)
+    try:
+        os.chmod(config_path, 0o600)
+    except OSError:
+        pass
+    return config_path
+
+
+def launch_terminal_bootstrap(terminal_path, login, server, credential):
+    config_path = write_bootstrap_config(terminal_path, login, server, credential)
+    terminal_dir = os.path.dirname(os.path.abspath(terminal_path))
+    args = [terminal_path, "/portable", f"/config:{config_path}"]
+    startupinfo = None
+    creationflags = 0
+    try:
+        if os.name == "nt":
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = 0
+            creationflags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            threading.Thread(target=keep_terminal_hidden, args=(terminal_path,), daemon=True).start()
+        else:
+            launcher = os.getenv("MT5_TERMINAL_LAUNCHER", "").strip()
+            if launcher:
+                args = [*shlex.split(launcher), *args]
+            else:
+                wine = shutil.which("wine64") or shutil.which("wine")
+                if wine:
+                    args = [wine, *args]
+        subprocess.Popen(
+            args, cwd=terminal_dir, startupinfo=startupinfo, creationflags=creationflags,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        time.sleep(max(2.0, min(15.0, float(os.getenv("MT5_BOOTSTRAP_WAIT_SECONDS", "8")))))
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)
+    finally:
+        try:
+            os.remove(config_path)
+        except OSError:
+            pass
 
 
 def ensure_terminal_trading_permissions(terminal_path):
@@ -208,6 +267,23 @@ def run_worker(config, password, command_q, response_q):
             if config.get("portable"):
                 kwargs["portable"] = True
 
+            bootstrap_done_marker = (
+                os.path.join(os.path.dirname(os.path.abspath(terminal_path)), ".koolkid-headless-bootstrap-v1")
+                if terminal_path else ""
+            )
+            if (
+                terminal_path
+                and config.get("broker_seeded")
+                and password
+                and requested_server
+                and not os.path.isfile(bootstrap_done_marker)
+            ):
+                started, bootstrap_error = launch_terminal_bootstrap(
+                    terminal_path, int(config["login"]), requested_server, password
+                )
+                if not started:
+                    raise RuntimeError(f"Automatic MT5 broker bootstrap failed: {bootstrap_error}")
+
             def initialize_once():
                 last_error = None
                 server_candidates = mt5_server_candidates(config.get("broker"), requested_server)
@@ -256,6 +332,16 @@ def run_worker(config, password, command_q, response_q):
                 error_code = last_error[0] if isinstance(last_error, (tuple, list)) and last_error else None
                 error_text = str(last_error).lower()
                 if terminal_path and (error_code == -10005 or "ipc timeout" in error_text):
+                    if config.get("broker_seeded"):
+                        if bootstrap_done_marker:
+                            try:
+                                os.remove(bootstrap_done_marker)
+                            except OSError:
+                                pass
+                        raise RuntimeError(
+                            f"Automatic MT5 broker bootstrap could not attach to server '{requested_server}'. "
+                            "Retry the connection once; if it repeats, check the broker server or cloud MT5 runtime."
+                        )
                     try:
                         marker = os.path.join(os.path.dirname(os.path.abspath(terminal_path)), ".koolkid-broker-bootstrap-required")
                         with open(marker, "w", encoding="utf-8") as handle:
@@ -311,6 +397,12 @@ def run_worker(config, password, command_q, response_q):
                 if requested_server.replace(" ", "").lower() != actual_server.replace(" ", "").lower():
                     mt5.shutdown()
                     raise RuntimeError(f"MT5 connected to '{actual_server or 'unknown'}' instead of selected server '{requested_server}'.")
+            if config.get("broker_seeded") and bootstrap_done_marker:
+                try:
+                    with open(bootstrap_done_marker, "w", encoding="ascii") as handle:
+                        handle.write("Headless broker bootstrap completed.\n")
+                except OSError:
+                    pass
         response_q.put({"id": "__startup__", "ok": True})
     except Exception as exc:
         response_q.put({"id": "__startup__", "ok": False, "error": str(exc)})

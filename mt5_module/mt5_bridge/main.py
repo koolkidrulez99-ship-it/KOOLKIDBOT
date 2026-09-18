@@ -30,6 +30,7 @@ import engine
 import ea_worker_client
 import multi_account_client
 import native_runtime
+from native_strategies import NATIVE_PRESETS
 import ai_auto_select
 import mq5_compiler
 from store import default_risk, read_state, remove_profile, update_state, upsert_profile
@@ -124,7 +125,11 @@ async def unhandled_api_error(_request: Request, _exc: Exception):
     return JSONResponse(status_code=500, content={"detail": "MT5 Bridge internal error."})
 
 HUB_USERS_FILE = ROOT / "data" / "mt5_hub_users.json"
+GLOBAL_TRIAL_FILE = ROOT / "data" / "mt5_global_trial.json"
+GLOBAL_TRIAL_START = "2026-09-18T00:00:00+00:00"
+GLOBAL_TRIAL_END = "2026-10-18T00:00:00+00:00"
 _HUB_USERS_LOCK = threading.RLock()
+_GLOBAL_TRIAL_LOCK = threading.RLock()
 
 
 def _load_hub_users() -> dict[str, Any]:
@@ -142,6 +147,43 @@ def _save_hub_users(data: dict[str, Any]) -> None:
     tmp = HUB_USERS_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
     tmp.replace(HUB_USERS_FILE)
+
+
+def _global_trial_schedule() -> dict[str, Any]:
+    default = {
+        "version": 1,
+        "start_at": GLOBAL_TRIAL_START,
+        "end_at": GLOBAL_TRIAL_END,
+        "duration_days": 30,
+    }
+    with _GLOBAL_TRIAL_LOCK:
+        if GLOBAL_TRIAL_FILE.is_file():
+            try:
+                data = json.loads(GLOBAL_TRIAL_FILE.read_text(encoding="utf-8"))
+                if isinstance(data, dict) and data.get("start_at") and data.get("end_at"):
+                    return data
+            except Exception:
+                pass
+        GLOBAL_TRIAL_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = GLOBAL_TRIAL_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(default, indent=2), encoding="utf-8")
+        tmp.replace(GLOBAL_TRIAL_FILE)
+        return default
+
+
+def _global_trial_status() -> dict[str, Any]:
+    schedule = _global_trial_schedule()
+    now = datetime.now(timezone.utc)
+    start = datetime.fromisoformat(str(schedule["start_at"]))
+    end = datetime.fromisoformat(str(schedule["end_at"]))
+    remaining = max(0, int((end - now).total_seconds()))
+    return {
+        **schedule,
+        "server_now": now.isoformat(),
+        "active": start <= now < end,
+        "expired": now >= end,
+        "remaining_seconds": remaining,
+    }
 
 
 def _password_hash(password: str, salt: bytes) -> str:
@@ -251,7 +293,12 @@ def hub_signup(payload: HubAuthPayload):
         users["users"].append(row)
         _save_hub_users(users)
     identity = _hub_identity(row)
-    return {**identity, "token": issue_token(identity["workspace_id"], identity["user_id"])}
+    return {**identity, "token": issue_token(identity["workspace_id"], identity["user_id"]), "trial": _global_trial_status()}
+
+
+@app.get("/api/mt5/hub/auth/trial")
+def hub_trial_status():
+    return _global_trial_status()
 
 
 @app.post("/api/mt5/hub/auth/login")
@@ -268,7 +315,7 @@ def hub_login(payload: HubAuthPayload):
     if not valid:
         raise HTTPException(status_code=401, detail="Invalid MT5 Hub login.")
     identity = _hub_identity(row)
-    return {**identity, "token": issue_token(identity["workspace_id"], identity["user_id"])}
+    return {**identity, "token": issue_token(identity["workspace_id"], identity["user_id"]), "trial": _global_trial_status()}
 
 
 @app.get("/api/mt5/hub/auth/me")
@@ -280,7 +327,7 @@ def hub_me(request: Request):
         row = next((item for item in _load_hub_users()["users"] if item.get("workspace_id") == workspace_id), None)
     if not row:
         raise HTTPException(status_code=401, detail="MT5 Hub workspace no longer exists.")
-    return _hub_identity(row)
+    return {**_hub_identity(row), "trial": _global_trial_status()}
 
 
 def fail(exc: Exception, status: int = 400):
@@ -1340,11 +1387,13 @@ def start_bot(bot_id: int, payload: dict[str, Any] = Body(default_factory=dict))
     if bot.get("native_engine"):
         if not bot.get("native_ready"):
             raise HTTPException(status_code=409, detail=f"{bot.get('name') or 'This preset'} needs its MQ5 source before native execution can be enabled.")
+        native_meta = dict(NATIVE_PRESETS.get(int(bot_id)) or {})
+        native_timeframe = str(native_meta.get("entry_tf") or bot.get("timeframe") or "M5")
         def save_native_config(st):
             row = next(b for b in st["bots"] if int(b["id"]) == bot_id)
             if isinstance(payload.get("settings"), dict):
                 row["settings"] = {**dict(row.get("settings") or {}), **dict(payload["settings"])}
-            row.update({"account_login": login, "symbol": symbol, "timeframe": "M5", "lot_size": float(payload.get("lot_size") or row.get("lot_size") or 0.01)})
+            row.update({"account_login": login, "symbol": symbol, "timeframe": native_timeframe, "lot_size": float(payload.get("lot_size") or row.get("lot_size") or 0.01)})
             return dict(row)
         update_state(save_native_config)
         try:

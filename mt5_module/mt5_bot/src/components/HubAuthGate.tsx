@@ -2,7 +2,10 @@ import { FormEvent, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { ArrowDown, ArrowLeft, ArrowRight, Bot, BrainCircuit, ChartNoAxesCombined, Copy, Eye, EyeOff, Landmark, ShieldCheck } from 'lucide-react';
 import { hubAuthService } from '../services/hubAuthService';
+import type { HubAuthResponse, HubTrialInfo } from '../services/hubAuthService';
 import { hostHomeUrl } from '../config/runtime';
+import ContactSupport from './ContactSupport';
+import TrialNotice from './TrialNotice';
 
 type EntryView = 'cover' | 'login' | 'signup';
 const logo = '/mt5-bot/favicon.svg';
@@ -28,16 +31,40 @@ function Cover({ open }: { open: (view: EntryView) => void }) {
   </main>;
 }
 
-function Auth({ mode, open, complete }: { mode: Exclude<EntryView, 'cover'>; open: (view: EntryView) => void; complete: () => void }) {
+function Auth({ mode, open, complete }: { mode: Exclude<EntryView, 'cover'>; open: (view: EntryView) => void; complete: (result: HubAuthResponse) => void }) {
   const [username, setUsername] = useState(''); const [password, setPassword] = useState(''); const [show, setShow] = useState(false); const [error, setError] = useState(''); const [busy, setBusy] = useState(false); const login = mode === 'login';
-  const submit = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(''); try { if (login) await hubAuthService.login(username, password); else await hubAuthService.signup(username, password); complete(); } catch (err) { setError(err instanceof Error ? err.message : 'MT5 Hub sign-in failed.'); } finally { setBusy(false); } };
+  const submit = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(''); try { const result = login ? await hubAuthService.login(username, password) : await hubAuthService.signup(username, password); complete(result); } catch (err) { setError(err instanceof Error ? err.message : 'MT5 Hub sign-in failed.'); } finally { setBusy(false); } };
   return <main className="mt5-public mt5-auth"><header className="mt5-public-head"><Brand /><nav><button onClick={() => open('cover')}><ArrowLeft size={15} /> Back to home</button><button onClick={() => window.location.assign(hostHomeUrl || '/')}>KOOLKID AI BOT</button><button className="mt5-nav-cta" onClick={() => open(login ? 'signup' : 'login')}>{login ? 'Create account' : 'Log in'}</button></nav></header><section><div className="mt5-grid" aria-hidden="true" /><div className="mt5-auth-mark"><img src={logo} alt="" /> MT5</div><form onSubmit={submit}><p className="mt5-kicker">YOUR MT5 WORKSPACE</p><h1>{login ? 'Welcome back.' : 'Make it yours.'}</h1><p className="mt5-muted">{login ? 'Your next move starts here.' : 'Create your MT5 Hub account. No license key required.'}</p><label>Username<input required minLength={3} maxLength={80} value={username} onChange={(event) => setUsername(event.target.value)} placeholder="Your MT5 Hub username" autoComplete="username" autoCapitalize="none" /></label><label>Password<div className="mt5-password"><input required minLength={8} type={show ? 'text' : 'password'} value={password} onChange={(event) => setPassword(event.target.value)} placeholder={login ? 'Your password' : 'Choose a password'} autoComplete={login ? 'current-password' : 'new-password'} /><button type="button" onClick={() => setShow(!show)} title={show ? 'Hide password' : 'Show password'}>{show ? <EyeOff size={17} /> : <Eye size={17} />}</button></div>{!login && <small>Use at least 8 characters.</small>}</label>{error && <p className="mt5-auth-error">{error}</p>}<button className="mt5-primary mt5-auth-submit" disabled={busy}>{busy ? 'Please wait...' : login ? 'Log in' : 'Create account'} <ArrowRight size={17} /></button><p className="mt5-switch">{login ? 'New to KOOLKID MT5?' : 'Already have an account?'} <button type="button" onClick={() => open(login ? 'signup' : 'login')}>{login ? 'Create an account' : 'Log in'}</button></p></form></section><footer className="mt5-footer"><Brand /><p>Your account. Your approach. Your MT5 workspace.</p><button onClick={() => open('cover')}>Home</button></footer></main>;
 }
 
 export default function HubAuthGate({ children }: { children: ReactNode }) {
-  const [ready, setReady] = useState(false); const [signedIn, setSignedIn] = useState(false); const [view, setView] = useState<EntryView>('cover');
-  useEffect(() => { if (!sessionStorage.getItem('koolkid_mt5_hub_token')) { setReady(true); return; } hubAuthService.me().then(() => setSignedIn(true)).catch(() => hubAuthService.logout()).finally(() => setReady(true)); }, []);
-  if (!ready) return <div className="min-h-screen bg-[#04060b]" />;
-  if (signedIn) return <>{children}</>;
-  return view === 'cover' ? <Cover open={setView} /> : <Auth mode={view} open={setView} complete={() => setSignedIn(true)} />;
+  const [ready, setReady] = useState(false);
+  const [signedIn, setSignedIn] = useState(false);
+  const [view, setView] = useState<EntryView>('cover');
+  const [trial, setTrial] = useState<HubTrialInfo | null>(null);
+  const [trialNoticeOpen, setTrialNoticeOpen] = useState(false);
+
+  useEffect(() => {
+    if (!sessionStorage.getItem('koolkid_mt5_hub_token')) {
+      setReady(true);
+      return;
+    }
+    hubAuthService.me()
+      .then((result) => {
+        setTrial(result.trial || null);
+        setSignedIn(true);
+      })
+      .catch(() => hubAuthService.logout())
+      .finally(() => setReady(true));
+  }, []);
+
+  const complete = (result: HubAuthResponse) => {
+    setTrial(result.trial || null);
+    setSignedIn(true);
+    setTrialNoticeOpen(true);
+  };
+
+  if (!ready) return <><div className="min-h-screen bg-[#04060b]" /><ContactSupport trial={trial} /></>;
+  if (signedIn) return <>{children}<ContactSupport trial={trial} /><TrialNotice open={trialNoticeOpen} onClose={() => setTrialNoticeOpen(false)} trial={trial} /></>;
+  return <>{view === 'cover' ? <Cover open={setView} /> : <Auth mode={view} open={setView} complete={complete} />}<ContactSupport trial={trial} /></>;
 }

@@ -1,92 +1,92 @@
-[
-  {
-    "id": 1000,
-    "name": "PRIMORDIAL BLACK",
-    "title": "Liquidity Confluence Sniper",
-    "description": "Multi-timeframe liquidity sweep and displacement strategy using FVG/Order-Block confluence with M5 rejection, micro BOS and momentum confirmation.",
-    "source": "Primordial_Black.mq5",
-    "source_status": "ready",
-    "native_status": "planned"
-  },
-  {
-    "id": 1001,
-    "name": "PRIMORDIAL BLUE",
-    "title": "Trendline Break & Retest Sniper",
-    "description": "Liquidity/FVG/Order-Block framework with a mandatory M15 trendline break and M5 break-zone retest before entry.",
-    "source": "Primordial_Blue.mq5",
-    "source_status": "ready",
-    "native_status": "planned"
-  },
-  {
-    "id": 1002,
-    "name": "PRIMORDIAL EMERALD",
-    "title": "Fibonacci Pullback Precision",
-    "description": "Liquidity raid and displacement strategy focused on the 61.8%-78.6% retracement zone and 61.8%-70.5% sweet spot with M5 confirmation.",
-    "source": "Primordial_Emerald.mq5",
-    "source_status": "ready",
-    "native_status": "planned"
-  },
-  {
-    "id": 1003,
-    "name": "PRIMORDIAL GOLD",
-    "title": "Compression Sweep Expansion",
-    "description": "M15 compression-box strategy that waits for a false-break liquidity sweep and reclaim, then M5 rejection, BOS and momentum before expansion entry.",
-    "source": "Primordial_Gold.mq5",
-    "source_status": "ready",
-    "native_status": "planned"
-  },
-  {
-    "id": 1004,
-    "name": "PRIMORDIAL PURPLE",
-    "title": "OB + FVG MSS Sniper",
-    "description": "High-selectivity Order-Block/FVG liquidity strategy with stronger displacement, short setup expiry and M5 micro-structure confirmation.",
-    "source": "Primordial_Purple.mq5",
-    "source_status": "ready",
-    "native_status": "planned"
-  },
-  {
-    "id": 1005,
-    "name": "PRIMORDIAL RED",
-    "title": "Liquidity Raid Retracement Trader",
-    "description": "Pure liquidity raid plus 61.8%-78.6% Fibonacci retracement model with rejection, micro BOS and momentum confirmation.",
-    "source": "Primordial_Red.mq5",
-    "source_status": "ready",
-    "native_status": "planned"
-  },
-  {
-    "id": 1006,
-    "name": "PRIMORDIAL SILVER",
-    "title": "Range Sweep & MSS Reversal",
-    "description": "H1 range and premium/discount reversal strategy using M15 edge sweep/rejection/break, then M5 retest, confirmation and market-structure shift.",
-    "source": "Primordial_Silver.mq5",
-    "source_status": "ready",
-    "native_status": "planned"
-  },
-  {
-    "id": 1007,
-    "name": "PRIMORDIAL WHITE",
-    "title": "Opening Range Specialist",
-    "description": "First-four-hour opening-range system with sweep/reclaim and breakout/retest routes, selected by setup score and confirmed on M5.",
-    "source": "Primordial_White.mq5",
-    "source_status": "ready",
-    "native_status": "planned"
-  },
-  {
-    "id": 1008,
-    "name": "BLACK ROCK",
-    "title": null,
-    "description": "Native strategy conversion blocked until MQ5 source or a complete written strategy specification is provided.",
-    "source": null,
-    "source_status": "missing",
-    "native_status": "blocked"
-  },
-  {
-    "id": 1009,
-    "name": "DEAR BRUCE PREMIUM",
-    "title": null,
-    "description": "Native strategy conversion blocked until MQ5 source or a complete written strategy specification is provided.",
-    "source": null,
-    "source_status": "missing",
-    "native_status": "blocked"
-  }
+﻿[
+    {
+        "id":  1000,
+        "name":  "PRIMORDIAL BLACK",
+        "title":  "Liquidity Confluence Sniper",
+        "description":  "Multi-timeframe liquidity sweep and displacement strategy using FVG/Order-Block confluence with M5 rejection, micro BOS and momentum confirmation.",
+        "source":  "Primordial_Black.mq5",
+        "source_status":  "ready",
+        "native_status":  "planned"
+    },
+    {
+        "id":  1001,
+        "name":  "PRIMORDIAL BLUE",
+        "title":  "Trendline Break \u0026 Retest Sniper",
+        "description":  "Liquidity/FVG/Order-Block framework with a mandatory M15 trendline break and M5 break-zone retest before entry.",
+        "source":  "Primordial_Blue.mq5",
+        "source_status":  "ready",
+        "native_status":  "planned"
+    },
+    {
+        "id":  1002,
+        "name":  "PRIMORDIAL EMERALD",
+        "title":  "Fibonacci Pullback Precision",
+        "description":  "Liquidity raid and displacement strategy focused on the 61.8%-78.6% retracement zone and 61.8%-70.5% sweet spot with M5 confirmation.",
+        "source":  "Primordial_Emerald.mq5",
+        "source_status":  "ready",
+        "native_status":  "planned"
+    },
+    {
+        "id":  1003,
+        "name":  "PRIMORDIAL GOLD",
+        "title":  "Compression Sweep Expansion",
+        "description":  "M15 compression-box strategy that waits for a false-break liquidity sweep and reclaim, then M5 rejection, BOS and momentum before expansion entry.",
+        "source":  "Primordial_Gold.mq5",
+        "source_status":  "ready",
+        "native_status":  "planned"
+    },
+    {
+        "id":  1004,
+        "name":  "PRIMORDIAL PURPLE",
+        "title":  "OB + FVG MSS Sniper",
+        "description":  "High-selectivity Order-Block/FVG liquidity strategy with stronger displacement, short setup expiry and M5 micro-structure confirmation.",
+        "source":  "Primordial_Purple.mq5",
+        "source_status":  "ready",
+        "native_status":  "planned"
+    },
+    {
+        "id":  1005,
+        "name":  "PRIMORDIAL RED",
+        "title":  "Liquidity Raid Retracement Trader",
+        "description":  "Pure liquidity raid plus 61.8%-78.6% Fibonacci retracement model with rejection, micro BOS and momentum confirmation.",
+        "source":  "Primordial_Red.mq5",
+        "source_status":  "ready",
+        "native_status":  "planned"
+    },
+    {
+        "id":  1006,
+        "name":  "PRIMORDIAL SILVER",
+        "title":  "Range Sweep \u0026 MSS Reversal",
+        "description":  "H1 range and premium/discount reversal strategy using M15 edge sweep/rejection/break, then M5 retest, confirmation and market-structure shift.",
+        "source":  "Primordial_Silver.mq5",
+        "source_status":  "ready",
+        "native_status":  "planned"
+    },
+    {
+        "id":  1007,
+        "name":  "PRIMORDIAL WHITE",
+        "title":  "Opening Range Specialist",
+        "description":  "First-four-hour opening-range system with sweep/reclaim and breakout/retest routes, selected by setup score and confirmed on M5.",
+        "source":  "Primordial_White.mq5",
+        "source_status":  "ready",
+        "native_status":  "planned"
+    },
+    {
+        "id":  1008,
+        "name":  "HUMAN APOSTLE",
+        "title":  "H4 / M15 Structure Reversal",
+        "description":  "Market-structure reversal preset built from the Human Apostle MQ5. It tracks H4 bias and M15 structure, waits for an opposing trendline break, protected-structure shift, later retest and rejection, then enters with source-derived 1% risk and a 2R target.",
+        "source":  "HumanApostle_EA.mq5",
+        "source_status":  "ready",
+        "native_status":  "ready"
+    },
+    {
+        "id":  1009,
+        "name":  "DEAR BRUCE",
+        "title":  "Enhanced Market Structure",
+        "description":  "Enhanced market-structure preset built from Dear Bruce Premium v2.20. It follows the break ? protected-structure shift ? later retest sequence on M5 with H4 alignment, source-derived 1% risk, 2R targets, break-even at 1R and RR trailing from 1.5R.",
+        "source":  "DEAR_BRUCE_PREMIUM.mq5",
+        "source_status":  "ready",
+        "native_status":  "ready"
+    }
 ]

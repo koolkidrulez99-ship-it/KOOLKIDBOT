@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowRightLeft, Landmark, Link2, RefreshCw, ShieldCheck, Users } from 'lucide-react';
+import { ArrowRightLeft, Gauge, Landmark, Link2, RefreshCw, ShieldCheck, Users } from 'lucide-react';
 import { Badge, EmptyState, PageHeader, Panel, Spinner } from '../components/ui';
 import { useHub } from '../context/HubContext';
 import { isSimulation } from '../config/runtime';
@@ -7,6 +7,17 @@ import NumberStepper from '../components/NumberStepper';
 import { mt5MultiAccountService } from '../services/mt5MultiAccountService';
 
 type LotMode = 'same' | 'fixed' | 'multiplier' | 'equity_proportional';
+
+interface CopyTimingActivity {
+  time?: number;
+  event?: string;
+  master_ticket?: string | number;
+  elapsed_ms?: number;
+  fill_spread_ms?: number;
+  slave_count?: number;
+  filled_count?: number;
+  results?: Record<string, { ok?: boolean; elapsed_ms?: number; error?: string }>;
+}
 
 export default function CopyTradingPage() {
   const { accounts, pushToast } = useHub();
@@ -23,6 +34,28 @@ export default function CopyTradingPage() {
     account_id: `session-${account.login}`, login: account.login, connected: account.status === 'connected',
   }])), [accounts]);
   const running = status?.status === 'running';
+  const copyActivity = useMemo(
+    () => (Array.isArray(status?.activity) ? status.activity as CopyTimingActivity[] : []),
+    [status],
+  );
+  const latestCopyTiming = useMemo(
+    () => copyActivity.find((row) => row.event === 'copy_completed') || null,
+    [copyActivity],
+  );
+  const latestSlaveTimings = useMemo(
+    () => Object.entries(latestCopyTiming?.results || {}).sort((a, b) => Number(a[1].elapsed_ms || 0) - Number(b[1].elapsed_ms || 0)),
+    [latestCopyTiming],
+  );
+  const copySamples = useMemo(
+    () => copyActivity.filter((row) => row.event === 'copy_completed' && Number.isFinite(Number(row.elapsed_ms))).slice(0, 16),
+    [copyActivity],
+  );
+  const medianCopyMs = useMemo(() => {
+    const values = copySamples.map((row) => Number(row.elapsed_ms || 0)).sort((a, b) => a - b);
+    if (!values.length) return 0;
+    const mid = Math.floor(values.length / 2);
+    return values.length % 2 ? values[mid] : (values[mid - 1] + values[mid]) / 2;
+  }, [copySamples]);
 
   const load = async () => {
     try {
@@ -44,6 +77,24 @@ export default function CopyTradingPage() {
   };
 
   useEffect(() => { load(); }, []);
+
+  useEffect(() => {
+    if (!running) return;
+    let cancelled = false;
+    const refreshTiming = async () => {
+      try {
+        const copyData = await mt5MultiAccountService.copyStatus();
+        if (!cancelled) setStatus(copyData);
+      } catch {
+        // The normal Refresh action surfaces worker errors.
+      }
+    };
+    const id = window.setInterval(refreshTiming, 1500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [running]);
 
   const chooseMaster = (login: number) => {
     setMaster(login);
@@ -130,6 +181,67 @@ export default function CopyTradingPage() {
               </div>;
             })}
           </div>
+        </Panel>
+
+        <Panel className="p-5 mb-5">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-bold text-white flex items-center gap-2"><Gauge size={15} className="text-brand-300" /> Copy execution latency</h3>
+              <p className="mt-1 text-xs text-slate-500">Real concurrent slave timing from the Copy Trader engine.</p>
+            </div>
+            <Badge tone={latestCopyTiming && Number(latestCopyTiming.elapsed_ms || 0) <= 250 ? 'gain' : latestCopyTiming && Number(latestCopyTiming.elapsed_ms || 0) <= 750 ? 'warn' : latestCopyTiming ? 'loss' : 'slate'}>
+              {latestCopyTiming ? `${Number(latestCopyTiming.elapsed_ms || 0).toFixed(1)} MS` : 'NO SAMPLE'}
+            </Badge>
+          </div>
+          {latestCopyTiming ? (
+            <>
+              <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-2 text-center">
+                <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] px-2 py-3">
+                  <p className="text-[9px] uppercase tracking-widest text-slate-600 font-semibold">Latest</p>
+                  <p className="mono mt-1 text-lg font-extrabold text-white">{Number(latestCopyTiming.elapsed_ms || 0).toFixed(1)}<span className="ml-1 text-[10px] text-slate-500">ms</span></p>
+                </div>
+                <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] px-2 py-3">
+                  <p className="text-[9px] uppercase tracking-widest text-slate-600 font-semibold">Median</p>
+                  <p className="mono mt-1 text-lg font-extrabold text-white">{medianCopyMs.toFixed(1)}<span className="ml-1 text-[10px] text-slate-500">ms</span></p>
+                </div>
+                <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] px-2 py-3">
+                  <p className="text-[9px] uppercase tracking-widest text-slate-600 font-semibold">Fill spread</p>
+                  <p className="mono mt-1 text-lg font-extrabold text-white">{Number(latestCopyTiming.fill_spread_ms || 0).toFixed(1)}<span className="ml-1 text-[10px] text-slate-500">ms</span></p>
+                </div>
+                <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] px-2 py-3">
+                  <p className="text-[9px] uppercase tracking-widest text-slate-600 font-semibold">Filled</p>
+                  <p className="mono mt-1 text-lg font-extrabold text-white">{Number(latestCopyTiming.filled_count || 0)}/{Number(latestCopyTiming.slave_count || 0)}</p>
+                </div>
+              </div>
+              <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-2">
+                {latestSlaveTimings.map(([accountId, result]) => {
+                  const login = Number(accountId.replace(/^session-/, ''));
+                  const label = accounts.find((account) => account.login === login)?.nickname || accountId;
+                  return (
+                    <div key={accountId} className="flex items-center justify-between gap-3 rounded-xl border border-white/[0.05] bg-white/[0.025] px-3 py-2.5">
+                      <div className="min-w-0">
+                        <p className="truncate text-[12px] font-semibold text-slate-300">{label}</p>
+                        <p className="mono text-[10px] text-slate-600">{accountId}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className={`mono text-[12px] font-bold ${result.ok ? 'text-gain-400' : 'text-loss-400'}`}>{Number(result.elapsed_ms || 0).toFixed(1)} ms</p>
+                        <p className="text-[9px] uppercase tracking-wider text-slate-600">{result.ok ? 'FILLED' : 'FAILED'}</p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="mt-4 flex h-12 items-end gap-1 rounded-xl border border-white/[0.05] bg-black/20 px-2 py-2">
+                {copySamples.slice().reverse().map((sample, index, values) => {
+                  const peak = Math.max(1, ...values.map((item) => Number(item.elapsed_ms || 0)));
+                  const height = Math.max(8, Math.round((Number(sample.elapsed_ms || 0) / peak) * 100));
+                  return <div key={`${sample.time || 0}-${index}`} title={`${Number(sample.elapsed_ms || 0).toFixed(1)} ms`} className="flex-1 rounded-sm bg-brand-500/70" style={{ height: `${height}%` }} />;
+                })}
+              </div>
+            </>
+          ) : (
+            <p className="mt-4 text-xs text-slate-600">No copied-trade timing sample yet. After the next approved copy, KOOLKID will show total execution time, each slave's ms, and the fill spread between slaves.</p>
+          )}
         </Panel>
 
         <Panel className="p-5">
