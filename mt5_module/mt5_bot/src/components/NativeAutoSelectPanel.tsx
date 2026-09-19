@@ -22,8 +22,8 @@ type Props = {
 const MODES: Array<{ value: AiAutoSelectMode; label: string; note: string }> = [
   { value: 'analysis', label: 'ANALYSIS ONLY', note: 'Scan and rank only' },
   { value: 'alert', label: 'ALERT ONLY', note: 'Notify on a full setup' },
-  { value: 'manual', label: 'MANUAL CONFIRM', note: 'You approve the DEMO order' },
-  { value: 'auto', label: 'AUTO DEMO', note: 'DEMO execution only' },
+  { value: 'manual', label: 'MANUAL CONFIRM', note: 'You approve each order' },
+  { value: 'auto', label: 'AUTO EXECUTE', note: 'LIVE requires risk confirmation' },
 ];
 const tone = (decision?: string): 'gain' | 'loss' | 'warn' | 'slate' => {
   if (decision === 'APPROVE') return 'gain';
@@ -49,7 +49,7 @@ export default function NativeAutoSelectPanel(props: Props) {
             <div><p className="text-[15px] font-extrabold text-white">AI Auto Select · Native Strategies</p>
               <p className="text-[10px] text-slate-600">KOOLKID evaluates the enabled native presets independently.</p></div>
             <Badge tone={active ? 'gain' : running ? 'warn' : 'slate'}>{active ? 'SERVER ACTIVE' : running ? 'STARTING' : 'OFF'}</Badge>
-            <Badge tone="warn">AUTO = DEMO ONLY</Badge>
+            <Badge tone="warn">LIVE = CONFIRM FIRST</Badge>
           </div>
         </div>
         <div className="text-right text-[10px] text-slate-600">
@@ -94,13 +94,13 @@ export default function NativeAutoSelectPanel(props: Props) {
         </button>
         <button className={running ? 'btn-secondary' : 'btn-primary'}
           onClick={running ? props.onStop : props.onStart}
-          disabled={busy || simulation || (!running && (!accountLogin || !selectedBotIds.length || (mode === 'auto' && accountType !== 'demo')))}>
+          disabled={busy || simulation || (!running && (!accountLogin || !selectedBotIds.length))}>
           {busy ? <Spinner size={14} /> : running ? <Square size={14} /> : <Activity size={14} />}
           {running ? 'Stop Auto Select' : 'Start Auto Select'}
         </button>
         {mode === 'manual' && selected?.decision === 'APPROVE' && (
-          <button className="btn-primary" onClick={props.onExecute} disabled={busy || simulation || accountType !== 'demo'}>
-            <Play size={14} /> Execute Selected DEMO Setup
+          <button className="btn-primary" onClick={props.onExecute} disabled={busy || simulation}>
+            <Play size={14} /> Execute Selected Setup
           </button>
         )}
       </div>

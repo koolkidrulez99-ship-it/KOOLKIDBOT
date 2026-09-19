@@ -296,7 +296,14 @@ def _manage_open_position(bot: dict[str, Any], positions: list[dict[str, Any]], 
         managed["last_managed_at"] = _now()
         _patch_bot(int(bot["id"]), native_managed_position=managed)
 
-def _execute(bot: dict[str, Any], signal: dict[str, Any], account: dict[str, Any], symbol_info: dict[str, Any]) -> dict[str, Any]:
+def _execute(
+    bot: dict[str, Any],
+    signal: dict[str, Any],
+    account: dict[str, Any],
+    symbol_info: dict[str, Any],
+    *,
+    allow_live: bool = False,
+) -> dict[str, Any]:
     signal_key = str(signal.get("signal_key") or "")
     if not signal_key:
         raise RuntimeError("Native signal has no stable signal key.")
@@ -313,6 +320,7 @@ def _execute(bot: dict[str, Any], signal: dict[str, Any], account: dict[str, Any
         "sl": float(signal["sl"]), "tp": float(signal["tp"]),
         "magic": int((_preset(int(bot["id"])) or {}).get("magic") or 0),
         "comment": prefix,
+        "confirm_live": bool(allow_live),
     }
     try:
         result = multi_account_client.request("/manual-trade", "POST", payload, timeout=25)
@@ -375,7 +383,7 @@ def _cycle(bot_id: int) -> None:
         return
     signal_key = str(signal.get("signal_key") or "")
     if signal_key and not _already_attempted(bot_id, signal_key):
-        execution = _execute(bot, signal, account, market["symbol_info"])
+        execution = _execute(bot, signal, account, market["symbol_info"], allow_live=bool(config.get("allow_live")))
         _runtime(bot_id, status="running", last_execution=execution, last_execution_at=_now(), last_error=None)
 
 
@@ -459,7 +467,7 @@ def execute_signal_once(
         symbol_info = multi_account_client.account_request(
             int(account_login), f"/symbol-info/{str(symbol)}", timeout=8,
         )
-    return _execute(runtime_bot, signal, account, dict(symbol_info or {}))
+    return _execute(runtime_bot, signal, account, dict(symbol_info or {}), allow_live=not demo_only)
 
 
 def start(workspace_id: str, bot_id: int, account_login: int, symbol: str, *, allow_live: bool = False, scan_seconds: int = 20) -> dict[str, Any]:

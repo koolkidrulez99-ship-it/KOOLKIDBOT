@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import math
 import os
 import re
 import sys
@@ -289,6 +290,7 @@ class TradePayload(BaseModel):
     sl: float | None = None
     tp: float | None = None
     source: str | None = None
+    confirm_live: bool = False
 
 
 class AiTrialScanPayload(BaseModel):
@@ -300,6 +302,7 @@ class AiTrialExecutePayload(BaseModel):
     account_login: int
     symbol: str = Field(min_length=1, max_length=64)
     volume: float = Field(gt=0)
+    confirm_live: bool = False
 
 
 class AiAutoConfigPayload(BaseModel):
@@ -308,6 +311,7 @@ class AiAutoConfigPayload(BaseModel):
     symbol: str | None = Field(default=None, min_length=1, max_length=64)
     volume: float | None = Field(default=None, gt=0)
     scan_seconds: int = Field(default=30, ge=15, le=300)
+    confirm_live: bool = False
 
 
 class AiAutoSelectScanPayload(BaseModel):
@@ -323,6 +327,11 @@ class AiAutoSelectConfigPayload(BaseModel):
     enabled_bot_ids: list[int] = Field(default_factory=list)
     mode: str = "analysis"
     scan_seconds: int = Field(default=30, ge=15, le=300)
+    confirm_live: bool = False
+
+
+class AiAutoSelectExecutePayload(BaseModel):
+    confirm_live: bool = False
 
 
 @app.post("/api/mt5/hub/auth/signup")
@@ -625,7 +634,7 @@ def _run_ai_trial_scan(payload: AiTrialScanPayload) -> dict[str, Any]:
     previous = load_ai_trial_snapshot()
     snapshot = run_human_apostle_trial(execution_rows, bias_rows, symbol=payload.symbol, account_login=payload.account_login)
     snapshot.setdefault("execution_mode", "SIGNAL_ONLY")
-    snapshot.setdefault("execution_lock", "demo_only")
+    snapshot.setdefault("execution_lock", "live_requires_explicit_confirmation")
     if previous and int(previous.get("account_login") or 0) == int(payload.account_login) and str(previous.get("symbol") or "") == payload.symbol:
         snapshot["last_execution"] = previous.get("last_execution")
     else:
@@ -670,26 +679,30 @@ def _ai_runtime(**updates: Any) -> dict[str, Any]:
     return update_state(mut)
 
 
-def _connected_demo_ai_account(login: int) -> dict[str, Any]:
-    # Verify DEMO/LIVE from the authoritative per-account worker, not only from the
-    # bridge profile cache. MT5 trade_mode 2 is a real-money account. If the worker
-    # cannot prove the account mode, AI execution stays locked rather than guessing.
+def _connected_ai_account(login: int, *, allow_live: bool = False) -> dict[str, Any]:
+    # Verify account mode from the authoritative per-account worker. MT5 trade_mode
+    # 2 is a real-money account. LIVE execution requires an explicit confirmation
+    # on the specific request that enables/submits the trade.
     workers = multi_account_client.connected_by_login()
     worker = workers.get(int(login))
     if not worker:
         raise RuntimeError(f"MT5 account #{login} is disconnected. AI will keep waiting for it to reconnect.")
-    info = worker.get("account_info") or {}
+    info = dict(worker.get("account_info") or {})
+    if bool(info.get("read_only")) or str(info.get("access_mode") or "").lower() == "investor":
+        raise PermissionError("AI execution is blocked on investor/read-only MT5 accounts.")
     trade_mode = info.get("trade_mode")
     if trade_mode is None:
-        raise PermissionError("KOOLKID could not verify that this MT5 account is DEMO. AI execution remains locked.")
+        raise PermissionError("KOOLKID could not verify the MT5 account mode. AI execution remains locked.")
     try:
+        if isinstance(trade_mode, bool) or str(trade_mode) not in {"0", "1", "2"}:
+            raise ValueError("Unknown account mode")
         is_live = int(trade_mode) == 2
     except (TypeError, ValueError):
-        raise PermissionError("KOOLKID could not verify that this MT5 account is DEMO. AI execution remains locked.")
-    if is_live:
-        raise PermissionError("Human Apostle auto-trading is locked to DEMO accounts. Live AI execution is not enabled.")
+        raise PermissionError("KOOLKID could not verify the MT5 account mode. AI execution remains locked.")
+    if is_live and not allow_live:
+        raise PermissionError("LIVE AI execution requires explicit confirmation of the real-money risk warning.")
     account = next((row for row in accounts() if int(row.get("login") or 0) == int(login)), None) or {}
-    return {**account, "status": "connected", "account_type": "demo", "worker": worker}
+    return {**account, "status": "connected", "account_type": "live" if is_live else "demo", "worker": worker}
 
 
 def _record_signal_attempt(signal_key: str, snapshot: dict[str, Any], volume: float, source: str) -> None:
@@ -724,19 +737,41 @@ def _finish_signal_attempt(signal_key: str, status: str, **extra: Any) -> None:
     update_state(mut)
 
 
-def _execute_apostle_snapshot(snapshot: dict[str, Any], volume: float, *, source: str) -> dict[str, Any]:
+def _execute_apostle_snapshot(
+    snapshot: dict[str, Any],
+    volume: float,
+    *,
+    source: str,
+    allow_live: bool = False,
+    expected_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     if snapshot.get("decision") not in {"BUY", "SELL"} or not snapshot.get("proposed_trade"):
         raise HTTPException(status_code=409, detail="The current Apostle result is not a tradable BUY/SELL signal.")
     login = int(snapshot.get("account_login") or 0)
     symbol = str(snapshot.get("symbol") or "")
-    _connected_demo_ai_account(login)
-    trade_plan = snapshot["proposed_trade"]
     signal_key = _ai_signal_key(snapshot)
     workspace_id = current_workspace()
     with _ai_execution_lock(workspace_id):
         prior = (read_state().get("ai_signal_attempts") or {}).get(signal_key)
         if prior:
             raise HTTPException(status_code=409, detail="This Apostle completed-candle signal was already submitted once. KOOLKID will not duplicate it.")
+        fresh = _run_ai_trial_scan(AiTrialScanPayload(account_login=login, symbol=symbol))
+        if fresh.get("decision") not in {"BUY", "SELL"} or not fresh.get("proposed_trade") or _ai_signal_key(fresh) != signal_key:
+            raise HTTPException(status_code=409, detail="The Apostle setup changed before execution. Run a fresh scan.")
+        snapshot = fresh
+        trade_plan = snapshot["proposed_trade"]
+        direction = str(trade_plan.get("direction") or "").upper()
+        prices = [float(trade_plan.get(key) or 0) for key in ("entry", "sl", "tp")]
+        entry, sl, tp = prices
+        if not math.isfinite(float(volume)) or volume <= 0 or not all(math.isfinite(p) and p > 0 for p in prices) or not (
+            direction == "BUY" and sl < entry < tp or direction == "SELL" and tp < entry < sl
+        ):
+            raise HTTPException(status_code=409, detail="The Apostle trade has invalid size or protective prices.")
+        execution_account = _connected_ai_account(login, allow_live=allow_live)
+        if source == "ai_auto_human_apostle":
+            active = read_state().get("ai_auto_config") or {}
+            if not expected_config or not active.get("enabled") or active != expected_config:
+                raise HTTPException(status_code=409, detail="AI automation stopped or settings changed during the scan.")
         # Mark before order submission. Even if the broker response is ambiguous, the same
         # completed-candle signal is never retried automatically and can never double-fire.
         _record_signal_attempt(signal_key, snapshot, volume, source)
@@ -749,31 +784,37 @@ def _execute_apostle_snapshot(snapshot: dict[str, Any], volume: float, *, source
                 sl=float(trade_plan.get("sl") or 0),
                 tp=float(trade_plan.get("tp") or 0),
                 source=source,
+                confirm_live=bool(allow_live),
             ))
+            if not isinstance(result, dict) or result.get("retcode") not in {10009, 10010} or not any(result.get(k) for k in ("ticket", "deal", "order")):
+                raise HTTPException(status_code=409, detail="MT5 did not confirm an AI fill. Check positions before submitting a new signal.")
         except Exception as exc:
             detail = getattr(exc, "detail", None) or str(exc)
             _finish_signal_attempt(signal_key, "failed", error=str(detail))
             raise
 
+        account_type = str(execution_account.get("account_type") or "demo").lower()
         execution_record = {
             "executed": True,
             "account_login": login,
+            "account_type": account_type,
             "symbol": symbol,
             "volume": float(volume),
             "direction": trade_plan.get("direction"),
             "executed_at": _ai_now(),
             "signal_time": int(trade_plan.get("time") or 0),
             "signal_key": signal_key,
-            "mode": "DEMO_AUTO_TRADE",
+            "mode": "LIVE_AUTO_TRADE" if account_type == "live" else "DEMO_AUTO_TRADE",
             "automatic": source == "ai_auto_human_apostle",
             "source": source,
             "result": result,
-            "message": "Demo order submitted automatically by Human Apostle." if source == "ai_auto_human_apostle" else "Demo order submitted from the current Apostle signal.",
+            "message": ("LIVE order submitted" if account_type == "live" else "Demo order submitted")
+                + (" automatically by Human Apostle." if source == "ai_auto_human_apostle" else " from the current Apostle signal."),
         }
         _finish_signal_attempt(signal_key, "executed", result=result)
-        snapshot["execution_mode"] = "DEMO_AUTO_TRADE"
+        snapshot["execution_mode"] = execution_record["mode"]
         snapshot["last_execution"] = execution_record
-        snapshot["execution"] = "Demo execution sent to MT5. Live accounts stay locked."
+        snapshot["execution"] = f"{account_type.upper()} execution sent to MT5."
         save_ai_trial_snapshot(snapshot)
         return execution_record
 
@@ -784,7 +825,8 @@ def _run_ai_auto_cycle(config: dict[str, Any]) -> None:
     volume = float(config.get("volume") or 0)
     if not login or not symbol or volume <= 0:
         raise RuntimeError("AI Auto-Trading configuration is incomplete.")
-    _connected_demo_ai_account(login)
+    allow_live = bool(config.get("allow_live"))
+    _connected_ai_account(login, allow_live=allow_live)
     snapshot = _run_ai_trial_scan(AiTrialScanPayload(account_login=login, symbol=symbol))
     now = _ai_now()
     runtime = {
@@ -806,7 +848,10 @@ def _run_ai_auto_cycle(config: dict[str, Any]) -> None:
     if signal_key in registry:
         return
     try:
-        execution = _execute_apostle_snapshot(snapshot, volume, source="ai_auto_human_apostle")
+        execution = _execute_apostle_snapshot(
+            snapshot, volume, source="ai_auto_human_apostle", allow_live=allow_live,
+            expected_config=config,
+        )
     except HTTPException as exc:
         if exc.status_code == 409 and "already submitted" in str(exc.detail).lower():
             return
@@ -876,7 +921,7 @@ def _ai_auto_status() -> dict[str, Any]:
         runtime["status"] = "stopped"
     return {
         "strategy": "Human Apostle",
-        "execution_lock": "demo_only",
+        "execution_lock": "live_requires_explicit_confirmation",
         "execution_timeframe": "M15",
         "bias_timeframe": "H4",
         "enabled": enabled,
@@ -908,8 +953,16 @@ def root():
 
 @app.get("/health")
 def health():
-    copy_online = not bool(session_snapshot().get("offline"))
-    return {"ok": True, "revision": "mt5-bridge-ea-v6", "time": datetime.now(timezone.utc).isoformat(), "copy_worker": "online" if copy_online else "offline", "ea_worker": ea_worker_client.status()}
+    account_worker = multi_account_client.public_status()
+    ea_worker = ea_worker_client.public_status()
+    return {
+        "ok": True,
+        "revision": "mt5-bridge-ea-v6",
+        "time": datetime.now(timezone.utc).isoformat(),
+        "copy_worker": account_worker["status"],
+        "account_worker": account_worker,
+        "ea_worker": ea_worker,
+    }
 
 
 @app.get("/api/mt5/bridge/status")
@@ -974,6 +1027,7 @@ def accounts():
             "margin": float(info.get("margin") or 0), "free_margin": float(info.get("margin_free") or 0),
             "floating_pl": float(info.get("profit") or 0), "leverage": int(info.get("leverage") or row.get("leverage") or 0),
             "currency": info.get("currency") or row.get("currency") or "USD",
+            "account_type": "live" if int(info.get("trade_mode") or 0) == 2 else "demo",
             "last_heartbeat": datetime.now(timezone.utc).isoformat(),
         })
     return rows
@@ -1142,9 +1196,22 @@ def trade(payload: TradePayload):
     workers = normalize_http_errors(multi_account_client.connected_by_login)
     worker = workers.get(payload.account_login)
     if worker:
+        info = dict(worker.get("account_info") or {})
+        if bool(info.get("read_only")) or str(info.get("access_mode") or "").lower() == "investor":
+            raise HTTPException(status_code=403, detail="Trading is blocked on investor/read-only MT5 accounts.")
+        trade_mode = info.get("trade_mode")
+        if trade_mode is None:
+            raise HTTPException(status_code=403, detail="KOOLKID could not verify the MT5 account mode.")
+        try:
+            is_live = int(trade_mode) == 2
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=403, detail="KOOLKID could not verify the MT5 account mode.")
+        if is_live and not payload.confirm_live:
+            raise HTTPException(status_code=403, detail="LIVE trading requires explicit confirmation of the testing-phase risk warning.")
         result = normalize_http_errors(lambda: multi_account_client.request("/manual-trade", "POST", {
             "target_account_ids": [worker["account_id"]], "symbol": payload.symbol,
             "side": payload.type.lower(), "volume": payload.volume, "sl": payload.sl or 0, "tp": payload.tp or 0,
+            "confirm_live": bool(payload.confirm_live),
         }, timeout=55))
         row = result.get("results", {}).get(worker["account_id"], {})
         if not row.get("ok"):
@@ -1665,7 +1732,7 @@ def start_bot(bot_id: int, payload: dict[str, Any] = Body(default_factory=dict))
         raise HTTPException(status_code=409, detail="Uploaded .ex5 file was not found. Upload the EA before starting it.")
     preset_rel = bot.get("preset_storage_path")
     worker_payload = {
-        "bot_id": bot_id, "account_login": login, "account_type": profile.get("account_type", "demo"),
+        "bot_id": bot_id, "account_login": login, "account_type": "live" if int(info.get("trade_mode") or 0) == 2 else "demo",
         "server": profile.get("server"), "symbol": symbol, "timeframe": str(payload.get("timeframe") or bot.get("timeframe") or ""),
         "ea_path": str((ROOT / ea_rel).resolve()), "ea_filename": bot.get("ea_filename"),
         "preset_path": str((ROOT / preset_rel).resolve()) if preset_rel else None, "preset_filename": bot.get("preset_filename"),
@@ -1823,14 +1890,17 @@ def emergency_stop_close():
 @app.get("/api/mt5/ai/trial")
 def get_ai_trial():
     snapshot = load_ai_trial_snapshot()
+    if snapshot:
+        snapshot = dict(snapshot)
+        snapshot["execution_lock"] = "live_requires_explicit_confirmation"
     return {
         "trial_version": "1.0-user-trial",
         "strategy": "Human Apostle",
-        "mode": "DEMO_EXECUTION_LOCKED_TO_DEMO",
+        "mode": "EXECUTION_REQUIRES_LIVE_CONFIRMATION",
         "execution_timeframe": "M15",
         "bias_timeframe": "H4",
         "snapshot": snapshot,
-        "execution": "Human Apostle can scan manually or run continuously on the server. Demo execution only; live AI execution stays locked.",
+        "execution": "Human Apostle can scan manually or run continuously on the server. Live execution requires explicit confirmation for the selected account.",
     }
 
 
@@ -1857,7 +1927,12 @@ def execute_ai_trial(payload: AiTrialExecutePayload):
     if int(snapshot.get("account_login") or 0) != int(payload.account_login) or str(snapshot.get("symbol") or "") != payload.symbol:
         raise HTTPException(status_code=409, detail="The stored Apostle snapshot no longer matches the selected account and symbol. Run a fresh scan first.")
     try:
-        execution = _execute_apostle_snapshot(snapshot, payload.volume, source="ai_manual_demo")
+        execution = _execute_apostle_snapshot(
+            snapshot,
+            payload.volume,
+            source="ai_manual_human_apostle",
+            allow_live=bool(payload.confirm_live),
+        )
         _ai_event("manual_ai_trade_executed", symbol=payload.symbol, direction=execution.get("direction"), signal_time=execution.get("signal_time"), volume=payload.volume)
         return execution
     except PermissionError as exc:
@@ -1898,9 +1973,9 @@ def configure_ai_auto_select(payload: AiAutoSelectConfigPayload):
 
 
 @app.post("/api/mt5/ai/auto-select/execute")
-def execute_ai_auto_select():
+def execute_ai_auto_select(payload: AiAutoSelectExecutePayload):
     try:
-        return ai_auto_select.manual_execute()
+        return ai_auto_select.manual_execute(confirm_live=bool(payload.confirm_live))
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc))
     except RuntimeError as exc:
@@ -1917,12 +1992,12 @@ def configure_ai_auto(payload: AiAutoConfigPayload):
     workspace_id = current_workspace()
     if payload.enabled:
         if not payload.account_login or not payload.symbol or not payload.volume:
-            raise HTTPException(status_code=422, detail="Choose a connected demo account, symbol, and fixed lot size before starting AI Auto-Trading.")
+            raise HTTPException(status_code=422, detail="Choose a connected MT5 account, symbol, and fixed lot size before starting AI Auto-Trading.")
         auto_select_cfg = read_state().get("ai_auto_select_config") or {}
         if auto_select_cfg.get("enabled") and str(auto_select_cfg.get("mode") or "").lower() == "auto":
             raise HTTPException(status_code=409, detail="Stop Auto Select automatic execution before starting Human Apostle Auto-Trading.")
         try:
-            _connected_demo_ai_account(payload.account_login)
+            _connected_ai_account(payload.account_login, allow_live=bool(payload.confirm_live))
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc))
         except RuntimeError as exc:
@@ -1936,7 +2011,7 @@ def configure_ai_auto(payload: AiAutoConfigPayload):
             "scan_seconds": int(payload.scan_seconds),
             "execution_timeframe": "M15",
             "bias_timeframe": "H4",
-            "demo_only": True,
+            "allow_live": bool(payload.confirm_live),
             "updated_at": _ai_now(),
         }
         def enable(st):

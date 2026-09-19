@@ -15,7 +15,7 @@ const tools = [
   [ChartNoAxesCombined, 'Trade and monitor', 'Work from positions, history, charts, account metrics, and manual execution controls.'],
   [Copy, 'Copy Trader', 'Link a master account to selected slaves and keep the relationship running server-side.'],
   [Bot, 'EA Bot Library', 'Assign verified EX5 bots to MT5 terminals and follow their status from one place.'],
-  [BrainCircuit, 'AI Intelligence', 'Review account insight, Human Apostle scanning, and demo-only AI safeguards.'],
+  [BrainCircuit, 'AI Intelligence', 'Review account insight, Human Apostle scanning, and LIVE-risk confirmation safeguards.'],
   [ShieldCheck, 'Risk control', 'Set account guardrails, review exposure, and keep operational controls close.'],
 ] as const;
 

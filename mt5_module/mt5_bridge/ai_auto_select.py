@@ -6,13 +6,14 @@ from typing import Any
 
 import multi_account_client
 import native_runtime
-from hub_auth import reset_workspace, set_workspace
+from hub_auth import current_workspace, reset_workspace, set_workspace
 from native_strategies import NATIVE_PRESETS, evaluate
 from store import read_state, update_state
 
 _THREADS: dict[str, threading.Thread] = {}
 _STOPS: dict[str, threading.Event] = {}
 _LOCK = threading.RLock()
+_EXECUTION_LOCKS: dict[str, threading.RLock] = {}
 MODES = {"analysis", "alert", "manual", "auto"}
 
 
@@ -64,9 +65,24 @@ def _account_mode(login: int) -> str:
     if trade_mode is None:
         return "unknown"
     try:
-        return "live" if int(trade_mode) == 2 else "demo"
+        return {"0": "demo", "1": "demo", "2": "live"}.get(str(trade_mode), "unknown")
     except (TypeError, ValueError):
         return "unknown"
+
+
+def _verify_execution_account(login: int, *, allow_live: bool = False) -> str:
+    worker = multi_account_client.connected_by_login().get(int(login))
+    if not worker:
+        raise RuntimeError(f"MT5 account #{int(login)} is disconnected.")
+    info = dict(worker.get("account_info") or {})
+    if bool(info.get("read_only")) or str(info.get("access_mode") or "").lower() == "investor":
+        raise PermissionError("AI execution is blocked on investor/read-only MT5 accounts.")
+    mode = {"0": "demo", "1": "demo", "2": "live"}.get(str(info.get("trade_mode")), "unknown")
+    if mode == "unknown":
+        raise PermissionError("KOOLKID could not verify the MT5 account mode. AI execution remains locked.")
+    if mode == "live" and not allow_live:
+        raise PermissionError("LIVE AI execution requires explicit confirmation of the real-money risk warning.")
+    return mode
 
 
 def _positions(login: int) -> list[dict[str, Any]]:
@@ -169,7 +185,7 @@ def scan_once(account_login: int, symbol: str, enabled_bot_ids: list[int] | None
             "completed_candles_only": True,
             "confidence_cannot_complete_setup": True,
             "history_is_tiebreaker_only": True,
-            "live_auto_execution": False,
+            "live_execution_requires_confirmation": True,
         },
     }
 def scan_and_store(account_login: int, symbol: str, enabled_bot_ids: list[int] | None = None) -> dict[str, Any]:
@@ -178,22 +194,39 @@ def scan_and_store(account_login: int, symbol: str, enabled_bot_ids: list[int] |
     return snapshot
 
 
-def execute_selected(snapshot: dict[str, Any]) -> dict[str, Any]:
+def execute_selected(snapshot: dict[str, Any], *, allow_live: bool = False, expected_config: dict[str, Any] | None = None) -> dict[str, Any]:
+    with _LOCK:
+        lock = _EXECUTION_LOCKS.setdefault(current_workspace(), threading.RLock())
+    with lock:
+        return _execute_selected(snapshot, allow_live=allow_live, expected_config=expected_config)
+
+
+def _execute_selected(snapshot: dict[str, Any], *, allow_live: bool, expected_config: dict[str, Any] | None) -> dict[str, Any]:
     selected = dict(snapshot.get("selected") or {})
     signal = dict(selected.get("signal") or {})
     if selected.get("decision") != "APPROVE" or not signal.get("valid"):
         raise RuntimeError("Auto Select has no fully confirmed native setup to execute.")
     login = int(snapshot.get("account_login") or 0)
     symbol = str(snapshot.get("symbol") or "")
-    if _account_mode(login) != "demo":
-        raise PermissionError("Auto Select AI execution is locked to DEMO accounts.")
+    _verify_execution_account(login, allow_live=allow_live)
     bot_id = int(selected.get("bot_id") or 0)
     market, _ = native_runtime.fetch_market_snapshot(login, symbol)
     current = evaluate(str((NATIVE_PRESETS.get(bot_id) or {}).get("key") or ""), {**market, "symbol": symbol, "account_login": login}).to_dict()
     if not current.get("valid") or current.get("signal_key") != signal.get("signal_key"):
         raise RuntimeError("The selected setup changed before execution. Auto Select will rescan instead of chasing it.")
+    bot = _bot_map().get(bot_id, {})
+    if bot.get("status") == "running" and (bot.get("native_config") or {}).get("enabled"):
+        raise RuntimeError("This preset is already running independently in Bot Library.")
+    block = _position_block(bot_id, symbol, _positions(login))
+    if block:
+        raise RuntimeError(block)
+    _verify_execution_account(login, allow_live=allow_live)
+    if expected_config is not None:
+        active = read_state().get("ai_auto_select_config") or {}
+        if not active.get("enabled") or active != expected_config:
+            raise RuntimeError("Auto Select stopped or settings changed during the scan.")
     return native_runtime.execute_signal_once(
-        bot_id, login, symbol, current, market.get("symbol_info") or {}, demo_only=True,
+        bot_id, login, symbol, current, market.get("symbol_info") or {}, demo_only=not allow_live,
     )
 
 
@@ -240,7 +273,7 @@ def _cycle(config: dict[str, Any]) -> None:
     if mode != "auto" or not signal_key:
         return
     try:
-        execution = execute_selected(snapshot)
+        execution = execute_selected(snapshot, allow_live=bool(config.get("allow_live")), expected_config=config)
     except RuntimeError as exc:
         if "already submitted" in str(exc).lower() or "changed before execution" in str(exc).lower():
             return
@@ -316,15 +349,18 @@ def configure(workspace_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         if not enabled_ids:
             raise RuntimeError("Enable at least one native preset before starting Auto Select.")
         account_mode = _account_mode(login)
-        if mode == "auto" and account_mode != "demo":
-            raise PermissionError("Auto Select automatic execution is DEMO-only.")
+        allow_live = bool(payload.get("confirm_live"))
+        if mode == "auto":
+            _verify_execution_account(login, allow_live=allow_live)
         if mode == "auto" and bool((read_state().get("ai_auto_config") or {}).get("enabled")):
             raise RuntimeError("Stop Human Apostle Auto-Trading before enabling Auto Select automatic execution.")
         config = {
             "enabled": True, "mode": mode, "account_login": login, "symbol": symbol,
             "enabled_bot_ids": enabled_ids,
             "scan_seconds": max(15, min(int(payload.get("scan_seconds") or 30), 300)),
-            "demo_only_auto_execution": True, "updated_at": _now(),
+            "allow_live": allow_live if mode == "auto" else False,
+            "account_mode": account_mode,
+            "updated_at": _now(),
         }
         def mut(state):
             state["ai_auto_select_config"] = config
@@ -347,9 +383,9 @@ def configure(workspace_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     return status(workspace_id)
 
 
-def manual_execute() -> dict[str, Any]:
+def manual_execute(*, confirm_live: bool = False) -> dict[str, Any]:
     snapshot = dict(read_state().get("ai_auto_select_snapshot") or {})
-    execution = execute_selected(snapshot)
+    execution = execute_selected(snapshot, allow_live=bool(confirm_live))
     _runtime(last_execution_at=_now(), last_execution=execution)
     selected = dict(snapshot.get("selected") or {})
     _event("native_manual_confirm_executed", bot_id=selected.get("bot_id"), name=selected.get("name"),
@@ -375,5 +411,5 @@ def status(workspace_id: str) -> dict[str, Any]:
              "source": meta.get("source"), "entry_tf": meta.get("entry_tf"), "bias_tf": meta.get("bias_tf")}
             for bot_id, meta in NATIVE_PRESETS.items()
         ],
-        "execution_lock": "demo_only_auto_execution",
+        "execution_lock": "live_requires_explicit_confirmation",
     }

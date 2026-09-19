@@ -11,6 +11,7 @@ export interface OpenTradePayload {
   sl?: number | null;
   tp?: number | null;
   source?: string;
+  confirm_live?: boolean;
 }
 
 export const mt5TradingService = {

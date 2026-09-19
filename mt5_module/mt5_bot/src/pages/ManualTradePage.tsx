@@ -12,6 +12,7 @@ import { isSimulation } from '../config/runtime';
 import MarketSelect from '../components/MarketSelect';
 import { usePersistentState } from '../hooks/usePersistentState';
 import Modal from '../components/Modal';
+import ConfirmModal from '../components/ConfirmModal';
 import { mt5MultiAccountService, type MultiAccount } from '../services/mt5MultiAccountService';
 
 interface ExecutionLatencySample {
@@ -57,6 +58,8 @@ export default function ManualTradePage() {
   const [selectedSlaves, setSelectedSlaves] = useState<string[]>([]);
   const [copyLotMode, setCopyLotMode] = useState<'same' | 'fixed' | 'multiplier'>('same');
   const [copyLotValue, setCopyLotValue] = useState('1.00');
+  const [liveConfirmOpen, setLiveConfirmOpen] = useState(false);
+  const [pendingLiveSlaves, setPendingLiveSlaves] = useState<string[]>([]);
   const routingRef = useRef(false);
   const acc = connected.find((account) => Number(account.login) === Number(login)) || null;
   const latestLatency = latencySamples[0] || null;
@@ -168,10 +171,30 @@ export default function ManualTradePage() {
       setCopyOpen(true);
       return;
     }
-    await executeOrder([]);
+    await requestOrder([]);
   };
 
-  const executeOrder = async (slaveIds: string[]) => {
+  const hasLiveTarget = (slaveIds: string[]) => {
+    if (acc?.account_type === 'live') return true;
+    return slaveIds.some((id) => {
+      const multi = multiAccounts.find((row) => row.account_id === id);
+      if (Number(multi?.account_info?.trade_mode) === 2) return true;
+      const hub = accounts.find((row) => Number(row.login) === Number(multi?.login));
+      return hub?.account_type === 'live';
+    });
+  };
+
+  const requestOrder = async (slaveIds: string[]) => {
+    if (!isSimulation && hasLiveTarget(slaveIds)) {
+      setPendingLiveSlaves(slaveIds);
+      setCopyOpen(false);
+      setLiveConfirmOpen(true);
+      return;
+    }
+    await executeOrder(slaveIds, false);
+  };
+
+  const executeOrder = async (slaveIds: string[], confirmLive = false) => {
     if (!acc || routingRef.current) return;
     routingRef.current = true;
     setBusy(true);
@@ -185,7 +208,8 @@ export default function ManualTradePage() {
         const response = await mt5MultiAccountService.manualTrade({ target_account_ids: targetIds, symbol, side, volume: vol,
           sl: useProtection && sl ? slNum : 0, tp: useProtection && tp ? tpNum : 0, ui_clicked_at: uiClickedAt,
           lot_mode: copyLotMode, fixed_lot: copyLotMode === 'fixed' ? Math.max(0.01, Number(copyLotValue) || 0.01) : 0.01,
-          multiplier: copyLotMode === 'multiplier' ? Math.max(0.01, Number(copyLotValue) || 1) : 1 });
+          multiplier: copyLotMode === 'multiplier' ? Math.max(0.01, Number(copyLotValue) || 1) : 1,
+          confirm_live: confirmLive });
         const rows = Object.entries(response.results || {});
         const filled = rows.filter(([, row]) => row.ok);
         const failed = rows.filter(([, row]) => !row.ok);
@@ -211,7 +235,7 @@ export default function ManualTradePage() {
         console.info('KOOLKID MT5 execution timing', { ui_clicked_at: uiClickedAt, accounts: response.results });
       } else {
         await openTrade({ account_login: acc.login, symbol, type: side, volume: vol,
-          sl: useProtection && sl ? slNum : null, tp: useProtection && tp ? tpNum : null, source: 'Manual' });
+          sl: useProtection && sl ? slNum : null, tp: useProtection && tp ? tpNum : null, source: 'Manual', confirm_live: confirmLive });
         pushToast('success', `${side.toUpperCase()} ${vol.toFixed(2)} ${symbol} filled`, `Account ${acc.nickname} \u00b7 market execution.`);
       }
       setSl('');
@@ -244,8 +268,18 @@ export default function ManualTradePage() {
           {configuredSlaves.map((id) => { const account = multiAccounts.find((row) => row.account_id === id); return <label key={id} className="flex items-center gap-3 rounded-xl border border-white/[0.07] bg-white/[0.03] px-3 py-3 text-xs text-slate-300"><input type="checkbox" checked={selectedSlaves.includes(id)} onChange={(event) => setSelectedSlaves(event.target.checked ? [...selectedSlaves, id] : selectedSlaves.filter((value) => value !== id))} /><span><b className="block text-white">{account?.nickname || id}</b><span className="mono text-slate-500">#{account?.login || id}</span></span></label>; })}
         </div>
         <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3"><div><label className="label">Slave lot mode</label><select className="input" value={copyLotMode} onChange={(event) => setCopyLotMode(event.target.value as 'same' | 'fixed' | 'multiplier')}><option value="same">Same as master</option><option value="fixed">Fixed lot</option><option value="multiplier">Multiplier</option></select></div>{copyLotMode !== 'same' && <div><label className="label">{copyLotMode === 'fixed' ? 'Fixed slave lot' : 'Lot multiplier'}</label><input className="input mono" type="number" min="0.01" step="0.01" value={copyLotValue} onChange={(event) => setCopyLotValue(event.target.value)} /></div>}</div>
-        <div className="mt-5 flex flex-col-reverse sm:flex-row sm:justify-end gap-2"><button className="btn-ghost justify-center" disabled={busy} onClick={() => executeOrder([])}>Master Only</button><button className="btn-primary justify-center" disabled={busy || !selectedSlaves.length} onClick={() => executeOrder(selectedSlaves)}><ArrowRightLeft size={14} /> Copy Trade</button></div>
+        <div className="mt-5 flex flex-col-reverse sm:flex-row sm:justify-end gap-2"><button className="btn-ghost justify-center" disabled={busy} onClick={() => requestOrder([])}>Master Only</button><button className="btn-primary justify-center" disabled={busy || !selectedSlaves.length} onClick={() => requestOrder(selectedSlaves)}><ArrowRightLeft size={14} /> Copy Trade</button></div>
       </Modal>
+
+      <ConfirmModal
+        open={liveConfirmOpen}
+        onClose={() => setLiveConfirmOpen(false)}
+        title="Place this order on a LIVE account?"
+        tone="danger"
+        confirmLabel="I Accept the Risk & Place Order"
+        message={<>KOOLKID MT5 is still in its testing phase. LIVE accounts use real funds and losses can occur. Continue only if you accept that risk. By confirming, you choose to place this order at your own risk and understand that KOOLKID and its admin are not liable for any trading losses.</>}
+        onConfirm={() => executeOrder(pendingLiveSlaves, true)}
+      />
       <PageHeader title="Manual Trading" sub={isSimulation ? 'Simulation order ticket · no broker order is sent' : 'Discretionary execution through the authenticated MT5 bridge'} />
 
       <div className="grid grid-cols-1 xl:grid-cols-5 gap-4">
@@ -265,7 +299,7 @@ export default function ManualTradePage() {
             </div>
             <div>
               <label className="label">Symbol</label>
-              <MarketSelect compact tradeOnly value={symbol} onChange={(next) => { setSymbol(next); setSl(''); setTp(''); }} />
+              <MarketSelect compact tradeOnly accountLogin={acc?.login} value={symbol} onChange={(next) => { setSymbol(next); setSl(''); setTp(''); }} />
             </div>
           </div>
 

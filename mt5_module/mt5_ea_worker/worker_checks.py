@@ -12,6 +12,7 @@ from .ea_manager import install_files
 from .models import StartBotRequest
 from . import worker
 from .main import require_worker_token
+from hub_auth import reset_workspace, set_workspace
 from fastapi import HTTPException
 
 
@@ -56,6 +57,12 @@ class ConfigTests(unittest.TestCase):
 
 
 class WorkerTests(unittest.TestCase):
+    def setUp(self):
+        self._workspace_token = set_workspace("worker-checks")
+
+    def tearDown(self):
+        reset_workspace(self._workspace_token)
+
     def request(self, ea: Path, terminal: Path) -> StartBotRequest:
         return StartBotRequest(bot_id=7, account_login=123, account_type="demo", symbol="EURUSD", timeframe="M15", ea_path=str(ea), ea_filename=ea.name, terminal_path=str(terminal))
 
@@ -105,14 +112,14 @@ class WorkerTests(unittest.TestCase):
             self.assertTrue(captured["args"][2].startswith("/config:"))
             self.assertTrue((data / "MQL5" / "Experts" / "KOOLKID" / "7" / "Demo.ex5").is_file())
 
-    def test_live_start_is_locked(self):
+    def test_live_start_requires_explicit_confirmation(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             ea = root / "Demo.ex5"; ea.write_bytes(b"ea")
             terminal = root / "terminal64.exe"; terminal.write_bytes(b"terminal")
-            request = self.request(ea, terminal).model_copy(update={"account_type": "live", "allow_live": True})
-            with patch.object(worker, "reconcile", return_value=[]), patch.object(worker, "select_terminal", return_value=terminal), patch.dict(os.environ, {"MT5_ALLOW_LIVE_EA": "0"}):
-                with self.assertRaisesRegex(ValueError, "LIVE EA execution is locked"):
+            request = self.request(ea, terminal).model_copy(update={"account_type": "live", "allow_live": False})
+            with patch.object(worker, "reconcile", return_value=[]):
+                with self.assertRaisesRegex(ValueError, "explicit confirmation"):
                     worker.start_bot(request)
 
     def test_worker_token_is_enforced_when_configured(self):

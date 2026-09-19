@@ -38,6 +38,9 @@ export interface MultiAccountInfo {
   balance?: number;
   equity?: number;
   currency?: string;
+  trade_mode?: number;
+  access_mode?: string;
+  read_only?: boolean;
 }
 
 export interface MultiAccount {

@@ -33,7 +33,7 @@ The current bridge controls one active MT5 terminal session at a time. Real copy
 - Server binds to `127.0.0.1` only.
 - Account passwords are used for the login request and are **not written to the KOOLKID bridge state file**.
 - Demo trading is permitted when the terminal/broker allows it.
-- Real-money order execution remains blocked unless `MT5_ALLOW_LIVE_TRADING=1` is explicitly set in `mt5_bridge/.env`.
+- Real-money execution requires KOOLKID's explicit testing-phase risk confirmation before a LIVE order or bot is started.
 - Starting the bridge never opens a trade.
 
 ## Setup
@@ -46,12 +46,6 @@ The current bridge controls one active MT5 terminal session at a time. Real copy
 6. The launcher opens the local KOOLKID URL automatically.
 7. In KOOLKID, use **MT5 Accounts → Add MT5 Account → Test Connection → Connect Account**.
 
-## Live-money lock
+## Live-money confirmation
 
-Do not enable live trading until demo testing is complete. To intentionally remove KOOLKID's bridge lock later:
-
-```env
-MT5_ALLOW_LIVE_TRADING=1
-```
-
-Broker/terminal permissions and Hub Risk Center rules still apply.
+LIVE accounts are not demo-locked. Before KOOLKID submits a real-money order or starts a trading bot, the user must explicitly accept the testing-phase risk warning in the Hub. Broker/terminal permissions and Hub Risk Center rules still apply.

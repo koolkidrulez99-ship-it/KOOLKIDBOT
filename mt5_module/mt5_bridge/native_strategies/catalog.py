@@ -26,4 +26,12 @@ NATIVE_PRESETS: dict[int, dict[str, Any]] = {
         "version": "2.20", "magic": 22082605, "ready": True, "entry_tf": "M5", "bias_tf": "H4", "risk_percent": 1.0,
         "max_trades_per_day": 3, "max_daily_loss_percent": 2.0,
     },
+    1010: {
+        "key": "koolkid_scalper_x", "name": "KOOLKID SCALPER X", "title": "Native Momentum Scalper",
+        "subtitle": "H1 trend · M5 momentum breakout · ATR risk management",
+        "description": "Standalone KOOLKID-native scalper. It uses completed H1/M5 candles only, aligns with the H1 EMA trend, waits for an M5 momentum breakout, then uses ATR-based protection, a 1.6R target, breakeven and trailing management. It has no external signal website, WebRequest, bridge key or third-party command channel.",
+        "source": "KOOLKID native engine", "version": "1.00", "magic": 19092610,
+        "ready": True, "entry_tf": "M5", "bias_tf": "H1", "risk_percent": 0.5,
+        "max_trades_per_day": 8, "max_daily_loss_percent": 3.0,
+    },
 }

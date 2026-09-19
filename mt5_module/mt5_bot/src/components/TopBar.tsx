@@ -23,6 +23,7 @@ const TITLES: [string, string][] = [
   ['/mt5/risk', 'Risk Center'],
   ['/mt5/ai', 'AI Intelligence'],
   ['/mt5/copy', 'Copy Trading'],
+  ['/mt5/journal', 'Journal'],
   ['/settings', 'Settings'],
 ];
 
@@ -74,20 +75,20 @@ export default function TopBar({ onMenu }: { onMenu: () => void }) {
 
   return (
     <header className="sticky top-0 z-30 border-b border-white/[0.06] bg-[#04060b]/80 backdrop-blur-xl">
-      <div className="flex h-16 items-center gap-3 px-4 md:px-6">
+      <div className="flex h-16 items-center gap-3 px-4 md:px-6 max-md:gap-2">
         <button className="btn-icon lg:hidden" onClick={onMenu}>
           <Menu size={18} />
         </button>
         <h2 className="hidden sm:block text-sm font-bold text-white tracking-tight w-40 truncate">{titleFor(location.pathname)}</h2>
 
         {/* account switcher */}
-        <div className="relative" ref={dropRef}>
+        <div className="relative max-md:flex-1 max-md:min-w-0" ref={dropRef}>
           <button
             onClick={() => setDropOpen((o) => !o)}
-            className="flex items-center gap-2.5 rounded-xl glass px-3 py-2 hover:border-brand-500/40 transition-colors cursor-pointer"
+            className="flex items-center gap-2.5 rounded-xl glass px-3 py-2 hover:border-brand-500/40 transition-colors cursor-pointer max-md:w-full max-md:min-w-0 max-md:gap-2"
           >
             <StatusDot status={active === 'all' ? (connected > 0 ? 'connected' : 'disconnected') : activeAcc?.status || 'disconnected'} />
-            <span className="text-left leading-tight">
+            <span className="text-left leading-tight max-md:min-w-0 max-md:flex-1">
               <span className="block text-[12px] font-semibold text-white max-w-[130px] truncate">
                 {active === 'all' ? 'All Accounts' : activeAcc?.nickname || 'Select account'}
               </span>
@@ -99,7 +100,7 @@ export default function TopBar({ onMenu }: { onMenu: () => void }) {
           </button>
 
           {dropOpen && (
-            <div className="absolute left-0 top-[calc(100%+8px)] w-[300px] rounded-xl glass-strong p-1.5 shadow-2xl z-50">
+            <div className="absolute left-0 top-[calc(100%+8px)] w-[300px] rounded-xl glass-strong p-1.5 shadow-2xl z-50 max-md:w-[min(300px,calc(100vw-72px))]">
               <button
                 onClick={() => pick('all')}
                 className={`w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors cursor-pointer ${
@@ -174,7 +175,7 @@ export default function TopBar({ onMenu }: { onMenu: () => void }) {
           <span className={connected > 0 ? (isSimulation ? 'text-warn-400 font-semibold' : 'text-gain-400 font-semibold') : 'text-slate-500 font-semibold'}>{isSimulation ? `${connected}/${totalAcc} Sim` : `${connected}/${totalAcc} Live`}</span>
         </span>
 
-        <button onClick={toggleTheme} className="btn-icon" title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'} aria-label="Toggle color theme">
+        <button onClick={toggleTheme} className="btn-icon max-md:hidden" title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'} aria-label="Toggle color theme">
           {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
         </button>
         <button onClick={() => refresh()} className="btn-icon" title="Refresh hub data">

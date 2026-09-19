@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 import math
+from decimal import Decimal, ROUND_FLOOR
 from typing import Iterable
 
 
@@ -51,6 +52,8 @@ class SetupState:
     trendline: tuple[tuple[int, float], tuple[int, float]] | None = None
     break_index: int | None = None
     shift_index: int | None = None
+    break_time: int | None = None
+    shift_time: int | None = None
     last_processed_time: int = 0
     reason: str = ""
     score: int = 0
@@ -81,9 +84,13 @@ def completed(rows: Iterable[dict | Candle]) -> list[Candle]:
             float(row["low"]), float(row["close"]), float(row.get("volume", 0)),
             bool(row.get("complete", True)),
         )
-        if candle.complete and all(math.isfinite(v) for v in (candle.open, candle.high, candle.low, candle.close)):
+        if not all(math.isfinite(v) for v in (candle.open, candle.high, candle.low, candle.close)) or not (
+            candle.low <= min(candle.open, candle.close) <= max(candle.open, candle.close) <= candle.high
+        ):
+            raise ValueError("Invalid OHLC candle data.")
+        if candle.complete:
             output.append(candle)
-    return sorted(output, key=lambda c: c.time)
+    return sorted({c.time: c for c in output}.values(), key=lambda c: c.time)
 
 
 def confirmed_swings(candles: list[Candle], radius=2) -> tuple[list[Swing], list[Swing]]:
@@ -103,15 +110,15 @@ def market_structure(candles: list[Candle], highs: list[Swing], lows: list[Swing
     if not candles:
         return "NEUTRAL"
     close = candles[-1].close
+    if highs and close > highs[-1].price:
+        return "BULLISH"
+    if lows and close < lows[-1].price:
+        return "BEARISH"
     if len(highs) >= 2 and len(lows) >= 2:
         if highs[-1].price > highs[-2].price and lows[-1].price > lows[-2].price:
             return "BULLISH"
         if highs[-1].price < highs[-2].price and lows[-1].price < lows[-2].price:
             return "BEARISH"
-    if highs and close > highs[-1].price:
-        return "BULLISH"
-    if lows and close < lows[-1].price:
-        return "BEARISH"
     return "NEUTRAL"
 
 
@@ -123,37 +130,39 @@ def trendline_value(first: Swing, second: Swing, index: int) -> float:
 
 
 def rejection(candle: Candle, direction: str, level: float, tolerance: float, require_color=True) -> bool:
+    touched = candle.low <= level + tolerance and candle.high >= level - tolerance
     if direction == "BUY":
-        touched = candle.low <= level + tolerance
         return touched and candle.close > level and (not require_color or candle.close > candle.open)
-    touched = candle.high >= level - tolerance
     return touched and candle.close < level and (not require_color or candle.close < candle.open)
 
 
 def position_size(entry: float, stop: float, spec: RiskSpec) -> float:
     values = (entry, stop, spec.equity, spec.risk_percent, spec.tick_size, spec.tick_value,
               spec.volume_min, spec.volume_max, spec.volume_step)
-    if not all(math.isfinite(float(v)) for v in values) or min(spec.equity, spec.risk_percent, spec.tick_size, spec.tick_value, spec.volume_min, spec.volume_step) <= 0:
+    if not all(math.isfinite(float(v)) for v in values) or min(spec.equity, spec.risk_percent, spec.tick_size, spec.tick_value, spec.volume_min, spec.volume_step) <= 0 or spec.volume_max < spec.volume_min or spec.risk_percent > 100:
         raise ValueError("Complete MT5 equity, tick-value and volume information is required.")
     distance = abs(entry - stop)
     if distance <= 0:
         raise ValueError("Structural stop distance must be positive.")
-    raw = (spec.equity * spec.risk_percent / 100) / ((distance / spec.tick_size) * spec.tick_value)
-    volume = math.floor((raw + 1e-12) / spec.volume_step) * spec.volume_step
-    volume = min(volume, spec.volume_max)
-    if volume + 1e-12 < spec.volume_min:
+    dec = lambda value: Decimal(str(value))
+    raw = (dec(spec.equity) * dec(spec.risk_percent) / 100) / ((abs(dec(entry) - dec(stop)) / dec(spec.tick_size)) * dec(spec.tick_value))
+    step = Decimal(str(spec.volume_step))
+    volume = (min(raw, dec(spec.volume_max)) / step).to_integral_value(rounding=ROUND_FLOOR) * step
+    if volume < dec(spec.volume_min):
         raise ValueError("Safe calculated volume is below the broker minimum.")
-    precision = max(0, len(str(spec.volume_step).split(".")[-1].rstrip("0")))
-    return round(volume, precision)
+    return float(volume)
 
 
 class ApostleEngine:
-    def __init__(self, buffer=0.0, retest_tolerance=0.0, confirmation=True, target_r=2.0, stale_bars=80):
+    def __init__(self, buffer=0.0, retest_tolerance=0.0, confirmation=True, target_r=2.0, stale_bars=80, threshold=0):
+        if not all(math.isfinite(float(v)) for v in (buffer, retest_tolerance, target_r, threshold)) or not 0 <= float(threshold) <= 100:
+            raise ValueError("AI settings must be finite; confidence must be between 0 and 100.")
         self.buffer = max(0.0, float(buffer))
         self.tolerance = max(0.0, float(retest_tolerance))
         self.confirmation = bool(confirmation)
         self.target_r = max(0.1, float(target_r))
         self.stale_bars = max(5, int(stale_bars))
+        self.threshold = float(threshold)
 
     def evaluate(self, state: SetupState, rows, bias=None, risk: RiskSpec | None = None):
         candles = completed(rows)
@@ -166,12 +175,25 @@ class ApostleEngine:
         if candle.time <= state.last_processed_time:
             return self._decision(state, self._state_decision(state), "No new completed candle.")
         state.last_processed_time = candle.time
-        if state.break_index is not None and i - state.break_index > self.stale_bars:
+        # Persist timestamps: an MT5 history window slides while its last index stays constant.
+        for name in ("break", "shift"):
+            index = getattr(state, name + "_index")
+            if getattr(state, name + "_time") is None and index is not None and 0 <= index < len(candles):
+                setattr(state, name + "_time", candles[index].time)
+        if state.state in ("SIGNAL_READY", "POSITION_ACTIVE"):
+            state.reset("Previous signal recorded; scanning the next completed candle.")
+            state.last_processed_time = candle.time
+            state.structure = structure
+        if state.break_time is not None and (state.break_time < candles[0].time or sum(c.time > state.break_time for c in candles) > self.stale_bars):
             state.reset("Setup expired before confirmation.")
             state.last_processed_time = candle.time
 
         if state.state == "SCANNING":
-            if structure == "BULLISH" and len(lows) >= 2 and lows[-1].price > lows[-2].price:
+            prior_highs, prior_lows = confirmed_swings(candles[:-1])
+            origin_structure = market_structure(candles[:-1], prior_highs, prior_lows)
+            if origin_structure == "NEUTRAL":
+                origin_structure = structure
+            if origin_structure == "BULLISH" and len(lows) >= 2 and lows[-1].price > lows[-2].price:
                 a, b = lows[-2], lows[-1]
                 state.trendline = ((a.index, a.price), (b.index, b.price))
                 state.reason = "Bullish structure tracked; waiting for close below rising-HL trendline."
@@ -181,9 +203,10 @@ class ApostleEngine:
                     state.protected_structure = b.price
                     state.stop_reference = max((h.price for h in highs if h.index > b.index), default=max(c.high for c in candles[b.index:]))
                     state.break_index = i
+                    state.break_time = candle.time
                     return self._decision(state, "WAIT FOR STRUCTURE SHIFT", "Opposing trendline broke on a completed close.")
                 return self._decision(state, "WAIT FOR TRENDLINE BREAK", state.reason)
-            if structure == "BEARISH" and len(highs) >= 2 and highs[-1].price < highs[-2].price:
+            if origin_structure == "BEARISH" and len(highs) >= 2 and highs[-1].price < highs[-2].price:
                 a, b = highs[-2], highs[-1]
                 state.trendline = ((a.index, a.price), (b.index, b.price))
                 state.reason = "Bearish structure tracked; waiting for close above falling-LH trendline."
@@ -193,9 +216,18 @@ class ApostleEngine:
                     state.protected_structure = b.price
                     state.stop_reference = min((x.price for x in lows if x.index > b.index), default=min(c.low for c in candles[b.index:]))
                     state.break_index = i
+                    state.break_time = candle.time
                     return self._decision(state, "WAIT FOR STRUCTURE SHIFT", "Opposing trendline broke on a completed close.")
                 return self._decision(state, "WAIT FOR TRENDLINE BREAK", state.reason)
             return self._decision(state, "SCANNING", "Structure is neutral or lacks two confirmed trendline anchors.")
+
+        if state.direction and state.stop_reference is not None and (
+            (state.direction == "BUY" and candle.close < state.stop_reference - self.buffer) or
+            (state.direction == "SELL" and candle.close > state.stop_reference + self.buffer)
+        ):
+            state.reset("Setup invalidated beyond its structural stop.")
+            state.last_processed_time = candle.time
+            return self._decision(state, "REJECT SETUP", state.reason)
 
         if state.state == "WAITING_FOR_STRUCTURE_SHIFT":
             shifted = (state.direction == "SELL" and candle.close < state.protected_structure - self.buffer) or (state.direction == "BUY" and candle.close > state.protected_structure + self.buffer)
@@ -204,10 +236,11 @@ class ApostleEngine:
             state.state = "WAITING_FOR_RETEST"
             state.retest_level = state.protected_structure
             state.shift_index = i
+            state.shift_time = candle.time
             return self._decision(state, "WAIT FOR LATER RETEST", "Structure shifted; the same candle cannot confirm its own retest.")
 
         if state.state == "WAITING_FOR_RETEST":
-            if i <= (state.shift_index or i):
+            if state.shift_time is None or candle.time <= state.shift_time:
                 return self._decision(state, "WAIT FOR LATER RETEST", "Waiting for a candle after the structure-shift candle.")
             level = float(state.retest_level)
             touched = candle.low <= level + self.tolerance if state.direction == "BUY" else candle.high >= level - self.tolerance
@@ -217,12 +250,19 @@ class ApostleEngine:
                 return self._decision(state, "WAIT FOR CANDLE CONFIRMATION", "Retest occurred without a valid completed rejection candle.")
             required_bias = [str(x).upper() for x in (bias or [])]
             wanted = "BULLISH" if state.direction == "BUY" else "BEARISH"
+            if structure != wanted:
+                state.reset("Execution structure no longer agrees with the setup.")
+                state.last_processed_time = candle.time
+                return self._decision(state, "REJECT SETUP", state.reason)
             if required_bias and any(x != wanted for x in required_bias):
                 state.reset("Required higher-timeframe alignment failed.")
                 state.last_processed_time = candle.time
                 return self._decision(state, "REJECT SETUP", "Required higher-timeframe alignment failed.")
             entry = candle.close
-            stop = (float(state.stop_reference) - self.buffer) if state.direction == "BUY" else (float(state.stop_reference) + self.buffer)
+            reference = state.stop_reference
+            if reference is None:
+                reference = candle.low if state.direction == "BUY" else candle.high
+            stop = (float(reference) - self.buffer) if state.direction == "BUY" else (float(reference) + self.buffer)
             if (state.direction == "BUY" and stop >= entry) or (state.direction == "SELL" and stop <= entry):
                 fallback = candle.low - self.buffer if state.direction == "BUY" else candle.high + self.buffer
                 stop = fallback
@@ -230,7 +270,14 @@ class ApostleEngine:
                 state.reset("A structural stop could not be calculated.")
                 return self._decision(state, "REJECT SETUP", state.reason)
             target = entry + self.target_r * abs(entry - stop) * (1 if state.direction == "BUY" else -1)
-            score = 25 + 20 + 10 + (15 if required_bias else 0) + 10
+            factors = {"execution_structure": 25, "completed_structure_shift": 20,
+                       "later_retest": 20, "rejection_candle": 20,
+                       "higher_timeframe_alignment": 15 if required_bias else 0}
+            score = sum(factors.values())
+            if score < self.threshold:
+                state.reset("Confirmed setup is below the configured confidence threshold.")
+                state.last_processed_time = candle.time
+                return self._decision(state, "REJECT SETUP", state.reason, score=score, confidence_factors=factors)
             volume = None
             risk_error = None
             if risk:
@@ -241,16 +288,17 @@ class ApostleEngine:
             if risk_error:
                 state.reset(risk_error)
                 return self._decision(state, "REJECT SETUP", risk_error, score=score)
-            state.state = "POSITION_ACTIVE"
+            state.state = "SIGNAL_READY"
             state.score = score
-            state.features = {"entry": entry, "sl": stop, "tp": target, "r": self.target_r, "volume": volume}
+            state.features = {"entry": entry, "sl": stop, "tp": target, "r": self.target_r, "volume": volume,
+                              "risk_validated": risk is not None, "confidence_factors": factors}
             return self._decision(state, state.direction, "All mandatory Apostle stages passed.", score=score, **state.features)
 
-        return self._decision(state, "MANAGE POSITION", "An approved position is active.", **state.features)
+        return self._decision(state, "SCANNING", "No executed position is managed by this signal-only engine.")
 
     @staticmethod
     def _state_decision(state):
-        return {"WAITING_FOR_STRUCTURE_SHIFT": "WAIT FOR STRUCTURE SHIFT", "WAITING_FOR_RETEST": "WAIT FOR LATER RETEST", "POSITION_ACTIVE": "MANAGE POSITION"}.get(state.state, "SCANNING")
+        return {"WAITING_FOR_STRUCTURE_SHIFT": "WAIT FOR STRUCTURE SHIFT", "WAITING_FOR_RETEST": "WAIT FOR LATER RETEST"}.get(state.state, "SCANNING")
 
     @staticmethod
     def _decision(state, decision, reason, score=0, **extra):
@@ -275,7 +323,10 @@ def backtest(rows, *, account="BACKTEST", symbol="UNKNOWN", timeframe="M15", str
     engine = engine or ApostleEngine()
     state = SetupState(account, symbol, timeframe, strategy)
     trades, rejected = [], 0
+    occupied_until = -1
     for end in range(7, len(candles)):
+        if end <= occupied_until:
+            continue
         result = engine.evaluate(state, candles[:end + 1], bias=bias)
         if result["decision"] == "REJECT SETUP":
             rejected += 1
@@ -285,7 +336,8 @@ def backtest(rows, *, account="BACKTEST", symbol="UNKNOWN", timeframe="M15", str
         direction = result["decision"]
         outcome, r_value, mfe, mae = "OPEN", 0.0, 0.0, 0.0
         risk_distance = abs(entry - stop)
-        for future in candles[end + 1:]:
+        exit_index = len(candles) - 1
+        for future_index, future in enumerate(candles[end + 1:], end + 1):
             favorable = (future.high - entry) if direction == "BUY" else (entry - future.low)
             adverse = (entry - future.low) if direction == "BUY" else (future.high - entry)
             mfe, mae = max(mfe, favorable / risk_distance), max(mae, adverse / risk_distance)
@@ -294,10 +346,13 @@ def backtest(rows, *, account="BACKTEST", symbol="UNKNOWN", timeframe="M15", str
             if stop_hit or target_hit:
                 # If both occur in one candle, use the conservative stop-first result.
                 outcome, r_value = ("LOSS", -1.0) if stop_hit else ("WIN", engine.target_r)
+                exit_index = future_index
                 break
         trades.append({"time": candles[end].time, "direction": direction, "entry": entry, "sl": stop, "tp": target, "outcome": outcome, "r": r_value, "mfe": round(mfe, 4), "mae": round(mae, 4)})
         state.reset("Backtest position resolved.")
-        state.last_processed_time = candles[end].time
+        occupied_until = exit_index
+        trades[-1]["exit_time"] = candles[exit_index].time if outcome != "OPEN" else None
+        state.last_processed_time = candles[exit_index].time
     closed = [trade for trade in trades if trade["outcome"] != "OPEN"]
     wins = sum(trade["outcome"] == "WIN" for trade in closed)
     losses = sum(trade["outcome"] == "LOSS" for trade in closed)

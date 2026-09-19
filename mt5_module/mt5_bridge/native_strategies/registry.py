@@ -10,6 +10,7 @@ from .models import NativeSignal
 from .primordial import evaluate_black, evaluate_blue
 from .silver import evaluate_silver
 from .white import evaluate_white
+from .scalper_x import evaluate_scalper_x
 
 Evaluator = Callable[[dict[str, Any]], NativeSignal]
 
@@ -24,6 +25,7 @@ EVALUATORS: dict[str, Evaluator] = {
     "primordial_white": evaluate_white,
     "human_apostle": evaluate_human_apostle,
     "dear_bruce": evaluate_dear_bruce,
+    "koolkid_scalper_x": evaluate_scalper_x,
 }
 def preset_for_bot(bot_id: int) -> dict[str, Any] | None:
     row = NATIVE_PRESETS.get(int(bot_id))

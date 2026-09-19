@@ -6,7 +6,7 @@ Local-only worker that installs uploaded `.ex5` and optional `.set` files into t
 
 Run `mt5_module\SETUP_MT5_EA_WORKER.bat`, then use the root `START_KOOLKID.bat` launcher. The worker must use a separate MT5 installation and data folder from the normal API bridge. Configure those with `MT5_EA_TERMINAL_PATH` and `MT5_EA_DATA_PATH` in `.env`; the worker rejects the bridge's paths.
 
-DEMO EA execution is allowed. LIVE execution requires both explicit confirmation from the Hub and `MT5_ALLOW_LIVE_EA=1`. DLL imports remain disabled unless the Hub explicitly approves them and `MT5_ALLOW_DLL_IMPORTS=1` is configured.
+DEMO EA execution is allowed. LIVE execution requires the Hub's explicit testing-phase risk confirmation for the selected real-money account. DLL imports remain disabled unless the Hub explicitly approves them and `MT5_ALLOW_DLL_IMPORTS=1` is configured.
 
 Pause and resume are intentionally unavailable for arbitrary third-party EAs because MT5 provides no universal safe runtime pause contract. Stop terminates only the assigned terminal process and does not close broker positions.
 

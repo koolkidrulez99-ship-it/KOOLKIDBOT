@@ -46,6 +46,7 @@ class ManualTradeRequest(BaseModel):
     multiplier: float = 1.0
     magic: int = 0
     comment: str = "KOOLKID"
+    confirm_live: bool = False
 
 class ModifyPositionRequest(BaseModel):
     account_id: str

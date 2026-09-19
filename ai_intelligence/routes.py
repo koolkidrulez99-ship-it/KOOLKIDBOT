@@ -9,7 +9,7 @@ from flask import Blueprint, jsonify, request, session
 
 from .bridge import Bridge, binding, hub
 from .commands import CommandError, READ_ACTIONS, emergency, parse, safe_input
-from .apostle import ApostleEngine, DEAR_BRUCE_BIAS, RiskSpec, SetupState, TIMEFRAMES, approve_ex5_signal, backtest, completed, confirmed_swings, market_structure
+from .apostle import ApostleEngine, DEAR_BRUCE_BIAS, SetupState, TIMEFRAMES, approve_ex5_signal, backtest, completed, confirmed_swings, market_structure
 from .intelligence_store import IntelligenceStore
 from .mt5_provider import Mt5ReadProvider
 
@@ -50,6 +50,10 @@ def register(app, namespace):
     def invalid(error):
         return jsonify(error=str(error)), 400
 
+    @bp.errorhandler(ValueError)
+    def invalid_value(error):
+        return jsonify(error="Invalid AI settings or market data. Check the selected values and rescan."), 400
+
     @bp.errorhandler(Exception)
     def unexpected(error):
         # Exception strings may contain provider bodies or credentials.
@@ -78,7 +82,10 @@ def register(app, namespace):
         return jsonify(csrf=ai.csrf, context_id=context_id, visible=bridge.preference(), messages=ai.messages, settings=bridge.settings(state))
 
     def intelligence_identity(account):
-        rows = mt5.accounts()
+        try:
+            rows = mt5.accounts()
+        except RuntimeError as error:
+            raise CommandError(str(error)) from None
         rows = rows.get("accounts", rows) if isinstance(rows, dict) else rows
         allowed = {str(row.get("login")) for row in (rows or []) if row.get("connected") or row.get("status") == "connected"}
         if str(account) not in allowed:
@@ -88,13 +95,16 @@ def register(app, namespace):
     @bp.get("/intelligence/status")
     def intelligence_status():
         current()
+        data_error = None
         try:
             account_payload = mt5.accounts()
             accounts = account_payload.get("accounts", account_payload) if isinstance(account_payload, dict) else account_payload
-        except RuntimeError:
+        except RuntimeError as error:
             accounts = []
+            data_error = str(error)
         return jsonify(
-            status="READY",
+            status="MT5 UNAVAILABLE" if data_error else "READY",
+            data_error=data_error,
             execution="SIGNAL_ONLY",
             strategies=["HUMAN APOSTLE", "DEAR BRUCE"],
             modes=["ANALYSIS ONLY", "ALERT ONLY", "MANUAL CONFIRMATION", "AI AUTO TRADE", "EX5 + AI CONFIRMATION"],
@@ -111,7 +121,8 @@ def register(app, namespace):
         account = intelligence_identity(request.args.get("account"))
         payload = mt5.symbols(account)
         rows = payload.get("symbols", payload) if isinstance(payload, dict) else payload
-        return jsonify(symbols=[str(row.get("name") if isinstance(row, dict) else row) for row in (rows or []) if (row.get("name") if isinstance(row, dict) else row)])
+        names = [row.get("symbol") or row.get("name") if isinstance(row, dict) else row for row in (rows or [])]
+        return jsonify(symbols=[str(name) for name in names if name])
 
     @bp.post("/intelligence/evaluate")
     def intelligence_evaluate():
@@ -157,19 +168,23 @@ def register(app, namespace):
                     setattr(setup, key, saved[key])
             if setup.trendline:
                 setup.trendline = tuple(tuple(x) for x in setup.trendline)
+            if setup.state != "SCANNING" and setup.break_time is None:
+                setup.reset("Legacy setup requires a fresh timestamp-based scan.")
         engine = ApostleEngine(
             buffer=float(body.get("buffer") or 0),
             retest_tolerance=float(body.get("retest_tolerance") or 0),
             confirmation=body.get("candle_confirmation", True) is True,
             target_r=float(body.get("target_r") or 2),
+            threshold=float(body.get("threshold", 75)),
         )
-        risk = None
         if body.get("risk"):
-            risk = RiskSpec(**{key: body["risk"][key] for key in RiskSpec.__dataclass_fields__ if key in body["risk"]})
-        result = engine.evaluate(setup, rows, bias=bias, risk=risk)
-        result.update(account=account, symbol=symbol, timeframe=timeframe, strategy=strategy, bias=bias, mode=mode, executed=False)
+            raise CommandError("Account equity and broker sizing cannot be supplied by the browser. This monitor provides signals only.")
+        result = engine.evaluate(setup, rows, bias=bias)
+        result.update(account=account, symbol=symbol, timeframe=timeframe, strategy=strategy, bias=bias, mode=mode,
+                      executed=False, threshold=engine.threshold, risk_validated=False)
+        result["execution_note"] = "Signal only. Account risk and lot size have not been validated; no order was placed."
         if mode in ("AI AUTO TRADE", "EX5 + AI CONFIRMATION"):
-            result["execution_note"] = "Signal evaluated, but AI MT5 execution is locked until the demo execution adapter is validated."
+            result["execution_note"] += " Use the MT5 Hub AI controls for execution."
         intelligence_store.save_setup(session["user"], setup)
         intelligence_store.record_evaluation(session["user"], setup, result)
         return jsonify(result)
@@ -179,10 +194,20 @@ def register(app, namespace):
         current()
         body = request.get_json() or {}
         signal = body.get("signal")
-        analysis = body.get("analysis")
-        if not isinstance(signal, dict) or not isinstance(analysis, dict):
-            raise CommandError("EX5 signal and AI analysis are required.")
-        return jsonify(approve_ex5_signal(signal, analysis, int(body.get("threshold") or 75)))
+        if not isinstance(signal, dict):
+            raise CommandError("EX5 signal metadata is required.")
+        account = intelligence_identity(body.get("account"))
+        strategy = str(body.get("strategy") or "HUMAN APOSTLE").upper()
+        analysis = intelligence_store.latest_evaluation(session["user"], account, str(signal.get("symbol") or ""), str(signal.get("timeframe") or "").upper(), strategy)
+        if not analysis:
+            raise CommandError("Run a fresh AI analysis for this account, market, and timeframe first.")
+        raw = mt5.candles(account, signal["symbol"], signal["timeframe"], 20)
+        rows = raw.get("candles", raw) if isinstance(raw, dict) else raw
+        candles = completed(list(rows or [])[:-1])
+        if not candles or candles[-1].time != analysis.get("state", {}).get("last_processed_time"):
+            raise CommandError("The stored AI analysis is stale. Run a fresh scan.")
+        result = approve_ex5_signal(signal, analysis, max(float(analysis.get("threshold", 75)), float(body.get("threshold", 75))))
+        return jsonify(**result, executed=False, execution_connected=False)
 
     @bp.post("/intelligence/backtest")
     def intelligence_backtest():
@@ -194,6 +219,8 @@ def register(app, namespace):
         strategy = str(body.get("strategy") or "HUMAN APOSTLE").upper()
         if not symbol or timeframe not in TIMEFRAMES or strategy not in ("HUMAN APOSTLE", "DEAR BRUCE"):
             raise CommandError("Choose a valid account, symbol, timeframe, and strategy.")
+        if strategy == "DEAR BRUCE" or body.get("bias_timeframes"):
+            raise CommandError("This backtester does not yet align historical bias candles. Multi-timeframe backtests are unavailable.")
         payload = mt5.candles(account, symbol, timeframe, min(1000, int(body.get("count") or 1000)))
         rows = payload.get("candles", payload) if isinstance(payload, dict) else payload
         result = backtest(list(rows or [])[:-1], account=account, symbol=symbol, timeframe=timeframe, strategy=strategy)

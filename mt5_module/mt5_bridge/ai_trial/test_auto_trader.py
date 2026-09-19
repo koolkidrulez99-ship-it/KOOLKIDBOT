@@ -31,12 +31,15 @@ class AutoTraderSafetyTests(unittest.TestCase):
                     "proposed_trade": {
                         "direction": "BUY",
                         "time": 123456,
+                        "entry": 2000.0,
                         "sl": 1990.0,
                         "tp": 2030.0,
                     },
                 }
-                with patch.object(main, "_connected_demo_ai_account", return_value={"login": 1001, "account_type": "demo", "status": "connected"}), patch.object(main, "trade", return_value={"retcode": 10009, "ticket": 42}):
-                    first = main._execute_apostle_snapshot(snapshot, 0.01, source="ai_auto_human_apostle")
+                config = {"enabled": True, "account_login": 1001, "symbol": "XAUUSD"}
+                store.update_state(lambda state: state.update(ai_auto_config=config))
+                with patch.object(main, "_connected_ai_account", return_value={"login": 1001, "account_type": "demo", "status": "connected"}), patch.object(main, "_run_ai_trial_scan", return_value=snapshot), patch.object(main, "trade", return_value={"retcode": 10009, "ticket": 42}):
+                    first = main._execute_apostle_snapshot(snapshot, 0.01, source="ai_auto_human_apostle", expected_config=config)
                     self.assertTrue(first["executed"])
                     self.assertTrue(first["automatic"])
                     with self.assertRaises(HTTPException) as ctx:

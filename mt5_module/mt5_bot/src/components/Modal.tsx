@@ -35,7 +35,7 @@ export default function Modal({
     <AnimatePresence>
       {open && (
         <motion.div
-          className="fixed inset-0 z-[80] flex items-center justify-center p-4"
+          className="fixed inset-0 z-[80] flex items-center justify-center p-4 max-md:items-end max-md:p-0"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
@@ -46,9 +46,9 @@ export default function Modal({
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 12, scale: 0.98 }}
             transition={{ type: 'spring', stiffness: 380, damping: 30 }}
-            className={`relative glass-strong rounded-2xl w-full ${wide ? 'max-w-2xl' : 'max-w-md'} max-h-[88vh] overflow-y-auto shadow-2xl`}
+            className={`relative glass-strong rounded-2xl w-full ${wide ? 'max-w-2xl' : 'max-w-md'} max-h-[88vh] overflow-y-auto shadow-2xl max-md:max-w-none max-md:max-h-[92dvh] max-md:rounded-b-none`}
           >
-            <div className="flex items-start justify-between gap-4 px-6 pt-5 pb-4 border-b border-white/[0.07] sticky top-0 bg-[#0a0f1a]/85 backdrop-blur-xl z-10 rounded-t-2xl">
+            <div className="flex items-start justify-between gap-4 px-6 pt-5 pb-4 border-b border-white/[0.07] sticky top-0 bg-[#0a0f1a]/85 backdrop-blur-xl z-10 rounded-t-2xl max-md:px-4 max-md:pt-4 max-md:pb-3">
               <div>
                 <h3 className="text-lg font-bold text-white tracking-tight">{title}</h3>
                 {sub && <p className="text-xs text-slate-500 mt-0.5">{sub}</p>}
@@ -57,7 +57,7 @@ export default function Modal({
                 <X size={17} />
               </button>
             </div>
-            <div className="px-6 py-5">{children}</div>
+            <div className="px-6 py-5 max-md:px-4 max-md:py-4 max-md:pb-[max(1rem,env(safe-area-inset-bottom))]">{children}</div>
           </motion.div>
         </motion.div>
       )}

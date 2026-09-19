@@ -710,9 +710,28 @@ def manual_trade(req: ManualTradeRequest):
     runtime = _runtime()
     pool = runtime.pool
     copy_engine = runtime.copy
-    copy_engine.pause_for_execution(20)
     copy_config = copy_engine.config if copy_engine.status == "running" else None
     master_id = str((copy_config or {}).get("master_account_id") or "")
+    targets = list(dict.fromkeys(req.target_account_ids))[:10]
+    for aid in targets:
+        try:
+            info = dict(pool.call(aid, "account_info", timeout=5) or {})
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"Could not verify MT5 account {aid}: {exc}")
+        if bool(info.get("read_only")) or str(info.get("access_mode") or "").lower() == "investor":
+            raise HTTPException(status_code=403, detail=f"Trading is blocked on investor/read-only MT5 account {aid}.")
+        trade_mode = info.get("trade_mode")
+        account_mode = str(getattr(pool.items.get(aid), "config", {}).get("mode") or "real").lower()
+        if trade_mode is None and account_mode != "simulation":
+            raise HTTPException(status_code=403, detail=f"KOOLKID could not verify the MT5 account mode for {aid}.")
+        if trade_mode is not None:
+            try:
+                is_live = int(trade_mode) == 2
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=403, detail=f"KOOLKID could not verify the MT5 account mode for {aid}.")
+            if is_live and not req.confirm_live:
+                raise HTTPException(status_code=403, detail="LIVE trading requires explicit confirmation of the testing-phase risk warning.")
+
     def submit(aid):
         requested_comment = str(req.comment or "KOOLKID")
         prefix = "KKM" if int(req.magic or 0) == 0 and requested_comment == "KOOLKID" else re.sub(r"[^A-Za-z0-9:_-]+", "", requested_comment)[:18] or "KOOLKID"
@@ -741,7 +760,7 @@ def manual_trade(req: ManualTradeRequest):
         except Exception as exc:
             return aid, {"ok": False, "error": str(exc)}
     out = {}
-    targets = list(dict.fromkeys(req.target_account_ids))[:10]
+    copy_engine.pause_for_execution(20)
     try:
         with ThreadPoolExecutor(max_workers=len(targets) or 1) as executor:
             for future in as_completed([executor.submit(submit, aid) for aid in targets]):

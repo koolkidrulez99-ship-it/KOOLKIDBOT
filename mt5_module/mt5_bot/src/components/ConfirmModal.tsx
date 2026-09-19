@@ -56,7 +56,7 @@ export default function ConfirmModal({
         <div className="text-sm text-slate-400 leading-relaxed">{message}</div>
       </div>
       {children && <div className="mt-4">{children}</div>}
-      <div className="flex justify-end gap-2.5 mt-6">
+      <div className="flex justify-end gap-2.5 mt-6 max-md:[&>button]:flex-1 max-md:[&>button]:justify-center">
         <button className="btn-ghost" onClick={onClose} disabled={busy}>
           Cancel
         </button>

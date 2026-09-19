@@ -116,8 +116,8 @@ export default function JournalPage() {
         title="📔 Journal"
         sub="Daily, monthly and yearly performance for one MT5 account at a time"
         actions={
-          <div className="flex flex-wrap items-center gap-2">
-            <select className="input !w-auto !py-2 text-xs" value={accountLogin} onChange={(event) => setAccountLogin(Number(event.target.value))}>
+          <div className="flex flex-wrap items-center gap-2 max-md:w-full">
+            <select className="input !w-auto !py-2 text-xs max-md:flex-1 max-md:min-w-0" value={accountLogin} onChange={(event) => setAccountLogin(Number(event.target.value))}>
               {accounts.map((account) => (
                 <option key={account.id} value={account.login}>#{account.login} · {account.nickname || account.broker}</option>
               ))}
@@ -145,13 +145,13 @@ export default function JournalPage() {
         </div>
       </Panel>
 
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3 max-md:items-stretch">
+        <div className="flex items-center gap-2 max-md:w-full max-md:[&>button]:flex-1 max-md:[&>button]:justify-center">
           <button className={view === 'month' ? 'btn-primary' : 'btn-ghost'} onClick={() => setView('month')}>Month</button>
           <button className={view === 'year' ? 'btn-primary' : 'btn-ghost'} onClick={() => setView('year')}>Year</button>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2 max-md:w-full max-md:grid max-md:grid-cols-[auto_1fr_1fr_auto]">
           {view === 'month' && <button className="btn-icon" onClick={() => goMonth(-1)}><ChevronLeft size={16} /></button>}
           {view === 'month' && (
             <select className="input !w-auto !py-2 text-xs" value={month} onChange={(event) => { setMonth(Number(event.target.value)); setSelectedDay(null); }}>
@@ -187,7 +187,30 @@ export default function JournalPage() {
             ))}
           </div>
 
-          <Panel className="overflow-x-auto p-3 md:p-4">
+          <Panel className="md:hidden p-2.5">
+            <div className="grid grid-cols-7 gap-1 mb-1">
+              {WEEKDAYS.map((day) => <div key={day} className="py-1 text-center text-[8px] font-bold uppercase tracking-wider text-slate-600">{day.slice(0, 1)}</div>)}
+            </div>
+            <div className="grid grid-cols-7 gap-1">
+              {Array.from({ length: startOffset }).map((_, index) => <div key={`mobile-empty-${index}`} />)}
+              {monthData.days.map((day) => (
+                <button
+                  key={`mobile-${day.date}`}
+                  className={`min-h-[72px] rounded-lg border p-1.5 text-left transition ${dayCardClass(day, selectedDay?.date === day.date)}`}
+                  onClick={() => setSelectedDay(day)}
+                >
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="mono text-[10px] font-bold text-slate-300">{day.day}</span>
+                    {day.trades > 0 && <span className="h-1.5 w-1.5 rounded-full bg-brand-400" />}
+                  </div>
+                  <p className={`mono mt-2 truncate text-[9px] font-extrabold ${pnlClass(day.pnl)}`}>{money(day.pnl, currency)}</p>
+                  <p className="mt-1 truncate text-[8px] text-slate-600">{day.trades ? `${day.trades} trade${day.trades === 1 ? '' : 's'}` : '—'}</p>
+                </button>
+              ))}
+            </div>
+          </Panel>
+
+          <Panel className="hidden md:block overflow-x-auto p-3 md:p-4">
             <div className="min-w-[900px]">
               <div className="mb-2 grid grid-cols-7 gap-2">
                 {WEEKDAYS.map((day) => <div key={day} className="px-2 py-1 text-center text-[9px] font-bold uppercase tracking-[0.18em] text-slate-600">{day}</div>)}
@@ -241,21 +264,23 @@ export default function JournalPage() {
       )}
 
       {selectedDay && view === 'month' && (
-        <Panel className="mt-4 p-5">
-          <div className="flex flex-wrap items-start justify-between gap-3">
+        <Panel className="mt-4 p-5 max-md:p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3 max-md:flex-col">
+
             <div>
               <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-brand-300">Daily Review</p>
               <h3 className="mt-1 text-lg font-extrabold text-white">{new Date(selectedDay.date + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}</h3>
               {selectedDay.motivation && <p className="mt-2 max-w-3xl text-xs italic text-slate-400">“{selectedDay.motivation}”</p>}
             </div>
-            <div className="text-right">
+            <div className="text-right max-md:text-left">
               <p className={`mono text-xl font-extrabold ${pnlClass(selectedDay.pnl)}`}>{money(selectedDay.pnl, currency)}</p>
               <p className="text-[10px] text-slate-600">{selectedDay.trades} trades · {selectedDay.wins} wins · {selectedDay.losses} losses</p>
             </div>
           </div>
 
           {selectedDay.trade_rows.length ? (
-            <div className="mt-4 overflow-x-auto">
+            <>
+            <div className="mt-4 hidden md:block overflow-x-auto">
               <table className="w-full min-w-[760px] text-left text-xs">
                 <thead className="border-b border-white/[0.07] text-[9px] uppercase tracking-wider text-slate-600">
                   <tr><th className="py-2">Time</th><th>Symbol</th><th>Side</th><th>Volume</th><th>Source</th><th className="text-right">P/L</th></tr>
@@ -274,6 +299,21 @@ export default function JournalPage() {
                 </tbody>
               </table>
             </div>
+            <div className="mt-4 md:hidden divide-y divide-white/[0.06] rounded-xl border border-white/[0.06] overflow-hidden">
+              {selectedDay.trade_rows.map((trade, index) => (
+                <div key={`mobile-${trade.ticket || trade.id || index}-${trade.close_time}`} className="p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-bold text-white">{trade.symbol} <span className="text-[10px] uppercase text-slate-500">{trade.type}</span></p>
+                      <p className="mt-1 text-[10px] text-slate-600">{new Date(trade.close_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · {trade.source || 'MT5'}</p>
+                    </div>
+                    <p className={`mono text-sm font-bold ${pnlClass(Number(trade.net_pl || 0))}`}>{money(Number(trade.net_pl || 0), currency)}</p>
+                  </div>
+                  <p className="mt-2 text-[10px] text-slate-500">Volume <span className="mono text-slate-300">{Number(trade.volume || 0).toFixed(2)}</span></p>
+                </div>
+              ))}
+            </div>
+            </>
           ) : <p className="mt-4 text-xs text-slate-500">No closed trades were recorded for this day.</p>}
         </Panel>
       )}

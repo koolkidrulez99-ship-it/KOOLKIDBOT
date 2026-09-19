@@ -120,10 +120,10 @@ export default function BacktestLab() {
       <p className="mt-1 text-xs text-slate-400">Historical testing runs on the KOOLKID server and stays saved when you leave the page.</p>
       <div className="mt-3 flex flex-wrap gap-2">
         <Badge tone="brand">SERVER-SIDE</Badge>
-        <Badge tone="slate">1 TEST / 24 HOURS</Badge>
+        <Badge tone="slate">1 ACTIVE TEST AT A TIME</Badge>
       </div>
       <button
-        className="btn-primary mt-4"
+        className="btn-primary mt-4 max-md:w-full max-md:justify-center"
         disabled={!state?.available || connected.length === 0}
         onClick={() => setOpen(true)}
       >
@@ -155,9 +155,9 @@ export default function BacktestLab() {
           {latest.error && <p className="mt-2 text-xs text-loss-400">{latest.error}</p>}
         </div>
       )}
-      {!state?.available && !activeJob && state?.next_available_at && (
+      {!state?.available && activeJob && (
         <p className="mt-3 flex items-center gap-2 text-[11px] text-slate-500">
-          <Clock3 size={12} /> Next test available after {formatDate(state.next_available_at)}
+          <Clock3 size={12} /> Finish the active backtest before starting another.
         </p>
       )}
     </div>

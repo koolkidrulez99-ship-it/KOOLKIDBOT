@@ -311,3 +311,29 @@ html.light-theme ::-webkit-scrollbar-thumb { border-color: #f3f7fc; background: 
 .mt5-hero-copy { z-index: 3; }
 .mt5-actions { position: relative; z-index: 4; }
 .mt5-primary, .mt5-secondary, .mt5-public-head nav a, .mt5-public-head nav button, .mt5-explore { position: relative; z-index: 5; pointer-events: auto; }
+
+@media (max-width: 767px) {
+  .btn, .btn-primary, .btn-ghost, .btn-danger, .btn-warn, .btn-success {
+    min-height: 42px;
+    padding-left: 0.875rem;
+    padding-right: 0.875rem;
+  }
+
+  .btn-icon {
+    min-width: 40px;
+    min-height: 40px;
+  }
+
+  .input {
+    min-height: 42px;
+    font-size: 16px;
+  }
+
+  .nav-item {
+    min-height: 44px;
+  }
+
+  .glass-hover:hover {
+    transform: none;
+  }
+}

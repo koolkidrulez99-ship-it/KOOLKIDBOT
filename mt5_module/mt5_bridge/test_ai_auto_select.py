@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import sys
+from unittest.mock import patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -110,7 +111,8 @@ def test_live_execution_is_blocked():
             "selected": {"bot_id": 1000, "decision": "APPROVE", "signal": base_signal("primordial_black", 80, True)},
         }
         try:
-            mod.execute_selected(snapshot)
+            with patch.object(mod, "current_workspace", return_value="ws_test"), patch.object(mod.multi_account_client, "connected_by_login", return_value={1: {"account_info": {"trade_mode": 2}}}):
+                mod.execute_selected(snapshot)
             raise AssertionError("Live Auto Select execution was accepted")
         except PermissionError:
             pass
@@ -135,7 +137,8 @@ def test_config_guards():
     mod.start = lambda workspace_id: None
     try:
         try:
-            mod.configure("ws_test", {"enabled": True, "mode": "auto", "account_login": 1, "symbol": "XAUUSD", "enabled_bot_ids": [1000]})
+            with patch.object(mod.multi_account_client, "connected_by_login", return_value={1: {"account_info": {"trade_mode": 0}}}):
+                mod.configure("ws_test", {"enabled": True, "mode": "auto", "account_login": 1, "symbol": "XAUUSD", "enabled_bot_ids": [1000]})
             raise AssertionError("Auto Select auto mode overlapped Human Apostle auto")
         except RuntimeError as exc:
             assert "Human Apostle" in str(exc)
@@ -160,3 +163,31 @@ def run():
 if __name__ == "__main__":
     run()
     print("AI Auto Select checks passed")
+
+
+def test_live_analysis_and_alert_modes_do_not_require_trade_confirmation():
+    state = {"ai_auto_config": {"enabled": False}}
+    original_read, original_update = mod.read_state, mod.update_state
+    original_mode, original_start = mod._account_mode, mod.start
+
+    def read_state():
+        return copy.deepcopy(state)
+
+    def update_state(mutator):
+        result = mutator(state)
+        return copy.deepcopy(result)
+
+    mod.read_state, mod.update_state = read_state, update_state
+    mod._account_mode = lambda login: "live"
+    mod.start = lambda workspace_id: None
+    try:
+        for mode in ("analysis", "alert"):
+            result = mod.configure("ws_live_nonexec", {
+                "enabled": True, "mode": mode, "account_login": 1,
+                "symbol": "XAUUSD", "enabled_bot_ids": [1000],
+            })
+            assert result["config"]["mode"] == mode
+            assert result["config"]["allow_live"] is False
+    finally:
+        mod.read_state, mod.update_state = original_read, original_update
+        mod._account_mode, mod.start = original_mode, original_start

@@ -269,8 +269,8 @@ def start_bot(request: StartBotRequest) -> dict[str, Any]:
                 return existing
             raise ValueError("This bot already has a running assignment with different settings.")
 
-        if request.account_type.lower() == "live" and (not request.allow_live or not _env_bool("MT5_ALLOW_LIVE_EA")):
-            raise ValueError("LIVE EA execution is locked. Confirm LIVE execution and set MT5_ALLOW_LIVE_EA=1 in the worker environment.")
+        if request.account_type.lower() == "live" and not request.allow_live:
+            raise ValueError("LIVE EA execution requires explicit confirmation of the testing-phase risk warning.")
         if request.dll_required and (not request.allow_dll or not _env_bool("MT5_ALLOW_DLL_IMPORTS")):
             raise ValueError("This EA requires DLL imports. Explicit approval and MT5_ALLOW_DLL_IMPORTS=1 are required.")
 

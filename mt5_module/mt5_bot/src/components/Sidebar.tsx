@@ -48,7 +48,7 @@ export default function Sidebar({ open, onClose }: { open: boolean; onClose: () 
   return (
     <>
       <div className={`fixed inset-0 z-40 bg-black/60 backdrop-blur-sm transition-opacity lg:hidden ${open ? 'opacity-100' : 'opacity-0 pointer-events-none'}`} onClick={onClose} />
-      <aside className={`fixed left-0 top-0 z-50 h-screen w-[248px] shrink-0 border-r border-white/[0.07] bg-[#05080f]/95 backdrop-blur-2xl flex flex-col transition-transform duration-300 lg:translate-x-0 ${open ? 'translate-x-0' : '-translate-x-full'}`}>
+      <aside className={`fixed left-0 top-0 z-50 h-screen w-[248px] max-md:w-[86vw] max-md:max-w-[300px] shrink-0 border-r border-white/[0.07] bg-[#05080f]/95 backdrop-blur-2xl flex flex-col transition-transform duration-300 lg:translate-x-0 ${open ? 'translate-x-0' : '-translate-x-full'}`}>
         <div className="flex items-center justify-between px-5 h-16 border-b border-white/[0.06]">
           <NavLink to="/" className="flex items-center gap-2.5">
             <span className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-brand-500 to-brand-700 shadow-glow-brand"><ChartCandlestick size={18} className="text-white" strokeWidth={2.2} /></span>

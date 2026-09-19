@@ -46,7 +46,7 @@ class IntelligenceStore:
 
     def record_evaluation(self, username, setup, result):
         self.ensure()
-        safe = {k: result.get(k) for k in ("decision", "reason", "score", "entry", "sl", "tp", "r", "volume") if k in result}
+        safe = {k: result.get(k) for k in ("decision", "reason", "score", "entry", "sl", "tp", "r", "volume", "threshold", "risk_validated", "executed", "confidence_factors") if k in result}
         safe["state"] = result.get("state", {})
         self.bridge.db("INSERT INTO ai_intelligence_evaluations (id,username,account,symbol,timeframe,strategy,decision,score,record,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)", (secrets.token_hex(16), username, setup.account, setup.symbol, setup.timeframe, setup.strategy, result["decision"], int(result.get("score", 0)), json.dumps(safe), self.now()))
 
@@ -60,6 +60,11 @@ class IntelligenceStore:
                 return [{**json.loads(row[0]), "created_at": row[1]} for row in cur.fetchall()]
             finally:
                 conn.close()
+
+    def latest_evaluation(self, username, account, symbol, timeframe, strategy):
+        self.ensure()
+        row = self.bridge.db("SELECT record FROM ai_intelligence_evaluations WHERE username=? AND account=? AND symbol=? AND timeframe=? AND strategy=? ORDER BY created_at DESC LIMIT 1", (username, account, symbol, timeframe, strategy), True)
+        return json.loads(row[0]) if row else None
 
     def teach(self, username, strategy, text, structured, priority=50):
         self.ensure()

@@ -8,6 +8,7 @@ import type { AiAutoSelectMode, AiAutoSelectStatus, AiAutoStatus, AiInsight, AiS
 import { aiControlService } from '../services/aiControlService';
 import { mt5MultiAccountService } from '../services/mt5MultiAccountService';
 import NativeAutoSelectPanel from '../components/NativeAutoSelectPanel';
+import ConfirmModal from '../components/ConfirmModal';
 import { isSimulation } from '../config/runtime';
 
 const CATEGORY_META: Record<string, { icon: typeof Brain; cls: string }> = {
@@ -53,6 +54,8 @@ type CopyAnywhereStatus = {
   pending_count?: number;
 };
 
+type LiveRiskAction = 'trial' | 'human_auto' | 'auto_select' | 'auto_select_execute' | null;
+
 export default function AIPage() {
   const { accounts, mt5Symbols, activeAccount, pushToast } = useHub();
   const connectedAccounts = useMemo(() => accounts.filter((a) => a.status === 'connected'), [accounts]);
@@ -82,6 +85,7 @@ export default function AIPage() {
   const [copyAnywhereBusy, setCopyAnywhereBusy] = useState(false);
   const [copyStatus, setCopyStatus] = useState<CopyAnywhereStatus | null>(null);
   const [copyStatusError, setCopyStatusError] = useState('');
+  const [liveRiskAction, setLiveRiskAction] = useState<LiveRiskAction>(null);
 
   const selectedAccount = useMemo(() => connectedAccounts.find((a) => a.login === accountLogin) || null, [connectedAccounts, accountLogin]);
   const selectedNative = autoSelectStatus?.snapshot?.selected || null;
@@ -168,17 +172,13 @@ export default function AIPage() {
     }
   };
 
-  const executeTrial = async () => {
+  const doExecuteTrial = async (confirmLive: boolean) => {
     if (isSimulation) {
       pushToast('warning', 'Real MT5 bridge required');
       return;
     }
     if (!trial?.proposed_trade || !['BUY', 'SELL'].includes(trial.decision)) {
       pushToast('warning', 'No tradable Apostle signal', 'Run a scan and wait for a current BUY or SELL first.');
-      return;
-    }
-    if (selectedAccount?.account_type !== 'demo') {
-      pushToast('warning', 'Demo account required', 'Live AI execution is locked. Use a demo MT5 account.');
       return;
     }
     const volume = Number(trialVolume);
@@ -188,27 +188,31 @@ export default function AIPage() {
     }
     setExecuting(true);
     try {
-      const result = await aiControlService.trialExecute(accountLogin, symbol, volume);
-      setTrial((prev) => prev ? { ...prev, execution: 'Demo execution sent to MT5. Live accounts stay locked.', execution_mode: 'DEMO_AUTO_TRADE', last_execution: result } : prev);
-      pushToast('success', 'Demo AI trade sent', `${result.direction} ${result.symbol} · lot ${result.volume}`);
+      const result = await aiControlService.trialExecute(accountLogin, symbol, volume, confirmLive);
+      setTrial((prev) => prev ? { ...prev, execution: `${(result.account_type || selectedAccount?.account_type || 'demo').toUpperCase()} execution sent to MT5.`, execution_mode: result.mode, last_execution: result } : prev);
+      pushToast('success', 'AI trade sent', `${result.direction} ${result.symbol} · lot ${result.volume}`);
     } catch (e) {
-      pushToast('error', 'Demo AI execution failed', e instanceof Error ? e.message : undefined);
+      pushToast('error', 'AI execution failed', e instanceof Error ? e.message : undefined);
     } finally {
       setExecuting(false);
     }
   };
 
-  const startAutoTrading = async () => {
+  const executeTrial = () => {
+    if (selectedAccount?.account_type === 'live') {
+      setLiveRiskAction('trial');
+      return;
+    }
+    void doExecuteTrial(false);
+  };
+
+  const doStartAutoTrading = async (confirmLive: boolean) => {
     if (isSimulation) {
       pushToast('warning', 'Real MT5 bridge required');
       return;
     }
     if (!accountLogin || !symbol) {
       pushToast('warning', 'Select an account and symbol');
-      return;
-    }
-    if (selectedAccount?.account_type !== 'demo') {
-      pushToast('warning', 'Demo account required', 'Human Apostle auto-trading is locked to demo accounts for the user trial.');
       return;
     }
     if (autoSelectStatus?.enabled && autoSelectStatus.config.mode === 'auto') {
@@ -222,15 +226,23 @@ export default function AIPage() {
     }
     setAutoBusy(true);
     try {
-      const status = await aiControlService.autoConfigure({ enabled: true, account_login: accountLogin, symbol, volume, scan_seconds: 30 });
+      const status = await aiControlService.autoConfigure({ enabled: true, account_login: accountLogin, symbol, volume, scan_seconds: 30, confirm_live: confirmLive });
       setAutoStatus(status);
       setSettings((prev) => prev ? { ...prev, auto_trading: true } : prev);
-      pushToast('success', 'Human Apostle Auto-Trading started', `${symbol} · demo #${accountLogin} · lot ${volume}`);
+      pushToast('success', 'Human Apostle Auto-Trading started', `${symbol} · ${selectedAccount?.account_type || 'MT5'} #${accountLogin} · lot ${volume}`);
     } catch (e) {
       pushToast('error', 'Could not start AI Auto-Trading', e instanceof Error ? e.message : undefined);
     } finally {
       setAutoBusy(false);
     }
+  };
+
+  const startAutoTrading = () => {
+    if (selectedAccount?.account_type === 'live') {
+      setLiveRiskAction('human_auto');
+      return;
+    }
+    void doStartAutoTrading(false);
   };
 
   const stopAutoTrading = async () => {
@@ -275,13 +287,9 @@ export default function AIPage() {
     }
   };
 
-  const startAutoSelect = async () => {
+  const doStartAutoSelect = async (confirmLive: boolean) => {
     if (!accountLogin || !symbol || !autoSelectBotIds.length) {
       pushToast('warning', 'Choose an account, symbol, and at least one native preset.');
-      return;
-    }
-    if (autoSelectMode === 'auto' && selectedAccount?.account_type !== 'demo') {
-      pushToast('warning', 'Demo account required', 'Auto Select automatic execution is locked to DEMO accounts.');
       return;
     }
     setAutoSelectBusy(true);
@@ -289,6 +297,7 @@ export default function AIPage() {
       const status = await aiControlService.autoSelectConfigure({
         enabled: true, account_login: accountLogin, symbol,
         enabled_bot_ids: autoSelectBotIds, mode: autoSelectMode, scan_seconds: 30,
+        confirm_live: autoSelectMode === 'auto' ? confirmLive : false,
       });
       setAutoSelectStatus(status);
       pushToast('success', 'AI Auto Select started', `${symbol} · ${autoSelectMode.toUpperCase()} · ${autoSelectBotIds.length} native presets`);
@@ -297,6 +306,14 @@ export default function AIPage() {
     } finally {
       setAutoSelectBusy(false);
     }
+  };
+
+  const startAutoSelect = () => {
+    if (autoSelectMode === 'auto' && selectedAccount?.account_type === 'live') {
+      setLiveRiskAction('auto_select');
+      return;
+    }
+    void doStartAutoSelect(false);
   };
 
   const stopAutoSelect = async () => {
@@ -312,14 +329,10 @@ export default function AIPage() {
     }
   };
 
-  const executeAutoSelectSelection = async () => {
-    if (selectedAccount?.account_type !== 'demo') {
-      pushToast('warning', 'Demo account required', 'Manual AI confirmation execution is DEMO-only.');
-      return;
-    }
+  const doExecuteAutoSelectSelection = async (confirmLive: boolean) => {
     setAutoSelectBusy(true);
     try {
-      const execution = await aiControlService.autoSelectExecute();
+      const execution = await aiControlService.autoSelectExecute(confirmLive);
       const status = await aiControlService.autoSelectStatus();
       setAutoSelectStatus(status);
       const direction = String(execution.direction || '');
@@ -329,6 +342,14 @@ export default function AIPage() {
     } finally {
       setAutoSelectBusy(false);
     }
+  };
+
+  const executeAutoSelectSelection = () => {
+    if (selectedAccount?.account_type === 'live') {
+      setLiveRiskAction('auto_select_execute');
+      return;
+    }
+    void doExecuteAutoSelectSelection(false);
   };
 
   const toggleCopyAnywhere = async (enabled: boolean) => {
@@ -398,16 +419,25 @@ export default function AIPage() {
     }
   };
 
+  const confirmLiveRisk = async () => {
+    const action = liveRiskAction;
+    setLiveRiskAction(null);
+    if (action === 'trial') await doExecuteTrial(true);
+    else if (action === 'human_auto') await doStartAutoTrading(true);
+    else if (action === 'auto_select') await doStartAutoSelect(true);
+    else if (action === 'auto_select_execute') await doExecuteAutoSelectSelection(true);
+  };
+
   return (
     <div>
       <PageHeader
         title="AI Intelligence"
-        sub="Human Apostle + KOOLKID native strategy intelligence · completed candles only · server-side scanning · automatic execution stays DEMO-only"
+        sub="Human Apostle + KOOLKID native strategy intelligence · completed candles only · server-side scanning · LIVE execution requires explicit risk confirmation"
         actions={
           <div className="flex flex-wrap gap-2">
-            <button className="btn-secondary" onClick={executeTrial} disabled={executing || isSimulation || !trial?.proposed_trade || !['BUY', 'SELL'].includes(trial?.decision || '') || selectedAccount?.account_type !== 'demo'}>
+            <button className="btn-secondary" onClick={executeTrial} disabled={executing || isSimulation || !trial?.proposed_trade || !['BUY', 'SELL'].includes(trial?.decision || '')}>
               {executing ? <Spinner size={15} /> : <Zap size={15} />}
-              {executing ? 'Sending demo order…' : 'Execute current demo signal'}
+              {executing ? 'Sending MT5 order…' : 'Execute current signal'}
             </button>
             <button className="btn-primary" onClick={runTrial} disabled={trialLoading || isSimulation || !accountLogin}>
               {trialLoading ? <Spinner size={15} /> : <Brain size={15} />}
@@ -422,11 +452,11 @@ export default function AIPage() {
           <div>
             <div className="flex flex-wrap items-center gap-2">
               <p className="text-[15px] font-extrabold text-white">Human Apostle AI</p>
-              <Badge tone="warn">DEMO ONLY</Badge>
+              <Badge tone="warn">LIVE = CONFIRM FIRST</Badge>
               <Badge tone={isSimulation ? 'warn' : 'gain'}>{autoStatus?.enabled ? 'AUTO RUNNING' : (isSimulation ? 'Bridge required' : 'Ready')}</Badge>
             </div>
             <p className="mt-1 text-[12px] text-slate-500 max-w-3xl">
-              Sequence: market structure → opposing trendline break → protected structure break → later retest → rejection candle → H4 alignment. You can scan manually, execute a current signal manually, or let the server keep scanning and execute fresh confirmed signals automatically on a demo account. Live AI execution remains locked.
+              Sequence: market structure → opposing trendline break → protected structure break → later retest → rejection candle → H4 alignment. You can scan manually, execute a current signal manually, or let the server keep scanning and execute fresh confirmed signals automatically. LIVE accounts require the testing-phase risk confirmation before execution.
             </p>
           </div>
           <p className="mono text-[10px] text-slate-600">{trial?.execution || (autoStatus?.enabled ? 'SERVER SCANNER ACTIVE' : 'WAITING FOR SCAN')}</p>
@@ -447,7 +477,7 @@ export default function AIPage() {
             </select>
           </div>
           <div>
-            <label className="label">Fixed demo lot</label>
+            <label className="label">Fixed lot</label>
             <input className="input mono" value={trialVolume} onChange={(e) => setTrialVolume(e.target.value)} placeholder="0.01" disabled={!!autoStatus?.enabled || !!autoSelectStatus?.enabled} />
           </div>
           <div>
@@ -464,7 +494,7 @@ export default function AIPage() {
           <button
             className={autoStatus?.enabled ? 'btn-secondary' : 'btn-primary'}
             onClick={autoStatus?.enabled ? stopAutoTrading : startAutoTrading}
-            disabled={autoBusy || isSimulation || (!autoStatus?.enabled && (!accountLogin || selectedAccount?.account_type !== 'demo' || (autoSelectStatus?.enabled && autoSelectStatus.config.mode === 'auto')))}
+            disabled={autoBusy || isSimulation || (!autoStatus?.enabled && (!accountLogin || (autoSelectStatus?.enabled && autoSelectStatus.config.mode === 'auto')))}
           >
             {autoBusy ? <Spinner size={15} /> : <Activity size={15} />}
             {autoBusy ? 'Updating…' : autoStatus?.enabled ? 'Stop AI Auto-Trading' : 'Start AI Auto-Trading'}
@@ -485,7 +515,7 @@ export default function AIPage() {
             </div>
             <div className="text-right text-[10px] text-slate-600">
               <p>{autoStatus.config?.symbol || symbol} · #{autoStatus.config?.account_login || accountLogin || '—'} · lot {autoStatus.config?.volume ?? trialVolume}</p>
-              <p>M15 execution · H4 bias · DEMO ONLY</p>
+              <p>M15 execution · H4 bias · {autoStatus.config?.allow_live ? 'LIVE RISK ACCEPTED' : 'LIVE REQUIRES CONFIRM'}</p>
             </div>
           </div>
           <div className="mt-4 grid grid-cols-2 lg:grid-cols-4 gap-2.5">
@@ -579,10 +609,10 @@ export default function AIPage() {
                   <span className="text-slate-500">TP</span><span className="mono text-right text-gain-400">{fmt(trial.proposed_trade.tp)}</span>
                   <span className="text-slate-500">Target</span><span className="mono text-right text-white">2.0R</span>
                 </div>
-                <p className="text-[10px] text-warn-400 border-t border-white/[0.06] pt-2">This setup can be sent manually or by the server auto-trader on the selected demo account only.</p>
+                <p className="text-[10px] text-warn-400 border-t border-white/[0.06] pt-2">This setup can be sent manually or by the server auto-trader. LIVE execution requires explicit confirmation of the testing-phase risk warning.</p>
                 {trial.last_execution && (
                   <div className="mt-3 rounded-xl bg-black/20 border border-white/[0.06] p-3 text-[11px]">
-                    <p className="text-[10px] uppercase tracking-widest text-slate-600">Last demo execution</p>
+                    <p className="text-[10px] uppercase tracking-widest text-slate-600">Last execution</p>
                     <p className="mt-1 text-slate-300">{trial.last_execution.direction} {trial.last_execution.symbol} · lot {trial.last_execution.volume}</p>
                     <p className="text-slate-500">{timeAgo(trial.last_execution.executed_at)} · {trial.last_execution.message}</p>
                   </div>
@@ -635,6 +665,18 @@ export default function AIPage() {
           })}
         </div>
       </div>
+
+      <ConfirmModal
+        open={liveRiskAction !== null}
+        onClose={() => setLiveRiskAction(null)}
+        title="Continue on a LIVE account?"
+        tone="danger"
+        confirmLabel="I Accept the Risk & Continue"
+        message={
+          <>This bot is still in its testing phase. A LIVE MT5 account uses real funds and trading losses can occur. Continue only if you accept that risk. By confirming, you choose to use this feature at your own risk and understand that KOOLKID and its admin are not liable for any trading losses. Server-side automatic modes can continue running after you close the browser until you stop them.</>
+        }
+        onConfirm={confirmLiveRisk}
+      />
     </div>
   );
 }

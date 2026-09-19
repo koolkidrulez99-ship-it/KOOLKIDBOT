@@ -35,6 +35,19 @@ def request(path: str, method: str = "GET", payload: dict[str, Any] | None = Non
         raise RuntimeError("EA Worker Offline. Start KOOLKID with START_KOOLKID.bat.") from exc
 
 
+def public_status() -> dict[str, Any]:
+    """Workspace-neutral worker health for the bridge's public /health route."""
+    req = Request(f"{BASE_URL}/health", method="GET")
+    try:
+        with urlopen(req, timeout=1.5) as response:
+            health = json.loads(response.read().decode("utf-8"))
+        return {"status": "online", "message": "EA worker is ready.", "endpoint": BASE_URL, **health}
+    except HTTPError as exc:
+        return {"status": "error", "message": f"EA worker health check failed ({exc.code}).", "endpoint": BASE_URL}
+    except (URLError, TimeoutError):
+        return {"status": "offline", "message": "EA Worker Offline. Start KOOLKID with START_KOOLKID.bat.", "endpoint": BASE_URL}
+
+
 def status() -> dict[str, Any]:
     try:
         health = request("/health", timeout=1.5)

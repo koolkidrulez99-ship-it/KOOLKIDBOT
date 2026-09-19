@@ -25,7 +25,7 @@ def test_confirmed_fractal_swings_and_labels():
 
 
 def test_structure_bullish_bearish_and_neutral():
-    rows = candles([5] * 8)
+    rows = candles([8] * 8)
     from ai_intelligence.apostle import Swing
     assert market_structure(rows, [Swing(1, 1, 10, "HIGH"), Swing(5, 5, 11, "HIGH")], [Swing(2, 2, 5, "LOW"), Swing(6, 6, 6, "LOW")]) == "BULLISH"
     assert market_structure(rows, [Swing(1, 1, 11, "HIGH"), Swing(5, 5, 10, "HIGH")], [Swing(2, 2, 6, "LOW"), Swing(6, 6, 5, "LOW")]) == "BEARISH"
@@ -42,7 +42,7 @@ def test_trendline_math_and_close_not_wick_break():
 
 def test_same_candle_retest_rejected_then_later_retest_accepted():
     engine = ApostleEngine(retest_tolerance=0.1)
-    rows = candles([10] * 7)
+    rows = candles([11, 11, 10.5, 11, 11, 11, 9.7])
     rows[-1] = Candle(6, 9.8, 10.05, 9.5, 9.7)
     state = SetupState("1", "EURUSD", "M15", state="WAITING_FOR_RETEST", direction="SELL", retest_level=10, stop_reference=11, shift_index=6)
     result = engine.evaluate(state, rows, bias=["BEARISH"])
@@ -63,7 +63,7 @@ def test_rejection_candle(direction, candle, expected):
 
 def test_structural_stop_two_r_and_bias_rejection():
     engine = ApostleEngine(target_r=2)
-    rows = candles([10] * 7) + [Candle(7, 10.1, 10.2, 9.5, 9.8)]
+    rows = candles([11, 11, 10.5, 11, 11, 11, 9.7]) + [Candle(7, 10.1, 10.2, 9.5, 9.8)]
     state = SetupState("1", "XAUUSD", "M5", state="WAITING_FOR_RETEST", direction="SELL", retest_level=10, stop_reference=11, shift_index=6)
     result = engine.evaluate(state, rows, bias=["BEARISH", "BEARISH"])
     assert result["decision"] == "SELL"
@@ -107,3 +107,80 @@ def test_backtest_reports_rejections_and_metrics_without_execution():
     assert result["total_trades"] == 0
     assert result["win_rate"] == 0
     assert "rejected_setups" in result and "max_drawdown_r" in result
+
+
+def retest_state():
+    return SetupState("1", "EURUSD", "M15", state="WAITING_FOR_RETEST", direction="SELL",
+                      protected_structure=10, retest_level=10, stop_reference=12,
+                      break_index=5, break_time=5, shift_index=6, shift_time=6)
+
+
+def retest_rows():
+    return candles([11, 11, 10.5, 11, 11, 11, 9.7]) + [Candle(7, 10.1, 10.2, 9.5, 9.8)]
+
+
+def test_sliding_window_retest_uses_time_not_fixed_last_index():
+    state = retest_state()
+    # Prior window included time -1; now it starts at 0 but still ends at index 7.
+    state.shift_index = 7
+    rows = retest_rows()
+    assert len(rows) - 1 == state.shift_index
+    result = ApostleEngine().evaluate(state, rows, bias=["BEARISH"])
+    assert result["decision"] == "SELL"
+    assert state.state == "SIGNAL_READY"
+    assert result["risk_validated"] is False
+    assert ApostleEngine().evaluate(state, rows, bias=["BEARISH"])["decision"] != "SELL"
+    rows.append(Candle(8, 9.8, 10, 9, 9.5))
+    assert ApostleEngine().evaluate(state, rows, bias=["BEARISH"])["decision"] != "MANAGE POSITION"
+
+
+def test_threshold_blocks_otherwise_confirmed_signal():
+    result = ApostleEngine(threshold=90).evaluate(retest_state(), retest_rows())
+    assert result["decision"] == "REJECT SETUP"
+    assert result["score"] == 85
+    assert "threshold" in result["reason"]
+
+
+def test_retest_rejects_neutral_execution_structure():
+    rows = candles([10] * 7) + [Candle(7, 10.1, 10.2, 9.5, 9.8)]
+    result = ApostleEngine().evaluate(retest_state(), rows, bias=["BEARISH"])
+    assert result["decision"] == "REJECT SETUP"
+    assert "Execution structure" in result["reason"]
+
+
+def test_setup_expires_when_break_falls_outside_history_window():
+    state = retest_state()
+    rows = [Candle(c.time + 100, c.open, c.high, c.low, c.close) for c in candles([10] * 8)]
+    ApostleEngine().evaluate(state, rows)
+    assert state.state == "SCANNING" and state.break_time is None
+
+
+@pytest.mark.parametrize("row", [Candle(1, 9, 12, 10, 11), Candle(1, 11, 12, 10, float("nan"))])
+def test_invalid_prices_cannot_create_signal(row):
+    with pytest.raises(ValueError, match="OHLC"):
+        completed([row])
+
+
+def test_position_size_honors_non_step_aligned_maximum():
+    assert position_size(10, 9, RiskSpec(10000, 1, 1, 1, .1, .25, .1)) == .2
+    assert position_size(10, 9, RiskSpec(100, 1, 1, 1, .00001, .00009, .00001)) == .00009
+
+
+def test_backtest_cannot_open_again_until_existing_position_exits():
+    class AlwaysSignal:
+        target_r = 2
+
+        def __init__(self):
+            self.times = []
+
+        def evaluate(self, state, rows, **kwargs):
+            self.times.append(rows[-1].time)
+            return {"decision": "BUY", "entry": 10, "sl": 9, "tp": 12}
+
+    rows = [Candle(i, 10, 11, 9.5, 10) for i in range(13)]
+    rows[10] = Candle(10, 10, 12, 9.5, 11)
+    engine = AlwaysSignal()
+    result = backtest(rows, engine=engine)
+    assert engine.times == [7, 11]
+    assert result["total_trades"] == 1
+    assert result["trades"][0]["exit_time"] == 10

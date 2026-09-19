@@ -476,3 +476,76 @@ def test_teaching_is_versioned_per_user_and_never_live_applied(bot):
     records = server.ai_intelligence_bridge.intelligence_store.knowledge("alice")
     assert records[0]["version"] == 1 and records[0]["enabled"] is True
     assert records[0]["structured"]["live_effect"] is False
+
+
+def test_mt5_symbol_catalog_accepts_actual_worker_field(bot, monkeypatch):
+    provider = server.ai_intelligence_bridge.mt5_provider
+    monkeypatch.setattr(provider, "accounts", lambda: [{"login": 1001, "status": "connected"}])
+    monkeypatch.setattr(provider, "symbols", lambda account: [{"symbol": "EURUSD"}, {"name": "XAUUSD"}])
+    result = bot.client.get("/ai-intelligence/intelligence/symbols?account=1001")
+    assert result.get_json()["symbols"] == ["EURUSD", "XAUUSD"]
+
+
+def test_shared_mt5_token_is_never_used_for_another_user(bot, monkeypatch):
+    from ai_intelligence.mt5_provider import Mt5ReadProvider
+    import urllib.request
+    provider = Mt5ReadProvider()
+    monkeypatch.setenv("AI_INTELLIGENCE_MT5_TOKEN", "owner-test-token")
+    monkeypatch.setenv("AI_INTELLIGENCE_MT5_USER", "alice")
+    monkeypatch.setenv("AI_INTELLIGENCE_MT5_USER_TOKENS", "{}")
+    requests = []
+
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def read(self, limit): return b'[]'
+
+    def open_request(request, **kwargs):
+        requests.append(request)
+        return Response()
+
+    monkeypatch.setattr(urllib.request, "urlopen", open_request)
+    with server.app.test_request_context():
+        from flask import session
+        session["user"] = "alice"
+        assert provider.accounts() == []
+        session["user"] = "bob"
+        with pytest.raises(RuntimeError, match="no linked MT5"):
+            provider.accounts()
+    assert len(requests) == 1
+    assert requests[0].get_header("Authorization") == "Bearer owner-test-token"
+
+
+def test_ex5_cannot_supply_its_own_approval_or_other_users_analysis(bot, monkeypatch):
+    provider = server.ai_intelligence_bridge.mt5_provider
+    monkeypatch.setattr(provider, "accounts", lambda: [{"login": 1001, "connected": True}])
+    result = bot.post("intelligence/ex5/evaluate", {
+        "account": "1001", "signal": {"symbol": "EURUSD", "timeframe": "M15"},
+        "analysis": {"decision": "BUY", "score": 100},
+    })
+    assert result.status_code == 400
+    assert "fresh AI analysis" in result.get_json()["error"]
+    from ai_intelligence.apostle import SetupState
+    store = server.ai_intelligence_bridge.intelligence_store
+    state = SetupState("1001", "EURUSD", "M15")
+    store.record_evaluation("bob", state, {"decision": "BUY", "score": 100, "state": state.__dict__})
+    assert store.latest_evaluation("alice", "1001", "EURUSD", "M15", "HUMAN APOSTLE") is None
+    assert store.latest_evaluation("bob", "1001", "EURUSD", "M15", "HUMAN APOSTLE")["decision"] == "BUY"
+
+
+def test_signal_endpoint_rejects_browser_supplied_equity(bot, monkeypatch):
+    provider = server.ai_intelligence_bridge.mt5_provider
+    monkeypatch.setattr(provider, "accounts", lambda: [{"login": 1001, "connected": True}])
+    monkeypatch.setattr(provider, "candles", lambda *args: [
+        {"time": i, "open": 10, "high": 11, "low": 9, "close": 10} for i in range(20)
+    ])
+    result = bot.post("intelligence/evaluate", {"account": "1001", "symbol": "EURUSD", "timeframe": "M15", "risk": {"equity": 1000000}})
+    assert result.status_code == 400
+    assert "cannot be supplied" in result.get_json()["error"]
+
+
+def test_backtest_refuses_unimplemented_bias_alignment(bot, monkeypatch):
+    monkeypatch.setattr(server.ai_intelligence_bridge.mt5_provider, "accounts", lambda: [{"login": 1001, "connected": True}])
+    result = bot.post("intelligence/backtest", {"account": "1001", "symbol": "EURUSD", "timeframe": "M15", "strategy": "DEAR BRUCE"})
+    assert result.status_code == 400
+    assert "historical bias" in result.get_json()["error"]

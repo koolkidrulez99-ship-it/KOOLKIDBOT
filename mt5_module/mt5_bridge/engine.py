@@ -242,19 +242,16 @@ def bridge_status() -> dict[str, Any]:
     else:
         status = "online"
         account_type = account_type_from_info(info)
-        live_allowed = _env_bool("MT5_ALLOW_LIVE_TRADING", False)
         terminal_info = mt5.terminal_info()
         terminal = str(getattr(terminal_info, "path", "") or _terminal_path() or "MetaTrader 5")
         terminal_trade_allowed = bool(getattr(terminal_info, "trade_allowed", True)) if terminal_info else True
         account_trade_allowed = bool(getattr(info, "trade_allowed", True))
-        trading_enabled = terminal_trade_allowed and account_trade_allowed and (account_type == "demo" or live_allowed)
+        trading_enabled = terminal_trade_allowed and account_trade_allowed
         terminal_api_disabled = bool(getattr(terminal_info, "tradeapi_disabled", False)) if terminal_info else False
-        if account_type == "live" and not live_allowed:
-            message = "LIVE account connected. Order execution is safety-locked. Set MT5_ALLOW_LIVE_TRADING=1 only after demo testing."
-        elif terminal_api_disabled:
-            message = "MT5 has disabled trading through the external Python API. Enable the terminal's external API permission before demo trading."
+        if terminal_api_disabled:
+            message = "MT5 has disabled trading through the external Python API. Enable the terminal's external API permission before trading."
         elif not terminal_trade_allowed:
-            message = "MT5 Algo Trading is disabled. Enable Algo Trading in the original bridge terminal before placing demo API trades."
+            message = "MT5 Algo Trading is disabled. Enable Algo Trading in the original bridge terminal before placing API trades."
         elif not account_trade_allowed:
             message = "The connected MT5 account currently does not allow trading."
         else:
@@ -519,8 +516,9 @@ def _check_trading_permission(info) -> None:
         raise RuntimeError("MT5 terminal has algorithmic/API trading disabled. Enable trading permission in MetaTrader 5 first.")
     if not bool(getattr(info, "trade_allowed", True)):
         raise RuntimeError("This MT5 account currently does not allow trading.")
-    if account_type_from_info(info) == "live" and not _env_bool("MT5_ALLOW_LIVE_TRADING", False):
-        raise RuntimeError("LIVE trading is safety-locked. Demo trading works by default. Set MT5_ALLOW_LIVE_TRADING=1 only after you finish demo testing.")
+    # LIVE accounts are permitted when the caller has already completed
+    # KOOLKID's explicit testing-phase risk confirmation. This low-level
+    # permission check only enforces actual MT5 terminal/account permissions.
 
 
 def _time_in_window(window: str) -> bool:

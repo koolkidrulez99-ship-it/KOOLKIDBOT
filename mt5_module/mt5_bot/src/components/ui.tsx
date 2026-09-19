@@ -8,13 +8,13 @@ export function Panel({ className = '', children, hover = false }: { className?:
 
 export function PageHeader({ title, sub, actions }: { title: string; sub?: string; actions?: ReactNode }) {
   return (
-    <div className="flex flex-wrap items-end justify-between gap-4 mb-6">
+    <div className="flex flex-wrap items-end justify-between gap-4 mb-6 max-md:items-stretch max-md:gap-3 max-md:mb-4">
       <div>
         <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-brand-400 mb-1.5">MT5 Hub</p>
         <h1 className="text-2xl md:text-[28px] font-bold text-white tracking-tight">{title}</h1>
         {sub && <p className="text-sm text-slate-500 mt-1">{sub}</p>}
       </div>
-      {actions && <div className="flex items-center gap-2.5 flex-wrap">{actions}</div>}
+      {actions && <div className="flex items-center gap-2.5 flex-wrap max-md:w-full max-md:[&>button]:flex-1 max-md:[&>button]:justify-center max-md:[&>div]:w-full">{actions}</div>}
     </div>
   );
 }
@@ -41,11 +41,11 @@ export function StatCard({
         ? 'bg-loss-500/12 text-loss-400'
         : 'bg-brand-500/12 text-brand-300';
   return (
-    <Panel hover className="p-5">
+    <Panel hover className="p-5 max-md:p-4">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">{label}</p>
-          <div className={`mono text-[22px] leading-8 font-bold mt-1.5 truncate ${toneText}`}>{value}</div>
+          <div className={`mono text-[22px] leading-8 font-bold mt-1.5 truncate max-md:text-[18px] max-md:leading-7 ${toneText}`}>{value}</div>
           {sub && <div className="text-xs text-slate-500 mt-1.5">{sub}</div>}
         </div>
         {Icon && (

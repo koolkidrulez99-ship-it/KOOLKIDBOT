@@ -355,9 +355,10 @@ export interface AiTrialExecution {
   direction: 'BUY' | 'SELL';
   executed_at: string;
   signal_time?: number;
-  mode: 'DEMO_AUTO_TRADE';
+  mode: 'DEMO_AUTO_TRADE' | 'LIVE_AUTO_TRADE';
+  account_type?: 'demo' | 'live';
   automatic?: boolean;
-  source?: 'ai_manual_demo' | 'ai_auto_human_apostle' | string;
+  source?: 'ai_manual_human_apostle' | 'ai_auto_human_apostle' | string;
   signal_key?: string;
   result: Record<string, unknown>;
   message: string;
@@ -368,8 +369,8 @@ export interface AiTrialSnapshot {
   strategy: string;
   mode: 'SIGNAL_ONLY';
   execution: string;
-  execution_mode?: 'SIGNAL_ONLY' | 'DEMO_AUTO_TRADE';
-  execution_lock?: 'demo_only';
+  execution_mode?: 'SIGNAL_ONLY' | 'DEMO_AUTO_TRADE' | 'LIVE_AUTO_TRADE';
+  execution_lock?: 'live_requires_explicit_confirmation';
   account_login: number;
   symbol: string;
   execution_timeframe: 'M15';
@@ -409,7 +410,7 @@ export interface AiTrialSnapshot {
 export interface AiTrialStatus {
   trial_version: string;
   strategy: string;
-  mode: 'SIGNAL_ONLY' | 'DEMO_EXECUTION_LOCKED_TO_DEMO';
+  mode: 'SIGNAL_ONLY' | 'EXECUTION_REQUIRES_LIVE_CONFIRMATION';
   execution_timeframe: 'M15';
   bias_timeframe: 'H4';
   snapshot: AiTrialSnapshot | null;
@@ -425,7 +426,7 @@ export interface AiAutoConfig {
   scan_seconds?: number;
   execution_timeframe?: 'M15';
   bias_timeframe?: 'H4';
-  demo_only?: boolean;
+  allow_live?: boolean;
   updated_at?: string;
 }
 
@@ -458,7 +459,7 @@ export interface AiAutoEvent {
 
 export interface AiAutoStatus {
   strategy: 'Human Apostle';
-  execution_lock: 'demo_only';
+  execution_lock: 'live_requires_explicit_confirmation';
   execution_timeframe: 'M15';
   bias_timeframe: 'H4';
   enabled: boolean;
@@ -496,7 +497,7 @@ export interface AiAutoSelectSnapshot {
     completed_candles_only: boolean;
     confidence_cannot_complete_setup: boolean;
     history_is_tiebreaker_only: boolean;
-    live_auto_execution: boolean;
+    live_execution_requires_confirmation: boolean;
   };
 }
 
@@ -510,7 +511,8 @@ export interface AiAutoSelectStatus {
     symbol?: string;
     enabled_bot_ids?: number[];
     scan_seconds?: number;
-    demo_only_auto_execution?: boolean;
+    allow_live?: boolean;
+    account_mode?: 'demo' | 'live' | 'unknown';
   };
   runtime: {
     status?: string;
@@ -532,7 +534,7 @@ export interface AiAutoSelectStatus {
     bot_id: number; name: string; title: string; subtitle?: string; ready: boolean;
     source?: string | null; entry_tf?: string | null; bias_tf?: string | null;
   }>;
-  execution_lock: 'demo_only_auto_execution';
+  execution_lock: 'live_requires_explicit_confirmation';
 }
 
 export interface DerivAccount {

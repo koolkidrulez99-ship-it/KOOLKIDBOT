@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from .engine import completed_candles, detect_swings, run_human_apostle_trial, structure_at
+from .engine import completed_candles, detect_swings, normalize_candles, run_human_apostle_trial, structure_at
 
 
 def candle(ts: int, o: float, h: float, l: float, c: float):
@@ -60,6 +60,38 @@ class SwingTests(unittest.TestCase):
 
 
 class TrialSafetyTests(unittest.TestCase):
+    def sell_setup(self):
+        rows = [candle(500000 + i * 900, 110, 111, 109, 110) for i in range(25)]
+        rows[8]["high"] = 112
+        rows[10]["low"] = 100
+        rows[18]["high"] = 115
+        rows[20]["low"] = 105
+        rows[22] = candle(rows[22]["time"], 110, 111, 105.5, 105.6)
+        rows[23] = candle(rows[23]["time"], 105.6, 105.8, 103, 104)
+        rows[24] = candle(rows[24]["time"], 105.1, 105.3, 103.5, 104.2)
+        prices = [120, 121, 125, 119, 115, 120, 122, 117, 110, 114, 116, 112]
+        bias = [candle(i * 14400, value, value + 1, value - 1, value) for i, value in enumerate(prices)]
+        return rows, bias
+
+    def test_complete_sell_sequence_and_two_r(self):
+        rows, bias = self.sell_setup()
+        result = run_human_apostle_trial(rows, bias, symbol="TEST", account_login=1, now_ts=600000)
+        self.assertEqual(result["decision"], "SELL", result["reason"])
+        trade = result["proposed_trade"]
+        self.assertEqual(result["structure_shift"]["index"], 23)
+        self.assertAlmostEqual(trade["tp"], trade["entry"] - 2 * (trade["sl"] - trade["entry"]))
+
+    def test_future_bias_cannot_invalidate_historical_signal(self):
+        rows, bias = self.sell_setup()
+        # This bullish H4 candle closes after the M15 signal and cannot govern it.
+        bias.append(candle(600000, 130, 141, 129, 140))
+        result = run_human_apostle_trial(rows, bias, symbol="TEST", account_login=1, now_ts=700000)
+        self.assertEqual(result["decision"], "SELL", result["reason"])
+
+    def test_invalid_ohlc_is_rejected_instead_of_fabricating_zero_prices(self):
+        with self.assertRaises(ValueError):
+            normalize_candles([{"time": 100, "high": 11, "low": 9, "close": 10}])
+
     def make_trend(self, tf_seconds: int, count: int, start: float, step: float):
         rows = []
         price = start

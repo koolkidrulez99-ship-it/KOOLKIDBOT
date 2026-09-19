@@ -110,6 +110,12 @@
       option.disabled = !row.connected;
       account.append(option);
     }
+    if (!account.options.length) {
+      account.append(Object.assign(document.createElement("option"), {
+        value: "", textContent: data.data_error ? "MT5 workspace unavailable" : "No connected accounts"
+      }));
+    }
+    account.title = data.data_error || "";
     if (previous && [...account.options].some(option => option.value === previous && !option.disabled)) account.value = previous;
     renderDecisionRows(data.recent || []);
     renderKnowledge(data.knowledge || []);
@@ -146,11 +152,16 @@
 
   async function loadIntelligenceSymbols(account) {
     const field = root.querySelector('.ai-scan-form [name="symbol"]');
+    const previous = field.value;
     field.innerHTML = '<option value="">Loading symbols...</option>';
     try {
       const data = await api(`intelligence/symbols?account=${encodeURIComponent(account)}`);
+      if (root.querySelector('.ai-scan-form [name="account"]').value !== account) return;
       field.replaceChildren(...data.symbols.map(name => Object.assign(document.createElement("option"), {value: name, textContent: name})));
-    } catch (error) { field.innerHTML = '<option value="">Symbols unavailable</option>'; }
+      if (data.symbols.includes(previous)) field.value = previous;
+    } catch (error) {
+      if (root.querySelector('.ai-scan-form [name="account"]').value === account) field.innerHTML = '<option value="">Symbols unavailable</option>';
+    }
   }
 
   function quickActions() {
@@ -346,7 +357,8 @@
   root.querySelector('.ai-scan-form [name="account"]').addEventListener("change", event => loadIntelligenceSymbols(event.target.value));
   root.querySelector(".ai-scan-form").addEventListener("submit", async event => {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
     const button = event.currentTarget.querySelector("button");
     button.disabled = true;
     try {
@@ -355,6 +367,8 @@
         strategy: form.get("strategy"), mode: form.get("mode"), threshold: Number(form.get("threshold")),
         candle_confirmation: true, target_r: 2
       });
+      const current = new FormData(formElement);
+      if ([...form.keys()].some(key => form.get(key) !== current.get(key))) return;
       root.querySelector('[data-ai-stat="decision"]').textContent = result.decision;
       root.querySelector('[data-ai-stat="score"]').textContent = `${result.score || 0}%`;
       root.querySelector('[data-ai-stat="stage"]').textContent = result.state?.state || "SCANNING";
@@ -365,13 +379,14 @@
   });
   root.querySelector(".ai-teach-form").addEventListener("submit", async event => {
     event.preventDefault();
-    const teaching = event.currentTarget.elements.teaching.value;
+    const form = event.currentTarget;
+    const teaching = form.elements.teaching.value;
     const strategy = root.querySelector('.ai-scan-form [name="strategy"]').value;
     const button = event.currentTarget.querySelector("button");
     button.disabled = true;
     try {
       const result = await api("intelligence/teach", {teaching, strategy});
-      event.currentTarget.reset();
+      form.reset();
       root.querySelector(".ai-decision p").textContent = result.message;
       await loadIntelligence();
     } catch (error) { root.querySelector(".ai-decision p").textContent = error.message; }

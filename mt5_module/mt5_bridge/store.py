@@ -33,6 +33,7 @@ SYSTEM_BOT_PRESETS = [
     {"id": 1007, "name": "PRIMORDIAL WHITE", "file": "Primordial_White.ex5", "version": "1.10", "magic": 26033179},
     {"id": 1008, "name": "HUMAN APOSTLE", "file": "HumanApostle_EA.ex5", "version": "1.00", "magic": 4152026},
     {"id": 1009, "name": "DEAR BRUCE", "file": "DEAR_BRUCE_PREMIUM.ex5", "version": "2.20", "magic": 22082605},
+    {"id": 1010, "name": "KOOLKID SCALPER X", "file": "KOOLKID_ScalperX.ex5", "version": "1.00", "magic": 19092610},
 ]
 
 

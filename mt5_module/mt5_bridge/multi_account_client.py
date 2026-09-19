@@ -35,6 +35,19 @@ def request(path: str, method: str = "GET", payload: dict[str, Any] | None = Non
         raise RuntimeError("MT5 multi-account worker is offline.") from exc
 
 
+def public_status() -> dict[str, Any]:
+    """Workspace-neutral worker health for launcher/service monitoring."""
+    req = Request(f"{BASE_URL}/health", method="GET")
+    try:
+        with urlopen(req, timeout=1.5) as response:
+            health = json.loads(response.read().decode("utf-8"))
+        return {"status": "online", "message": "MT5 account worker is ready.", "endpoint": BASE_URL, **health}
+    except HTTPError as exc:
+        return {"status": "error", "message": f"MT5 account worker health check failed ({exc.code}).", "endpoint": BASE_URL}
+    except (URLError, TimeoutError):
+        return {"status": "offline", "message": "MT5 multi-account worker is offline.", "endpoint": BASE_URL}
+
+
 def accounts() -> dict[str, Any]:
     return request("/accounts", timeout=5)
 

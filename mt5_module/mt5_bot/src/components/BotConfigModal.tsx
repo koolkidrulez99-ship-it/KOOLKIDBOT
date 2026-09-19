@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Modal from './Modal';
+import ConfirmModal from './ConfirmModal';
+import MarketSelect from './MarketSelect';
 import { Spinner, Toggle } from './ui';
 import { useHub } from '../context/HubContext';
 import { botControl } from '../lib/actions';
-import { SYMBOL_LIST, TIMEFRAMES } from '../lib/market';
+import { TIMEFRAMES } from '../lib/market';
 import { Rocket, Save } from 'lucide-react';
 import type { Mt5Bot } from '../types';
 import type { Timeframe } from '../lib/market';
@@ -19,7 +21,7 @@ export default function BotConfigModal({
   open: boolean;
   onClose: () => void;
 }) {
-  const { accounts, activeAccount, bridge, mt5Symbols, pushToast, refresh } = useHub();
+  const { accounts, activeAccount, bridge, pushToast, refresh } = useHub();
   const eaLaunchAvailable = isSimulation || bridge?.capabilities?.ea_launch === true;
   const nativePreset = Boolean(bot?.native_engine);
   const nativeReady = !nativePreset || bot?.native_ready !== false;
@@ -42,15 +44,14 @@ export default function BotConfigModal({
   const [tradingSession, setTradingSession] = useState('All Sessions');
   const [trailing, setTrailing] = useState(true);
   const [confirmLive, setConfirmLive] = useState(false);
+  const [liveConfirmOpen, setLiveConfirmOpen] = useState(false);
   const [allowDll, setAllowDll] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const initializedBotId = useRef<number | null>(null);
 
   const isLaunch = bot?.status === 'stopped' || bot?.status === 'error' || bot?.status === 'worker_offline';
-  const availableSymbols = !isSimulation && mt5Symbols.length
-    ? mt5Symbols.filter((s) => s.trade_allowed).map((s) => s.symbol)
-    : [...SYMBOL_LIST];
+  const selectedAccount = accounts.find((account) => account.login === accountLogin) || null;
 
   useEffect(() => {
     if (!bot || !open) {
@@ -77,7 +78,7 @@ export default function BotConfigModal({
 
   if (!bot) return null;
 
-  const validatedPayload = (forStart = false) => {
+  const validatedPayload = (forStart = false, liveConfirmed = confirmLive) => {
     const errs: string[] = [];
     const lotNum = Number(lot);
     if (!nativePreset && (!lotNum || lotNum < 0.01 || lotNum > 50)) errs.push('Lot size must be between 0.01 and 50.');
@@ -87,8 +88,7 @@ export default function BotConfigModal({
     const maxOpenNum = Number(maxOpenPositions);
     if (!maxOpenNum || maxOpenNum < 1 || maxOpenNum > 100) errs.push('Maximum open positions must be between 1 and 100.');
     if (!accountLogin) errs.push('Assign a connected MT5 account.');
-    const selectedAccount = accounts.find((account) => account.login === accountLogin);
-    if (forStart && selectedAccount?.account_type === 'live' && !confirmLive) errs.push('Confirm LIVE EA execution before starting this bot.');
+    if (forStart && selectedAccount?.account_type === 'live' && !liveConfirmed) errs.push('Confirm the LIVE-account risk warning before starting this bot.');
     if (forStart && bot.dll_required && !allowDll) errs.push('This EA requires explicit DLL-import approval.');
     setErrors(errs);
     if (errs.length) return null;
@@ -103,7 +103,7 @@ export default function BotConfigModal({
       trailing_stop: trailing,
     };
     const nativeTimeframe = bot.native_key === 'human_apostle' ? 'M15' : 'M5';
-    return { symbol, timeframe: nativePreset ? nativeTimeframe : timeframe, lot_size: nativePreset ? (bot.lot_size || 0.01) : lotNum, account_login: accountLogin, settings, confirm_live: confirmLive, allow_dll: nativePreset ? false : allowDll };
+    return { symbol, timeframe: nativePreset ? nativeTimeframe : timeframe, lot_size: nativePreset ? (bot.lot_size || 0.01) : lotNum, account_login: accountLogin, settings, confirm_live: liveConfirmed, allow_dll: nativePreset ? false : allowDll };
   };
 
   const save = async () => {
@@ -122,8 +122,8 @@ export default function BotConfigModal({
     }
   };
 
-  const start = async () => {
-    const payload = validatedPayload(true);
+  const doStart = async (liveConfirmed = confirmLive) => {
+    const payload = validatedPayload(true, liveConfirmed);
     if (!payload) return;
     setBusy(true);
     try {
@@ -144,7 +144,16 @@ export default function BotConfigModal({
     }
   };
 
+  const start = async () => {
+    if (selectedAccount?.account_type === 'live' && !confirmLive) {
+      setLiveConfirmOpen(true);
+      return;
+    }
+    await doStart(confirmLive);
+  };
+
   return (
+    <>
     <Modal
       open={open}
       onClose={busy ? () => {} : onClose}
@@ -157,7 +166,7 @@ export default function BotConfigModal({
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <label className="label">MT5 Account</label>
-          <select className="input" value={accountLogin} onChange={(e) => setAccountLogin(e.target.value ? Number(e.target.value) : '')}>
+          <select className="input" value={accountLogin} onChange={(e) => { setAccountLogin(e.target.value ? Number(e.target.value) : ''); setConfirmLive(false); }}>
             <option value="">Select account...</option>
             {availableAccounts.map((a) => (
               <option key={a.id} value={a.login}>
@@ -170,14 +179,15 @@ export default function BotConfigModal({
           )}
         </div>
         <div>
-          <label className="label">Symbol</label>
-          <select className="input" value={symbol} onChange={(e) => setSymbol(e.target.value)}>
-            {availableSymbols.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
+          <label className="label">Market</label>
+          <MarketSelect
+            value={symbol}
+            onChange={setSymbol}
+            compact
+            tradeOnly
+            accountLogin={accountLogin ? Number(accountLogin) : undefined}
+          />
+          <p className="mt-1 text-[10px] text-slate-600">Searchable and grouped. Markets are loaded directly from the selected MT5 account, including Weltrade SyntX symbols such as FXV50 when the broker exposes them.</p>
         </div>
         <div>
           <label className="label">Timeframe</label>
@@ -262,7 +272,12 @@ export default function BotConfigModal({
         </div>
       )}
 
-      {!isSimulation && accounts.find((account) => account.login === accountLogin)?.account_type === 'live' && <label className="mt-4 flex items-start gap-3 rounded-xl border border-loss-500/30 bg-loss-500/[0.08] px-4 py-3 text-xs text-slate-300"><input type="checkbox" checked={confirmLive} onChange={(e) => setConfirmLive(e.target.checked)} /><span>{nativePreset ? 'I explicitly confirm starting this native KOOLKID strategy on a LIVE account.' : 'I explicitly confirm starting this EA on a LIVE account. The worker\'s LIVE safety lock must also be enabled.'}</span></label>}
+      {!isSimulation && selectedAccount?.account_type === 'live' && (
+        <div className="mt-4 rounded-xl border border-loss-500/30 bg-loss-500/[0.08] px-4 py-3 text-xs text-slate-300">
+          <p className="font-bold text-loss-300">LIVE account selected</p>
+          <p className="mt-1 text-slate-400">Pressing Start will show a final risk confirmation before any bot is allowed to run on real funds.</p>
+        </div>
+      )}
       {!isSimulation && !nativePreset && bot.dll_required && <label className="mt-4 flex items-start gap-3 rounded-xl border border-warn-400/30 bg-warn-400/[0.08] px-4 py-3 text-xs text-slate-300"><input type="checkbox" checked={allowDll} onChange={(e) => setAllowDll(e.target.checked)} /><span>I explicitly approve DLL imports for this EA. The worker's DLL safety lock must also be enabled.</span></label>}
 
       {errors.length > 0 && (
@@ -285,5 +300,21 @@ export default function BotConfigModal({
         </button>}
       </div>
     </Modal>
+
+    <ConfirmModal
+      open={liveConfirmOpen}
+      onClose={() => setLiveConfirmOpen(false)}
+      title="Start bot on a LIVE account?"
+      tone="danger"
+      confirmLabel="I Accept the Risk & Start"
+      message={
+        <>This bot is still in its testing phase. A LIVE MT5 account uses real funds and trading losses can occur. Continue only if you accept that risk. By confirming, you choose to run the bot at your own risk and understand that KOOLKID and its admin are not liable for any trading losses.</>
+      }
+      onConfirm={async () => {
+        setConfirmLive(true);
+        await doStart(true);
+      }}
+    />
+    </>
   );
 }

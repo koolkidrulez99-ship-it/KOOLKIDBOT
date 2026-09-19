@@ -429,23 +429,13 @@ def list_for_workspace(workspace_id: str) -> dict[str, Any]:
             if row.get("workspace_id") == workspace_id
         ]
     rows.sort(key=lambda row: row.get("created_at") or "", reverse=True)
-    last = rows[0] if rows else None
-    next_at = None
-    available = True
-    if last and last.get("created_at"):
-        try:
-            next_dt = datetime.fromisoformat(str(last["created_at"])) + timedelta(hours=24)
-            next_at = next_dt.isoformat()
-            available = datetime.now(timezone.utc) >= next_dt
-        except ValueError:
-            pass
     active_status = {"queued", "preparing", "compiling", "testing", "analyzing"}
     active = next((row for row in rows if row.get("status") in active_status), None)
     return {
         "jobs": rows,
-        "daily_limit": 1,
-        "available": available and active is None,
-        "next_available_at": next_at,
+        "daily_limit": None,
+        "available": active is None,
+        "next_available_at": None,
         "active_job": active,
     }
 
@@ -476,11 +466,6 @@ def create_job(
         quota = list_for_workspace(workspace_id)
         if quota["active_job"]:
             raise RuntimeError("One backtest is already active for this user.")
-        if not quota["available"]:
-            raise RuntimeError(
-                f"Daily backtest limit reached. Next backtest: {quota.get('next_available_at') or 'later'}."
-            )
-
         job_id = f"bt-{uuid.uuid4().hex[:12]}"
         job_dir = DATA_DIR / "jobs" / job_id
         job_dir.mkdir(parents=True, exist_ok=True)

@@ -12,6 +12,7 @@ import { mt5MarketService } from '../services/mt5MarketService';
 import type { Mt5Quote } from '../types';
 import DerivAdvancedChart from '../components/DerivAdvancedChart';
 import MarketSelect from '../components/MarketSelect';
+import ConfirmModal from '../components/ConfirmModal';
 import { usePersistentState } from '../hooks/usePersistentState';
 
 export default function ChartsPage() {
@@ -23,6 +24,7 @@ export default function ChartsPage() {
   const [busy, setBusy] = useState<'buy' | 'sell' | null>(null);
   const [closingId, setClosingId] = useState<number | null>(null);
   const [selectedBridgeQuote, setSelectedBridgeQuote] = useState<Mt5Quote | null>(null);
+  const [pendingLiveSide, setPendingLiveSide] = useState<'buy' | 'sell' | null>(null);
 
   const account = useMemo(() => {
     if (activeAccount && activeAccount.status === 'connected') return activeAccount;
@@ -58,7 +60,7 @@ export default function ChartsPage() {
 
   const symbolPositions = useMemo(() => positions.filter((p) => p.symbol === symbol), [positions, symbol]);
 
-  const trade = async (type: 'buy' | 'sell') => {
+  const doTrade = async (type: 'buy' | 'sell', confirmLive = false) => {
     if (!account) {
       pushToast('error', 'No connected account', 'Connect an MT5 account before placing trades.');
       return;
@@ -70,7 +72,7 @@ export default function ChartsPage() {
     }
     setBusy(type);
     try {
-      await openTrade({ account_login: account.login, symbol, type, volume: vol, source: 'Manual' });
+      await openTrade({ account_login: account.login, symbol, type, volume: vol, source: 'Manual', confirm_live: confirmLive });
       pushToast('success', `${type.toUpperCase()} ${vol.toFixed(2)} ${symbol}`, `Filled on ${account.nickname} at market.`);
       await refresh(true);
     } catch (e) {
@@ -78,6 +80,14 @@ export default function ChartsPage() {
     } finally {
       setBusy(null);
     }
+  };
+
+  const trade = (type: 'buy' | 'sell') => {
+    if (account?.account_type === 'live') {
+      setPendingLiveSide(type);
+      return;
+    }
+    void doTrade(type, false);
   };
 
   const close = async (id: number, ticket: number) => {
@@ -107,7 +117,7 @@ export default function ChartsPage() {
         <div className="xl:col-span-3 space-y-4">
           {/* toolbar */}
           <Panel className="p-3 flex flex-wrap items-center gap-2">
-            <MarketSelect value={symbol} onChange={setSymbol} />
+            <MarketSelect value={symbol} onChange={setSymbol} accountLogin={account?.login} />
             <div className="flex flex-wrap gap-1.5">
               {SYMBOL_LIST.filter((s) => ['XAUUSD','EURUSD','GBPUSD','USDJPY','BTCUSD','Volatility 75 Index'].includes(s)).filter((s) => isSimulation || !mt5Symbols.length || mt5Symbols.some((x) => x.symbol === s)).map((s) => {
                 const p = market[s] ?? MARKET[s].base;
@@ -252,6 +262,19 @@ export default function ChartsPage() {
         </Panel>
       </div>
       )}
+
+      <ConfirmModal
+        open={pendingLiveSide !== null}
+        onClose={() => setPendingLiveSide(null)}
+        title="Place this order on a LIVE account?"
+        tone="danger"
+        confirmLabel="I Accept the Risk & Place Order"
+        message={<>KOOLKID MT5 is still in its testing phase. LIVE accounts use real funds and losses can occur. Continue only if you accept that risk. By confirming, you choose to place this order at your own risk and understand that KOOLKID and its admin are not liable for any trading losses.</>}
+        onConfirm={async () => {
+          const side = pendingLiveSide;
+          if (side) await doTrade(side, true);
+        }}
+      />
     </div>
   );
 }
