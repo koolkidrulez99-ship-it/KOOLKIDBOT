@@ -909,7 +909,7 @@ def root():
 @app.get("/health")
 def health():
     copy_online = not bool(session_snapshot().get("offline"))
-    return {"ok": True, "revision": "mt5-bridge-ea-v5", "time": datetime.now(timezone.utc).isoformat(), "copy_worker": "online" if copy_online else "offline", "ea_worker": ea_worker_client.status()}
+    return {"ok": True, "revision": "mt5-bridge-ea-v6", "time": datetime.now(timezone.utc).isoformat(), "copy_worker": "online" if copy_online else "offline", "ea_worker": ea_worker_client.status()}
 
 
 @app.get("/api/mt5/bridge/status")
