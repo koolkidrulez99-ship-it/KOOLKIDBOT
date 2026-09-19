@@ -5,6 +5,7 @@ import { backtestService } from '../services/backtestService';
 import type { BacktestJob, BacktestState } from '../services/backtestService';
 import { Badge, Panel } from './ui';
 import Modal from './Modal';
+import MarketSelect from './MarketSelect';
 
 const ACTIVE = new Set(['queued', 'preparing', 'compiling', 'testing', 'analyzing']);
 const TIMEFRAMES = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1'];
@@ -183,7 +184,7 @@ export default function BacktestLab() {
             <option value="">Select account</option>
             {connected.map((account) => <option key={account.id} value={account.login}>#{account.login} · {account.broker}</option>)}
           </select></label>
-          <label><span className="label">Symbol</span><input className="input" value={symbol} onChange={(event) => setSymbol(event.target.value)} /></label>
+          <div><span className="label">Market</span><MarketSelect compact value={symbol} onChange={setSymbol} accountLogin={accountLogin === '' ? undefined : Number(accountLogin)} /></div>
         </div>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <label><span className="label">Timeframe</span><select className="input" value={timeframe} onChange={(event) => setTimeframe(event.target.value)}>

@@ -192,9 +192,9 @@ def _buffer(candles: list[dict[str, Any]], upto: int, ratio: float = 0.05) -> fl
     return max(value, close * 1e-6, 1e-8)
 
 
-def _bias_snapshot(candles: list[dict[str, Any]], swings: list[Swing]) -> tuple[str, str]:
+def _bias_snapshot(candles: list[dict[str, Any]], swings: list[Swing], timeframe: str = "H4") -> tuple[str, str]:
     if not candles:
-        return "neutral", "No completed H4 candles were available."
+        return "neutral", f"No completed {timeframe} candles were available."
     return structure_at(candles, swings, len(candles) - 1)
 
 
@@ -204,7 +204,7 @@ def _serialize_swing(s: Swing | None) -> dict[str, Any] | None:
     return asdict(s)
 
 
-def _confidence(state: SetupState, bias: str, rejection_ok: bool = False) -> tuple[int, list[str]]:
+def _confidence(state: SetupState, bias: str, rejection_ok: bool = False, bias_timeframe: str = "H4") -> tuple[int, list[str]]:
     score = 0
     factors: list[str] = []
     if state.direction:
@@ -216,7 +216,7 @@ def _confidence(state: SetupState, bias: str, rejection_ok: bool = False) -> tup
     if state.retest_touched:
         score += 15; factors.append("later retest touched: +15")
     if state.direction and bias == ("bearish" if state.direction == "sell" else "bullish"):
-        score += 15; factors.append("H4 bias aligned: +15")
+        score += 15; factors.append(f"{bias_timeframe} bias aligned: +15")
     if rejection_ok:
         score += 10; factors.append("rejection candle confirmed: +10")
     return min(100, score), factors
@@ -231,16 +231,20 @@ def run_human_apostle_trial(
     now_ts: int | None = None,
     swing_left: int = 2,
     swing_right: int = 2,
+    execution_timeframe: str = "M15",
+    bias_timeframe: str = "H4",
 ) -> dict[str, Any]:
     """Signal-only Human Apostle trial.
 
-    This intentionally performs no order execution. It replays only completed M15
-    candles, uses confirmed fractal swings, waits for trendline break -> protected
-    structure break -> later retest -> rejection, and requires H4 alignment before
-    it publishes BUY/SELL on the latest completed candle.
+    This intentionally performs no order execution. It replays only completed
+    execution-timeframe candles, uses confirmed fractal swings, waits for trendline
+    break -> protected structure break -> later retest -> rejection, and requires
+    the selected bias-timeframe alignment before it publishes BUY/SELL.
     """
-    exec_tf = "M15"
-    bias_tf = "H4"
+    exec_tf = str(execution_timeframe or "M15").upper()
+    bias_tf = str(bias_timeframe or "H4").upper()
+    if exec_tf not in TIMEFRAME_SECONDS or bias_tf not in TIMEFRAME_SECONDS:
+        raise ValueError("Unsupported Human Apostle execution or bias timeframe.")
     execution = completed_candles(execution_rows, exec_tf, now_ts)
     bias = completed_candles(bias_rows, bias_tf, now_ts)
     if len(execution) < 25:
@@ -250,7 +254,7 @@ def run_human_apostle_trial(
 
     exec_swings = detect_swings(execution, swing_left, swing_right)
     bias_swings = detect_swings(bias, swing_left, swing_right)
-    bias_structure, bias_reason = _bias_snapshot(bias, bias_swings)
+    bias_structure, bias_reason = _bias_snapshot(bias, bias_swings, bias_tf)
     bias_close_times = [row["time"] + TIMEFRAME_SECONDS[bias_tf] for row in bias]
 
     state = SetupState()
@@ -356,16 +360,16 @@ def run_human_apostle_trial(
                         aligned = candle_bias == "bearish" and current_structure == "bearish"
                         if risk > 0 and aligned:
                             tp = entry - (2.0 * risk)
-                            conf, factors = _confidence(state, candle_bias, True)
+                            conf, factors = _confidence(state, candle_bias, True, bias_tf)
                             last_signal = {
                                 "direction": "SELL", "index": i, "time": candle["time"], "entry": entry,
                                 "sl": sl, "tp": tp, "risk_distance": risk, "r_multiple": 2.0,
                                 "confidence": conf, "confidence_factors": factors,
-                                "reason": "All Human Apostle trial stages completed and H4 bias is bearish.",
+                                "reason": f"All Human Apostle trial stages completed and {bias_tf} bias is bearish.",
                             }
                             signal_on_latest = i == latest_index
                         elif not aligned:
-                            state.last_reason = f"Retest rejected correctly, but execution structure is {current_structure} and completed H4 bias is {candle_bias}; SELL is blocked."
+                            state.last_reason = f"Retest rejected correctly, but execution structure is {current_structure} and completed {bias_tf} bias is {candle_bias}; SELL is blocked."
                             continue
                         state.state = "SIGNAL_RESET"
             elif state.direction == "buy":
@@ -386,16 +390,16 @@ def run_human_apostle_trial(
                         aligned = candle_bias == "bullish" and current_structure == "bullish"
                         if risk > 0 and aligned:
                             tp = entry + (2.0 * risk)
-                            conf, factors = _confidence(state, candle_bias, True)
+                            conf, factors = _confidence(state, candle_bias, True, bias_tf)
                             last_signal = {
                                 "direction": "BUY", "index": i, "time": candle["time"], "entry": entry,
                                 "sl": sl, "tp": tp, "risk_distance": risk, "r_multiple": 2.0,
                                 "confidence": conf, "confidence_factors": factors,
-                                "reason": "All Human Apostle trial stages completed and H4 bias is bullish.",
+                                "reason": f"All Human Apostle trial stages completed and {bias_tf} bias is bullish.",
                             }
                             signal_on_latest = i == latest_index
                         elif not aligned:
-                            state.last_reason = f"Retest rejected correctly, but execution structure is {current_structure} and completed H4 bias is {candle_bias}; BUY is blocked."
+                            state.last_reason = f"Retest rejected correctly, but execution structure is {current_structure} and completed {bias_tf} bias is {candle_bias}; BUY is blocked."
                             continue
                         state.state = "SIGNAL_RESET"
 
@@ -423,7 +427,7 @@ def run_human_apostle_trial(
         else:
             decision = "SCANNING"
         reason = state.last_reason
-        confidence, confidence_factors = _confidence(state, bias_structure, False)
+        confidence, confidence_factors = _confidence(state, bias_structure, False, bias_tf)
 
     visible = confirmed_swings(exec_swings, latest_index)
     last_high = next((s for s in reversed(visible) if s.kind == "high"), None)
@@ -474,7 +478,7 @@ def run_human_apostle_trial(
             "swing_left": swing_left,
             "swing_right": swing_right,
             "same_candle_shift_retest": False,
-            "required_sequence": ["structure", "opposing trendline break", "protected structure break", "later retest", "rejection candle", "H4 alignment"],
+            "required_sequence": ["structure", "opposing trendline break", "protected structure break", "later retest", "rejection candle", f"{bias_tf} alignment"],
             "take_profit_r": 2.0,
         },
     }

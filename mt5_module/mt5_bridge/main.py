@@ -13,7 +13,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote
 
 from dotenv import load_dotenv
@@ -36,7 +36,7 @@ import ai_auto_select
 import mq5_compiler
 import backtest_manager
 import journal_manager
-from store import default_risk, read_state, remove_profile, update_state, upsert_profile
+from store import bot_library_revision, default_risk, read_state, remove_profile, update_state, upsert_profile
 from ai_trial import clear_snapshot as clear_ai_trial_snapshot, load_snapshot as load_ai_trial_snapshot, save_snapshot as save_ai_trial_snapshot, run_human_apostle_trial
 
 app = FastAPI(title="KOOLKID Local MT5 Bridge", version="1.0.0")
@@ -52,6 +52,13 @@ _AI_SCANNER_STOPS: dict[str, threading.Event] = {}
 _AI_EXECUTION_LOCKS: dict[str, threading.RLock] = {}
 _AI_SCANNERS_LOCK = threading.RLock()
 _SECRET_INPUT = re.compile(r"(?:password|passwd|token|secret|license|licence|api.?key)", re.IGNORECASE)
+_LIBRARY_UPDATE_LOCKS: dict[str, threading.RLock] = {}
+_LIBRARY_UPDATE_LOCKS_GUARD = threading.RLock()
+
+
+def _library_update_lock(workspace_id: str) -> threading.RLock:
+    with _LIBRARY_UPDATE_LOCKS_GUARD:
+        return _LIBRARY_UPDATE_LOCKS.setdefault(workspace_id, threading.RLock())
 
 
 def _safe_upload_name(name: str, extension: str) -> str:
@@ -293,9 +300,14 @@ class TradePayload(BaseModel):
     confirm_live: bool = False
 
 
+AiTimeframe = Literal["M1", "M5", "M15", "M30", "H1", "H4", "D1"]
+
+
 class AiTrialScanPayload(BaseModel):
     account_login: int
     symbol: str = Field(min_length=1, max_length=64)
+    execution_timeframe: AiTimeframe = "M15"
+    bias_timeframe: AiTimeframe = "H4"
 
 
 class AiTrialExecutePayload(BaseModel):
@@ -311,6 +323,8 @@ class AiAutoConfigPayload(BaseModel):
     symbol: str | None = Field(default=None, min_length=1, max_length=64)
     volume: float | None = Field(default=None, gt=0)
     scan_seconds: int = Field(default=30, ge=15, le=300)
+    execution_timeframe: AiTimeframe = "M15"
+    bias_timeframe: AiTimeframe = "H4"
     confirm_live: bool = False
 
 
@@ -629,13 +643,37 @@ def session_snapshot() -> dict[str, Any]:
 
 
 def _run_ai_trial_scan(payload: AiTrialScanPayload) -> dict[str, Any]:
-    execution_rows = multi_account_client.account_request(payload.account_login, f"/candles/{quote(payload.symbol)}?timeframe=M15&count=700", timeout=20)
-    bias_rows = multi_account_client.account_request(payload.account_login, f"/candles/{quote(payload.symbol)}?timeframe=H4&count=350", timeout=20)
+    exec_tf = str(payload.execution_timeframe).upper()
+    bias_tf = str(payload.bias_timeframe).upper()
+    execution_rows = multi_account_client.account_request(
+        payload.account_login,
+        f"/candles/{quote(payload.symbol)}?timeframe={quote(exec_tf)}&count=700",
+        timeout=20,
+    )
+    bias_rows = multi_account_client.account_request(
+        payload.account_login,
+        f"/candles/{quote(payload.symbol)}?timeframe={quote(bias_tf)}&count=350",
+        timeout=20,
+    )
     previous = load_ai_trial_snapshot()
-    snapshot = run_human_apostle_trial(execution_rows, bias_rows, symbol=payload.symbol, account_login=payload.account_login)
+    snapshot = run_human_apostle_trial(
+        execution_rows,
+        bias_rows,
+        symbol=payload.symbol,
+        account_login=payload.account_login,
+        execution_timeframe=exec_tf,
+        bias_timeframe=bias_tf,
+    )
     snapshot.setdefault("execution_mode", "SIGNAL_ONLY")
     snapshot.setdefault("execution_lock", "live_requires_explicit_confirmation")
-    if previous and int(previous.get("account_login") or 0) == int(payload.account_login) and str(previous.get("symbol") or "") == payload.symbol:
+    same_context = (
+        previous
+        and int(previous.get("account_login") or 0) == int(payload.account_login)
+        and str(previous.get("symbol") or "") == payload.symbol
+        and str(previous.get("execution_timeframe") or "M15").upper() == exec_tf
+        and str(previous.get("bias_timeframe") or "H4").upper() == bias_tf
+    )
+    if same_context:
         snapshot["last_execution"] = previous.get("last_execution")
     else:
         snapshot.setdefault("last_execution", None)
@@ -651,6 +689,8 @@ def _ai_signal_key(snapshot: dict[str, Any]) -> str:
     return ":".join([
         str(int(snapshot.get("account_login") or 0)),
         str(snapshot.get("symbol") or "").upper(),
+        str(snapshot.get("execution_timeframe") or "M15").upper(),
+        str(snapshot.get("bias_timeframe") or "H4").upper(),
         str(int(trade_plan.get("time") or 0)),
         str(trade_plan.get("direction") or snapshot.get("decision") or "").upper(),
     ])
@@ -755,7 +795,12 @@ def _execute_apostle_snapshot(
         prior = (read_state().get("ai_signal_attempts") or {}).get(signal_key)
         if prior:
             raise HTTPException(status_code=409, detail="This Apostle completed-candle signal was already submitted once. KOOLKID will not duplicate it.")
-        fresh = _run_ai_trial_scan(AiTrialScanPayload(account_login=login, symbol=symbol))
+        fresh = _run_ai_trial_scan(AiTrialScanPayload(
+            account_login=login,
+            symbol=symbol,
+            execution_timeframe=str(snapshot.get("execution_timeframe") or "M15").upper(),
+            bias_timeframe=str(snapshot.get("bias_timeframe") or "H4").upper(),
+        ))
         if fresh.get("decision") not in {"BUY", "SELL"} or not fresh.get("proposed_trade") or _ai_signal_key(fresh) != signal_key:
             raise HTTPException(status_code=409, detail="The Apostle setup changed before execution. Run a fresh scan.")
         snapshot = fresh
@@ -827,7 +872,12 @@ def _run_ai_auto_cycle(config: dict[str, Any]) -> None:
         raise RuntimeError("AI Auto-Trading configuration is incomplete.")
     allow_live = bool(config.get("allow_live"))
     _connected_ai_account(login, allow_live=allow_live)
-    snapshot = _run_ai_trial_scan(AiTrialScanPayload(account_login=login, symbol=symbol))
+    snapshot = _run_ai_trial_scan(AiTrialScanPayload(
+        account_login=login,
+        symbol=symbol,
+        execution_timeframe=str(config.get("execution_timeframe") or "M15").upper(),
+        bias_timeframe=str(config.get("bias_timeframe") or "H4").upper(),
+    ))
     now = _ai_now()
     runtime = {
         "status": "running",
@@ -922,14 +972,163 @@ def _ai_auto_status() -> dict[str, Any]:
     return {
         "strategy": "Human Apostle",
         "execution_lock": "live_requires_explicit_confirmation",
-        "execution_timeframe": "M15",
-        "bias_timeframe": "H4",
+        "execution_timeframe": str(config.get("execution_timeframe") or "M15"),
+        "bias_timeframe": str(config.get("bias_timeframe") or "H4"),
         "enabled": enabled,
         "scanner_alive": alive,
         "config": config,
         "runtime": runtime,
         "events": list(state.get("ai_auto_events") or [])[:50],
     }
+
+
+def _mark_library_revision_running(
+    bot_id: int,
+    revision: str,
+    assignment: dict[str, Any] | None = None,
+    *,
+    previous_revision: str | None = None,
+    restarted: bool = False,
+    error: str | None = None,
+) -> dict[str, Any] | None:
+    def mut(state):
+        row = next((b for b in state.get("bots", []) if int(b.get("id", 0)) == int(bot_id)), None)
+        if not row:
+            return None
+        row["running_library_revision"] = revision
+        row["library_update_error"] = error
+        if restarted:
+            row["last_library_restart_at"] = datetime.now(timezone.utc).isoformat()
+            row["last_library_restart_from"] = previous_revision
+            row["last_library_restart_to"] = revision
+        if assignment:
+            row.update({
+                "status": assignment.get("status", "running"),
+                "started_at": assignment.get("started_at"),
+                "worker_id": assignment.get("worker_id"),
+                "terminal_id": assignment.get("terminal_id"),
+                "process_id": assignment.get("process_id"),
+                "terminal_status": assignment.get("terminal_status"),
+                "last_activity": assignment.get("last_activity"),
+                "last_error": assignment.get("error"),
+                "ea_verified": assignment.get("ea_verified", False),
+                "ea_status": assignment.get("ea_status"),
+                "account_verified": assignment.get("account_verified", False),
+                "open_positions": assignment.get("open_positions", 0),
+                "current_pl": assignment.get("current_pl", 0),
+                "today_pl": assignment.get("today_pl", 0),
+            })
+        return dict(row)
+    return update_state(mut)
+
+
+def _library_restart_payload(bot: dict[str, Any], assignment: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(assignment.get("restart_request") or {})
+    if not payload:
+        raise RuntimeError("Running EA does not have a saved restart request.")
+    ea_rel = bot.get("ea_storage_path")
+    if ea_rel:
+        ea_path = (ROOT / str(ea_rel)).resolve()
+        if not ea_path.is_file():
+            raise RuntimeError("Updated EA file is missing from the Bot Library.")
+        payload["ea_path"] = str(ea_path)
+        payload["ea_filename"] = bot.get("ea_filename") or ea_path.name
+    preset_rel = bot.get("preset_storage_path")
+    payload["preset_path"] = str((ROOT / str(preset_rel)).resolve()) if preset_rel else None
+    payload["preset_filename"] = bot.get("preset_filename")
+    payload["configured_magic"] = int((bot.get("settings") or {}).get("magic_number") or 0) or None
+    return payload
+
+
+def _force_restart_library_bot(bot: dict[str, Any], assignment: dict[str, Any], desired_revision: str) -> dict[str, Any]:
+    bot_id = int(bot.get("id") or 0)
+    previous_revision = str(bot.get("running_library_revision") or "") or None
+    payload = _library_restart_payload(bot, assignment)
+    # Intentionally do not inspect open_positions. Library updates force an immediate
+    # terminal/EA restart even while broker positions remain open.
+    ea_worker_client.request(f"/bots/{bot_id}/stop", "POST", {}, timeout=20)
+    try:
+        restarted = ea_worker_client.request("/bots/start", "POST", payload, timeout=120)
+    except RuntimeError:
+        time.sleep(1.0)
+        restarted = ea_worker_client.request("/bots/start", "POST", payload, timeout=120)
+    _mark_library_revision_running(
+        bot_id,
+        desired_revision,
+        restarted,
+        previous_revision=previous_revision,
+        restarted=True,
+    )
+    return restarted
+
+
+def _reconcile_library_updates(workspace_id: str) -> None:
+    with _library_update_lock(workspace_id):
+        token = set_workspace(workspace_id)
+        try:
+            state = read_state()
+            try:
+                assignments = {
+                    int(row.get("bot_id") or 0): row
+                    for row in ea_worker_client.request("/bots", timeout=8)
+                    if row.get("status") in {"starting", "running"}
+                }
+            except RuntimeError:
+                assignments = {}
+
+            for bot in state.get("bots", []):
+                bot_id = int(bot.get("id") or 0)
+                desired_revision = str(bot.get("library_revision") or bot_library_revision(bot) or "")
+                if not desired_revision:
+                    continue
+
+                if bot.get("native_engine"):
+                    config = dict(bot.get("native_config") or {})
+                    if not config.get("enabled"):
+                        continue
+                    # Native strategy threads are recreated by the bridge on deploy/startup,
+                    # so the newly loaded strategy code is already active.
+                    _mark_library_revision_running(
+                        bot_id,
+                        desired_revision,
+                        previous_revision=str(bot.get("running_library_revision") or "") or None,
+                        restarted=bool(bot.get("running_library_revision") and bot.get("running_library_revision") != desired_revision),
+                    )
+                    continue
+
+                assignment = assignments.get(bot_id)
+                if not assignment:
+                    continue
+
+                running_revision = str(bot.get("running_library_revision") or "")
+                if not running_revision:
+                    # First rollout of revision tracking: adopt the current running build
+                    # as the baseline without bouncing an existing user's EA.
+                    _mark_library_revision_running(bot_id, desired_revision, assignment)
+                    continue
+                if running_revision == desired_revision:
+                    continue
+                try:
+                    _force_restart_library_bot(bot, assignment, desired_revision)
+                except Exception as exc:
+                    def mark_error(current_state):
+                        row = next((b for b in current_state.get("bots", []) if int(b.get("id", 0)) == bot_id), None)
+                        if row:
+                            row["library_update_error"] = str(exc)
+                            row["last_error"] = f"Library update restart failed: {exc}"
+                        return dict(row) if row else None
+                    update_state(mark_error)
+        finally:
+            reset_workspace(token)
+
+
+def _schedule_library_update_reconcile(workspace_id: str) -> None:
+    threading.Thread(
+        target=_reconcile_library_updates,
+        args=(workspace_id,),
+        daemon=True,
+        name=f"KOOLKID-Library-Update-{workspace_id[:8]}",
+    ).start()
 
 
 @app.on_event("startup")
@@ -944,6 +1143,7 @@ def restore_ai_scanners():
             native_runtime.restore(workspace_id)
         finally:
             reset_workspace(token)
+        _schedule_library_update_reconcile(workspace_id)
 
 
 @app.get("/")
@@ -982,6 +1182,49 @@ def bridge_status():
         "compiler": mq5_compiler.compiler_status(),
         "ea_worker": worker,
     }
+
+
+@app.get("/api/mt5/preferences")
+def get_hub_preferences():
+    return dict(read_state().get("hub_preferences") or {})
+
+
+@app.put("/api/mt5/preferences")
+def save_hub_preferences(payload: dict[str, Any] = Body(default_factory=dict)):
+    allowed_brokers = {"all", "current", "deriv", "weltrade", "favorites", "custom"}
+    allowed_categories = {
+        "all", "synthetic", "forex", "metals", "indices", "crypto", "stocks", "energies",
+        "weltrade_syntx", "fxvol", "sfxvol", "painx", "gainx", "flipx",
+        "switchx", "breakx", "trendx", "progression", "maxx", "custom",
+    }
+    def mut(state):
+        current = dict(state.get("hub_preferences") or {})
+        current.update({k: v for k, v in payload.items() if k in {
+            "pollMs", "confirmDanger", "restoreWorkspace", "reconnectOnStartup", "notifications",
+            "marketBrokerFilter", "marketCategoryFilter", "customBrokerFamilies", "customMarketGroups", "marketFavorites",
+        }})
+        if current.get("marketBrokerFilter") not in allowed_brokers:
+            current["marketBrokerFilter"] = "all"
+        if current.get("marketCategoryFilter") not in allowed_categories:
+            current["marketCategoryFilter"] = "all"
+        current["customBrokerFamilies"] = [
+            item for item in current.get("customBrokerFamilies", []) if item in {"deriv", "weltrade", "other"}
+        ] or ["deriv", "weltrade", "other"]
+        valid_groups = {"synthetic", "forex", "metals", "indices", "crypto", "stocks", "energies", "weltrade_syntx"}
+        current["customMarketGroups"] = [
+            item for item in current.get("customMarketGroups", []) if item in valid_groups
+        ] or list(valid_groups)
+        favorites = current.get("marketFavorites")
+        if not isinstance(favorites, dict):
+            favorites = {}
+        current["marketFavorites"] = {
+            str(scope)[:32]: [str(symbol)[:64] for symbol in symbols[:32] if str(symbol).strip()]
+            for scope, symbols in favorites.items()
+            if isinstance(symbols, list)
+        }
+        state["hub_preferences"] = current
+        return dict(current)
+    return update_state(mut)
 
 
 @app.get("/api/mt5/accounts")
@@ -1550,11 +1793,13 @@ async def upload_bot_files(
             row["preset_sha256"] = result["preset"]["sha256"]
             row["preset_analysis"] = result["preset"].get("analysis")
         row["upload_date"] = now
+        row["library_revision"] = bot_library_revision(row)
         return dict(row)
     try:
         result["bot"] = update_state(mut)
     except KeyError:
         raise HTTPException(status_code=404, detail="Bot not found.")
+    _schedule_library_update_reconcile(current_workspace())
     return result
 
 
@@ -1618,12 +1863,14 @@ async def compile_bot_source(bot_id: int, source_file: UploadFile = File(...)):
             if not row.get("ea_storage_path"):
                 row["file_status"] = "compile-error"
                 row["worker_compatibility"] = "compile-error"
+        row["library_revision"] = bot_library_revision(row)
         return dict(row)
 
     try:
         result["bot"] = update_state(mut)
     except KeyError:
         raise HTTPException(status_code=404, detail="Bot not found.")
+    _schedule_library_update_reconcile(current_workspace())
     return result
 
 
@@ -1658,17 +1905,22 @@ def update_bot(bot_id: int, payload: dict[str, Any] = Body(...)):
         for i, bot in enumerate(state.get("bots", [])):
             if int(bot.get("id", 0)) == bot_id:
                 if bot.get("system_preset"):
-                    allowed = {"account_login", "symbol", "timeframe", "lot_size", "settings"}
+                    allowed = {"account_login", "symbol", "timeframe", "bias_timeframe", "lot_size", "settings"}
                     safe = {k: v for k, v in payload.items() if k in allowed}
                 else:
                     safe = {k: v for k, v in payload.items() if k not in {"id", "status", "started_at"}}
                 state["bots"][i] = {**bot, **safe}
+                revision = bot_library_revision(state["bots"][i])
+                if revision:
+                    state["bots"][i]["library_revision"] = revision
                 return state["bots"][i]
         raise KeyError
     try:
-        return update_state(mut)
+        result = update_state(mut)
     except KeyError:
         raise HTTPException(status_code=404, detail="Bot not found.")
+    _schedule_library_update_reconcile(current_workspace())
+    return result
 
 
 @app.delete("/api/mt5/bots/{bot_id}")
@@ -1708,20 +1960,32 @@ def start_bot(bot_id: int, payload: dict[str, Any] = Body(default_factory=dict))
         if not bot.get("native_ready"):
             raise HTTPException(status_code=409, detail=f"{bot.get('name') or 'This preset'} needs its MQ5 source before native execution can be enabled.")
         native_meta = dict(NATIVE_PRESETS.get(int(bot_id)) or {})
-        native_timeframe = str(native_meta.get("entry_tf") or bot.get("timeframe") or "M5")
+        execution_timeframe = str(payload.get("timeframe") or bot.get("timeframe") or native_meta.get("entry_tf") or "M5").upper()
+        default_bias = str(native_meta.get("bias_tf") or "H1").replace("+", " ").split()[0]
+        bias_timeframe = str(payload.get("bias_timeframe") or bot.get("bias_timeframe") or default_bias).upper()
         def save_native_config(st):
             row = next(b for b in st["bots"] if int(b["id"]) == bot_id)
             if isinstance(payload.get("settings"), dict):
                 row["settings"] = {**dict(row.get("settings") or {}), **dict(payload["settings"])}
-            row.update({"account_login": login, "symbol": symbol, "timeframe": native_timeframe, "lot_size": float(payload.get("lot_size") or row.get("lot_size") or 0.01)})
+            row.update({
+                "account_login": login, "symbol": symbol, "timeframe": execution_timeframe,
+                "bias_timeframe": bias_timeframe,
+                "lot_size": float(payload.get("lot_size") or row.get("lot_size") or 0.01),
+            })
             return dict(row)
         update_state(save_native_config)
         try:
-            return native_runtime.start(
+            result = native_runtime.start(
                 current_workspace(), bot_id, login, symbol,
                 allow_live=bool(payload.get("confirm_live")),
                 scan_seconds=int(payload.get("scan_seconds") or 20),
+                execution_timeframe=execution_timeframe,
+                bias_timeframe=bias_timeframe,
             )
+            revision = str(bot.get("library_revision") or bot_library_revision(bot) or "")
+            if revision:
+                _mark_library_revision_running(bot_id, revision)
+            return result
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc))
         except RuntimeError as exc:
@@ -1779,6 +2043,8 @@ def start_bot(bot_id: int, payload: dict[str, Any] = Body(default_factory=dict))
             "verification_message": assignment.get("verification_message"),
             "strategy_analysis": assignment.get("strategy_analysis"),
             "background_mode": assignment.get("background_mode", False),
+            "running_library_revision": str(bot.get("library_revision") or bot_library_revision(bot) or "") or row.get("running_library_revision"),
+            "library_update_error": None,
         })
         return row
     return update_state(mark_running)
@@ -1893,13 +2159,24 @@ def get_ai_trial():
     if snapshot:
         snapshot = dict(snapshot)
         snapshot["execution_lock"] = "live_requires_explicit_confirmation"
+    scan_config = dict(read_state().get("ai_scan_config") or {})
+    if not scan_config and snapshot:
+        scan_config = {
+            "account_login": int(snapshot.get("account_login") or 0),
+            "symbol": str(snapshot.get("symbol") or ""),
+            "execution_timeframe": str(snapshot.get("execution_timeframe") or "M15"),
+            "bias_timeframe": str(snapshot.get("bias_timeframe") or "H4"),
+        }
+    exec_tf = str(scan_config.get("execution_timeframe") or (snapshot or {}).get("execution_timeframe") or "M15")
+    bias_tf = str(scan_config.get("bias_timeframe") or (snapshot or {}).get("bias_timeframe") or "H4")
     return {
         "trial_version": "1.0-user-trial",
         "strategy": "Human Apostle",
         "mode": "EXECUTION_REQUIRES_LIVE_CONFIRMATION",
-        "execution_timeframe": "M15",
-        "bias_timeframe": "H4",
+        "execution_timeframe": exec_tf,
+        "bias_timeframe": bias_tf,
         "snapshot": snapshot,
+        "scan_config": scan_config,
         "execution": "Human Apostle can scan manually or run continuously on the server. Live execution requires explicit confirmation for the selected account.",
     }
 
@@ -1909,7 +2186,12 @@ def scan_ai_trial(payload: AiTrialScanPayload):
     try:
         result = _run_ai_trial_scan(payload)
         def save_scan_config(state):
-            state["ai_scan_config"] = {"account_login": payload.account_login, "symbol": payload.symbol}
+            state["ai_scan_config"] = {
+                "account_login": payload.account_login,
+                "symbol": payload.symbol,
+                "execution_timeframe": str(payload.execution_timeframe),
+                "bias_timeframe": str(payload.bias_timeframe),
+            }
             return state["ai_scan_config"]
         update_state(save_scan_config)
         return result
@@ -2009,13 +2291,19 @@ def configure_ai_auto(payload: AiAutoConfigPayload):
             "symbol": str(payload.symbol).strip(),
             "volume": float(payload.volume),
             "scan_seconds": int(payload.scan_seconds),
-            "execution_timeframe": "M15",
-            "bias_timeframe": "H4",
+            "execution_timeframe": str(payload.execution_timeframe),
+            "bias_timeframe": str(payload.bias_timeframe),
             "allow_live": bool(payload.confirm_live),
             "updated_at": _ai_now(),
         }
         def enable(st):
             st["ai_auto_config"] = config
+            st["ai_scan_config"] = {
+                "account_login": config["account_login"],
+                "symbol": config["symbol"],
+                "execution_timeframe": config["execution_timeframe"],
+                "bias_timeframe": config["bias_timeframe"],
+            }
             settings = st.setdefault("ai_settings", {})
             settings["auto_trading"] = True
             runtime = st.setdefault("ai_auto_runtime", {})

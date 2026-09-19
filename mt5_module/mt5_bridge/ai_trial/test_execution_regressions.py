@@ -134,3 +134,58 @@ def test_demo_trade_does_not_require_live_confirmation(monkeypatch):
     monkeypatch.setattr(main.multi_account_client, "request", lambda *a, **k: {"results": {"demo-1": {"ok": True, "result": {"retcode": 10009, "ticket": 43}}}})
     result = main.trade(main.TradePayload(account_login=556, symbol="XAUUSD", type="buy", volume=0.01))
     assert result["ticket"] == 43
+
+
+def test_ai_trial_status_restores_saved_market_selection(monkeypatch):
+    monkeypatch.setattr(main, "load_ai_trial_snapshot", lambda: None)
+    monkeypatch.setattr(main, "read_state", lambda: {
+        "ai_scan_config": {"account_login": 77123, "symbol": "FXVol40"}
+    })
+    status = main.get_ai_trial()
+    assert status["scan_config"] == {"account_login": 77123, "symbol": "FXVol40"}
+
+
+def test_trial_scan_persists_selected_market(monkeypatch):
+    state = {}
+    monkeypatch.setattr(main, "_run_ai_trial_scan", lambda payload: {"decision": "SCANNING"})
+    monkeypatch.setattr(main, "update_state", lambda mutator: mutator(state))
+    result = main.scan_ai_trial(main.AiTrialScanPayload(account_login=77123, symbol="SFXVol40"))
+    assert result["decision"] == "SCANNING"
+    assert state["ai_scan_config"] == {
+        "account_login": 77123,
+        "symbol": "SFXVol40",
+        "execution_timeframe": "M15",
+        "bias_timeframe": "H4",
+    }
+
+
+def test_ai_scan_requests_selected_execution_and_bias_timeframes(monkeypatch):
+    requested = []
+    monkeypatch.setattr(
+        main.multi_account_client,
+        "account_request",
+        lambda login, path, timeout=20: requested.append(path) or [{"time": 1, "open": 1, "high": 2, "low": .5, "close": 1.5, "volume": 1}],
+    )
+    monkeypatch.setattr(main, "load_ai_trial_snapshot", lambda: None)
+    monkeypatch.setattr(main, "save_ai_trial_snapshot", lambda snapshot: snapshot)
+    monkeypatch.setattr(
+        main,
+        "run_human_apostle_trial",
+        lambda execution, bias, **kwargs: {
+            "decision": "WAIT",
+            "execution_timeframe": kwargs["execution_timeframe"],
+            "bias_timeframe": kwargs["bias_timeframe"],
+        },
+    )
+
+    result = main._run_ai_trial_scan(main.AiTrialScanPayload(
+        account_login=77123,
+        symbol="FXV40",
+        execution_timeframe="M30",
+        bias_timeframe="D1",
+    ))
+
+    assert any("timeframe=M30" in path for path in requested)
+    assert any("timeframe=D1" in path for path in requested)
+    assert result["execution_timeframe"] == "M30"
+    assert result["bias_timeframe"] == "D1"

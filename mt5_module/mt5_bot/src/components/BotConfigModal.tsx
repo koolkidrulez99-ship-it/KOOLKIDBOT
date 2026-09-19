@@ -36,6 +36,7 @@ export default function BotConfigModal({
   const [accountLogin, setAccountLogin] = useState<number | ''>('');
   const [symbol, setSymbol] = useState('EURUSD');
   const [timeframe, setTimeframe] = useState<Timeframe>('M15');
+  const [biasTimeframe, setBiasTimeframe] = useState<Timeframe>('H4');
   const [lot, setLot] = useState('0.01');
   const [risk, setRisk] = useState('2');
   const [maxSpread, setMaxSpread] = useState('3.5');
@@ -62,6 +63,8 @@ export default function BotConfigModal({
     initializedBotId.current = bot.id;
     setSymbol(bot.symbol);
     setTimeframe((TIMEFRAMES as readonly string[]).includes(bot.timeframe) ? (bot.timeframe as Timeframe) : 'M15');
+    const bias = String(bot.bias_timeframe || 'H4').replace('+', ' ').split(' ')[0];
+    setBiasTimeframe((TIMEFRAMES as readonly string[]).includes(bias) ? (bias as Timeframe) : 'H4');
     setLot(String(bot.lot_size ?? 0.01));
     setRisk(String(bot.settings?.risk_percent ?? 2));
     setMaxSpread(String(bot.settings?.max_spread ?? 3.5));
@@ -102,8 +105,16 @@ export default function BotConfigModal({
       trading_session: tradingSession,
       trailing_stop: trailing,
     };
-    const nativeTimeframe = bot.native_key === 'human_apostle' ? 'M15' : 'M5';
-    return { symbol, timeframe: nativePreset ? nativeTimeframe : timeframe, lot_size: nativePreset ? (bot.lot_size || 0.01) : lotNum, account_login: accountLogin, settings, confirm_live: liveConfirmed, allow_dll: nativePreset ? false : allowDll };
+    return {
+      symbol,
+      timeframe,
+      bias_timeframe: nativePreset ? biasTimeframe : undefined,
+      lot_size: nativePreset ? (bot.lot_size || 0.01) : lotNum,
+      account_login: accountLogin,
+      settings,
+      confirm_live: liveConfirmed,
+      allow_dll: nativePreset ? false : allowDll,
+    };
   };
 
   const save = async () => {
@@ -192,9 +203,20 @@ export default function BotConfigModal({
         <div>
           <label className="label">Timeframe</label>
           {nativePreset ? (
-            <div className="input mono flex items-center justify-between">
-              <span>{bot.native_key === 'human_apostle' ? 'M15 entry' : 'M5 entry'}</span>
-              <span className="text-slate-600">{bot.bias_timeframe ? `${bot.bias_timeframe} bias` : 'source fixed'}</span>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <label>
+                <span className="text-[10px] text-slate-600">Execution timeframe</span>
+                <select className="input mono mt-1" value={timeframe} onChange={(e) => setTimeframe(e.target.value as Timeframe)}>
+                  {TIMEFRAMES.map((tf) => <option key={tf} value={tf}>{tf}</option>)}
+                </select>
+              </label>
+              <label>
+                <span className="text-[10px] text-slate-600">Bias timeframe</span>
+                <select className="input mono mt-1" value={biasTimeframe} onChange={(e) => setBiasTimeframe(e.target.value as Timeframe)}>
+                  {TIMEFRAMES.map((tf) => <option key={tf} value={tf}>{tf}</option>)}
+                </select>
+              </label>
+              <p className="sm:col-span-2 text-[10px] text-slate-600">Defaults come from the preset, but KOOLKID will run this start using your chosen execution and bias candles.</p>
             </div>
           ) : (
             <div className="flex flex-wrap gap-1.5">

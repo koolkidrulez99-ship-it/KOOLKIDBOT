@@ -31,10 +31,26 @@ SYSTEM_BOT_PRESETS = [
     {"id": 1005, "name": "PRIMORDIAL RED", "file": "Primordial_Red.ex5", "version": "1.10", "magic": 26033178},
     {"id": 1006, "name": "PRIMORDIAL SILVER", "file": "Primordial_Silver.ex5", "version": "1.20", "magic": 90412026},
     {"id": 1007, "name": "PRIMORDIAL WHITE", "file": "Primordial_White.ex5", "version": "1.10", "magic": 26033179},
-    {"id": 1008, "name": "HUMAN APOSTLE", "file": "HumanApostle_EA.ex5", "version": "1.00", "magic": 4152026},
     {"id": 1009, "name": "DEAR BRUCE", "file": "DEAR_BRUCE_PREMIUM.ex5", "version": "2.20", "magic": 22082605},
     {"id": 1010, "name": "KOOLKID SCALPER X", "file": "KOOLKID_ScalperX.ex5", "version": "1.00", "magic": 19092610},
 ]
+
+# Human Apostle stays available to the dedicated AI engine, but it is no longer
+# exposed as a normal Bot Library preset.
+RETIRED_SYSTEM_BOT_IDS = {1008}
+
+
+def bot_library_revision(bot: dict[str, Any]) -> str | None:
+    strategy_hash = str(bot.get("native_source_sha256") or bot.get("ea_sha256") or "").strip()
+    preset_hash = str(bot.get("preset_sha256") or "").strip()
+    if not strategy_hash and not preset_hash:
+        return None
+    payload = "|".join([
+        str(bot.get("version") or "").strip(),
+        strategy_hash,
+        preset_hash,
+    ])
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _system_ea_library() -> Path:
@@ -44,7 +60,8 @@ def _system_ea_library() -> Path:
 def _merge_system_bots(existing: list[dict[str, Any]]) -> list[dict[str, Any]]:
     by_id = {int(row.get("id", 0)): dict(row) for row in existing if isinstance(row, dict)}
     system_ids = {int(p["id"]) for p in SYSTEM_BOT_PRESETS}
-    rows = [dict(row) for row in existing if int(row.get("id", 0)) not in system_ids]
+    reserved_ids = system_ids | RETIRED_SYSTEM_BOT_IDS
+    rows = [dict(row) for row in existing if int(row.get("id", 0)) not in reserved_ids]
     for preset in SYSTEM_BOT_PRESETS:
         bot_id = int(preset["id"])
         path = _system_ea_library() / str(preset["file"])
@@ -77,6 +94,7 @@ def _merge_system_bots(existing: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "settings": {"risk_percent": float(native.get("risk_percent") or 0.5), "max_spread": 3.5, "trailing_stop": True,
                          "magic_number": int(native.get("magic") or preset["magic"]), "max_daily_loss": 250, "max_open_positions": 3},
         }
+        canonical["library_revision"] = bot_library_revision(canonical)
         current = by_id.get(bot_id, {})
         identity_changed = bool(current) and (
             str(current.get("native_key") or "") != str(canonical.get("native_key") or "")
@@ -84,11 +102,11 @@ def _merge_system_bots(existing: list[dict[str, Any]]) -> list[dict[str, Any]]:
         )
         row = {**canonical, **current}
         for key in (
-            "id", "name", "display_title", "display_subtitle", "description", "strategy", "version", "timeframe",
+            "id", "name", "display_title", "display_subtitle", "description", "strategy", "version",
             "ea_filename", "preset_filename", "file_status", "dll_required",
             "ea_storage_path", "ea_size_bytes", "ea_sha256", "legacy_ex5_available",
             "system_preset", "locked", "native_engine", "native_key", "native_ready",
-            "native_source", "native_source_sha256", "engine_type", "bias_timeframe",
+            "native_source", "native_source_sha256", "engine_type", "library_revision",
         ):
             row[key] = canonical[key]
         current_settings = current.get("settings") if isinstance(current.get("settings"), dict) else {}
@@ -131,6 +149,17 @@ def _default_state() -> dict[str, Any]:
             "sentiment_filter": False,
             "news_pause": True,
         },
+        "hub_preferences": {
+            "pollMs": 5000,
+            "confirmDanger": True,
+            "restoreWorkspace": True,
+            "reconnectOnStartup": True,
+            "marketBrokerFilter": "all",
+            "marketCategoryFilter": "all",
+            "customBrokerFamilies": ["deriv", "weltrade", "other"],
+            "customMarketGroups": ["synthetic", "forex", "metals", "indices", "crypto", "stocks", "energies", "weltrade_syntx"],
+            "marketFavorites": {},
+        },
         "copy_relationships": [],
         "copy_events": [],
     }
@@ -163,6 +192,7 @@ def _load_unlocked() -> dict[str, Any]:
     state.setdefault("active_login", None)
     state.setdefault("risk", [default_risk()])
     state.setdefault("ai_settings", _default_state()["ai_settings"])
+    state.setdefault("hub_preferences", _default_state()["hub_preferences"])
     state.setdefault("copy_relationships", [])
     state.setdefault("copy_events", [])
     return state

@@ -7,6 +7,7 @@ import { mt5AccountService } from '../services/mt5AccountService';
 import { mt5BotService } from '../services/mt5BotService';
 import { mt5BridgeService } from '../services/mt5BridgeService';
 import { mt5HistoryService } from '../services/mt5HistoryService';
+import { hubPreferencesService } from '../services/hubPreferencesService';
 import { mt5MarketService } from '../services/mt5MarketService';
 import { mt5MultiAccountService } from '../services/mt5MultiAccountService';
 import { mt5PositionService } from '../services/mt5PositionService';
@@ -17,12 +18,20 @@ import { workspaceService } from '../services/workspaceService';
 
 export type ActiveSel = number | 'all';
 
+export type MarketBrokerFilter = 'all' | 'current' | 'deriv' | 'weltrade' | 'favorites' | 'custom';
+export type MarketCategoryFilter = 'all' | 'synthetic' | 'forex' | 'metals' | 'indices' | 'crypto' | 'stocks' | 'energies' | 'weltrade_syntx' | 'fxvol' | 'sfxvol' | 'painx' | 'gainx' | 'flipx' | 'switchx' | 'breakx' | 'trendx' | 'progression' | 'maxx' | 'custom';
+
 export interface HubPreferences {
   pollMs: number;
   confirmDanger: boolean;
   restoreWorkspace: boolean;
   reconnectOnStartup: boolean;
   notifications: NotificationPrefs;
+  marketBrokerFilter: MarketBrokerFilter;
+  marketCategoryFilter: MarketCategoryFilter;
+  customBrokerFamilies: Array<'deriv' | 'weltrade' | 'other'>;
+  customMarketGroups: Array<'synthetic' | 'forex' | 'metals' | 'indices' | 'crypto' | 'stocks' | 'energies' | 'weltrade_syntx'>;
+  marketFavorites: Record<string, string[]>;
 }
 
 export interface Toast {
@@ -89,6 +98,7 @@ export function HubProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const [active, setActiveState] = useState<ActiveSel>(() => workspaceService.getRaw<ActiveSel>('active_account', 'all'));
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [serverPrefsLoaded, setServerPrefsLoaded] = useState(isSimulation);
 
   const [prefs, setPrefsState] = useState<HubPreferences>(() => {
     const defaults: HubPreferences = {
@@ -97,6 +107,11 @@ export function HubProvider({ children }: { children: ReactNode }) {
       restoreWorkspace: true,
       reconnectOnStartup: true,
       notifications: DEFAULT_NOTIFICATION_PREFS,
+      marketBrokerFilter: 'all',
+      marketCategoryFilter: 'all',
+      customBrokerFamilies: ['deriv', 'weltrade', 'other'],
+      customMarketGroups: ['synthetic', 'forex', 'metals', 'indices', 'crypto', 'stocks', 'energies', 'weltrade_syntx'],
+      marketFavorites: {},
     };
     try {
       const raw = localStorage.getItem('koolkid_mt5_prefs');
@@ -163,9 +178,32 @@ export function HubProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => { refresh(); }, [refresh]);
 
+  useEffect(() => {
+    if (isSimulation) return;
+    let cancelled = false;
+    hubPreferencesService.get()
+      .then((saved) => {
+        if (cancelled) return;
+        setPrefsState((prev) => {
+          const next: HubPreferences = {
+            ...prev,
+            ...saved,
+            notifications: { ...DEFAULT_NOTIFICATION_PREFS, ...(prev.notifications || {}), ...(saved.notifications || {}) },
+            customBrokerFamilies: saved.customBrokerFamilies?.length ? saved.customBrokerFamilies : prev.customBrokerFamilies,
+            customMarketGroups: saved.customMarketGroups?.length ? saved.customMarketGroups : prev.customMarketGroups,
+          };
+          try { localStorage.setItem('koolkid_mt5_prefs', JSON.stringify(next)); } catch { /* ignore */ }
+          return next;
+        });
+      })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setServerPrefsLoaded(true); });
+    return () => { cancelled = true; };
+  }, []);
+
   const didApplyStartupReconnect = useRef(false);
   useEffect(() => {
-    if (loading || didApplyStartupReconnect.current || !accounts.length) return;
+    if (!serverPrefsLoaded || loading || didApplyStartupReconnect.current || !accounts.length) return;
     didApplyStartupReconnect.current = true;
     const remembered = workspaceService.getRaw<ActiveSel>('active_account', 'all');
     const preferred = accounts.find((a) => a.login === remembered) || accounts.find((a) => a.is_active);
@@ -185,7 +223,7 @@ export function HubProvider({ children }: { children: ReactNode }) {
       if (!cancelled) await refresh(true);
     })();
     return () => { cancelled = true; };
-  }, [loading, prefs.reconnectOnStartup, refresh]);
+  }, [serverPrefsLoaded, loading, prefs.reconnectOnStartup, refresh]);
 
   const didInitActive = useRef(false);
   useEffect(() => {
@@ -478,6 +516,7 @@ export function HubProvider({ children }: { children: ReactNode }) {
         notifications: p.notifications ? { ...prev.notifications, ...p.notifications } : prev.notifications,
       };
       try { localStorage.setItem('koolkid_mt5_prefs', JSON.stringify(next)); } catch { /* ignore */ }
+      if (!isSimulation) void hubPreferencesService.save(next).catch(() => {});
       return next;
     });
   }, []);

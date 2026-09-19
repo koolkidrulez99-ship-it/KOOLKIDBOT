@@ -17,6 +17,7 @@ NATIVE_PRESETS: dict[int, dict[str, Any]] = {
         "description": "Market-structure reversal preset built from the Human Apostle MQ5. It tracks H4 bias and M15 structure, waits for an opposing trendline break, protected-structure shift, later retest and rejection, then enters with source-derived 1% risk and a 2R target.",
         "source": "HumanApostle_EA.mq5", "source_sha256": "7cf6d31c3b6e168a87dc6d4fe6272b2d46a254b223bbed24ad6c1be0ed3f6242",
         "version": "1.00", "magic": 4152026, "ready": True, "entry_tf": "M15", "bias_tf": "H4", "risk_percent": 1.0,
+        "library_visible": False, "auto_select_enabled": False,
     },
     1009: {
         "key": "dear_bruce", "name": "DEAR BRUCE", "title": "Enhanced Market Structure",

@@ -131,3 +131,16 @@ class TrialSafetyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_trial_accepts_custom_execution_and_bias_timeframes():
+    helper = TrialSafetyTests()
+    m30 = helper.make_trend(1800, 80, 100, 0.2)
+    d1 = helper.make_trend(86400, 30, 100, 0.8)
+    result = run_human_apostle_trial(
+        m30, d1, symbol="TEST", account_login=123, now_ts=99999999,
+        execution_timeframe="M30", bias_timeframe="D1",
+    )
+    assert result["execution_timeframe"] == "M30"
+    assert result["bias_timeframe"] == "D1"
+    assert result["rules"]["required_sequence"][-1] == "D1 alignment"

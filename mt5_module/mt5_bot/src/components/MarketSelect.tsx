@@ -2,10 +2,83 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Check, ChevronDown, Clock3, Search, Star } from 'lucide-react';
 import { useHub } from '../context/HubContext';
 import { isSimulation } from '../config/runtime';
-import { groupMt5Symbols, simulationSymbolRows } from '../lib/symbols';
+import { classifySymbol, groupMt5Symbols, simulationSymbolRows, weltradeSyntxCatalogRows } from '../lib/symbols';
 import { mt5MarketService } from '../services/mt5MarketService';
 import { workspaceService } from '../services/workspaceService';
 import type { Mt5SymbolInfo } from '../types';
+
+function brokerFamily(broker = '', server = ''): 'deriv' | 'weltrade' | 'other' {
+  const text = `${broker} ${server}`.toLowerCase();
+  if (text.includes('weltrade') || text.includes('syntx')) return 'weltrade';
+  if (text.includes('deriv') || text.includes('binary.com')) return 'deriv';
+  return 'other';
+}
+
+function marketGroupKey(row: Mt5SymbolInfo) {
+  const group = classifySymbol(row.symbol, row.description, row.path, row.category);
+  if (group === 'Weltrade SyntX · FX Volatility') return 'fxvol';
+  if (group === 'Weltrade SyntX · SFX Volatility') return 'sfxvol';
+  if (group === 'Weltrade SyntX · PainX') return 'painx';
+  if (group === 'Weltrade SyntX · GainX') return 'gainx';
+  if (group === 'Weltrade SyntX · FlipX') return 'flipx';
+  if (group === 'Weltrade SyntX · SwitchX') return 'switchx';
+  if (group === 'Weltrade SyntX · BreakX') return 'breakx';
+  if (group === 'Weltrade SyntX · TrendX') return 'trendx';
+  if (group === 'Weltrade SyntX · Progression') return 'progression';
+  if (group === 'Weltrade SyntX · MAX') return 'maxx';
+  if (group.startsWith('Weltrade SyntX')) return 'weltrade_syntx';
+  if (group.startsWith('Forex')) return 'forex';
+  if (group === 'Synthetic / Volatility') return 'synthetic';
+  if (group === 'Metals') return 'metals';
+  if (group === 'Indices') return 'indices';
+  if (group === 'Crypto') return 'crypto';
+  if (group === 'Stocks / CFDs') return 'stocks';
+  if (group === 'Energies') return 'energies';
+  return 'other';
+}
+
+function normalizedSymbolKey(symbol: string) {
+  return symbol
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '')
+    .replace(/^SFXVOL/, 'SFXV')
+    .replace(/^FXVOL/, 'FXV');
+}
+
+const symbolRequestCache = new Map<number, Promise<Mt5SymbolInfo[]>>();
+
+function cachedSymbols(login: number) {
+  const existing = symbolRequestCache.get(login);
+  if (existing) return existing;
+  const request = mt5MarketService.symbols(login).catch((error) => {
+    symbolRequestCache.delete(login);
+    throw error;
+  });
+  symbolRequestCache.set(login, request);
+  return request;
+}
+
+function mergeMarketRows(rows: Mt5SymbolInfo[]) {
+  const merged = new Map<string, Mt5SymbolInfo>();
+  for (const row of rows) {
+    const family = row.broker_family || 'other';
+    const key = family + ':' + normalizedSymbolKey(row.symbol);
+    const prior = merged.get(key);
+    if (!prior) {
+      merged.set(key, { ...row, broker_family: family, available_logins: [...(row.available_logins || [])] });
+      continue;
+    }
+    const available = [...new Set([...(prior.available_logins || []), ...(row.available_logins || [])])];
+    const actual = prior.catalog_only && !row.catalog_only ? row : prior;
+    merged.set(key, {
+      ...actual,
+      broker_family: family,
+      available_logins: available,
+      catalog_only: Boolean(prior.catalog_only && row.catalog_only),
+    });
+  }
+  return [...merged.values()];
+}
 
 export default function MarketSelect({
   value,
@@ -13,27 +86,35 @@ export default function MarketSelect({
   compact = false,
   tradeOnly = false,
   accountLogin,
+  disabled = false,
 }: {
   value: string;
   onChange: (symbol: string) => void;
   compact?: boolean;
   tradeOnly?: boolean;
   accountLogin?: number;
+  disabled?: boolean;
 }) {
-  const { mt5Symbols } = useHub();
+  const { mt5Symbols, accounts, activeAccount, prefs, setPrefs } = useHub();
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
   const [accountRows, setAccountRows] = useState<Mt5SymbolInfo[] | null>(null);
+  const [connectedCatalogRows, setConnectedCatalogRows] = useState<Mt5SymbolInfo[]>([]);
   const [loadingAccount, setLoadingAccount] = useState(false);
   const [favorites, setFavorites] = useState<string[]>([]);
   const [recent, setRecent] = useState<string[]>([]);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const storageScope = String(accountLogin || 'global');
+  const connectedAccountKey = useMemo(
+    () => accounts.filter((item) => item.status === 'connected').map((item) => `${item.login}:${item.broker}:${item.server}`).sort().join('|'),
+    [accounts],
+  );
 
   useEffect(() => {
-    setFavorites(workspaceService.getRaw<string[]>(`market_favorites:${storageScope}`, []));
+    const serverFavorites = prefs.marketFavorites?.[storageScope];
+    setFavorites(serverFavorites?.length ? serverFavorites : workspaceService.getRaw<string[]>(`market_favorites:${storageScope}`, []));
     setRecent(workspaceService.getRaw<string[]>(`market_recent:${storageScope}`, []));
-  }, [storageScope]);
+  }, [storageScope, prefs.marketFavorites]);
 
   useEffect(() => {
     if (isSimulation || !accountLogin) {
@@ -43,7 +124,7 @@ export default function MarketSelect({
     }
     let cancelled = false;
     setLoadingAccount(true);
-    mt5MarketService.symbols(accountLogin)
+    cachedSymbols(accountLogin)
       .then((rows) => {
         if (!cancelled) setAccountRows(rows);
       })
@@ -56,19 +137,101 @@ export default function MarketSelect({
     return () => { cancelled = true; };
   }, [accountLogin]);
 
+  useEffect(() => {
+    if (isSimulation) {
+      setConnectedCatalogRows([]);
+      return;
+    }
+    let cancelled = false;
+    const connected = accounts.filter((item) => item.status === 'connected');
+    Promise.all(connected.map(async (account) => {
+      try {
+        const rows = await cachedSymbols(account.login);
+        const family = brokerFamily(account.broker, account.server);
+        return rows.map((row) => ({
+          ...row,
+          broker_family: family,
+          available_logins: [account.login],
+          catalog_only: false,
+        }));
+      } catch {
+        return [];
+      }
+    })).then((groups) => {
+      if (!cancelled) setConnectedCatalogRows(mergeMarketRows(groups.flat()));
+    });
+    return () => { cancelled = true; };
+  }, [connectedAccountKey]);
+
   const allRows = useMemo(() => {
-    const rows = isSimulation
-      ? simulationSymbolRows()
-      : accountLogin && accountRows !== null
-        ? accountRows
-        : mt5Symbols;
-    return tradeOnly ? rows.filter((row) => row.trade_allowed) : rows;
-  }, [mt5Symbols, accountRows, accountLogin, tradeOnly]);
+    if (isSimulation) {
+      let rows = simulationSymbolRows();
+      const category = prefs.marketCategoryFilter;
+      if (category !== 'all') rows = rows.filter((row) => marketGroupKey(row) === category);
+      return rows;
+    }
+
+    const account = accountLogin
+      ? accounts.find((item) => item.login === accountLogin)
+      : (activeAccount?.status === 'connected' ? activeAccount : accounts.find((item) => item.status === 'connected'));
+    const currentFamily = account ? brokerFamily(account.broker, account.server) : 'other';
+    const selectedRows = accountLogin && accountRows
+      ? accountRows.map((row) => ({ ...row, broker_family: currentFamily, available_logins: [accountLogin], catalog_only: false }))
+      : [];
+    const fallbackRows = connectedCatalogRows.length || !mt5Symbols.length
+      ? []
+      : mt5Symbols.map((row) => ({
+          ...row,
+          broker_family: currentFamily,
+          available_logins: account ? [account.login] : [],
+          catalog_only: false,
+        }));
+    const globalRows = mergeMarketRows([
+      ...connectedCatalogRows,
+      ...selectedRows,
+      ...fallbackRows,
+      ...weltradeSyntxCatalogRows(),
+    ]);
+
+    let rows = globalRows;
+    const brokerFilter = prefs.marketBrokerFilter;
+    if (brokerFilter === 'current') {
+      rows = accountLogin
+        ? globalRows.filter((row) => (row.available_logins || []).includes(accountLogin))
+        : globalRows.filter((row) => row.broker_family === currentFamily);
+    } else if (brokerFilter === 'deriv' || brokerFilter === 'weltrade') {
+      rows = globalRows.filter((row) => row.broker_family === brokerFilter);
+    } else if (brokerFilter === 'favorites') {
+      rows = globalRows.filter((row) => favorites.includes(row.symbol));
+    } else if (brokerFilter === 'custom') {
+      rows = globalRows.filter((row) => prefs.customBrokerFamilies.includes(row.broker_family || 'other'));
+    }
+
+    if (tradeOnly) rows = rows.filter((row) => row.catalog_only || row.trade_allowed);
+
+    const category = prefs.marketCategoryFilter;
+    if (category !== 'all') {
+      rows = rows.filter((row) => {
+        const key = marketGroupKey(row);
+        if (category === 'weltrade_syntx') return row.broker_family === 'weltrade';
+        if (category === 'custom') {
+          return prefs.customMarketGroups.includes(key as typeof prefs.customMarketGroups[number])
+            || (row.broker_family === 'weltrade' && prefs.customMarketGroups.includes('weltrade_syntx'));
+        }
+        return key === category;
+      });
+    }
+    return rows;
+  }, [mt5Symbols, accountRows, connectedCatalogRows, accountLogin, tradeOnly, accounts, activeAccount, prefs, favorites]);
 
   useEffect(() => {
     if (loadingAccount || !allRows.length) return;
-    if (!allRows.some((row) => row.symbol === value)) onChange(allRows[0].symbol);
-  }, [allRows, loadingAccount, onChange, value]);
+    const current = allRows.find((row) => row.symbol === value);
+    const selectable = allRows.find((row) => !accountLogin || (row.available_logins || []).includes(accountLogin));
+    if ((!current || (accountLogin && !(current.available_logins || []).includes(accountLogin))) && selectable) {
+      onChange(selectable.symbol);
+    }
+  }, [allRows, accountLogin, loadingAccount, onChange, value]);
 
   const source = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -79,6 +242,8 @@ export default function MarketSelect({
 
   const groups = useMemo(() => groupMt5Symbols(source), [source]);
   const selected = allRows.find((row) => row.symbol === value);
+  const rowAvailable = (row: Mt5SymbolInfo) => !accountLogin || (row.available_logins || []).includes(accountLogin);
+  const unavailableCount = accountLogin ? allRows.filter((row) => !rowAvailable(row)).length : 0;
   const favoritesRows = useMemo(
     () => favorites.map((symbol) => allRows.find((row) => row.symbol === symbol)).filter(Boolean) as Mt5SymbolInfo[],
     [favorites, allRows],
@@ -100,11 +265,13 @@ export default function MarketSelect({
       : [nextSymbol, ...favorites].slice(0, 16);
     setFavorites(next);
     workspaceService.set(`market_favorites:${storageScope}`, next);
+    setPrefs({ marketFavorites: { ...prefs.marketFavorites, [storageScope]: next } });
   };
 
-  const choose = (nextSymbol: string) => {
-    onChange(nextSymbol);
-    remember(nextSymbol);
+  const choose = (row: Mt5SymbolInfo) => {
+    if (!rowAvailable(row)) return;
+    onChange(row.symbol);
+    remember(row.symbol);
     setOpen(false);
     setQuery('');
   };
@@ -121,18 +288,22 @@ export default function MarketSelect({
     return () => document.removeEventListener('mousedown', close);
   }, [open]);
 
-  const renderMarketRow = (row: Mt5SymbolInfo) => (
-    <div key={row.symbol} className="flex items-center rounded-lg hover:bg-white/[0.06]">
+  const renderMarketRow = (row: Mt5SymbolInfo) => {
+    const available = rowAvailable(row);
+    return (
+    <div key={`${row.broker_family || 'other'}:${row.symbol}`} className={`flex items-center rounded-lg ${available ? 'hover:bg-white/[0.06]' : 'opacity-60'}`}>
       <button
         type="button"
-        onClick={() => choose(row.symbol)}
-        className="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-2.5 text-left"
+        disabled={!available}
+        onClick={() => choose(row)}
+        className="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-2.5 text-left disabled:cursor-not-allowed"
       >
         <span className="min-w-0 flex-1">
           <span className="mono block truncate text-xs font-bold text-slate-200">{row.symbol}</span>
           {row.description && row.description !== row.symbol && <span className="block truncate text-[10px] text-slate-600">{row.description}</span>}
+          {!available && <span className="block truncate text-[9px] text-warn-300">Not available on MT5 account #{accountLogin} · connect/select the matching broker account</span>}
         </span>
-        {row.symbol === value && <Check size={14} className="shrink-0 text-brand-300" />}
+        {available && row.symbol === value && <Check size={14} className="shrink-0 text-brand-300" />}
       </button>
       <button
         type="button"
@@ -144,15 +315,16 @@ export default function MarketSelect({
         <Star size={13} fill={favorites.includes(row.symbol) ? 'currentColor' : 'none'} />
       </button>
     </div>
-  );
+    );
+  };
 
   if (compact) {
     return (
       <div className="relative min-w-0" ref={wrapRef}>
-        <button type="button" className="input flex w-full items-center justify-between gap-3 text-left" onClick={() => setOpen((current) => !current)} aria-expanded={open}>
+        <button type="button" disabled={disabled} className="input flex w-full items-center justify-between gap-3 text-left disabled:cursor-not-allowed disabled:opacity-60" onClick={() => setOpen((current) => !current)} aria-expanded={open}>
           <span className="min-w-0 flex-1">
-            <span className="mono block truncate text-slate-100">{loadingAccount ? 'Loading broker markets…' : value || 'Choose symbol'}</span>
-            {selected?.description && selected.description !== value && <span className="block truncate text-[10px] text-slate-600">{selected.description}</span>}
+            <span className="mono block truncate text-slate-100">{loadingAccount ? 'Loading broker markets…' : selected?.symbol || (allRows.length ? 'Choose market' : value || 'Choose symbol')}</span>
+            {selected?.description && selected.description !== selected.symbol && <span className="block truncate text-[10px] text-slate-600">{selected.description}</span>}
           </span>
           <ChevronDown size={15} className={`shrink-0 text-slate-500 transition-transform ${open ? 'rotate-180' : ''}`} />
         </button>
@@ -206,8 +378,8 @@ export default function MarketSelect({
               {isSimulation
                 ? `${source.length} simulated markets`
                 : accountLogin
-                  ? `${source.length} tradable broker markets loaded from MT5 account #${accountLogin}`
-                  : `${source.length} broker symbols`} · type to filter instantly
+                  ? `${source.length} markets shown · ${Math.max(0, source.length - unavailableCount)} available on account #${accountLogin}`
+                  : `${source.length} markets across connected brokers + catalog`} · type to filter instantly
             </p>
           </div>
         )}
@@ -221,14 +393,14 @@ export default function MarketSelect({
         <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-600" />
         <input className="input !pl-8 !py-2 text-xs" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search broker markets…" />
       </div>
-      <select className="input !py-2 text-xs" value={value} onChange={(e) => { onChange(e.target.value); remember(e.target.value); }}>
+      <select disabled={disabled} className="input !py-2 text-xs disabled:cursor-not-allowed disabled:opacity-60" value={value} onChange={(e) => { onChange(e.target.value); remember(e.target.value); }}>
         {groups.map(([group, rows]) => (
           <optgroup key={group} label={group + ' (' + rows.length + ')'}>
-            {rows.map((row) => <option key={row.symbol} value={row.symbol}>{row.symbol}{row.description && row.description !== row.symbol ? ' — ' + row.description : ''}</option>)}
+            {rows.map((row) => <option key={`${row.broker_family || 'other'}:${row.symbol}`} value={row.symbol} disabled={!rowAvailable(row)}>{row.symbol}{row.description && row.description !== row.symbol ? ' — ' + row.description : ''}{!rowAvailable(row) ? ' — unavailable on selected account' : ''}</option>)}
           </optgroup>
         ))}
       </select>
-      <p className="mt-1.5 text-[10px] text-slate-600">{isSimulation ? source.length + ' simulated markets available' : source.length + ' broker symbols loaded from MT5'}</p>
+      <p className="mt-1.5 text-[10px] text-slate-600">{isSimulation ? source.length + ' simulated markets available' : accountLogin ? `${source.length} markets shown · ${Math.max(0, source.length - unavailableCount)} available on account #${accountLogin}` : `${source.length} markets across connected brokers + catalog`}</p>
     </div>
   );
 }

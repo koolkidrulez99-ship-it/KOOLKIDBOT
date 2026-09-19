@@ -139,7 +139,6 @@ export default function JournalPage() {
               <p className="mt-2 max-w-4xl text-sm font-semibold leading-relaxed text-slate-200">
                 {monthData?.today_motivation || 'Stay disciplined. Your next clean setup is worth waiting for.'}
               </p>
-              <p className="mt-1 text-[10px] text-slate-600">Every KOOLKID user sees the same message for the same calendar day.</p>
             </div>
           </div>
         </div>

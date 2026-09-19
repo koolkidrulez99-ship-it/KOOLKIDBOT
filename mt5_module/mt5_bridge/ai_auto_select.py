@@ -119,10 +119,14 @@ def _enabled_ids(config: dict[str, Any]) -> list[int]:
                 bot_id = int(item)
             except (TypeError, ValueError):
                 continue
-            if bot_id in NATIVE_PRESETS and bot_id not in values:
+            meta = NATIVE_PRESETS.get(bot_id) or {}
+            if meta.get("auto_select_enabled", True) and bot_id not in values:
                 values.append(bot_id)
         return values
-    return [bot_id for bot_id, meta in NATIVE_PRESETS.items() if meta.get("ready")]
+    return [
+        bot_id for bot_id, meta in NATIVE_PRESETS.items()
+        if meta.get("ready") and meta.get("auto_select_enabled", True)
+    ]
 
 
 def scan_once(account_login: int, symbol: str, enabled_bot_ids: list[int] | None = None) -> dict[str, Any]:
@@ -130,18 +134,31 @@ def scan_once(account_login: int, symbol: str, enabled_bot_ids: list[int] | None
     symbol = str(symbol).strip()
     if not login or not symbol:
         raise RuntimeError("Auto Select requires an account and symbol.")
-    market, _ = native_runtime.fetch_market_snapshot(login, symbol)
+    bots = _bot_map()
+    ids = enabled_bot_ids if enabled_bot_ids is not None else [
+        bot_id for bot_id, meta in NATIVE_PRESETS.items()
+        if meta.get("ready") and meta.get("auto_select_enabled", True)
+    ]
+    needed_timeframes: set[str] = set()
+    for bot_id in ids:
+        meta = NATIVE_PRESETS.get(int(bot_id)) or {}
+        if not meta or not meta.get("auto_select_enabled", True):
+            continue
+        try:
+            exec_tf, bias_tf = native_runtime.configured_timeframes(int(bot_id), bots.get(int(bot_id), {}))
+            needed_timeframes.update({exec_tf, bias_tf})
+        except RuntimeError:
+            continue
+    market, _ = native_runtime.fetch_market_snapshot(login, symbol, needed_timeframes)
     market.update({"symbol": symbol, "account_login": login})
     positions = _positions(login)
     history = _history(login)
-    bots = _bot_map()
-    ids = enabled_bot_ids if enabled_bot_ids is not None else [bot_id for bot_id, meta in NATIVE_PRESETS.items() if meta.get("ready")]
     results: list[dict[str, Any]] = []
 
     for bot_id in ids:
         meta = dict(NATIVE_PRESETS.get(int(bot_id)) or {})
         bot = bots.get(int(bot_id), {})
-        if not meta:
+        if not meta or not meta.get("auto_select_enabled", True):
             continue
         if not meta.get("ready") or not bot.get("native_ready", meta.get("ready")):
             results.append({
@@ -151,7 +168,11 @@ def scan_once(account_login: int, symbol: str, enabled_bot_ids: list[int] | None
                 "history": _history_metrics(history, int(bot_id)), "signal": None,
             })
             continue
-        signal = evaluate(str(meta["key"]), market).to_dict()
+        strategy_market, exec_tf, bias_tf = native_runtime.prepare_strategy_market(int(bot_id), market, bot)
+        signal = evaluate(str(meta["key"]), strategy_market).to_dict()
+        rules = dict(signal.get("rules") or {})
+        rules.update({"configured_execution_timeframe": exec_tf, "configured_bias_timeframe": bias_tf})
+        signal["rules"] = rules
         perf = _history_metrics(history, int(bot_id))
         independent_running = bot.get("status") == "running" and bool((bot.get("native_config") or {}).get("enabled"))
         block = "This preset is already running independently in Bot Library." if independent_running else _position_block(int(bot_id), symbol, positions)
@@ -210,8 +231,15 @@ def _execute_selected(snapshot: dict[str, Any], *, allow_live: bool, expected_co
     symbol = str(snapshot.get("symbol") or "")
     _verify_execution_account(login, allow_live=allow_live)
     bot_id = int(selected.get("bot_id") or 0)
-    market, _ = native_runtime.fetch_market_snapshot(login, symbol)
-    current = evaluate(str((NATIVE_PRESETS.get(bot_id) or {}).get("key") or ""), {**market, "symbol": symbol, "account_login": login}).to_dict()
+    bot = _bot_map().get(bot_id, {})
+    exec_tf, bias_tf = native_runtime.configured_timeframes(bot_id, bot)
+    market, _ = native_runtime.fetch_market_snapshot(login, symbol, {exec_tf, bias_tf})
+    market.update({"symbol": symbol, "account_login": login})
+    strategy_market, exec_tf, bias_tf = native_runtime.prepare_strategy_market(bot_id, market, bot)
+    current = evaluate(str((NATIVE_PRESETS.get(bot_id) or {}).get("key") or ""), strategy_market).to_dict()
+    rules = dict(current.get("rules") or {})
+    rules.update({"configured_execution_timeframe": exec_tf, "configured_bias_timeframe": bias_tf})
+    current["rules"] = rules
     if not current.get("valid") or current.get("signal_key") != signal.get("signal_key"):
         raise RuntimeError("The selected setup changed before execution. Auto Select will rescan instead of chasing it.")
     bot = _bot_map().get(bot_id, {})
@@ -233,6 +261,10 @@ def _execute_selected(snapshot: dict[str, Any], *, allow_live: bool, expected_co
 def _save_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     def mut(state):
         state["ai_auto_select_snapshot"] = snapshot
+        state["ai_scan_config"] = {
+            "account_login": int(snapshot.get("account_login") or 0),
+            "symbol": str(snapshot.get("symbol") or ""),
+        }
         return snapshot
     return update_state(mut)
 def _cycle(config: dict[str, Any]) -> None:
@@ -364,6 +396,7 @@ def configure(workspace_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         }
         def mut(state):
             state["ai_auto_select_config"] = config
+            state["ai_scan_config"] = {"account_login": login, "symbol": symbol}
             state.setdefault("ai_auto_select_runtime", {}).update({"status": "starting", "last_error": None})
             return config
         update_state(mut)
@@ -394,6 +427,8 @@ def manual_execute(*, confirm_live: bool = False) -> dict[str, Any]:
 def status(workspace_id: str) -> dict[str, Any]:
     state = read_state()
     config = dict(state.get("ai_auto_select_config") or {})
+    if "enabled_bot_ids" in config:
+        config["enabled_bot_ids"] = _enabled_ids(config)
     runtime = dict(state.get("ai_auto_select_runtime") or {})
     with _LOCK:
         thread = _THREADS.get(workspace_id)
@@ -410,6 +445,7 @@ def status(workspace_id: str) -> dict[str, Any]:
              "subtitle": meta.get("subtitle"), "ready": bool(meta.get("ready")),
              "source": meta.get("source"), "entry_tf": meta.get("entry_tf"), "bias_tf": meta.get("bias_tf")}
             for bot_id, meta in NATIVE_PRESETS.items()
+            if meta.get("auto_select_enabled", True)
         ],
         "execution_lock": "live_requires_explicit_confirmation",
     }

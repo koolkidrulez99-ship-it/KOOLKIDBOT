@@ -16,6 +16,8 @@ from native_strategies.common import Series, atr
 _THREADS: dict[tuple[str, int], threading.Thread] = {}
 _STOPS: dict[tuple[str, int], threading.Event] = {}
 _LOCK = threading.RLock()
+_TIMEFRAME_COUNTS = {"M1": 700, "M5": 500, "M15": 500, "M30": 450, "H1": 360, "H4": 260, "D1": 180}
+_BASE_TIMEFRAME_COUNTS = {"M5": 500, "M15": 500, "H1": 360, "H4": 260, "D1": 10}
 
 
 def _now() -> str:
@@ -29,6 +31,57 @@ def _key(workspace_id: str, bot_id: int) -> tuple[str, int]:
 def _preset(bot_id: int) -> dict[str, Any] | None:
     row = NATIVE_PRESETS.get(int(bot_id))
     return dict(row) if row else None
+
+
+def _primary_bias_timeframe(preset: dict[str, Any]) -> str:
+    raw = str(preset.get("bias_tf") or "").upper().replace("+", " ")
+    for token in raw.split():
+        if token in _TIMEFRAME_COUNTS:
+            return token
+    return "H1"
+
+
+def configured_timeframes(
+    bot_id: int,
+    bot: dict[str, Any] | None = None,
+    *,
+    execution_timeframe: str | None = None,
+    bias_timeframe: str | None = None,
+) -> tuple[str, str]:
+    preset = _preset(bot_id) or {}
+    row = bot or _bot(bot_id) or {}
+    config = dict(row.get("native_config") or {})
+    exec_tf = str(execution_timeframe or config.get("execution_timeframe") or row.get("timeframe") or preset.get("entry_tf") or "M5").upper()
+    bias_tf = str(bias_timeframe or config.get("bias_timeframe") or row.get("bias_timeframe") or _primary_bias_timeframe(preset)).upper()
+    if exec_tf not in _TIMEFRAME_COUNTS or bias_tf not in _TIMEFRAME_COUNTS:
+        raise RuntimeError("Unsupported native execution or bias timeframe.")
+    return exec_tf, bias_tf
+
+
+def prepare_strategy_market(
+    bot_id: int,
+    market: dict[str, Any],
+    bot: dict[str, Any] | None = None,
+    *,
+    execution_timeframe: str | None = None,
+    bias_timeframe: str | None = None,
+) -> tuple[dict[str, Any], str, str]:
+    preset = _preset(bot_id) or {}
+    exec_tf, bias_tf = configured_timeframes(
+        bot_id, bot, execution_timeframe=execution_timeframe, bias_timeframe=bias_timeframe,
+    )
+    if not isinstance(market.get(exec_tf), Series) or not isinstance(market.get(bias_tf), Series):
+        raise RuntimeError(f"Required {exec_tf}/{bias_tf} candle history is unavailable.")
+    prepared = dict(market)
+    canonical_exec = str(preset.get("entry_tf") or exec_tf).upper()
+    canonical_bias = _primary_bias_timeframe(preset)
+    if canonical_exec in _TIMEFRAME_COUNTS:
+        prepared[canonical_exec] = market[exec_tf]
+    if canonical_bias in _TIMEFRAME_COUNTS:
+        prepared[canonical_bias] = market[bias_tf]
+    prepared["_configured_execution_timeframe"] = exec_tf
+    prepared["_configured_bias_timeframe"] = bias_tf
+    return prepared, exec_tf, bias_tf
 
 
 def _bot(bot_id: int) -> dict[str, Any] | None:
@@ -72,20 +125,26 @@ def _verify_account(login: int, allow_live: bool) -> tuple[dict[str, Any], dict[
         raise PermissionError("LIVE native preset execution requires explicit LIVE confirmation.")
     return worker, info
 
-def _fetch_market(login: int, symbol: str) -> tuple[dict[str, Any], dict[str, Any]]:
+def _fetch_market(
+    login: int,
+    symbol: str,
+    extra_timeframes: set[str] | list[str] | tuple[str, ...] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     quote_rows = multi_account_client.account_request(login, f"/quotes?symbols={quote(symbol)}", timeout=8)
     if not quote_rows:
         raise RuntimeError(f"No live quote is available for {symbol}.")
     q = dict(quote_rows[0])
     symbol_info = multi_account_client.account_request(login, f"/symbol-info/{quote(symbol)}", timeout=8)
     data: dict[str, Any] = {"quote": q, "symbol_info": dict(symbol_info or {})}
-    counts = {"M5": 500, "M15": 500, "H1": 360, "H4": 260}
+    counts = dict(_BASE_TIMEFRAME_COUNTS)
+    for tf in {str(item).upper() for item in (extra_timeframes or [])}:
+        if tf in _TIMEFRAME_COUNTS:
+            counts[tf] = max(counts.get(tf, 0), _TIMEFRAME_COUNTS[tf])
     for tf, count in counts.items():
         rows = multi_account_client.account_request(login, f"/candles/{quote(symbol)}?timeframe={tf}&count={count}", timeout=15)
         data[tf] = Series.from_rows(rows)
-    d1 = multi_account_client.account_request(login, f"/candles/{quote(symbol)}?timeframe=D1&count=10", timeout=15)
-    if d1:
-        data["day_start"] = int(d1[-1].get("time") or 0)
+        if tf == "D1" and rows:
+            data["day_start"] = int(rows[-1].get("time") or 0)
     return data, q
 
 
@@ -359,12 +418,18 @@ def _cycle(bot_id: int) -> None:
     symbol = str(config.get("symbol") or bot.get("symbol") or "")
     if not login or not symbol:
         raise RuntimeError("Native preset requires an account and symbol.")
-    worker, account = _verify_account(login, bool(config.get("allow_live")))
-    market, live_quote = _fetch_market(login, symbol)
+    _, account = _verify_account(login, bool(config.get("allow_live")))
+    exec_tf, bias_tf = configured_timeframes(bot_id, bot)
+    market, _ = _fetch_market(login, symbol, {exec_tf, bias_tf})
     market.update({"symbol": symbol, "account_login": login})
-    signal = evaluate(str(bot.get("native_key") or ""), market).to_dict()
+    strategy_market, exec_tf, bias_tf = prepare_strategy_market(bot_id, market, bot)
+    signal = evaluate(str(bot.get("native_key") or ""), strategy_market).to_dict()
+    rules = dict(signal.get("rules") or {})
+    rules.update({"configured_execution_timeframe": exec_tf, "configured_bias_timeframe": bias_tf})
+    signal["rules"] = rules
     positions = _positions(login)
-    _manage_open_position(bot, positions, market["M5"], market["symbol_info"])
+    canonical_exec = str((_preset(bot_id) or {}).get("entry_tf") or "M5").upper()
+    _manage_open_position(bot, positions, strategy_market.get(canonical_exec) or market["M5"], market["symbol_info"])
     runtime = {
         **dict(bot.get("native_runtime") or {}), "status": "running", "last_scan_at": _now(),
         "last_signal": signal, "last_stage": signal.get("stage"), "last_score": signal.get("score"),
@@ -414,8 +479,12 @@ def _runner(workspace_id: str, bot_id: int, stop_event: threading.Event) -> None
                 _STOPS.pop(_key(workspace_id, bot_id), None)
 
 
-def fetch_market_snapshot(account_login: int, symbol: str) -> tuple[dict[str, Any], dict[str, Any]]:
-    return _fetch_market(int(account_login), str(symbol))
+def fetch_market_snapshot(
+    account_login: int,
+    symbol: str,
+    timeframes: set[str] | list[str] | tuple[str, ...] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    return _fetch_market(int(account_login), str(symbol), timeframes)
 
 
 def manage_positions_once(
@@ -470,20 +539,35 @@ def execute_signal_once(
     return _execute(runtime_bot, signal, account, dict(symbol_info or {}), allow_live=not demo_only)
 
 
-def start(workspace_id: str, bot_id: int, account_login: int, symbol: str, *, allow_live: bool = False, scan_seconds: int = 20) -> dict[str, Any]:
+def start(
+    workspace_id: str,
+    bot_id: int,
+    account_login: int,
+    symbol: str,
+    *,
+    allow_live: bool = False,
+    scan_seconds: int = 20,
+    execution_timeframe: str | None = None,
+    bias_timeframe: str | None = None,
+) -> dict[str, Any]:
     preset = _preset(bot_id)
     if not preset:
         raise RuntimeError("This bot is not a KOOLKID native preset.")
     if not preset.get("ready"):
         raise RuntimeError(f"{preset['name']} requires its MQ5 source before native execution can be enabled.")
     _verify_account(account_login, allow_live)
+    exec_tf = str(execution_timeframe or preset.get("entry_tf") or "M5").upper()
+    bias_tf = str(bias_timeframe or _primary_bias_timeframe(preset)).upper()
+    if exec_tf not in _TIMEFRAME_COUNTS or bias_tf not in _TIMEFRAME_COUNTS:
+        raise RuntimeError("Choose a supported execution and bias timeframe.")
     config = {
         "enabled": True, "account_login": int(account_login), "symbol": str(symbol),
         "allow_live": bool(allow_live), "scan_seconds": max(10, min(int(scan_seconds), 300)),
-        "strategy_key": preset["key"], "updated_at": _now(),
+        "strategy_key": preset["key"], "execution_timeframe": exec_tf, "bias_timeframe": bias_tf,
+        "updated_at": _now(),
     }
     _patch_bot(bot_id, status="running", account_login=int(account_login), symbol=str(symbol),
-               native_config=config, started_at=_now(), last_error=None)
+               timeframe=exec_tf, bias_timeframe=bias_tf, native_config=config, started_at=_now(), last_error=None)
     key = _key(workspace_id, bot_id)
     with _LOCK:
         thread = _THREADS.get(key)

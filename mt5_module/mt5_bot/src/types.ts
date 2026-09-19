@@ -165,6 +165,10 @@ export interface Mt5SymbolInfo {
   trade_allowed: boolean;
   path?: string;
   category?: string;
+  broker_family?: 'deriv' | 'weltrade' | 'other';
+  available_logins?: number[];
+  catalog_only?: boolean;
+  availability_note?: string;
 }
 
 export interface Mt5Position {
@@ -364,6 +368,8 @@ export interface AiTrialExecution {
   message: string;
 }
 
+export type AiTimeframe = 'M1' | 'M5' | 'M15' | 'M30' | 'H1' | 'H4' | 'D1';
+
 export interface AiTrialSnapshot {
   trial_version: string;
   strategy: string;
@@ -373,8 +379,8 @@ export interface AiTrialSnapshot {
   execution_lock?: 'live_requires_explicit_confirmation';
   account_login: number;
   symbol: string;
-  execution_timeframe: 'M15';
-  bias_timeframe: 'H4';
+  execution_timeframe: AiTimeframe;
+  bias_timeframe: AiTimeframe;
   generated_at: string;
   latest_completed_candle: { time: number; open: number; high: number; low: number; close: number; volume: number };
   completed_candles: { execution: number; bias: number };
@@ -411,9 +417,10 @@ export interface AiTrialStatus {
   trial_version: string;
   strategy: string;
   mode: 'SIGNAL_ONLY' | 'EXECUTION_REQUIRES_LIVE_CONFIRMATION';
-  execution_timeframe: 'M15';
-  bias_timeframe: 'H4';
+  execution_timeframe: AiTimeframe;
+  bias_timeframe: AiTimeframe;
   snapshot: AiTrialSnapshot | null;
+  scan_config?: { account_login?: number; symbol?: string; execution_timeframe?: AiTimeframe; bias_timeframe?: AiTimeframe };
   execution: string;
 }
 
@@ -424,8 +431,8 @@ export interface AiAutoConfig {
   symbol?: string;
   volume?: number;
   scan_seconds?: number;
-  execution_timeframe?: 'M15';
-  bias_timeframe?: 'H4';
+  execution_timeframe?: AiTimeframe;
+  bias_timeframe?: AiTimeframe;
   allow_live?: boolean;
   updated_at?: string;
 }
@@ -460,8 +467,8 @@ export interface AiAutoEvent {
 export interface AiAutoStatus {
   strategy: 'Human Apostle';
   execution_lock: 'live_requires_explicit_confirmation';
-  execution_timeframe: 'M15';
-  bias_timeframe: 'H4';
+  execution_timeframe: AiTimeframe;
+  bias_timeframe: AiTimeframe;
   enabled: boolean;
   scanner_alive: boolean;
   config: AiAutoConfig;

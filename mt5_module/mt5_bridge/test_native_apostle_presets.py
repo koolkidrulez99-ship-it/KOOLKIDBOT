@@ -40,36 +40,35 @@ def _market():
     }
 
 
-def test_catalog_replaces_black_rock():
+def test_human_apostle_is_ai_only_and_dear_bruce_stays_preset():
     assert NATIVE_PRESETS[1008]["name"] == "HUMAN APOSTLE"
     assert NATIVE_PRESETS[1008]["key"] == "human_apostle"
     assert NATIVE_PRESETS[1008]["ready"] is True
-    assert NATIVE_PRESETS[1008]["version"] == "1.00"
-    assert NATIVE_PRESETS[1008]["magic"] == 4152026
+    assert NATIVE_PRESETS[1008]["library_visible"] is False
+    assert NATIVE_PRESETS[1008]["auto_select_enabled"] is False
+    assert "human_apostle" in ready_keys()
+
+    system_ids = {int(row["id"]) for row in SYSTEM_BOT_PRESETS}
+    assert 1008 not in system_ids
+    assert 1009 in system_ids
     assert NATIVE_PRESETS[1009]["name"] == "DEAR BRUCE"
     assert NATIVE_PRESETS[1009]["key"] == "dear_bruce"
     assert NATIVE_PRESETS[1009]["ready"] is True
-    assert NATIVE_PRESETS[1009]["version"] == "2.20"
-    assert NATIVE_PRESETS[1009]["magic"] == 22082605
-    assert "human_apostle" in ready_keys()
     assert "dear_bruce" in ready_keys()
     assert all(row["name"] != "BLACK ROCK" for row in SYSTEM_BOT_PRESETS)
 
 
 def test_native_rows_are_locked_and_described():
-    rows = {int(row["id"]): row for row in _merge_system_bots([])}
-    human = rows[1008]
+    rows = {int(row["id"]): row for row in _merge_system_bots([{"id": 1008, "name": "HUMAN APOSTLE"}])}
+    assert 1008 not in rows
     bruce = rows[1009]
-    for row in (human, bruce):
-        assert row["system_preset"] is True
-        assert row["locked"] is True
-        assert row["native_engine"] is True
-        assert row["native_ready"] is True
-        assert row["engine_type"] == "native"
-        assert row["description"]
-        assert row["settings"]["risk_percent"] == 1.0
-    assert human["timeframe"] == "M15"
-    assert human["bias_timeframe"] == "H4"
+    assert bruce["system_preset"] is True
+    assert bruce["locked"] is True
+    assert bruce["native_engine"] is True
+    assert bruce["native_ready"] is True
+    assert bruce["engine_type"] == "native"
+    assert bruce["description"]
+    assert bruce["settings"]["risk_percent"] == 1.0
     assert bruce["timeframe"] == "M5"
     assert bruce["bias_timeframe"] == "H4"
 
@@ -119,3 +118,24 @@ def run():
 
 if __name__ == "__main__":
     run()
+
+
+def test_native_timeframe_overrides_are_preserved_and_remapped():
+    existing = [{
+        "id": 1009, "name": "DEAR BRUCE", "native_key": "dear_bruce",
+        "native_source_sha256": NATIVE_PRESETS[1009].get("source_sha256"),
+        "timeframe": "M30", "bias_timeframe": "D1",
+    }]
+    rows = {int(row["id"]): row for row in _merge_system_bots(existing)}
+    assert rows[1009]["timeframe"] == "M30"
+    assert rows[1009]["bias_timeframe"] == "D1"
+
+    m30 = Series(_rows(1800, 80, 100.0, 0.02))
+    d1 = Series(_rows(86400, 40, 100.0, 0.2))
+    market = {**_market(), "M30": m30, "D1": d1}
+    bot = {"id": 1009, "timeframe": "M30", "bias_timeframe": "D1", "native_config": {}}
+    prepared, execution_tf, bias_tf = native_runtime.prepare_strategy_market(1009, market, bot)
+    assert execution_tf == "M30"
+    assert bias_tf == "D1"
+    assert prepared["M5"] is m30
+    assert prepared["H4"] is d1

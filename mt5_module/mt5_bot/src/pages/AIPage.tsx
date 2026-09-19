@@ -4,11 +4,13 @@ import { Activity, ArrowRightLeft, Brain, Globe, RefreshCw, ShieldAlert, Sparkle
 import { useHub } from '../context/HubContext';
 import { timeAgo } from '../lib/format';
 import { Badge, PageHeader, Panel, Progress, Skel, Spinner, Toggle } from '../components/ui';
-import type { AiAutoSelectMode, AiAutoSelectStatus, AiAutoStatus, AiInsight, AiSettings, AiTrialSnapshot } from '../types';
+import type { AiAutoSelectMode, AiAutoSelectStatus, AiAutoStatus, AiInsight, AiSettings, AiTimeframe, AiTrialSnapshot } from '../types';
 import { aiControlService } from '../services/aiControlService';
 import { mt5MultiAccountService } from '../services/mt5MultiAccountService';
 import NativeAutoSelectPanel from '../components/NativeAutoSelectPanel';
 import ConfirmModal from '../components/ConfirmModal';
+import MarketSelect from '../components/MarketSelect';
+import { TIMEFRAMES } from '../lib/market';
 import { isSimulation } from '../config/runtime';
 
 const CATEGORY_META: Record<string, { icon: typeof Brain; cls: string }> = {
@@ -57,12 +59,8 @@ type CopyAnywhereStatus = {
 type LiveRiskAction = 'trial' | 'human_auto' | 'auto_select' | 'auto_select_execute' | null;
 
 export default function AIPage() {
-  const { accounts, mt5Symbols, activeAccount, pushToast } = useHub();
+  const { accounts, activeAccount, pushToast } = useHub();
   const connectedAccounts = useMemo(() => accounts.filter((a) => a.status === 'connected'), [accounts]);
-  const symbols = useMemo(() => {
-    const rows = mt5Symbols.filter((s) => s.trade_allowed).map((s) => s.symbol);
-    return rows.length ? rows : ['XAUUSD', 'EURUSD', 'GBPUSD', 'USDJPY'];
-  }, [mt5Symbols]);
 
   const [insights, setInsights] = useState<AiInsight[] | null>(null);
   const [settings, setSettings] = useState<AiSettings | null>(null);
@@ -73,6 +71,8 @@ export default function AIPage() {
   const [executing, setExecuting] = useState(false);
   const [accountLogin, setAccountLogin] = useState<number>(0);
   const [symbol, setSymbol] = useState('XAUUSD');
+  const [executionTimeframe, setExecutionTimeframe] = useState<AiTimeframe>('M15');
+  const [biasTimeframe, setBiasTimeframe] = useState<AiTimeframe>('H4');
   const [trialVolume, setTrialVolume] = useState('0.01');
   const [autoStatus, setAutoStatus] = useState<AiAutoStatus | null>(null);
   const [autoBusy, setAutoBusy] = useState(false);
@@ -110,8 +110,24 @@ export default function AIPage() {
       .then((d) => { setInsights(d.insights); setSettings(d.settings); })
       .catch(() => pushToast('error', 'AI feed unavailable', 'Could not load the intelligence feed.'));
     if (!isSimulation) {
-      aiControlService.trialGet().then((d) => setTrial(d.snapshot)).catch(() => {});
-      aiControlService.autoStatus().then(setAutoStatus).catch(() => {});
+      aiControlService.trialGet().then((d) => {
+        setTrial(d.snapshot);
+        const savedAccount = Number(d.scan_config?.account_login || d.snapshot?.account_login || 0);
+        const savedSymbol = String(d.scan_config?.symbol || d.snapshot?.symbol || '');
+        const savedExec = (d.scan_config?.execution_timeframe || d.snapshot?.execution_timeframe || d.execution_timeframe || 'M15') as AiTimeframe;
+        const savedBias = (d.scan_config?.bias_timeframe || d.snapshot?.bias_timeframe || d.bias_timeframe || 'H4') as AiTimeframe;
+        if (savedAccount) setAccountLogin(savedAccount);
+        if (savedSymbol) setSymbol(savedSymbol);
+        setExecutionTimeframe(savedExec);
+        setBiasTimeframe(savedBias);
+      }).catch(() => {});
+      aiControlService.autoStatus().then((d) => {
+        setAutoStatus(d);
+        if (d.enabled) {
+          if (d.config.execution_timeframe) setExecutionTimeframe(d.config.execution_timeframe);
+          if (d.config.bias_timeframe) setBiasTimeframe(d.config.bias_timeframe);
+        }
+      }).catch(() => {});
       aiControlService.autoSelectStatus().then(setAutoSelectStatus).catch(() => {});
       loadCopyAnywhere();
     }
@@ -138,10 +154,6 @@ export default function AIPage() {
   }, [accountLogin, activeAccount, connectedAccounts]);
 
   useEffect(() => {
-    if (!symbols.includes(symbol)) setSymbol(symbols[0] || 'XAUUSD');
-  }, [symbol, symbols]);
-
-  useEffect(() => {
     if (!autoSelectStatus || autoSelectInitRef.current) return;
     autoSelectInitRef.current = true;
     setAutoSelectMode(autoSelectStatus.config.mode || 'analysis');
@@ -153,7 +165,7 @@ export default function AIPage() {
 
   const runTrial = async () => {
     if (isSimulation) {
-      pushToast('warning', 'Real MT5 bridge required', 'Human Apostle reads completed M15/H4 candles from a connected MT5 account.');
+      pushToast('warning', 'Real MT5 bridge required', 'Human Apostle reads completed execution/bias candles from a connected MT5 account.');
       return;
     }
     if (!accountLogin || !symbol) {
@@ -162,7 +174,7 @@ export default function AIPage() {
     }
     setTrialLoading(true);
     try {
-      const result = await aiControlService.trialScan(accountLogin, symbol);
+      const result = await aiControlService.trialScan(accountLogin, symbol, executionTimeframe, biasTimeframe);
       setTrial(result);
       pushToast('success', 'Apostle scan complete', `${result.decision} · ${result.confidence}% confidence`);
     } catch (e) {
@@ -226,7 +238,16 @@ export default function AIPage() {
     }
     setAutoBusy(true);
     try {
-      const status = await aiControlService.autoConfigure({ enabled: true, account_login: accountLogin, symbol, volume, scan_seconds: 30, confirm_live: confirmLive });
+      const status = await aiControlService.autoConfigure({
+        enabled: true,
+        account_login: accountLogin,
+        symbol,
+        volume,
+        scan_seconds: 30,
+        execution_timeframe: executionTimeframe,
+        bias_timeframe: biasTimeframe,
+        confirm_live: confirmLive,
+      });
       setAutoStatus(status);
       setSettings((prev) => prev ? { ...prev, auto_trading: true } : prev);
       pushToast('success', 'Human Apostle Auto-Trading started', `${symbol} · ${selectedAccount?.account_type || 'MT5'} #${accountLogin} · lot ${volume}`);
@@ -441,7 +462,7 @@ export default function AIPage() {
             </button>
             <button className="btn-primary" onClick={runTrial} disabled={trialLoading || isSimulation || !accountLogin}>
               {trialLoading ? <Spinner size={15} /> : <Brain size={15} />}
-              {trialLoading ? 'Scanning M15 + H4…' : 'Run Apostle Scan'}
+              {trialLoading ? `Scanning ${executionTimeframe} + ${biasTimeframe}…` : 'Run Apostle Scan'}
             </button>
           </div>
         }
@@ -456,7 +477,7 @@ export default function AIPage() {
               <Badge tone={isSimulation ? 'warn' : 'gain'}>{autoStatus?.enabled ? 'AUTO RUNNING' : (isSimulation ? 'Bridge required' : 'Ready')}</Badge>
             </div>
             <p className="mt-1 text-[12px] text-slate-500 max-w-3xl">
-              Sequence: market structure → opposing trendline break → protected structure break → later retest → rejection candle → H4 alignment. You can scan manually, execute a current signal manually, or let the server keep scanning and execute fresh confirmed signals automatically. LIVE accounts require the testing-phase risk confirmation before execution.
+              Sequence: market structure → opposing trendline break → protected structure break → later retest → rejection candle → selected bias-timeframe alignment. You can scan manually, execute a current signal manually, or let the server keep scanning and execute fresh confirmed signals automatically. LIVE accounts require the testing-phase risk confirmation before execution.
             </p>
           </div>
           <p className="mono text-[10px] text-slate-600">{trial?.execution || (autoStatus?.enabled ? 'SERVER SCANNER ACTIVE' : 'WAITING FOR SCAN')}</p>
@@ -471,10 +492,15 @@ export default function AIPage() {
             </select>
           </div>
           <div>
-            <label className="label">Symbol</label>
-            <select className="input" value={symbol} onChange={(e) => setSymbol(e.target.value)} disabled={!!autoStatus?.enabled || !!autoSelectStatus?.enabled}>
-              {symbols.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
+            <label className="label">Market</label>
+            <MarketSelect
+              compact
+              tradeOnly
+              value={symbol}
+              onChange={setSymbol}
+              accountLogin={accountLogin || undefined}
+              disabled={!!autoStatus?.enabled || !!autoSelectStatus?.enabled}
+            />
           </div>
           <div>
             <label className="label">Fixed lot</label>
@@ -482,11 +508,15 @@ export default function AIPage() {
           </div>
           <div>
             <label className="label">Execution timeframe</label>
-            <div className="input mono flex items-center">M15 <span className="text-slate-600 ml-2">fixed</span></div>
+            <select className="input mono" value={executionTimeframe} onChange={(e) => setExecutionTimeframe(e.target.value as AiTimeframe)} disabled={!!autoStatus?.enabled}>
+              {TIMEFRAMES.map((tf) => <option key={tf} value={tf}>{tf}</option>)}
+            </select>
           </div>
           <div>
             <label className="label">Bias timeframe</label>
-            <div className="input mono flex items-center">H4 <span className="text-slate-600 ml-2">fixed</span></div>
+            <select className="input mono" value={biasTimeframe} onChange={(e) => setBiasTimeframe(e.target.value as AiTimeframe)} disabled={!!autoStatus?.enabled}>
+              {TIMEFRAMES.map((tf) => <option key={tf} value={tf}>{tf}</option>)}
+            </select>
           </div>
         </div>
         <p className="mt-3 text-[11px] text-slate-500">Selected account type: <span className="text-white font-semibold">{selectedAccount?.account_type || '—'}</span>. Human Apostle uses its proposed SL/TP and your fixed lot. Auto-Trading keeps running on the server even if this browser closes.</p>
@@ -515,7 +545,7 @@ export default function AIPage() {
             </div>
             <div className="text-right text-[10px] text-slate-600">
               <p>{autoStatus.config?.symbol || symbol} · #{autoStatus.config?.account_login || accountLogin || '—'} · lot {autoStatus.config?.volume ?? trialVolume}</p>
-              <p>M15 execution · H4 bias · {autoStatus.config?.allow_live ? 'LIVE RISK ACCEPTED' : 'LIVE REQUIRES CONFIRM'}</p>
+              <p>{autoStatus.config?.execution_timeframe || autoStatus.execution_timeframe || executionTimeframe} execution · {autoStatus.config?.bias_timeframe || autoStatus.bias_timeframe || biasTimeframe} bias · {autoStatus.config?.allow_live ? 'LIVE RISK ACCEPTED' : 'LIVE REQUIRES CONFIRM'}</p>
             </div>
           </div>
           <div className="mt-4 grid grid-cols-2 lg:grid-cols-4 gap-2.5">
@@ -575,11 +605,11 @@ export default function AIPage() {
             <p className="mt-2 text-[13px] leading-relaxed text-slate-400">{trial.reason}</p>
 
             <div className="mt-4 grid grid-cols-2 lg:grid-cols-5 gap-2.5">
-              <div className="rounded-xl bg-black/25 border border-white/[0.06] p-3"><p className="text-[9px] uppercase tracking-widest text-slate-600">M15 structure</p><div className="mt-1"><Badge tone={structureTone(trial.execution_structure)}>{trial.execution_structure}</Badge></div></div>
+              <div className="rounded-xl bg-black/25 border border-white/[0.06] p-3"><p className="text-[9px] uppercase tracking-widest text-slate-600">{trial.execution_timeframe} structure</p><div className="mt-1"><Badge tone={structureTone(trial.execution_structure)}>{trial.execution_structure}</Badge></div></div>
               <div className="rounded-xl bg-black/25 border border-white/[0.06] p-3"><p className="text-[9px] uppercase tracking-widest text-slate-600">Trendline</p><p className="mt-1 text-xs font-bold text-slate-200">{trial.trendline ? 'BROKEN' : 'WAITING'}</p></div>
               <div className="rounded-xl bg-black/25 border border-white/[0.06] p-3"><p className="text-[9px] uppercase tracking-widest text-slate-600">Structure shift</p><p className="mt-1 text-xs font-bold text-slate-200">{trial.structure_shift.confirmed ? 'CONFIRMED' : 'WAITING'}</p></div>
               <div className="rounded-xl bg-black/25 border border-white/[0.06] p-3"><p className="text-[9px] uppercase tracking-widest text-slate-600">Later retest</p><p className="mt-1 text-xs font-bold text-slate-200">{trial.retest.touched ? 'TOUCHED' : 'WAITING'}</p></div>
-              <div className="rounded-xl bg-black/25 border border-white/[0.06] p-3"><p className="text-[9px] uppercase tracking-widest text-slate-600">H4 bias</p><div className="mt-1"><Badge tone={structureTone(trial.bias_structure)}>{trial.bias_structure}</Badge></div></div>
+              <div className="rounded-xl bg-black/25 border border-white/[0.06] p-3"><p className="text-[9px] uppercase tracking-widest text-slate-600">{trial.bias_timeframe} bias</p><div className="mt-1"><Badge tone={structureTone(trial.bias_structure)}>{trial.bias_structure}</Badge></div></div>
             </div>
 
             <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3 text-[11px]">

@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { Bell, DatabaseBackup, FileDown, Headphones, RefreshCw, Server, ShieldCheck, Timer, Moon, Sun } from 'lucide-react';
+import { Bell, DatabaseBackup, FileDown, Filter, Headphones, RefreshCw, Server, ShieldCheck, Timer, Moon, Sun } from 'lucide-react';
 import { useHub } from '../context/HubContext';
+import type { MarketBrokerFilter, MarketCategoryFilter } from '../context/HubContext';
 import { PageHeader, Panel, Toggle, Badge, StatusDot } from '../components/ui';
 import { isSimulation } from '../config/runtime';
 import { mt5HistoryService } from '../services/mt5HistoryService';
@@ -17,6 +18,38 @@ const POLL_OPTIONS = [
   { label: '30 seconds', value: 30000 },
   { label: '60 seconds', value: 60000 },
   { label: '2 minutes', value: 120000 },
+];
+
+const BROKER_FILTERS: Array<{ value: MarketBrokerFilter; label: string }> = [
+  { value: 'all', label: 'All brokers' },
+  { value: 'current', label: 'Current account broker' },
+  { value: 'deriv', label: 'Deriv only' },
+  { value: 'weltrade', label: 'Weltrade only' },
+  { value: 'favorites', label: 'Favorites only' },
+  { value: 'custom', label: 'Custom broker mix' },
+];
+
+const MARKET_FILTERS: Array<{ value: MarketCategoryFilter; label: string }> = [
+  { value: 'all', label: 'All markets' },
+  { value: 'synthetic', label: 'Synthetic / Volatility' },
+  { value: 'forex', label: 'Forex' },
+  { value: 'metals', label: 'Metals' },
+  { value: 'indices', label: 'Indices' },
+  { value: 'crypto', label: 'Crypto' },
+  { value: 'stocks', label: 'Stocks / CFDs' },
+  { value: 'energies', label: 'Energies' },
+  { value: 'weltrade_syntx', label: 'Weltrade SyntX' },
+  { value: 'fxvol', label: 'FXVol only' },
+  { value: 'sfxvol', label: 'SFX Vol only' },
+  { value: 'painx', label: 'PainX only' },
+  { value: 'gainx', label: 'GainX only' },
+  { value: 'flipx', label: 'FlipX only' },
+  { value: 'switchx', label: 'SwitchX only' },
+  { value: 'breakx', label: 'BreakX only' },
+  { value: 'trendx', label: 'TrendX only' },
+  { value: 'progression', label: 'PlusX / FiboX / QuadX' },
+  { value: 'maxx', label: 'MAX PainX / MAX GainX' },
+  { value: 'custom', label: 'Custom market groups' },
 ];
 
 const ALERT_OPTIONS: Array<{ key: NotificationAlertKey; title: string; description: string }> = [
@@ -53,6 +86,18 @@ export default function SettingsPage() {
 
   const setAlert = (key: NotificationAlertKey, enabled: boolean) => {
     setPrefs({ notifications: { ...prefs.notifications, [key]: enabled } });
+  };
+
+  const toggleBrokerFamily = (family: 'deriv' | 'weltrade' | 'other') => {
+    const has = prefs.customBrokerFamilies.includes(family);
+    const next = has ? prefs.customBrokerFamilies.filter((item) => item !== family) : [...prefs.customBrokerFamilies, family];
+    if (next.length) setPrefs({ customBrokerFamilies: next });
+  };
+
+  const toggleMarketGroup = (group: 'synthetic' | 'forex' | 'metals' | 'indices' | 'crypto' | 'stocks' | 'energies' | 'weltrade_syntx') => {
+    const has = prefs.customMarketGroups.includes(group);
+    const next = has ? prefs.customMarketGroups.filter((item) => item !== group) : [...prefs.customMarketGroups, group];
+    if (next.length) setPrefs({ customMarketGroups: next });
   };
 
   const exportAll = async () => {
@@ -137,6 +182,39 @@ export default function SettingsPage() {
                 <p className="text-[11px] text-slate-500 mt-0.5">Automatically reconnect the last MT5 account using credentials already saved in the MetaTrader 5 terminal.</p>
               </div>
               <Toggle on={prefs.reconnectOnStartup} onChange={(v) => setPrefs({ reconnectOnStartup: v })} />
+            </div>
+
+            <div className="rounded-xl bg-white/[0.03] border border-white/[0.06] p-4">
+              <div className="flex items-center gap-2">
+                <Filter size={14} className="text-brand-300" />
+                <p className="text-[13px] font-semibold text-slate-200">Market visibility</p>
+              </div>
+              <p className="mt-1 text-[11px] text-slate-500">Choose which broker families and market groups appear across KOOLKID. These preferences are saved to your KOOLKID account.</p>
+              <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                <label><span className="label">Broker source</span>
+                  <select className="input" value={prefs.marketBrokerFilter} onChange={(e) => setPrefs({ marketBrokerFilter: e.target.value as MarketBrokerFilter })}>
+                    {BROKER_FILTERS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                  </select>
+                </label>
+                <label><span className="label">Market type</span>
+                  <select className="input" value={prefs.marketCategoryFilter} onChange={(e) => setPrefs({ marketCategoryFilter: e.target.value as MarketCategoryFilter })}>
+                    {MARKET_FILTERS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                  </select>
+                </label>
+              </div>
+              {prefs.marketBrokerFilter === 'custom' && (
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {(['deriv', 'weltrade', 'other'] as const).map((family) => <button key={family} type="button" onClick={() => toggleBrokerFamily(family)} className={prefs.customBrokerFamilies.includes(family) ? 'btn-primary !px-3 !py-1.5' : 'btn-ghost !px-3 !py-1.5'}>{family === 'deriv' ? 'Deriv' : family === 'weltrade' ? 'Weltrade' : 'Other brokers'}</button>)}
+                </div>
+              )}
+              {prefs.marketCategoryFilter === 'custom' && (
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {([
+                    ['synthetic', 'Synthetic'], ['forex', 'Forex'], ['metals', 'Metals'], ['indices', 'Indices'],
+                    ['crypto', 'Crypto'], ['stocks', 'Stocks'], ['energies', 'Energies'], ['weltrade_syntx', 'Weltrade SyntX'],
+                  ] as const).map(([key, label]) => <button key={key} type="button" onClick={() => toggleMarketGroup(key)} className={prefs.customMarketGroups.includes(key) ? 'btn-primary !px-3 !py-1.5' : 'btn-ghost !px-3 !py-1.5'}>{label}</button>)}
+                </div>
+              )}
             </div>
 
             <div className="rounded-xl bg-white/[0.03] border border-white/[0.06] p-4">
