@@ -14,6 +14,7 @@ import MarketSelect from '../components/MarketSelect';
 import { isSimulation } from '../config/runtime';
 import { mt5BotService } from '../services/mt5BotService';
 import type { Mt5Bot } from '../types';
+import BacktestLab from '../components/BacktestLab';
 
 const STRATEGIES = ['System Preset', 'Custom EA'];
 
@@ -78,6 +79,8 @@ export default function BotLibraryPage() {
           </>
         }
       />
+
+      <BacktestLab />
 
       <Panel className="mb-4 px-4 py-3 !border-brand-500/20 bg-brand-500/[0.04]">
         <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-[11px] text-slate-400">

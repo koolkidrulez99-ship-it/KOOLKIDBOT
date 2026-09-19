@@ -1,7 +1,7 @@
 import { NavLink } from 'react-router-dom';
 import {
   LayoutDashboard, Hexagon, Gauge, Wallet, Boxes, Cpu, ChartCandlestick, Layers, History,
-  Crosshair, ShieldAlert, Sparkles, Settings, X, Signal, ArrowRightLeft, ArrowLeft,
+  Crosshair, ShieldAlert, Sparkles, Settings, X, Signal, ArrowRightLeft, ArrowLeft, BookOpenText,
 } from 'lucide-react';
 import { useHub } from '../context/HubContext';
 import { hostHomeUrl } from '../config/runtime';
@@ -36,6 +36,7 @@ export default function Sidebar({ open, onClose }: { open: boolean; onClose: () 
       { to: '/mt5/risk', label: 'Risk Center', icon: ShieldAlert },
       { to: '/mt5/ai', label: 'AI Intelligence', icon: Sparkles },
       { to: '/mt5/copy', label: 'Copy Trading', icon: ArrowRightLeft },
+      { to: '/mt5/journal', label: '📔 Journal', icon: BookOpenText },
     ]},
     { label: 'System', items: [{ to: '/settings', label: 'Settings', icon: Settings }] },
   ];

@@ -31,3 +31,9 @@ mt5_module/mt5_bridge/data/ea_library/ws_*/
 
 # Persistent global MT5 trial clock - never replace during deploys
 mt5_module/mt5_bridge/data/mt5_global_trial.json
+
+# MT5 Hub private runtime data - never push
+mt5_module/mt5_bridge/data/mt5_hub_users_runtime.json
+mt5_module/mt5_bridge/data/mt5_hub_presence.json
+mt5_module/mt5_bridge/data/journal_archive.json
+mt5_module/mt5_bridge/data/backtests/

@@ -16,7 +16,7 @@ from typing import Any
 from urllib.parse import quote
 
 from dotenv import load_dotenv
-from fastapi import Body, FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
@@ -33,6 +33,8 @@ import native_runtime
 from native_strategies import NATIVE_PRESETS
 import ai_auto_select
 import mq5_compiler
+import backtest_manager
+import journal_manager
 from store import default_risk, read_state, remove_profile, update_state, upsert_profile
 from ai_trial import clear_snapshot as clear_ai_trial_snapshot, load_snapshot as load_ai_trial_snapshot, save_snapshot as save_ai_trial_snapshot, run_human_apostle_trial
 
@@ -124,20 +126,28 @@ async def unhandled_api_error(_request: Request, _exc: Exception):
     # the local-origin headers even when an unexpected API error occurs.
     return JSONResponse(status_code=500, content={"detail": "MT5 Bridge internal error."})
 
-HUB_USERS_FILE = ROOT / "data" / "mt5_hub_users.json"
+LEGACY_HUB_USERS_FILE = ROOT / "data" / "mt5_hub_users.json"
+HUB_USERS_FILE = ROOT / "data" / "mt5_hub_users_runtime.json"
 GLOBAL_TRIAL_FILE = ROOT / "data" / "mt5_global_trial.json"
 GLOBAL_TRIAL_START = "2026-09-18T00:00:00+00:00"
 GLOBAL_TRIAL_END = "2026-10-18T00:00:00+00:00"
+PRESENCE_FILE = ROOT / "data" / "mt5_hub_presence.json"
 _HUB_USERS_LOCK = threading.RLock()
 _GLOBAL_TRIAL_LOCK = threading.RLock()
+_PRESENCE_LOCK = threading.RLock()
 
 
 def _load_hub_users() -> dict[str, Any]:
-    if not HUB_USERS_FILE.exists():
+    source = HUB_USERS_FILE if HUB_USERS_FILE.exists() else LEGACY_HUB_USERS_FILE
+    if not source.exists():
         return {"version": 1, "users": []}
     try:
-        data = json.loads(HUB_USERS_FILE.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) and isinstance(data.get("users"), list) else {"version": 1, "users": []}
+        data = json.loads(source.read_text(encoding="utf-8"))
+        if not (isinstance(data, dict) and isinstance(data.get("users"), list)):
+            return {"version": 1, "users": []}
+        if source == LEGACY_HUB_USERS_FILE and not HUB_USERS_FILE.exists():
+            _save_hub_users(data)
+        return data
     except Exception:
         return {"version": 1, "users": []}
 
@@ -196,7 +206,40 @@ class HubAuthPayload(BaseModel):
 
 
 def _hub_identity(row: dict[str, Any]) -> dict[str, str]:
-    return {"user_id": str(row["id"]), "username": str(row["username"]), "workspace_id": str(row["workspace_id"])}
+    return {"user_id": str(row["id"]), "username": str(row["username"]), "workspace_id": str(row["workspace_id"]), "role": str(row.get("role") or "user")}
+
+
+def _hub_user_for_workspace(workspace_id: str) -> dict[str, Any] | None:
+    with _HUB_USERS_LOCK:
+        return next((dict(item) for item in _load_hub_users()["users"] if str(item.get("workspace_id")) == workspace_id), None)
+
+
+def _presence_data() -> dict[str, Any]:
+    try:
+        data = json.loads(PRESENCE_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _touch_presence(workspace_id: str) -> None:
+    with _PRESENCE_LOCK:
+        data = _presence_data()
+        data[workspace_id] = datetime.now(timezone.utc).isoformat()
+        PRESENCE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = PRESENCE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        tmp.replace(PRESENCE_FILE)
+
+
+def _require_admin(request: Request) -> dict[str, Any]:
+    workspace_id = workspace_from_authorization(request.headers.get("Authorization"))
+    if not workspace_id:
+        raise HTTPException(status_code=401, detail="Admin sign-in required.")
+    row = _hub_user_for_workspace(workspace_id)
+    if not row or str(row.get("role") or "user") != "admin":
+        raise HTTPException(status_code=403, detail="Administrator access required.")
+    return row
 
 
 @app.middleware("http")
@@ -286,6 +329,7 @@ def hub_signup(payload: HubAuthPayload):
             "id": uuid.uuid4().hex,
             "workspace_id": f"ws_{uuid.uuid4().hex}",
             "username": username,
+            "role": "user",
             "password_salt": salt.hex(),
             "password_hash": _password_hash(payload.password, salt),
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -328,6 +372,151 @@ def hub_me(request: Request):
     if not row:
         raise HTTPException(status_code=401, detail="MT5 Hub workspace no longer exists.")
     return {**_hub_identity(row), "trial": _global_trial_status()}
+
+
+@app.post("/api/mt5/hub/presence")
+def hub_presence():
+    workspace_id = current_workspace()
+    _touch_presence(workspace_id)
+    return {"ok": True, "seen_at": datetime.now(timezone.utc).isoformat()}
+
+
+@app.get("/api/mt5/backtests")
+def list_backtests():
+    return backtest_manager.list_for_workspace(current_workspace())
+
+
+@app.post("/api/mt5/backtests")
+async def create_backtest(
+    bot_file: UploadFile = File(...),
+    preset_file: UploadFile | None = File(default=None),
+    account_login: int = Form(...),
+    symbol: str = Form(...),
+    timeframe: str = Form("M15"),
+    date_from: str = Form(...),
+    date_to: str = Form(...),
+    deposit: float = Form(10000),
+    leverage: int = Form(100),
+    model: int = Form(4),
+    research_opt_in: bool = Form(False),
+):
+    workspace_id = current_workspace()
+    user = _hub_user_for_workspace(workspace_id)
+    if not user:
+        raise HTTPException(status_code=401, detail="MT5 Hub user was not found.")
+    if timeframe.upper() not in {"M1", "M5", "M15", "M30", "H1", "H4", "D1"}:
+        raise HTTPException(status_code=400, detail="Unsupported backtest timeframe.")
+    if model not in {0, 1, 2, 4}:
+        raise HTTPException(status_code=400, detail="Unsupported MT5 tester model.")
+    try:
+        start, end = datetime.fromisoformat(date_from), datetime.fromisoformat(date_to)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Use valid YYYY-MM-DD backtest dates.") from exc
+    if end <= start:
+        raise HTTPException(status_code=400, detail="Backtest end date must be after the start date.")
+    bot_data = await bot_file.read(MAX_EA_FILE_BYTES + 1)
+    preset_data = await preset_file.read(MAX_MQ5_FILE_BYTES + 1) if preset_file else None
+    try:
+        return backtest_manager.create_job(
+            workspace_id, str(user.get("username") or "user"), account_login,
+            bot_file.filename or "bot.ex5", bot_data,
+            preset_file.filename if preset_file else None, preset_data,
+            symbol, timeframe, date_from, date_to, deposit, leverage, model, research_opt_in,
+        )
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+def _admin_online_snapshot() -> tuple[dict[str, str], set[str]]:
+    presence = _presence_data()
+    now = datetime.now(timezone.utc)
+    online: set[str] = set()
+    for workspace_id, seen in presence.items():
+        try:
+            if (now - datetime.fromisoformat(str(seen))).total_seconds() <= 120:
+                online.add(str(workspace_id))
+        except ValueError:
+            continue
+    return presence, online
+
+
+@app.get("/api/mt5/admin/overview")
+def admin_overview(request: Request):
+    _require_admin(request)
+    users = _load_hub_users()["users"]
+    _, online = _admin_online_snapshot()
+    jobs = backtest_manager.all_jobs()
+    research = backtest_manager.all_research()
+    active_states = {"queued", "preparing", "compiling", "testing", "analyzing"}
+    return {
+        "total_users": len([row for row in users if str(row.get("role") or "user") == "user"]),
+        "online_users": len([row for row in users if row.get("workspace_id") in online and str(row.get("role") or "user") == "user"]),
+        "active_backtests": len([row for row in jobs if row.get("status") in active_states]),
+        "completed_backtests": len([row for row in jobs if row.get("status") == "complete"]),
+        "pending_research": len([row for row in research if row.get("status") == "pending"]),
+        "approved_candidates": len([row for row in research if row.get("status") == "approved_candidate"]),
+    }
+
+
+@app.get("/api/mt5/admin/users")
+def admin_users(request: Request):
+    _require_admin(request)
+    presence, online = _admin_online_snapshot()
+    jobs = backtest_manager.all_jobs()
+    rows = []
+    for user in _load_hub_users()["users"]:
+        workspace_id = str(user.get("workspace_id") or "")
+        rows.append({
+            "username": user.get("username"),
+            "role": user.get("role") or "user",
+            "joined_at": user.get("created_at"),
+            "last_seen": presence.get(workspace_id),
+            "online": workspace_id in online,
+            "backtests": len([job for job in jobs if job.get("workspace_id") == workspace_id]),
+        })
+    return rows
+
+
+@app.get("/api/mt5/journal/{account_login}")
+def journal(account_login: int, year: int | None = None, month: int | None = None, view: str = "month"):
+    today = journal_manager.journal_today()
+    target_year = int(year or today.year)
+    if target_year < 2010 or target_year > today.year + 1:
+        raise HTTPException(status_code=400, detail="Unsupported journal year.")
+    try:
+        if str(view).lower() == "year":
+            return journal_manager.year_view(account_login, target_year)
+        target_month = int(month or today.month)
+        return journal_manager.month_view(account_login, target_year, target_month)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/mt5/admin/backtests")
+def admin_backtests(request: Request):
+    _require_admin(request)
+    return backtest_manager.all_jobs()
+
+
+@app.get("/api/mt5/admin/research")
+def admin_research(request: Request):
+    _require_admin(request)
+    return backtest_manager.all_research()
+
+
+@app.post("/api/mt5/admin/research/{item_id}/decision")
+def admin_research_decision(item_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)):
+    _require_admin(request)
+    try:
+        return backtest_manager.decide_research(
+            item_id,
+            str(payload.get("decision") or ""),
+            str(payload.get("note") or "") or None,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Research item was not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def fail(exc: Exception, status: int = 400):

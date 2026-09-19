@@ -6,6 +6,7 @@ import type { HubAuthResponse, HubTrialInfo } from '../services/hubAuthService';
 import { hostHomeUrl } from '../config/runtime';
 import ContactSupport from './ContactSupport';
 import TrialNotice from './TrialNotice';
+import AdminConsole from '../pages/AdminConsole';
 
 type EntryView = 'cover' | 'login' | 'signup';
 const logo = '/mt5-bot/favicon.svg';
@@ -42,6 +43,7 @@ export default function HubAuthGate({ children }: { children: ReactNode }) {
   const [signedIn, setSignedIn] = useState(false);
   const [view, setView] = useState<EntryView>('cover');
   const [trial, setTrial] = useState<HubTrialInfo | null>(null);
+  const [identity, setIdentity] = useState<HubAuthResponse | null>(null);
   const [trialNoticeOpen, setTrialNoticeOpen] = useState(false);
 
   useEffect(() => {
@@ -52,6 +54,7 @@ export default function HubAuthGate({ children }: { children: ReactNode }) {
     hubAuthService.me()
       .then((result) => {
         setTrial(result.trial || null);
+        setIdentity(result);
         setSignedIn(true);
       })
       .catch(() => hubAuthService.logout())
@@ -60,11 +63,21 @@ export default function HubAuthGate({ children }: { children: ReactNode }) {
 
   const complete = (result: HubAuthResponse) => {
     setTrial(result.trial || null);
+    setIdentity(result);
     setSignedIn(true);
     setTrialNoticeOpen(true);
   };
 
+  useEffect(() => {
+    if (!signedIn) return;
+    const ping = () => { void hubAuthService.presence().catch(() => {}); };
+    ping();
+    const timer = window.setInterval(ping, 45000);
+    return () => window.clearInterval(timer);
+  }, [signedIn]);
+
   if (!ready) return <><div className="min-h-screen bg-[#04060b]" /><ContactSupport trial={trial} /></>;
+  if (signedIn && identity?.role === 'admin') return <AdminConsole username={identity.username} />;
   if (signedIn) return <>{children}<ContactSupport trial={trial} /><TrialNotice open={trialNoticeOpen} onClose={() => setTrialNoticeOpen(false)} trial={trial} /></>;
   return <>{view === 'cover' ? <Cover open={setView} /> : <Auth mode={view} open={setView} complete={complete} />}<ContactSupport trial={trial} /></>;
 }

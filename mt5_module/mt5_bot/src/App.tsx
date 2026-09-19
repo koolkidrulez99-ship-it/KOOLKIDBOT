@@ -16,6 +16,7 @@ import RiskCenterPage from './pages/RiskCenterPage';
 import AIPage from './pages/AIPage';
 import SettingsPage from './pages/SettingsPage';
 import CopyTradingPage from './pages/CopyTradingPage';
+import JournalPage from './pages/JournalPage';
 import { routerBase } from './config/runtime';
 import HubAuthGate from './components/HubAuthGate';
 
@@ -40,6 +41,7 @@ export default function App() {
             <Route path="/mt5/risk" element={<RiskCenterPage />} />
             <Route path="/mt5/ai" element={<AIPage />} />
             <Route path="/mt5/copy" element={<CopyTradingPage />} />
+            <Route path="/mt5/journal" element={<JournalPage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="*" element={<OverviewPage />} />
           </Route>

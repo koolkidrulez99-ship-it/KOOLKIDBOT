@@ -17,6 +17,7 @@ export interface HubIdentity {
   user_id: string;
   username: string;
   workspace_id: string;
+  role: 'user' | 'admin';
 }
 
 export interface HubAuthResponse extends HubIdentity {
@@ -45,6 +46,7 @@ async function request<T>(path: string, body?: Record<string, string>): Promise<
 export const hubAuthService = {
   trial: () => request<HubTrialInfo>('/api/mt5/hub/auth/trial'),
   me: () => request<HubAuthResponse>('/api/mt5/hub/auth/me'),
+  presence: () => request<{ ok: boolean; seen_at: string }>('/api/mt5/hub/presence', {}),
   login: async (username: string, password: string) => {
     const result = await request<HubAuthResponse>('/api/mt5/hub/auth/login', { username, password });
     if (result.token) sessionStorage.setItem(TOKEN_KEY, result.token);
