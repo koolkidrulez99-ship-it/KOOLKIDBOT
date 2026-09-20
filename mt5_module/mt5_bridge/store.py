@@ -33,6 +33,14 @@ SYSTEM_BOT_PRESETS = [
     {"id": 1007, "name": "PRIMORDIAL WHITE", "file": "Primordial_White.ex5", "version": "1.10", "magic": 26033179},
     {"id": 1009, "name": "DEAR BRUCE", "file": "DEAR_BRUCE_PREMIUM.ex5", "version": "2.20", "magic": 22082605},
     {"id": 1010, "name": "KOOLKID SCALPER X", "file": "KOOLKID_ScalperX.ex5", "version": "1.00", "magic": 19092610},
+    {
+        "id": 1011, "name": "BLACK ROCK", "file": "Black_Rock.ex5", "version": "2.00",
+        "magic": 9122026, "engine": "ea", "lifetime_only": True,
+        "entry_tf": "M15", "bias_tf": "H4", "risk_percent": 1.0,
+        "title": "Black Rock",
+        "subtitle": "H4 Bias · M15 Structure / Trendline Retest",
+        "description": "H4 market bias with M15 structure reversal, trendline break, protected-structure shift and level retest.",
+    },
 ]
 
 # Human Apostle stays available to the dedicated AI engine, but it is no longer
@@ -66,32 +74,33 @@ def _merge_system_bots(existing: list[dict[str, Any]]) -> list[dict[str, Any]]:
         bot_id = int(preset["id"])
         path = _system_ea_library() / str(preset["file"])
         native = dict(NATIVE_PRESETS.get(bot_id) or {})
-        native_ready = bool(native.get("ready"))
-        # Ready system presets are KOOLKID-native. Do not expose or advertise
-        # any legacy EX5 path/hash even if an old private system file exists.
-        legacy_ready = path.is_file() and not native_ready
+        force_ea = str(preset.get("engine") or "").strip().lower() == "ea"
+        native_ready = bool(native.get("ready")) and not force_ea
+        # Native presets execute in the KOOLKID engine. Explicit EA presets keep
+        # their original compiled MQL5 logic and run through the isolated EA worker.
+        legacy_ready = path.is_file() and (force_ea or not native_ready)
         canonical = {
             "id": bot_id, "name": preset["name"],
-            "display_title": native.get("title") or "KOOLKID System Strategy",
-            "display_subtitle": native.get("subtitle") or "Built-in KOOLKID trading strategy",
-            "description": native.get("description") or native.get("subtitle") or "KOOLKID built-in trading strategy.",
-            "strategy": "System Preset", "symbol": "XAUUSD", "timeframe": native.get("entry_tf") or "M5",
+            "display_title": preset.get("title") or native.get("title") or "KOOLKID System Strategy",
+            "display_subtitle": preset.get("subtitle") or native.get("subtitle") or "Built-in KOOLKID trading strategy",
+            "description": preset.get("description") or native.get("description") or native.get("subtitle") or "KOOLKID built-in trading strategy.",
+            "strategy": "System Preset", "symbol": "XAUUSD", "timeframe": preset.get("entry_tf") or native.get("entry_tf") or "M5",
             "account_login": None, "status": "stopped", "lot_size": 0.01,
             "win_rate": 0, "total_trades": 0, "net_profit": 0, "profit_today": 0,
             "version": preset["version"], "started_at": None,
-            "ea_filename": None if native_ready else preset["file"], "preset_filename": None,
-            "file_status": "native" if native_ready else "source-required", "dll_required": False,
+            "ea_filename": preset["file"] if force_ea or not native_ready else None, "preset_filename": None,
+            "file_status": ("ready" if force_ea and legacy_ready else "native" if native_ready else "source-required"), "dll_required": False,
             "ea_storage_path": str(path.relative_to(ROOT)) if legacy_ready else None,
             "ea_size_bytes": path.stat().st_size if legacy_ready else None,
             "ea_sha256": hashlib.sha256(path.read_bytes()).hexdigest() if legacy_ready else None,
             "legacy_ex5_available": legacy_ready,
-            "system_preset": True, "locked": True,
-            "native_engine": True, "native_key": native.get("key"),
+            "system_preset": True, "locked": True, "lifetime_only": bool(preset.get("lifetime_only")),
+            "native_engine": False if force_ea else True, "native_key": native.get("key"),
             "native_ready": native_ready, "native_source": native.get("source"),
             "native_source_sha256": native.get("source_sha256"),
-            "engine_type": "native" if native_ready else "source_required",
-            "bias_timeframe": native.get("bias_tf"),
-            "settings": {"risk_percent": float(native.get("risk_percent") or 0.5), "max_spread": 3.5, "trailing_stop": True,
+            "engine_type": "ea" if force_ea else ("native" if native_ready else "source_required"),
+            "bias_timeframe": preset.get("bias_tf") or native.get("bias_tf"),
+            "settings": {"risk_percent": float(preset.get("risk_percent") or native.get("risk_percent") or 0.5), "max_spread": 3.5, "trailing_stop": True,
                          "magic_number": int(native.get("magic") or preset["magic"]), "max_daily_loss": 250, "max_open_positions": 3},
         }
         canonical["library_revision"] = bot_library_revision(canonical)
@@ -105,7 +114,7 @@ def _merge_system_bots(existing: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "id", "name", "display_title", "display_subtitle", "description", "strategy", "version",
             "ea_filename", "preset_filename", "file_status", "dll_required",
             "ea_storage_path", "ea_size_bytes", "ea_sha256", "legacy_ex5_available",
-            "system_preset", "locked", "native_engine", "native_key", "native_ready",
+            "system_preset", "locked", "lifetime_only", "native_engine", "native_key", "native_ready",
             "native_source", "native_source_sha256", "engine_type", "library_revision",
         ):
             row[key] = canonical[key]

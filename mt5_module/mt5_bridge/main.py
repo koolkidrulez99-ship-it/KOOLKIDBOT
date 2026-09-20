@@ -268,11 +268,15 @@ def _current_workspace_is_lifetime() -> bool:
 def _visible_bots_for_current_user(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if _current_workspace_is_lifetime():
         return rows
-    return [row for row in rows if not _is_black_rock_bot(row)]
+    return [
+        row for row in rows
+        if not bool(row.get("lifetime_only")) and not _is_black_rock_bot(row)
+    ]
 
 
 def _require_black_rock_lifetime_access(bot: dict[str, Any] | None) -> None:
-    if _is_black_rock_bot(bot) and not _current_workspace_is_lifetime():
+    lifetime_only = bool(bot and bot.get("lifetime_only"))
+    if (lifetime_only or _is_black_rock_bot(bot)) and not _current_workspace_is_lifetime():
         raise HTTPException(status_code=403, detail="BLACK ROCK is available to Lifetime users only.")
 
 
@@ -2540,6 +2544,7 @@ def pause_bot(bot_id: int, payload: dict[str, Any] = Body(default_factory=dict))
     bot = next((b for b in state.get("bots", []) if int(b.get("id", 0)) == bot_id), None)
     if not bot:
         raise HTTPException(status_code=404, detail="Bot not found.")
+    _require_black_rock_lifetime_access(bot)
     if bot.get("native_engine"):
         try:
             return native_runtime.pause(current_workspace(), bot_id)
@@ -2623,6 +2628,7 @@ def stop_bot(bot_id: int, payload: dict[str, Any] = Body(default_factory=dict)):
     bot = next((b for b in state.get("bots", []) if int(b.get("id", 0)) == bot_id), None)
     if not bot:
         raise HTTPException(status_code=404, detail="Bot not found.")
+    _require_black_rock_lifetime_access(bot)
     if bot.get("native_engine"):
         try:
             return native_runtime.stop(current_workspace(), bot_id)

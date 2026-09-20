@@ -33,6 +33,7 @@ const PRESET_ACCENTS: Record<number, { icon: string; border: string; glow: strin
   1005: { icon: 'text-rose-300 bg-rose-500/10 border-rose-400/25', border: '!border-rose-400/15', glow: 'from-rose-400/10' },
   1006: { icon: 'text-zinc-200 bg-zinc-400/10 border-zinc-300/25', border: '!border-zinc-300/15', glow: 'from-zinc-300/10' },
   1007: { icon: 'text-white bg-white/[0.06] border-white/20', border: '!border-white/15', glow: 'from-white/[0.06]' },
+  1011: { icon: 'text-zinc-100 bg-black/50 border-zinc-500/30', border: '!border-zinc-500/20', glow: 'from-zinc-400/[0.05]' },
 };
 
 export default function BotLibraryPage() {
@@ -57,7 +58,7 @@ export default function BotLibraryPage() {
 
   const filtered = useMemo(
     () => {
-      const visible = accessTier === 'lifetime' ? bots : bots.filter((bot) => !isBlackRockBot(bot));
+      const visible = accessTier === 'lifetime' ? bots : bots.filter((bot) => !bot.lifetime_only && !isBlackRockBot(bot));
       return strategyFilter === 'all' ? visible : visible.filter((bot) => bot.strategy === strategyFilter);
     },
     [accessTier, bots, strategyFilter]
@@ -171,6 +172,7 @@ export default function BotLibraryPage() {
 
                 <div className="mt-3 flex flex-wrap items-center gap-1.5">
                   <Badge tone="slate">{b.strategy}</Badge>{isCatalog && <Badge tone="brand">BUILT-IN PRESET</Badge>}
+                  {b.lifetime_only && <Badge tone="gain">LIFETIME</Badge>}
                   <span className="chip mono !text-[11px]"><Target size={11} className="text-brand-300" /> {b.symbol} · {b.timeframe}</span>
                   {isNative ? <span className="chip !text-[11px]">Source risk sizing</span> : <span className="chip mono !text-[11px]">{b.lot_size.toFixed(2)} lots</span>}
                 </div>

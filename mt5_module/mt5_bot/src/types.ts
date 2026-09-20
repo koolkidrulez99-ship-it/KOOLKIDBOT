@@ -92,7 +92,8 @@ export interface Mt5Bot {
   native_key?: string | null;
   native_ready?: boolean;
   native_source?: string | null;
-  engine_type?: 'native' | 'ex5' | 'source_required' | string;
+  engine_type?: 'native' | 'ea' | 'ex5' | 'source_required' | string;
+  lifetime_only?: boolean;
   bias_timeframe?: string | null;
   legacy_ex5_available?: boolean;
   native_config?: Record<string, unknown> | null;
