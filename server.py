@@ -18822,7 +18822,21 @@ def _send_human_koolkid_profit_buy(client_id, state):
         return False, runtime["last_error"]
 
     stake = round(max(0.35, float(runtime.get("current_stake") or runtime.get("base_stake") or 1.0)), 2)
-    symbol = str(state.get("human_symbol") or state.get("current_symbol") or "R_10").strip()
+    requested_symbol = str(state.get("human_symbol") or state.get("current_symbol") or "R_10").strip()
+    symbol = requested_symbol
+    if _uses_new_deriv_trade_api(state):
+        symbol, symbol_err = resolve_new_api_symbol(
+            state,
+            requested_symbol,
+            context="HUMAN KOOLKID PROFIT",
+            client_id=client_id,
+        )
+        if symbol_err:
+            runtime["running"] = False
+            runtime["status"] = "Trade validation failed"
+            runtime["last_error"] = str(symbol_err)
+            runtime["retry_at"] = time.time() + 2.0
+            return False, runtime["last_error"]
     budget_ok, budget_msg, budget_reservation = _reserve_profile_budget(state, "HUMAN", stake)
     if not budget_ok:
         runtime["enabled"] = False
@@ -18839,7 +18853,7 @@ def _send_human_koolkid_profit_buy(client_id, state):
         "deriv_contract_type": "ACCU",
         "barrier": None,
         "stake": stake,
-        "symbol": symbol,
+        "symbol": requested_symbol,
         "underlying_symbol": symbol,
         "time": now_time(),
         "mode": "HUMAN_KOOLKID_PROFIT",
@@ -18857,20 +18871,51 @@ def _send_human_koolkid_profit_buy(client_id, state):
     runtime["status"] = "Opening 5% accumulator"
     runtime["last_error"] = ""
     _stamp_trade_latency(meta, "buy_send")
+    parameters = {
+        "amount": stake,
+        "basis": "stake",
+        "contract_type": "ACCU",
+        "currency": str(state.get("currency") or "USD"),
+        "growth_rate": 0.05,
+        "symbol": symbol,
+    }
     payload = {
         "req_id": req_id,
         "buy": 1,
         "price": stake,
-        "parameters": {
-            "amount": stake,
-            "basis": "stake",
-            "contract_type": "ACCU",
-            "currency": str(state.get("currency") or "USD"),
-            "growth_rate": 0.05,
-            "symbol": symbol,
-        },
+        "parameters": parameters,
     }
     try:
+        if _uses_new_deriv_trade_api(state):
+            proposal_payload = _proposal_payload_for_connection(
+                state,
+                {"proposal": 1, "req_id": req_id, **parameters},
+            )
+            logger.info(
+                "[%s] human_koolkid_profit_proposal_send payload=%s",
+                client_id,
+                _safe_deriv_payload_text(proposal_payload),
+            )
+            proposal, proposal_err = _request_digit_proposal_for_buy(
+                client_id,
+                state,
+                proposal_payload,
+                timeout_sec=5.0,
+            )
+            if proposal_err:
+                raise ValueError(_friendly_proposal_error_message(proposal_err))
+            proposal_id = (proposal or {}).get("id")
+            if proposal_id in (None, ""):
+                raise ValueError("Deriv returned no proposal ID for the accumulator trade")
+            ask_price = _safe_float(
+                (proposal or {}).get("ask_price"),
+                _safe_float((proposal or {}).get("display_value"), stake),
+            )
+            payload = {
+                "req_id": req_id,
+                "buy": proposal_id,
+                "price": float(ask_price if ask_price is not None else stake),
+            }
         ws.send(json.dumps(payload))
         _emit_human_koolkid_profit_status(client_id, state)
         return True, "KOOLKID PROFIT accumulator sent"

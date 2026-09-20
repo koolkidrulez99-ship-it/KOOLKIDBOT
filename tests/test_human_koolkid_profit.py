@@ -35,6 +35,40 @@ def test_human_koolkid_profit_sends_immediate_five_percent_accumulator():
     assert runtime["pending_buy"] is True
 
 
+def test_human_koolkid_profit_pat_uses_proposal_then_buys_id(monkeypatch):
+    state = _state()
+    state["api_token_type"] = "pat"
+    runtime = server._ensure_human_koolkid_profit_state(state)
+    runtime.update({"enabled": True, "running": True, "base_stake": 2, "current_stake": 2})
+    captured = {}
+
+    monkeypatch.setattr(
+        server,
+        "resolve_new_api_symbol",
+        lambda current_state, symbol, context=None, client_id=None: ("R_10", None),
+    )
+
+    def proposal(_client_id, _state, payload, timeout_sec=5.0):
+        captured["payload"] = payload
+        return {"id": "proposal-123", "ask_price": 2.0}, None
+
+    monkeypatch.setattr(server, "_request_digit_proposal_for_buy", proposal)
+
+    ok, _message = server._send_human_koolkid_profit_buy("test-client", state)
+
+    assert ok is True
+    assert captured["payload"]["proposal"] == 1
+    assert captured["payload"]["underlying_symbol"] == "R_10"
+    assert "symbol" not in captured["payload"]
+    assert captured["payload"]["contract_type"] == "ACCU"
+    assert captured["payload"]["growth_rate"] == 0.05
+    assert state["ws"].messages[-1] == {
+        "req_id": state["ws"].messages[-1]["req_id"],
+        "buy": "proposal-123",
+        "price": 2.0,
+    }
+
+
 def test_human_koolkid_profit_win_reinvests_full_profit_and_loss_resets():
     state = _state()
     runtime = server._ensure_human_koolkid_profit_state(state)
