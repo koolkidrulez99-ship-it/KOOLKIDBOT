@@ -682,9 +682,14 @@ def start(
         "strategy_key": preset["key"], "execution_timeframe": exec_tf, "bias_timeframe": bias_tf,
         "updated_at": _now(),
     }
+    session_started_at = _now()
     _patch_bot(bot_id, status="running", account_login=int(account_login), symbol=str(symbol), symbols=selected,
                market_mode="multi" if len(selected) > 1 else "single",
-               timeframe=exec_tf, bias_timeframe=bias_tf, native_config=config, started_at=_now(), last_error=None)
+               timeframe=exec_tf, bias_timeframe=bias_tf, native_config=config,
+               started_at=session_started_at, session_started_at=session_started_at,
+               bot_trade_count=0, bot_wins=0, bot_losses=0, bot_win_rate=0.0,
+               today_pl=0.0, profit_today=0.0, last_trade=None,
+               native_signal=None, native_last_execution=None, last_error=None)
     key = _key(workspace_id, bot_id)
     with _LOCK:
         thread = _THREADS.get(key)
@@ -762,7 +767,7 @@ def stop(workspace_id: str, bot_id: int) -> dict[str, Any]:
     config = dict(bot.get("native_config") or {})
     config["enabled"] = False
     config["updated_at"] = _now()
-    return _patch_bot(bot_id, status="stopped", started_at=None, native_config=config,
+    return _patch_bot(bot_id, status="stopped", started_at=None, session_started_at=None, native_config=config,
                       native_runtime={**dict(bot.get("native_runtime") or {}), "status": "stopped", "stopped_at": _now()})
 
 

@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#031123">
+  <title>KOOLKID Trading | Deriv & MT5</title>
+  <meta name="description" content="Choose the KOOLKID Deriv Bot or KOOLKID MT5 Hub from one trading homepage.">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/master-home.css') }}">
+</head>
+<body>
+  <main id="top" class="master-home">
+    <header class="hero-shell page-width">
+      <p class="hero-kicker">DIFFERENT<br>MARKETS<br>SAME<br>ADVANTAGE</p>
+      <div class="hero-title">
+        <h1>KOOLKID <span>TRADING</span></h1>
+        <p class="hero-subtitle">One account. Two trading platforms.</p>
+        <p class="hero-prompt">Choose how you want to trade today.</p>
+      </div>
+      <p class="hero-script">Same Vision<br><span>More Opportunities</span></p>
+    </header>
+
+    <section id="bots" class="platform-grid page-width" aria-label="Choose a trading platform">
+      <article class="platform-card deriv-card">
+        <div class="platform-copy">
+          <header class="platform-heading">
+            <span class="deriv-mark" aria-hidden="true">d</span>
+            <div><h2>KOOLKID <span>DERIV BOT</span></h2><p>DIGITS &amp; SYNTHETIC TRADING</p></div>
+          </header>
+          <p class="platform-description">Trade Deriv digit contracts, Volatility Indices, martingale strategies, AI signals and automated profiles.</p>
+          <div class="chip-row" aria-label="Deriv features"><span>Digits</span><span>Synthetic Indices</span><span>OAuth/PAT</span><span>Auto Trading</span></div>
+          <a class="primary-action" href="{{ url_for('deriv_bot_home') }}">OPEN DERIV BOT <span aria-hidden="true">&rarr;</span></a>
+          <p class="platform-points">FAST <i></i> AUTOMATED <i></i> RELIABLE</p>
+        </div>
+        <div class="deriv-visual" aria-hidden="true">
+          <div class="market-select">Volatility 100 (1s) <b></b></div>
+          <div class="digit-strip"><span>7</span><span>1</span><span>3</span><span>9</span><span>5</span></div>
+          <svg class="line-chart" viewBox="0 0 360 150" preserveAspectRatio="none">
+            <defs><linearGradient id="lineGlow" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#1fbeff" stop-opacity=".35"/><stop offset="1" stop-color="#1fbeff" stop-opacity="0"/></linearGradient></defs>
+            <path class="chart-fill" d="M0,130 L20,126 L38,132 L58,110 L78,118 L98,78 L118,112 L138,88 L158,105 L178,64 L198,91 L220,51 L242,84 L265,33 L285,68 L307,19 L329,50 L350,12 L360,20 L360,150 L0,150 Z"/>
+            <path class="chart-line" d="M0,130 L20,126 L38,132 L58,110 L78,118 L98,78 L118,112 L138,88 L158,105 L178,64 L198,91 L220,51 L242,84 L265,33 L285,68 L307,19 L329,50 L350,12 L360,20"/>
+            <circle cx="350" cy="12" r="5"/>
+          </svg>
+        </div>
+      </article>
+
+      <article class="platform-card mt5-card">
+        <div class="platform-copy">
+          <header class="platform-heading">
+            <span class="mt5-mark" aria-hidden="true"><img src="{{ url_for('static', filename='images/mt5-hub-logo.png') }}" alt=""></span>
+            <div><h2>KOOLKID <span>MT5 BOT</span></h2><p>FOREX &bull; GOLD &bull; INDICES &bull; COPY TRADING</p></div>
+          </header>
+          <p class="platform-description">Run MT5 bots, copy trades between accounts, use AI analysis, backtest strategies and manage multiple brokers.</p>
+          <div class="chip-row" aria-label="MT5 features"><span>MT5 EAs</span><span>Copy Trader</span><span>AI Analysis</span><span>Backtesting</span></div>
+          <a class="primary-action" href="/mt5-bot">OPEN MT5 HUB <span aria-hidden="true">&rarr;</span></a>
+          <p class="platform-points">ANALYSE <i></i> AUTOMATE <i></i> MULTI-ACCOUNT <i></i> GROW</p>
+        </div>
+        <div class="mt5-visual" aria-hidden="true">
+          <div class="candles"><i style="--h:42%;--y:44%;--d:0"></i><i style="--h:31%;--y:51%;--d:1"></i><i style="--h:47%;--y:35%;--d:0"></i><i style="--h:55%;--y:25%;--d:0"></i><i style="--h:30%;--y:38%;--d:1"></i><i style="--h:48%;--y:20%;--d:0"></i><i style="--h:63%;--y:8%;--d:0"></i><i style="--h:34%;--y:22%;--d:1"></i></div>
+          <div class="ticker-stack">
+            <div><span class="ticker-icon gold" title="Gold"></span><b>XAUUSD<small>2,365.42</small></b><strong>+0.52%</strong></div>
+            <div><span class="ticker-icon eu" title="European Union"></span><b>EURUSD<small>1.0821</small></b><strong>+0.31%</strong></div>
+            <div><span class="ticker-icon uk" title="United Kingdom"></span><b>GBPUSD<small>1.2654</small></b><strong>+0.28%</strong></div>
+            <div><span class="ticker-icon us" title="United States"></span><b>US30<small>39,421</small></b><strong>+0.18%</strong></div>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <section id="about" class="content-section page-width">
+      <header class="section-title"><span></span><div><h2>ABOUT THE BOTS</h2><p>POWERFUL TOOLS. REAL OPPORTUNITIES.</p></div><span></span></header>
+      <div class="about-grid">
+        <article class="info-panel">
+          <header><span class="mini-mark deriv-mark">d</span><div><h3>KOOLKID <b>DERIV BOT</b></h3><p>SIMPLE. SMART. AUTOMATED.</p></div><small>BUILT FOR<br>OPPORTUNITY</small></header>
+          <div class="feature-grid">
+            <div><span class="feature-icon">DT</span><p><b>Digits Trading</b><small>Trade digit contracts with precision</small></p></div>
+            <div><span class="feature-icon">AI</span><p><b>AI Signals</b><small>Get intelligent trade signals</small></p></div>
+            <div><span class="feature-icon">SI</span><p><b>Synthetic Indices</b><small>Access global synthetic markets</small></p></div>
+            <div><span class="feature-icon">AP</span><p><b>Automated Profiles</b><small>Use ready-to-trade settings</small></p></div>
+            <div><span class="feature-icon">MG</span><p><b>Martingale Strategies</b><small>Built-in risk management strategies</small></p></div>
+            <div><span class="feature-icon">24</span><p><b>Fast &amp; Reliable</b><small>Run 24/7 without emotions</small></p></div>
+          </div>
+        </article>
+        <article class="info-panel">
+          <header><span class="mini-mark mt5-mark"><img src="{{ url_for('static', filename='images/mt5-hub-logo.png') }}" alt=""></span><div><h3>KOOLKID <b>MT5 BOT</b></h3><p>MORE MARKETS. MORE POSSIBILITIES.</p></div><small>PROFESSIONAL<br>TRADING TOOLS</small></header>
+          <div class="feature-grid">
+            <div><span class="feature-icon">EA</span><p><b>MT5 Expert Advisors</b><small>Run powerful EAs on MT5</small></p></div>
+            <div><span class="feature-icon">BT</span><p><b>Backtesting</b><small>Test strategies with real data</small></p></div>
+            <div><span class="feature-icon">CP</span><p><b>Copy Trading</b><small>Copy trades between accounts</small></p></div>
+            <div><span class="feature-icon">MB</span><p><b>Multi-Broker Support</b><small>Use multiple brokers in one place</small></p></div>
+            <div><span class="feature-icon">AI</span><p><b>AI Analysis</b><small>Smart market analysis &amp; insights</small></p></div>
+            <div><span class="feature-icon">FX</span><p><b>Flexible Trading</b><small>Forex, Gold, Indices and more</small></p></div>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="content-section page-width">
+      <header class="section-title"><span></span><div><h2>WHY CHOOSE KOOLKID</h2><p>SAME VISION. MORE OPPORTUNITIES.</p></div><span></span></header>
+      <div class="benefit-grid">
+        <article><span>FX</span><p><b>FAST EXECUTION</b><small>Get into the market quickly<br>with optimized performance.</small></p></article>
+        <article><span>AI</span><p><b>SMART AUTOMATION</b><small>Let our bots work for you<br>24/7 with intelligent systems.</small></p></article>
+        <article><span>2X</span><p><b>MULTI-PLATFORM TRADING</b><small>Trade Deriv and MT5<br>from one ecosystem.</small></p></article>
+        <article><span>ID</span><p><b>EASY ACCESS</b><small>Simple setup, clear guides<br>and ongoing support.</small></p></article>
+      </div>
+    </section>
+
+    <section id="contact" class="content-section page-width contact-section">
+      <header class="section-title"><span></span><div><h2>CONTACT US</h2><p>WE'RE HERE TO HELP. LET'S GROW TOGETHER.</p></div><span></span></header>
+      <div class="contact-grid">
+        <a href="https://t.me/jordibrown" target="_blank" rel="noopener noreferrer"><span class="contact-icon">TG</span><p><b>Telegram</b><small>Join Our Community</small></p><i>&rarr;</i></a>
+        <a href="https://wa.me/qr/XFJMRUGZX5SBF1" target="_blank" rel="noopener noreferrer"><span class="contact-icon whatsapp">WA</span><p><b>WhatsApp</b><small>Chat With Us</small></p><i>&rarr;</i></a>
+        <a href="mailto:support@koolkidtrading.com"><span class="contact-icon">@</span><p><b>Email Support</b><small>support@koolkidtrading.com</small></p><i>&rarr;</i></a>
+        <a href="{{ url_for('deriv_bot_home') }}"><span class="contact-icon">WEB</span><p><b>Website / Help Center</b><small>Visit Our Website</small></p><i>&rarr;</i></a>
+      </div>
+    </section>
+
+    <footer class="site-footer">
+      <div class="page-width footer-inner">
+        <div class="footer-brand"><b>KOOLKID <span>TRADING</span></b><small>Trade Smarter. Together.</small></div>
+        <nav aria-label="Footer navigation"><a href="#top">Home</a><a href="#bots">Bots</a><a href="#about">About</a><a href="#contact">Support</a><a href="#contact">Contact</a></nav>
+        <div class="footer-social"><a href="https://t.me/jordibrown" target="_blank" rel="noopener noreferrer" aria-label="Telegram">TG</a><a href="https://wa.me/qr/XFJMRUGZX5SBF1" target="_blank" rel="noopener noreferrer" aria-label="WhatsApp">WA</a></div>
+        <p>Trade Smarter.<br><b>Together.</b></p>
+      </div>
+    </footer>
+  </main>
+</body>
+</html>

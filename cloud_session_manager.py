@@ -131,7 +131,7 @@ class CloudPersistence:
             (
                 user,
                 1 if status.get("cloud_enabled") or status.get("running") else 0,
-                "under9_reinvest",
+                str(status.get("strategy_name") or settings.get("strategy_name") or "under9_reinvest"),
                 float(settings.get("base_stake") or 1),
                 float(status.get("current_stake") or settings.get("base_stake") or 1),
                 float(status.get("session_profit") or 0),
@@ -169,7 +169,9 @@ class CloudSessionManager:
         if not self.persistence or not session:
             return
         try:
-            self.persistence.save(session.username, session.status(), session.settings, session.history)
+            settings = dict(session.settings)
+            settings["_runtime_state"] = session.runtime_state()
+            self.persistence.save(session.username, session.status(), settings, session.history)
         except Exception as exc:
             if self.logger:
                 self.logger.warning("cloud persistence save failed user=%s error=%s", getattr(session, "username", ""), exc)
@@ -218,7 +220,8 @@ class CloudSessionManager:
                 engine.update_settings(settings)
             engine.start(client_id)
             self._persist(engine)
-            self.alerts.send("cloud_started", f"Cloud Under 9 started on {engine.current_market}.", engine.settings)
+            label = "KOOLKID PROFIT" if engine.strategy_name == "koolkid_profit" else "Cloud Under 9"
+            self.alerts.send("cloud_started", f"{label} started on {engine.current_market}.", engine.settings)
             return engine.status()
 
     def stop(self, username: str, reason: str = "Stopped") -> dict:
@@ -316,7 +319,14 @@ class CloudSessionManager:
             engine = self.get_or_create(username)
             engine.mark_trade_failed(reason)
             self._persist(engine)
-            self.alerts.send("cloud_trade_failed", f"Cloud Under 9 trade failed: {reason}", engine.settings)
+            label = "KOOLKID PROFIT" if engine.strategy_name == "koolkid_profit" else "Cloud Under 9"
+            self.alerts.send("cloud_trade_failed", f"{label} trade failed: {reason}", engine.settings)
+
+    def mark_close_failed(self, username: str, reason: str):
+        with self._lock:
+            engine = self.get_or_create(username)
+            engine.mark_close_failed(reason)
+            self._persist(engine)
 
     def on_contract_result(self, username: str, contract: dict, meta: dict | None, profit: float) -> dict:
         with self._lock:
@@ -324,7 +334,8 @@ class CloudSessionManager:
             row = engine.on_contract_result(contract, meta, profit)
             self._persist(engine)
             event = "cloud_trade_win" if profit > 0 else "cloud_trade_loss"
-            self.alerts.send(event, f"Cloud Under 9 {row.get('result')}: {row.get('profit')} on {row.get('market')}.", engine.settings)
+            label = "KOOLKID PROFIT" if engine.strategy_name == "koolkid_profit" else "Cloud Under 9"
+            self.alerts.send(event, f"{label} {row.get('result')}: {row.get('profit')} on {row.get('market')}.", engine.settings)
             if row.get("tp_hit"):
                 self.alerts.send("cloud_tp_reached", "Cloud Under 9 TP reached. Reinvest chain reset.", engine.settings)
             return row

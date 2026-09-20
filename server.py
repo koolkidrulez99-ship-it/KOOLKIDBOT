@@ -4646,7 +4646,7 @@ def login():
 
             if role == "admin":
                 return redirect(url_for("admin_panel"))
-            return redirect(url_for("index"))
+            return redirect(url_for("deriv_bot_home"))
         else:
             return render_template("login.html", error="Invalid username or password")
 
@@ -5444,9 +5444,15 @@ def mutant_js_alias():
 
 
 
-# ---------------- BOT ROUTE (PROTECTED) ---------------- #
+# ---------------- PUBLIC MASTER HOME ---------------- #
 @app.route("/")
 def index():
+    return render_template("master_home.html")
+
+
+# ---------------- DERIV BOT ROUTE ---------------- #
+@app.route("/deriv-bot")
+def deriv_bot_home():
     if not login_required():
         return render_template("cover.html")
     if is_admin():
@@ -18722,6 +18728,65 @@ register_cloud_routes(
 )
 
 
+def _send_cloud_accumulator_buy(client_id, *, stake, symbol, growth_rate, signal_id, hold_ticks=2):
+    state = clients.get(client_id)
+    if not state:
+        return False, "No client state"
+    ws = state.get("ws")
+    if not state.get("ws_connected") or not ws:
+        return False, "Cloud trading connection is not ready"
+    try:
+        stake = round(float(stake), 2)
+    except Exception:
+        return False, "Invalid accumulator stake"
+    if stake <= 0:
+        return False, "Accumulator stake must be greater than zero"
+    growth_rate = max(0.01, min(0.05, float(growth_rate or 0.05)))
+    hold_ticks = max(1, min(50, int(hold_ticks or 2)))
+    req_id = _new_req_id()
+    meta = {
+        "profile": "CLOUD",
+        "type": "ACCU",
+        "contract_type": "ACCU",
+        "deriv_contract_type": "ACCU",
+        "barrier": None,
+        "stake": stake,
+        "symbol": symbol,
+        "underlying_symbol": symbol,
+        "time": now_time(),
+        "mode": "CLOUD_KOOLKID_PROFIT",
+        "growth_rate": growth_rate,
+        "exit_ticks": hold_ticks,
+        "duration": hold_ticks,
+        "duration_unit": "t",
+        "strategy_name": "KOOLKID PROFIT",
+        "cloud_signal_id": signal_id,
+        "cloud_strategy": "koolkid_profit",
+        "button": "KOOLKID PROFIT",
+    }
+    state.setdefault("req_meta", {})[req_id] = meta
+    _stamp_trade_latency(meta, "buy_send")
+    payload = {
+        "req_id": req_id,
+        "buy": 1,
+        "price": stake,
+        "parameters": {
+            "amount": stake,
+            "basis": "stake",
+            "contract_type": "ACCU",
+            "currency": str(state.get("currency") or "USD"),
+            "growth_rate": growth_rate,
+            "symbol": symbol,
+        },
+    }
+    try:
+        ws.send(json.dumps(payload))
+        return True, "KOOLKID PROFIT accumulator sent"
+    except Exception as exc:
+        state.get("req_meta", {}).pop(req_id, None)
+        return False, str(exc)
+
+
 def _handle_cloud_under9_action(client_id, state, action):
     if not isinstance(action, dict):
         return
@@ -18749,13 +18814,22 @@ def _handle_cloud_under9_action(client_id, state, action):
         except Exception:
             pass
         return
+    if action_type == "close_trade":
+        contract_id = action.get("contract_id")
+        ok, msg = _request_sell_contract(client_id, contract_id)
+        if not ok:
+            cloud_manager.mark_close_failed(username, msg)
+            logger.warning("[%s] cloud_koolkid_profit_close_failed contract_id=%s error=%s", client_id, contract_id, msg)
+        else:
+            logger.info("[%s] cloud_koolkid_profit_close_sent contract_id=%s", client_id, contract_id)
+        return
     if action_type != "trade":
         return
     intent = action.get("intent") or {}
     signal_id = str(intent.get("signal_id") or "")
     symbol = str(intent.get("symbol") or "").strip()
     stake = float(intent.get("stake") or 0)
-    duration = int(intent.get("duration") or 1)
+    duration = int(intent.get("duration") or intent.get("hold_ticks") or 1)
     duration_unit = str(intent.get("duration_unit") or "t").strip().lower() or "t"
     logger.info(
         "[%s] cloud_under9_trade_attempt signal_id=%s symbol=%s stake=%s duration=%s%s",
@@ -18766,24 +18840,35 @@ def _handle_cloud_under9_action(client_id, state, action):
         duration,
         duration_unit,
     )
-    ok, msg = send_buy_with_profile(
-        client_id,
-        "CLOUD",
-        "UNDER",
-        stake,
-        symbol,
-        9,
-        duration=duration,
-        duration_unit=duration_unit,
-        mode="CLOUD_UNDER9",
-        emit_balance_after_send=False,
-        extra_meta={
-            "strategy_name": "Cloud Under 9",
-            "cloud_signal_id": signal_id,
-            "cloud_strategy": "under9_reinvest",
-            "button": "Cloud Under 9",
-        },
-    )
+    is_accumulator = str(intent.get("deriv_contract_type") or intent.get("contract_type") or "").upper() == "ACCU"
+    if is_accumulator:
+        ok, msg = _send_cloud_accumulator_buy(
+            client_id,
+            stake=stake,
+            symbol=symbol,
+            growth_rate=float(intent.get("growth_rate") or 0.05),
+            signal_id=signal_id,
+            hold_ticks=int(intent.get("hold_ticks") or 2),
+        )
+    else:
+        ok, msg = send_buy_with_profile(
+            client_id,
+            "CLOUD",
+            "UNDER",
+            stake,
+            symbol,
+            9,
+            duration=duration,
+            duration_unit=duration_unit,
+            mode="CLOUD_UNDER9",
+            emit_balance_after_send=False,
+            extra_meta={
+                "strategy_name": "Cloud Under 9",
+                "cloud_signal_id": signal_id,
+                "cloud_strategy": "under9_reinvest",
+                "button": "Cloud Under 9",
+            },
+        )
     if ok:
         cloud_manager.mark_trade_sent(username, signal_id)
         logger.info("[%s] cloud_under9_trade_placed signal_id=%s", client_id, signal_id)
@@ -21292,7 +21377,7 @@ def process_contract(client_id, contract):
         elif (
             profile_for_contract == "CLOUD"
             and not is_auto_session_contract
-            and str((meta or {}).get("mode") or "").upper() == "CLOUD_UNDER9"
+            and str((meta or {}).get("mode") or "").upper() in ("CLOUD_UNDER9", "CLOUD_KOOLKID_PROFIT")
         ):
             cloud_key = _cloud_key_for_state(state)
             cloud_row = cloud_manager.on_contract_result(cloud_key, contract, meta, profit)
@@ -21306,7 +21391,7 @@ def process_contract(client_id, contract):
                 "duration": (meta or {}).get("duration"),
                 "duration_unit": (meta or {}).get("duration_unit"),
                 "mode": (meta or {}).get("mode") or "CLOUD_UNDER9",
-                "strategy_name": "Cloud Under 9",
+                "strategy_name": (meta or {}).get("strategy_name") or cloud_row.get("strategy") or "Cloud Under 9",
                 "result": cloud_row.get("result"),
                 "profit": round(float(profit), 2),
                 "status": contract.get("status"),
@@ -22319,7 +22404,7 @@ def deriv_oauth_select_account():
     state["oauth_pending_access_token"] = ""
     state["oauth_pending_accounts"] = []
     _start_deriv_connection_for_state(cid, state, access_token, "oauth", selected, "deriv_oauth_select", DERIV_OAUTH_APP_ID)
-    return redirect(url_for("index"))
+    return redirect(url_for("deriv_bot_home"))
 
 
 @app.route("/set_token", methods=["POST"])

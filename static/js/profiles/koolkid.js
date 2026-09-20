@@ -245,6 +245,40 @@
     });
   }
 
+  const KOOLKID_VIEWPORT_POPUP_IDS = [
+    "koolkidDigitTradePicker",
+    "koolkidMartingaleSessionPopup",
+    "koolkidMartingaleCalculatorPopup",
+    "profitCalculatorPopupKoolkid",
+    "halfAutoPopupKoolkid",
+    "dual2xCustomPopupKoolkid",
+    "g1AutoPopupKoolkid",
+    "goldenCardPopupKoolkid",
+  ];
+
+  function mountKoolkidViewportPopups(resetExisting) {
+    let host = document.getElementById("koolkidPopupViewport");
+    if (resetExisting && host) {
+      host.remove();
+      host = null;
+    }
+    if (!host) {
+      host = document.createElement("div");
+      host.id = "koolkidPopupViewport";
+      host.setAttribute("aria-live", "polite");
+      document.body.appendChild(host);
+    }
+    KOOLKID_VIEWPORT_POPUP_IDS.forEach((id) => {
+      const popup = document.getElementById(id);
+      if (popup && popup.parentElement !== host) host.appendChild(popup);
+    });
+  }
+
+  function removeKoolkidViewportPopups() {
+    const host = document.getElementById("koolkidPopupViewport");
+    if (host) host.remove();
+  }
+
   function showCenteredPopupKoolkid(id) {
     const popup = document.getElementById(id);
     if (!popup) return null;
@@ -5803,6 +5837,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
   }
 
   async function onMount() {
+    mountKoolkidViewportPopups(true);
     try { App().ensureDigitClickPatchSoon && App().ensureDigitClickPatchSoon(); } catch (e) {}
     try { App().applyDigitSelectionUI && App().applyDigitSelectionUI(); } catch (e) {}
     bindSocketListeners();
@@ -5827,6 +5862,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
   }
 
   async function onActivate() {
+    mountKoolkidViewportPopups();
     try { App().applyDigitSelectionUI && App().applyDigitSelectionUI(); } catch (e) {}
     bindSocketListeners();
     updateDual2xUIKoolkid();
@@ -5849,6 +5885,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
   }
 
   async function afterLoadProfileUI() {
+    mountKoolkidViewportPopups();
     try { App().applyDigitSelectionUI && App().applyDigitSelectionUI(); } catch (e) {}
     bindSocketListeners();
     updateDual2xUIKoolkid();
@@ -5905,6 +5942,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
     stopKoolkidOver6ScanMartingale();
     state.socketBound = false;
     state.lastSocket = null;
+    removeKoolkidViewportPopups();
     try { stopFallbackBootstrap(); } catch (e) {}
   }
 

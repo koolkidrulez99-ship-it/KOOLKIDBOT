@@ -5,6 +5,7 @@ import { useHub } from '../context/HubContext';
 import { fmtSigned, profitTone, uptimeSince } from '../lib/format';
 import { Badge, EmptyState, PageHeader, Panel, StatCard } from '../components/ui';
 import BotConfigModal from '../components/BotConfigModal';
+import BotSetupPreview from '../components/BotSetupPreview';
 import { botControl } from '../lib/actions';
 import { isSimulation } from '../config/runtime';
 import type { Mt5Bot } from '../types';
@@ -160,6 +161,7 @@ export default function RunningBotsPage() {
                     </button>
                   </div>
                 </div>
+                <BotSetupPreview bot={b} />
               </Panel>
             );
           })}

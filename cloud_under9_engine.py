@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import statistics
 from collections import Counter, deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -33,6 +34,7 @@ def _bool_value(value, fallback=False):
 
 
 DEFAULT_CLOUD_SETTINGS = {
+    "strategy_name": "under9_reinvest",
     "base_stake": 1.0,
     "take_profit_target": 50.0,
     "max_reinvest_steps": 5,
@@ -51,10 +53,17 @@ DEFAULT_CLOUD_SETTINGS = {
     "trade_time_mode": "ANYTIME",
     "custom_trade_start_time": "09:00",
     "custom_trade_end_time": "13:00",
+    "compound_percent": 100.0,
+    "accumulator_growth_rate": 0.05,
+    "accumulator_hold_ticks": 2,
+    "max_daily_trades": 2,
+    "min_crash_gap_ticks": 30,
+    "confirmation_ticks": 5,
     **merge_risk_settings({}),
 }
 
 JAMAICA_TZ = timezone(timedelta(hours=-5), "EST")
+KOOLKID_PROFIT_MARKETS = ["R_10", "R_25", "R_50", "R_75", "R_100"]
 
 
 def _jamaica_now(now_ts: float | None = None) -> datetime:
@@ -213,6 +222,7 @@ class CloudUnder9Engine:
         self.client_id = client_id
         self.logger = logger
         self.settings = self.normalize_settings(settings or {})
+        self.strategy_name = self.settings["strategy_name"]
         self.enabled = False
         self.running = False
         self.cloud_status = "Stopped"
@@ -239,17 +249,31 @@ class CloudUnder9Engine:
         self.wins = int((restored or {}).get("wins") or 0)
         self.losses = int((restored or {}).get("losses") or 0)
         self.history = list((restored or {}).get("history") or [])[-200:]
+        runtime = self.settings.get("_runtime_state") if isinstance(self.settings.get("_runtime_state"), dict) else {}
+        self.price_ticks = deque(maxlen=120)
+        self.ticks_since_crash = max(0, _int_value(runtime.get("ticks_since_crash"), 0))
+        self.confirmation_progress = max(0, _int_value(runtime.get("confirmation_progress"), 0))
+        self.waiting_for_confirmation = bool(runtime.get("waiting_for_confirmation"))
+        self.daily_trade_date = str(runtime.get("daily_trade_date") or "")
+        self.daily_trade_count = max(0, _int_value(runtime.get("daily_trade_count"), 0))
+        self.open_trade_entry_tick = None
+        self.close_requested = False
 
     @staticmethod
     def normalize_settings(settings: dict | None) -> dict:
         raw = dict(DEFAULT_CLOUD_SETTINGS)
         raw.update(settings or {})
+        strategy_name = str(raw.get("strategy_name") or "under9_reinvest").strip().lower()
+        raw["strategy_name"] = strategy_name if strategy_name in ("under9_reinvest", "koolkid_profit") else "under9_reinvest"
         raw["base_stake"] = max(0.35, round(_float_value(raw.get("base_stake"), 1.0), 2))
         raw["take_profit_target"] = max(0.01, round(_float_value(raw.get("take_profit_target"), 50.0), 2))
         raw["max_reinvest_steps"] = max(1, _int_value(raw.get("max_reinvest_steps"), 5))
         raw["capital_build_mode"] = _bool_value(raw.get("capital_build_mode"), False)
         raw["market_switch_minutes"] = max(1, _int_value(raw.get("market_switch_minutes"), 10))
         raw["allowed_markets"] = normalize_allowed_markets(raw.get("allowed_markets"))
+        if raw["strategy_name"] == "koolkid_profit":
+            compatible = [symbol for symbol in raw["allowed_markets"] if symbol in KOOLKID_PROFIT_MARKETS]
+            raw["allowed_markets"] = compatible or list(KOOLKID_PROFIT_MARKETS)
         raw["duration"] = max(1, min(10, _int_value(raw.get("duration"), 1)))
         raw["duration_unit"] = str(raw.get("duration_unit") or "t").strip().lower() or "t"
         if raw["duration_unit"] not in ("t", "s", "m", "h"):
@@ -264,6 +288,17 @@ class CloudUnder9Engine:
         raw["trade_time_mode"] = _normalize_trade_time_mode(raw.get("trade_time_mode"))
         raw["custom_trade_start_time"] = _normalize_window_time(raw.get("custom_trade_start_time"), "09:00")
         raw["custom_trade_end_time"] = _normalize_window_time(raw.get("custom_trade_end_time"), "13:00")
+        raw["compound_percent"] = max(0.0, min(100.0, _float_value(raw.get("compound_percent"), 100.0)))
+        raw["accumulator_growth_rate"] = 0.05
+        raw["accumulator_hold_ticks"] = 2
+        raw["max_daily_trades"] = 2
+        raw["min_crash_gap_ticks"] = 30
+        raw["confirmation_ticks"] = 5
+        if raw["strategy_name"] == "koolkid_profit":
+            raw["allow_auto_resume"] = True
+            raw["capital_build_mode"] = False
+            raw["max_trades_per_session"] = 0
+            raw["trade_time_mode"] = "ANYTIME"
         for old_key in ("specific_time_enabled", "specific_trade_times", "specific_time_window_minutes"):
             raw.pop(old_key, None)
         raw.update(merge_risk_settings(raw))
@@ -273,6 +308,8 @@ class CloudUnder9Engine:
         previous_base_stake = round(float(self.settings.get("base_stake") or 0.0), 2)
         previous_markets = self.settings.get("allowed_markets") or []
         self.settings = self.normalize_settings({**self.settings, **(settings or {})})
+        previous_strategy = self.strategy_name
+        self.strategy_name = self.settings["strategy_name"]
         new_base_stake = round(float(self.settings["base_stake"]), 2)
         if new_base_stake != previous_base_stake:
             if not self.trade_locked and not self.open_contract_id:
@@ -290,6 +327,13 @@ class CloudUnder9Engine:
             self.reset_market_buffer("settings market change")
         if previous_markets != self.settings["allowed_markets"]:
             self.log("allowed markets updated: %s", ",".join(self.settings["allowed_markets"]))
+        if previous_strategy != self.strategy_name:
+            self.current_stake = round(float(self.settings["base_stake"]), 2)
+            self.reinvest_step = 0
+            self.session_profit = 0.0
+            self.daily_trade_date = ""
+            self.daily_trade_count = 0
+            self.reset_market_buffer("cloud preset changed")
 
     def start(self, client_id: str | None = None):
         if client_id:
@@ -297,7 +341,7 @@ class CloudUnder9Engine:
         self.enabled = True
         self.running = True
         self.cloud_status = "Running"
-        self.last_signal = "Waiting for 100 ticks"
+        self.last_signal = "Watching for a 30-tick crash setup" if self.strategy_name == "koolkid_profit" else "Waiting for 100 ticks"
         self.market_started_at = time.time()
         self.current_market = self.current_market or self.settings["allowed_markets"][0]
         if self.current_stake <= 0:
@@ -310,6 +354,8 @@ class CloudUnder9Engine:
         self.trade_locked = False
         self.open_contract_id = None
         self.pending_signal_id = ""
+        self.open_trade_entry_tick = None
+        self.close_requested = False
         self.cloud_status = reason or "Stopped"
         self.last_signal = self.cloud_status
         self.log("cloud stopped reason=%s", self.cloud_status)
@@ -321,6 +367,10 @@ class CloudUnder9Engine:
         self.last_99_streak_ts = 0.0
         self.market_started_at = time.time()
         self.last_signal = "Waiting for 100 ticks"
+        self.price_ticks.clear()
+        self.ticks_since_crash = 0
+        self.confirmation_progress = 0
+        self.waiting_for_confirmation = False
         self.log("market buffer reset market=%s reason=%s", self.current_market, reason)
 
     def log(self, message, *args):
@@ -428,6 +478,9 @@ class CloudUnder9Engine:
             self.stop(stop_reason)
             return [{"type": "stopped", "reason": stop_reason}]
 
+        if self.strategy_name == "koolkid_profit":
+            return self._on_koolkid_profit_tick(tick, balance=balance, now_ts=now_ts)
+
         try:
             safe_digit = int(digit)
         except Exception:
@@ -505,24 +558,122 @@ class CloudUnder9Engine:
         )
         return [{"type": "trade", "intent": intent.to_payload(), "risk": risk.details}]
 
+    def _on_koolkid_profit_tick(self, tick: dict, *, balance: float | None, now_ts: float) -> list[dict]:
+        try:
+            quote = float((tick or {}).get("quote"))
+        except Exception:
+            return []
+        if quote != quote or quote <= 0:
+            return []
+
+        today = _jamaica_now(now_ts).strftime("%Y-%m-%d")
+        if today != self.daily_trade_date:
+            self.daily_trade_date = today
+            self.daily_trade_count = 0
+            self.daily_profit = 0.0
+
+        self.total_ticks += 1
+        self.ticks_since_crash += 1
+        previous = self.price_ticks[-1] if self.price_ticks else None
+        historical = list(self.price_ticks)
+        self.price_ticks.append(quote)
+
+        if self.open_contract_id:
+            if self.open_trade_entry_tick is not None:
+                held = max(0, self.total_ticks - int(self.open_trade_entry_tick))
+                self.last_signal = f"Accumulator open: {held}/2 ticks"
+                if held >= 2 and not self.close_requested:
+                    self.close_requested = True
+                    self.cloud_status = "Closing accumulator"
+                    return [{"type": "close_trade", "contract_id": self.open_contract_id}]
+            return []
+        if self.trade_locked:
+            return []
+        if self.daily_trade_count >= int(self.settings["max_daily_trades"]):
+            self.last_signal = "Daily target complete: 2 accumulator trades"
+            return []
+
+        raw_crash = False
+        if previous is not None and len(historical) >= int(self.settings["min_crash_gap_ticks"]):
+            deltas = [abs(historical[i] - historical[i - 1]) for i in range(1, len(historical))]
+            baseline = statistics.median(deltas[-30:]) if deltas else 0.0
+            threshold = max(baseline * 5.0, abs(previous) * 0.00005, 1e-9)
+            raw_crash = (quote - previous) <= -threshold
+
+        if raw_crash:
+            if self.ticks_since_crash >= int(self.settings["min_crash_gap_ticks"]):
+                self.waiting_for_confirmation = True
+                self.confirmation_progress = 0
+                self.ticks_since_crash = 0
+                self.last_signal = "Crash confirmed. Waiting for 5 confirmation ticks (0/5)"
+            elif self.waiting_for_confirmation:
+                self.waiting_for_confirmation = False
+                self.confirmation_progress = 0
+                self.ticks_since_crash = 0
+                self.last_signal = "Confirmation reset by another crash"
+            return []
+
+        if not self.waiting_for_confirmation:
+            needed = max(0, int(self.settings["min_crash_gap_ticks"]) - self.ticks_since_crash)
+            self.last_signal = "Watching for crash setup" if needed == 0 else f"Building crash setup history ({self.ticks_since_crash}/30 ticks)"
+            return []
+
+        self.confirmation_progress += 1
+        required = int(self.settings["confirmation_ticks"])
+        self.last_signal = f"Crash confirmed. Waiting for 5 confirmation ticks ({self.confirmation_progress}/{required})"
+        if self.confirmation_progress < required:
+            return []
+
+        time_allowed, time_reason = self._trade_window_allows_trade(now_ts)
+        if not time_allowed:
+            self.last_signal = time_reason
+            return []
+
+        self.waiting_for_confirmation = False
+        self.confirmation_progress = 0
+        self.trade_locked = True
+        self.pending_signal_id = f"koolkid-profit:{self.current_market}:{self.total_ticks}:{int(now_ts * 1000)}"
+        self.last_valid_setup_at = now_ts
+        self.last_signal = "Setup confirmed. Sending 5% accumulator."
+        return [{
+            "type": "trade",
+            "intent": {
+                "signal_id": self.pending_signal_id,
+                "symbol": self.current_market,
+                "stake": round(float(self.current_stake), 2),
+                "contract_type": "ACCU",
+                "deriv_contract_type": "ACCU",
+                "growth_rate": 0.05,
+                "hold_ticks": 2,
+            },
+        }]
+
     def mark_trade_sent(self, signal_id: str):
         if signal_id and signal_id == self.pending_signal_id:
             self.last_trade_at = time.time()
             self.session_trade_count += 1
             self.cloud_status = "Trade open"
-            self.last_signal = "Under 9 sent. Waiting for result."
+            self.last_signal = "Accumulator sent. Waiting for open confirmation." if self.strategy_name == "koolkid_profit" else "Under 9 sent. Waiting for result."
             self.log("trade placed signal_id=%s stake=%s", signal_id, self.current_stake)
 
     def mark_trade_open(self, contract_id, meta: dict | None = None):
+        was_same_contract = bool(self.open_contract_id and str(self.open_contract_id) == str(contract_id or ""))
         self.open_contract_id = str(contract_id or "")
         self.trade_locked = True
         self.cloud_status = "Trade open"
+        if self.strategy_name == "koolkid_profit":
+            self.open_trade_entry_tick = self.total_ticks
+            self.close_requested = False
+            if not was_same_contract:
+                self.daily_trade_count += 1
         self.log("trade open contract_id=%s signal_id=%s", self.open_contract_id, (meta or {}).get("cloud_signal_id"))
 
     def mark_trade_failed(self, reason: str):
         self.trade_locked = False
         self.open_contract_id = None
         self.pending_signal_id = ""
+        self.open_trade_entry_tick = None
+        self.close_requested = False
         self.last_trade_result = "FAILED"
         self.last_signal = reason or "Trade failed"
         self.cloud_status = "Running" if self.running else self.cloud_status
@@ -539,22 +690,23 @@ class CloudUnder9Engine:
         if won:
             self.wins += 1
             self.reinvest_step += 1
-            self.current_stake = round(max(0.35, previous_stake + max(0.0, float(profit or 0.0))), 2)
+            compound_share = float(self.settings.get("compound_percent", 100.0)) / 100.0 if self.strategy_name == "koolkid_profit" else 1.0
+            self.current_stake = round(max(0.35, previous_stake + (max(0.0, float(profit or 0.0)) * compound_share)), 2)
         else:
             self.losses += 1
             self.current_stake = round(float(self.settings["base_stake"]), 2)
             self.reinvest_step = 0
 
-        action = "Reinvest stake updated" if won else "Stake reset after loss"
+        action = "Compounded profit into next stake" if won and self.strategy_name == "koolkid_profit" else ("Reinvest stake updated" if won else "Stake reset after loss")
         tp_hit = False
         target = self.tp_target_for_cycle()
-        if self.session_profit >= target:
+        if self.strategy_name != "koolkid_profit" and self.session_profit >= target:
             tp_hit = True
             action = "TP reached. Chain reset."
             self.current_stake = round(float(self.settings["base_stake"]), 2)
             self.reinvest_step = 0
             self.session_profit = 0.0
-        elif self.reinvest_step >= int(self.settings["max_reinvest_steps"]):
+        elif self.strategy_name != "koolkid_profit" and self.reinvest_step >= int(self.settings["max_reinvest_steps"]):
             action = "Max reinvest steps reached. Chain reset."
             self.current_stake = round(float(self.settings["base_stake"]), 2)
             self.reinvest_step = 0
@@ -567,10 +719,12 @@ class CloudUnder9Engine:
         self.trade_locked = False
         self.open_contract_id = None
         self.pending_signal_id = ""
+        self.open_trade_entry_tick = None
+        self.close_requested = False
         self.cloud_status = "Running" if self.running else "Stopped"
         self.last_signal = f"{result}: {action}"
         row = {
-            "strategy": "Cloud Under 9",
+            "strategy": "KOOLKID PROFIT" if self.strategy_name == "koolkid_profit" else "Cloud Under 9",
             "market": self.current_market,
             "contract_id": (contract or {}).get("contract_id"),
             "stake": previous_stake,
@@ -618,6 +772,14 @@ class CloudUnder9Engine:
             "wins": int(self.wins),
             "losses": int(self.losses),
             "session_trade_count": int(self.session_trade_count),
+            "daily_trade_count": int(self.daily_trade_count),
+            "max_daily_trades": int(self.settings["max_daily_trades"]),
+            "confirmation_progress": int(self.confirmation_progress),
+            "waiting_for_confirmation": bool(self.waiting_for_confirmation),
+            "ticks_since_crash": int(self.ticks_since_crash),
+            "compound_percent": float(self.settings["compound_percent"]),
+            "accumulator_growth_rate": 0.05,
+            "accumulator_hold_ticks": 2,
             "settings": dict(self.settings),
             **self._trade_time_status(),
         }
@@ -631,3 +793,17 @@ class CloudUnder9Engine:
             "reinvest_step": self.reinvest_step,
             "history": list(self.history[-200:]),
         }
+
+    def runtime_state(self) -> dict:
+        return {
+            "ticks_since_crash": self.ticks_since_crash,
+            "confirmation_progress": self.confirmation_progress,
+            "waiting_for_confirmation": self.waiting_for_confirmation,
+            "daily_trade_date": self.daily_trade_date,
+            "daily_trade_count": self.daily_trade_count,
+        }
+
+    def mark_close_failed(self, reason: str):
+        self.close_requested = False
+        self.cloud_status = "Trade open"
+        self.last_signal = f"Accumulator close retry needed: {reason}"

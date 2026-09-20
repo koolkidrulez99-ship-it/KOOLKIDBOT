@@ -10,6 +10,7 @@ def _parse_settings_payload(data: dict | None) -> dict:
         allowed = [item.strip() for item in allowed.replace("\n", ",").replace(";", ",").split(",") if item.strip()]
     settings = {}
     for key in (
+        "strategy_name",
         "base_stake",
         "take_profit_target",
         "max_reinvest_steps",
@@ -28,6 +29,7 @@ def _parse_settings_payload(data: dict | None) -> dict:
         "trade_time_mode",
         "custom_trade_start_time",
         "custom_trade_end_time",
+        "compound_percent",
         "max_digit9_last10",
         "max_digit9_last20",
         "max_digit9_last5",

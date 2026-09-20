@@ -55,8 +55,8 @@
   <div class="cloud-shell">
     <section class="cloud-panel cloud-hero">
       <div class="cloud-kicker">Cloud Trading Engine</div>
-      <h2 class="cloud-title">Under 9 Reinvest</h2>
-      <p class="cloud-sub">Scans every configured volatility and jump market, waits for digit 9 frequency to be 9% or lower, then places one Under 9 trade when a fresh 9 prints.</p>
+      <h2 class="cloud-title" id="cloudPresetTitle">Under 9 Reinvest</h2>
+      <p class="cloud-sub" id="cloudPresetDescription">Scans every configured volatility and jump market, waits for digit 9 frequency to be 9% or lower, then places one Under 9 trade when a fresh 9 prints.</p>
       <div class="cloud-badges">
         <span class="cloud-badge" id="cloudRunningBadge">Stopped</span>
         <span class="cloud-badge" id="cloudTokenBadge">Token not verified</span>
@@ -67,15 +67,35 @@
         <div class="cloud-metric"><span>Market</span><strong id="cloudCurrentMarket">R_10</strong></div>
         <div class="cloud-metric"><span>Current Stake</span><strong id="cloudCurrentStake">$0.00</strong></div>
         <div class="cloud-metric"><span>Session Profit</span><strong id="cloudSessionProfit">$0.00</strong></div>
-        <div class="cloud-metric"><span>TP Progress</span><strong id="cloudTpProgress">0%</strong></div>
-        <div class="cloud-metric"><span>Reinvest Step</span><strong id="cloudReinvestStep">0/5</strong></div>
-        <div class="cloud-metric"><span>Digit 9</span><strong id="cloudDigit9Pct">0%</strong></div>
+        <div class="cloud-metric"><span id="cloudTpMetricLabel">TP Progress</span><strong id="cloudTpProgress">0%</strong></div>
+        <div class="cloud-metric"><span id="cloudReinvestMetricLabel">Reinvest Step</span><strong id="cloudReinvestStep">0/5</strong></div>
+        <div class="cloud-metric"><span id="cloudSignalMetricLabel">Digit 9</span><strong id="cloudDigit9Pct">0%</strong></div>
       </div>
       <div class="cloud-log" id="cloudStatusText" style="margin-top:12px;">Cloud status loading...</div>
     </section>
 
     <section class="cloud-panel">
       <div class="cloud-kicker">Settings</div>
+      <label style="margin-top:10px;">Cloud Preset
+        <select id="cloudPreset">
+          <option value="under9_reinvest">Under 9 Reinvest</option>
+          <option value="koolkid_profit">KOOLKID PROFIT</option>
+        </select>
+      </label>
+      <div id="cloudKoolkidProfitSettings" hidden style="margin-top:10px;">
+        <div class="cloud-settings-grid">
+          <label>Starting Stake <input id="cloudKoolkidProfitStake" type="number" min="0.35" step="0.01" value="1"></label>
+          <label>Compound Interest % <input id="cloudCompoundPercent" type="number" min="0" max="100" step="1" value="100"></label>
+        </div>
+        <div class="cloud-badges" style="margin-bottom:10px;">
+          <span class="cloud-badge">5% accumulator growth</span>
+          <span class="cloud-badge">2-tick hold</span>
+          <span class="cloud-badge">2 trades per day</span>
+          <span class="cloud-badge">30 ticks + 5 confirmations</span>
+          <span class="cloud-badge">Cloud auto-resume</span>
+        </div>
+      </div>
+      <div id="cloudUnder9Settings">
       <div class="cloud-settings-grid" style="margin-top:10px;">
         <label>Base Stake <input id="cloudBaseStake" type="number" min="0.35" step="0.01" value="1"></label>
         <label>TP Target <input id="cloudTpTarget" type="number" min="0.01" step="0.01" value="50"></label>
@@ -139,6 +159,7 @@
           </div>
         </div>
       </details>
+      </div>
       <div class="cloud-actions">
         <button class="cloud-start" type="button" onclick="startCloudUnder9()">Start Cloud Bot</button>
         <button class="cloud-restart" type="button" onclick="restartCloudUnder9()">Restart Cloud Bot</button>

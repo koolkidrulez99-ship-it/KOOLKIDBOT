@@ -1689,6 +1689,39 @@ def _overlay_bot_activity(bot_rows: list[dict[str, Any]]) -> list[dict[str, Any]
         bot_id = int(bot.get("id") or 0)
         related_positions = [row for row in enriched_positions if int(row.get("bot_id") or 0) == bot_id]
         related_history = [row for row in enriched_history if int(row.get("bot_id") or 0) == bot_id]
+
+        session_started = None
+        session_started_raw = bot.get("session_started_at") or bot.get("started_at")
+        if session_started_raw:
+            try:
+                session_started = datetime.fromisoformat(str(session_started_raw).replace("Z", "+00:00"))
+                if session_started.tzinfo is None:
+                    session_started = session_started.replace(tzinfo=timezone.utc)
+                session_started = session_started.astimezone(timezone.utc)
+            except (TypeError, ValueError):
+                session_started = None
+        if session_started is not None:
+            session_history = []
+            for row in related_history:
+                try:
+                    closed = datetime.fromisoformat(str(row.get("close_time") or "").replace("Z", "+00:00"))
+                    if closed.tzinfo is None:
+                        closed = closed.replace(tzinfo=timezone.utc)
+                    if closed.astimezone(timezone.utc) >= session_started:
+                        session_history.append(row)
+                except (TypeError, ValueError):
+                    continue
+            related_history = session_history
+
+        bot["open_positions"] = len(related_positions)
+        bot["current_pl"] = 0.0
+        bot["bot_trade_count"] = 0
+        bot["bot_wins"] = 0
+        bot["bot_losses"] = 0
+        bot["bot_win_rate"] = 0.0
+        bot["last_trade"] = None
+        bot["today_pl"] = 0.0
+        bot["profit_today"] = 0.0
         today_history = []
         for row in related_history:
             try:
@@ -2410,7 +2443,7 @@ def start_bot(bot_id: int, payload: dict[str, Any] = Body(default_factory=dict))
     if missing:
         raise HTTPException(status_code=400, detail=f"Unavailable on the selected MT5 account: {', '.join(missing)}")
 
-    if bot.get("native_engine"):
+    if bot.get("native_engine") and not _is_black_rock_bot(bot):
         if not bot.get("native_ready"):
             raise HTTPException(status_code=409, detail=f"{bot.get('name') or 'This preset'} needs its MQ5 source before native execution can be enabled.")
         native_meta = dict(NATIVE_PRESETS.get(int(bot_id)) or {})
@@ -2448,7 +2481,13 @@ def start_bot(bot_id: int, payload: dict[str, Any] = Body(default_factory=dict))
             raise HTTPException(status_code=409, detail=str(exc))
 
     ea_rel = bot.get("ea_storage_path")
+    if _is_black_rock_bot(bot):
+        bundled_black_rock = ROOT / "data" / "system_ea_library" / "Black_Rock.ex5"
+        if bundled_black_rock.is_file():
+            ea_rel = str(bundled_black_rock.relative_to(ROOT))
     if not ea_rel or not (ROOT / ea_rel).is_file():
+        if _is_black_rock_bot(bot):
+            raise HTTPException(status_code=409, detail="BLACK ROCK compiled EA is unavailable on this server.")
         raise HTTPException(status_code=409, detail="Uploaded .ex5 file was not found. Upload the EA before starting it.")
     preset_rel = bot.get("preset_storage_path")
     worker_payload = {
@@ -2506,22 +2545,23 @@ def start_bot(bot_id: int, payload: dict[str, Any] = Body(default_factory=dict))
         row = next(b for b in st["bots"] if int(b["id"]) == bot_id)
         row.update({
             "status": assignment["status"], "started_at": assignment.get("started_at"),
+            "session_started_at": assignment.get("started_at") or datetime.now(timezone.utc).isoformat(),
             "worker_id": assignment.get("worker_id"), "terminal_id": assignment.get("terminal_id"),
             "process_id": assignment.get("process_id"), "terminal_status": assignment.get("terminal_status"),
             "last_activity": assignment.get("last_activity"), "last_error": assignment.get("error"),
             "account_verified": assignment.get("account_verified", False),
             "open_positions": assignment.get("open_positions", 0),
-            "current_pl": assignment.get("current_pl", 0), "today_pl": assignment.get("today_pl", 0),
-            "profit_today": assignment.get("today_pl", 0),
+            "current_pl": assignment.get("current_pl", 0), "today_pl": 0,
+            "profit_today": 0,
             "account_open_positions": assignment.get("account_open_positions", 0),
             "account_current_pl": assignment.get("account_current_pl", 0),
-            "metrics_scope": assignment.get("metrics_scope"),
-            "bot_trade_count": assignment.get("bot_trade_count", 0),
-            "bot_wins": assignment.get("bot_wins", 0), "bot_losses": assignment.get("bot_losses", 0),
-            "bot_win_rate": assignment.get("bot_win_rate", 0),
+            "metrics_scope": "Current bot session · verified attributed activity.",
+            "bot_trade_count": 0,
+            "bot_wins": 0, "bot_losses": 0,
+            "bot_win_rate": 0,
             "detected_magic": assignment.get("detected_magic"),
             "attribution_status": assignment.get("attribution_status", "pending"),
-            "last_trade": assignment.get("last_trade"), "metrics_error": assignment.get("metrics_error"),
+            "last_trade": None, "metrics_error": assignment.get("metrics_error"),
             "ea_verified": assignment.get("ea_verified", False), "ea_status": assignment.get("ea_status"),
             "verification_message": assignment.get("verification_message"),
             "strategy_analysis": assignment.get("strategy_analysis"),
@@ -2545,7 +2585,7 @@ def pause_bot(bot_id: int, payload: dict[str, Any] = Body(default_factory=dict))
     if not bot:
         raise HTTPException(status_code=404, detail="Bot not found.")
     _require_black_rock_lifetime_access(bot)
-    if bot.get("native_engine"):
+    if bot.get("native_engine") and not _is_black_rock_bot(bot):
         try:
             return native_runtime.pause(current_workspace(), bot_id)
         except RuntimeError as exc:
@@ -2584,7 +2624,7 @@ def resume_bot(bot_id: int, payload: dict[str, Any] = Body(default_factory=dict)
     if not bot:
         raise HTTPException(status_code=404, detail="Bot not found.")
     _require_black_rock_lifetime_access(bot)
-    if bot.get("native_engine"):
+    if bot.get("native_engine") and not _is_black_rock_bot(bot):
         try:
             return native_runtime.resume(current_workspace(), bot_id)
         except RuntimeError as exc:
@@ -2603,7 +2643,8 @@ def resume_bot(bot_id: int, payload: dict[str, Any] = Body(default_factory=dict)
             raise KeyError
         row.update({
             "status": aggregate.get("status") or assignment.get("status") or "running",
-            "started_at": aggregate.get("started_at") or assignment.get("started_at") or datetime.now(timezone.utc).isoformat(),
+            "started_at": row.get("started_at") or aggregate.get("started_at") or assignment.get("started_at") or datetime.now(timezone.utc).isoformat(),
+            "session_started_at": row.get("session_started_at") or row.get("started_at") or aggregate.get("started_at") or assignment.get("started_at") or datetime.now(timezone.utc).isoformat(),
             "process_id": aggregate.get("process_id") or assignment.get("process_id"),
             "terminal_status": aggregate.get("terminal_status") or assignment.get("terminal_status") or "online",
             "ea_status": aggregate.get("ea_status") or assignment.get("ea_status") or "active",
@@ -2629,7 +2670,7 @@ def stop_bot(bot_id: int, payload: dict[str, Any] = Body(default_factory=dict)):
     if not bot:
         raise HTTPException(status_code=404, detail="Bot not found.")
     _require_black_rock_lifetime_access(bot)
-    if bot.get("native_engine"):
+    if bot.get("native_engine") and not _is_black_rock_bot(bot):
         try:
             return native_runtime.stop(current_workspace(), bot_id)
         except RuntimeError as exc:
@@ -2643,7 +2684,7 @@ def stop_bot(bot_id: int, payload: dict[str, Any] = Body(default_factory=dict)):
         if not row:
             raise KeyError
         row.update({
-            "status": assignment.get("status", "stopped"), "started_at": None, "process_id": None,
+            "status": assignment.get("status", "stopped"), "started_at": None, "session_started_at": None, "process_id": None,
             "terminal_status": assignment.get("terminal_status", "offline"), "account_verified": False,
             "last_activity": assignment.get("last_activity"), "last_error": assignment.get("error"),
             "ea_verified": False, "ea_status": "stopped",
@@ -2665,7 +2706,7 @@ def bot_performance(bot_id: int):
         raise HTTPException(status_code=404, detail="Bot not found.")
     _require_black_rock_lifetime_access(bot)
     rows = history(30)
-    if bot.get("native_engine"):
+    if bot.get("native_engine") and not _is_black_rock_bot(bot):
         prefix = f"KKN{int(bot_id)}"
         tagged = [r for r in rows if str(r.get("source", "")).startswith(prefix)]
     else:

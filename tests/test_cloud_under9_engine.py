@@ -7,6 +7,10 @@ def _tick(symbol, digit):
     return {"symbol": symbol, "quote": float(f"100.{digit}")}
 
 
+def _price_tick(symbol, price):
+    return {"symbol": symbol, "quote": float(price)}
+
+
 def test_cloud_under9_places_one_trade_when_single_9_prints_at_9_percent_or_lower():
     engine = CloudUnder9Engine("alice", "cid", {"base_stake": 10, "allowed_markets": ["R_10"]})
     engine.start("cid")
@@ -202,3 +206,71 @@ def test_cloud_custom_window_blocks_outside_custom_start_end():
 
     assert actions == []
     assert "10:00 - 11:00" in engine.last_signal
+
+
+def test_koolkid_profit_waits_for_crash_and_five_later_confirmation_ticks():
+    engine = CloudUnder9Engine(
+        "alice",
+        "cid",
+        {"strategy_name": "koolkid_profit", "base_stake": 2, "allowed_markets": ["R_10"]},
+    )
+    engine.start("cid")
+    for index in range(31):
+        assert engine.on_tick(_price_tick("R_10", 100 + (index * 0.1)), index % 10, balance=100) == []
+
+    assert engine.on_tick(_price_tick("R_10", 95), 0, balance=100) == []
+    for index in range(4):
+        assert engine.on_tick(_price_tick("R_10", 95 + ((index + 1) * 0.02)), index, balance=100) == []
+
+    actions = engine.on_tick(_price_tick("R_10", 95.10), 1, balance=100)
+
+    assert len(actions) == 1
+    assert actions[0]["intent"]["deriv_contract_type"] == "ACCU"
+    assert actions[0]["intent"]["growth_rate"] == 0.05
+    assert actions[0]["intent"]["hold_ticks"] == 2
+    assert actions[0]["intent"]["stake"] == 2
+
+
+def test_koolkid_profit_requests_close_after_two_ticks_only_once():
+    engine = CloudUnder9Engine("alice", "cid", {"strategy_name": "koolkid_profit", "allowed_markets": ["R_10"]})
+    engine.start("cid")
+    engine.total_ticks = 40
+    engine.trade_locked = True
+    engine.mark_trade_open("123")
+
+    assert engine.on_tick(_price_tick("R_10", 100.1), 1, balance=100) == []
+    actions = engine.on_tick(_price_tick("R_10", 100.2), 2, balance=100)
+    assert actions == [{"type": "close_trade", "contract_id": "123"}]
+    assert engine.on_tick(_price_tick("R_10", 100.3), 3, balance=100) == []
+
+
+def test_koolkid_profit_compounds_selected_profit_share_and_resets_after_loss():
+    engine = CloudUnder9Engine(
+        "alice",
+        "cid",
+        {"strategy_name": "koolkid_profit", "base_stake": 10, "compound_percent": 50},
+    )
+    engine.start("cid")
+    engine.current_stake = 10
+
+    win = engine.on_contract_result({"contract_id": "1"}, {"stake": 10}, 4)
+    assert win["result"] == "WIN"
+    assert engine.current_stake == 12
+
+    loss = engine.on_contract_result({"contract_id": "2"}, {"stake": 12}, -3)
+    assert loss["result"] == "LOSS"
+    assert engine.current_stake == 10
+
+
+def test_koolkid_profit_stops_new_setups_after_two_opened_trades_for_day():
+    engine = CloudUnder9Engine("alice", "cid", {"strategy_name": "koolkid_profit", "allowed_markets": ["R_10"]})
+    engine.start("cid")
+    engine.daily_trade_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    engine.daily_trade_count = 2
+    engine.price_ticks.extend([100 + (index * 0.01) for index in range(31)])
+    engine.ticks_since_crash = 31
+
+    actions = engine.on_tick(_price_tick("R_10", 90), 0, balance=100)
+
+    assert actions == []
+    assert "Daily target complete" in engine.last_signal

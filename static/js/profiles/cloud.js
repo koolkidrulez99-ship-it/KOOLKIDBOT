@@ -3,6 +3,7 @@
   const POLL_LABEL = "cloud_under9_status_poll";
   const DEFAULT_MARKET_LIST = ["R_10","R_25","R_50","R_75","R_100","1HZ10V","1HZ25V","1HZ50V","1HZ75V","1HZ100V","JD10","JD25","JD50","JD75","JD100"];
   const DEFAULT_MARKETS = DEFAULT_MARKET_LIST.join(",");
+  const KOOLKID_PROFIT_MARKETS = ["R_10","R_25","R_50","R_75","R_100"];
   const MARKET_LABELS = {
     R_10: "Vol 10",
     R_25: "Vol 25",
@@ -115,11 +116,16 @@
     setText("cloudMarketCount", `${list.length} market${list.length === 1 ? "" : "s"} selected`);
   }
   function readSettings(){
-    const markets = selectedMarkets();
+    const preset = ((byId("cloudPreset") || {}).value || "under9_reinvest");
+    const selected = selectedMarkets();
+    const markets = preset === "koolkid_profit" ? selected.filter((symbol)=> KOOLKID_PROFIT_MARKETS.includes(symbol)) : selected;
+    if(preset === "koolkid_profit" && !markets.length) markets.push(...KOOLKID_PROFIT_MARKETS);
     if(!markets.length) throw new Error("Choose at least one Cloud market.");
     syncMarketTextarea(false);
     return {
-      base_stake: readNumber("cloudBaseStake", 1),
+      strategy_name: preset,
+      base_stake: preset === "koolkid_profit" ? readNumber("cloudKoolkidProfitStake", 1) : readNumber("cloudBaseStake", 1),
+      compound_percent: readNumber("cloudCompoundPercent", 100),
       take_profit_target: readNumber("cloudTpTarget", 50),
       max_reinvest_steps: readNumber("cloudMaxReinvestSteps", 5),
       duration: readNumber("cloudDuration", 1),
@@ -134,12 +140,27 @@
       capital_build_mode: !!((byId("cloudCapitalBuildMode") || {}).checked),
       enable_telegram_alerts: !!((byId("cloudTelegramAlerts") || {}).checked),
       enable_whatsapp_alerts: !!((byId("cloudWhatsappAlerts") || {}).checked),
-      allow_auto_resume: !!((byId("cloudAllowAutoResume") || {}).checked),
+      allow_auto_resume: preset === "koolkid_profit" || !!((byId("cloudAllowAutoResume") || {}).checked),
       max_digit9_last5: readNumber("cloudMax9Last5", 2),
       max_digit9_last10: readNumber("cloudMax9Last10", 2),
       max_digit9_last20: readNumber("cloudMax9Last20", 4),
       min_seconds_between_99_streaks: readNumber("cloudStreakCooldown", 20),
     };
+  }
+  function updatePresetUI(){
+    const preset = ((byId("cloudPreset") || {}).value || "under9_reinvest");
+    const isProfit = preset === "koolkid_profit";
+    const profit = byId("cloudKoolkidProfitSettings");
+    const under9 = byId("cloudUnder9Settings");
+    if(profit) profit.hidden = !isProfit;
+    if(under9) under9.hidden = isProfit;
+    setText("cloudPresetTitle", isProfit ? "KOOLKID PROFIT" : "Under 9 Reinvest");
+    setText("cloudPresetDescription", isProfit
+      ? "Waits for a qualified crash after at least 30 ticks, confirms five later ticks, then opens a 5% accumulator for two ticks. Runs two independent setups per day and compounds the selected share of profit."
+      : "Scans every configured volatility and jump market, waits for digit 9 frequency to be 9% or lower, then places one Under 9 trade when a fresh 9 prints.");
+    setText("cloudTpMetricLabel", isProfit ? "Daily Trades" : "TP Progress");
+    setText("cloudReinvestMetricLabel", isProfit ? "Compound" : "Reinvest Step");
+    setText("cloudSignalMetricLabel", isProfit ? "Confirmations" : "Digit 9");
   }
   function bindSettingsDirtyHandlers(){
     const panel = byId("cloudProfilePanel");
@@ -150,6 +171,7 @@
         el.addEventListener("input", ()=> { settingsDirty = true; });
         el.addEventListener("change", ()=> {
           if(el.id === "cloudAllowedMarkets") writeMarketPicker(parseMarkets(el.value));
+          if(el.id === "cloudPreset") updatePresetUI();
           settingsDirty = true;
         });
       }
@@ -159,7 +181,10 @@
     if(settingsDirty && !force) return;
     const settings = (status && status.settings) || status || {};
     const map = {
+      cloudPreset: settings.strategy_name,
       cloudBaseStake: settings.base_stake,
+      cloudKoolkidProfitStake: settings.base_stake,
+      cloudCompoundPercent: settings.compound_percent,
       cloudTpTarget: settings.take_profit_target || status.configured_tp_target,
       cloudMaxReinvestSteps: settings.max_reinvest_steps,
       cloudDuration: settings.duration,
@@ -185,6 +210,7 @@
       markets.value = settings.allowed_markets.join(",");
     }
     writeMarketPicker(settings.allowed_markets);
+    updatePresetUI();
     [["cloudCapitalBuildMode","capital_build_mode"],["cloudTelegramAlerts","enable_telegram_alerts"],["cloudWhatsappAlerts","enable_whatsapp_alerts"],["cloudAllowAutoResume","allow_auto_resume"]].forEach(([id,key])=>{
       const el = byId(id);
       if(el) el.checked = !!settings[key];
@@ -198,6 +224,7 @@
     if(!status || !byId("cloudProfilePanel")) return;
     latestStatus = status;
     writeSettings(status);
+    updatePresetUI();
     const running = !!status.running;
     setText("cloudRunningBadge", running ? "Running" : "Stopped");
     setText("cloudTokenBadge", status.token_verified ? "Token verified" : "Token verification needed");
@@ -211,13 +238,14 @@
     setText("cloudSessionProfit", signedMoney(status.session_profit));
     const target = Math.max(0.01, Number(status.tp_target || status.configured_tp_target || 50));
     const profit = Math.max(0, Number(status.session_profit || 0));
-    setText("cloudTpProgress", `${Math.min(100, (profit / target) * 100).toFixed(1)}%`);
-    setText("cloudReinvestStep", `${Number(status.reinvest_step || 0)}/${Number(status.max_reinvest_steps || 5)}`);
-    setText("cloudDigit9Pct", `${Number(status.digit9_percentage || 0).toFixed(1)}%`);
+    const isProfit = String(status.strategy_name || "") === "koolkid_profit";
+    setText("cloudTpProgress", isProfit ? `${Number(status.daily_trade_count || 0)}/${Number(status.max_daily_trades || 2)} trades` : `${Math.min(100, (profit / target) * 100).toFixed(1)}%`);
+    setText("cloudReinvestStep", isProfit ? `${Number(status.compound_percent || 100).toFixed(0)}%` : `${Number(status.reinvest_step || 0)}/${Number(status.max_reinvest_steps || 5)}`);
+    setText("cloudDigit9Pct", isProfit ? `${Number(status.confirmation_progress || 0)}/5` : `${Number(status.digit9_percentage || 0).toFixed(1)}%`);
     const statusLines = [
       `State: ${status.cloud_status || "Stopped"}`,
       `Last signal: ${status.last_signal || "Waiting"}`,
-      `Ticks: ${status.tick_count || 0}/100`,
+      isProfit ? `Crash gap ticks: ${status.ticks_since_crash || 0}/30` : `Ticks: ${status.tick_count || 0}/100`,
       `Trade lock: ${status.trade_locked ? "locked" : "open for next setup"}`,
       `Last result: ${status.last_trade_result || "none"}`,
       `Jamaica time: ${status.jamaica_time || "--:--"} ${status.jamaica_timezone || "EST Jamaica"}`,
@@ -228,7 +256,7 @@
     setText("cloudStatusText", statusLines.join("\n"));
     setText("cloudDecisionLog", statusLines.concat([
       `Markets: ${(status.allowed_markets || []).join(", ")}`,
-      `Capital build: ${status.capital_build_mode ? "ON" : "OFF"}`,
+      isProfit ? `Daily trades: ${status.daily_trade_count || 0}/${status.max_daily_trades || 2}` : `Capital build: ${status.capital_build_mode ? "ON" : "OFF"}`,
     ]).join("\n"));
   }
   async function refreshStatus(silent){
@@ -272,7 +300,7 @@
       writeSettings(data, true);
       renderStatus(data);
       startPoll();
-      if(typeof showToast === "function") showToast("Cloud Under 9 started", "success");
+      if(typeof showToast === "function") showToast(String(data.strategy_name) === "koolkid_profit" ? "KOOLKID PROFIT started" : "Cloud Under 9 started", "success");
     }catch(e){
       if(typeof showToast === "function") showToast(e.message || "Cloud start failed", "error");
     }
@@ -329,6 +357,7 @@
     bindSocket();
     buildMarketPicker();
     bindSettingsDirtyHandlers();
+    updatePresetUI();
     await refreshStatus(true);
     startPoll();
   }

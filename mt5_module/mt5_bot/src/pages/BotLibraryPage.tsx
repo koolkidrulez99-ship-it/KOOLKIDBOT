@@ -142,7 +142,7 @@ export default function BotLibraryPage() {
             const paused = b.status === 'paused';
             const today = botLiveToday(b);
             const isCatalog = Boolean(b.system_preset);
-            const isNative = Boolean(b.native_engine);
+            const isNative = Boolean(b.native_engine) && !isBlackRockBot(b);
             const sourceRequired = isNative && b.native_ready === false;
             const accent = PRESET_ACCENTS[b.id] || { icon: 'text-brand-300 bg-brand-500/10 border-brand-500/25', border: '', glow: 'from-brand-500/[0.06]' };
             const nativeSignal = (b.native_signal || {}) as { stage?: string; score?: number; reason?: string };
