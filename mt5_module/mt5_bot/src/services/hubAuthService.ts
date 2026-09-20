@@ -18,6 +18,7 @@ export interface HubIdentity {
   username: string;
   workspace_id: string;
   role: 'user' | 'admin';
+  access_tier: 'tester' | 'lifetime';
 }
 
 export interface HubAuthResponse extends HubIdentity {

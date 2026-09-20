@@ -195,10 +195,33 @@ def configured_server_endpoints(broker, server):
 def mt5_server_candidates(broker, server):
     requested = str(server or "").strip()
     rows = [requested] if requested else [""]
-    if str(broker or "").strip().lower() == "hfm":
+    broker_name = str(broker or "").strip().lower()
+    if broker_name == "hfm":
         rows.extend(HFM_SERVER_ENDPOINTS.get(requested, []))
+    elif broker_name == "weltrade":
+        # The Weltrade account portal can display the assigned server simply as
+        # "Weltrade", while MT5 broker discovery exposes Demo/Live route labels.
+        # Keep the user's saved server untouched, but try the broker-discovered
+        # routes as fallbacks so users never have to guess the suffix.
+        rows.extend(["Weltrade-Demo", "Weltrade-Live"])
     rows.extend(configured_server_endpoints(broker, requested))
     return list(dict.fromkeys(rows))
+
+
+def mt5_server_matches(broker, requested, actual):
+    requested_text = str(requested or "").strip()
+    actual_text = str(actual or "").strip()
+    if not requested_text:
+        return True
+    if "." in requested_text or ":" in requested_text:
+        return True
+    requested_key = requested_text.replace(" ", "").lower()
+    actual_key = actual_text.replace(" ", "").lower()
+    if requested_key == actual_key:
+        return True
+    if str(broker or "").strip().lower() == "weltrade" and requested_key == "weltrade":
+        return actual_key in {"weltrade-demo", "weltradedemo", "weltrade-live", "weltradelive"}
+    return False
 
 
 def filling_candidates(mt5, info):
@@ -365,24 +388,32 @@ def run_worker(config, password, command_q, response_q):
             if os.name == "nt" and terminal_path:
                 threading.Thread(target=keep_terminal_hidden, args=(terminal_path,), daemon=True).start()
             terminal_state = mt5.terminal_info()
-            if not read_only and terminal_path and terminal_state is not None and (
-                not bool(getattr(terminal_state, "trade_allowed", True))
-                or bool(getattr(terminal_state, "tradeapi_disabled", False))
+            if (
+                not read_only
+                and terminal_path
+                and terminal_state is not None
+                and bool(getattr(terminal_state, "tradeapi_disabled", False))
             ):
-                # Some MT5 builds rewrite common.ini during first launch. Apply
-                # the KOOLKID terminal policy once more and restart this private
-                # terminal before accepting the account session.
+                # Python/API trading has its own terminal permission. The MT5
+                # Algo-Trading switch (trade_allowed) governs MQL EAs and can
+                # remain off while external Python trading is enabled.
                 mt5.shutdown()
                 ensure_terminal_trading_permissions(terminal_path)
                 time.sleep(0.25)
                 initialize_once()
                 terminal_state = mt5.terminal_info()
-                if terminal_state is not None and (
-                    not bool(getattr(terminal_state, "trade_allowed", True))
-                    or bool(getattr(terminal_state, "tradeapi_disabled", False))
-                ):
+                if terminal_state is not None and bool(getattr(terminal_state, "tradeapi_disabled", False)):
+                    flags = {
+                        "connected": bool(getattr(terminal_state, "connected", False)),
+                        "trade_allowed": bool(getattr(terminal_state, "trade_allowed", False)),
+                        "tradeapi_disabled": bool(getattr(terminal_state, "tradeapi_disabled", False)),
+                        "dlls_allowed": bool(getattr(terminal_state, "dlls_allowed", False)),
+                    }
                     mt5.shutdown()
-                    raise RuntimeError("MT5 terminal could not enable algorithmic/API trading for this private KOOLKID session.")
+                    raise RuntimeError(
+                        "MT5 terminal has disabled external Python/API trading for this KOOLKID session. "
+                        f"Terminal flags: {flags}"
+                    )
 
             connected = mt5.account_info()
             actual_login = int(getattr(connected, "login", 0) or 0) if connected is not None else 0
@@ -390,13 +421,12 @@ def run_worker(config, password, command_q, response_q):
                 mt5.shutdown()
                 raise RuntimeError(f"MT5 worker connected account #{actual_login or 'none'} instead of #{config['login']}.")
             actual_server = str(getattr(connected, "server", "") or "").strip() if connected is not None else ""
-            # Named server selections from the UI must resolve to that exact MT5
-            # server. Direct host:port entries are allowed to resolve to the
-            # broker's canonical server name after authentication.
-            if requested_server and "." not in requested_server and ":" not in requested_server:
-                if requested_server.replace(" ", "").lower() != actual_server.replace(" ", "").lower():
-                    mt5.shutdown()
-                    raise RuntimeError(f"MT5 connected to '{actual_server or 'unknown'}' instead of selected server '{requested_server}'.")
+            # Named servers normally resolve exactly. Weltrade is a broker
+            # exception: its account portal may show "Weltrade" while MT5
+            # resolves the authenticated route to Weltrade-Demo/Weltrade-Live.
+            if not mt5_server_matches(config.get("broker"), requested_server, actual_server):
+                mt5.shutdown()
+                raise RuntimeError(f"MT5 connected to '{actual_server or 'unknown'}' instead of selected server '{requested_server}'.")
             if config.get("broker_seeded") and bootstrap_done_marker:
                 try:
                     with open(bootstrap_done_marker, "w", encoding="ascii") as handle:

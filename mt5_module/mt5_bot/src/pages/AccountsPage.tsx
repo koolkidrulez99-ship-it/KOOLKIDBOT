@@ -13,6 +13,7 @@ import type { Mt5Account } from '../types';
 
 const BROKER_PRESETS = [
   { name: 'Deriv', servers: ['Deriv-Demo', 'DerivSVG-Server'] },
+  { name: 'Weltrade', servers: ['Weltrade'] },
   { name: 'HFM', servers: ['HFMarketsGlobal-Demo', 'HFMarketsGlobal-Demo3', 'HFMarketsGlobal-Demo4', 'HFMarketsGlobal-Live1', 'HFMarketsGlobal-Live3', 'HFMarketsGlobal-Live4', 'HFMarketsGlobal-Live5', 'HFMarketsGlobal-Live7', 'HFMarketsGlobal-Live8', 'HFMarketsGlobal-Live9', 'HFMarketsGlobal-Live10', 'HFMarketsGlobal-Live11', 'HFMarketsGlobal-Live12', 'HFMarketsGlobal-Live13', 'HFMarketsGlobal-Live14', 'HFMarketsGlobal-Live15', 'HFMarketsGlobal-Live16', 'HFMarketsGlobal-Live17', 'HFMarketsGlobal-Live18', 'HFMarketsGlobal-Live19', 'HFMarketsGlobal-Live20'] },
   { name: 'XM Global', servers: ['XMGlobal-MT5', 'XMGlobal-MT5 2', 'XMGlobal-MT5 4', 'XMGlobal-MT5 5', 'XMGlobal-MT5 6', 'XMGlobal-MT5 7', 'XMGlobal-MT5 8', 'XMGlobal-MT5 9', 'XMGlobal-MT5 10', 'XMGlobal-MT5 11', 'XMGlobal-MT5 12', 'XMGlobal-MT5 13', 'XMGlobal-MT5 14', 'XMGlobal-MT5 15', 'XMGlobal-MT5 16', 'XMGlobal-MT5 17', 'XMGlobal-MT5 18', 'XMGlobal-MT5 19', 'XMGlobal-MT5 20'] },
   { name: 'Qberx Capital', servers: ['QberxCapital-Server'] },

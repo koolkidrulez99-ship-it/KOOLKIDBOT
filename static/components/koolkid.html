@@ -483,6 +483,19 @@
                   </div>
                 </div>
               </div>
+              <div style="border:1px solid #334155; border-radius:8px; padding:9px; background:#0f172a;">
+                <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;">
+                  <div><strong style="font-size:12px;">Switch Every Trade</strong><div style="color:#94a3b8; font-size:11px; margin-top:2px;">Alternate between the selected main trade and a second trade after every settled trade.</div></div>
+                  <button id="koolkidSwitchEveryTradeToggle" type="button" onclick="toggleKoolkidSwitchEveryTrade()" style="background:#334155; min-width:72px;">OFF</button>
+                </div>
+                <div id="koolkidSwitchEveryTradeControls" style="display:none; margin-top:8px; grid-template-columns:minmax(135px,240px); gap:8px;">
+                  <div style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">
+                    Switch Trade
+                    <button type="button" onclick="openKoolkidDigitTradePicker('everyTrade')" style="background:#1e293b;">Choose Switch Trade</button>
+                    <span id="koolkidSwitchEveryTradeSelected" style="color:#f8fafc;">UNDER 6</span>
+                  </div>
+                </div>
+              </div>
             </div>
             <div id="koolkidMartingaleStatus" style="margin-top:8px; color:#94a3b8; font-size:12px;">Ready. $0.05 step - Step 1 - Current stake $0.35 - Next stake $0.40 - Last result: none</div>
             <div style="margin-top:8px; display:grid; grid-template-columns:1fr 1fr; gap:8px;">

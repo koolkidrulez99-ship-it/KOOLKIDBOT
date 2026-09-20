@@ -43,3 +43,10 @@ mt5_module/mt5_bridge/data/backtests/
 # Local mobile QA captures/helpers - never push
 mt5_module/mt5_bot/mobile_review/
 mt5_module/mt5_bridge/_mobile_*.py
+
+# MT5 AI trial runtime state - never push
+mt5_module/mt5_bridge/data/ai_trial_state.json
+
+# Local Weltrade setup/test artifacts - never push
+.tmp_weltrade_*.py
+.weltrade5setup.exe

@@ -119,6 +119,14 @@ def stop_bot(bot_id: int, _: None = Depends(require_worker_token)):
         raise HTTPException(status_code=404, detail=str(exc.args[0]))
 
 
+@app.post("/bots/{bot_id}/instances/{instance_key}/stop")
+def stop_bot_instance(bot_id: int, instance_key: str, _: None = Depends(require_worker_token)):
+    try:
+        return worker.stop_bot_instance(bot_id, instance_key)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc.args[0]))
+
+
 @app.post("/bots/{bot_id}/pause")
 def pause_bot(bot_id: int):
     raise HTTPException(

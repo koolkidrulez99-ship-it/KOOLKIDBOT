@@ -78,6 +78,7 @@ Removed from Git tracking, but retained on disk:
 
 - `mt5_module/data/mt5_hub_auth_secret`
 - `mt5_module/mt5_multi_account/data/credentials/session-32321374.bin`
+- `mt5_module/mt5_bridge/data/ai_trial_state.json`
 
 Their old copies remain in Git history. Rotate exposed credentials/signing
 secrets before deploying if that history has been shared; no secret rotation or

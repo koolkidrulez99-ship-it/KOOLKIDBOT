@@ -225,6 +225,73 @@ class DerivPublicSocket {
 
 const publicSocket = typeof window !== 'undefined' ? new DerivPublicSocket() : null;
 
+type CandleCacheEntry = {
+  rows: Candle[];
+  expiresAt: number;
+};
+
+const candleCache = new Map<string, CandleCacheEntry>();
+const candleInflight = new Map<string, Promise<Candle[]>>();
+let historyQueue: Promise<void> = Promise.resolve();
+let nextHistoryRequestAt = 0;
+let historyCooldownUntil = 0;
+const HISTORY_REQUEST_GAP_MS = 900;
+const HISTORY_RATE_LIMIT_COOLDOWN_MS = 12000;
+const LATEST_CANDLE_CACHE_MS = 15000;
+const HISTORICAL_CANDLE_CACHE_MS = 10 * 60 * 1000;
+const MAX_CANDLE_CACHE_ENTRIES = 80;
+
+function isTicksHistoryRateLimit(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error || '');
+  return /rate limit/i.test(message) && /ticks_history|tick/i.test(message);
+}
+
+function pruneCandleCache() {
+  if (candleCache.size <= MAX_CANDLE_CACHE_ENTRIES) return;
+  const oldest = [...candleCache.keys()].slice(0, candleCache.size - MAX_CANDLE_CACHE_ENTRIES);
+  oldest.forEach((key) => candleCache.delete(key));
+}
+
+async function queuedHistoryRequest<T>(request: () => Promise<T>): Promise<T> {
+  const previous = historyQueue;
+  let release!: () => void;
+  historyQueue = new Promise<void>((resolve) => { release = resolve; });
+  await previous;
+  try {
+    const now = Date.now();
+    const waitUntil = Math.max(nextHistoryRequestAt, historyCooldownUntil);
+    if (waitUntil > now) {
+      await new Promise((resolve) => window.setTimeout(resolve, waitUntil - now));
+    }
+    nextHistoryRequestAt = Date.now() + HISTORY_REQUEST_GAP_MS;
+    try {
+      return await request();
+    } catch (error) {
+      if (!isTicksHistoryRateLimit(error)) throw error;
+      historyCooldownUntil = Date.now() + HISTORY_RATE_LIMIT_COOLDOWN_MS;
+      await new Promise((resolve) => window.setTimeout(resolve, HISTORY_RATE_LIMIT_COOLDOWN_MS));
+      nextHistoryRequestAt = Date.now() + HISTORY_REQUEST_GAP_MS;
+      return await request();
+    }
+  } finally {
+    release();
+  }
+}
+
+function normalizeCandles(msg: any, symbol: string): Candle[] {
+  const rows = msg.candles || msg.data?.candles || [];
+  const normalized = rows.map((c: any) => ({
+    time: Number(c.epoch ?? c.time),
+    open: Number(c.open),
+    high: Number(c.high),
+    low: Number(c.low),
+    close: Number(c.close),
+    volume: Number(c.volume || 0),
+  })).filter((c: Candle) => Number.isFinite(c.time) && Number.isFinite(c.close));
+  if (!normalized.length) throw new Error(`Deriv returned no candle data for ${symbol}. Try Retry or another timeframe.`);
+  return normalized;
+}
+
 function normalizeSymbol(row: any): DerivSymbol {
   return {
     symbol: String(row.underlying_symbol || row.symbol || ''),
@@ -261,24 +328,45 @@ export const derivMarketService = {
 
   async candles(symbol: string, granularity = 60, count = 500, end: 'latest' | number = 'latest'): Promise<Candle[]> {
     if (!publicSocket) return [];
-    const msg = await publicSocket.request({
-      ticks_history: symbol,
-      end,
-      style: 'candles',
-      granularity,
-      count: Math.max(10, Math.min(5000, count)),
+    const safeCount = Math.max(10, Math.min(5000, count));
+    const key = `${symbol}|${granularity}|${safeCount}|${end}`;
+    const cached = candleCache.get(key);
+    if (cached && (cached.expiresAt > Date.now() || historyCooldownUntil > Date.now())) {
+      return cached.rows.map((row) => ({ ...row }));
+    }
+    const existing = candleInflight.get(key);
+    if (existing) return (await existing).map((row) => ({ ...row }));
+
+    const request = queuedHistoryRequest(async () => {
+      try {
+        const msg = await publicSocket.request({
+          ticks_history: symbol,
+          end,
+          style: 'candles',
+          granularity,
+          count: safeCount,
+        });
+        const normalized = normalizeCandles(msg, symbol);
+        candleCache.set(key, {
+          rows: normalized,
+          expiresAt: Date.now() + (end === 'latest' ? LATEST_CANDLE_CACHE_MS : HISTORICAL_CANDLE_CACHE_MS),
+        });
+        pruneCandleCache();
+        return normalized;
+      } catch (error) {
+        const stale = candleCache.get(key);
+        if (stale && isTicksHistoryRateLimit(error)) return stale.rows;
+        throw error;
+      }
     });
-    const rows = msg.candles || msg.data?.candles || [];
-    const normalized = rows.map((c: any) => ({
-      time: Number(c.epoch ?? c.time),
-      open: Number(c.open),
-      high: Number(c.high),
-      low: Number(c.low),
-      close: Number(c.close),
-      volume: Number(c.volume || 0),
-    })).filter((c: Candle) => Number.isFinite(c.time) && Number.isFinite(c.close));
-    if (!normalized.length) throw new Error(`Deriv returned no candle data for ${symbol}. Try Retry or another timeframe.`);
-    return normalized;
+
+    candleInflight.set(key, request);
+    try {
+      const rows = await request;
+      return rows.map((row) => ({ ...row }));
+    } finally {
+      candleInflight.delete(key);
+    }
   },
 
   async subscribeTicks(symbol: string, onTick: (tick: DerivTick) => void): Promise<() => void> {

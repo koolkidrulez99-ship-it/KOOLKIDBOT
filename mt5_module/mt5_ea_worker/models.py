@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 class StartBotRequest(BaseModel):
     bot_id: int
+    instance_key: str = Field(default="default", min_length=1, max_length=96)
     account_login: int
     account_type: str
     server: str | None = None

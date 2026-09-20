@@ -222,6 +222,8 @@ def keep_saved_sessions_connected():
 
 @app.on_event("startup")
 def startup_restore():
+    if os.getenv("MT5_SKIP_SESSION_RESTORE", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return
     users_file = BASE.parent / "mt5_bridge" / "data" / "mt5_hub_users.json"
     for workspace_id in workspace_ids(users_file):
         _start_workspace(workspace_id)
@@ -275,6 +277,8 @@ def normalize_mt5_server(value: str) -> str:
         return "Deriv-Real"
     if compact in {"qberxcapital-server", "qberxcaptial-server"}:
         return "QberxCapital-Server"
+    if compact in {"weltrade", "weltrade-demo", "weltradedemo", "weltrade-live", "weltradelive"}:
+        return "Weltrade"
     return server
 
 
@@ -295,6 +299,7 @@ def broker_terminal_source(broker: str, requested: str = "") -> str:
         "hfm": ("hfm", "hf markets", "hfmarkets", "hotforex"),
         "xm global": ("xm global", "xmglobal", "xm mt5"),
         "qberx capital": ("qberx", "qberx capital", "qb capital"),
+        "weltrade": ("weltrade",),
         "exness": ("exness",),
         "ic markets": ("ic markets", "icmarkets"),
         "pepperstone": ("pepperstone",),

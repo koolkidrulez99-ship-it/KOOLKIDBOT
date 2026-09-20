@@ -409,13 +409,29 @@ def _execute(
         raise
 
 
-def _cycle(bot_id: int) -> None:
+def _selected_symbols(bot: dict[str, Any], config: dict[str, Any]) -> list[str]:
+    raw = config.get("symbols") or bot.get("symbols") or [config.get("symbol") or bot.get("symbol")]
+    if isinstance(raw, str):
+        raw = [raw]
+    symbols: list[str] = []
+    for item in raw or []:
+        symbol = str(item or "").strip()
+        if symbol and symbol not in symbols:
+            symbols.append(symbol)
+    if not symbols:
+        raise RuntimeError("Native preset requires at least one market.")
+    if len(symbols) > 10:
+        raise RuntimeError("A native bot can scan a maximum of 10 markets.")
+    return symbols
+
+
+def _cycle(bot_id: int, symbol_override: str | None = None, *, execute_allowed: bool = True) -> dict[str, Any]:
     bot = _bot(bot_id)
     if not bot:
         raise RuntimeError("Native bot state was not found.")
     config = dict(bot.get("native_config") or {})
     login = int(config.get("account_login") or bot.get("account_login") or 0)
-    symbol = str(config.get("symbol") or bot.get("symbol") or "")
+    symbol = str(symbol_override or config.get("symbol") or bot.get("symbol") or "")
     if not login or not symbol:
         raise RuntimeError("Native preset requires an account and symbol.")
     _, account = _verify_account(login, bool(config.get("allow_live")))
@@ -425,31 +441,73 @@ def _cycle(bot_id: int) -> None:
     strategy_market, exec_tf, bias_tf = prepare_strategy_market(bot_id, market, bot)
     signal = evaluate(str(bot.get("native_key") or ""), strategy_market).to_dict()
     rules = dict(signal.get("rules") or {})
-    rules.update({"configured_execution_timeframe": exec_tf, "configured_bias_timeframe": bias_tf})
+    rules.update({
+        "configured_execution_timeframe": exec_tf,
+        "configured_bias_timeframe": bias_tf,
+        "scanned_symbol": symbol,
+    })
     signal["rules"] = rules
+    original_signal_key = str(signal.get("signal_key") or "")
+    if original_signal_key:
+        signal["signal_key"] = f"{symbol}:{original_signal_key}"
     positions = _positions(login)
+    managed = _managed_position(bot, positions)
     canonical_exec = str((_preset(bot_id) or {}).get("entry_tf") or "M5").upper()
-    _manage_open_position(bot, positions, strategy_market.get(canonical_exec) or market["M5"], market["symbol_info"])
+    if managed and str(managed.get("symbol") or "") == symbol:
+        _manage_open_position(
+            {**bot, "symbol": symbol},
+            positions,
+            strategy_market.get(canonical_exec) or market["M5"],
+            market["symbol_info"],
+        )
+    previous_runtime = dict(bot.get("native_runtime") or {})
+    market_scans = dict(previous_runtime.get("market_scans") or {})
+    market_scans[symbol] = {
+        "symbol": symbol,
+        "valid": bool(signal.get("valid")),
+        "stage": signal.get("stage"),
+        "score": float(signal.get("score") or signal.get("confidence") or 0),
+        "direction": signal.get("direction"),
+        "reason": signal.get("reason"),
+        "error": None,
+    }
     runtime = {
-        **dict(bot.get("native_runtime") or {}), "status": "running", "last_scan_at": _now(),
+        **previous_runtime, "status": "managing" if managed else "running", "last_scan_at": _now(),
         "last_signal": signal, "last_stage": signal.get("stage"), "last_score": signal.get("score"),
         "last_error": None, "account_login": login, "symbol": symbol,
+        "symbols": _selected_symbols(bot, config), "market_scans": market_scans,
     }
     _patch_bot(bot_id, native_signal=signal, native_runtime=runtime)
-    if not signal.get("valid"):
-        return
-    ok, reason = _daily_guard(bot, account, positions)
+    result = {
+        "symbol": symbol,
+        "signal": signal,
+        "score": float(signal.get("score") or signal.get("confidence") or 0),
+        "valid": bool(signal.get("valid")),
+        "market": market,
+    }
+    if not execute_allowed or not signal.get("valid"):
+        return result
+    runtime_bot = {**(_bot(bot_id) or bot), "account_login": login, "symbol": symbol}
+    ok, reason = _daily_guard(runtime_bot, account, positions)
     if not ok:
         _runtime(bot_id, status="guarded", last_error=reason)
-        return
-    managed = _managed_position(bot, positions)
+        return result
+    managed = _managed_position(runtime_bot, positions)
     if managed:
         _runtime(bot_id, status="managing", last_error=None)
-        return
+        return result
     signal_key = str(signal.get("signal_key") or "")
     if signal_key and not _already_attempted(bot_id, signal_key):
-        execution = _execute(bot, signal, account, market["symbol_info"], allow_live=bool(config.get("allow_live")))
+        execution = _execute(
+            runtime_bot,
+            signal,
+            account,
+            market["symbol_info"],
+            allow_live=bool(config.get("allow_live")),
+        )
+        result["execution"] = execution
         _runtime(bot_id, status="running", last_execution=execution, last_execution_at=_now(), last_error=None)
+    return result
 
 
 def _runner(workspace_id: str, bot_id: int, stop_event: threading.Event) -> None:
@@ -461,7 +519,28 @@ def _runner(workspace_id: str, bot_id: int, stop_event: threading.Event) -> None
             if not bot or bot.get("status") != "running" or not (bot.get("native_config") or {}).get("enabled"):
                 break
             try:
-                _cycle(bot_id)
+                config = dict(bot.get("native_config") or {})
+                symbols = _selected_symbols(bot, config)
+                results: list[dict[str, Any]] = []
+                for symbol in symbols:
+                    try:
+                        results.append(_cycle(bot_id, symbol, execute_allowed=False))
+                    except Exception as scan_exc:
+                        latest_scan = _bot(bot_id) or bot
+                        scan_runtime = dict(latest_scan.get("native_runtime") or {})
+                        market_scans = dict(scan_runtime.get("market_scans") or {})
+                        market_scans[symbol] = {
+                            "symbol": symbol, "valid": False, "stage": "ERROR",
+                            "score": 0, "direction": None, "reason": None, "error": str(scan_exc),
+                        }
+                        _runtime(bot_id, market_scans=market_scans, symbols=symbols)
+                latest = _bot(bot_id) or bot
+                login = int(config.get("account_login") or latest.get("account_login") or 0)
+                managed = _managed_position(latest, _positions(login)) if login else None
+                candidates = [row for row in results if row.get("valid")]
+                if not managed and candidates:
+                    winner = max(candidates, key=lambda row: float(row.get("score") or 0))
+                    _cycle(bot_id, str(winner["symbol"]), execute_allowed=True)
             except Exception as exc:
                 _runtime(bot_id, status="waiting", last_error=str(exc), last_error_at=_now())
             bot = _bot(bot_id) or {}
@@ -545,6 +624,7 @@ def start(
     account_login: int,
     symbol: str,
     *,
+    symbols: list[str] | None = None,
     allow_live: bool = False,
     scan_seconds: int = 20,
     execution_timeframe: str | None = None,
@@ -556,17 +636,29 @@ def start(
     if not preset.get("ready"):
         raise RuntimeError(f"{preset['name']} requires its MQ5 source before native execution can be enabled.")
     _verify_account(account_login, allow_live)
+    selected: list[str] = []
+    for item in (symbols or [symbol]):
+        value = str(item or "").strip()
+        if value and value not in selected:
+            selected.append(value)
+    if not selected:
+        raise RuntimeError("Choose at least one market.")
+    if len(selected) > 10:
+        raise RuntimeError("Choose no more than 10 markets for one bot.")
+    symbol = selected[0]
     exec_tf = str(execution_timeframe or preset.get("entry_tf") or "M5").upper()
     bias_tf = str(bias_timeframe or _primary_bias_timeframe(preset)).upper()
     if exec_tf not in _TIMEFRAME_COUNTS or bias_tf not in _TIMEFRAME_COUNTS:
         raise RuntimeError("Choose a supported execution and bias timeframe.")
     config = {
-        "enabled": True, "account_login": int(account_login), "symbol": str(symbol),
+        "enabled": True, "account_login": int(account_login), "symbol": str(symbol), "symbols": selected,
+        "market_mode": "multi" if len(selected) > 1 else "single",
         "allow_live": bool(allow_live), "scan_seconds": max(10, min(int(scan_seconds), 300)),
         "strategy_key": preset["key"], "execution_timeframe": exec_tf, "bias_timeframe": bias_tf,
         "updated_at": _now(),
     }
-    _patch_bot(bot_id, status="running", account_login=int(account_login), symbol=str(symbol),
+    _patch_bot(bot_id, status="running", account_login=int(account_login), symbol=str(symbol), symbols=selected,
+               market_mode="multi" if len(selected) > 1 else "single",
                timeframe=exec_tf, bias_timeframe=bias_tf, native_config=config, started_at=_now(), last_error=None)
     key = _key(workspace_id, bot_id)
     with _LOCK:

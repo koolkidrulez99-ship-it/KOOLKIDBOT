@@ -219,6 +219,18 @@ export default function DerivAdvancedChart() {
     setStatus('connecting'); setError(''); setCandles([]); setLastPrice(null);
     const start = async () => {
       try {
+        if (chartEngine === 'tradingview') {
+          const unsubscribe = await derivMarketService.subscribeTicks(workspace.symbol, (tick) => {
+            if (cancelled || !Number.isFinite(tick.quote)) return;
+            setError('');
+            setStatus('live');
+            setLastPrice(tick.quote);
+          });
+          if (cancelled) unsubscribe();
+          else stop = unsubscribe;
+          return;
+        }
+
         const rows = await derivMarketService.candles(workspace.symbol, workspace.seconds, 700);
         if (cancelled) return;
         candlesRef.current = rows;
@@ -272,7 +284,7 @@ export default function DerivAdvancedChart() {
     };
     start();
     return () => { cancelled = true; stop?.(); };
-  }, [workspace.symbol, workspace.seconds, reloadKey]);
+  }, [workspace.symbol, workspace.seconds, reloadKey, chartEngine]);
 
   // Build the chart only when layout/tools change. Live candles are updated in the next effect,
   // avoiding the old behavior that recreated the whole chart on every incoming tick.

@@ -155,6 +155,32 @@ def test_switch_after_win_alternates_between_original_and_selected_trade():
     assert 'resetKoolkidSwitchRotation(st, st.action);' in KOOLKID_JS
 
 
+def test_switch_every_trade_reuses_digit_picker_and_persists_selection():
+    assert 'id="koolkidSwitchEveryTradeToggle"' in KOOLKID_HTML
+    assert 'id="koolkidSwitchEveryTradeControls"' in KOOLKID_HTML
+    assert "openKoolkidDigitTradePicker('everyTrade')" in KOOLKID_HTML
+    assert 'switchEveryTradeEnabled: saved.switchEveryTradeEnabled === true' in KOOLKID_JS
+    assert 'everyTradeType: everyTrade ? everyTrade.contractType : defaults.everyTradeType' in KOOLKID_JS
+    assert 'everyTradeBarrier: everyTrade ? everyTrade.barrier : defaults.everyTradeBarrier' in KOOLKID_JS
+
+
+def test_switch_every_trade_alternates_after_results_without_resetting_loss_step():
+    assert 'function applyKoolkidSwitchEveryTrade(st)' in KOOLKID_JS
+    assert 'const alternate = selectedKoolkidFeatureTrade("everyTrade");' in KOOLKID_JS
+    assert 'if (!wasRecoveryTrade && !koolkidMartingaleConfig.switchEveryTradeEnabled) applyKoolkidSwitchAfterNormalWin(st);' in KOOLKID_JS
+    loss_start = KOOLKID_JS.index('} else if (outcome === "LOSS")', KOOLKID_JS.index('if (st.pendingContractId'))
+    loss_block = KOOLKID_JS[loss_start:KOOLKID_JS.index('updateKoolkidSingleMartingalePanel();', loss_start)]
+    assert 'applyKoolkidSwitchEveryTrade(st);' in loss_block
+    assert loss_block.index('applyKoolkidSwitchEveryTrade(st);') < loss_block.index('st.step = nextKoolkidLimitedMartingaleStep')
+    assert 'riskSettings.active || koolkidMartingaleConfig.switchEveryTradeEnabled' in KOOLKID_JS
+
+
+def test_switch_every_trade_respects_recovery_and_conflicting_switch_mode():
+    assert 'if (!koolkidMartingaleConfig.switchEveryTradeEnabled || st.recoveryActive) return false;' in KOOLKID_JS
+    assert 'if (koolkidMartingaleConfig.switchAfterWinEnabled) koolkidMartingaleConfig.switchEveryTradeEnabled = false;' in KOOLKID_JS
+    assert 'koolkidMartingaleConfig.switchAfterWinEnabled = false;' in KOOLKID_JS
+
+
 def test_picker_has_all_digits_and_disables_under_zero_and_over_nine():
     assert 'for (let digit = 0; digit <= 9; digit += 1)' in KOOLKID_JS
     assert 'disabled: digit === 0' in KOOLKID_JS

@@ -1258,6 +1258,9 @@
       switchAfterWinEnabled: false,
       switchType: "DIGITOVER",
       switchBarrier: 5,
+      switchEveryTradeEnabled: false,
+      everyTradeType: "DIGITUNDER",
+      everyTradeBarrier: 6,
       pairDoubleAfterLoss: false,
       pairMultipliers: { OVER_3: 2, UNDER_6: 2 },
       sessionEnabled: false,
@@ -1268,6 +1271,7 @@
       const saved = JSON.parse(localStorage.getItem(KOOLKID_MARTINGALE_CONFIG_KEY) || "{}");
       const recovery = normalizeKoolkidDigitContract(saved.recoveryType, Number(saved.recoveryBarrier));
       const next = normalizeKoolkidDigitContract(saved.switchType, Number(saved.switchBarrier));
+      const everyTrade = normalizeKoolkidDigitContract(saved.everyTradeType, Number(saved.everyTradeBarrier));
       const recoveryAfter = Number(saved.recoveryAfter);
       return {
         ...defaults,
@@ -1278,6 +1282,9 @@
         switchAfterWinEnabled: saved.switchAfterWinEnabled === true,
         switchType: next ? next.contractType : defaults.switchType,
         switchBarrier: next ? next.barrier : defaults.switchBarrier,
+        switchEveryTradeEnabled: saved.switchEveryTradeEnabled === true,
+        everyTradeType: everyTrade ? everyTrade.contractType : defaults.everyTradeType,
+        everyTradeBarrier: everyTrade ? everyTrade.barrier : defaults.everyTradeBarrier,
         pairDoubleAfterLoss: saved.pairDoubleAfterLoss === true,
         pairMultipliers: {
           OVER_3: Math.max(1, Math.min(100, Number(saved.pairMultipliers && saved.pairMultipliers.OVER_3) || 2)),
@@ -1371,6 +1378,7 @@
   function renderKoolkidMartingaleFeatureControls() {
     const recovery = selectedKoolkidFeatureTrade("recovery");
     const next = selectedKoolkidFeatureTrade("switch");
+    const everyTrade = selectedKoolkidFeatureTrade("everyTrade");
     const recoveryToggle = document.getElementById("koolkidRecoveryToggle");
     const recoveryControls = document.getElementById("koolkidRecoveryControls");
     const recoverySelected = document.getElementById("koolkidRecoverySelected");
@@ -1378,6 +1386,9 @@
     const switchToggle = document.getElementById("koolkidSwitchAfterWinToggle");
     const switchControls = document.getElementById("koolkidSwitchAfterWinControls");
     const switchSelected = document.getElementById("koolkidSwitchAfterWinSelected");
+    const everyTradeToggle = document.getElementById("koolkidSwitchEveryTradeToggle");
+    const everyTradeControls = document.getElementById("koolkidSwitchEveryTradeControls");
+    const everyTradeSelected = document.getElementById("koolkidSwitchEveryTradeSelected");
     const sessionBtn = document.getElementById("koolkidMartingaleSessionBtn");
     if (sessionBtn) {
       const st = getKoolkidSingleMartingaleState();
@@ -1399,6 +1410,12 @@
     }
     if (switchControls) switchControls.style.display = koolkidMartingaleConfig.switchAfterWinEnabled ? "grid" : "none";
     if (switchSelected) switchSelected.textContent = next ? next.label : "Invalid selection";
+    if (everyTradeToggle) {
+      everyTradeToggle.textContent = koolkidMartingaleConfig.switchEveryTradeEnabled ? "ON" : "OFF";
+      everyTradeToggle.style.background = koolkidMartingaleConfig.switchEveryTradeEnabled ? "#f59e0b" : "#334155";
+    }
+    if (everyTradeControls) everyTradeControls.style.display = koolkidMartingaleConfig.switchEveryTradeEnabled ? "grid" : "none";
+    if (everyTradeSelected) everyTradeSelected.textContent = everyTrade ? everyTrade.label : "Invalid selection";
     const settings = readKoolkidSingleMartingaleSettings();
     const pairWrap = document.getElementById("koolkidPairProgressionSettings");
     const pairToggle = document.getElementById("koolkidPairDoubleAfterLossToggle");
@@ -1805,6 +1822,27 @@
     st.action = next.action;
     st.cycleMainAction = next.action;
     st.switchAlternateActive = !st.switchAlternateActive;
+  }
+
+  function applyKoolkidSwitchEveryTrade(st) {
+    if (!koolkidMartingaleConfig.switchEveryTradeEnabled || st.recoveryActive) return false;
+    const alternate = selectedKoolkidFeatureTrade("everyTrade");
+    if (!alternate) return false;
+    const original = normalizeKoolkidMartingaleAction(st.switchOriginalAction || st.cycleMainAction || st.action);
+    if (original.isPair || original.targetProfitMode || !["OVER", "UNDER"].includes(original.type)) return false;
+    const next = st.switchAlternateActive ? original : alternate;
+    const actionEl = document.getElementById("koolkidMartingaleAction");
+    if (actionEl && !Array.from(actionEl.options || []).some((option) => option.value === next.action)) {
+      const option = document.createElement("option");
+      option.value = next.action;
+      option.textContent = next.label;
+      actionEl.appendChild(option);
+    }
+    if (actionEl) actionEl.value = next.action;
+    st.action = next.action;
+    st.cycleMainAction = next.action;
+    st.switchAlternateActive = !st.switchAlternateActive;
+    return true;
   }
 
   function scheduleKoolkidSingleMartingaleContinuation(st, settings, reason) {
@@ -2233,8 +2271,29 @@
 
   function toggleKoolkidSwitchAfterWin() {
     koolkidMartingaleConfig.switchAfterWinEnabled = !koolkidMartingaleConfig.switchAfterWinEnabled;
+    if (koolkidMartingaleConfig.switchAfterWinEnabled) koolkidMartingaleConfig.switchEveryTradeEnabled = false;
     saveKoolkidMartingaleFeatureConfig();
     renderKoolkidMartingaleFeatureControls();
+  }
+
+  function toggleKoolkidSwitchEveryTrade() {
+    const st = getKoolkidSingleMartingaleState();
+    if (!koolkidMartingaleConfig.switchEveryTradeEnabled) {
+      const current = normalizeKoolkidMartingaleAction(readKoolkidSingleMartingaleSettings().action);
+      if (current.isPair || current.targetProfitMode || !["OVER", "UNDER"].includes(current.type)) {
+        safeToast("Switch Every Trade requires a single Over or Under main trade.", "error");
+        return false;
+      }
+      koolkidMartingaleConfig.switchEveryTradeEnabled = true;
+      koolkidMartingaleConfig.switchAfterWinEnabled = false;
+      if (!st.inProgress) resetKoolkidSwitchRotation(st, current.action);
+    } else {
+      koolkidMartingaleConfig.switchEveryTradeEnabled = false;
+      if (!st.inProgress) resetKoolkidSwitchRotation(st, st.action);
+    }
+    saveKoolkidMartingaleFeatureConfig();
+    renderKoolkidMartingaleFeatureControls();
+    return true;
   }
 
   function setKoolkidRecoveryAfter(value) {
@@ -2280,13 +2339,17 @@
   }
 
   function openKoolkidDigitTradePicker(target, preserveDigit) {
-    koolkidDigitPickerTarget = target === "switch" ? "switch" : "recovery";
+    koolkidDigitPickerTarget = ["switch", "everyTrade"].includes(target) ? target : "recovery";
     const current = selectedKoolkidFeatureTrade(koolkidDigitPickerTarget);
     if (!preserveDigit) koolkidDigitPickerDigit = current ? current.barrier : 4;
     const popup = document.getElementById("koolkidDigitTradePicker");
     const digits = document.getElementById("koolkidDigitPickerDigits");
     const hint = document.getElementById("koolkidDigitPickerHint");
-    if (hint) hint.textContent = koolkidDigitPickerTarget === "switch" ? "Choose the next main trade after a normal win." : "Choose the trade used after unsuccessful main attempts.";
+    if (hint) hint.textContent = koolkidDigitPickerTarget === "switch"
+      ? "Choose the next main trade after a normal win."
+      : koolkidDigitPickerTarget === "everyTrade"
+      ? "Choose the trade that alternates with the selected main trade after every result."
+      : "Choose the trade used after unsuccessful main attempts.";
     if (digits) {
       digits.innerHTML = "";
       for (let digit = 0; digit <= 9; digit += 1) {
@@ -3149,7 +3212,7 @@
       resetKoolkidSingleMartingaleSteps();
       const originalMain = st.cycleMainAction || settings.action;
       resetKoolkidRecoveryRuntime(st, originalMain);
-      if (!wasRecoveryTrade) applyKoolkidSwitchAfterNormalWin(st);
+      if (!wasRecoveryTrade && !koolkidMartingaleConfig.switchEveryTradeEnabled) applyKoolkidSwitchAfterNormalWin(st);
       st.lastResult = "WIN";
       if (hitSl) {
         stopKoolkidSingleMartingaleOnRiskLimit(st, hitTp, st.sessionProfit);
@@ -3157,8 +3220,10 @@
         scheduleKoolkidMartingaleSessionRestart(st, settings);
       } else if (hitTp) {
         stopKoolkidSingleMartingaleOnRiskLimit(st, true, st.sessionProfit);
-      } else if (riskSettings.active && wasMartingaleTrade && st.enabled && st.running && !st.stopRequested) {
-        scheduleKoolkidSingleMartingaleContinuation(st, settings, `Win reset. Waiting ${settings.tickSpacing} tick${settings.tickSpacing === 1 ? "" : "s"}`);
+      } else if ((riskSettings.active || koolkidMartingaleConfig.switchEveryTradeEnabled) && wasMartingaleTrade && st.enabled && st.running && !st.stopRequested) {
+        if (!wasRecoveryTrade) applyKoolkidSwitchEveryTrade(st);
+        const nextSettings = readKoolkidSingleMartingaleSettings();
+        scheduleKoolkidSingleMartingaleContinuation(st, nextSettings, `Win reset. Waiting ${nextSettings.tickSpacing} tick${nextSettings.tickSpacing === 1 ? "" : "s"}`);
       } else {
         st.running = false;
         st.stopRequested = false;
@@ -3179,6 +3244,7 @@
       if (hitSl) {
         stopKoolkidSingleMartingaleOnRiskLimit(st, false, st.sessionProfit);
       } else if (wasMartingaleTrade && st.enabled) {
+        if (!wasRecoveryTrade) applyKoolkidSwitchEveryTrade(st);
         const settings = readKoolkidSingleMartingaleSettings();
         st.step = nextKoolkidLimitedMartingaleStep(st.step, settings);
         st.status = "Running";
@@ -5884,6 +5950,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
   window.setKoolkidSingleMartingaleAction = setKoolkidSingleMartingaleAction;
   window.toggleKoolkidRecoveryMode = toggleKoolkidRecoveryMode;
   window.toggleKoolkidSwitchAfterWin = toggleKoolkidSwitchAfterWin;
+  window.toggleKoolkidSwitchEveryTrade = toggleKoolkidSwitchEveryTrade;
   window.toggleKoolkidPairDoubleAfterLoss = toggleKoolkidPairDoubleAfterLoss;
   window.setKoolkidPairMultiplier = setKoolkidPairMultiplier;
   window.setKoolkidRecoveryAfter = setKoolkidRecoveryAfter;

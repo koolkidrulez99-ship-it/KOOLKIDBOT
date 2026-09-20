@@ -1,4 +1,5 @@
 import { apiFormRequest, apiRequest } from './http';
+import { apiUrl } from '../config/runtime';
 
 export interface BacktestJob {
   id: string;
@@ -21,6 +22,9 @@ export interface BacktestJob {
   started_at?: string | null;
   completed_at?: string | null;
   result?: Record<string, number | string | null>;
+  report_filename?: string | null;
+  tester_log?: string | null;
+  return_code?: number | null;
   error?: string | null;
 }
 
@@ -46,8 +50,34 @@ export interface BacktestCreateInput {
   researchOptIn: boolean;
 }
 
+async function downloadBacktestFile(jobId: string, kind: 'report' | 'data') {
+  const token = sessionStorage.getItem('koolkid_mt5_hub_token');
+  const response = await fetch(apiUrl(`/api/mt5/backtests/${encodeURIComponent(jobId)}/${kind}`), {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.detail || `Backtest ${kind} could not be downloaded.`);
+  }
+  const disposition = response.headers.get('content-disposition') || '';
+  const match = disposition.match(/filename="?([^";]+)"?/i);
+  const filename = match?.[1] || `backtest_${jobId}.${kind === 'report' ? 'html' : 'json'}`;
+  const blob = await response.blob();
+  const href = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = href;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(href);
+}
+
+
 export const backtestService = {
   list: () => apiRequest<BacktestState>('/api/mt5/backtests'),
+  downloadReport: (jobId: string) => downloadBacktestFile(jobId, 'report'),
+  downloadData: (jobId: string) => downloadBacktestFile(jobId, 'data'),
   create: (input: BacktestCreateInput) => {
     const form = new FormData();
     form.append('bot_file', input.botFile, input.botFile.name);

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Beaker, CheckCircle2, Clock3, FileCode2, LoaderCircle, Upload, XCircle } from 'lucide-react';
+import { CheckCircle2, Clock3, Download, Eye, FileCode2, LoaderCircle, Upload, XCircle } from 'lucide-react';
 import { useHub } from '../context/HubContext';
 import { backtestService } from '../services/backtestService';
 import type { BacktestJob, BacktestState } from '../services/backtestService';
@@ -35,7 +35,9 @@ export default function BacktestLab() {
   );
   const [state, setState] = useState<BacktestState | null>(null);
   const [open, setOpen] = useState(false);
+  const [selectedResult, setSelectedResult] = useState<BacktestJob | null>(null);
   const [busy, setBusy] = useState(false);
+  const [downloadBusy, setDownloadBusy] = useState<string | null>(null);
   const [botFile, setBotFile] = useState<File | null>(null);
   const [presetFile, setPresetFile] = useState<File | null>(null);
   const [accountLogin, setAccountLogin] = useState<number | ''>('');
@@ -113,6 +115,33 @@ export default function BacktestLab() {
     }
   };
 
+  const download = async (job: BacktestJob, kind: 'report' | 'data') => {
+    const key = `${job.id}:${kind}`;
+    setDownloadBusy(key);
+    try {
+      if (kind === 'report') await backtestService.downloadReport(job.id);
+      else await backtestService.downloadData(job.id);
+    } catch (error) {
+      pushToast('error', 'Backtest download failed', error instanceof Error ? error.message : undefined);
+    } finally {
+      setDownloadBusy(null);
+    }
+  };
+
+  const resultMetrics: Array<[string, string]> = [
+    ['Net profit', 'net_profit'],
+    ['Gross profit', 'gross_profit'],
+    ['Gross loss', 'gross_loss'],
+    ['Profit factor', 'profit_factor'],
+    ['Expected payoff', 'expected_payoff'],
+    ['Max drawdown', 'max_drawdown'],
+    ['Total trades', 'total_trades'],
+    ['Winning trades', 'profit_trades'],
+    ['Losing trades', 'loss_trades'],
+    ['Largest win', 'largest_profit_trade'],
+    ['Largest loss', 'largest_loss_trade'],
+  ];
+
   // Backtest Lab display
   return (
     <>
@@ -154,6 +183,17 @@ export default function BacktestLab() {
           </div>
           <p className="mt-2 text-xs text-slate-500">{latest.symbol} · {latest.timeframe} · Finished {formatDate(latest.completed_at)}</p>
           {latest.error && <p className="mt-2 text-xs text-loss-400">{latest.error}</p>}
+          {latest.status === 'complete' && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button className="btn-primary" onClick={() => setSelectedResult(latest)}><Eye size={14} /> View Results</button>
+              <button className="btn-ghost" disabled={!latest.report_filename || downloadBusy === `${latest.id}:report`} onClick={() => void download(latest, 'report')}>
+                <Download size={14} /> {downloadBusy === `${latest.id}:report` ? 'Preparing...' : 'MT5 Report'}
+              </button>
+              <button className="btn-ghost" disabled={downloadBusy === `${latest.id}:data`} onClick={() => void download(latest, 'data')}>
+                <Download size={14} /> {downloadBusy === `${latest.id}:data` ? 'Preparing...' : 'JSON Data'}
+              </button>
+            </div>
+          )}
         </div>
       )}
       {!state?.available && activeJob && (
@@ -220,6 +260,45 @@ export default function BacktestLab() {
           {busy ? 'Starting...' : 'Start Backtest'}
         </button>
       </div>
+    </Modal>
+
+    <Modal
+      open={Boolean(selectedResult)}
+      onClose={() => setSelectedResult(null)}
+      title={selectedResult ? `${selectedResult.bot_filename} · Backtest Results` : 'Backtest Results'}
+      sub={selectedResult ? `${selectedResult.symbol} · ${selectedResult.timeframe} · ${selectedResult.date_from} → ${selectedResult.date_to}` : undefined}
+      wide
+    >
+      {selectedResult && (
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {resultMetrics.map(([label, key]) => (
+              <div key={key} className="rounded-xl border border-white/[0.07] bg-white/[0.025] p-3">
+                <p className="text-[9px] font-bold uppercase tracking-wider text-slate-600">{label}</p>
+                <p className="mono mt-1 text-sm font-extrabold text-white">{resultValue(selectedResult, key)}</p>
+              </div>
+            ))}
+          </div>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <div className="rounded-xl border border-white/[0.07] p-3"><p className="text-[9px] uppercase tracking-wider text-slate-600">Starting balance</p><p className="mono mt-1 text-xs font-bold text-slate-200">{selectedResult.deposit}</p></div>
+            <div className="rounded-xl border border-white/[0.07] p-3"><p className="text-[9px] uppercase tracking-wider text-slate-600">Leverage</p><p className="mono mt-1 text-xs font-bold text-slate-200">1:{selectedResult.leverage}</p></div>
+            <div className="rounded-xl border border-white/[0.07] p-3"><p className="text-[9px] uppercase tracking-wider text-slate-600">Tester return</p><p className="mono mt-1 text-xs font-bold text-slate-200">{selectedResult.return_code ?? '—'}</p></div>
+            <div className="rounded-xl border border-white/[0.07] p-3"><p className="text-[9px] uppercase tracking-wider text-slate-600">Finished</p><p className="mt-1 text-[10px] font-semibold text-slate-300">{formatDate(selectedResult.completed_at)}</p></div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button className="btn-primary" disabled={!selectedResult.report_filename || downloadBusy === `${selectedResult.id}:report`} onClick={() => void download(selectedResult, 'report')}>
+              <Download size={14} /> {downloadBusy === `${selectedResult.id}:report` ? 'Preparing...' : 'Download MT5 Report'}
+            </button>
+            <button className="btn-ghost" disabled={downloadBusy === `${selectedResult.id}:data`} onClick={() => void download(selectedResult, 'data')}>
+              <Download size={14} /> {downloadBusy === `${selectedResult.id}:data` ? 'Preparing...' : 'Download JSON Data'}
+            </button>
+          </div>
+          <div className="rounded-xl border border-white/[0.07] bg-black/20 p-3">
+            <p className="mb-2 text-[10px] font-bold uppercase tracking-wider text-slate-500">MT5 Strategy Tester Log</p>
+            <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words text-[10px] leading-relaxed text-slate-400">{selectedResult.tester_log || 'No tester log was saved for this run.'}</pre>
+          </div>
+        </div>
+      )}
     </Modal>
   </>
   );

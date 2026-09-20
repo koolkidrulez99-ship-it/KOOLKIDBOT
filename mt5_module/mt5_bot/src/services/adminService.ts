@@ -13,6 +13,7 @@ export interface AdminOverview {
 export interface AdminUser {
   username: string;
   role: 'user' | 'admin';
+  access_tier: 'tester' | 'lifetime';
   joined_at?: string | null;
   last_seen?: string | null;
   online: boolean;
@@ -37,6 +38,8 @@ export interface ResearchItem {
 export const adminService = {
   overview: () => apiRequest<AdminOverview>('/api/mt5/admin/overview'),
   users: () => apiRequest<AdminUser[]>('/api/mt5/admin/users'),
+  setUserAccess: (username: string, accessTier: 'tester' | 'lifetime') =>
+    apiRequest<AdminUser>(`/api/mt5/admin/users/${encodeURIComponent(username)}/access`, 'PUT', { access_tier: accessTier }),
   backtests: () => apiRequest<BacktestJob[]>('/api/mt5/admin/backtests'),
   research: () => apiRequest<ResearchItem[]>('/api/mt5/admin/research'),
   decide: (id: string, decision: 'approve' | 'reject' | 'research', note = '') =>

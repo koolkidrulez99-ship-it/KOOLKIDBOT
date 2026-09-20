@@ -6,7 +6,7 @@ import { Spinner, Toggle } from './ui';
 import { useHub } from '../context/HubContext';
 import { botControl } from '../lib/actions';
 import { TIMEFRAMES } from '../lib/market';
-import { Rocket, Save } from 'lucide-react';
+import { Plus, Rocket, Save, X } from 'lucide-react';
 import type { Mt5Bot } from '../types';
 import type { Timeframe } from '../lib/market';
 import { isSimulation } from '../config/runtime';
@@ -35,6 +35,9 @@ export default function BotConfigModal({
 
   const [accountLogin, setAccountLogin] = useState<number | ''>('');
   const [symbol, setSymbol] = useState('EURUSD');
+  const [symbols, setSymbols] = useState<string[]>(['EURUSD']);
+  const [marketMode, setMarketMode] = useState<'single' | 'multi'>('single');
+  const [marketCandidate, setMarketCandidate] = useState('EURUSD');
   const [timeframe, setTimeframe] = useState<Timeframe>('M15');
   const [biasTimeframe, setBiasTimeframe] = useState<Timeframe>('H4');
   const [lot, setLot] = useState('0.01');
@@ -61,7 +64,12 @@ export default function BotConfigModal({
     }
     if (initializedBotId.current === bot.id) return;
     initializedBotId.current = bot.id;
-    setSymbol(bot.symbol);
+    const savedSymbols = (bot.symbols?.length ? bot.symbols : [bot.symbol]).filter(Boolean).slice(0, 10);
+    const primarySymbol = savedSymbols[0] || bot.symbol || 'EURUSD';
+    setSymbol(primarySymbol);
+    setSymbols(savedSymbols.length ? savedSymbols : [primarySymbol]);
+    setMarketCandidate(primarySymbol);
+    setMarketMode(bot.market_mode === 'multi' || savedSymbols.length > 1 ? 'multi' : 'single');
     setTimeframe((TIMEFRAMES as readonly string[]).includes(bot.timeframe) ? (bot.timeframe as Timeframe) : 'M15');
     const bias = String(bot.bias_timeframe || 'H4').replace('+', ' ').split(' ')[0];
     setBiasTimeframe((TIMEFRAMES as readonly string[]).includes(bias) ? (bias as Timeframe) : 'H4');
@@ -83,6 +91,9 @@ export default function BotConfigModal({
 
   const validatedPayload = (forStart = false, liveConfirmed = confirmLive) => {
     const errs: string[] = [];
+    const effectiveSymbols = marketMode === 'multi' ? symbols : [symbol];
+    if (marketMode === 'multi' && effectiveSymbols.length < 2) errs.push('Multi-market mode requires at least 2 markets.');
+    if (effectiveSymbols.length > 10) errs.push('Choose no more than 10 markets.');
     const lotNum = Number(lot);
     if (!nativePreset && (!lotNum || lotNum < 0.01 || lotNum > 50)) errs.push('Lot size must be between 0.01 and 50.');
     const riskNum = Number(risk);
@@ -106,7 +117,9 @@ export default function BotConfigModal({
       trailing_stop: trailing,
     };
     return {
-      symbol,
+      symbol: effectiveSymbols[0],
+      symbols: effectiveSymbols,
+      market_mode: effectiveSymbols.length > 1 ? 'multi' : 'single',
       timeframe,
       bias_timeframe: nativePreset ? biasTimeframe : undefined,
       lot_size: nativePreset ? (bot.lot_size || 0.01) : lotNum,
@@ -145,7 +158,15 @@ export default function BotConfigModal({
         return;
       }
       await botControl(bot.id, 'launch', payload);
-      pushToast('success', `${bot.name} started`, nativePreset ? `${symbol} · native server engine · source risk sizing` : `${symbol} · ${timeframe} · ${Number(lot).toFixed(2)} lots on the assigned account.`);
+      const selectedMarkets = payload.symbols as string[];
+      const marketLabel = selectedMarkets.length === 1 ? selectedMarkets[0] : `${selectedMarkets.length} markets`;
+      pushToast(
+        'success',
+        `${bot.name} started`,
+        nativePreset
+          ? `${marketLabel} · native scanner · one active trade per bot`
+          : `${marketLabel} · ${timeframe} · ${selectedMarkets.length} isolated EA instance${selectedMarkets.length === 1 ? '' : 's'}`,
+      );
       await refresh(true);
       onClose();
     } catch (e) {
@@ -189,16 +210,91 @@ export default function BotConfigModal({
             <p className="mt-1.5 text-[11px] text-warn-400">No saved accounts - connect one from the Accounts page.</p>
           )}
         </div>
-        <div>
-          <label className="label">Market</label>
-          <MarketSelect
-            value={symbol}
-            onChange={setSymbol}
-            compact
-            tradeOnly
-            accountLogin={accountLogin ? Number(accountLogin) : undefined}
-          />
-          <p className="mt-1 text-[10px] text-slate-600">Searchable and grouped. Markets are loaded directly from the selected MT5 account, including Weltrade SyntX symbols such as FXV50 when the broker exposes them.</p>
+        <div className="sm:col-span-2">
+          <div className="flex items-center justify-between gap-3">
+            <label className="label mb-0">Markets</label>
+            <span className="text-[10px] text-slate-500">{marketMode === 'multi' ? `${symbols.length}/10 selected` : '1 market'}</span>
+          </div>
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              className={`rounded-xl border px-3 py-2 text-xs font-bold transition-colors ${marketMode === 'single' ? 'border-brand-500/50 bg-brand-500/10 text-brand-200' : 'border-white/[0.08] bg-white/[0.03] text-slate-400'}`}
+              onClick={() => {
+                setMarketMode('single');
+                const next = symbols[0] || symbol;
+                setSymbol(next);
+                setSymbols([next]);
+                setMarketCandidate(next);
+              }}
+            >
+              Single Market
+            </button>
+            <button
+              type="button"
+              className={`rounded-xl border px-3 py-2 text-xs font-bold transition-colors ${marketMode === 'multi' ? 'border-brand-500/50 bg-brand-500/10 text-brand-200' : 'border-white/[0.08] bg-white/[0.03] text-slate-400'}`}
+              onClick={() => {
+                setMarketMode('multi');
+                setSymbols((current) => current.includes(symbol) ? current : [symbol, ...current].slice(0, 10));
+                setMarketCandidate(symbol);
+              }}
+            >
+              Multi-Market (2–10)
+            </button>
+          </div>
+
+          {marketMode === 'single' ? (
+            <div className="mt-2">
+              <MarketSelect
+                value={symbol}
+                onChange={(value) => { setSymbol(value); setSymbols([value]); setMarketCandidate(value); }}
+                compact
+                tradeOnly
+                accountLogin={accountLogin ? Number(accountLogin) : undefined}
+              />
+            </div>
+          ) : (
+            <div className="mt-2 space-y-2">
+              <div className="flex gap-2">
+                <div className="min-w-0 flex-1">
+                  <MarketSelect
+                    value={marketCandidate}
+                    onChange={setMarketCandidate}
+                    compact
+                    tradeOnly
+                    accountLogin={accountLogin ? Number(accountLogin) : undefined}
+                  />
+                </div>
+                <button
+                  type="button"
+                  className="btn-ghost shrink-0"
+                  disabled={!marketCandidate || symbols.includes(marketCandidate) || symbols.length >= 10}
+                  onClick={() => {
+                    if (!marketCandidate || symbols.includes(marketCandidate) || symbols.length >= 10) return;
+                    setSymbols((current) => [...current, marketCandidate].slice(0, 10));
+                  }}
+                >
+                  <Plus size={14} /> Add
+                </button>
+              </div>
+              <div className="flex min-h-9 flex-wrap gap-1.5 rounded-xl border border-white/[0.07] bg-white/[0.02] p-2">
+                {symbols.map((market) => (
+                  <button
+                    key={market}
+                    type="button"
+                    className="inline-flex items-center gap-1 rounded-lg border border-brand-500/20 bg-brand-500/[0.08] px-2.5 py-1 text-[11px] font-semibold text-brand-100"
+                    onClick={() => setSymbols((current) => current.filter((item) => item !== market))}
+                    title={`Remove ${market}`}
+                  >
+                    {market}<X size={11} />
+                  </button>
+                ))}
+                {symbols.length === 0 && <span className="px-1 py-1 text-[11px] text-slate-600">Add at least 2 markets.</span>}
+              </div>
+            </div>
+          )}
+          <p className="mt-1 text-[10px] text-slate-600">
+            Markets come directly from the selected MT5 account. Native presets scan all selected markets from one engine; uploaded EAs run one isolated market instance per selection.
+          </p>
         </div>
         <div>
           <label className="label">Timeframe</label>

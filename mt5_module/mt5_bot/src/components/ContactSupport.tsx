@@ -104,11 +104,12 @@ export function TrialCountdown({ trial, large = false }: { trial?: HubTrialInfo 
   );
 }
 
-export default function ContactSupport({ trial: suppliedTrial }: { trial?: HubTrialInfo | null }) {
+export default function ContactSupport({ trial: suppliedTrial, lifetime = false }: { trial?: HubTrialInfo | null; lifetime?: boolean }) {
   const [trial, setTrial] = useState<HubTrialInfo | null>(suppliedTrial || null);
   const [visible, setVisible] = useState(true);
 
   useEffect(() => {
+    if (lifetime) return;
     if (suppliedTrial) {
       setTrial(suppliedTrial);
       return;
@@ -118,7 +119,7 @@ export default function ContactSupport({ trial: suppliedTrial }: { trial?: HubTr
       if (!cancelled) setTrial(value);
     }).catch(() => {});
     return () => { cancelled = true; };
-  }, [suppliedTrial]);
+  }, [suppliedTrial, lifetime]);
 
   useEffect(() => {
     const reopen = () => setVisible(true);
@@ -148,19 +149,23 @@ export default function ContactSupport({ trial: suppliedTrial }: { trial?: HubTr
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-2">
             <p className="text-[13px] font-extrabold text-white">Contact Us</p>
-            <span className="rounded-full border border-warn-400/25 bg-warn-400/10 px-2 py-0.5 text-[8px] font-extrabold uppercase tracking-[0.14em] text-warn-300">
-              30-Day Free Trial
+            <span className={lifetime
+              ? 'rounded-full border border-gain-500/25 bg-gain-500/10 px-2 py-0.5 text-[8px] font-extrabold uppercase tracking-[0.14em] text-gain-300'
+              : 'rounded-full border border-warn-400/25 bg-warn-400/10 px-2 py-0.5 text-[8px] font-extrabold uppercase tracking-[0.14em] text-warn-300'}>
+              {lifetime ? 'Lifetime Access' : '30-Day Free Trial'}
             </span>
           </div>
           <p className="mt-0.5 text-[10px] text-slate-500">Need help or more information? Contact the KOOLKID admin.</p>
         </div>
       </div>
-      <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-white/[0.06] bg-white/[0.025] px-3 py-2">
-        <span className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-wider text-slate-500"><Timer size={11} /> Trial left</span>
-        <span className="mono text-[10px] font-bold text-slate-200">
-          {trial ? (trial.expired || countdown.remaining <= 0 ? 'EXPIRED' : `${countdown.days}d ${String(countdown.hours).padStart(2, '0')}h ${String(countdown.minutes).padStart(2, '0')}m`) : 'Loading...'}
-        </span>
-      </div>
+      {!lifetime && (
+        <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-white/[0.06] bg-white/[0.025] px-3 py-2">
+          <span className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-wider text-slate-500"><Timer size={11} /> Trial left</span>
+          <span className="mono text-[10px] font-bold text-slate-200">
+            {trial ? (trial.expired || countdown.remaining <= 0 ? 'EXPIRED' : `${countdown.days}d ${String(countdown.hours).padStart(2, '0')}h ${String(countdown.minutes).padStart(2, '0')}m`) : 'Loading...'}
+          </span>
+        </div>
+      )}
       <div className="mt-3"><ContactButtons compact /></div>
     </aside>
   );

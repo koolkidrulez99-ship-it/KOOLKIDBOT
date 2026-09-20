@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import threading
 import time
@@ -171,13 +172,16 @@ def _terminal_metrics(row: dict[str, Any]) -> dict[str, Any]:
         trade_deals = [deal for deal in deals if int(getattr(deal, "type", -1)) in trade_types]
         baseline_positions = {int(ticket) for ticket in row.get("baseline_position_tickets", [])}
         baseline_deals = {int(ticket) for ticket in row.get("baseline_deal_tickets", [])}
+        instance_symbol = str(row.get("symbol") or "")
         position_candidates = [
             position for position in positions
-            if _bot_trade_candidate(position, row, baseline_positions, getattr(mt5, "POSITION_REASON_EXPERT", None))
+            if str(getattr(position, "symbol", "") or "") == instance_symbol
+            and _bot_trade_candidate(position, row, baseline_positions, getattr(mt5, "POSITION_REASON_EXPERT", None))
         ]
         deal_candidates = [
             deal for deal in trade_deals
-            if _bot_trade_candidate(deal, row, baseline_deals, getattr(mt5, "DEAL_REASON_EXPERT", None))
+            if str(getattr(deal, "symbol", "") or "") == instance_symbol
+            and _bot_trade_candidate(deal, row, baseline_deals, getattr(mt5, "DEAL_REASON_EXPERT", None))
         ]
         detected_magic, attribution_status = _resolve_bot_magic(position_candidates + deal_candidates, row)
         observed_positions = [position for position in position_candidates if detected_magic and int(getattr(position, "magic", 0) or 0) == detected_magic]
@@ -260,14 +264,24 @@ def reconcile() -> list[dict[str, Any]]:
         return state.get("assignments", [])
 
 
+def _safe_instance_key(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "default")).strip("._")[:80] or "default"
+
+
 def start_bot(request: StartBotRequest) -> dict[str, Any]:
     with _LOCK:
         assignments = reconcile()
-        existing = next((x for x in assignments if int(x.get("bot_id", 0)) == request.bot_id and x.get("status") in {"starting", "running"}), None)
+        instance_key = _safe_instance_key(request.instance_key)
+        existing = next((
+            x for x in assignments
+            if int(x.get("bot_id", 0)) == request.bot_id
+            and str(x.get("instance_key") or "default") == instance_key
+            and x.get("status") in {"starting", "running"}
+        ), None)
         if existing:
             if (int(existing["account_login"]) == request.account_login and existing["symbol"] == request.symbol and existing["timeframe"] == request.timeframe):
                 return existing
-            raise ValueError("This bot already has a running assignment with different settings.")
+            raise ValueError("This bot market instance already has a running assignment with different settings.")
 
         if request.account_type.lower() == "live" and not request.allow_live:
             raise ValueError("LIVE EA execution requires explicit confirmation of the testing-phase risk warning.")
@@ -282,7 +296,7 @@ def start_bot(request: StartBotRequest) -> dict[str, Any]:
             except ValueError:
                 source_data = None
         terminal, data_dir = prepare_dedicated_terminal(
-            str(source_terminal), source_data, f"{request.account_login}-{request.bot_id}"
+            str(source_terminal), source_data, f"{request.account_login}-{request.bot_id}-{instance_key}"
         )
         terminal_in_use = next((x for x in assignments if x.get("status") == "running" and Path(x["terminal_path"]).resolve() == terminal.resolve()), None)
         if terminal_in_use:
@@ -333,7 +347,7 @@ def start_bot(request: StartBotRequest) -> dict[str, Any]:
             raise RuntimeError(metrics.get("metrics_error") or "The assigned MT5 account could not be verified.")
         row = {
             "id": assignment_id, "worker_id": "koolkid-ea-worker", "terminal_id": terminal.parent.name,
-            "account_login": request.account_login, "bot_id": request.bot_id, "ea_file": request.ea_filename,
+            "account_login": request.account_login, "bot_id": request.bot_id, "instance_key": instance_key, "ea_file": request.ea_filename,
             "symbol": request.symbol, "timeframe": request.timeframe, "preset": request.preset_filename,
             "process_id": process.pid, "status": "running", "started_at": _now(), "error": None,
             "terminal_status": "online", "last_activity": observed.get("last_ea_activity") or _last_activity(str(data_dir)),
@@ -349,35 +363,74 @@ def start_bot(request: StartBotRequest) -> dict[str, Any]:
         row.update(metrics)
         row.update({"open_positions": 0, "current_pl": 0.0, "today_pl": 0.0, "last_trade": None})
         state = read_state()
-        state["assignments"] = [x for x in state.get("assignments", []) if int(x.get("bot_id", 0)) != request.bot_id] + [row]
+        state["assignments"] = [
+            x for x in state.get("assignments", [])
+            if not (
+                int(x.get("bot_id", 0)) == request.bot_id
+                and str(x.get("instance_key") or "default") == instance_key
+            )
+        ] + [row]
         write_state(state)
         return row
 
 
+def get_bots(bot_id: int) -> list[dict[str, Any]]:
+    return [x for x in reconcile() if int(x.get("bot_id", 0)) == int(bot_id)]
+
+
 def get_bot(bot_id: int) -> dict[str, Any] | None:
-    return next((x for x in reconcile() if int(x.get("bot_id", 0)) == int(bot_id)), None)
+    rows = get_bots(bot_id)
+    return next((x for x in rows if x.get("status") in {"starting", "running"}), rows[0] if rows else None)
+
+
+def _stop_assignment(stored: dict[str, Any]) -> dict[str, Any]:
+    pid = int(stored.get("process_id") or 0)
+    if _process_alive(pid, stored.get("terminal_path", "")):
+        _terminate_process(pid)
+    stored["status"] = "stopped"
+    stored["terminal_status"] = "offline"
+    stored["ea_status"] = "stopped"
+    stored["ea_verified"] = False
+    stored["account_verified"] = False
+    stored["process_id"] = None
+    stored["stopped_at"] = _now()
+    stored["error"] = None
+    return stored
+
+
+def stop_bot_instance(bot_id: int, instance_key: str) -> dict[str, Any]:
+    target_key = _safe_instance_key(instance_key)
+    with _LOCK:
+        state = read_state()
+        stored = next((
+            x for x in state.get("assignments", [])
+            if int(x.get("bot_id", 0)) == int(bot_id)
+            and str(x.get("instance_key") or "default") == target_key
+        ), None)
+        if not stored:
+            raise KeyError("Bot market assignment not found.")
+        result = dict(_stop_assignment(stored))
+        write_state(state)
+        return result
 
 
 def stop_bot(bot_id: int) -> dict[str, Any]:
     with _LOCK:
-        row = get_bot(bot_id)
-        if not row:
-            raise KeyError("Bot assignment not found.")
-        pid = int(row.get("process_id") or 0)
-        if _process_alive(pid, row.get("terminal_path", "")):
-            _terminate_process(pid)
         state = read_state()
-        stored = next(x for x in state.get("assignments", []) if int(x.get("bot_id", 0)) == int(bot_id))
-        stored["status"] = "stopped"
-        stored["terminal_status"] = "offline"
-        stored["ea_status"] = "stopped"
-        stored["ea_verified"] = False
-        stored["account_verified"] = False
-        stored["process_id"] = None
-        stored["stopped_at"] = _now()
-        stored["error"] = None
+        rows = [x for x in state.get("assignments", []) if int(x.get("bot_id", 0)) == int(bot_id)]
+        if not rows:
+            raise KeyError("Bot assignment not found.")
+        stopped = [dict(_stop_assignment(row)) for row in rows]
         write_state(state)
-        return stored
+        primary = dict(stopped[0])
+        primary.update({
+            "status": "stopped",
+            "terminal_status": "offline",
+            "process_id": None,
+            "instances": stopped,
+            "symbols": [str(row.get("symbol") or "") for row in stopped if row.get("symbol")],
+        })
+        return primary
 
 
 def terminals() -> list[dict[str, str]]:

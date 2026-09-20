@@ -60,6 +60,8 @@ export interface Mt5Bot {
   description: string;
   strategy: string;
   symbol: string;
+  symbols?: string[];
+  market_mode?: 'single' | 'multi';
   timeframe: string;
   account_login: number | null;
   status: 'starting' | 'running' | 'paused' | 'stopping' | 'stopped' | 'error' | 'worker_offline' | 'connecting';

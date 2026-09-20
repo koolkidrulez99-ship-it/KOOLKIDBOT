@@ -74,6 +74,38 @@ def _find_job(job_id: str) -> dict[str, Any] | None:
     return next((row for row in _jobs() if row.get("id") == job_id), None)
 
 
+def job_for_workspace(workspace_id: str, job_id: str) -> dict[str, Any] | None:
+    with _LOCK:
+        row = next(
+            (
+                item for item in _jobs()
+                if str(item.get("id") or "") == str(job_id)
+                and str(item.get("workspace_id") or "") == str(workspace_id)
+            ),
+            None,
+        )
+        return _public_job(dict(row)) if row else None
+
+
+def report_for_workspace(workspace_id: str, job_id: str) -> Path | None:
+    with _LOCK:
+        row = next(
+            (
+                item for item in _jobs()
+                if str(item.get("id") or "") == str(job_id)
+                and str(item.get("workspace_id") or "") == str(workspace_id)
+            ),
+            None,
+        )
+        if not row or row.get("status") != "complete":
+            return None
+        filename = Path(str(row.get("report_filename") or "")).name
+        if not filename:
+            return None
+        path = Path(str(row.get("job_dir") or "")) / filename
+        return path if path.is_file() else None
+
+
 def _update(job_id: str, **changes: Any) -> dict[str, Any]:
     with _LOCK:
         rows = _jobs()
@@ -237,10 +269,51 @@ def _cleanup_runtime(runtime: Path) -> None:
         pass
 
 
+def _runtime_copy_ignore(directory: str, names: list[str]) -> set[str]:
+    """Skip MT5 folders that are live-mutated and can be exclusively locked.
+
+    The cloned tester keeps broker/server configuration, but history/tick caches
+    are intentionally regenerated/downloaded by the isolated Strategy Tester.
+    """
+    path = Path(directory)
+    lowered_parts = {part.lower() for part in path.parts}
+    if "bases" in lowered_parts and path.name.lower() in {"history", "ticks"}:
+        return set(names)
+
+    ignored: set[str] = set()
+    for name in names:
+        lowered = name.lower()
+        if lowered in {"logs", "crash"}:
+            ignored.add(name)
+        elif path == Path(directory) and lowered == "tester":
+            # Never seed a backtest with another terminal's mutable tester cache.
+            ignored.add(name)
+    return ignored
+
+
+def _copy_runtime_file(source: str, target: str) -> str:
+    last_error: OSError | None = None
+    for attempt in range(4):
+        try:
+            return shutil.copy2(source, target)
+        except OSError as exc:
+            last_error = exc
+            if getattr(exc, "winerror", None) != 32 or attempt == 3:
+                raise
+            time.sleep(0.15 * (attempt + 1))
+    if last_error:
+        raise last_error
+    return target
+
+
 def _copy_runtime(source: Path, runtime: Path) -> None:
     _cleanup_runtime(runtime)
-    ignore = shutil.ignore_patterns("Logs", "logs", "Crash", "crash")
-    shutil.copytree(source, runtime, ignore=ignore)
+    shutil.copytree(
+        source,
+        runtime,
+        ignore=_runtime_copy_ignore,
+        copy_function=_copy_runtime_file,
+    )
 
 
 def _write_tester_config(job: dict[str, Any], runtime: Path, expert_rel: str, preset_name: str | None, report: Path) -> Path:

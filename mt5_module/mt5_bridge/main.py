@@ -223,8 +223,20 @@ class HubAuthPayload(BaseModel):
     password: str = Field(min_length=8, max_length=256)
 
 
+def _hub_access_tier(row: dict[str, Any]) -> str:
+    if str(row.get("role") or "user") == "admin":
+        return "lifetime"
+    return "lifetime" if str(row.get("access_tier") or "tester").lower() == "lifetime" else "tester"
+
+
 def _hub_identity(row: dict[str, Any]) -> dict[str, str]:
-    return {"user_id": str(row["id"]), "username": str(row["username"]), "workspace_id": str(row["workspace_id"]), "role": str(row.get("role") or "user")}
+    return {
+        "user_id": str(row["id"]),
+        "username": str(row["username"]),
+        "workspace_id": str(row["workspace_id"]),
+        "role": str(row.get("role") or "user"),
+        "access_tier": _hub_access_tier(row),
+    }
 
 
 def _hub_user_for_workspace(workspace_id: str) -> dict[str, Any] | None:
@@ -378,6 +390,7 @@ def hub_signup(payload: HubAuthPayload):
             ),
             "username": username,
             "role": "admin" if is_reserved_admin else "user",
+            "access_tier": "lifetime" if is_reserved_admin else "tester",
             "password_salt": salt.hex(),
             "password_hash": _password_hash(payload.password, salt),
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -473,6 +486,35 @@ def list_backtests():
     return backtest_manager.list_for_workspace(current_workspace())
 
 
+@app.get("/api/mt5/backtests/{job_id}/report")
+def backtest_report(job_id: str):
+    workspace_id = current_workspace()
+    job = backtest_manager.job_for_workspace(workspace_id, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Backtest was not found.")
+    report = backtest_manager.report_for_workspace(workspace_id, job_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="This backtest did not produce an MT5 HTML report.")
+    stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", Path(str(job.get("bot_filename") or "backtest")).stem) or "backtest"
+    return FileResponse(
+        report,
+        media_type="text/html",
+        filename=f"{stem}_backtest_report{report.suffix.lower() or '.html'}",
+    )
+
+
+@app.get("/api/mt5/backtests/{job_id}/data")
+def backtest_data(job_id: str):
+    job = backtest_manager.job_for_workspace(current_workspace(), job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Backtest was not found.")
+    stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", Path(str(job.get("bot_filename") or "backtest")).stem) or "backtest"
+    return JSONResponse(
+        content=job,
+        headers={"Content-Disposition": f'attachment; filename="{stem}_backtest_data.json"'},
+    )
+
+
 @app.post("/api/mt5/backtests")
 async def create_backtest(
     bot_file: UploadFile = File(...),
@@ -556,12 +598,45 @@ def admin_users(request: Request):
         rows.append({
             "username": user.get("username"),
             "role": user.get("role") or "user",
+            "access_tier": _hub_access_tier(user),
             "joined_at": user.get("created_at"),
             "last_seen": presence.get(workspace_id),
             "online": workspace_id in online,
             "backtests": len([job for job in jobs if job.get("workspace_id") == workspace_id]),
         })
     return rows
+
+
+@app.put("/api/mt5/admin/users/{username}/access")
+def admin_user_access(username: str, request: Request, payload: dict[str, Any] = Body(...)):
+    admin = _require_admin(request)
+    target = username.strip().lower()
+    requested = str(payload.get("access_tier") or "").strip().lower()
+    if requested not in {"tester", "lifetime"}:
+        raise HTTPException(status_code=422, detail="Access tier must be tester or lifetime.")
+    with _HUB_USERS_LOCK:
+        users = _load_hub_users()
+        row = next(
+            (
+                item for item in users["users"]
+                if str(item.get("username") or "").strip().lower() == target
+            ),
+            None,
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="MT5 Hub user was not found.")
+        if str(row.get("role") or "user") == "admin":
+            raise HTTPException(status_code=409, detail="Admin access cannot be changed to a user tier.")
+        row["access_tier"] = requested
+        row["access_updated_at"] = datetime.now(timezone.utc).isoformat()
+        row["access_updated_by"] = str(admin.get("username") or ADMIN_RESERVED_USERNAME)
+        _save_hub_users(users)
+        return {
+            "username": row.get("username"),
+            "role": row.get("role") or "user",
+            "access_tier": _hub_access_tier(row),
+            "joined_at": row.get("created_at"),
+        }
 
 
 @app.get("/api/mt5/journal/{account_login}")
@@ -1040,18 +1115,26 @@ def _library_restart_payload(bot: dict[str, Any], assignment: dict[str, Any]) ->
     return payload
 
 
-def _force_restart_library_bot(bot: dict[str, Any], assignment: dict[str, Any], desired_revision: str) -> dict[str, Any]:
+def _force_restart_library_bot(bot: dict[str, Any], assignment: dict[str, Any] | list[dict[str, Any]], desired_revision: str) -> dict[str, Any]:
     bot_id = int(bot.get("id") or 0)
     previous_revision = str(bot.get("running_library_revision") or "") or None
-    payload = _library_restart_payload(bot, assignment)
+    assignment_rows = assignment if isinstance(assignment, list) else [assignment]
+    payloads = [_library_restart_payload(bot, row) for row in assignment_rows]
     # Intentionally do not inspect open_positions. Library updates force an immediate
     # terminal/EA restart even while broker positions remain open.
     ea_worker_client.request(f"/bots/{bot_id}/stop", "POST", {}, timeout=20)
-    try:
-        restarted = ea_worker_client.request("/bots/start", "POST", payload, timeout=120)
-    except RuntimeError:
-        time.sleep(1.0)
-        restarted = ea_worker_client.request("/bots/start", "POST", payload, timeout=120)
+    restarted_rows: list[dict[str, Any]] = []
+    for payload in payloads:
+        try:
+            restarted_rows.append(ea_worker_client.request("/bots/start", "POST", payload, timeout=120))
+        except RuntimeError:
+            time.sleep(1.0)
+            restarted_rows.append(ea_worker_client.request("/bots/start", "POST", payload, timeout=120))
+    restarted = restarted_rows[0] if len(restarted_rows) == 1 else {
+        **restarted_rows[0],
+        "instances": restarted_rows,
+        "symbols": [row.get("symbol") for row in restarted_rows],
+    }
     _mark_library_revision_running(
         bot_id,
         desired_revision,
@@ -1068,11 +1151,11 @@ def _reconcile_library_updates(workspace_id: str) -> None:
         try:
             state = read_state()
             try:
-                assignments = {
-                    int(row.get("bot_id") or 0): row
-                    for row in ea_worker_client.request("/bots", timeout=8)
-                    if row.get("status") in {"starting", "running"}
-                }
+                assignments: dict[int, list[dict[str, Any]]] = {}
+                for row in ea_worker_client.request("/bots", timeout=8):
+                    if row.get("status") not in {"starting", "running"}:
+                        continue
+                    assignments.setdefault(int(row.get("bot_id") or 0), []).append(row)
             except RuntimeError:
                 assignments = {}
 
@@ -1096,20 +1179,20 @@ def _reconcile_library_updates(workspace_id: str) -> None:
                     )
                     continue
 
-                assignment = assignments.get(bot_id)
-                if not assignment:
+                assignment_rows = assignments.get(bot_id)
+                if not assignment_rows:
                     continue
 
                 running_revision = str(bot.get("running_library_revision") or "")
                 if not running_revision:
                     # First rollout of revision tracking: adopt the current running build
                     # as the baseline without bouncing an existing user's EA.
-                    _mark_library_revision_running(bot_id, desired_revision, assignment)
+                    _mark_library_revision_running(bot_id, desired_revision, assignment_rows[0])
                     continue
                 if running_revision == desired_revision:
                     continue
                 try:
-                    _force_restart_library_bot(bot, assignment, desired_revision)
+                    _force_restart_library_bot(bot, assignment_rows, desired_revision)
                 except Exception as exc:
                     def mark_error(current_state):
                         row = next((b for b in current_state.get("bots", []) if int(b.get("id", 0)) == bot_id), None)
@@ -1280,7 +1363,8 @@ def accounts():
 def test_account(payload: AccountPayload):
     if not payload.password:
         raise HTTPException(status_code=400, detail="MT5 password is required for a connection test.")
-    profile = {"login": payload.login, "nickname": payload.nickname or f"MT5 #{payload.login}", "server": payload.server or "", "broker": payload.broker or "MetaTrader 5"}
+    access_mode = "investor" if str(payload.access_mode or "").lower() == "investor" else "trading"
+    profile = {"login": payload.login, "nickname": payload.nickname or f"MT5 #{payload.login}", "server": payload.server or "", "broker": payload.broker or "MetaTrader 5", "access_mode": access_mode}
     try:
         engine.shutdown_terminal()
         result = multi_account_client.connect(profile, payload.password)
@@ -1670,13 +1754,60 @@ def delete_copy(relationship_id: str):
     return {"ok": bool(update_state(mut))}
 
 
+def _aggregate_ea_assignments(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    if not rows:
+        return {}
+    active = [row for row in rows if row.get("status") in {"starting", "running", "stopping"}]
+    primary = dict((active or rows)[0])
+    symbols = list(dict.fromkeys(str(row.get("symbol") or "") for row in rows if row.get("symbol")))
+    trades = sum(int(row.get("bot_trade_count") or 0) for row in rows)
+    wins = sum(int(row.get("bot_wins") or 0) for row in rows)
+    losses = sum(int(row.get("bot_losses") or 0) for row in rows)
+    statuses = {str(row.get("status") or "") for row in rows}
+    if active:
+        status = "running" if any(row.get("status") == "running" for row in active) else "starting"
+    elif "error" in statuses:
+        status = "error"
+    else:
+        status = "stopped"
+    last_trade = max(
+        (row.get("last_trade") for row in rows if isinstance(row.get("last_trade"), dict)),
+        key=lambda row: str(row.get("time") or ""),
+        default=None,
+    )
+    primary.update({
+        "status": status,
+        "instances": rows,
+        "ea_instances": rows,
+        "symbols": symbols,
+        "market_mode": "multi" if len(symbols) > 1 else "single",
+        "instance_count": len(rows),
+        "active_instance_count": len(active),
+        "open_positions": sum(int(row.get("open_positions") or 0) for row in rows),
+        "current_pl": sum(float(row.get("current_pl") or 0) for row in rows),
+        "today_pl": sum(float(row.get("today_pl") or 0) for row in rows),
+        "bot_trade_count": trades,
+        "bot_wins": wins,
+        "bot_losses": losses,
+        "bot_win_rate": round(wins / trades * 100, 1) if trades else 0.0,
+        "last_trade": last_trade,
+        "ea_verified": bool(rows) and all(bool(row.get("ea_verified")) for row in active or rows),
+        "account_verified": bool(rows) and all(bool(row.get("account_verified")) for row in active or rows),
+        "terminal_status": "online" if active else "offline",
+    })
+    return primary
+
+
 @app.get("/api/mt5/bots")
 def bots():
     state = read_state()
     worker_status = ea_worker_client.status()
     if worker_status["status"] == "online":
         try:
-            assignments = {int(x["bot_id"]): x for x in ea_worker_client.request("/bots")}
+            assignment_rows: dict[int, list[dict[str, Any]]] = {}
+            for item in ea_worker_client.request("/bots"):
+                assignment_rows.setdefault(int(item["bot_id"]), []).append(item)
+            assignments = {bot_id: _aggregate_ea_assignments(rows) for bot_id, rows in assignment_rows.items()}
             def sync(st):
                 for bot in st.get("bots", []):
                     if bot.get("native_engine"):
@@ -1706,6 +1837,11 @@ def bots():
                             "verification_message": assignment.get("verification_message"),
                             "strategy_analysis": assignment.get("strategy_analysis"),
                             "background_mode": assignment.get("background_mode", False),
+                            "symbols": assignment.get("symbols") or [assignment.get("symbol")],
+                            "market_mode": assignment.get("market_mode", "single"),
+                            "ea_instances": assignment.get("ea_instances") or assignment.get("instances") or [],
+                            "instance_count": assignment.get("instance_count", 1),
+                            "active_instance_count": assignment.get("active_instance_count", 1 if assignment_active else 0),
                         })
                     elif bot.get("status") in {"running", "connecting", "worker_offline"}:
                         bot["status"] = "stopped"
@@ -1905,7 +2041,7 @@ def update_bot(bot_id: int, payload: dict[str, Any] = Body(...)):
         for i, bot in enumerate(state.get("bots", [])):
             if int(bot.get("id", 0)) == bot_id:
                 if bot.get("system_preset"):
-                    allowed = {"account_login", "symbol", "timeframe", "bias_timeframe", "lot_size", "settings"}
+                    allowed = {"account_login", "symbol", "symbols", "market_mode", "timeframe", "bias_timeframe", "lot_size", "settings"}
                     safe = {k: v for k, v in payload.items() if k in allowed}
                 else:
                     safe = {k: v for k, v in payload.items() if k not in {"id", "status", "started_at"}}
@@ -1951,10 +2087,23 @@ def start_bot(bot_id: int, payload: dict[str, Any] = Body(default_factory=dict))
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     info = session.get("account_info") or {}
-    symbol = str(payload.get("symbol") or bot.get("symbol") or "")
+    raw_symbols = payload.get("symbols") or bot.get("symbols") or [payload.get("symbol") or bot.get("symbol")]
+    if isinstance(raw_symbols, str):
+        raw_symbols = [raw_symbols]
+    symbols: list[str] = []
+    for item in raw_symbols or []:
+        value = str(item or "").strip()
+        if value and value not in symbols:
+            symbols.append(value)
+    if not symbols:
+        raise HTTPException(status_code=422, detail="Choose at least one market.")
+    if len(symbols) > 10:
+        raise HTTPException(status_code=422, detail="Choose no more than 10 markets for one bot.")
+    symbol = symbols[0]
     available = {row["symbol"] for row in normalize_http_errors(lambda: multi_account_client.account_request(login, "/symbols?visible_only=false&limit=5000", timeout=15))}
-    if symbol not in available:
-        raise HTTPException(status_code=400, detail=f"Symbol {symbol} is unavailable on the selected MT5 account.")
+    missing = [item for item in symbols if item not in available]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Unavailable on the selected MT5 account: {', '.join(missing)}")
 
     if bot.get("native_engine"):
         if not bot.get("native_ready"):
@@ -1968,8 +2117,9 @@ def start_bot(bot_id: int, payload: dict[str, Any] = Body(default_factory=dict))
             if isinstance(payload.get("settings"), dict):
                 row["settings"] = {**dict(row.get("settings") or {}), **dict(payload["settings"])}
             row.update({
-                "account_login": login, "symbol": symbol, "timeframe": execution_timeframe,
-                "bias_timeframe": bias_timeframe,
+                "account_login": login, "symbol": symbol, "symbols": symbols,
+                "market_mode": "multi" if len(symbols) > 1 else "single",
+                "timeframe": execution_timeframe, "bias_timeframe": bias_timeframe,
                 "lot_size": float(payload.get("lot_size") or row.get("lot_size") or 0.01),
             })
             return dict(row)
@@ -1977,6 +2127,7 @@ def start_bot(bot_id: int, payload: dict[str, Any] = Body(default_factory=dict))
         try:
             result = native_runtime.start(
                 current_workspace(), bot_id, login, symbol,
+                symbols=symbols,
                 allow_live=bool(payload.get("confirm_live")),
                 scan_seconds=int(payload.get("scan_seconds") or 20),
                 execution_timeframe=execution_timeframe,
@@ -2007,15 +2158,42 @@ def start_bot(bot_id: int, payload: dict[str, Any] = Body(default_factory=dict))
     }
     def mark_starting(st):
         row = next(b for b in st["bots"] if int(b["id"]) == bot_id)
-        row.update({**{k: v for k, v in payload.items() if k in {"account_login", "symbol", "timeframe", "lot_size", "settings"}}, "status": "connecting"})
+        row.update({
+            **{k: v for k, v in payload.items() if k in {"account_login", "timeframe", "lot_size", "settings"}},
+            "symbol": symbol,
+            "symbols": symbols,
+            "market_mode": "multi" if len(symbols) > 1 else "single",
+            "status": "connecting",
+        })
         return row
     update_state(mark_starting)
+    started_assignments: list[dict[str, Any]] = []
     try:
-        assignment = ea_worker_client.request("/bots/start", "POST", worker_payload, timeout=120)
+        for index, market_symbol in enumerate(symbols, start=1):
+            instance_payload = {
+                **worker_payload,
+                "symbol": market_symbol,
+                "instance_key": f"market-{index}",
+            }
+            started_assignments.append(
+                ea_worker_client.request("/bots/start", "POST", instance_payload, timeout=120)
+            )
+        assignment = _aggregate_ea_assignments(started_assignments)
     except RuntimeError as exc:
+        for started in started_assignments:
+            instance_key = str(started.get("instance_key") or "")
+            if not instance_key:
+                continue
+            try:
+                ea_worker_client.request(
+                    f"/bots/{bot_id}/instances/{quote(instance_key)}/stop",
+                    "POST", {}, timeout=15,
+                )
+            except RuntimeError:
+                pass
         def mark_error(st):
             row = next(b for b in st["bots"] if int(b["id"]) == bot_id)
-            row.update({"status": "error", "last_error": str(exc)})
+            row.update({"status": "error", "last_error": str(exc), "ea_instances": started_assignments})
             return row
         update_state(mark_error)
         raise HTTPException(status_code=409, detail=str(exc))
@@ -2043,6 +2221,11 @@ def start_bot(bot_id: int, payload: dict[str, Any] = Body(default_factory=dict))
             "verification_message": assignment.get("verification_message"),
             "strategy_analysis": assignment.get("strategy_analysis"),
             "background_mode": assignment.get("background_mode", False),
+            "symbols": symbols,
+            "market_mode": "multi" if len(symbols) > 1 else "single",
+            "ea_instances": assignment.get("ea_instances") or assignment.get("instances") or started_assignments,
+            "instance_count": len(started_assignments),
+            "active_instance_count": len([item for item in started_assignments if item.get("status") in {"starting", "running"}]),
             "running_library_revision": str(bot.get("library_revision") or bot_library_revision(bot) or "") or row.get("running_library_revision"),
             "library_update_error": None,
         })
@@ -2084,6 +2267,8 @@ def stop_bot(bot_id: int, payload: dict[str, Any] = Body(default_factory=dict)):
             "terminal_status": assignment.get("terminal_status", "offline"), "account_verified": False,
             "last_activity": assignment.get("last_activity"), "last_error": assignment.get("error"),
             "ea_verified": False, "ea_status": "stopped",
+            "ea_instances": assignment.get("instances") or [],
+            "active_instance_count": 0,
         })
         return row
     try:

@@ -112,6 +112,55 @@ class WorkerTests(unittest.TestCase):
             self.assertTrue(captured["args"][2].startswith("/config:"))
             self.assertTrue((data / "MQL5" / "Experts" / "KOOLKID" / "7" / "Demo.ex5").is_file())
 
+    def test_same_bot_can_run_distinct_market_instances(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            ea = root / "library" / "Demo.ex5"
+            ea.parent.mkdir()
+            ea.write_bytes(b"compiled-ea")
+            terminal = root / "terminal64.exe"
+            terminal.write_bytes(b"terminal")
+            data = root / "data"
+            state = {"assignments": []}
+            next_pid = {"value": 5000}
+
+            class FakeProcess:
+                returncode = None
+                def __init__(self, pid): self.pid = pid
+                def poll(self): return None
+
+            def fake_popen(args, **kwargs):
+                next_pid["value"] += 1
+                return FakeProcess(next_pid["value"])
+
+            def fake_write(next_state):
+                state.clear(); state.update(next_state)
+
+            def fake_prepare(source, source_data, terminal_id):
+                isolated = root / "workers" / terminal_id / "terminal64.exe"
+                isolated.parent.mkdir(parents=True, exist_ok=True)
+                isolated.write_bytes(b"terminal")
+                return isolated, isolated.parent
+
+            with patch.dict(os.environ, {"MT5_EA_LIBRARY_ROOT": str(ea.parent)}), \
+                 patch.object(worker, "select_terminal", return_value=terminal), \
+                 patch.object(worker, "terminal_data_dir", return_value=data), \
+                 patch.object(worker, "prepare_dedicated_terminal", side_effect=fake_prepare), \
+                 patch.object(worker, "read_state", side_effect=lambda: {"assignments": [dict(x) for x in state["assignments"]]}), \
+                 patch.object(worker, "write_state", side_effect=fake_write), \
+                 patch.object(worker.subprocess, "Popen", side_effect=fake_popen), \
+                 patch.object(worker.time, "sleep"), \
+                 patch.object(worker, "capture_log_offsets", return_value={}), \
+                 patch.object(worker, "inspect_ea_logs", return_value={"ea_verified": True, "verification_error": None, "observed_messages": [], "observed_timeframes": [], "observed_traits": [], "last_ea_activity": None}), \
+                 patch.object(worker, "_terminal_metrics", return_value={"account_verified": True, "open_positions": 0, "current_pl": 0, "today_pl": 0}), \
+                 patch.object(worker, "reconcile", side_effect=lambda: [dict(x) for x in state["assignments"]]):
+                first = worker.start_bot(self.request(ea, terminal).model_copy(update={"instance_key": "market-1", "symbol": "EURUSD"}))
+                second = worker.start_bot(self.request(ea, terminal).model_copy(update={"instance_key": "market-2", "symbol": "GBPUSD"}))
+
+            self.assertNotEqual(first["id"], second["id"])
+            self.assertEqual({row["instance_key"] for row in state["assignments"]}, {"market-1", "market-2"})
+            self.assertEqual({row["symbol"] for row in state["assignments"]}, {"EURUSD", "GBPUSD"})
+
     def test_live_start_requires_explicit_confirmation(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

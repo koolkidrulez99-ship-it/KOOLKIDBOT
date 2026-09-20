@@ -60,6 +60,19 @@ export default function AdminConsole({ username }: { username: string }) {
     }
   };
 
+  const changeAccess = async (member: AdminUser, accessTier: 'tester' | 'lifetime') => {
+    if (member.role === 'admin' || member.access_tier === accessTier) return;
+    setBusyId(`user:${member.username}`);
+    try {
+      await adminService.setUserAccess(member.username, accessTier);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'User access could not be changed.');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const tabs: Array<[Tab, string]> = [
     ['users', 'Users'],
     ['backtests', 'Backtests'],
@@ -106,11 +119,40 @@ export default function AdminConsole({ username }: { username: string }) {
           <div className="mt-4 space-y-2">
             {members.map((member) => (
               <div key={member.username} className="rounded-xl border border-white/[0.07] p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <b className="text-white">{member.username}</b>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <b className="text-white">{member.username}</b>
+                      <span className={member.access_tier === 'lifetime'
+                        ? 'rounded-full border border-gain-500/25 bg-gain-500/10 px-2 py-0.5 text-[9px] font-extrabold uppercase tracking-wider text-gain-300'
+                        : 'rounded-full border border-warn-400/25 bg-warn-400/10 px-2 py-0.5 text-[9px] font-extrabold uppercase tracking-wider text-warn-300'}>
+                        {member.role === 'admin' ? 'Admin' : member.access_tier}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-[11px] text-slate-500">Last seen {when(member.last_seen)} · Backtests {member.backtests}</p>
+                  </div>
                   <span className={member.online ? 'text-gain-400' : 'text-slate-500'}>{member.online ? 'Online' : 'Offline'}</span>
                 </div>
-                <p className="mt-1 text-[11px] text-slate-500">Role {member.role} · Last seen {when(member.last_seen)} · Backtests {member.backtests}</p>
+                {member.role !== 'admin' && (
+                  <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-white/[0.06] pt-3">
+                    <span className="mr-1 text-[10px] font-bold uppercase tracking-wider text-slate-600">User access</span>
+                    <button
+                      className={member.access_tier === 'tester' ? 'btn-primary' : 'btn-ghost'}
+                      disabled={busyId === `user:${member.username}`}
+                      onClick={() => void changeAccess(member, 'tester')}
+                    >
+                      Tester
+                    </button>
+                    <button
+                      className={member.access_tier === 'lifetime' ? 'btn-primary' : 'btn-ghost'}
+                      disabled={busyId === `user:${member.username}`}
+                      onClick={() => void changeAccess(member, 'lifetime')}
+                    >
+                      Lifetime
+                    </button>
+                    {busyId === `user:${member.username}` && <span className="text-[10px] text-slate-500">Updating...</span>}
+                  </div>
+                )}
               </div>
             ))}
           </div>
