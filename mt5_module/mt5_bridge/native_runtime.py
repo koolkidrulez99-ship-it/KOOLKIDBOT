@@ -405,12 +405,41 @@ def _execute(
         "confirm_live": bool(allow_live),
     }
     try:
+        existing_tickets = {
+            int(row.get("ticket") or 0)
+            for row in _positions(int(bot["account_login"]))
+            if str(row.get("symbol") or "") == str(bot["symbol"])
+            and str(row.get("comment") or "").startswith(mt5_comment[:16])
+            and int(row.get("ticket") or 0) > 0
+        }
         result = multi_account_client.request("/manual-trade", "POST", payload, timeout=25)
         row = (result.get("results") or {}).get(account_id) or {}
         if not row.get("ok"):
             raise RuntimeError(str(row.get("error") or "8002 rejected native order."))
         order = dict(row.get("result") or {})
         ticket = int(order.get("ticket") or order.get("order") or order.get("deal") or 0)
+
+        if ticket <= 0:
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline and ticket <= 0:
+                for position in _positions(int(bot["account_login"])):
+                    candidate = int(position.get("ticket") or 0)
+                    if candidate <= 0 or candidate in existing_tickets:
+                        continue
+                    if str(position.get("symbol") or "") != str(bot["symbol"]):
+                        continue
+                    if not str(position.get("comment") or "").startswith(mt5_comment[:16]):
+                        continue
+                    ticket = candidate
+                    order["ticket"] = candidate
+                    order["reconciled_after_bridge"] = True
+                    break
+                if ticket <= 0:
+                    time.sleep(0.25)
+
+        if ticket <= 0:
+            raise RuntimeError("MT5 did not confirm a real broker ticket for this preset order.")
+
         management = dict((signal.get("context") or {}).get("management") or {})
         managed = {
             "ticket": ticket, "signal_key": signal_key, "entry": float(signal["entry"]),

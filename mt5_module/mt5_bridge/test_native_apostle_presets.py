@@ -55,7 +55,10 @@ def test_human_apostle_is_ai_only_and_dear_bruce_stays_preset():
     assert NATIVE_PRESETS[1009]["key"] == "dear_bruce"
     assert NATIVE_PRESETS[1009]["ready"] is True
     assert "dear_bruce" in ready_keys()
-    assert all(row["name"] != "BLACK ROCK" for row in SYSTEM_BOT_PRESETS)
+    black_rock = next(row for row in SYSTEM_BOT_PRESETS if row["name"] == "BLACK ROCK")
+    assert int(black_rock["id"]) == 1011
+    assert black_rock["engine"] == "ea"
+    assert black_rock["lifetime_only"] is True
 
 
 def test_native_rows_are_locked_and_described():

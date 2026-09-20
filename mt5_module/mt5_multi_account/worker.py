@@ -669,13 +669,20 @@ def run_worker(config, password, command_q, response_q):
         worker_received_at = time.time()
         out = send_market_order(mt5, req, info)
         ticket = int(out.get("order") or out.get("deal") or 0)
-        # Resolve a live position ticket when possible.
-        for _ in range(4):
+        # Resolve a live position ticket when possible. Some terminals expose the
+        # accepted position slightly after order_send returns, so allow a short
+        # reconciliation window instead of reporting a zero-ticket success.
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
             tagged = [x for x in positions() if x.get("symbol") == symbol and str(x.get("comment") or "").startswith(comment[:16])]
             if tagged:
                 ticket = int(tagged[-1].get("ticket") or ticket)
                 break
-            time.sleep(0.025)
+            if ticket > 0:
+                break
+            time.sleep(0.1)
+        if ticket <= 0:
+            raise RuntimeError("MT5 accepted the request but did not confirm an order/position ticket.")
         out["ticket"] = ticket
         out.setdefault("timing", {})["worker_received_at"] = worker_received_at
         out["timing"]["position_confirmed_at"] = time.time()

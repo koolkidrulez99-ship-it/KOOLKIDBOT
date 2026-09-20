@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "mt5_module"))
 sys.path.insert(0, str(ROOT / "mt5_module" / "mt5_bridge"))
@@ -106,3 +108,63 @@ def test_market_fetch_only_adds_user_selected_extra_timeframes(monkeypatch):
     assert any("timeframe=M30" in path for path in candle_paths)
     assert not any("timeframe=M1&" in path for path in candle_paths)
     assert "M30" in market
+
+
+def test_native_execution_reconciles_zero_ticket_against_broker_position(monkeypatch):
+    bot = {"id": 1009, "name": "DEAR BRUCE", "account_login": 123, "symbol": "XAUUSD"}
+    signal = {
+        "signal_key": "sig-1", "direction": "BUY", "entry": 100.0,
+        "sl": 99.0, "tp": 102.0, "context": {},
+    }
+    position_reads = iter([
+        [],
+        [{"ticket": 777, "symbol": "XAUUSD", "comment": "KKBOT(DEAR BRUCE)"}],
+    ])
+    patches = []
+    attempts = []
+
+    monkeypatch.setattr(native_runtime, "_already_attempted", lambda *_args: False)
+    monkeypatch.setattr(native_runtime, "_risk_volume", lambda *_args: 0.1)
+    monkeypatch.setattr(native_runtime, "_connected_worker", lambda *_args: {"account_id": "session-123"})
+    monkeypatch.setattr(native_runtime, "_positions", lambda *_args: next(position_reads))
+    monkeypatch.setattr(native_runtime, "_record_attempt", lambda *args, **kwargs: attempts.append((args, kwargs)))
+    monkeypatch.setattr(native_runtime, "_patch_bot", lambda *args, **kwargs: patches.append((args, kwargs)))
+    monkeypatch.setattr(
+        native_runtime.multi_account_client,
+        "request",
+        lambda *_args, **_kwargs: {"results": {"session-123": {"ok": True, "result": {"retcode": 10009, "ticket": 0}}}},
+    )
+
+    result = native_runtime._execute(bot, signal, {}, {}, allow_live=False)
+    assert result["ticket"] == 777
+    assert result["result"]["reconciled_after_bridge"] is True
+    assert attempts[-1][0][2] == "executed"
+    assert patches[-1][1]["native_last_execution"]["ticket"] == 777
+
+
+def test_native_execution_never_reports_success_without_real_ticket(monkeypatch):
+    bot = {"id": 1009, "name": "DEAR BRUCE", "account_login": 123, "symbol": "XAUUSD"}
+    signal = {
+        "signal_key": "sig-2", "direction": "BUY", "entry": 100.0,
+        "sl": 99.0, "tp": 102.0, "context": {},
+    }
+    attempts = []
+    monotonic = iter([0.0, 0.0, 4.0])
+
+    monkeypatch.setattr(native_runtime, "_already_attempted", lambda *_args: False)
+    monkeypatch.setattr(native_runtime, "_risk_volume", lambda *_args: 0.1)
+    monkeypatch.setattr(native_runtime, "_connected_worker", lambda *_args: {"account_id": "session-123"})
+    monkeypatch.setattr(native_runtime, "_positions", lambda *_args: [])
+    monkeypatch.setattr(native_runtime, "_record_attempt", lambda *args, **kwargs: attempts.append((args, kwargs)))
+    monkeypatch.setattr(native_runtime, "_patch_bot", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not mark execution")))
+    monkeypatch.setattr(native_runtime.time, "monotonic", lambda: next(monotonic))
+    monkeypatch.setattr(native_runtime.time, "sleep", lambda *_args: None)
+    monkeypatch.setattr(
+        native_runtime.multi_account_client,
+        "request",
+        lambda *_args, **_kwargs: {"results": {"session-123": {"ok": True, "result": {"retcode": 10009, "ticket": 0}}}},
+    )
+
+    with pytest.raises(RuntimeError, match="real broker ticket"):
+        native_runtime._execute(bot, signal, {}, {}, allow_live=False)
+    assert attempts[-1][0][2] == "failed"
