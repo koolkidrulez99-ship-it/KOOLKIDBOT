@@ -1942,28 +1942,130 @@ def _empty_stats():
     }
 
 
+def _stats_close_time(row: dict[str, Any]) -> datetime | None:
+    try:
+        closed = datetime.fromisoformat(str(row.get("close_time") or "").replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if closed.tzinfo is None:
+        closed = closed.replace(tzinfo=timezone.utc)
+    return closed.astimezone(timezone.utc)
+
+
+def _overview_chart_series(
+    live_accounts: list[dict[str, Any]],
+    history_rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    today = datetime.now(timezone.utc).date().isoformat()
+    logins = {int(row.get("login") or 0) for row in live_accounts if int(row.get("login") or 0)}
+    rows = [row for row in history_rows if int(row.get("account_login") or 0) in logins]
+
+    daily_by_login: dict[int, dict[str, float]] = {}
+    daily_total: dict[str, float] = {}
+    for row in rows:
+        closed = _stats_close_time(row)
+        if closed is None:
+            continue
+        day = closed.date().isoformat()
+        login = int(row.get("account_login") or 0)
+        value = float(row.get("net_pl") or 0)
+        by_day = daily_by_login.setdefault(login, {})
+        by_day[day] = by_day.get(day, 0.0) + value
+        daily_total[day] = daily_total.get(day, 0.0) + value
+
+    daily_total.setdefault(today, 0.0)
+    daily_days = sorted(daily_total)
+    daily = [{"date": day, "pl": round(daily_total[day], 2)} for day in daily_days[-30:]]
+
+    if not live_accounts:
+        return [], daily
+
+    history_floor = min(daily_days) if daily_days else today
+    account_floors: list[str] = []
+    for account in live_accounts:
+        login = int(account.get("login") or 0)
+        current = float(account.get("equity") or 0)
+        account_days = sorted(daily_by_login.get(login, {}), reverse=True)
+        floor = history_floor if not account_days else today
+        for day in account_days:
+            previous = current - float(daily_by_login[login].get(day, 0.0))
+            if not math.isfinite(previous) or previous <= 0:
+                break
+            current = previous
+            floor = day
+        account_floors.append(floor)
+
+    common_floor = max(account_floors) if account_floors else today
+    curve_days = [day for day in daily_days if day >= common_floor]
+    if today not in curve_days:
+        curve_days.append(today)
+    curve_days = sorted(set(curve_days))
+
+    account_curves: dict[int, dict[str, float]] = {}
+    for account in live_accounts:
+        login = int(account.get("login") or 0)
+        current = float(account.get("equity") or 0)
+        curve: dict[str, float] = {}
+        for day in reversed(curve_days):
+            curve[day] = current
+            current -= float(daily_by_login.get(login, {}).get(day, 0.0))
+        account_curves[login] = curve
+
+    equity = []
+    for day in curve_days:
+        value = sum(curve.get(day, 0.0) for curve in account_curves.values())
+        equity.append({"date": day, "equity": round(value, 2), "daily_pl": round(daily_total.get(day, 0.0), 2)})
+    return equity, daily
+
+
 @app.get("/api/mt5/stats")
 def stats():
     base = _empty_stats()
     live_accounts = [row for row in accounts() if row.get("status") == "connected"]
-    position_rows = positions()
-    history_rows = _history_for_stats(30)
+    connected_logins = {int(row.get("login") or 0) for row in live_accounts}
+    position_rows = [row for row in positions() if int(row.get("account_login") or 0) in connected_logins]
+    all_history = [
+        row for row in _history_for_stats(0)
+        if int(row.get("account_login") or 0) in connected_logins
+    ]
+    cutoff_30d = datetime.now(timezone.utc) - timedelta(days=30)
+    history_rows = [
+        row for row in all_history
+        if (closed := _stats_close_time(row)) is not None and closed >= cutoff_30d
+    ]
     today = datetime.now(timezone.utc).date().isoformat()
-    today_rows = [row for row in history_rows if str(row.get("close_time", "")).startswith(today)]
+    today_rows = [row for row in all_history if str(row.get("close_time", "")).startswith(today)]
+    total_balance = sum(float(row.get("balance") or 0) for row in live_accounts)
+    total_equity = sum(float(row.get("equity") or 0) for row in live_accounts)
+    floating = total_equity - total_balance
+    margin = sum(float(row.get("margin") or 0) for row in live_accounts)
+    realized_today = sum(float(row.get("net_pl") or 0) for row in today_rows)
+    equity_series, daily_series = _overview_chart_series(live_accounts, all_history)
+    peak_equity = max([float(row.get("equity") or 0) for row in equity_series] + [total_equity], default=0.0)
+    drawdown = max(0.0, (peak_equity - total_equity) / peak_equity * 100.0) if peak_equity > 0 else 0.0
+
     kpis = base["kpis"]
     kpis.update({
-        "total_balance": sum(float(row.get("balance") or 0) for row in live_accounts),
-        "total_equity": sum(float(row.get("equity") or 0) for row in live_accounts),
-        "floating": sum(float(row.get("profit") or 0) for row in position_rows),
-        "margin": sum(float(row.get("margin") or 0) for row in live_accounts),
-        "free_margin": sum(float(row.get("free_margin") or 0) for row in live_accounts),
-        "realized_today": sum(float(row.get("net_pl") or 0) for row in today_rows),
-        "today_pl": sum(float(row.get("net_pl") or 0) for row in today_rows) + sum(float(row.get("profit") or 0) for row in position_rows),
-        "trades_today": len(today_rows), "connected_accounts": len(live_accounts),
-        "open_positions": len(position_rows), "trades_30d": len(history_rows),
-        "profit_30d": sum(float(row.get("net_pl") or 0) for row in history_rows),
-        "win_rate_30d": (100 * len([row for row in history_rows if float(row.get("net_pl") or 0) > 0]) / len(history_rows)) if history_rows else 0,
+        "total_balance": round(total_balance, 2),
+        "total_equity": round(total_equity, 2),
+        "floating": round(floating, 2),
+        "margin": round(margin, 2),
+        "free_margin": round(sum(float(row.get("free_margin") or 0) for row in live_accounts), 2),
+        "margin_level": round(total_equity / margin * 100.0, 2) if margin > 0 else None,
+        "realized_today": round(realized_today, 2),
+        "today_pl": round(realized_today + floating, 2),
+        "trades_today": len(today_rows),
+        "latest_day": max((row["date"] for row in daily_series), default=None),
+        "connected_accounts": len(live_accounts),
+        "open_positions": len(position_rows),
+        "trades_30d": len(history_rows),
+        "profit_30d": round(sum(float(row.get("net_pl") or 0) for row in history_rows), 2),
+        "win_rate_30d": round(100 * len([row for row in history_rows if float(row.get("net_pl") or 0) > 0]) / len(history_rows), 1) if history_rows else 0,
+        "drawdown_pct": round(drawdown, 2),
+        "peak_equity": round(peak_equity, 2),
     })
+    base["equity"] = equity_series
+    base["daily"] = daily_series
     return base
 
 

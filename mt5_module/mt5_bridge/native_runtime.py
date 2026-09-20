@@ -52,7 +52,11 @@ def configured_timeframes(
     row = bot or _bot(bot_id) or {}
     config = dict(row.get("native_config") or {})
     exec_tf = str(execution_timeframe or config.get("execution_timeframe") or row.get("timeframe") or preset.get("entry_tf") or "M5").upper()
-    bias_tf = str(bias_timeframe or config.get("bias_timeframe") or row.get("bias_timeframe") or _primary_bias_timeframe(preset)).upper()
+    raw_bias = str(bias_timeframe or config.get("bias_timeframe") or row.get("bias_timeframe") or _primary_bias_timeframe(preset)).upper()
+    bias_tf = raw_bias if raw_bias in _TIMEFRAME_COUNTS else next(
+        (token for token in raw_bias.replace("+", " ").split() if token in _TIMEFRAME_COUNTS),
+        _primary_bias_timeframe(preset),
+    )
     if exec_tf not in _TIMEFRAME_COUNTS or bias_tf not in _TIMEFRAME_COUNTS:
         raise RuntimeError("Unsupported native execution or bias timeframe.")
     return exec_tf, bias_tf

@@ -168,3 +168,10 @@ def test_native_execution_never_reports_success_without_real_ticket(monkeypatch)
     with pytest.raises(RuntimeError, match="real broker ticket"):
         native_runtime._execute(bot, signal, {}, {}, allow_live=False)
     assert attempts[-1][0][2] == "failed"
+
+
+def test_composite_saved_bias_timeframe_uses_first_supported_frame():
+    bot = {"id": 1002, "timeframe": "M5", "bias_timeframe": "H4 + H1", "native_config": {}}
+    execution_tf, bias_tf = native_runtime.configured_timeframes(1002, bot)
+    assert execution_tf == "M5"
+    assert bias_tf == "H4"

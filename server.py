@@ -4026,6 +4026,24 @@ def _build_default_client_state():
         "contract_meta": {},     # contract_id -> meta
         "bot_auto_close_timers": {}, # contract_id -> Timer for bot-requested close
         "human_pending_contracts": {}, # contract_id -> HUMAN pending settlement guard
+        "human_koolkid_profit": {
+            "enabled": False,
+            "running": False,
+            "base_stake": 1.0,
+            "current_stake": 1.0,
+            "pending_buy": False,
+            "open_contract_id": "",
+            "entry_tick_seq": 0,
+            "close_requested": False,
+            "trade_count": 0,
+            "wins": 0,
+            "losses": 0,
+            "session_profit": 0.0,
+            "last_result": "",
+            "last_error": "",
+            "status": "Stopped",
+            "retry_at": 0.0,
+        },
         "last_seen": time.time(),  # heartbeat (page open)
         "strategies": {
             "KOOLKID": KoolKidStrategy(),
@@ -18728,6 +18746,234 @@ register_cloud_routes(
 )
 
 
+def _ensure_human_koolkid_profit_state(state):
+    defaults = {
+        "enabled": False,
+        "running": False,
+        "base_stake": 1.0,
+        "current_stake": 1.0,
+        "pending_buy": False,
+        "open_contract_id": "",
+        "entry_tick_seq": 0,
+        "close_requested": False,
+        "trade_count": 0,
+        "wins": 0,
+        "losses": 0,
+        "session_profit": 0.0,
+        "last_result": "",
+        "last_error": "",
+        "status": "Stopped",
+        "retry_at": 0.0,
+    }
+    current = state.setdefault("human_koolkid_profit", {})
+    if not isinstance(current, dict):
+        current = {}
+        state["human_koolkid_profit"] = current
+    for key, value in defaults.items():
+        current.setdefault(key, value)
+    return current
+
+
+def _human_koolkid_profit_payload(state):
+    runtime = _ensure_human_koolkid_profit_state(state)
+    return {
+        "status": "success",
+        "enabled": bool(runtime.get("enabled")),
+        "running": bool(runtime.get("running")),
+        "base_stake": round(float(runtime.get("base_stake") or 1.0), 2),
+        "current_stake": round(float(runtime.get("current_stake") or 1.0), 2),
+        "pending_buy": bool(runtime.get("pending_buy")),
+        "open_contract_id": str(runtime.get("open_contract_id") or ""),
+        "close_requested": bool(runtime.get("close_requested")),
+        "trade_count": int(runtime.get("trade_count") or 0),
+        "wins": int(runtime.get("wins") or 0),
+        "losses": int(runtime.get("losses") or 0),
+        "session_profit": round(float(runtime.get("session_profit") or 0.0), 2),
+        "last_result": str(runtime.get("last_result") or ""),
+        "last_error": str(runtime.get("last_error") or ""),
+        "runtime_status": str(runtime.get("status") or "Stopped"),
+        "symbol": str(state.get("human_symbol") or state.get("current_symbol") or "R_10"),
+        "growth_rate": 0.05,
+        "hold_ticks": 2,
+    }
+
+
+def _emit_human_koolkid_profit_status(client_id, state):
+    try:
+        socketio.emit("human_koolkid_profit_status", _human_koolkid_profit_payload(state), room=client_id)
+    except Exception:
+        pass
+
+
+def _send_human_koolkid_profit_buy(client_id, state):
+    runtime = _ensure_human_koolkid_profit_state(state)
+    if not runtime.get("enabled"):
+        return False, "KOOLKID PROFIT is stopped"
+    if runtime.get("pending_buy") or runtime.get("open_contract_id"):
+        return False, "A KOOLKID PROFIT accumulator is already pending or open"
+    if time.time() < float(runtime.get("retry_at") or 0.0):
+        return False, "Waiting to retry"
+    ws = state.get("ws")
+    if not state.get("ws_connected") or not ws:
+        runtime["running"] = False
+        runtime["status"] = "Reconnecting"
+        runtime["last_error"] = "Deriv connection is not ready"
+        runtime["retry_at"] = time.time() + 2.0
+        return False, runtime["last_error"]
+
+    stake = round(max(0.35, float(runtime.get("current_stake") or runtime.get("base_stake") or 1.0)), 2)
+    symbol = str(state.get("human_symbol") or state.get("current_symbol") or "R_10").strip()
+    budget_ok, budget_msg, budget_reservation = _reserve_profile_budget(state, "HUMAN", stake)
+    if not budget_ok:
+        runtime["enabled"] = False
+        runtime["running"] = False
+        runtime["status"] = "Stopped: HUMAN budget limit reached"
+        runtime["last_error"] = str(budget_msg or runtime["status"])
+        return False, runtime["last_error"]
+
+    req_id = _new_req_id()
+    meta = {
+        "profile": "HUMAN",
+        "type": "ACCU",
+        "contract_type": "ACCU",
+        "deriv_contract_type": "ACCU",
+        "barrier": None,
+        "stake": stake,
+        "symbol": symbol,
+        "underlying_symbol": symbol,
+        "time": now_time(),
+        "mode": "HUMAN_KOOLKID_PROFIT",
+        "growth_rate": 0.05,
+        "exit_ticks": 2,
+        "duration": 2,
+        "duration_unit": "t",
+        "strategy_name": "KOOLKID PROFIT",
+        "button": "KOOLKID PROFIT",
+        "budget_reservation": budget_reservation,
+    }
+    state.setdefault("req_meta", {})[req_id] = meta
+    runtime["pending_buy"] = True
+    runtime["running"] = True
+    runtime["status"] = "Opening 5% accumulator"
+    runtime["last_error"] = ""
+    _stamp_trade_latency(meta, "buy_send")
+    payload = {
+        "req_id": req_id,
+        "buy": 1,
+        "price": stake,
+        "parameters": {
+            "amount": stake,
+            "basis": "stake",
+            "contract_type": "ACCU",
+            "currency": str(state.get("currency") or "USD"),
+            "growth_rate": 0.05,
+            "symbol": symbol,
+        },
+    }
+    try:
+        ws.send(json.dumps(payload))
+        _emit_human_koolkid_profit_status(client_id, state)
+        return True, "KOOLKID PROFIT accumulator sent"
+    except Exception as exc:
+        state.get("req_meta", {}).pop(req_id, None)
+        _release_profile_budget_reservation(state, budget_reservation)
+        runtime["pending_buy"] = False
+        runtime["running"] = bool(runtime.get("enabled"))
+        runtime["status"] = "Retrying after send failure" if runtime.get("enabled") else "Stopped"
+        runtime["last_error"] = str(exc)
+        runtime["retry_at"] = time.time() + 2.0
+        _emit_human_koolkid_profit_status(client_id, state)
+        return False, str(exc)
+
+
+def _human_koolkid_profit_buy_confirmed(client_id, state, contract_id, meta):
+    if str((meta or {}).get("mode") or "").upper() != "HUMAN_KOOLKID_PROFIT":
+        return
+    runtime = _ensure_human_koolkid_profit_state(state)
+    runtime["pending_buy"] = False
+    runtime["open_contract_id"] = str(contract_id or "")
+    runtime["entry_tick_seq"] = _get_human_tick_counter(state)
+    runtime["close_requested"] = False
+    runtime["running"] = True
+    runtime["status"] = "Accumulator open: 0/2 ticks" if runtime.get("enabled") else "Stopping after current two-tick trade"
+    runtime["last_error"] = ""
+    _emit_human_koolkid_profit_status(client_id, state)
+
+
+def _human_koolkid_profit_buy_failed(client_id, state, meta, reason):
+    if str((meta or {}).get("mode") or "").upper() != "HUMAN_KOOLKID_PROFIT":
+        return
+    runtime = _ensure_human_koolkid_profit_state(state)
+    runtime["pending_buy"] = False
+    runtime["running"] = bool(runtime.get("enabled"))
+    runtime["status"] = "Retrying after trade error" if runtime.get("enabled") else "Stopped"
+    runtime["last_error"] = str(reason or "Accumulator trade failed")
+    runtime["retry_at"] = time.time() + 2.0
+    _emit_human_koolkid_profit_status(client_id, state)
+
+
+def _maybe_human_koolkid_profit_on_tick(client_id, state):
+    runtime = _ensure_human_koolkid_profit_state(state)
+    contract_id = str(runtime.get("open_contract_id") or "")
+    if contract_id:
+        held = max(0, _get_human_tick_counter(state) - int(runtime.get("entry_tick_seq") or 0))
+        runtime["status"] = f"Accumulator open: {held}/2 ticks"
+        if held >= 2 and not runtime.get("close_requested"):
+            runtime["close_requested"] = True
+            runtime["status"] = "Closing accumulator"
+            ok, msg = _request_sell_contract(client_id, contract_id)
+            if not ok:
+                runtime["close_requested"] = False
+                runtime["last_error"] = str(msg or "Accumulator close failed")
+                runtime["status"] = "Close retry pending"
+        _emit_human_koolkid_profit_status(client_id, state)
+        return
+    if runtime.get("enabled") and not runtime.get("pending_buy"):
+        _send_human_koolkid_profit_buy(client_id, state)
+
+
+def _settle_human_koolkid_profit(state, contract, meta, profit):
+    runtime = _ensure_human_koolkid_profit_state(state)
+    previous_stake = round(float((meta or {}).get("stake") or runtime.get("current_stake") or runtime.get("base_stake") or 1.0), 2)
+    profit = round(float(profit or 0.0), 2)
+    won = profit > 0
+    runtime["session_profit"] = round(float(runtime.get("session_profit") or 0.0) + profit, 2)
+    runtime["trade_count"] = int(runtime.get("trade_count") or 0) + 1
+    runtime["last_result"] = "WIN" if won else "LOSS"
+    if won:
+        runtime["wins"] = int(runtime.get("wins") or 0) + 1
+        runtime["current_stake"] = round(max(0.35, previous_stake + profit), 2)
+    else:
+        runtime["losses"] = int(runtime.get("losses") or 0) + 1
+        runtime["current_stake"] = round(float(runtime.get("base_stake") or 1.0), 2)
+    runtime["pending_buy"] = False
+    runtime["open_contract_id"] = ""
+    runtime["entry_tick_seq"] = 0
+    runtime["close_requested"] = False
+    runtime["retry_at"] = 0.0
+    runtime["running"] = bool(runtime.get("enabled"))
+    runtime["status"] = "Starting next accumulator" if runtime.get("enabled") else "Stopped"
+    runtime["last_error"] = ""
+    return {
+        "profile": "HUMAN",
+        "type": "ACCU",
+        "contract_type": "ACCU",
+        "barrier": None,
+        "stake": previous_stake,
+        "symbol": (meta or {}).get("symbol") or (contract or {}).get("underlying") or state.get("human_symbol"),
+        "time": (meta or {}).get("time") or now_time(),
+        "duration": 2,
+        "duration_unit": "t",
+        "mode": "HUMAN_KOOLKID_PROFIT",
+        "strategy_name": "KOOLKID PROFIT",
+        "result": "WIN" if won else "LOSS",
+        "profit": profit,
+        "status": (contract or {}).get("status") or "sold",
+        "action": "Full profit reinvested" if won else "Stake reset after loss",
+        "next_stake": runtime["current_stake"],
+    }
+
+
 def _send_cloud_accumulator_buy(client_id, *, stake, symbol, growth_rate, signal_id, hold_ticks=2):
     state = clients.get(client_id)
     if not state:
@@ -20430,6 +20676,10 @@ def handle_on_message(client_id, ws, message, expected_nonce):
             except Exception:
                 pass
             try:
+                _human_koolkid_profit_buy_failed(client_id, state, failed_buy_meta, msg)
+            except Exception:
+                pass
+            try:
                 _handle_mutant_auto_buy_failed(state, failed_buy_meta, msg)
             except Exception:
                 logger.exception("[%s] TEMP mutant_auto_buy_failed_handler_error", client_id)
@@ -20774,7 +21024,10 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                             )
                             ntt["auto_both_enabled"] = bool(auto.get("enabled"))
                     elif (meta.get("profile") or "").upper() == "HUMAN":
-                        _upsert_human_pending_contract(state, contract_id, meta=meta, status="OPEN")
+                        if str((meta or {}).get("mode") or "").upper() == "HUMAN_KOOLKID_PROFIT":
+                            _human_koolkid_profit_buy_confirmed(client_id, state, contract_id, meta)
+                        else:
+                            _upsert_human_pending_contract(state, contract_id, meta=meta, status="OPEN")
                 except Exception:
                     pass
                 _schedule_bot_auto_close(client_id, state, contract_id, meta)
@@ -21138,6 +21391,7 @@ def process_tick(client_id, tick):
             _maybe_force_unchain_close_on_countdown(client_id, state)
             _maybe_force_ntt_close_on_countdown(client_id, state)
         if is_human:
+            _maybe_human_koolkid_profit_on_tick(client_id, state)
             _maybe_force_human_pending_close(client_id, state)
 
         if is_cloud and digit is not None:
@@ -21403,6 +21657,14 @@ def process_contract(client_id, contract):
                 socketio.emit("cloud_under9_status", cloud_manager.status(cloud_key), room=client_id)
             except Exception:
                 pass
+        elif (
+            profile_for_contract == "HUMAN"
+            and not is_auto_session_contract
+            and str((meta or {}).get("mode") or "").upper() == "HUMAN_KOOLKID_PROFIT"
+        ):
+            entry = _settle_human_koolkid_profit(state, contract, meta, profit)
+            _remove_human_pending_contract(state, contract_id)
+            _emit_human_koolkid_profit_status(client_id, state)
         elif not is_auto_session_contract:
             strategies = state.get("strategies", {})
             strategy = strategies.get(profile_for_contract)
@@ -25766,6 +26028,77 @@ def unchain_clear_active_route():
         "cleared": cleared,
         "payload": payload,
     })
+
+
+@app.route("/human/koolkid-profit/status", methods=["GET"])
+def human_koolkid_profit_status_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    _cid, state = get_client_state()
+    return jsonify(_human_koolkid_profit_payload(state))
+
+
+@app.route("/human/koolkid-profit/start", methods=["POST"])
+def human_koolkid_profit_start_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    cid, state = get_client_state()
+    if not state.get("ws_connected") or not state.get("ws"):
+        return jsonify({"status": "error", "error": "Connect a Deriv account before starting KOOLKID PROFIT."}), 400
+    data = request.json or {}
+    try:
+        base_stake = round(max(0.35, float(data.get("base_stake") or 1.0)), 2)
+    except Exception:
+        return jsonify({"status": "error", "error": "Enter a valid starting stake."}), 400
+    symbol = str(state.get("human_symbol") or state.get("current_symbol") or "R_10").strip()
+    contracts_for, contracts_error = _get_contracts_for_symbol(cid, state, symbol)
+    if contracts_error:
+        return jsonify({"status": "error", "error": f"Could not verify accumulator availability: {contracts_error}"}), 400
+    if not _contracts_for_has_contract_type(contracts_for, "ACCU"):
+        return jsonify({"status": "error", "error": f"5% accumulators are not available on {symbol}. Choose a supported Volatility market."}), 400
+
+    runtime = _ensure_human_koolkid_profit_state(state)
+    was_busy = bool(runtime.get("pending_buy") or runtime.get("open_contract_id"))
+    runtime["enabled"] = True
+    runtime["running"] = True
+    runtime["base_stake"] = base_stake
+    if not was_busy:
+        runtime["current_stake"] = base_stake
+        runtime["session_profit"] = 0.0
+        runtime["trade_count"] = 0
+        runtime["wins"] = 0
+        runtime["losses"] = 0
+        runtime["last_result"] = ""
+    runtime["last_error"] = ""
+    runtime["retry_at"] = 0.0
+    runtime["status"] = "Starting"
+    _ensure_tick_subscription(state, symbol, force=False, reason="human_koolkid_profit_start", client_id=cid)
+    if not was_busy:
+        ok, msg = _send_human_koolkid_profit_buy(cid, state)
+        if not ok:
+            runtime["enabled"] = False
+            runtime["running"] = False
+            runtime["status"] = "Stopped"
+            _emit_human_koolkid_profit_status(cid, state)
+            return jsonify({"status": "error", "error": msg, "runtime": _human_koolkid_profit_payload(state)}), 400
+    payload = _human_koolkid_profit_payload(state)
+    _emit_human_koolkid_profit_status(cid, state)
+    return jsonify(payload)
+
+
+@app.route("/human/koolkid-profit/stop", methods=["POST"])
+def human_koolkid_profit_stop_route():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+    cid, state = get_client_state()
+    runtime = _ensure_human_koolkid_profit_state(state)
+    runtime["enabled"] = False
+    runtime["running"] = bool(runtime.get("pending_buy") or runtime.get("open_contract_id"))
+    runtime["status"] = "Stopping after current two-tick trade" if runtime["running"] else "Stopped"
+    runtime["retry_at"] = 0.0
+    payload = _human_koolkid_profit_payload(state)
+    _emit_human_koolkid_profit_status(cid, state)
+    return jsonify(payload)
 
 
 @app.route("/human_rf_status", methods=["GET"])
