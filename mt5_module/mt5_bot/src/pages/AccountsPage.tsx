@@ -12,23 +12,21 @@ import { mt5AccountService } from '../services/mt5AccountService';
 import type { Mt5Account } from '../types';
 
 const BROKER_PRESETS = [
-  { name: 'Deriv', servers: ['Deriv-Demo', 'DerivSVG-Server'] },
-  { name: 'Weltrade', servers: ['Weltrade'] },
-  { name: 'HFM', servers: ['HFMarketsGlobal-Demo', 'HFMarketsGlobal-Demo3', 'HFMarketsGlobal-Demo4', 'HFMarketsGlobal-Live1', 'HFMarketsGlobal-Live3', 'HFMarketsGlobal-Live4', 'HFMarketsGlobal-Live5', 'HFMarketsGlobal-Live7', 'HFMarketsGlobal-Live8', 'HFMarketsGlobal-Live9', 'HFMarketsGlobal-Live10', 'HFMarketsGlobal-Live11', 'HFMarketsGlobal-Live12', 'HFMarketsGlobal-Live13', 'HFMarketsGlobal-Live14', 'HFMarketsGlobal-Live15', 'HFMarketsGlobal-Live16', 'HFMarketsGlobal-Live17', 'HFMarketsGlobal-Live18', 'HFMarketsGlobal-Live19', 'HFMarketsGlobal-Live20'] },
-  { name: 'XM Global', servers: ['XMGlobal-MT5', 'XMGlobal-MT5 2', 'XMGlobal-MT5 4', 'XMGlobal-MT5 5', 'XMGlobal-MT5 6', 'XMGlobal-MT5 7', 'XMGlobal-MT5 8', 'XMGlobal-MT5 9', 'XMGlobal-MT5 10', 'XMGlobal-MT5 11', 'XMGlobal-MT5 12', 'XMGlobal-MT5 13', 'XMGlobal-MT5 14', 'XMGlobal-MT5 15', 'XMGlobal-MT5 16', 'XMGlobal-MT5 17', 'XMGlobal-MT5 18', 'XMGlobal-MT5 19', 'XMGlobal-MT5 20'] },
-  { name: 'Qberx Capital', servers: ['QberxCapital-Server'] },
-  { name: 'Exness', servers: [] },
-  { name: 'IC Markets', servers: [] },
-  { name: 'Pepperstone', servers: [] },
-  { name: 'FXTM', servers: [] },
-  { name: 'FBS', servers: [] },
-  { name: 'Eightcap', servers: [] },
-  { name: 'Admiral Markets', servers: [] },
-  { name: 'FTMO', servers: [] },
-  { name: 'Other / Custom Broker', servers: [] },
+  { name: 'Deriv', verified: true, servers: ['Deriv-Demo', 'DerivSVG-Server'] },
+  { name: 'Weltrade', verified: true, servers: ['Weltrade'] },
+  { name: 'HFM', verified: true, servers: ['HFMarketsGlobal-Demo', 'HFMarketsGlobal-Demo3', 'HFMarketsGlobal-Demo4', 'HFMarketsGlobal-Live1', 'HFMarketsGlobal-Live3', 'HFMarketsGlobal-Live4', 'HFMarketsGlobal-Live5', 'HFMarketsGlobal-Live7', 'HFMarketsGlobal-Live8', 'HFMarketsGlobal-Live9', 'HFMarketsGlobal-Live10', 'HFMarketsGlobal-Live11', 'HFMarketsGlobal-Live12', 'HFMarketsGlobal-Live13', 'HFMarketsGlobal-Live14', 'HFMarketsGlobal-Live15', 'HFMarketsGlobal-Live16', 'HFMarketsGlobal-Live17', 'HFMarketsGlobal-Live18', 'HFMarketsGlobal-Live19', 'HFMarketsGlobal-Live20'] },
+  { name: 'XM Global', verified: true, servers: ['XMGlobal-MT5', 'XMGlobal-MT5 2', 'XMGlobal-MT5 4', 'XMGlobal-MT5 5', 'XMGlobal-MT5 6', 'XMGlobal-MT5 7', 'XMGlobal-MT5 8', 'XMGlobal-MT5 9', 'XMGlobal-MT5 10', 'XMGlobal-MT5 11', 'XMGlobal-MT5 12', 'XMGlobal-MT5 13', 'XMGlobal-MT5 14', 'XMGlobal-MT5 15', 'XMGlobal-MT5 16', 'XMGlobal-MT5 17', 'XMGlobal-MT5 18', 'XMGlobal-MT5 19', 'XMGlobal-MT5 20'] },
+  { name: 'Qberx Capital', verified: true, servers: ['QberxCapital-Server'] },
+  { name: 'Exness', verified: false, servers: [] },
+  { name: 'IC Markets', verified: false, servers: [] },
+  { name: 'Pepperstone', verified: false, servers: [] },
+  { name: 'FXTM', verified: false, servers: [] },
+  { name: 'FBS', verified: false, servers: [] },
+  { name: 'Eightcap', verified: false, servers: [] },
+  { name: 'Admiral Markets', verified: false, servers: [] },
+  { name: 'FTMO', verified: false, servers: [] },
+  { name: 'Other / Custom Broker', verified: false, servers: [] },
 ] as const;
-
-const BROKERS = BROKER_PRESETS.map((broker) => broker.name);
 
 export default function AccountsPage() {
   const { accounts, positions, liveProfit, pushToast, refresh, setActive, active } = useHub();
@@ -378,7 +376,8 @@ function AddAccountModal({ open, onClose }: { open: boolean; onClose: () => void
   });
 
   const set = (k: string, v: string) => { setTested(false); setForm((f) => ({ ...f, [k]: v })); };
-  const serverPresets: readonly string[] = BROKER_PRESETS.find((broker) => broker.name === form.broker)?.servers || [];
+  const selectedBroker = BROKER_PRESETS.find((broker) => broker.name === form.broker);
+  const serverPresets: readonly string[] = selectedBroker?.servers || [];
   const setBroker = (broker: string) => {
     const nextServers: readonly string[] = BROKER_PRESETS.find((item) => item.name === broker)?.servers || [];
     setTested(false);
@@ -493,10 +492,13 @@ function AddAccountModal({ open, onClose }: { open: boolean; onClose: () => void
         <div>
           <label className="label">Broker</label>
           <select className="input" value={form.broker} onChange={(e) => setBroker(e.target.value)}>
-            {BROKERS.map((b) => (
-              <option key={b}>{b}</option>
+            {BROKER_PRESETS.map((broker) => (
+              <option key={broker.name} value={broker.name}>{broker.name} - {broker.verified ? 'Verified working' : 'Unverified'}</option>
             ))}
           </select>
+          <p className={`mt-1 text-[10px] font-semibold ${selectedBroker?.verified ? 'text-gain-400' : 'text-warn-400'}`}>
+            {selectedBroker?.verified ? 'Verified working with KOOLKID MT5 Hub.' : 'Unverified broker. Use the exact MT5 server supplied by the broker.'}
+          </p>
         </div>
         <div>
           <label className="label">Server</label>

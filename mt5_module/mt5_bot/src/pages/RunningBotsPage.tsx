@@ -36,7 +36,13 @@ export default function RunningBotsPage() {
       pushToast(
         action === 'stop' ? 'info' : 'success',
         `${b.name} ${action === 'stop' ? 'stopped' : action === 'pause' ? 'paused' : action === 'restart' ? 'restarted' : 'resumed'}`,
-        action === 'stop' ? 'Engine halted; open tickets remain untouched.' : undefined
+        action === 'stop'
+          ? 'Engine halted; open tickets remain untouched.'
+          : action === 'pause'
+            ? b.native_engine
+              ? 'New entries are paused; existing native positions continue to be managed.'
+              : 'The EA terminal is paused. Existing broker positions remain open until resume or manual management.'
+            : undefined
       );
       await refresh(true);
     } catch (e) {
@@ -103,8 +109,13 @@ export default function RunningBotsPage() {
                     ) : (
                       <p className="text-[10px] text-slate-600 mt-1">Terminal: <span className={b.terminal_status === 'online' ? 'text-gain-400' : 'text-loss-400'}>{b.terminal_status || 'unknown'}</span> · EA: <span className={b.ea_verified ? 'text-gain-400' : 'text-warn-400'}>{b.ea_verified ? 'verified active' : 'verifying'}</span>{b.last_activity ? ` · last EA activity ${new Date(b.last_activity).toLocaleString()}` : ''}</p>
                     )}
-                    <p className="text-[10px] text-slate-600 mt-1">Bot activity: <span className="text-slate-300">{b.open_positions ?? 0} open</span> · Floating: <span className={profitTone(Number(b.current_pl || 0))}>{fmtSigned(Number(b.current_pl || 0))}</span> · Realized: <span className={profitTone(Number(b.today_pl || 0))}>{fmtSigned(Number(b.today_pl || 0))}</span></p>
-                    {!isSimulation && b.metrics_scope && <p className={`text-[10px] mt-1 ${b.attribution_status === 'verified' ? 'text-gain-400' : 'text-warn-400'}`}>{b.metrics_scope}</p>}
+                    <p className="text-[10px] text-slate-600 mt-1">
+                      Bot activity: <span className="text-slate-300">{b.open_positions ?? 0} open</span>
+                      {' · '}Floating: <span className={profitTone(Number(b.current_pl || 0))}>{fmtSigned(Number(b.current_pl || 0))}</span>
+                      {' · '}Realized: <span className={profitTone(Number(b.today_pl || 0))}>{fmtSigned(Number(b.today_pl || 0))}</span>
+                      {b.last_trade ? <>{' · '}Last: <span className="text-slate-300">#{b.last_trade.ticket} {b.last_trade.symbol}</span></> : null}
+                    </p>
+                    {!isSimulation && b.metrics_scope && <p className={`text-[10px] mt-1 ${String(b.attribution_status || '').startsWith('verified') ? 'text-gain-400' : 'text-warn-400'}`}>{b.metrics_scope}</p>}
                     {!!b.strategy_analysis?.observed_traits?.length && <p className="text-[10px] text-slate-500 mt-1">Observed behavior: <span className="text-slate-300">{b.strategy_analysis.observed_traits.join(' · ')}</span></p>}
                     {!!b.strategy_analysis?.observed_messages?.length && <p className="text-[10px] text-slate-500 mt-1 line-clamp-2">Latest EA log: {b.strategy_analysis.observed_messages.at(-1)}</p>}
                     {b.verification_message && <p className="text-[10px] text-gain-400 mt-1">{b.verification_message}</p>}
@@ -130,7 +141,7 @@ export default function RunningBotsPage() {
 
                   <div className="flex items-center gap-1.5 ml-auto">
                     {runningNow ? (
-                      <button className="btn-warn !px-3 !py-2 text-xs" title={pauseAvailable ? 'Pause bot' : 'This EA does not expose a safe pause control'} disabled={busyId === b.id || !pauseAvailable} onClick={() => cmd(b, 'pause')}>
+                      <button className="btn-warn !px-3 !py-2 text-xs" title={b.native_engine || pauseAvailable ? 'Pause bot' : 'Pause is unavailable while the EA worker is offline'} disabled={busyId === b.id || (!b.native_engine && !pauseAvailable)} onClick={() => cmd(b, 'pause')}>
                         <Pause size={13} /> Pause
                       </button>
                     ) : pausedNow ? (

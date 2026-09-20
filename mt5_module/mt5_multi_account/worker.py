@@ -56,6 +56,12 @@ def write_bootstrap_config(terminal_path, login, server, credential):
     parser.set("Common", "ProxyEnable", "0")
     parser.set("Common", "KeepPrivate", "0")
     parser.set("Common", "NewsEnable", "0")
+    parser.add_section("Experts")
+    parser.set("Experts", "Enabled", "1")
+    parser.set("Experts", "Api", "0")
+    parser.set("Experts", "Account", "0")
+    parser.set("Experts", "Profile", "0")
+    parser.set("Experts", "Chart", "0")
     with open(config_path, "w", encoding="utf-8") as handle:
         parser.write(handle, space_around_delimiters=False)
     try:
@@ -123,6 +129,9 @@ def ensure_terminal_trading_permissions(terminal_path):
     # of broker/account-side restrictions.
     parser.set("Experts", "Enabled", "1")
     parser.set("Experts", "Api", "0")
+    parser.set("Experts", "Account", "0")
+    parser.set("Experts", "Profile", "0")
+    parser.set("Experts", "Chart", "0")
     with open(common_ini, "w", encoding=encoding) as handle:
         parser.write(handle, space_around_delimiters=False)
 
@@ -570,6 +579,7 @@ def run_worker(config, password, command_q, response_q):
             commission = sum(float(getattr(deal, "commission", 0) or 0) + float(getattr(deal, "fee", 0) or 0) for deal in items)
             comments = [str(getattr(deal, "comment", "") or "") for deal in items]
             source = "Manual" if any(text.lower().startswith("koolkid manual") or text.startswith("KKM:") for text in comments) else next((text for text in comments if text), "MT5")
+            magic = next((int(getattr(deal, "magic", 0) or 0) for deal in items if int(getattr(deal, "magic", 0) or 0)), 0)
             rows.append({
                 "id": position_id, "ticket": position_id, "account_login": int(config["login"]),
                 "symbol": str(first.symbol), "type": "buy" if int(first.type) == int(mt5.DEAL_TYPE_BUY) else "sell",
@@ -577,7 +587,9 @@ def run_worker(config, password, command_q, response_q):
                 "open_price": float(first.price), "close_price": float(last.price), "profit": profit,
                 "swap": swap, "commission": commission, "net_pl": profit + swap + commission,
                 "open_time": datetime.fromtimestamp(int(first.time), timezone.utc).isoformat(),
-                "close_time": datetime.fromtimestamp(int(last.time), timezone.utc).isoformat(), "source": source,
+                "close_time": datetime.fromtimestamp(int(last.time), timezone.utc).isoformat(),
+                "source": source, "magic": magic or None,
+                "comment": next((text for text in comments if text), ""),
             })
         rows.sort(key=lambda row: row["close_time"], reverse=True)
         return rows

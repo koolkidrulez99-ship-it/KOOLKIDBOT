@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Activity, Beaker, Bot, Check, Clock3, LogOut, RefreshCw, ShieldCheck, Users, X } from 'lucide-react';
+import { Activity, Ban, Beaker, Bot, Check, Clock3, LogOut, RefreshCw, ShieldCheck, UserCheck, Users, X } from 'lucide-react';
 import { adminService } from '../services/adminService';
 import type { AdminOverview, AdminUser, ResearchItem } from '../services/adminService';
 import type { BacktestJob } from '../services/backtestService';
@@ -73,6 +73,21 @@ export default function AdminConsole({ username }: { username: string }) {
     }
   };
 
+  const changeBan = async (member: AdminUser) => {
+    if (member.role === 'admin') return;
+    const nextBanned = !member.banned;
+    if (nextBanned && !window.confirm(`Ban ${member.username}? Their current session and future logins will be blocked.`)) return;
+    setBusyId(`ban:${member.username}`);
+    try {
+      await adminService.setUserBanned(member.username, nextBanned);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'User ban status could not be changed.');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const tabs: Array<[Tab, string]> = [
     ['users', 'Users'],
     ['backtests', 'Backtests'],
@@ -128,6 +143,7 @@ export default function AdminConsole({ username }: { username: string }) {
                         : 'rounded-full border border-warn-400/25 bg-warn-400/10 px-2 py-0.5 text-[9px] font-extrabold uppercase tracking-wider text-warn-300'}>
                         {member.role === 'admin' ? 'Admin' : member.access_tier}
                       </span>
+                      {member.banned && <span className="rounded-full border border-loss-500/30 bg-loss-500/10 px-2 py-0.5 text-[9px] font-extrabold uppercase tracking-wider text-loss-300">Banned</span>}
                     </div>
                     <p className="mt-1 text-[11px] text-slate-500">Last seen {when(member.last_seen)} · Backtests {member.backtests}</p>
                   </div>
@@ -150,7 +166,15 @@ export default function AdminConsole({ username }: { username: string }) {
                     >
                       Lifetime
                     </button>
+                    <button
+                      className={member.banned ? 'btn-ghost ml-auto' : 'btn-danger ml-auto'}
+                      disabled={busyId !== null}
+                      onClick={() => void changeBan(member)}
+                    >
+                      {member.banned ? <><UserCheck size={13} /> Unban User</> : <><Ban size={13} /> Ban User</>}
+                    </button>
                     {busyId === `user:${member.username}` && <span className="text-[10px] text-slate-500">Updating...</span>}
+                    {busyId === `ban:${member.username}` && <span className="text-[10px] text-slate-500">Updating ban...</span>}
                   </div>
                 )}
               </div>

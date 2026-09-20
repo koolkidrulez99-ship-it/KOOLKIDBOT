@@ -125,13 +125,27 @@ def _last_activity(data_dir: str) -> str | None:
     return datetime.fromtimestamp(newest, timezone.utc).isoformat() if newest else None
 
 
+def _identity_text(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+def _comment_matches_ea(item: Any, row: dict[str, Any]) -> bool:
+    comment = _identity_text(getattr(item, "comment", ""))
+    ea_name = _identity_text(Path(str(row.get("ea_file") or "")).stem)
+    return bool(comment and ea_name and (comment == ea_name or comment.startswith(ea_name) or ea_name.startswith(comment)))
+
+
 def _bot_trade_candidate(item: Any, row: dict[str, Any], baseline: set[int], expert_reason: int | None) -> bool:
     ticket = int(getattr(item, "ticket", 0) or 0)
     if ticket in baseline or str(getattr(item, "symbol", "")) != str(row.get("symbol") or ""):
         return False
     magic = int(getattr(item, "magic", 0) or 0)
     comment = str(getattr(item, "comment", "") or "").strip().lower()
-    if magic in {0, COPY_MAGIC} or comment.startswith(HUB_COMMENTS):
+    if magic == COPY_MAGIC or comment.startswith(HUB_COMMENTS):
+        return False
+    if _comment_matches_ea(item, row):
+        return True
+    if magic == 0:
         return False
     reason = getattr(item, "reason", None)
     return expert_reason is not None and reason is not None and int(reason) == int(expert_reason)
@@ -142,7 +156,7 @@ def _resolve_bot_magic(candidates: list[Any], row: dict[str, Any]) -> tuple[int 
     if detected:
         return detected, "verified"
     configured = int(row.get("configured_magic") or 0)
-    available = {int(getattr(item, "magic", 0) or 0) for item in candidates}
+    available = {int(getattr(item, "magic", 0) or 0) for item in candidates if int(getattr(item, "magic", 0) or 0)}
     if configured and configured in available:
         row["detected_magic"] = configured
         return configured, "verified"
@@ -150,6 +164,8 @@ def _resolve_bot_magic(candidates: list[Any], row: dict[str, Any]) -> tuple[int 
         detected = available.pop()
         row["detected_magic"] = detected
         return detected, "verified"
+    if candidates and all(_comment_matches_ea(item, row) for item in candidates):
+        return 0, "verified_comment"
     return None, "ambiguous" if len(available) > 1 else "pending"
 
 
@@ -184,8 +200,12 @@ def _terminal_metrics(row: dict[str, Any]) -> dict[str, Any]:
             and _bot_trade_candidate(deal, row, baseline_deals, getattr(mt5, "DEAL_REASON_EXPERT", None))
         ]
         detected_magic, attribution_status = _resolve_bot_magic(position_candidates + deal_candidates, row)
-        observed_positions = [position for position in position_candidates if detected_magic and int(getattr(position, "magic", 0) or 0) == detected_magic]
-        observed_deals = [deal for deal in deal_candidates if detected_magic and int(getattr(deal, "magic", 0) or 0) == detected_magic]
+        if attribution_status == "verified_comment":
+            observed_positions = list(position_candidates)
+            observed_deals = list(deal_candidates)
+        else:
+            observed_positions = [position for position in position_candidates if detected_magic and int(getattr(position, "magic", 0) or 0) == detected_magic]
+            observed_deals = [deal for deal in deal_candidates if detected_magic and int(getattr(deal, "magic", 0) or 0) == detected_magic]
         close_entries = {
             int(value) for value in (
                 getattr(mt5, "DEAL_ENTRY_OUT", None), getattr(mt5, "DEAL_ENTRY_OUT_BY", None),
@@ -201,10 +221,12 @@ def _terminal_metrics(row: dict[str, Any]) -> dict[str, Any]:
         last = max(observed_deals, key=lambda deal: int(getattr(deal, "time_msc", 0) or 0), default=None)
         if attribution_status == "verified":
             scope = f"Bot-only MT5 activity matched to magic number {detected_magic}."
+        elif attribution_status == "verified_comment":
+            scope = f"Bot-only MT5 activity matched to EA comment {Path(str(row.get('ea_file') or '')).stem}."
         elif attribution_status == "ambiguous":
             scope = "Bot-only totals unavailable because multiple unclaimed EA magic numbers were observed."
         else:
-            scope = "Waiting for this EA to place a trade with a unique MT5 magic number."
+            scope = "Waiting for this EA to place an attributable MT5 trade."
         return {
             "account_verified": True,
             "open_positions": len(observed_positions),
@@ -412,6 +434,71 @@ def stop_bot_instance(bot_id: int, instance_key: str) -> dict[str, Any]:
         result = dict(_stop_assignment(stored))
         write_state(state)
         return result
+
+
+def pause_bot(bot_id: int) -> dict[str, Any]:
+    with _LOCK:
+        state = read_state()
+        rows = [x for x in state.get("assignments", []) if int(x.get("bot_id", 0)) == int(bot_id)]
+        if not rows:
+            raise KeyError("Bot assignment not found.")
+        paused: list[dict[str, Any]] = []
+        for row in rows:
+            if row.get("status") == "paused":
+                paused.append(dict(row))
+                continue
+            if row.get("status") not in {"starting", "running", "stopping"}:
+                raise ValueError("Only a running EA assignment can be paused.")
+            pid = int(row.get("process_id") or 0)
+            if _process_alive(pid, row.get("terminal_path", "")):
+                _terminate_process(pid)
+            row.update({
+                "status": "paused",
+                "terminal_status": "offline",
+                "ea_status": "paused",
+                "process_id": None,
+                "paused_at": _now(),
+                "error": None,
+            })
+            paused.append(dict(row))
+        write_state(state)
+        primary = dict(paused[0])
+        primary.update({
+            "status": "paused",
+            "terminal_status": "offline",
+            "process_id": None,
+            "instances": paused,
+            "symbols": [str(row.get("symbol") or "") for row in paused if row.get("symbol")],
+        })
+        return primary
+
+
+def resume_bot(bot_id: int) -> dict[str, Any]:
+    with _LOCK:
+        state = read_state()
+        rows = [dict(x) for x in state.get("assignments", []) if int(x.get("bot_id", 0)) == int(bot_id)]
+        if not rows:
+            raise KeyError("Bot assignment not found.")
+        requests = []
+        for row in rows:
+            if row.get("status") != "paused":
+                raise ValueError("Only a paused EA assignment can be resumed.")
+            request = row.get("restart_request")
+            if not isinstance(request, dict):
+                raise ValueError("This paused EA has no saved restart configuration.")
+            requests.append(dict(request))
+
+    resumed: list[dict[str, Any]] = []
+    for request in requests:
+        resumed.append(start_bot(StartBotRequest(**request)))
+
+    primary = dict(resumed[0])
+    primary.update({
+        "status": "running" if all(row.get("status") == "running" for row in resumed) else "starting",
+        "instances": resumed,
+        "symbols": [str(row.get("symbol") or "") for row in resumed if row.get("symbol")],
+    })
+    return primary
 
 
 def stop_bot(bot_id: int) -> dict[str, Any]:

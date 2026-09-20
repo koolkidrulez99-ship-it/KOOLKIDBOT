@@ -10,6 +10,10 @@ import type { Mt5HistoryRow } from '../types';
 
 type Range = 'today' | '7' | '30' | 'all';
 
+function tradeNet(row: Mt5HistoryRow) {
+  return Number(row.net_pl ?? (Number(row.profit || 0) + Number(row.swap || 0) + Number(row.commission || 0)));
+}
+
 export default function BotPerformancePage() {
   const { id } = useParams();
   const { bots, accountName } = useHub();
@@ -18,12 +22,19 @@ export default function BotPerformancePage() {
   const [range, setRange] = useState<Range>('all');
 
   useEffect(() => {
-    mt5HistoryService.list().then(setHistory).catch(() => setHistory([]));
+    mt5HistoryService.list(true).then(setHistory).catch(() => setHistory([]));
   }, []);
 
   const rows = useMemo(() => {
     if (!bot || !history) return [];
-    const matching = history.filter((h) => h.source === bot.name);
+    const sourceLabel = `KKBOT(${bot.name})`;
+    const legacyNative = `KKN${bot.id}:`;
+    const matching = history.filter((h) =>
+      Number(h.bot_id || 0) === bot.id
+      || h.source === sourceLabel
+      || h.source === bot.name
+      || String(h.source || '').startsWith(legacyNative)
+    );
     if (range === 'all') return matching;
     const now = new Date();
     if (range === 'today') return matching.filter((h) => new Date(h.close_time).toDateString() === now.toDateString());
@@ -33,15 +44,15 @@ export default function BotPerformancePage() {
   }, [bot, history, range]);
 
   const perf = useMemo(() => {
-    const wins = rows.filter((r) => r.profit > 0);
-    const losses = rows.filter((r) => r.profit < 0);
-    const grossProfit = wins.reduce((s, r) => s + r.profit, 0);
-    const grossLoss = losses.reduce((s, r) => s + r.profit, 0);
+    const wins = rows.filter((r) => tradeNet(r) > 0);
+    const losses = rows.filter((r) => tradeNet(r) < 0);
+    const grossProfit = wins.reduce((s, r) => s + tradeNet(r), 0);
+    const grossLoss = losses.reduce((s, r) => s + tradeNet(r), 0);
     let curve = 0;
     let peak = 0;
     let maxDrawdown = 0;
     for (const r of [...rows].reverse()) {
-      curve += r.profit;
+      curve += tradeNet(r);
       peak = Math.max(peak, curve);
       maxDrawdown = Math.max(maxDrawdown, peak - curve);
     }
@@ -55,8 +66,8 @@ export default function BotPerformancePage() {
       net: grossProfit + grossLoss,
       avgWin: wins.length ? grossProfit / wins.length : 0,
       avgLoss: losses.length ? grossLoss / losses.length : 0,
-      largestWin: wins.length ? Math.max(...wins.map((r) => r.profit)) : 0,
-      largestLoss: losses.length ? Math.min(...losses.map((r) => r.profit)) : 0,
+      largestWin: wins.length ? Math.max(...wins.map(tradeNet)) : 0,
+      largestLoss: losses.length ? Math.min(...losses.map(tradeNet)) : 0,
       currentDrawdown: Math.max(0, peak - curve),
       maxDrawdown,
     };
@@ -89,11 +100,13 @@ export default function BotPerformancePage() {
 
       {history === null ? <div className="grid grid-cols-2 md:grid-cols-4 gap-3">{Array.from({ length: 8 }).map((_, i) => <Skel key={i} className="h-28" />)}</div> : (
         <>
-          <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-3">
             <StatCard label="Trades" value={perf.trades} icon={BarChart3} />
             <StatCard label="Wins / Losses" value={`${perf.wins} / ${perf.losses}`} icon={Target} />
             <StatCard label="Win rate" value={perf.trades ? `${perf.winRate.toFixed(1)}%` : '—'} tone="brand" />
             <StatCard label="Net P/L" value={perf.trades ? fmtSigned(perf.net) : '—'} tone={perf.net >= 0 ? 'gain' : 'loss'} icon={TrendingUp} />
+            <StatCard label="Floating P/L" value={fmtSigned(Number(bot.current_pl || 0))} tone={Number(bot.current_pl || 0) >= 0 ? 'gain' : 'loss'} />
+            <StatCard label="Realized today" value={fmtSigned(Number(bot.today_pl || 0))} tone={Number(bot.today_pl || 0) >= 0 ? 'gain' : 'loss'} />
             <StatCard label="Gross profit" value={perf.trades ? fmtUSD(perf.grossProfit) : '—'} tone="gain" />
             <StatCard label="Gross loss" value={perf.trades ? fmtSigned(perf.grossLoss) : '—'} tone="loss" />
           </div>
@@ -109,7 +122,10 @@ export default function BotPerformancePage() {
           <Panel className="mt-4 overflow-hidden">
             <div className="px-5 py-4 border-b border-white/[0.06] flex items-center gap-2"><Clock size={14} className="text-brand-300" /><h3 className="text-sm font-bold text-white">Recorded trades</h3><span className="text-[11px] text-slate-600">{rows.length} in selected range</span></div>
             {rows.length === 0 ? <EmptyState icon={BarChart3} title="No recorded performance in this range" sub="The hub will calculate results only from trades actually recorded for this bot. It does not invent performance data." /> : (
-              <div className="overflow-x-auto"><table className="tbl"><thead><tr><th>Ticket</th><th>Symbol</th><th>Side</th><th>Volume</th><th>Close</th><th>P/L</th></tr></thead><tbody>{rows.slice(0, 50).map((r) => <tr key={r.id}><td className="mono text-slate-400">#{r.ticket}</td><td className="font-semibold text-white">{r.symbol}</td><td><Badge tone={r.type === 'buy' ? 'brand' : 'loss'}>{r.type}</Badge></td><td className="mono text-slate-300">{r.volume.toFixed(2)}</td><td className="text-slate-500">{new Date(r.close_time).toLocaleString()}</td><td className={`mono font-bold ${profitTone(r.profit)}`}>{fmtSigned(r.profit)}</td></tr>)}</tbody></table></div>
+              <div className="overflow-x-auto"><table className="tbl"><thead><tr><th>Ticket</th><th>Symbol</th><th>Side</th><th>Volume</th><th>Close</th><th>P/L</th></tr></thead><tbody>{rows.slice(0, 50).map((r) => {
+                const net = tradeNet(r);
+                return <tr key={`${r.account_login}:${r.ticket}:${r.close_time}`}><td className="mono text-slate-400">#{r.ticket}</td><td className="font-semibold text-white">{r.symbol}</td><td><Badge tone={r.type === 'buy' ? 'brand' : 'loss'}>{r.type}</Badge></td><td className="mono text-slate-300">{r.volume.toFixed(2)}</td><td className="text-slate-500">{new Date(r.close_time).toLocaleString()}</td><td className={`mono font-bold ${profitTone(net)}`}>{fmtSigned(net)}</td></tr>;
+              })}</tbody></table></div>
             )}
           </Panel>
         </>

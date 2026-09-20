@@ -5,7 +5,7 @@ import { MARKET, SYMBOL_LIST, marginFor, pipValue } from '../lib/market';
 import { fmtDateTime, fmtPrice, fmtSigned, fmtUSD, profitTone } from '../lib/format';
 import { Badge, PageHeader, Panel, Spinner, Toggle } from '../components/ui';
 import { openTrade } from '../lib/actions';
-import type { Mt5HistoryRow, Mt5Quote } from '../types';
+import type { Mt5HistoryRow, Mt5Quote, Mt5SymbolInfo } from '../types';
 import { mt5HistoryService } from '../services/mt5HistoryService';
 import { mt5MarketService } from '../services/mt5MarketService';
 import { isSimulation } from '../config/runtime';
@@ -38,7 +38,7 @@ function diffMs(later: unknown, earlier: unknown) {
 }
 
 export default function ManualTradePage() {
-  const { accounts, activeAccount, market, livePrice, liveQuote, mt5Symbols, pushToast, refresh } = useHub();
+  const { accounts, activeAccount, market, livePrice, liveQuote, pushToast, refresh } = useHub();
   const connected = useMemo(() => accounts.filter((a) => a.status === 'connected'), [accounts]);
 
   const [login, setLogin] = usePersistentState<number | ''>('manual_account_login', '');
@@ -52,6 +52,8 @@ export default function ManualTradePage() {
   const [busy, setBusy] = useState(false);
   const [manualHistory, setManualHistory] = useState<Mt5HistoryRow[]>([]);
   const [selectedBridgeQuote, setSelectedBridgeQuote] = useState<Mt5Quote | null>(null);
+  const [selectedAccountSymbols, setSelectedAccountSymbols] = useState<Mt5SymbolInfo[]>([]);
+  const [symbolsLoading, setSymbolsLoading] = useState(false);
   const [copyOpen, setCopyOpen] = useState(false);
   const [multiAccounts, setMultiAccounts] = useState<MultiAccount[]>([]);
   const [configuredSlaves, setConfiguredSlaves] = useState<string[]>([]);
@@ -98,13 +100,34 @@ export default function ManualTradePage() {
   }, [accounts]);
 
   useEffect(() => {
-    if (isSimulation || !mt5Symbols.length) return;
-    if (mt5Symbols.some((s) => s.symbol === symbol && s.trade_allowed)) return;
-    const preferred = mt5Symbols.find((s) => s.trade_allowed && s.symbol.toUpperCase() === 'XAUUSD')
-      || mt5Symbols.find((s) => s.trade_allowed && s.symbol.toUpperCase().startsWith('XAUUSD'))
-      || mt5Symbols.find((s) => s.trade_allowed);
-    if (preferred) setSymbol(preferred.symbol);
-  }, [mt5Symbols, symbol]);
+    if (isSimulation || !acc) {
+      setSelectedAccountSymbols([]);
+      setSymbolsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setSymbolsLoading(true);
+    mt5MarketService.symbols(acc.login)
+      .then((rows) => {
+        if (cancelled) return;
+        const tradable = rows.filter((row) => row.trade_allowed);
+        setSelectedAccountSymbols(tradable);
+        if (tradable.some((row) => row.symbol === symbol)) return;
+        const preferred = tradable.find((row) => row.symbol.toUpperCase() === 'XAUUSD')
+          || tradable.find((row) => row.symbol.toUpperCase().startsWith('XAUUSD'))
+          || tradable[0];
+        if (preferred) setSymbol(preferred.symbol);
+      })
+      .catch(() => {
+        if (!cancelled) setSelectedAccountSymbols([]);
+      })
+      .finally(() => {
+        if (!cancelled) setSymbolsLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [acc?.login]);
+
+
 
   useEffect(() => {
     if (isSimulation || !symbol || !acc) { setSelectedBridgeQuote(null); return; }
@@ -130,7 +153,7 @@ export default function ManualTradePage() {
   const price = livePrice(symbol);
   const quote = selectedBridgeQuote || liveQuote(symbol);
   const meta = MARKET[symbol];
-  const symbolInfo = mt5Symbols.find((s) => s.symbol === symbol);
+  const symbolInfo = selectedAccountSymbols.find((s) => s.symbol === symbol);
   const bid = quote?.bid || price;
   const ask = quote?.ask || (price + (meta?.pip || 0) * 2);
   const entryPrice = side === 'buy' ? ask : bid;
@@ -473,7 +496,7 @@ export default function ManualTradePage() {
           <Panel className="p-5">
             <h3 className="text-sm font-bold text-white">Watchlist</h3>
             <div className="mt-3 space-y-1.5">
-              {SYMBOL_LIST.filter((s) => isSimulation || mt5Symbols.some((x) => x.symbol === s)).map((s) => {
+              {SYMBOL_LIST.filter((s) => isSimulation || selectedAccountSymbols.some((x) => x.symbol === s)).map((s) => {
                 const p = market[s] ?? MARKET[s].base;
                 const chg = ((p - MARKET[s].base) / MARKET[s].base) * 100;
                 return (

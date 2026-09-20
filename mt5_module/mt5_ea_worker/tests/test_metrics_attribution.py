@@ -21,6 +21,13 @@ class BotMetricsAttributionTests(TestCase):
         self.assertFalse(_bot_trade_candidate(self.item(magic=COPY_MAGIC, comment="KKCOPY:123"), row, set(), 3))
         self.assertFalse(_bot_trade_candidate(self.item(magic=510999, comment="KOOLKID Hub"), row, set(), 3))
 
+    def test_zero_magic_trade_can_be_attributed_by_ea_comment(self):
+        row = {"symbol": "USDCAD", "ea_file": "Dear_Bruce.ex5"}
+        item = self.item(magic=0, reason=0, comment="Dear Bruce")
+        self.assertTrue(_bot_trade_candidate(item, row, set(), 3))
+        magic, status = _resolve_bot_magic([item], row)
+        self.assertEqual((magic, status), (0, "verified_comment"))
+
     def test_unique_magic_is_bound_and_ambiguous_magic_is_rejected(self):
         row = {}
         magic, status = _resolve_bot_magic([self.item(magic=812345), self.item(ticket=2, magic=812345)], row)

@@ -19,7 +19,7 @@ function netPl(r: Mt5HistoryRow): number {
 }
 
 export default function HistoryPage() {
-  const { active, accountName } = useHub();
+  const { accounts, accountName } = useHub();
   const [rows, setRows] = useState<Mt5HistoryRow[] | null>(null);
   const [error, setError] = useState('');
   const [result, setResult] = usePersistentState<ResultFilter>('history_result_filter', 'all');
@@ -30,17 +30,25 @@ export default function HistoryPage() {
   const [clearedAt, setClearedAt] = usePersistentState<string | null>('history_cleared_at', null);
   const [clearOpen, setClearOpen] = useState(false);
 
-  const load = () => {
-    mt5HistoryService.list()
+  const load = (force = false) => {
+    mt5HistoryService.list(force)
       .then((data) => { setRows(data); setError(''); })
       .catch((e) => setError(e instanceof Error ? e.message : 'History request failed'));
   };
 
-  useEffect(load, []);
+  useEffect(() => {
+    load();
+    const refreshVisible = () => { if (!document.hidden) load(); };
+    const id = window.setInterval(refreshVisible, 20000);
+    window.addEventListener('focus', refreshVisible);
+    return () => {
+      window.clearInterval(id);
+      window.removeEventListener('focus', refreshVisible);
+    };
+  }, []);
 
   const filtered = useMemo(() => {
     let out = rows || [];
-    if (active !== 'all') out = out.filter((r) => r.account_login === active);
     if (account !== 'all') out = out.filter((r) => String(r.account_login) === account);
     if (symbol !== 'all') out = out.filter((r) => r.symbol === symbol);
     if (result === 'win') out = out.filter((r) => netPl(r) > 0);
@@ -58,7 +66,7 @@ export default function HistoryPage() {
       if (clearedAt) out = out.filter((r) => new Date(r.close_time).getTime() > new Date(clearedAt).getTime());
     }
     return out;
-  }, [rows, active, account, symbol, result, sourceFilter, dateFilter, clearedAt]);
+  }, [rows, account, symbol, result, sourceFilter, dateFilter, clearedAt]);
 
   const summary = useMemo(() => {
     const list = filtered;
@@ -153,11 +161,14 @@ export default function HistoryPage() {
         </select>
         <select className="input !w-auto !py-2 text-xs" value={account} onChange={(e) => setAccount(e.target.value)}>
           <option value="all">All accounts</option>
-          {[...new Set((rows || []).map((r) => r.account_login))].map((l) => (
-            <option key={l} value={l}>
-              {accountName(l)}
-            </option>
-          ))}
+          {accounts
+            .slice()
+            .sort((a, b) => Number(a.login) - Number(b.login))
+            .map((row) => (
+              <option key={row.login} value={row.login}>
+                {accountName(row.login)}{row.status === 'connected' ? '' : ' · offline'}
+              </option>
+            ))}
         </select>
         <span className="mono text-xs text-slate-600 ml-auto">{filtered.length} records</span>
       </div>
@@ -168,9 +179,9 @@ export default function HistoryPage() {
             <Skel key={i} className="h-12" />
           ))}
         </div>
-      ) : error ? (
+      ) : error && !rows?.length ? (
         <Panel>
-          <EmptyState icon={HistoryIcon} title="History unavailable" sub={error} action={<button className="btn-primary" onClick={load}>Retry</button>} />
+          <EmptyState icon={HistoryIcon} title="History unavailable" sub={error} action={<button className="btn-primary" onClick={() => load(true)}>Retry</button>} />
         </Panel>
       ) : filtered.length === 0 ? (
         <Panel>
@@ -203,7 +214,7 @@ export default function HistoryPage() {
                   const meta = MARKET[r.symbol];
                   const pipMove = meta ? ((Number(r.close_price) - Number(r.open_price)) / meta.pip) * (r.type === 'buy' ? 1 : -1) : 0;
                   return (
-                    <tr key={r.id}>
+                    <tr key={`${r.account_login}:${r.ticket}:${r.close_time}`}>
                       <td className="text-xs text-slate-400">{fmtDateTime(r.close_time)}</td>
                       <td className="mono text-xs text-slate-500">#{r.ticket}</td>
                       <td className="text-xs text-slate-300">{accountName(r.account_login)}</td>
@@ -228,7 +239,7 @@ export default function HistoryPage() {
           <div className="md:hidden divide-y divide-white/[0.06]">
             {filtered.map((r) => {
               const p = netPl(r);
-              return <div key={r.id} className="p-4">
+              return <div key={`${r.account_login}:${r.ticket}:${r.close_time}`} className="p-4">
                 <div className="flex items-start justify-between gap-3"><div><p className="font-bold text-white">{r.symbol} <Badge tone={r.type === 'buy' ? 'brand' : 'loss'}>{r.type}</Badge> <Badge tone={p > 0 ? 'gain' : p < 0 ? 'loss' : 'neutral'}>{p > 0 ? 'WIN' : p < 0 ? 'LOSS' : 'BREAKEVEN'}</Badge></p><p className="mono text-[10px] text-slate-600 mt-1">#{r.ticket} · {fmtDateTime(r.close_time)}</p></div><div className="text-right"><p className="text-[9px] uppercase tracking-wider text-slate-600">Net P/L</p><p className={`mono text-sm font-bold ${profitTone(p)}`}>{fmtSigned(p)}</p></div></div>
                 <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-[11px]"><p className="text-slate-500">Account <span className="block text-slate-300">{accountName(r.account_login)}</span></p><p className="text-slate-500">Source <span className="block text-slate-300">{r.source}</span></p><p className="text-slate-500">Volume <span className="mono block text-slate-300">{Number(r.volume).toFixed(2)}</span></p><p className="text-slate-500">Duration <span className="mono block text-slate-300">{durationBetween(r.open_time, r.close_time)}</span></p></div>
               </div>;

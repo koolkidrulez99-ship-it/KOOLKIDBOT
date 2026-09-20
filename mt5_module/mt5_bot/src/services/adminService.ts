@@ -18,6 +18,9 @@ export interface AdminUser {
   last_seen?: string | null;
   online: boolean;
   backtests: number;
+  banned: boolean;
+  banned_at?: string | null;
+  banned_by?: string | null;
 }
 
 export interface ResearchItem {
@@ -40,6 +43,8 @@ export const adminService = {
   users: () => apiRequest<AdminUser[]>('/api/mt5/admin/users'),
   setUserAccess: (username: string, accessTier: 'tester' | 'lifetime') =>
     apiRequest<AdminUser>(`/api/mt5/admin/users/${encodeURIComponent(username)}/access`, 'PUT', { access_tier: accessTier }),
+  setUserBanned: (username: string, banned: boolean) =>
+    apiRequest<AdminUser>(`/api/mt5/admin/users/${encodeURIComponent(username)}/ban`, 'PUT', { banned }),
   backtests: () => apiRequest<BacktestJob[]>('/api/mt5/admin/backtests'),
   research: () => apiRequest<ResearchItem[]>('/api/mt5/admin/research'),
   decide: (id: string, decision: 'approve' | 'reject' | 'research', note = '') =>

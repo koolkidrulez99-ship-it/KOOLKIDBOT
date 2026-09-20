@@ -124,7 +124,7 @@ export interface Mt5Bot {
   bot_losses?: number;
   bot_win_rate?: number;
   detected_magic?: number | null;
-  attribution_status?: 'pending' | 'verified' | 'ambiguous';
+  attribution_status?: 'pending' | 'verified' | 'verified_comment' | 'ambiguous';
   last_trade?: { ticket: number; symbol: string; time: string } | null;
   ea_verified?: boolean;
   ea_status?: 'active' | 'verifying' | 'stopped' | null;
@@ -207,6 +207,10 @@ export interface Mt5HistoryRow {
   open_time: string;
   close_time: string;
   source: string;
+  magic?: number | null;
+  comment?: string;
+  bot_id?: number | null;
+  bot_name?: string | null;
   net_pl?: number;
 }
 

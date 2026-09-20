@@ -11,7 +11,7 @@ import sys
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote
@@ -244,6 +244,38 @@ def _hub_user_for_workspace(workspace_id: str) -> dict[str, Any] | None:
         return next((dict(item) for item in _load_hub_users()["users"] if str(item.get("workspace_id")) == workspace_id), None)
 
 
+def _hub_user_is_banned(row: dict[str, Any] | None) -> bool:
+    return bool(row and row.get("banned") is True)
+
+
+def _is_black_rock_bot(bot: dict[str, Any] | None) -> bool:
+    if not bot:
+        return False
+    candidates = (
+        bot.get("name"),
+        bot.get("display_title"),
+        bot.get("ea_filename"),
+        bot.get("ea_original_filename"),
+    )
+    return any(re.sub(r"[^a-z0-9]+", "", str(value or "").lower()).removesuffix("ex5") == "blackrock" for value in candidates)
+
+
+def _current_workspace_is_lifetime() -> bool:
+    row = _hub_user_for_workspace(current_workspace())
+    return bool(row and _hub_access_tier(row) == "lifetime" and not _hub_user_is_banned(row))
+
+
+def _visible_bots_for_current_user(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if _current_workspace_is_lifetime():
+        return rows
+    return [row for row in rows if not _is_black_rock_bot(row)]
+
+
+def _require_black_rock_lifetime_access(bot: dict[str, Any] | None) -> None:
+    if _is_black_rock_bot(bot) and not _current_workspace_is_lifetime():
+        raise HTTPException(status_code=403, detail="BLACK ROCK is available to Lifetime users only.")
+
+
 def _presence_data() -> dict[str, Any]:
     try:
         data = json.loads(PRESENCE_FILE.read_text(encoding="utf-8"))
@@ -282,6 +314,11 @@ async def require_mt5_workspace(request: Request, call_next):
     workspace_id = workspace_from_authorization(request.headers.get("Authorization"))
     if not workspace_id:
         return JSONResponse(status_code=401, content={"detail": "Sign in to your MT5 Hub workspace."})
+    user = _hub_user_for_workspace(workspace_id)
+    if not user:
+        return JSONResponse(status_code=401, content={"detail": "MT5 Hub workspace no longer exists."})
+    if _hub_user_is_banned(user):
+        return JSONResponse(status_code=403, content={"detail": "Your MT5 Hub account has been banned."})
     context_token = set_workspace(workspace_id)
     try:
         return await call_next(request)
@@ -440,6 +477,8 @@ def hub_login(payload: HubAuthPayload):
 
         if not valid:
             raise HTTPException(status_code=401, detail="Invalid MT5 Hub login.")
+        if _hub_user_is_banned(row):
+            raise HTTPException(status_code=403, detail="Your MT5 Hub account has been banned.")
 
         # Migration path for a reserved username that may have been created as
         # a normal Hub user before admin-role support existed on the server.
@@ -471,6 +510,8 @@ def hub_me(request: Request):
         row = next((item for item in _load_hub_users()["users"] if item.get("workspace_id") == workspace_id), None)
     if not row:
         raise HTTPException(status_code=401, detail="MT5 Hub workspace no longer exists.")
+    if _hub_user_is_banned(row):
+        raise HTTPException(status_code=403, detail="Your MT5 Hub account has been banned.")
     return {**_hub_identity(row), "trial": _global_trial_status()}
 
 
@@ -513,6 +554,16 @@ def backtest_data(job_id: str):
         content=job,
         headers={"Content-Disposition": f'attachment; filename="{stem}_backtest_data.json"'},
     )
+
+
+@app.delete("/api/mt5/backtests/{job_id}")
+def dismiss_backtest(job_id: str):
+    try:
+        return backtest_manager.dismiss_for_workspace(current_workspace(), job_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Backtest was not found.")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
 
 @app.post("/api/mt5/backtests")
@@ -579,7 +630,7 @@ def admin_overview(request: Request):
     active_states = {"queued", "preparing", "compiling", "testing", "analyzing"}
     return {
         "total_users": len([row for row in users if str(row.get("role") or "user") == "user"]),
-        "online_users": len([row for row in users if row.get("workspace_id") in online and str(row.get("role") or "user") == "user"]),
+        "online_users": len([row for row in users if row.get("workspace_id") in online and str(row.get("role") or "user") == "user" and not _hub_user_is_banned(row)]),
         "active_backtests": len([row for row in jobs if row.get("status") in active_states]),
         "completed_backtests": len([row for row in jobs if row.get("status") == "complete"]),
         "pending_research": len([row for row in research if row.get("status") == "pending"]),
@@ -599,9 +650,12 @@ def admin_users(request: Request):
             "username": user.get("username"),
             "role": user.get("role") or "user",
             "access_tier": _hub_access_tier(user),
+            "banned": _hub_user_is_banned(user),
+            "banned_at": user.get("banned_at"),
+            "banned_by": user.get("banned_by"),
             "joined_at": user.get("created_at"),
             "last_seen": presence.get(workspace_id),
-            "online": workspace_id in online,
+            "online": workspace_id in online and not _hub_user_is_banned(user),
             "backtests": len([job for job in jobs if job.get("workspace_id") == workspace_id]),
         })
     return rows
@@ -635,6 +689,44 @@ def admin_user_access(username: str, request: Request, payload: dict[str, Any] =
             "username": row.get("username"),
             "role": row.get("role") or "user",
             "access_tier": _hub_access_tier(row),
+            "banned": _hub_user_is_banned(row),
+            "joined_at": row.get("created_at"),
+        }
+
+
+@app.put("/api/mt5/admin/users/{username}/ban")
+def admin_user_ban(username: str, request: Request, payload: dict[str, Any] = Body(...)):
+    admin = _require_admin(request)
+    target = username.strip().lower()
+    banned = payload.get("banned") is True
+    with _HUB_USERS_LOCK:
+        users = _load_hub_users()
+        row = next(
+            (
+                item for item in users["users"]
+                if str(item.get("username") or "").strip().lower() == target
+            ),
+            None,
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="MT5 Hub user was not found.")
+        if str(row.get("role") or "user") == "admin":
+            raise HTTPException(status_code=409, detail="Administrator accounts cannot be banned.")
+        row["banned"] = banned
+        if banned:
+            row["banned_at"] = datetime.now(timezone.utc).isoformat()
+            row["banned_by"] = str(admin.get("username") or ADMIN_RESERVED_USERNAME)
+        else:
+            row["banned_at"] = None
+            row["banned_by"] = None
+        _save_hub_users(users)
+        return {
+            "username": row.get("username"),
+            "role": row.get("role") or "user",
+            "access_tier": _hub_access_tier(row),
+            "banned": _hub_user_is_banned(row),
+            "banned_at": row.get("banned_at"),
+            "banned_by": row.get("banned_by"),
             "joined_at": row.get("created_at"),
         }
 
@@ -1507,12 +1599,139 @@ def get_symbols(visible_only: bool = True, limit: int = 1000, account_login: int
         session_error(exc)
 
 
+def _bot_identity_text(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+def _bot_for_trade(row: dict[str, Any], bot_rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    source = str(row.get("source") or "")
+    comment = str(row.get("comment") or "")
+    account_login = int(row.get("account_login") or 0)
+    native_match = re.search(r"\bKKN(\d+)\b", f"{source} {comment}", re.IGNORECASE)
+    if native_match:
+        bot_id = int(native_match.group(1))
+        matched = next((bot for bot in bot_rows if int(bot.get("id") or 0) == bot_id), None)
+        if matched:
+            return matched
+
+    candidates = [
+        bot for bot in bot_rows
+        if not account_login or int(bot.get("account_login") or 0) == account_login
+    ]
+
+    mt5_comment_match = re.search(r"KKBOT\(([^)]*)\)", f"{source} {comment}", re.IGNORECASE)
+    if mt5_comment_match:
+        comment_name = _bot_identity_text(mt5_comment_match.group(1))
+        comment_matches = [
+            bot for bot in candidates
+            if _bot_identity_text(bot.get("name")).startswith(comment_name)
+            or comment_name.startswith(_bot_identity_text(bot.get("name")))
+        ]
+        if len(comment_matches) == 1:
+            return comment_matches[0]
+    magic = int(row.get("magic") or 0)
+    if magic:
+        magic_matches = []
+        for bot in candidates:
+            settings = dict(bot.get("settings") or {})
+            configured = int(settings.get("magic_number") or 0)
+            detected = int(bot.get("detected_magic") or 0)
+            if magic in {configured, detected} and magic not in {0, 990001}:
+                magic_matches.append(bot)
+        if len(magic_matches) == 1:
+            return magic_matches[0]
+
+    source_key = _bot_identity_text(source)
+    comment_key = _bot_identity_text(comment)
+    name_matches: list[dict[str, Any]] = []
+    for bot in candidates:
+        identities = {
+            _bot_identity_text(bot.get("name")),
+            _bot_identity_text(Path(str(bot.get("ea_filename") or "")).stem),
+            _bot_identity_text(Path(str(bot.get("source_filename") or "")).stem),
+            _bot_identity_text(Path(str(bot.get("native_source") or "")).stem),
+        } - {""}
+        if source_key in identities or comment_key in identities:
+            name_matches.append(bot)
+    return name_matches[0] if len(name_matches) == 1 else None
+
+
+def _enrich_bot_trade_row(row: dict[str, Any], bot_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    item = dict(row)
+    bot = _bot_for_trade(item, bot_rows)
+    if bot:
+        item["bot_id"] = int(bot.get("id") or 0)
+        item["bot_name"] = str(bot.get("name") or "")
+    return item
+
+
+def _overlay_bot_activity(bot_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not bot_rows:
+        return bot_rows
+    try:
+        raw_positions = list(multi_account_client.request("/positions", timeout=8).get("positions", []))
+    except RuntimeError:
+        raw_positions = []
+    try:
+        raw_history = list(_history_for_stats(30))
+    except Exception:
+        raw_history = []
+
+    enriched_positions = [_enrich_bot_trade_row(dict(row), bot_rows) for row in raw_positions]
+    enriched_history = [_enrich_bot_trade_row(dict(row), bot_rows) for row in raw_history]
+    today = datetime.now(timezone.utc).date()
+
+    for bot in bot_rows:
+        bot_id = int(bot.get("id") or 0)
+        related_positions = [row for row in enriched_positions if int(row.get("bot_id") or 0) == bot_id]
+        related_history = [row for row in enriched_history if int(row.get("bot_id") or 0) == bot_id]
+        today_history = []
+        for row in related_history:
+            try:
+                closed = datetime.fromisoformat(str(row.get("close_time") or "").replace("Z", "+00:00"))
+                if closed.tzinfo is None:
+                    closed = closed.replace(tzinfo=timezone.utc)
+                if closed.astimezone(timezone.utc).date() == today:
+                    today_history.append(row)
+            except (TypeError, ValueError):
+                continue
+
+        if related_positions:
+            bot["open_positions"] = len(related_positions)
+            bot["current_pl"] = round(sum(
+                float(row.get("profit") or 0)
+                + float(row.get("swap") or 0)
+                + float(row.get("commission") or 0)
+                for row in related_positions
+            ), 2)
+        if related_history:
+            bot["bot_trade_count"] = len(related_history)
+            bot["bot_wins"] = len([row for row in related_history if float(row.get("net_pl") or row.get("profit") or 0) > 0])
+            bot["bot_losses"] = len([row for row in related_history if float(row.get("net_pl") or row.get("profit") or 0) < 0])
+            bot["bot_win_rate"] = round(bot["bot_wins"] / len(related_history) * 100, 1) if related_history else 0.0
+            latest = max(related_history, key=lambda row: str(row.get("close_time") or ""))
+            bot["last_trade"] = {
+                "ticket": int(latest.get("ticket") or latest.get("id") or 0),
+                "symbol": str(latest.get("symbol") or ""),
+                "time": str(latest.get("close_time") or ""),
+            }
+        if today_history:
+            realized = round(sum(float(row.get("net_pl") or row.get("profit") or 0) for row in today_history), 2)
+            bot["today_pl"] = realized
+            bot["profit_today"] = realized
+        if related_positions or related_history:
+            bot["attribution_status"] = "verified"
+            bot["metrics_scope"] = f"Verified KOOLKID bot activity for {str(bot.get('name') or 'this bot')}."
+    return bot_rows
+
+
 @app.get("/api/mt5/positions")
 def positions():
     try:
         worker_rows = multi_account_client.request("/positions", timeout=10).get("positions", [])
         if worker_rows:
-            return worker_rows
+            bot_rows = list(read_state().get("bots") or [])
+            return [_enrich_bot_trade_row(dict(row), bot_rows) for row in worker_rows]
     except RuntimeError:
         pass
     return []
@@ -1573,18 +1792,88 @@ def close_all_positions():
     return {"ok": not errors, "closed": closed, "realized": 0, "errors": errors}
 
 
+def _history_archive_key(row: dict[str, Any]) -> str:
+    return ":".join([
+        str(row.get("account_login") or ""),
+        str(row.get("ticket") or row.get("id") or ""),
+        str(row.get("close_time") or ""),
+    ])
+
+
+def _store_history_archive(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not rows:
+        return list(read_state().get("history_archive") or [])
+
+    def mutate(state):
+        merged = {
+            _history_archive_key(dict(row)): dict(row)
+            for row in state.get("history_archive", [])
+            if isinstance(row, dict) and _history_archive_key(dict(row))
+        }
+        for row in rows:
+            item = dict(row)
+            key = _history_archive_key(item)
+            if key:
+                merged[key] = item
+        archive = sorted(
+            merged.values(),
+            key=lambda item: str(item.get("close_time") or ""),
+            reverse=True,
+        )[:20000]
+        state["history_archive"] = archive
+        return archive
+
+    return update_state(mutate)
+
+
+def _filter_history_archive(rows: list[dict[str, Any]], days: int | None) -> list[dict[str, Any]]:
+    if days is None or int(days) <= 0:
+        return rows
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, int(days)))
+    out = []
+    for row in rows:
+        try:
+            closed = datetime.fromisoformat(str(row.get("close_time") or "").replace("Z", "+00:00"))
+            if closed.tzinfo is None:
+                closed = closed.replace(tzinfo=timezone.utc)
+            if closed >= cutoff:
+                out.append(row)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 @app.get("/api/mt5/history")
 def history(days: int | None = None):
-    rows = []
+    requested_days = int(days or 0)
+    state = read_state()
+    archive_before = list(state.get("history_archive") or [])
+    full_sync_at = float(state.get("history_archive_full_sync_at") or 0)
+    full_sync_due = requested_days <= 0 and (
+        not archive_before or time.time() - full_sync_at > 6 * 60 * 60
+    )
+    fetch_days = requested_days if requested_days > 0 else (3650 if full_sync_due else 30)
+
+    bot_rows = list(state.get("bots") or [])
+    fetched: list[dict[str, Any]] = []
     for session in session_snapshot().get("accounts", []):
         if not session.get("connected"):
             continue
         try:
-            rows.extend(multi_account_client.request(f"/accounts/{session['account_id']}/history?days={int(days or 30)}", timeout=15))
+            rows = multi_account_client.request(
+                f"/accounts/{session['account_id']}/history?days={fetch_days}",
+                timeout=20,
+            )
+            fetched.extend(_enrich_bot_trade_row(dict(row), bot_rows) for row in rows)
         except RuntimeError:
             continue
-    rows.sort(key=lambda row: row.get("close_time", ""), reverse=True)
-    return rows
+
+    archive = _store_history_archive(fetched)
+    if full_sync_due:
+        update_state(lambda current: current.update({"history_archive_full_sync_at": time.time()}) or True)
+    archive = [_enrich_bot_trade_row(dict(row), bot_rows) for row in archive]
+    archive.sort(key=lambda row: row.get("close_time", ""), reverse=True)
+    return _filter_history_archive(archive, requested_days)
 
 
 def _history_for_stats(days: int = 30) -> list[dict[str, Any]]:
@@ -1766,6 +2055,8 @@ def _aggregate_ea_assignments(rows: list[dict[str, Any]]) -> dict[str, Any]:
     statuses = {str(row.get("status") or "") for row in rows}
     if active:
         status = "running" if any(row.get("status") == "running" for row in active) else "starting"
+    elif "paused" in statuses:
+        status = "paused"
     elif "error" in statuses:
         status = "error"
     else:
@@ -1847,7 +2138,8 @@ def bots():
                         bot["status"] = "stopped"
                         bot["started_at"] = None
                 return st.get("bots", [])
-            return update_state(sync)
+            synced = update_state(sync)
+            return _visible_bots_for_current_user(_overlay_bot_activity([dict(bot) for bot in synced]))
         except RuntimeError:
             pass
     elif any(bot.get("status") in {"running", "connecting"} for bot in state.get("bots", [])):
@@ -1858,8 +2150,9 @@ def bots():
                 if bot.get("status") in {"running", "connecting"}:
                     bot["status"] = "worker_offline"
             return st.get("bots", [])
-        return update_state(offline)
-    return state.get("bots", [])
+        offline_rows = update_state(offline)
+        return _visible_bots_for_current_user(_overlay_bot_activity([dict(bot) for bot in offline_rows]))
+    return _visible_bots_for_current_user(_overlay_bot_activity([dict(bot) for bot in state.get("bots", [])]))
 
 
 @app.post("/api/mt5/bots")
@@ -1897,6 +2190,7 @@ async def upload_bot_files(
     bot = next((b for b in state.get("bots", []) if int(b.get("id", 0)) == bot_id), None)
     if bot is None:
         raise HTTPException(status_code=404, detail="Bot not found.")
+    _require_black_rock_lifetime_access(bot)
     if bot.get("system_preset"):
         raise HTTPException(status_code=403, detail="KOOLKID system preset files cannot be replaced by users.")
 
@@ -1952,6 +2246,7 @@ async def compile_bot_source(bot_id: int, source_file: UploadFile = File(...)):
     bot = next((b for b in state.get("bots", []) if int(b.get("id", 0)) == bot_id), None)
     if bot is None:
         raise HTTPException(status_code=404, detail="Bot not found.")
+    _require_black_rock_lifetime_access(bot)
     if bot.get("system_preset"):
         raise HTTPException(status_code=403, detail="KOOLKID system presets cannot be replaced by users.")
 
@@ -2016,6 +2311,7 @@ def download_bot_ex5(bot_id: int):
     bot = next((b for b in state.get("bots", []) if int(b.get("id", 0)) == bot_id), None)
     if bot is None:
         raise HTTPException(status_code=404, detail="Bot not found.")
+    _require_black_rock_lifetime_access(bot)
     if bot.get("system_preset"):
         raise HTTPException(status_code=403, detail="KOOLKID system preset files are not available through user downloads.")
 
@@ -2037,6 +2333,10 @@ def download_bot_ex5(bot_id: int):
 
 @app.put("/api/mt5/bots/{bot_id}")
 def update_bot(bot_id: int, payload: dict[str, Any] = Body(...)):
+    current = next((b for b in read_state().get("bots", []) if int(b.get("id", 0)) == bot_id), None)
+    if current is None:
+        raise HTTPException(status_code=404, detail="Bot not found.")
+    _require_black_rock_lifetime_access(current)
     def mut(state):
         for i, bot in enumerate(state.get("bots", [])):
             if int(bot.get("id", 0)) == bot_id:
@@ -2078,6 +2378,7 @@ def start_bot(bot_id: int, payload: dict[str, Any] = Body(default_factory=dict))
     bot = next((b for b in state.get("bots", []) if int(b.get("id", 0)) == bot_id), None)
     if not bot:
         raise HTTPException(status_code=404, detail="Bot not found.")
+    _require_black_rock_lifetime_access(bot)
     login = int(payload.get("account_login") or bot.get("account_login") or 0)
     profile = next((p for p in state.get("profiles", []) if int(p.get("login", 0)) == login), None)
     if not profile:
@@ -2235,12 +2536,85 @@ def start_bot(bot_id: int, payload: dict[str, Any] = Body(default_factory=dict))
 
 @app.post("/api/mt5/bots/{bot_id}/pause")
 def pause_bot(bot_id: int, payload: dict[str, Any] = Body(default_factory=dict)):
-    raise HTTPException(status_code=409, detail="Pause is unavailable for arbitrary .ex5 EAs unless the EA exposes its own pause control.")
+    state = read_state()
+    bot = next((b for b in state.get("bots", []) if int(b.get("id", 0)) == bot_id), None)
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot not found.")
+    if bot.get("native_engine"):
+        try:
+            return native_runtime.pause(current_workspace(), bot_id)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+    try:
+        assignment = ea_worker_client.request(f"/bots/{bot_id}/pause", "POST", {}, timeout=20)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+    def mark_paused(st):
+        row = next((b for b in st.get("bots", []) if int(b.get("id", 0)) == bot_id), None)
+        if not row:
+            raise KeyError
+        row.update({
+            "status": "paused",
+            "process_id": None,
+            "terminal_status": "offline",
+            "ea_status": "paused",
+            "paused_at": datetime.now(timezone.utc).isoformat(),
+            "last_error": None,
+            "ea_instances": assignment.get("instances") or [],
+            "active_instance_count": 0,
+        })
+        return row
+
+    try:
+        return update_state(mark_paused)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Bot not found.")
 
 
 @app.post("/api/mt5/bots/{bot_id}/resume")
 def resume_bot(bot_id: int, payload: dict[str, Any] = Body(default_factory=dict)):
-    raise HTTPException(status_code=409, detail="Resume is unavailable for arbitrary .ex5 EAs. Start the bot again instead.")
+    state = read_state()
+    bot = next((b for b in state.get("bots", []) if int(b.get("id", 0)) == bot_id), None)
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot not found.")
+    _require_black_rock_lifetime_access(bot)
+    if bot.get("native_engine"):
+        try:
+            return native_runtime.resume(current_workspace(), bot_id)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+    try:
+        assignment = ea_worker_client.request(f"/bots/{bot_id}/resume", "POST", {}, timeout=75)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+    instances = assignment.get("instances") or [assignment]
+    aggregate = _aggregate_ea_assignments([dict(item) for item in instances if isinstance(item, dict)])
+
+    def mark_resumed(st):
+        row = next((b for b in st.get("bots", []) if int(b.get("id", 0)) == bot_id), None)
+        if not row:
+            raise KeyError
+        row.update({
+            "status": aggregate.get("status") or assignment.get("status") or "running",
+            "started_at": aggregate.get("started_at") or assignment.get("started_at") or datetime.now(timezone.utc).isoformat(),
+            "process_id": aggregate.get("process_id") or assignment.get("process_id"),
+            "terminal_status": aggregate.get("terminal_status") or assignment.get("terminal_status") or "online",
+            "ea_status": aggregate.get("ea_status") or assignment.get("ea_status") or "active",
+            "ea_verified": aggregate.get("ea_verified", assignment.get("ea_verified", False)),
+            "account_verified": aggregate.get("account_verified", assignment.get("account_verified", False)),
+            "last_activity": aggregate.get("last_activity") or assignment.get("last_activity"),
+            "last_error": aggregate.get("error") or assignment.get("error"),
+            "ea_instances": instances,
+            "active_instance_count": len([item for item in instances if item.get("status") in {"starting", "running"}]),
+        })
+        return row
+
+    try:
+        return update_state(mark_resumed)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Bot not found.")
 
 
 @app.post("/api/mt5/bots/{bot_id}/stop")
@@ -2283,6 +2657,7 @@ def bot_performance(bot_id: int):
     bot = next((b for b in state.get("bots", []) if int(b.get("id", 0)) == bot_id), None)
     if not bot:
         raise HTTPException(status_code=404, detail="Bot not found.")
+    _require_black_rock_lifetime_access(bot)
     rows = history(30)
     if bot.get("native_engine"):
         prefix = f"KKN{int(bot_id)}"

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ExternalLink, Headphones, Timer, X } from 'lucide-react';
 import { hubAuthService } from '../services/hubAuthService';
 import type { HubTrialInfo } from '../services/hubAuthService';
@@ -106,7 +106,8 @@ export function TrialCountdown({ trial, large = false }: { trial?: HubTrialInfo 
 
 export default function ContactSupport({ trial: suppliedTrial, lifetime = false }: { trial?: HubTrialInfo | null; lifetime?: boolean }) {
   const [trial, setTrial] = useState<HubTrialInfo | null>(suppliedTrial || null);
-  const [visible, setVisible] = useState(true);
+  const [open, setOpen] = useState(false);
+  const panelRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     if (lifetime) return;
@@ -122,51 +123,73 @@ export default function ContactSupport({ trial: suppliedTrial, lifetime = false 
   }, [suppliedTrial, lifetime]);
 
   useEffect(() => {
-    const reopen = () => setVisible(true);
+    const reopen = () => setOpen(true);
     window.addEventListener(CONTACT_SUPPORT_OPEN_EVENT, reopen);
     return () => window.removeEventListener(CONTACT_SUPPORT_OPEN_EVENT, reopen);
   }, []);
 
+  useEffect(() => {
+    if (!open) return;
+    const closeOutside = (event: MouseEvent) => {
+      if (!panelRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const timer = window.setTimeout(() => setOpen(false), 12000);
+    document.addEventListener('mousedown', closeOutside);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener('mousedown', closeOutside);
+    };
+  }, [open]);
+
   const countdown = useTrialCountdown(trial);
 
-  if (!visible) return null;
+  if (lifetime) return null;
 
-  return (
-    <aside className="fixed bottom-4 right-4 z-[70] w-[min(360px,calc(100vw-2rem))] rounded-2xl border border-brand-500/25 bg-[#070b13]/95 p-3.5 shadow-2xl shadow-black/40 backdrop-blur-xl">
+  if (!open) {
+    return (
       <button
         type="button"
-        onClick={() => setVisible(false)}
-        className="absolute right-2.5 top-2.5 grid h-7 w-7 place-items-center rounded-lg border border-white/[0.07] bg-white/[0.04] text-slate-500 transition-colors hover:bg-white/[0.08] hover:text-white"
+        onClick={() => setOpen(true)}
+        className="fixed bottom-20 right-3 z-[70] inline-flex h-10 items-center gap-1.5 rounded-full border border-brand-500/25 bg-[#070b13]/92 px-3 text-[10px] font-extrabold text-brand-200 shadow-lg shadow-black/25 backdrop-blur-xl transition hover:bg-[#0b1220] md:bottom-4 md:right-4"
+        title="Contact KOOLKID support"
+        aria-label="Open Contact Us"
+      >
+        <Headphones size={14} />
+        <span>Help</span>
+      </button>
+    );
+  }
+
+  return (
+    <aside
+      ref={panelRef}
+      className="fixed bottom-20 right-3 z-[70] w-[min(310px,calc(100vw-1.5rem))] rounded-2xl border border-brand-500/25 bg-[#070b13]/96 p-3 shadow-2xl shadow-black/35 backdrop-blur-xl md:bottom-4 md:right-4"
+    >
+      <button
+        type="button"
+        onClick={() => setOpen(false)}
+        className="absolute right-2 top-2 grid h-7 w-7 place-items-center rounded-lg border border-white/[0.07] bg-white/[0.04] text-slate-500 transition-colors hover:bg-white/[0.08] hover:text-white"
         title="Close Contact Us"
         aria-label="Close Contact Us"
       >
         <X size={14} />
       </button>
-      <div className="flex items-start gap-3 pr-8">
-        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-brand-500/15 text-brand-300 ring-1 ring-brand-500/25">
-          <Headphones size={17} />
+      <div className="flex items-start gap-2.5 pr-8">
+        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-brand-500/15 text-brand-300 ring-1 ring-brand-500/25">
+          <Headphones size={15} />
         </span>
         <div className="min-w-0 flex-1">
-          <div className="flex items-center justify-between gap-2">
-            <p className="text-[13px] font-extrabold text-white">Contact Us</p>
-            <span className={lifetime
-              ? 'rounded-full border border-gain-500/25 bg-gain-500/10 px-2 py-0.5 text-[8px] font-extrabold uppercase tracking-[0.14em] text-gain-300'
-              : 'rounded-full border border-warn-400/25 bg-warn-400/10 px-2 py-0.5 text-[8px] font-extrabold uppercase tracking-[0.14em] text-warn-300'}>
-              {lifetime ? 'Lifetime Access' : '30-Day Free Trial'}
-            </span>
-          </div>
-          <p className="mt-0.5 text-[10px] text-slate-500">Need help or more information? Contact the KOOLKID admin.</p>
+          <p className="text-[12px] font-extrabold text-white">Contact Us</p>
+          <p className="mt-0.5 text-[9px] leading-relaxed text-slate-500">Telegram or WhatsApp support from the KOOLKID admin.</p>
         </div>
       </div>
-      {!lifetime && (
-        <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-white/[0.06] bg-white/[0.025] px-3 py-2">
-          <span className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-wider text-slate-500"><Timer size={11} /> Trial left</span>
-          <span className="mono text-[10px] font-bold text-slate-200">
-            {trial ? (trial.expired || countdown.remaining <= 0 ? 'EXPIRED' : `${countdown.days}d ${String(countdown.hours).padStart(2, '0')}h ${String(countdown.minutes).padStart(2, '0')}m`) : 'Loading...'}
-          </span>
-        </div>
-      )}
-      <div className="mt-3"><ContactButtons compact /></div>
+      <div className="mt-2.5 flex items-center justify-between gap-3 rounded-lg border border-white/[0.06] bg-white/[0.025] px-2.5 py-1.5">
+        <span className="flex items-center gap-1 text-[8px] font-bold uppercase tracking-wider text-slate-500"><Timer size={10} /> Trial left</span>
+        <span className="mono text-[9px] font-bold text-slate-200">
+          {trial ? (trial.expired || countdown.remaining <= 0 ? 'EXPIRED' : `${countdown.days}d ${String(countdown.hours).padStart(2, '0')}h ${String(countdown.minutes).padStart(2, '0')}m`) : 'Loading...'}
+        </span>
+      </div>
+      <div className="mt-2.5"><ContactButtons compact /></div>
     </aside>
   );
 }

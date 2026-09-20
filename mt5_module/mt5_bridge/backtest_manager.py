@@ -67,7 +67,26 @@ def _save_research(rows: list[dict[str, Any]]) -> None:
     _save(RESEARCH_FILE, {"version": 1, "items": rows})
 def _public_job(row: dict[str, Any]) -> dict[str, Any]:
     hidden = {"job_dir", "source_path", "preset_path", "terminal_path", "config_path", "process_id"}
-    return {key: value for key, value in row.items() if key not in hidden}
+    public = {key: value for key, value in row.items() if key not in hidden}
+    if public.get("status") == "complete" and not public.get("result") and public.get("tester_log"):
+        public["result"] = _parse_tester_log_summary(
+            str(public.get("tester_log") or ""),
+            float(public.get("deposit") or 0),
+        )
+        public["result_fallback"] = True
+
+    if public.get("status") == "complete":
+        result = dict(public.get("result") or {})
+        if result.get("final_balance") in {None, ""}:
+            net_profit = _parse_number(result.get("net_profit"))
+            try:
+                deposit = float(public.get("deposit") or 0)
+            except (TypeError, ValueError):
+                deposit = 0.0
+            if net_profit is not None and deposit:
+                result["final_balance"] = round(deposit + float(net_profit), 2)
+        public["result"] = result
+    return public
 
 
 def _find_job(job_id: str) -> dict[str, Any] | None:
@@ -104,6 +123,27 @@ def report_for_workspace(workspace_id: str, job_id: str) -> Path | None:
             return None
         path = Path(str(row.get("job_dir") or "")) / filename
         return path if path.is_file() else None
+
+
+def dismiss_for_workspace(workspace_id: str, job_id: str) -> dict[str, Any]:
+    with _LOCK:
+        rows = _jobs()
+        row = next(
+            (
+                item for item in rows
+                if str(item.get("id") or "") == str(job_id)
+                and str(item.get("workspace_id") or "") == str(workspace_id)
+            ),
+            None,
+        )
+        if not row:
+            raise KeyError(job_id)
+        if row.get("status") in {"queued", "preparing", "compiling", "testing", "analyzing"}:
+            raise RuntimeError("An active backtest cannot be cleared.")
+        row["dismissed_at"] = _now()
+        row["updated_at"] = _now()
+        _save_jobs(rows)
+        return _public_job(dict(row))
 
 
 def _update(job_id: str, **changes: Any) -> dict[str, Any]:
@@ -182,10 +222,13 @@ def _metric(text: str, labels: list[str]) -> str | None:
     return None
 
 
-def _parse_number(value: str | None) -> float | None:
-    if not value:
+def _parse_number(value: Any) -> float | None:
+    if value is None or value == "":
         return None
-    match = re.search(r"[-+]?\d[\d,]*(?:\.\d+)?", value.replace("\xa0", " "))
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).replace("\xa0", " ")
+    match = re.search(r"[-+]?\d[\d,]*(?:\.\d+)?", text)
     if not match:
         return None
     try:
@@ -204,17 +247,55 @@ def _parse_report(path: Path) -> dict[str, Any]:
         "gross_loss": _metric(text, ["Gross Loss"]),
         "profit_factor": _metric(text, ["Profit Factor"]),
         "expected_payoff": _metric(text, ["Expected Payoff"]),
-        "max_drawdown": _metric(text, ["Balance Drawdown Maximal", "Equity Drawdown Maximal"]),
-        "total_trades": _metric(text, ["Total Trades"]),
-        "profit_trades": _metric(text, ["Profit Trades (% of total)"]),
-        "loss_trades": _metric(text, ["Loss Trades (% of total)"]),
-        "largest_profit_trade": _metric(text, ["Largest profit trade"]),
-        "largest_loss_trade": _metric(text, ["Largest loss trade"]),
+        "max_drawdown": _metric(text, ["Balance Drawdown Maximal", "Equity Drawdown Maximal", "Maximal Drawdown"]),
+        "relative_drawdown": _metric(text, ["Balance Drawdown Relative", "Equity Drawdown Relative", "Relative Drawdown"]),
+        "total_trades": _metric(text, ["Total Trades", "Trades"]),
+        "profit_trades": _metric(text, ["Profit Trades (% of total)", "Profit Trades"]),
+        "loss_trades": _metric(text, ["Loss Trades (% of total)", "Loss Trades"]),
+        "largest_profit_trade": _metric(text, ["Largest profit trade", "Largest Profit Trade"]),
+        "largest_loss_trade": _metric(text, ["Largest loss trade", "Largest Loss Trade"]),
+        "recovery_factor": _metric(text, ["Recovery Factor"]),
+        "sharpe_ratio": _metric(text, ["Sharpe Ratio"]),
     }
     summary: dict[str, Any] = {}
     for key, value in raw.items():
         parsed = _parse_number(value)
-        summary[key] = parsed if parsed is not None else value
+        if parsed is not None:
+            summary[key] = parsed
+        elif value:
+            summary[key] = value
+    if summary.get("total_trades") and summary.get("profit_trades") is not None:
+        try:
+            summary["win_rate"] = round(float(summary["profit_trades"]) / float(summary["total_trades"]) * 100, 2)
+        except (TypeError, ValueError, ZeroDivisionError):
+            pass
+    return summary
+
+
+def _parse_tester_log_summary(text: str, deposit: float = 0.0) -> dict[str, Any]:
+    if not text:
+        return {}
+    summary: dict[str, Any] = {}
+    balances = re.findall(r"final\s+balance\s+([-+]?\d[\d,]*(?:\.\d+)?)", text, re.IGNORECASE)
+    if balances:
+        try:
+            final_balance = float(balances[-1].replace(",", ""))
+            summary["final_balance"] = final_balance
+            if deposit:
+                summary["net_profit"] = round(final_balance - float(deposit), 2)
+        except ValueError:
+            pass
+    # Tester logs often repeat the EA's "entry opened" text again as an
+    # Alert line. Prefer actual market-order lines so each opened trade counts once.
+    entries = len(re.findall(r"\bmarket\s+(?:buy|sell)\s+\d", text, re.IGNORECASE))
+    if not entries:
+        entries = len([
+            line for line in text.splitlines()
+            if re.search(r"\bentry\s+opened\b", line, re.IGNORECASE)
+            and "alert:" not in line.lower()
+        ])
+    if entries:
+        summary["total_trades"] = entries
     return summary
 def _source_observations(path: Path) -> list[str]:
     if path.suffix.lower() != ".mq5" or not path.is_file():
@@ -331,7 +412,9 @@ def _write_tester_config(job: dict[str, Any], runtime: Path, expert_rel: str, pr
         "Deposit": str(float(job.get("deposit") or 10000)),
         "Currency": "USD",
         "Leverage": str(int(job.get("leverage") or 100)),
-        "Report": str(report),
+        # MT5 is more reliable with a report path inside the portable runtime.
+        # The finished file is copied into the persistent job folder before cleanup.
+        "Report": "KOOLKID_Backtest_Report.html",
         "ReplaceReport": "1",
         "Visual": "0",
     }
@@ -421,13 +504,28 @@ def _run(job_id: str) -> None:
             return_code=return_code,
         )
 
-        candidates = [report, job_dir / "report.htm"]
-        report_path = next((path for path in candidates if path.is_file()), None)
+        runtime_reports = [
+            runtime / "KOOLKID_Backtest_Report.html",
+            runtime / "KOOLKID_Backtest_Report.htm",
+            runtime / "report.html",
+            runtime / "report.htm",
+        ]
+        runtime_reports.extend(runtime.glob("**/KOOLKID_Backtest_Report*.htm*"))
+        runtime_reports.extend(runtime.glob("**/report*.htm*"))
+        candidates = [report, job_dir / "report.htm", *runtime_reports]
+        report_path = next((path for path in candidates if path.is_file() and path.stat().st_size > 0), None)
+        if report_path is not None and report_path.parent != job_dir:
+            persistent_report = job_dir / "report.html"
+            shutil.copy2(report_path, persistent_report)
+            report_path = persistent_report
         if report_path is None:
-            found = list(job_dir.glob("report.*"))
+            found = [path for path in job_dir.glob("*.htm*") if path.is_file() and path.stat().st_size > 0]
             report_path = found[0] if found else None
+
+        log_tail = _tester_log_text(runtime)[-12000:]
         result = _parse_report(report_path) if report_path else {}
-        log_tail = _tester_log_text(runtime)[-6000:]
+        if not result:
+            result = _parse_tester_log_summary(log_tail, float(job.get("deposit") or 0))
         if not result and return_code != 0:
             raise RuntimeError(f"MT5 Strategy Tester exited with code {return_code}.")
 
@@ -499,7 +597,7 @@ def list_for_workspace(workspace_id: str) -> dict[str, Any]:
         rows = [
             _public_job(row)
             for row in _jobs()
-            if row.get("workspace_id") == workspace_id
+            if row.get("workspace_id") == workspace_id and not row.get("dismissed_at")
         ]
     rows.sort(key=lambda row: row.get("created_at") or "", reverse=True)
     active_status = {"queued", "preparing", "compiling", "testing", "analyzing"}

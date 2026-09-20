@@ -45,16 +45,27 @@ function normalizedSymbolKey(symbol: string) {
     .replace(/^FXVOL/, 'FXV');
 }
 
-const symbolRequestCache = new Map<number, Promise<Mt5SymbolInfo[]>>();
+const symbolRequestCache = new Map<number, { at: number; promise: Promise<Mt5SymbolInfo[]> }>();
+const SYMBOL_CACHE_MS = 30000;
+const EMPTY_SYMBOL_CACHE_MS = 3000;
 
 function cachedSymbols(login: number) {
+  const now = Date.now();
   const existing = symbolRequestCache.get(login);
-  if (existing) return existing;
-  const request = mt5MarketService.symbols(login).catch((error) => {
-    symbolRequestCache.delete(login);
-    throw error;
-  });
-  symbolRequestCache.set(login, request);
+  if (existing && now - existing.at < SYMBOL_CACHE_MS) return existing.promise;
+
+  const request = mt5MarketService.symbols(login)
+    .then((rows) => {
+      const cached = symbolRequestCache.get(login);
+      if (cached) cached.at = Date.now() - (rows.length ? 0 : SYMBOL_CACHE_MS - EMPTY_SYMBOL_CACHE_MS);
+      return rows;
+    })
+    .catch((error) => {
+      symbolRequestCache.delete(login);
+      throw error;
+    });
+
+  symbolRequestCache.set(login, { at: now, promise: request });
   return request;
 }
 
@@ -193,18 +204,25 @@ export default function MarketSelect({
       ...weltradeSyntxCatalogRows(),
     ]);
 
-    let rows = globalRows;
+    // Once a concrete account is selected, the picker is account-scoped.
+    // Do not let a global broker filter hide that account's real MT5 symbols.
+    let rows = accountLogin && accountRows
+      ? mergeMarketRows([
+          ...selectedRows,
+          ...(currentFamily === 'weltrade' ? weltradeSyntxCatalogRows() : []),
+        ])
+      : globalRows;
     const brokerFilter = prefs.marketBrokerFilter;
-    if (brokerFilter === 'current') {
-      rows = accountLogin
-        ? globalRows.filter((row) => (row.available_logins || []).includes(accountLogin))
-        : globalRows.filter((row) => row.broker_family === currentFamily);
-    } else if (brokerFilter === 'deriv' || brokerFilter === 'weltrade') {
-      rows = globalRows.filter((row) => row.broker_family === brokerFilter);
-    } else if (brokerFilter === 'favorites') {
-      rows = globalRows.filter((row) => favorites.includes(row.symbol));
-    } else if (brokerFilter === 'custom') {
-      rows = globalRows.filter((row) => prefs.customBrokerFamilies.includes(row.broker_family || 'other'));
+    if (!accountLogin) {
+      if (brokerFilter === 'current') {
+        rows = globalRows.filter((row) => row.broker_family === currentFamily);
+      } else if (brokerFilter === 'deriv' || brokerFilter === 'weltrade') {
+        rows = globalRows.filter((row) => row.broker_family === brokerFilter);
+      } else if (brokerFilter === 'favorites') {
+        rows = globalRows.filter((row) => favorites.includes(row.symbol));
+      } else if (brokerFilter === 'custom') {
+        rows = globalRows.filter((row) => prefs.customBrokerFamilies.includes(row.broker_family || 'other'));
+      }
     }
 
     if (tradeOnly) rows = rows.filter((row) => row.catalog_only || row.trade_allowed);
@@ -220,6 +238,9 @@ export default function MarketSelect({
         }
         return key === category;
       });
+    }
+    if (accountLogin && accountRows && !rows.some((row) => (row.available_logins || []).includes(accountLogin) && row.trade_allowed)) {
+      rows = selectedRows.filter((row) => row.trade_allowed);
     }
     return rows;
   }, [mt5Symbols, accountRows, connectedCatalogRows, accountLogin, tradeOnly, accounts, activeAccount, prefs, favorites]);

@@ -76,7 +76,8 @@ def health():
     return {
         "ok": True,
         "service": "mt5-ea-worker",
-        "revision": "mt5-ea-native-v5",
+        "revision": "mt5-ea-native-v6",
+        "capabilities": {"start": True, "stop": True, "pause": True, "resume": True},
     }
 
 
@@ -128,19 +129,23 @@ def stop_bot_instance(bot_id: int, instance_key: str, _: None = Depends(require_
 
 
 @app.post("/bots/{bot_id}/pause")
-def pause_bot(bot_id: int):
-    raise HTTPException(
-        status_code=409,
-        detail="Pause is unavailable for arbitrary .ex5 EAs unless the EA exposes its own pause control.",
-    )
+def pause_bot(bot_id: int, _: None = Depends(require_worker_token)):
+    try:
+        return worker.pause_bot(bot_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc.args[0]))
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
 
 @app.post("/bots/{bot_id}/resume")
-def resume_bot(bot_id: int):
-    raise HTTPException(
-        status_code=409,
-        detail="Resume is unavailable for arbitrary .ex5 EAs. Start the stopped assignment again instead.",
-    )
+def resume_bot(bot_id: int, _: None = Depends(require_worker_token)):
+    try:
+        return worker.resume_bot(bot_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc.args[0]))
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
 
 if __name__ == "__main__":

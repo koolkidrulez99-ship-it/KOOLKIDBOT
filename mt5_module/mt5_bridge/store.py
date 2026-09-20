@@ -162,6 +162,7 @@ def _default_state() -> dict[str, Any]:
         },
         "copy_relationships": [],
         "copy_events": [],
+        "history_archive": [],
     }
 
 
@@ -195,6 +196,7 @@ def _load_unlocked() -> dict[str, Any]:
     state.setdefault("hub_preferences", _default_state()["hub_preferences"])
     state.setdefault("copy_relationships", [])
     state.setdefault("copy_events", [])
+    state.setdefault("history_archive", [])
     return state
 
 

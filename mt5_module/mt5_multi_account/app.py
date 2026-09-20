@@ -489,11 +489,19 @@ def connect(req: ConnectRequest):
             info = POOL.call(req.account_id, "account_info", timeout=5)
             actual_server = str(info.get("server") or "").strip()
             requested_server = str(cfg.get("server") or "").strip()
+            requested_key = requested_server.replace(" ", "").lower()
+            actual_key = actual_server.replace(" ", "").lower()
+            weltrade_alias = (
+                str(req.broker or "").strip().lower() == "weltrade"
+                and requested_key == "weltrade"
+                and actual_key in {"weltrade-demo", "weltradedemo", "weltrade-live", "weltradelive"}
+            )
             named_server_matches = (
                 not requested_server
                 or "." in requested_server
                 or ":" in requested_server
-                or requested_server.replace(" ", "").lower() == actual_server.replace(" ", "").lower()
+                or requested_key == actual_key
+                or weltrade_alias
             )
             existing_access_mode = str(POOL.items[req.account_id].config.get("access_mode") or "trading")
             requested_access_mode = str(cfg.get("access_mode") or "trading")

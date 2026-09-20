@@ -183,7 +183,17 @@ def _record_attempt(bot_id: int, signal_key: str, status: str, **extra: Any) -> 
 
 
 def _source_prefix(bot_id: int) -> str:
+    # Legacy comment prefix kept only for recovering positions opened before
+    # KOOLKID switched to human-readable MT5 comments.
     return f"KKN{int(bot_id)}"
+
+
+def _mt5_bot_comment(bot: dict[str, Any]) -> str:
+    name = " ".join(str(bot.get("name") or f"BOT {int(bot.get('id') or 0)}").split())
+    # MT5 order comments are broker-limited (commonly 31 chars). Keep the
+    # requested KKBOT(NAME) format and trim only the name when necessary.
+    max_name = 31 - len("KKBOT()")
+    return f"KKBOT({name[:max_name].rstrip()})"
 
 
 def _has_position_conflict(bot_id: int, symbol: str, positions: list[dict[str, Any]]) -> bool:
@@ -284,11 +294,24 @@ def _managed_position(bot: dict[str, Any], positions: list[dict[str, Any]]) -> d
         row = next((p for p in positions if int(p.get("ticket") or 0) == ticket), None)
         if row:
             return row
-    prefix = _source_prefix(int(bot["id"]))
-    row = next((p for p in positions if str(p.get("comment") or "").startswith(prefix)), None)
+    bot_id = int(bot["id"])
+    symbol = str(bot.get("symbol") or "")
+    magic = int((_preset(bot_id) or {}).get("magic") or 0)
+    row = next((
+        p for p in positions
+        if (not symbol or str(p.get("symbol") or "") == symbol)
+        and magic
+        and int(p.get("magic") or 0) == magic
+    ), None)
+    if not row:
+        legacy_prefix = _source_prefix(bot_id)
+        row = next((p for p in positions if str(p.get("comment") or "").startswith(legacy_prefix)), None)
+    if not row:
+        expected_comment = _mt5_bot_comment(bot)
+        row = next((p for p in positions if str(p.get("comment") or "") == expected_comment), None)
     if row:
         managed["ticket"] = int(row.get("ticket") or 0)
-        _patch_bot(int(bot["id"]), native_managed_position=managed)
+        _patch_bot(bot_id, native_managed_position=managed)
     return row
 
 
@@ -369,7 +392,7 @@ def _execute(
     if _already_attempted(int(bot["id"]), signal_key):
         raise RuntimeError("This completed-candle native signal was already submitted.")
     volume = _risk_volume(signal, account, symbol_info, bot)
-    prefix = _source_prefix(int(bot["id"]))
+    mt5_comment = _mt5_bot_comment(bot)
     _record_attempt(int(bot["id"]), signal_key, "submitting", volume=volume)
     worker = _connected_worker(int(bot["account_login"]))
     account_id = str(worker["account_id"])
@@ -378,7 +401,7 @@ def _execute(
         "side": str(signal["direction"]).lower(), "volume": volume,
         "sl": float(signal["sl"]), "tp": float(signal["tp"]),
         "magic": int((_preset(int(bot["id"])) or {}).get("magic") or 0),
-        "comment": prefix,
+        "comment": mt5_comment,
         "confirm_live": bool(allow_live),
     }
     try:
@@ -516,7 +539,7 @@ def _runner(workspace_id: str, bot_id: int, stop_event: threading.Event) -> None
         _runtime(bot_id, status="starting", started_at=_now(), last_error=None)
         while not stop_event.is_set():
             bot = _bot(bot_id)
-            if not bot or bot.get("status") != "running" or not (bot.get("native_config") or {}).get("enabled"):
+            if not bot or bot.get("status") not in {"running", "paused"} or not (bot.get("native_config") or {}).get("enabled"):
                 break
             try:
                 config = dict(bot.get("native_config") or {})
@@ -538,7 +561,9 @@ def _runner(workspace_id: str, bot_id: int, stop_event: threading.Event) -> None
                 login = int(config.get("account_login") or latest.get("account_login") or 0)
                 managed = _managed_position(latest, _positions(login)) if login else None
                 candidates = [row for row in results if row.get("valid")]
-                if not managed and candidates:
+                if bot.get("status") == "paused":
+                    _runtime(bot_id, status="paused", last_error=None)
+                elif not managed and candidates:
                     winner = max(candidates, key=lambda row: float(row.get("score") or 0))
                     _cycle(bot_id, str(winner["symbol"]), execute_allowed=True)
             except Exception as exc:
@@ -549,7 +574,7 @@ def _runner(workspace_id: str, bot_id: int, stop_event: threading.Event) -> None
     finally:
         try:
             bot = _bot(bot_id)
-            if bot and bot.get("status") != "running":
+            if bot and bot.get("status") not in {"running", "paused"}:
                 _runtime(bot_id, status="stopped", stopped_at=_now())
         finally:
             reset_workspace(token)
@@ -672,6 +697,59 @@ def start(
         thread.start()
     return _bot(bot_id) or {}
 
+def pause(workspace_id: str, bot_id: int) -> dict[str, Any]:
+    bot = _bot(bot_id)
+    if not bot:
+        raise RuntimeError("Bot not found.")
+    if bot.get("status") == "paused":
+        return bot
+    if bot.get("status") != "running":
+        raise RuntimeError("Only a running native bot can be paused.")
+    config = dict(bot.get("native_config") or {})
+    config["enabled"] = True
+    config["updated_at"] = _now()
+    return _patch_bot(
+        bot_id,
+        status="paused",
+        native_config=config,
+        native_runtime={**dict(bot.get("native_runtime") or {}), "status": "paused", "paused_at": _now(), "last_error": None},
+    )
+
+
+def resume(workspace_id: str, bot_id: int) -> dict[str, Any]:
+    bot = _bot(bot_id)
+    if not bot:
+        raise RuntimeError("Bot not found.")
+    if bot.get("status") == "running":
+        return bot
+    if bot.get("status") != "paused":
+        raise RuntimeError("Only a paused native bot can be resumed.")
+    config = dict(bot.get("native_config") or {})
+    config["enabled"] = True
+    config["updated_at"] = _now()
+    _patch_bot(
+        bot_id,
+        status="running",
+        native_config=config,
+        native_runtime={**dict(bot.get("native_runtime") or {}), "status": "running", "resumed_at": _now(), "last_error": None},
+    )
+    key = _key(workspace_id, bot_id)
+    with _LOCK:
+        thread = _THREADS.get(key)
+        if not thread or not thread.is_alive():
+            stop_event = threading.Event()
+            _STOPS[key] = stop_event
+            thread = threading.Thread(
+                target=_runner,
+                args=(workspace_id, int(bot_id), stop_event),
+                daemon=True,
+                name=f"koolkid-native-{bot_id}",
+            )
+            _THREADS[key] = thread
+            thread.start()
+    return _bot(bot_id) or {}
+
+
 def stop(workspace_id: str, bot_id: int) -> dict[str, Any]:
     key = _key(workspace_id, bot_id)
     with _LOCK:
@@ -691,7 +769,7 @@ def stop(workspace_id: str, bot_id: int) -> dict[str, Any]:
 def restore(workspace_id: str) -> int:
     restored = 0
     for bot in read_state().get("bots", []):
-        if not bot.get("native_engine") or bot.get("status") != "running":
+        if not bot.get("native_engine") or bot.get("status") not in {"running", "paused"}:
             continue
         config = dict(bot.get("native_config") or {})
         if not config.get("enabled") or not bot.get("native_ready"):

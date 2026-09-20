@@ -80,7 +80,7 @@ export default function HubAuthGate({ children }: { children: ReactNode }) {
   if (signedIn && identity?.role === 'admin') return <AdminConsole username={identity.username} />;
   if (signedIn) {
     const lifetime = identity?.access_tier === 'lifetime';
-    return <>{children}<ContactSupport trial={trial} lifetime={lifetime} />{!lifetime && <TrialNotice open={trialNoticeOpen} onClose={() => setTrialNoticeOpen(false)} trial={trial} />}</>;
+    return <>{children}{!lifetime && <ContactSupport trial={trial} />}{!lifetime && <TrialNotice open={trialNoticeOpen} onClose={() => setTrialNoticeOpen(false)} trial={trial} />}</>;
   }
   return <>{view === 'cover' ? <Cover open={setView} /> : <Auth mode={view} open={setView} complete={complete} />}<ContactSupport trial={trial} /></>;
 }

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, Clock3, Download, Eye, FileCode2, LoaderCircle, Upload, XCircle } from 'lucide-react';
+import { CheckCircle2, Clock3, Download, Eye, FileCode2, LoaderCircle, Upload, X, XCircle } from 'lucide-react';
 import { useHub } from '../context/HubContext';
 import { backtestService } from '../services/backtestService';
 import type { BacktestJob, BacktestState } from '../services/backtestService';
@@ -11,7 +11,12 @@ const ACTIVE = new Set(['queued', 'preparing', 'compiling', 'testing', 'analyzin
 const TIMEFRAMES = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1'];
 
 function resultValue(job: BacktestJob, key: string) {
-  const value = job.result?.[key];
+  let value = job.result?.[key];
+  if ((value === null || value === undefined || value === '') && key === 'final_balance') {
+    const net = Number(job.result?.net_profit);
+    const deposit = Number(job.deposit);
+    if (Number.isFinite(net) && Number.isFinite(deposit)) value = Math.round((deposit + net) * 100) / 100;
+  }
   if (value === null || value === undefined || value === '') return '—';
   return String(value);
 }
@@ -38,6 +43,7 @@ export default function BacktestLab() {
   const [selectedResult, setSelectedResult] = useState<BacktestJob | null>(null);
   const [busy, setBusy] = useState(false);
   const [downloadBusy, setDownloadBusy] = useState<string | null>(null);
+  const [clearingId, setClearingId] = useState<string | null>(null);
   const [botFile, setBotFile] = useState<File | null>(null);
   const [presetFile, setPresetFile] = useState<File | null>(null);
   const [accountLogin, setAccountLogin] = useState<number | ''>('');
@@ -128,18 +134,36 @@ export default function BacktestLab() {
     }
   };
 
+  const dismiss = async (job: BacktestJob) => {
+    setClearingId(job.id);
+    try {
+      await backtestService.dismiss(job.id);
+      if (selectedResult?.id === job.id) setSelectedResult(null);
+      await load();
+    } catch (error) {
+      pushToast('error', 'Could not clear backtest', error instanceof Error ? error.message : undefined);
+    } finally {
+      setClearingId(null);
+    }
+  };
+
   const resultMetrics: Array<[string, string]> = [
     ['Net profit', 'net_profit'],
+    ['Final balance', 'final_balance'],
     ['Gross profit', 'gross_profit'],
     ['Gross loss', 'gross_loss'],
     ['Profit factor', 'profit_factor'],
     ['Expected payoff', 'expected_payoff'],
+    ['Win rate', 'win_rate'],
     ['Max drawdown', 'max_drawdown'],
+    ['Relative DD', 'relative_drawdown'],
     ['Total trades', 'total_trades'],
     ['Winning trades', 'profit_trades'],
     ['Losing trades', 'loss_trades'],
     ['Largest win', 'largest_profit_trade'],
     ['Largest loss', 'largest_loss_trade'],
+    ['Recovery factor', 'recovery_factor'],
+    ['Sharpe ratio', 'sharpe_ratio'],
   ];
 
   // Backtest Lab display
@@ -175,14 +199,24 @@ export default function BacktestLab() {
         </div>
       )}
       {!activeJob && latest && (
-        <div className="mt-5 rounded-xl border border-white/[0.07] p-4">
-          <div className="flex items-center gap-2">
+        <div className="relative mt-5 rounded-xl border border-white/[0.07] p-4">
+          <button
+            type="button"
+            className="absolute right-3 top-3 grid h-7 w-7 place-items-center rounded-lg border border-white/[0.07] bg-white/[0.03] text-slate-500 transition hover:bg-white/[0.07] hover:text-white"
+            title="Clear this backtest from the page"
+            aria-label="Clear completed backtest"
+            disabled={clearingId === latest.id}
+            onClick={() => void dismiss(latest)}
+          >
+            {clearingId === latest.id ? <LoaderCircle size={13} className="animate-spin" /> : <X size={14} />}
+          </button>
+          <div className="flex items-center gap-2 pr-9">
             {latest.status === 'complete' ? <CheckCircle2 size={15} className="text-gain-400" /> : <XCircle size={15} className="text-loss-400" />}
             <p className="text-sm font-bold text-white">{latest.bot_filename}</p>
             <Badge tone={latest.status === 'complete' ? 'gain' : 'loss'}>{latest.status}</Badge>
           </div>
           <p className="mt-2 text-xs text-slate-500">{latest.symbol} · {latest.timeframe} · Finished {formatDate(latest.completed_at)}</p>
-          {latest.error && <p className="mt-2 text-xs text-loss-400">{latest.error}</p>}
+          {latest.status === 'failed' && <p className="mt-2 text-xs text-loss-400">Backtest failed. Please try again.</p>}
           {latest.status === 'complete' && (
             <div className="mt-3 flex flex-wrap gap-2">
               <button className="btn-primary" onClick={() => setSelectedResult(latest)}><Eye size={14} /> View Results</button>

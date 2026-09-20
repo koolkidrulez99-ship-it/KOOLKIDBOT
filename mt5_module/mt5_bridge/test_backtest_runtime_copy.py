@@ -59,3 +59,59 @@ def test_backtest_clone_retries_windows_sharing_violation(monkeypatch, tmp_path)
 
     assert calls["count"] == 3
     assert Path(result).read_bytes() == b"ok"
+
+
+def test_backtest_log_fallback_recovers_balance_and_trade_count():
+    log = """
+    Core 01 2026.09.22 01:00:00 entry opened: BUY
+    Core 01 Alert: entry opened: BUY
+    Core 01 2026.09.22 03:45:00 entry opened: BUY
+    Core 01 Alert: entry opened: BUY
+    Core 01 final balance 9949.90 USD
+    """
+    result = backtest_manager._parse_tester_log_summary(log, 10000.0)
+
+    assert result["final_balance"] == 9949.90
+    assert result["net_profit"] == -50.10
+    assert result["total_trades"] == 2
+
+
+def test_public_backtest_result_derives_final_balance_when_report_omits_it():
+    row = {
+        "id": "bt-test",
+        "status": "complete",
+        "deposit": 10000,
+        "result": {"net_profit": 125.55, "total_trades": 8},
+    }
+
+    public = backtest_manager._public_job(row)
+
+    assert public["result"]["final_balance"] == 10125.55
+    assert public["result"]["net_profit"] == 125.55
+
+
+def test_tester_config_writes_runtime_report_name(tmp_path):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+    job = {
+        "job_dir": str(job_dir),
+        "symbol": "XAUUSD",
+        "timeframe": "M15",
+        "model": 4,
+        "date_from": "2026-01-01",
+        "date_to": "2026-02-01",
+        "deposit": 10000,
+        "leverage": 100,
+    }
+    config = backtest_manager._write_tester_config(
+        job,
+        runtime,
+        "KOOLKIDBacktests\\Demo.ex5",
+        None,
+        job_dir / "report.html",
+    )
+
+    text = config.read_text(encoding="utf-16")
+    assert "Report=KOOLKID_Backtest_Report.html" in text

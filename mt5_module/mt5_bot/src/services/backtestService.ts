@@ -76,6 +76,7 @@ async function downloadBacktestFile(jobId: string, kind: 'report' | 'data') {
 
 export const backtestService = {
   list: () => apiRequest<BacktestState>('/api/mt5/backtests'),
+  dismiss: (jobId: string) => apiRequest<BacktestJob>(`/api/mt5/backtests/${encodeURIComponent(jobId)}`, 'DELETE'),
   downloadReport: (jobId: string) => downloadBacktestFile(jobId, 'report'),
   downloadData: (jobId: string) => downloadBacktestFile(jobId, 'data'),
   create: (input: BacktestCreateInput) => {

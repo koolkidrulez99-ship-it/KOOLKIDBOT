@@ -183,3 +183,50 @@ def test_native_symbol_selection_deduplicates_and_caps():
             {"symbols": [f"SYM{i}" for i in range(11)]},
             {},
         )
+
+
+def test_bot_trade_attribution_does_not_rewrite_display_source():
+    bots = [
+        {
+            "id": 1010,
+            "name": "KOOLKID SCALPER X",
+            "account_login": 123,
+            "settings": {"magic_number": 26101001},
+        },
+        {
+            "id": 2000,
+            "name": "My Uploaded EA",
+            "account_login": 123,
+            "ea_filename": "My_Uploaded_EA.ex5",
+            "detected_magic": 812345,
+            "settings": {"magic_number": 512000},
+        },
+    ]
+
+    native = main._enrich_bot_trade_row(
+        {"account_login": 123, "source": "KKN1010:abc123", "magic": 26101001},
+        bots,
+    )
+    uploaded = main._enrich_bot_trade_row(
+        {"account_login": 123, "source": "MT5", "comment": "anything", "magic": 812345},
+        bots,
+    )
+    mt5_comment = main._enrich_bot_trade_row(
+        {"account_login": 123, "source": "KKBOT(KOOLKID SCALPER X)", "comment": "KKBOT(KOOLKID SCALPER X)", "magic": 26101001},
+        bots,
+    )
+
+    assert native["source"] == "KKN1010:abc123"
+    assert native["bot_id"] == 1010
+    assert uploaded["source"] == "MT5"
+    assert uploaded["bot_id"] == 2000
+    assert mt5_comment["source"] == "KKBOT(KOOLKID SCALPER X)"
+    assert mt5_comment["bot_id"] == 1010
+
+
+def test_native_mt5_comment_uses_bot_name_and_mt5_length_limit():
+    assert native_runtime._mt5_bot_comment({"id": 1010, "name": "DEAR BRUCE"}) == "KKBOT(DEAR BRUCE)"
+    comment = native_runtime._mt5_bot_comment({"id": 1010, "name": "THIS IS A VERY LONG BOT NAME THAT EXCEEDS MT5"})
+    assert comment.startswith("KKBOT(")
+    assert comment.endswith(")")
+    assert len(comment) <= 31

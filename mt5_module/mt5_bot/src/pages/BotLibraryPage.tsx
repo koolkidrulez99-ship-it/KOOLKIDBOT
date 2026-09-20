@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
-import { BarChart3, Boxes, Cpu, Download, FileCode2, Play, Plus, ScanSearch, Settings2, Target, Trash2, Upload } from 'lucide-react';
+import { BarChart3, Boxes, Cpu, Download, FileCode2, Pause, Play, Plus, ScanSearch, Settings2, Square, Target, Trash2, Upload } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { useHub } from '../context/HubContext';
 import { fmtSigned, profitTone } from '../lib/format';
@@ -13,10 +13,16 @@ import { TIMEFRAMES } from '../lib/market';
 import MarketSelect from '../components/MarketSelect';
 import { isSimulation } from '../config/runtime';
 import { mt5BotService } from '../services/mt5BotService';
+import { hubAuthService } from '../services/hubAuthService';
 import type { Mt5Bot } from '../types';
 import BacktestLab from '../components/BacktestLab';
 
 const STRATEGIES = ['System Preset', 'Custom EA'];
+
+function isBlackRockBot(bot: Mt5Bot) {
+  const values = [bot.name, bot.display_title, bot.ea_filename];
+  return values.some((value) => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '').replace(/ex5$/, '') === 'blackrock');
+}
 
 const PRESET_ACCENTS: Record<number, { icon: string; border: string; glow: string }> = {
   1000: { icon: 'text-slate-100 bg-slate-500/10 border-slate-400/25', border: '!border-slate-400/15', glow: 'from-slate-300/10' },
@@ -37,11 +43,24 @@ export default function BotLibraryPage() {
   const [removeTarget, setRemoveTarget] = useState<Mt5Bot | null>(null);
   const [fileTarget, setFileTarget] = useState<Mt5Bot | null>(null);
   const [downloadId, setDownloadId] = useState<number | null>(null);
+  const [controlBusyId, setControlBusyId] = useState<number | null>(null);
   const [strategyFilter, setStrategyFilter] = useState<string>('all');
+  const [accessTier, setAccessTier] = useState<'tester' | 'lifetime'>('tester');
+
+  useEffect(() => {
+    let active = true;
+    hubAuthService.me()
+      .then((identity) => { if (active) setAccessTier(identity.access_tier); })
+      .catch(() => { if (active) setAccessTier('tester'); });
+    return () => { active = false; };
+  }, []);
 
   const filtered = useMemo(
-    () => (strategyFilter === 'all' ? bots : bots.filter((b) => b.strategy === strategyFilter)),
-    [bots, strategyFilter]
+    () => {
+      const visible = accessTier === 'lifetime' ? bots : bots.filter((bot) => !isBlackRockBot(bot));
+      return strategyFilter === 'all' ? visible : visible.filter((bot) => bot.strategy === strategyFilter);
+    },
+    [accessTier, bots, strategyFilter]
   );
 
   const downloadCompiled = async (bot: Mt5Bot) => {
@@ -61,6 +80,29 @@ export default function BotLibraryPage() {
       pushToast('error', 'Download failed', error instanceof Error ? error.message : undefined);
     } finally {
       setDownloadId(null);
+    }
+  };
+
+  const controlBot = async (bot: Mt5Bot, action: 'pause' | 'resume' | 'stop') => {
+    setControlBusyId(bot.id);
+    try {
+      await botControl(bot.id, action);
+      pushToast(
+        action === 'stop' ? 'info' : 'success',
+        `${bot.name} ${action === 'pause' ? 'paused' : action === 'resume' ? 'resumed' : 'stopped'}`,
+        action === 'pause'
+          ? bot.native_engine
+            ? 'New entries are paused. Existing native positions continue to be managed.'
+            : 'The EA terminal is paused. Existing broker positions remain open until you resume or manage them manually.'
+          : action === 'resume'
+            ? 'Bot execution resumed with its saved account, market and timeframe.'
+            : 'Bot engine stopped. Existing broker positions remain untouched.'
+      );
+      await refresh(true);
+    } catch (error) {
+      pushToast('error', `${action === 'pause' ? 'Pause' : action === 'resume' ? 'Resume' : 'Stop'} failed`, error instanceof Error ? error.message : undefined);
+    } finally {
+      setControlBusyId(null);
     }
   };
 
@@ -199,10 +241,14 @@ export default function BotLibraryPage() {
                       <button className="btn-ghost flex-1 opacity-60 cursor-not-allowed" disabled><FileCode2 size={14} /> MQ5 Source Required</button>
                     ) : running ? (
                       <>
-                        <button className="btn-danger flex-1" onClick={async () => {
-                          try { await botControl(b.id, 'stop'); pushToast('info', `${b.name} stopped`, 'Native scanner stopped. Existing open trades are not force-closed.'); await refresh(true); }
-                          catch (e) { pushToast('error', 'Stop failed', e instanceof Error ? e.message : undefined); }
-                        }}><Settings2 size={14} /> Stop Native Bot</button>
+                        <button className="btn-warn flex-1" disabled={controlBusyId === b.id} onClick={() => void controlBot(b, 'pause')}><Pause size={14} /> Pause</button>
+                        <button className="btn-danger !px-3" title="Stop native bot" disabled={controlBusyId === b.id} onClick={() => void controlBot(b, 'stop')}><Square size={13} /></button>
+                        <button className="btn-ghost !px-3" title="Configure native preset" onClick={() => setConfigBot(b)}><Settings2 size={15} /></button>
+                      </>
+                    ) : paused ? (
+                      <>
+                        <button className="btn-success flex-1" disabled={controlBusyId === b.id} onClick={() => void controlBot(b, 'resume')}><Play size={14} /> Resume</button>
+                        <button className="btn-danger !px-3" title="Stop native bot" disabled={controlBusyId === b.id} onClick={() => void controlBot(b, 'stop')}><Square size={13} /></button>
                         <button className="btn-ghost !px-3" title="Configure native preset" onClick={() => setConfigBot(b)}><Settings2 size={15} /></button>
                       </>
                     ) : (
@@ -210,6 +256,18 @@ export default function BotLibraryPage() {
                     )
                   ) : ['stopped', 'error', 'worker_offline'].includes(b.status) ? (
                     <button className="btn-primary flex-1" onClick={() => setConfigBot(b)}><Play size={14} /> Start Bot</button>
+                  ) : running ? (
+                    <>
+                      <button className="btn-warn flex-1" disabled={controlBusyId === b.id || !eaLaunchAvailable} onClick={() => void controlBot(b, 'pause')}><Pause size={14} /> Pause</button>
+                      <button className="btn-danger !px-3" title="Stop bot" disabled={controlBusyId === b.id} onClick={() => void controlBot(b, 'stop')}><Square size={13} /></button>
+                      <button className="btn-ghost !px-3" title="Configure bot" onClick={() => setConfigBot(b)}><Settings2 size={15} /></button>
+                    </>
+                  ) : paused ? (
+                    <>
+                      <button className="btn-success flex-1" disabled={controlBusyId === b.id || !eaLaunchAvailable} onClick={() => void controlBot(b, 'resume')}><Play size={14} /> Resume</button>
+                      <button className="btn-danger !px-3" title="Stop bot" disabled={controlBusyId === b.id} onClick={() => void controlBot(b, 'stop')}><Square size={13} /></button>
+                      <button className="btn-ghost !px-3" title="Configure bot" onClick={() => setConfigBot(b)}><Settings2 size={15} /></button>
+                    </>
                   ) : (
                     <button className="btn-ghost flex-1" onClick={() => setConfigBot(b)}><Settings2 size={14} /> Configure</button>
                   )}

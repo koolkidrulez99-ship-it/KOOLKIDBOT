@@ -161,6 +161,50 @@ class WorkerTests(unittest.TestCase):
             self.assertEqual({row["instance_key"] for row in state["assignments"]}, {"market-1", "market-2"})
             self.assertEqual({row["symbol"] for row in state["assignments"]}, {"EURUSD", "GBPUSD"})
 
+    def test_pause_stops_only_the_ea_process_and_preserves_restart_request(self):
+        request = StartBotRequest(
+            bot_id=7, account_login=123, account_type="demo", symbol="EURUSD",
+            timeframe="M15", ea_path="Demo.ex5", ea_filename="Demo.ex5",
+        )
+        state = {"assignments": [{
+            "id": "ea-1", "bot_id": 7, "instance_key": "default", "status": "running",
+            "process_id": 4321, "terminal_path": "terminal64.exe", "symbol": "EURUSD",
+            "restart_request": request.model_dump(),
+        }]}
+
+        with patch.object(worker, "read_state", side_effect=lambda: state), \
+             patch.object(worker, "write_state"), \
+             patch.object(worker, "_process_alive", return_value=True), \
+             patch.object(worker, "_terminate_process") as terminate:
+            result = worker.pause_bot(7)
+
+        terminate.assert_called_once_with(4321)
+        self.assertEqual(result["status"], "paused")
+        self.assertEqual(state["assignments"][0]["status"], "paused")
+        self.assertIsNone(state["assignments"][0]["process_id"])
+        self.assertIn("restart_request", state["assignments"][0])
+
+    def test_resume_restarts_paused_assignment_from_saved_request(self):
+        request = StartBotRequest(
+            bot_id=7, account_login=123, account_type="demo", symbol="EURUSD",
+            timeframe="M15", ea_path="Demo.ex5", ea_filename="Demo.ex5",
+        )
+        state = {"assignments": [{
+            "id": "ea-1", "bot_id": 7, "instance_key": "default", "status": "paused",
+            "process_id": None, "terminal_path": "terminal64.exe", "symbol": "EURUSD",
+            "restart_request": request.model_dump(),
+        }]}
+        with patch.object(worker, "read_state", return_value=state), \
+             patch.object(worker, "start_bot", return_value={
+                 "id": "ea-2", "bot_id": 7, "instance_key": "default", "status": "running",
+                 "symbol": "EURUSD", "process_id": 9876,
+             }) as start:
+            result = worker.resume_bot(7)
+
+        start.assert_called_once()
+        self.assertEqual(result["status"], "running")
+        self.assertEqual(result["instances"][0]["process_id"], 9876)
+
     def test_live_start_requires_explicit_confirmation(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
