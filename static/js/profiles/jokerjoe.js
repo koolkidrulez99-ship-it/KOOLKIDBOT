@@ -34,10 +34,52 @@ const state = { lastSocket: null, socketBound: false, autoModes: {}, turboMode: 
       completionTimer: null,
     },
   };
+  const JOKERJOE_SINGLE_MARTINGALE_KEY = "jokerjoe.single.martingale.v1";
+  const jokerjoeSingleMartingaleConfig = loadJokerjoeSingleMartingaleConfig();
+  state.singleMartingale = {
+    enabled: false, running: false, inProgress: false, stopRequested: false,
+    step: 1, cycleAttempt: 0, recoveryActive: false, pendingWasRecovery: false,
+    originalDigit: jokerjoeSingleMartingaleConfig.digit, currentDigit: jokerjoeSingleMartingaleConfig.digit,
+    switchAlternateActive: false, pendingContractId: "", pendingStake: 0,
+    pendingMartingale: false, requestGeneration: 0, settledIds: {},
+    waitingForTicks: false, waitTicksRemaining: 0, sessionProfit: 0,
+    sessionCycleBaseProfit: 0, sessionWaiting: false, sessionWaitRemaining: 0,
+    sessionRunsCompleted: 0, sessionTimer: null, sessionCountdownTimer: null,
+    status: "Ready", lastResult: "none", controlsLoaded: false,
+  };
+  let jokerjoeDigitPickerTarget = "recovery";
 
   function App() { return window.BotApp || {}; }
   function isActive() { try { return typeof activeProfile !== "undefined" && activeProfile === PROFILE; } catch (e) { return false; } }
   function safeToast(msg, type) { try { if (typeof showToast === "function") showToast(msg, type || "info"); } catch (e) {} }
+
+  function mountJokerjoeMartingalePopups(resetExisting) {
+    let host = document.getElementById("jokerjoeMartingalePopupViewport");
+    if (resetExisting && host) { host.remove(); host = null; }
+    if (!host) {
+      host = document.createElement("div");
+      host.id = "jokerjoeMartingalePopupViewport";
+      document.body.appendChild(host);
+    }
+    ["jokerjoeDigitPickerPopup", "jokerjoeMartingaleSessionPopup"].forEach((id) => {
+      const popup = document.getElementById(id);
+      if (popup && popup.parentElement !== host) host.appendChild(popup);
+    });
+  }
+
+  function removeJokerjoeMartingalePopups() {
+    const host = document.getElementById("jokerjoeMartingalePopupViewport");
+    if (host) host.remove();
+  }
+
+  function mountJokerjoeSingleMartingalePanel() {
+    const reinvestPanel = document.getElementById("profileReinvestPanelJokerjoe");
+    const martingalePanel = document.getElementById("jokerjoeSingleMartingalePanel");
+    if (!reinvestPanel || !martingalePanel) return;
+    if (reinvestPanel.nextElementSibling !== martingalePanel) {
+      reinvestPanel.insertAdjacentElement("afterend", martingalePanel);
+    }
+  }
 
 function getFastIntervalMsJokerjoe() {
   return currentTurboModeJokerjoe() ? FAST_INTERVAL_MS_TURBO : FAST_INTERVAL_MS_NORMAL;
@@ -4076,6 +4118,365 @@ function buildBlackcardFallbackPercentagesJokerjoe() {
     return sendNow();
   }
 
+  function loadJokerjoeSingleMartingaleConfig() {
+    const defaults = {
+      contract: "DIFFERS", digit: 5, startStake: 0.35, multiplier: 2,
+      duration: 1, tickSpacing: 1, maxSteps: 80, doubleLimit: 0, maxStake: "",
+      takeProfit: "", stopLoss: "", recoveryEnabled: false, recoveryDigit: 4,
+      recoveryAfter: 4, switchAfterWinEnabled: false, switchAfterWinDigit: 3,
+      switchEveryTradeEnabled: false, switchEveryTradeDigit: 6,
+      sessionEnabled: false, sessionDuration: 30, sessionUnit: "seconds", sessionRunLimit: 1,
+    };
+    try {
+      const saved = JSON.parse(localStorage.getItem(JOKERJOE_SINGLE_MARTINGALE_KEY) || "{}");
+      const digit = (value, fallback) => Number.isInteger(Number(value)) && Number(value) >= 0 && Number(value) <= 9 ? Number(value) : fallback;
+      return {
+        ...defaults, ...saved,
+        contract: String(saved.contract || defaults.contract).toUpperCase() === "MATCHES" ? "MATCHES" : "DIFFERS",
+        digit: digit(saved.digit, defaults.digit),
+        recoveryDigit: digit(saved.recoveryDigit, defaults.recoveryDigit),
+        switchAfterWinDigit: digit(saved.switchAfterWinDigit, defaults.switchAfterWinDigit),
+        switchEveryTradeDigit: digit(saved.switchEveryTradeDigit, defaults.switchEveryTradeDigit),
+        recoveryAfter: Math.max(1, Math.floor(Number(saved.recoveryAfter) || defaults.recoveryAfter)),
+        sessionRunLimit: Math.max(1, Math.min(10, Math.floor(Number(saved.sessionRunLimit) || defaults.sessionRunLimit))),
+        sessionUnit: ["ticks", "seconds", "minutes"].includes(String(saved.sessionUnit)) ? String(saved.sessionUnit) : defaults.sessionUnit,
+      };
+    } catch (e) { return defaults; }
+  }
+
+  function saveJokerjoeSingleMartingaleConfig() {
+    try { localStorage.setItem(JOKERJOE_SINGLE_MARTINGALE_KEY, JSON.stringify(jokerjoeSingleMartingaleConfig)); } catch (e) {}
+  }
+
+  function jjSmNumber(id, fallback, min, max, allowBlank) {
+    const el = document.getElementById(id);
+    if (allowBlank && el && String(el.value || "").trim() === "") return null;
+    let value = Number(el ? el.value : fallback);
+    if (!Number.isFinite(value)) value = Number(fallback);
+    if (Number.isFinite(Number(min))) value = Math.max(Number(min), value);
+    if (Number.isFinite(Number(max))) value = Math.min(Number(max), value);
+    return value;
+  }
+
+  function applyJokerjoeSingleMartingaleConfigToUi() {
+    const st = state.singleMartingale;
+    if (st.controlsLoaded) return;
+    if (!document.getElementById("jokerjoeSingleMartingaleContract")) return;
+    const values = {
+      jokerjoeSingleMartingaleContract: jokerjoeSingleMartingaleConfig.contract,
+      jokerjoeSingleMartingaleDigit: jokerjoeSingleMartingaleConfig.digit,
+      jokerjoeSingleMartingaleStake: jokerjoeSingleMartingaleConfig.startStake,
+      jokerjoeSingleMartingaleMultiplier: jokerjoeSingleMartingaleConfig.multiplier,
+      jokerjoeSingleMartingaleDuration: jokerjoeSingleMartingaleConfig.duration,
+      jokerjoeSingleMartingaleTickSpacing: jokerjoeSingleMartingaleConfig.tickSpacing,
+      jokerjoeSingleMartingaleMaxSteps: jokerjoeSingleMartingaleConfig.maxSteps,
+      jokerjoeSingleMartingaleDoubleLimit: jokerjoeSingleMartingaleConfig.doubleLimit,
+      jokerjoeSingleMartingaleMaxStake: jokerjoeSingleMartingaleConfig.maxStake,
+      jokerjoeSingleMartingaleTP: jokerjoeSingleMartingaleConfig.takeProfit,
+      jokerjoeSingleMartingaleSL: jokerjoeSingleMartingaleConfig.stopLoss,
+      jokerjoeRecoveryAfter: jokerjoeSingleMartingaleConfig.recoveryAfter,
+    };
+    Object.keys(values).forEach((id) => { const el = document.getElementById(id); if (el) el.value = String(values[id] ?? ""); });
+    st.originalDigit = jokerjoeSingleMartingaleConfig.digit;
+    st.currentDigit = jokerjoeSingleMartingaleConfig.digit;
+    st.controlsLoaded = true;
+  }
+
+  function readJokerjoeSingleMartingaleSettings() {
+    applyJokerjoeSingleMartingaleConfigToUi();
+    const contractEl = document.getElementById("jokerjoeSingleMartingaleContract");
+    const digitEl = document.getElementById("jokerjoeSingleMartingaleDigit");
+    const contract = String((contractEl && contractEl.value) || jokerjoeSingleMartingaleConfig.contract).toUpperCase() === "MATCHES" ? "MATCHES" : "DIFFERS";
+    const digit = Math.max(0, Math.min(9, Math.floor(Number((digitEl && digitEl.value) ?? jokerjoeSingleMartingaleConfig.digit) || 0)));
+    return {
+      contract, type: contract, digit,
+      startStake: Number(jjSmNumber("jokerjoeSingleMartingaleStake", 0.35, 0.35, 1000000).toFixed(2)),
+      multiplier: jjSmNumber("jokerjoeSingleMartingaleMultiplier", 2, 1, 100),
+      duration: Math.floor(jjSmNumber("jokerjoeSingleMartingaleDuration", 1, 1, 10)),
+      tickSpacing: Math.floor(jjSmNumber("jokerjoeSingleMartingaleTickSpacing", 1, 1, 10)),
+      maxSteps: Math.floor(jjSmNumber("jokerjoeSingleMartingaleMaxSteps", 80, 1, 1000000)),
+      doubleLimit: Math.floor(jjSmNumber("jokerjoeSingleMartingaleDoubleLimit", 0, 0, 1000000)),
+      maxStake: jjSmNumber("jokerjoeSingleMartingaleMaxStake", 0, 0.35, 1000000, true),
+      takeProfit: jjSmNumber("jokerjoeSingleMartingaleTP", 0, 0, 1000000, true) || 0,
+      stopLoss: jjSmNumber("jokerjoeSingleMartingaleSL", 0, 0, 1000000, true) || 0,
+      recoveryEnabled: !!jokerjoeSingleMartingaleConfig.recoveryEnabled,
+      recoveryDigit: Number(jokerjoeSingleMartingaleConfig.recoveryDigit),
+      recoveryAfter: Math.max(1, Math.floor(Number(jokerjoeSingleMartingaleConfig.recoveryAfter) || 4)),
+      switchAfterWinEnabled: !!jokerjoeSingleMartingaleConfig.switchAfterWinEnabled,
+      switchAfterWinDigit: Number(jokerjoeSingleMartingaleConfig.switchAfterWinDigit),
+      switchEveryTradeEnabled: !!jokerjoeSingleMartingaleConfig.switchEveryTradeEnabled,
+      switchEveryTradeDigit: Number(jokerjoeSingleMartingaleConfig.switchEveryTradeDigit),
+      sessionEnabled: !!jokerjoeSingleMartingaleConfig.sessionEnabled,
+      sessionDuration: Math.max(1, Math.floor(Number(jokerjoeSingleMartingaleConfig.sessionDuration) || 30)),
+      sessionUnit: jokerjoeSingleMartingaleConfig.sessionUnit || "seconds",
+      sessionRunLimit: Math.max(1, Math.min(10, Math.floor(Number(jokerjoeSingleMartingaleConfig.sessionRunLimit) || 1))),
+    };
+  }
+
+  function persistJokerjoeSingleMartingaleControls() {
+    const settings = readJokerjoeSingleMartingaleSettings();
+    Object.assign(jokerjoeSingleMartingaleConfig, {
+      contract: settings.contract, digit: settings.digit, startStake: settings.startStake,
+      multiplier: settings.multiplier, duration: settings.duration, tickSpacing: settings.tickSpacing,
+      maxSteps: settings.maxSteps, doubleLimit: settings.doubleLimit,
+      maxStake: settings.maxStake === null ? "" : settings.maxStake,
+      takeProfit: settings.takeProfit || "", stopLoss: settings.stopLoss || "",
+      recoveryAfter: Math.max(1, Math.floor(jjSmNumber("jokerjoeRecoveryAfter", settings.recoveryAfter, 1, 1000000))),
+    });
+    saveJokerjoeSingleMartingaleConfig();
+  }
+
+  function jokerjoeMartingaleStake(settings, step) {
+    let stake = settings.startStake * Math.pow(settings.multiplier, Math.max(0, Number(step || 1) - 1));
+    if (settings.maxStake !== null) stake = Math.min(stake, settings.maxStake);
+    return Number(Math.max(0.35, stake).toFixed(2));
+  }
+
+  function nextJokerjoeMartingaleStep(st, settings) {
+    const step = Math.max(1, Math.floor(Number(st.step) || 1));
+    if (settings.doubleLimit > 0 && (step - 1) >= settings.doubleLimit) return 1;
+    return Math.min(settings.maxSteps, step + 1);
+  }
+
+  function clearJokerjoeSinglePending() {
+    const st = state.singleMartingale;
+    st.inProgress = false; st.pendingContractId = ""; st.pendingStake = 0;
+    st.pendingMartingale = false; st.pendingWasRecovery = false;
+  }
+
+  function clearJokerjoeSessionTimers() {
+    const st = state.singleMartingale;
+    if (st.sessionTimer) clearTimeout(st.sessionTimer);
+    if (st.sessionCountdownTimer) clearInterval(st.sessionCountdownTimer);
+    st.sessionTimer = null; st.sessionCountdownTimer = null;
+  }
+
+  function scheduleJokerjoeNextTrade(reason) {
+    const st = state.singleMartingale;
+    const settings = readJokerjoeSingleMartingaleSettings();
+    if (!st.enabled || !st.running || st.stopRequested) return false;
+    st.waitingForTicks = true; st.waitTicksRemaining = settings.tickSpacing;
+    st.status = reason || `Waiting ${settings.tickSpacing} tick${settings.tickSpacing === 1 ? "" : "s"}`;
+    updateJokerjoeSingleMartingalePanel();
+    return true;
+  }
+
+  function stopJokerjoeSingleMartingale(reason, resetProfit) {
+    const st = state.singleMartingale;
+    st.requestGeneration += 1; st.enabled = false; st.running = false; st.stopRequested = true;
+    st.waitingForTicks = false; st.waitTicksRemaining = 0; st.sessionWaiting = false; st.sessionWaitRemaining = 0;
+    clearJokerjoeSessionTimers(); clearJokerjoeSinglePending();
+    st.step = 1; st.cycleAttempt = 0; st.recoveryActive = false; st.switchAlternateActive = false;
+    st.currentDigit = st.originalDigit;
+    if (resetProfit) { st.sessionProfit = 0; st.sessionCycleBaseProfit = 0; st.sessionRunsCompleted = 0; }
+    st.status = reason || "Stopped";
+    updateJokerjoeSingleMartingalePanel();
+  }
+
+  function applyJokerjoeEveryTradeSwitch(st, settings) {
+    if (!settings.switchEveryTradeEnabled || st.recoveryActive) return;
+    st.currentDigit = st.switchAlternateActive ? st.originalDigit : settings.switchEveryTradeDigit;
+    st.switchAlternateActive = !st.switchAlternateActive;
+  }
+
+  function applyJokerjoeAfterWinSwitch(st, settings) {
+    if (!settings.switchAfterWinEnabled || settings.switchEveryTradeEnabled || st.recoveryActive) return;
+    st.currentDigit = st.switchAlternateActive ? st.originalDigit : settings.switchAfterWinDigit;
+    st.switchAlternateActive = !st.switchAlternateActive;
+  }
+
+  function scheduleJokerjoeSessionRestart(settings) {
+    const st = state.singleMartingale;
+    st.sessionRunsCompleted += 1;
+    if (st.sessionRunsCompleted >= settings.sessionRunLimit) {
+      stopJokerjoeSingleMartingale(`Session complete (${st.sessionRunsCompleted}/${settings.sessionRunLimit})`, false);
+      return false;
+    }
+    clearJokerjoeSessionTimers();
+    st.sessionWaiting = true; st.sessionWaitRemaining = settings.sessionDuration;
+    st.sessionCycleBaseProfit = st.sessionProfit; st.waitingForTicks = false; st.step = 1;
+    st.status = `TP reached. Waiting ${settings.sessionDuration} ${settings.sessionUnit}`;
+    if (settings.sessionUnit === "ticks") { updateJokerjoeSingleMartingalePanel(); return true; }
+    const delay = settings.sessionUnit === "minutes" ? settings.sessionDuration * 60000 : settings.sessionDuration * 1000;
+    const deadline = Date.now() + delay;
+    st.sessionCountdownTimer = setInterval(() => {
+      if (!st.sessionWaiting || st.stopRequested) return clearJokerjoeSessionTimers();
+      st.sessionWaitRemaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+      updateJokerjoeSingleMartingalePanel();
+    }, 250);
+    st.sessionTimer = setTimeout(() => {
+      clearJokerjoeSessionTimers();
+      if (!st.sessionWaiting || !st.enabled || !st.running || st.stopRequested) return;
+      st.sessionWaiting = false; st.sessionWaitRemaining = 0; st.status = "Running";
+      placeJokerjoeSingleMartingaleTrade({ continuation: true });
+    }, delay);
+    return true;
+  }
+
+  async function placeJokerjoeSingleMartingaleTrade(options) {
+    const st = state.singleMartingale;
+    if (st.inProgress || st.sessionWaiting || st.waitingForTicks) return;
+    persistJokerjoeSingleMartingaleControls();
+    const settings = readJokerjoeSingleMartingaleSettings();
+    if (!options || !options.continuation) {
+      st.originalDigit = settings.digit;
+      if (!st.running) st.currentDigit = settings.digit;
+    }
+    const digit = st.recoveryActive ? settings.recoveryDigit : st.currentDigit;
+    const stake = jokerjoeMartingaleStake(settings, st.step);
+    st.inProgress = true; st.pendingContractId = ""; st.pendingStake = stake;
+    st.pendingMartingale = !!st.enabled; st.pendingWasRecovery = !!st.recoveryActive;
+    st.running = !!st.enabled; st.stopRequested = false; st.status = "Submitting trade";
+    const generation = ++st.requestGeneration;
+    updateJokerjoeSingleMartingalePanel();
+    try {
+      const result = await sendFastManualTradeJokerjoe({
+        stake, amount: stake, type: settings.contract, barrier: digit,
+        duration: settings.duration, duration_unit: "t", mode: "jokerjoe_single_martingale",
+        action: `${settings.contract}_${digit}`, main_trade_action: `${settings.contract}_${st.originalDigit}`,
+        recovery_trade_action: `${settings.contract}_${settings.recoveryDigit}`,
+        recovery_active: !!st.pendingWasRecovery, cycle_attempt: st.cycleAttempt,
+        logical_round_id: `jokerjoe-${Date.now()}-${generation}`,
+        label: `${settings.contract} DIGIT ${digit}`,
+      }, { turbo: false, queue: false, fireAndForget: false });
+      if (generation !== st.requestGeneration || st.stopRequested) return;
+      if (!(result && result.data && result.data.status === "success")) throw new Error((result && result.data && result.data.message) || "JOKERJOE martingale trade failed");
+      st.status = `Running ${settings.contract} DIGIT ${digit}`;
+      safeToast(`${settings.contract} DIGIT ${digit} sent at $${stake.toFixed(2)}`, "success");
+    } catch (error) {
+      if (generation !== st.requestGeneration) return;
+      stopJokerjoeSingleMartingale("Stopped: trade request failed", false);
+      safeToast((error && error.message) || "JOKERJOE martingale trade failed", "error");
+    }
+    updateJokerjoeSingleMartingalePanel();
+  }
+
+  function rememberJokerjoeSingleMartingaleTrade(entry) {
+    if (String((entry || {}).profile || "").toUpperCase() !== PROFILE || String((entry || {}).mode || "").toLowerCase() !== "jokerjoe_single_martingale") return;
+    const st = state.singleMartingale;
+    if (!st.inProgress || st.pendingContractId) return;
+    const id = entry.contract_id || entry.buy_contract_id || entry.id;
+    if (id) { st.pendingContractId = String(id); st.status = "Running"; updateJokerjoeSingleMartingalePanel(); }
+  }
+
+  function handleJokerjoeSingleMartingaleResult(entry) {
+    if (String((entry || {}).profile || "").toUpperCase() !== PROFILE || String((entry || {}).mode || "").toLowerCase() !== "jokerjoe_single_martingale") return;
+    const st = state.singleMartingale;
+    const id = String(entry.contract_id || entry.buy_contract_id || entry.id || "");
+    if (!id || st.settledIds[id] || (st.pendingContractId && id !== st.pendingContractId)) return;
+    const profit = Number(entry.profit ?? entry.pnl ?? entry.net_profit);
+    const resultText = String(entry.result || entry.status || entry.outcome || "").toUpperCase();
+    const outcome = Number.isFinite(profit) ? (profit > 0 ? "WIN" : profit < 0 ? "LOSS" : "BREAKEVEN") : (["WIN", "WON"].includes(resultText) ? "WIN" : ["LOSS", "LOST"].includes(resultText) ? "LOSS" : "");
+    if (!outcome) return;
+    st.settledIds[id] = true;
+    const keys = Object.keys(st.settledIds); if (keys.length > 500) keys.slice(0, 200).forEach((key) => delete st.settledIds[key]);
+    const settings = readJokerjoeSingleMartingaleSettings();
+    const wasMartingale = st.pendingMartingale; const wasRecovery = st.pendingWasRecovery;
+    const pnl = Number.isFinite(profit) ? profit : (outcome === "WIN" ? st.pendingStake : outcome === "LOSS" ? -st.pendingStake : 0);
+    st.sessionProfit = Number((st.sessionProfit + pnl).toFixed(2));
+    clearJokerjoeSinglePending(); st.lastResult = outcome;
+    const cycleProfit = settings.sessionEnabled ? st.sessionProfit - st.sessionCycleBaseProfit : st.sessionProfit;
+    const hitSl = settings.stopLoss > 0 && st.sessionProfit <= -Math.abs(settings.stopLoss);
+    const hitTp = settings.takeProfit > 0 && cycleProfit >= settings.takeProfit;
+    if (hitSl) { stopJokerjoeSingleMartingale("SL reached", false); safeToast("JOKERJOE martingale SL reached.", "error"); return; }
+    if (outcome === "WIN") {
+      st.step = 1; st.cycleAttempt = 0; st.recoveryActive = false; st.currentDigit = st.originalDigit;
+      if (!wasRecovery) {
+        if (settings.switchEveryTradeEnabled) applyJokerjoeEveryTradeSwitch(st, settings);
+        else applyJokerjoeAfterWinSwitch(st, settings);
+      }
+      if (hitTp && settings.sessionEnabled && wasMartingale && st.enabled && st.running) scheduleJokerjoeSessionRestart(settings);
+      else if (hitTp) { stopJokerjoeSingleMartingale("TP reached", false); safeToast("JOKERJOE martingale TP reached.", "success"); }
+      else if (wasMartingale && st.enabled && st.running && (settings.takeProfit > 0 || settings.stopLoss > 0 || settings.switchAfterWinEnabled || settings.switchEveryTradeEnabled)) scheduleJokerjoeNextTrade("Win reset");
+      else stopJokerjoeSingleMartingale("Win reset", false);
+    } else if (outcome === "LOSS") {
+      if (settings.recoveryEnabled) { st.cycleAttempt += 1; if (st.cycleAttempt >= settings.recoveryAfter) st.recoveryActive = true; }
+      if (!wasRecovery) applyJokerjoeEveryTradeSwitch(st, settings);
+      if (wasMartingale && st.enabled && st.running) { st.step = nextJokerjoeMartingaleStep(st, settings); scheduleJokerjoeNextTrade(); }
+      else stopJokerjoeSingleMartingale("Ready", false);
+    } else if (wasMartingale && st.enabled && st.running) scheduleJokerjoeNextTrade("Breakeven");
+    else stopJokerjoeSingleMartingale("Ready", false);
+    updateJokerjoeSingleMartingalePanel();
+  }
+
+  function processJokerjoeSingleMartingaleTick() {
+    const st = state.singleMartingale;
+    const settings = readJokerjoeSingleMartingaleSettings();
+    if (st.sessionWaiting && settings.sessionUnit === "ticks" && st.enabled && st.running && !st.stopRequested) {
+      st.sessionWaitRemaining = Math.max(0, st.sessionWaitRemaining - 1);
+      if (st.sessionWaitRemaining <= 0) { st.sessionWaiting = false; placeJokerjoeSingleMartingaleTrade({ continuation: true }); }
+      updateJokerjoeSingleMartingalePanel(); return;
+    }
+    if (!st.waitingForTicks || !st.enabled || !st.running || st.stopRequested || st.inProgress) return;
+    st.waitTicksRemaining = Math.max(0, st.waitTicksRemaining - 1);
+    if (st.waitTicksRemaining <= 0) { st.waitingForTicks = false; placeJokerjoeSingleMartingaleTrade({ continuation: true }); }
+    updateJokerjoeSingleMartingalePanel();
+  }
+
+  function updateJokerjoeSingleMartingalePanel() {
+    applyJokerjoeSingleMartingaleConfigToUi();
+    const st = state.singleMartingale; const settings = readJokerjoeSingleMartingaleSettings();
+    const toggle = document.getElementById("jokerjoeSingleMartingaleToggle");
+    if (toggle) { toggle.textContent = `MARTINGALE: ${st.enabled ? "ON" : "OFF"}`; toggle.style.background = st.enabled ? "#22c55e" : "#334155"; }
+    const place = document.getElementById("jokerjoeSingleMartingalePlace");
+    if (place) place.disabled = !!(st.inProgress || st.waitingForTicks || st.sessionWaiting || st.running);
+    const settingsLocked = !!(st.inProgress || st.running || st.waitingForTicks || st.sessionWaiting);
+    ["jokerjoeSingleMartingaleContract", "jokerjoeSingleMartingaleDigit", "jokerjoeSingleMartingaleStake", "jokerjoeSingleMartingaleMultiplier", "jokerjoeSingleMartingaleDuration", "jokerjoeSingleMartingaleTickSpacing", "jokerjoeSingleMartingaleMaxSteps", "jokerjoeSingleMartingaleDoubleLimit", "jokerjoeSingleMartingaleMaxStake"].forEach((id) => {
+      const el = document.getElementById(id); if (el) el.disabled = settingsLocked;
+    });
+    const recovery = document.getElementById("jokerjoeRecoveryToggle");
+    if (recovery) { recovery.textContent = settings.recoveryEnabled ? "ON" : "OFF"; recovery.style.background = settings.recoveryEnabled ? "#f59e0b" : "#334155"; }
+    const recoveryControls = document.getElementById("jokerjoeRecoveryControls"); if (recoveryControls) recoveryControls.style.display = settings.recoveryEnabled ? "grid" : "none";
+    const winToggle = document.getElementById("jokerjoeSwitchAfterWinToggle"); if (winToggle) { winToggle.textContent = settings.switchAfterWinEnabled ? "ON" : "OFF"; winToggle.style.background = settings.switchAfterWinEnabled ? "#f59e0b" : "#334155"; }
+    const everyToggle = document.getElementById("jokerjoeSwitchEveryTradeToggle"); if (everyToggle) { everyToggle.textContent = settings.switchEveryTradeEnabled ? "ON" : "OFF"; everyToggle.style.background = settings.switchEveryTradeEnabled ? "#f59e0b" : "#334155"; }
+    const winPicker = document.getElementById("jokerjoeSwitchAfterWinPicker"); if (winPicker) winPicker.style.display = settings.switchAfterWinEnabled ? "grid" : "none";
+    const everyPicker = document.getElementById("jokerjoeSwitchEveryTradePicker"); if (everyPicker) everyPicker.style.display = settings.switchEveryTradeEnabled ? "grid" : "none";
+    const labels = { jokerjoeRecoveryDigitLabel: settings.recoveryDigit, jokerjoeSwitchAfterWinDigitLabel: settings.switchAfterWinDigit, jokerjoeSwitchEveryTradeDigitLabel: settings.switchEveryTradeDigit };
+    Object.keys(labels).forEach((id) => { const el = document.getElementById(id); if (el) el.textContent = `DIGIT ${labels[id]}`; });
+    const sessionBtn = document.getElementById("jokerjoeMartingaleSessionBtn");
+    if (sessionBtn) sessionBtn.textContent = st.sessionWaiting ? `Next trades in ${st.sessionWaitRemaining}${settings.sessionUnit === "ticks" ? "t" : "s"}` : (settings.sessionEnabled ? `Session ${st.sessionRunsCompleted}/${settings.sessionRunLimit}` : "Session");
+    const status = document.getElementById("jokerjoeSingleMartingaleStatus");
+    if (status) status.textContent = `${st.status}. ${settings.contract} DIGIT ${st.recoveryActive ? settings.recoveryDigit : st.currentDigit} - Step ${st.step} - Stake $${jokerjoeMartingaleStake(settings, st.step).toFixed(2)} - Session P/L $${st.sessionProfit.toFixed(2)} - Last: ${st.lastResult}`;
+    persistJokerjoeSingleMartingaleControls();
+  }
+
+  function toggleJokerjoeSingleMartingale() {
+    const st = state.singleMartingale;
+    if (st.enabled || st.running || st.inProgress) return stopJokerjoeSingleMartingale("Martingale stopped", true);
+    persistJokerjoeSingleMartingaleControls(); const settings = readJokerjoeSingleMartingaleSettings();
+    st.enabled = true; st.running = false; st.stopRequested = false; st.step = 1; st.cycleAttempt = 0;
+    st.recoveryActive = false; st.originalDigit = settings.digit; st.currentDigit = settings.digit;
+    st.switchAlternateActive = false; st.sessionProfit = 0; st.sessionCycleBaseProfit = 0; st.sessionRunsCompleted = 0;
+    st.lastResult = "none"; st.status = "Ready"; updateJokerjoeSingleMartingalePanel();
+  }
+
+  function openJokerjoeDigitPicker(target) { jokerjoeDigitPickerTarget = target || "recovery"; const el = document.getElementById("jokerjoeDigitPickerPopup"); if (el) el.style.display = "flex"; }
+  function closeJokerjoeDigitPicker() { const el = document.getElementById("jokerjoeDigitPickerPopup"); if (el) el.style.display = "none"; }
+  function selectJokerjoeFeatureDigit(digit) {
+    const value = Math.max(0, Math.min(9, Math.floor(Number(digit) || 0)));
+    if (jokerjoeDigitPickerTarget === "win") jokerjoeSingleMartingaleConfig.switchAfterWinDigit = value;
+    else if (jokerjoeDigitPickerTarget === "every") jokerjoeSingleMartingaleConfig.switchEveryTradeDigit = value;
+    else jokerjoeSingleMartingaleConfig.recoveryDigit = value;
+    saveJokerjoeSingleMartingaleConfig(); closeJokerjoeDigitPicker(); updateJokerjoeSingleMartingalePanel();
+  }
+  function toggleJokerjoeRecoveryMode() { jokerjoeSingleMartingaleConfig.recoveryEnabled = !jokerjoeSingleMartingaleConfig.recoveryEnabled; persistJokerjoeSingleMartingaleControls(); updateJokerjoeSingleMartingalePanel(); }
+  function toggleJokerjoeSwitchAfterWin() { jokerjoeSingleMartingaleConfig.switchAfterWinEnabled = !jokerjoeSingleMartingaleConfig.switchAfterWinEnabled; if (jokerjoeSingleMartingaleConfig.switchAfterWinEnabled) jokerjoeSingleMartingaleConfig.switchEveryTradeEnabled = false; saveJokerjoeSingleMartingaleConfig(); updateJokerjoeSingleMartingalePanel(); }
+  function toggleJokerjoeSwitchEveryTrade() { jokerjoeSingleMartingaleConfig.switchEveryTradeEnabled = !jokerjoeSingleMartingaleConfig.switchEveryTradeEnabled; if (jokerjoeSingleMartingaleConfig.switchEveryTradeEnabled) jokerjoeSingleMartingaleConfig.switchAfterWinEnabled = false; saveJokerjoeSingleMartingaleConfig(); updateJokerjoeSingleMartingalePanel(); }
+  function openJokerjoeMartingaleSessionPopup() { const c=jokerjoeSingleMartingaleConfig; const d=document.getElementById("jokerjoeSessionDuration"),u=document.getElementById("jokerjoeSessionUnit"),r=document.getElementById("jokerjoeSessionRunLimit"),p=document.getElementById("jokerjoeMartingaleSessionPopup"); if(d)d.value=c.sessionDuration;if(u)u.value=c.sessionUnit;if(r)r.value=c.sessionRunLimit;if(p)p.style.display="flex"; }
+  function closeJokerjoeMartingaleSessionPopup() { const el=document.getElementById("jokerjoeMartingaleSessionPopup");if(el)el.style.display="none"; }
+  function applyJokerjoeMartingaleSession() { const duration=Math.floor(jjSmNumber("jokerjoeSessionDuration",30,1,86400));const unit=String((document.getElementById("jokerjoeSessionUnit")||{}).value||"seconds");const runs=Math.floor(jjSmNumber("jokerjoeSessionRunLimit",1,1,10));if(!["ticks","seconds","minutes"].includes(unit))return false;Object.assign(jokerjoeSingleMartingaleConfig,{sessionEnabled:true,sessionDuration:duration,sessionUnit:unit,sessionRunLimit:runs});state.singleMartingale.sessionRunsCompleted=0;saveJokerjoeSingleMartingaleConfig();closeJokerjoeMartingaleSessionPopup();updateJokerjoeSingleMartingalePanel();safeToast(`Session enabled for ${runs} run${runs===1?"":"s"}.`,"success");return true; }
+  function disableJokerjoeMartingaleSession() { jokerjoeSingleMartingaleConfig.sessionEnabled=false;state.singleMartingale.sessionWaiting=false;state.singleMartingale.sessionRunsCompleted=0;clearJokerjoeSessionTimers();saveJokerjoeSingleMartingaleConfig();closeJokerjoeMartingaleSessionPopup();updateJokerjoeSingleMartingalePanel(); }
+
+  window.updateJokerjoeSingleMartingalePanel = updateJokerjoeSingleMartingalePanel;
+  window.saveJokerjoeSingleMartingaleControls = function(){persistJokerjoeSingleMartingaleControls();updateJokerjoeSingleMartingalePanel();};
+  window.toggleJokerjoeSingleMartingale = toggleJokerjoeSingleMartingale;
+  window.placeJokerjoeSingleMartingaleTrade = placeJokerjoeSingleMartingaleTrade;
+  window.quickStopJokerjoeSingleMartingale = function(){stopJokerjoeSingleMartingale("Quick Stop",true);};
+  window.recoverJokerjoeMartingaleFromMartha = function(payload){const st=state.singleMartingale;if(!st.inProgress&&!st.pendingContractId)return false;stopJokerjoeSingleMartingale((payload&&payload.safe_stop)?"Stopped: repeated connection failures":"Stopped: stalled request cleared",false);safeToast((payload&&payload.message)||"Martha cleared the stalled JOKERJOE request.","error");return true;};
+  window.openJokerjoeDigitPicker = openJokerjoeDigitPicker; window.closeJokerjoeDigitPicker = closeJokerjoeDigitPicker; window.selectJokerjoeFeatureDigit = selectJokerjoeFeatureDigit;
+  window.toggleJokerjoeRecoveryMode = toggleJokerjoeRecoveryMode; window.toggleJokerjoeSwitchAfterWin = toggleJokerjoeSwitchAfterWin; window.toggleJokerjoeSwitchEveryTrade = toggleJokerjoeSwitchEveryTrade;
+  window.openJokerjoeMartingaleSessionPopup = openJokerjoeMartingaleSessionPopup; window.closeJokerjoeMartingaleSessionPopup = closeJokerjoeMartingaleSessionPopup; window.applyJokerjoeMartingaleSession = applyJokerjoeMartingaleSession; window.disableJokerjoeMartingaleSession = disableJokerjoeMartingaleSession;
+
   function currentBarrier() {
     const el = document.getElementById("barrier");
     let b = parseInt((el && el.value) || "5", 10);
@@ -4180,25 +4581,29 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
 
       bind("trade_placed", (entry) => {
         const isBatchMartingale = !!getJokerjoeBatchIdFromMode((entry || {}).mode);
+        const isSingleMartingale = String((entry || {}).mode || "").toLowerCase() === "jokerjoe_single_martingale";
         const isKoolkidMatchBatch = !!getJokerjoeKoolkidMatchBatchIdFromMode((entry || {}).mode);
         const isKoolkidOver3 = !!getJokerjoeKoolkidOver3IdFromMode((entry || {}).mode);
-        if (!isActive() && !isBatchMartingale && !isKoolkidMatchBatch && !isKoolkidOver3) return;
+        if (!isActive() && !isBatchMartingale && !isSingleMartingale && !isKoolkidMatchBatch && !isKoolkidOver3) return;
         rememberBlackcardTradeJokerjoe(entry || {});
         rememberJokerjoeBatchMartingaleTrade(entry || {});
+        rememberJokerjoeSingleMartingaleTrade(entry || {});
         rememberJokerjoeKoolkidMatchBatchTrade(entry || {});
       });
 
       bind("trade_result", (entry) => {
         const isBatchMartingale = !!getJokerjoeBatchIdFromMode((entry || {}).mode);
+        const isSingleMartingale = String((entry || {}).mode || "").toLowerCase() === "jokerjoe_single_martingale";
         const isKoolkidMatchBatch = !!getJokerjoeKoolkidMatchBatchIdFromMode((entry || {}).mode);
         const isKoolkidOver3 = !!getJokerjoeKoolkidOver3IdFromMode((entry || {}).mode);
-        if (!isActive() && !isBatchMartingale && !isKoolkidMatchBatch && !isKoolkidOver3) return;
+        if (!isActive() && !isBatchMartingale && !isSingleMartingale && !isKoolkidMatchBatch && !isKoolkidOver3) return;
         handleJokerjoeLiveDigitTradeResult(entry || {});
         handleProfileReinvestResultJokerjoe(entry || {});
         handleBlackcardTradeResultJokerjoe(entry || {});
         handleKid100WinsTradeResultJokerjoe(entry || {});
         onJokerjoeTradeResultForLowestAI(entry || {});
         updateJokerjoeBatchMartingaleFromResult(entry || {});
+        handleJokerjoeSingleMartingaleResult(entry || {});
         updateJokerjoeKoolkidMatchBatchFromResult(entry || {});
         handleJokerjoeKoolkidOver3Result(entry || {});
         updateMatchesFrenzyFromResultJokerjoe(entry || {});
@@ -4211,8 +4616,10 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
 
       bind("tick", (data) => {
         const batchSpacingActive = !!(state.batchMartingale && Number(state.batchMartingale.spacingWait || 0) > 0);
-        if (!isActive() && !batchSpacingActive) return;
+        const singleSpacingActive = !!(state.singleMartingale && (state.singleMartingale.waitingForTicks || state.singleMartingale.sessionWaiting));
+        if (!isActive() && !batchSpacingActive && !singleSpacingActive) return;
         processJokerjoeBatchMartingaleTickSpacing();
+        processJokerjoeSingleMartingaleTick();
         if (!isActive()) return;
         trackBlackcardTickJokerjoe(data || {});
         if (isKid100WinsAutoActiveJokerjoe() && data && data.tick_count !== undefined) {
@@ -4311,6 +4718,8 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
   }
 
   async function onMount() {
+    mountJokerjoeMartingalePopups(true);
+    mountJokerjoeSingleMartingalePanel();
     try { App().ensureDigitClickPatchSoon && App().ensureDigitClickPatchSoon(); } catch (e) {}
     try { App().applyDigitSelectionUI && App().applyDigitSelectionUI(); } catch (e) {}
     patchKidgambleConfirm();
@@ -4337,10 +4746,14 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     renderTurboToggleJokerjoe();
     renderProfileReinvestControlsJokerjoe();
     updateJokerjoeBatchMartingalePanel();
+    updateJokerjoeSingleMartingalePanel();
     refreshActivityPollJokerjoe();
   }
 
   async function afterLoadProfileUI() {
+    state.singleMartingale.controlsLoaded = false;
+    mountJokerjoeMartingalePopups();
+    mountJokerjoeSingleMartingalePanel();
     try { App().applyDigitSelectionUI && App().applyDigitSelectionUI(); } catch (e) {}
     patchKidgambleConfirm();
     bindSocketListeners();
@@ -4366,10 +4779,13 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     renderTurboToggleJokerjoe();
     renderProfileReinvestControlsJokerjoe();
     updateJokerjoeBatchMartingalePanel();
+    updateJokerjoeSingleMartingalePanel();
     refreshActivityPollJokerjoe();
   }
 
   async function onActivate() {
+    mountJokerjoeMartingalePopups();
+    mountJokerjoeSingleMartingalePanel();
     try { App().applyDigitSelectionUI && App().applyDigitSelectionUI(); } catch (e) {}
     patchKidgambleConfirm();
     bindSocketListeners();
@@ -4396,6 +4812,7 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
     renderTurboToggleJokerjoe();
     renderProfileReinvestControlsJokerjoe();
     updateJokerjoeBatchMartingalePanel();
+    updateJokerjoeSingleMartingalePanel();
     refreshMatchesAnalysisJokerjoe();
     refreshActivityPollJokerjoe();
   }
@@ -4420,6 +4837,10 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
       clearTimeout(state.batchMartingale.restartTimer);
       state.batchMartingale.restartTimer = null;
     }
+    if (state.singleMartingale && (state.singleMartingale.running || state.singleMartingale.inProgress || state.singleMartingale.enabled)) {
+      stopJokerjoeSingleMartingale("Stopped on profile change", false);
+    }
+    state.singleMartingale.controlsLoaded = false;
     if (state.matchesFrenzy) {
       state.matchesFrenzy.running = false;
       state.matchesFrenzy.busy = false;
@@ -4430,6 +4851,7 @@ function updateAdvancedAIModeButtonsJokerjoe(payload) {
       }
     }
     stopFallbackBootstrapJokerjoe();
+    removeJokerjoeMartingalePopups();
     state.lastSocket = null;
     state.socketBound = false;
   }

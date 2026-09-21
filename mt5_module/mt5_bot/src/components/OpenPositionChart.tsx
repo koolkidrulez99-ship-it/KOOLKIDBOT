@@ -6,6 +6,9 @@ import { mt5MarketService } from '../services/mt5MarketService';
 import { mt5MultiAccountService } from '../services/mt5MultiAccountService';
 import Modal from './Modal';
 
+type SavedPositionChartRange = { from: UTCTimestamp; to: UTCTimestamp };
+const SAVED_POSITION_VIEWPORTS = new Map<string, SavedPositionChartRange>();
+
 type ChartPosition = {
   ticket: number;
   account_login: number;
@@ -26,9 +29,11 @@ export default function OpenPositionChart({ position, onClose }: { position: Cha
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const linesRef = useRef<IPriceLine[]>([]);
   const userMovedRef = useRef(false);
-  const visibleRangeRef = useRef<{ from: UTCTimestamp; to: UTCTimestamp } | null>(null);
+  const visibleRangeRef = useRef<SavedPositionChartRange | null>(null);
   const programmaticRangeRef = useRef(false);
+  const renderedLastTimeRef = useRef<number | null>(null);
   const [timeframe, setTimeframe] = useState('M5');
+  const chartKey = position ? `${position.multiAccountId || position.account_login}:${position.ticket}:${timeframe}` : '';
   const [candles, setCandles] = useState<Candle[]>([]);
   const [error, setError] = useState<string | null>(null);
   const load = useCallback(async () => {
@@ -37,22 +42,29 @@ export default function OpenPositionChart({ position, onClose }: { position: Cha
       const rows = position.multiAccountId
         ? await mt5MultiAccountService.candles(position.multiAccountId, position.symbol, timeframe, 220)
         : await mt5MarketService.candles(position.symbol, timeframe, 220, position.account_login);
-      setCandles(rows as Candle[]);
+      const safeRows = Array.isArray(rows)
+        ? rows.filter((row) => row && Number.isFinite(Number(row.time)) && Number.isFinite(Number(row.open)) && Number.isFinite(Number(row.high)) && Number.isFinite(Number(row.low)) && Number.isFinite(Number(row.close)))
+        : [];
+      setCandles(safeRows as Candle[]);
       setError(null);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Unable to load MT5 candles.');
     }
-  }, [position, timeframe]);
+  }, [position?.multiAccountId, position?.account_login, position?.symbol, timeframe]);
 
   useEffect(() => {
     if (!position) return;
     void load();
     const timer = window.setInterval(() => void load(), 2500);
     return () => window.clearInterval(timer);
-  }, [position, load]);
+  }, [chartKey, load]);
 
   useEffect(() => {
     if (!position || !hostRef.current) return;
+    const savedViewport = SAVED_POSITION_VIEWPORTS.get(chartKey) || null;
+    userMovedRef.current = Boolean(savedViewport);
+    visibleRangeRef.current = savedViewport;
+    renderedLastTimeRef.current = null;
     const chart = createChart(hostRef.current, {
       autoSize: true,
       height: 460,
@@ -70,19 +82,28 @@ export default function OpenPositionChart({ position, onClose }: { position: Cha
     const rememberRange = () => {
       if (!userMovedRef.current || programmaticRangeRef.current) return;
       const range = chart.timeScale().getVisibleRange();
-      if (range) visibleRangeRef.current = { from: range.from as UTCTimestamp, to: range.to as UTCTimestamp };
+      if (range) {
+        const saved = { from: range.from as UTCTimestamp, to: range.to as UTCTimestamp };
+        visibleRangeRef.current = saved;
+        SAVED_POSITION_VIEWPORTS.set(chartKey, saved);
+      }
     };
     chart.timeScale().subscribeVisibleTimeRangeChange(rememberRange);
     chartRef.current = chart;
     seriesRef.current = series;
     return () => {
+      if (userMovedRef.current) {
+        const range = chart.timeScale().getVisibleRange();
+        if (range) SAVED_POSITION_VIEWPORTS.set(chartKey, { from: range.from as UTCTimestamp, to: range.to as UTCTimestamp });
+      }
       chart.timeScale().unsubscribeVisibleTimeRangeChange(rememberRange);
       chart.remove();
       chartRef.current = null;
       seriesRef.current = null;
       linesRef.current = [];
+      renderedLastTimeRef.current = null;
     };
-  }, [position?.ticket, timeframe]);
+  }, [chartKey]);
 
   useEffect(() => {
     const chart = chartRef.current;
@@ -91,18 +112,46 @@ export default function OpenPositionChart({ position, onClose }: { position: Cha
     const data: CandlestickData<UTCTimestamp>[] = candles.map((row) => ({
       time: row.time as UTCTimestamp, open: row.open, high: row.high, low: row.low, close: row.close,
     }));
-    const savedRange = userMovedRef.current
-      ? (visibleRangeRef.current || chart.timeScale().getVisibleRange())
-      : null;
+    const savedRange = SAVED_POSITION_VIEWPORTS.get(chartKey)
+      || (userMovedRef.current ? (visibleRangeRef.current || chart.timeScale().getVisibleRange() as SavedPositionChartRange | null) : null);
+    const previousLastTime = renderedLastTimeRef.current;
     programmaticRangeRef.current = true;
-    series.setData(data);
-    if (savedRange) {
-      const range = { from: savedRange.from as UTCTimestamp, to: savedRange.to as UTCTimestamp };
-      chart.timeScale().setVisibleRange(range);
-      visibleRangeRef.current = range;
+
+    if (previousLastTime === null) {
+      series.setData(data);
+      renderedLastTimeRef.current = Number(data[data.length - 1].time);
+      if (savedRange) {
+        const range = { from: savedRange.from as UTCTimestamp, to: savedRange.to as UTCTimestamp };
+        chart.timeScale().setVisibleRange(range);
+        visibleRangeRef.current = range;
+        userMovedRef.current = true;
+      } else {
+        chart.timeScale().fitContent();
+        chart.timeScale().scrollToPosition(4, false);
+      }
     } else {
-      chart.timeScale().fitContent();
-      chart.timeScale().scrollToPosition(4, false);
+      const previousIndex = data.findIndex((row) => Number(row.time) === previousLastTime);
+      if (previousIndex >= 0) {
+        for (let index = previousIndex; index < data.length; index += 1) {
+          series.update(data[index]);
+        }
+        renderedLastTimeRef.current = Number(data[data.length - 1].time);
+      } else {
+        // Only rebuild the full series if MT5 returned a discontinuous history window.
+        // Normal 2.5s polling never calls setData(), so a user's pan/zoom cannot be reset.
+        const rangeBeforeRebuild = savedRange || (userMovedRef.current ? chart.timeScale().getVisibleRange() : null);
+        series.setData(data);
+        renderedLastTimeRef.current = Number(data[data.length - 1].time);
+        if (rangeBeforeRebuild) {
+          const range = { from: rangeBeforeRebuild.from as UTCTimestamp, to: rangeBeforeRebuild.to as UTCTimestamp };
+          chart.timeScale().setVisibleRange(range);
+          visibleRangeRef.current = range;
+          SAVED_POSITION_VIEWPORTS.set(chartKey, range);
+        } else {
+          chart.timeScale().fitContent();
+          chart.timeScale().scrollToPosition(4, false);
+        }
+      }
     }
     window.requestAnimationFrame(() => { programmaticRangeRef.current = false; });
     const opened = Math.floor(Date.parse(position.open_time) / 1000);
@@ -142,12 +191,20 @@ export default function OpenPositionChart({ position, onClose }: { position: Cha
           onPointerDown={() => {
             userMovedRef.current = true;
             const range = chartRef.current?.timeScale().getVisibleRange();
-            if (range) visibleRangeRef.current = { from: range.from as UTCTimestamp, to: range.to as UTCTimestamp };
+            if (range) {
+              const saved = { from: range.from as UTCTimestamp, to: range.to as UTCTimestamp };
+              visibleRangeRef.current = saved;
+              SAVED_POSITION_VIEWPORTS.set(chartKey, saved);
+            }
           }}
           onWheel={() => {
             userMovedRef.current = true;
             const range = chartRef.current?.timeScale().getVisibleRange();
-            if (range) visibleRangeRef.current = { from: range.from as UTCTimestamp, to: range.to as UTCTimestamp };
+            if (range) {
+              const saved = { from: range.from as UTCTimestamp, to: range.to as UTCTimestamp };
+              visibleRangeRef.current = saved;
+              SAVED_POSITION_VIEWPORTS.set(chartKey, saved);
+            }
           }}
         />
         <button
@@ -158,6 +215,7 @@ export default function OpenPositionChart({ position, onClose }: { position: Cha
             if (!chart) return;
             visibleRangeRef.current = null;
             userMovedRef.current = false;
+            SAVED_POSITION_VIEWPORTS.delete(chartKey);
             programmaticRangeRef.current = true;
             chart.timeScale().fitContent();
             chart.timeScale().scrollToPosition(4, false);

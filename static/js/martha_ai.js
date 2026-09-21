@@ -781,6 +781,11 @@
       window.recoverKoolkidMartingaleFromMartha(recovery);
       return;
     }
+    if (recovery.action === "clear_jokerjoe_martingale_pending"
+      && typeof window.recoverJokerjoeMartingaleFromMartha === "function") {
+      window.recoverJokerjoeMartingaleFromMartha(recovery);
+      return;
+    }
     if (recovery.message) showToast(recovery.message, recovery.safe_stop ? "error" : "warn");
   }
 

@@ -438,6 +438,86 @@
           </details>
         </div>
       </div>
+      <details id="jokerjoeSingleMartingalePanel" class="ui-group" style="margin-top:10px; border-color:rgba(245,158,11,0.32);">
+        <summary><span>Single Contract Martingale</span></summary>
+        <div style="padding:10px 12px; background:rgba(15,23,42,0.82);">
+          <div style="display:flex; justify-content:flex-end; align-items:center; gap:10px; flex-wrap:wrap;">
+            <button id="jokerjoeMartingaleSessionBtn" type="button" onclick="openJokerjoeMartingaleSessionPopup()" style="background:#1d4ed8; min-width:78px;">Session</button>
+            <button id="jokerjoeSingleMartingaleToggle" type="button" onclick="toggleJokerjoeSingleMartingale()" style="background:#334155; min-width:120px;">MARTINGALE: OFF</button>
+          </div>
+          <div style="margin-top:10px; display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:8px;">
+            <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">Contract
+              <select id="jokerjoeSingleMartingaleContract" onchange="updateJokerjoeSingleMartingalePanel()" style="width:100%; min-height:38px;"><option value="DIFFERS">DIFFERS</option><option value="MATCHES">MATCHES</option></select>
+            </label>
+            <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">Contract Type
+              <select id="jokerjoeSingleMartingaleDigit" onchange="updateJokerjoeSingleMartingalePanel()" style="width:100%; min-height:38px;">
+                <option value="0">DIGIT 0</option><option value="1">DIGIT 1</option><option value="2">DIGIT 2</option><option value="3">DIGIT 3</option><option value="4">DIGIT 4</option>
+                <option value="5">DIGIT 5</option><option value="6">DIGIT 6</option><option value="7">DIGIT 7</option><option value="8">DIGIT 8</option><option value="9">DIGIT 9</option>
+              </select>
+            </label>
+            <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">Duration
+              <select id="jokerjoeSingleMartingaleDuration" onchange="updateJokerjoeSingleMartingalePanel()" style="width:100%; min-height:38px;">
+                <option value="1">1 Tick</option><option value="2">2 Ticks</option><option value="3">3 Ticks</option><option value="4">4 Ticks</option><option value="5">5 Ticks</option>
+                <option value="6">6 Ticks</option><option value="7">7 Ticks</option><option value="8">8 Ticks</option><option value="9">9 Ticks</option><option value="10">10 Ticks</option>
+              </select>
+            </label>
+            <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">Start Stake
+              <input id="jokerjoeSingleMartingaleStake" type="number" min="0.35" step="0.01" value="0.35" oninput="updateJokerjoeSingleMartingalePanel()" style="width:100%; min-height:38px;">
+            </label>
+            <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">Tick Spacing
+              <select id="jokerjoeSingleMartingaleTickSpacing" onchange="updateJokerjoeSingleMartingalePanel()" style="width:100%; min-height:38px;">
+                <option value="1">1 Tick</option><option value="2">2 Ticks</option><option value="3">3 Ticks</option><option value="4">4 Ticks</option><option value="5">5 Ticks</option>
+                <option value="6">6 Ticks</option><option value="7">7 Ticks</option><option value="8">8 Ticks</option><option value="9">9 Ticks</option><option value="10">10 Ticks</option>
+              </select>
+            </label>
+          </div>
+          <div style="margin-top:8px; display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:8px;">
+            <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">Multiplier
+              <input id="jokerjoeSingleMartingaleMultiplier" type="number" min="1" step="0.01" value="2" oninput="updateJokerjoeSingleMartingalePanel()" style="width:100%; min-height:38px;">
+            </label>
+            <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">Max Steps
+              <input id="jokerjoeSingleMartingaleMaxSteps" type="number" min="1" step="1" value="80" oninput="updateJokerjoeSingleMartingalePanel()" style="width:100%; min-height:38px;">
+            </label>
+            <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">Max Stake
+              <input id="jokerjoeSingleMartingaleMaxStake" type="number" min="0.35" step="0.01" placeholder="optional" oninput="updateJokerjoeSingleMartingalePanel()" style="width:100%; min-height:38px;">
+            </label>
+            <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">Double Up Limit
+              <input id="jokerjoeSingleMartingaleDoubleLimit" type="number" min="0" step="1" value="0" placeholder="0 = unlimited" oninput="updateJokerjoeSingleMartingalePanel()" style="width:100%; min-height:38px;">
+            </label>
+          </div>
+          <div style="margin-top:8px; display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:8px;">
+            <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">TP
+              <input id="jokerjoeSingleMartingaleTP" type="number" min="0" step="0.01" placeholder="optional" oninput="updateJokerjoeSingleMartingalePanel()" style="width:100%; min-height:38px;">
+            </label>
+            <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">SL
+              <input id="jokerjoeSingleMartingaleSL" type="number" min="0" step="0.01" placeholder="optional" oninput="updateJokerjoeSingleMartingalePanel()" style="width:100%; min-height:38px;">
+            </label>
+          </div>
+          <div style="margin-top:8px; display:grid; gap:8px;">
+            <div style="border:1px solid #334155; border-radius:8px; padding:9px; background:#0f172a;">
+              <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;"><strong style="font-size:12px;">Recovery Mode</strong><button id="jokerjoeRecoveryToggle" type="button" onclick="toggleJokerjoeRecoveryMode()" style="background:#334155; min-width:72px;">OFF</button></div>
+              <div id="jokerjoeRecoveryControls" style="display:none; margin-top:8px; grid-template-columns:repeat(auto-fit,minmax(135px,1fr)); gap:8px; align-items:end;">
+                <div style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">Recovery Trade<button type="button" onclick="openJokerjoeDigitPicker('recovery')" style="background:#1e293b;">Choose Recovery Trade</button><span id="jokerjoeRecoveryDigitLabel" style="color:#f8fafc;">DIGIT 4</span></div>
+                <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">Switch After<input id="jokerjoeRecoveryAfter" type="number" min="1" step="1" value="4" onchange="saveJokerjoeSingleMartingaleControls()" style="width:100%; min-height:38px;"></label>
+              </div>
+            </div>
+            <div style="border:1px solid #334155; border-radius:8px; padding:9px; background:#0f172a;">
+              <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;"><strong style="font-size:12px;">Switch After Win</strong><button id="jokerjoeSwitchAfterWinToggle" type="button" onclick="toggleJokerjoeSwitchAfterWin()" style="background:#334155; min-width:72px;">OFF</button></div>
+              <div id="jokerjoeSwitchAfterWinPicker" style="display:none; margin-top:8px; grid-template-columns:minmax(135px,240px); gap:8px;"><div style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">Next Trade<button type="button" onclick="openJokerjoeDigitPicker('win')" style="background:#1e293b;">Choose Next Trade</button><span id="jokerjoeSwitchAfterWinDigitLabel" style="color:#f8fafc;">DIGIT 3</span></div></div>
+            </div>
+            <div style="border:1px solid #334155; border-radius:8px; padding:9px; background:#0f172a;">
+              <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;"><div><strong style="font-size:12px;">Switch Every Trade</strong><div style="color:#94a3b8; font-size:11px; margin-top:2px;">Alternate between the main digit and a second digit after each settled trade.</div></div><button id="jokerjoeSwitchEveryTradeToggle" type="button" onclick="toggleJokerjoeSwitchEveryTrade()" style="background:#334155; min-width:72px;">OFF</button></div>
+              <div id="jokerjoeSwitchEveryTradePicker" style="display:none; margin-top:8px; grid-template-columns:minmax(135px,240px); gap:8px;"><div style="display:grid; gap:4px; color:#94a3b8; font-size:12px; font-weight:700;">Switch Trade<button type="button" onclick="openJokerjoeDigitPicker('every')" style="background:#1e293b;">Choose Switch Trade</button><span id="jokerjoeSwitchEveryTradeDigitLabel" style="color:#f8fafc;">DIGIT 6</span></div></div>
+            </div>
+          </div>
+          <div id="jokerjoeSingleMartingaleStatus" style="margin-top:8px; color:#94a3b8; font-size:12px; line-height:1.45;">Ready.</div>
+          <div style="margin-top:8px; display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+            <button id="jokerjoeSingleMartingalePlace" type="button" onclick="placeJokerjoeSingleMartingaleTrade()" style="background:#22c55e; color:#052e16; font-weight:900;">PLACE SELECTED CONTRACT</button>
+            <button type="button" onclick="quickStopJokerjoeSingleMartingale()" style="background:#ef4444; color:#fff7ed; font-weight:900;">QUICK STOP</button>
+          </div>
+        </div>
+      </details>
+
       <details id="jokerjoeBatchMartingalePanel" class="ui-group" style="margin-top:10px; display:none;">
         <summary>🎯 Match Batch Martingale</summary>
         <div class="ui-group-body">
@@ -507,6 +587,28 @@
           <div id="jokerjoeBatchMartingaleStatus" style="font-size:12px; color:#94a3b8; line-height:1.45;">Ready. Batch stake $1.05 - Per match $0.35 - Next batch $2.10 - Last result: none</div>
         </div>
       </details>
+    </div>
+  </div>
+
+  <div id="jokerjoeDigitPickerPopup" onclick="if(event.target===this) closeJokerjoeDigitPicker()" style="display:none; position:fixed; inset:0; z-index:10020; padding:18px; align-items:center; justify-content:center; background:rgba(2,6,23,.78);">
+    <div style="width:min(390px,100%); background:#0f172a; border:1px solid #334155; border-radius:12px; padding:14px; box-shadow:0 24px 54px rgba(0,0,0,.48);">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;"><strong>Choose Digit</strong><button type="button" onclick="closeJokerjoeDigitPicker()" style="background:#1e293b;">x</button></div>
+      <div style="display:grid; grid-template-columns:repeat(5,1fr); gap:7px; margin-top:12px;">
+        <button type="button" onclick="selectJokerjoeFeatureDigit(0)">0</button><button type="button" onclick="selectJokerjoeFeatureDigit(1)">1</button><button type="button" onclick="selectJokerjoeFeatureDigit(2)">2</button><button type="button" onclick="selectJokerjoeFeatureDigit(3)">3</button><button type="button" onclick="selectJokerjoeFeatureDigit(4)">4</button>
+        <button type="button" onclick="selectJokerjoeFeatureDigit(5)">5</button><button type="button" onclick="selectJokerjoeFeatureDigit(6)">6</button><button type="button" onclick="selectJokerjoeFeatureDigit(7)">7</button><button type="button" onclick="selectJokerjoeFeatureDigit(8)">8</button><button type="button" onclick="selectJokerjoeFeatureDigit(9)">9</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="jokerjoeMartingaleSessionPopup" onclick="if(event.target===this) closeJokerjoeMartingaleSessionPopup()" style="display:none; position:fixed; inset:0; z-index:10021; padding:18px; align-items:center; justify-content:center; background:rgba(2,6,23,.78);">
+    <div style="width:min(380px,100%); background:#0f172a; border:1px solid #334155; border-radius:12px; padding:14px; box-shadow:0 24px 54px rgba(0,0,0,.48);">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;"><strong>Martingale Session</strong><button type="button" onclick="closeJokerjoeMartingaleSessionPopup()" style="background:#1e293b;">x</button></div>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:12px;">
+        <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px;">Wait for<input id="jokerjoeSessionDuration" type="number" min="1" step="1" value="30"></label>
+        <label style="display:grid; gap:4px; color:#94a3b8; font-size:12px;">Unit<select id="jokerjoeSessionUnit"><option value="ticks">Ticks</option><option value="seconds" selected>Seconds</option><option value="minutes">Minutes</option></select></label>
+        <label style="display:grid; grid-column:1/-1; gap:4px; color:#94a3b8; font-size:12px;">Number of session runs<select id="jokerjoeSessionRunLimit"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option></select></label>
+      </div>
+      <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:12px;"><button type="button" onclick="disableJokerjoeMartingaleSession()" style="background:#475569;">Disable</button><button type="button" onclick="applyJokerjoeMartingaleSession()" style="background:#2563eb;">Apply Session</button></div>
     </div>
   </div>
 

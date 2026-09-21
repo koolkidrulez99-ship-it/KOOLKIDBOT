@@ -66,6 +66,7 @@
       sessionWaiting: false,
       sessionWaitRemaining: 0,
       sessionCycleBaseProfit: 0,
+      sessionRunsCompleted: 0,
       sessionTimer: null,
       sessionCountdownTimer: null,
       tickSpacing: 1,
@@ -1300,6 +1301,7 @@
       sessionEnabled: false,
       sessionDuration: 30,
       sessionUnit: "seconds",
+      sessionRunLimit: 1,
     };
     try {
       const saved = JSON.parse(localStorage.getItem(KOOLKID_MARTINGALE_CONFIG_KEY) || "{}");
@@ -1327,6 +1329,7 @@
         sessionEnabled: saved.sessionEnabled === true,
         sessionDuration: Number.isInteger(Number(saved.sessionDuration)) && Number(saved.sessionDuration) >= 1 ? Math.min(86400, Number(saved.sessionDuration)) : defaults.sessionDuration,
         sessionUnit: ["ticks", "seconds", "minutes"].includes(String(saved.sessionUnit)) ? String(saved.sessionUnit) : defaults.sessionUnit,
+        sessionRunLimit: Number.isInteger(Number(saved.sessionRunLimit)) && Number(saved.sessionRunLimit) >= 1 && Number(saved.sessionRunLimit) <= 10 ? Number(saved.sessionRunLimit) : defaults.sessionRunLimit,
       };
     } catch (e) {
       return defaults;
@@ -1352,8 +1355,10 @@
     const popup = document.getElementById("koolkidMartingaleSessionPopup");
     const duration = document.getElementById("koolkidMartingaleSessionDuration");
     const unit = document.getElementById("koolkidMartingaleSessionUnit");
+    const runLimit = document.getElementById("koolkidMartingaleSessionRunLimit");
     if (duration) duration.value = String(koolkidMartingaleConfig.sessionDuration || 30);
     if (unit) unit.value = koolkidMartingaleConfig.sessionUnit || "seconds";
+    if (runLimit) runLimit.value = String(koolkidMartingaleConfig.sessionRunLimit || 1);
     if (popup) popup.style.display = "flex";
   }
 
@@ -1365,19 +1370,27 @@
   function applyKoolkidMartingaleSession() {
     const durationEl = document.getElementById("koolkidMartingaleSessionDuration");
     const unitEl = document.getElementById("koolkidMartingaleSessionUnit");
+    const runLimitEl = document.getElementById("koolkidMartingaleSessionRunLimit");
     const duration = Number(durationEl && durationEl.value);
     const unit = String(unitEl && unitEl.value || "seconds");
+    const runLimit = Number(runLimitEl && runLimitEl.value);
     if (!Number.isInteger(duration) || duration < 1 || duration > 86400 || !["ticks", "seconds", "minutes"].includes(unit)) {
       safeToast("Enter a whole session wait of 1 to 86400 ticks, seconds, or minutes.", "error");
+      return false;
+    }
+    if (!Number.isInteger(runLimit) || runLimit < 1 || runLimit > 10) {
+      safeToast("Choose between 1 and 10 session runs.", "error");
       return false;
     }
     koolkidMartingaleConfig.sessionEnabled = true;
     koolkidMartingaleConfig.sessionDuration = duration;
     koolkidMartingaleConfig.sessionUnit = unit;
+    koolkidMartingaleConfig.sessionRunLimit = runLimit;
+    getKoolkidSingleMartingaleState().sessionRunsCompleted = 0;
     saveKoolkidMartingaleFeatureConfig();
     closeKoolkidMartingaleSessionPopup();
     updateKoolkidSingleMartingalePanel();
-    safeToast(`Martingale session enabled: ${duration} ${unit} after each TP.`, "success");
+    safeToast(`Martingale session enabled for ${runLimit} run${runLimit === 1 ? "" : "s"}: ${duration} ${unit} after each TP.`, "success");
     return true;
   }
 
@@ -1388,6 +1401,7 @@
     clearKoolkidMartingaleSessionTimer(st);
     st.sessionWaiting = false;
     st.sessionWaitRemaining = 0;
+    st.sessionRunsCompleted = 0;
     updateKoolkidSingleMartingalePanel();
     closeKoolkidMartingaleSessionPopup();
   }
@@ -1665,7 +1679,8 @@
       doubleLimit,
       sessionEnabled: koolkidMartingaleConfig.sessionEnabled === true,
       sessionDuration: Math.max(1, Math.floor(Number(koolkidMartingaleConfig.sessionDuration) || 30)),
-      sessionUnit: koolkidMartingaleConfig.sessionUnit || "seconds"
+      sessionUnit: koolkidMartingaleConfig.sessionUnit || "seconds",
+      sessionRunLimit: Math.max(1, Math.min(10, Math.floor(Number(koolkidMartingaleConfig.sessionRunLimit) || 1)))
     };
   }
 
@@ -1892,6 +1907,14 @@
 
   function scheduleKoolkidMartingaleSessionRestart(st, settings) {
     if (!st || !settings || !settings.sessionEnabled || !st.enabled || !st.running || st.stopRequested) return false;
+    st.sessionRunsCompleted = Math.max(0, Math.floor(Number(st.sessionRunsCompleted) || 0)) + 1;
+    if (st.sessionRunsCompleted >= settings.sessionRunLimit) {
+      const completed = st.sessionRunsCompleted;
+      stopKoolkidSingleMartingaleOnRiskLimit(st, true, st.sessionProfit);
+      st.status = `Session complete (${completed}/${settings.sessionRunLimit})`;
+      updateKoolkidSingleMartingalePanel();
+      return false;
+    }
     clearKoolkidMartingaleSessionTimer(st);
     st.sessionWaiting = true;
     st.sessionWaitRemaining = settings.sessionDuration;
@@ -1934,6 +1957,7 @@
     st.sessionWaiting = false;
     st.sessionWaitRemaining = 0;
     st.sessionCycleBaseProfit = 0;
+    st.sessionRunsCompleted = 0;
     st.enabled = false;
     st.stopRequested = true;
     st.waitingForTicks = false;
@@ -2458,6 +2482,7 @@
     st.sessionWaiting = false;
     st.sessionWaitRemaining = 0;
     st.sessionCycleBaseProfit = 0;
+    st.sessionRunsCompleted = 0;
     st.running = false;
     st.stopRequested = true;
     st.enabled = false;
@@ -2504,6 +2529,7 @@
       st.pairSteps = {};
       st.sessionProfit = 0;
       st.sessionCycleBaseProfit = 0;
+      st.sessionRunsCompleted = 0;
       st.sessionWaiting = false;
       st.sessionWaitRemaining = 0;
       clearKoolkidMartingaleSessionTimer(st);
@@ -5934,6 +5960,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
     clearKoolkidMartingaleSessionTimer(mgState);
     mgState.sessionWaiting = false;
     mgState.sessionWaitRemaining = 0;
+    mgState.sessionRunsCompleted = 0;
     if (digitAnalysisRenderTimer) {
       if (!(app && typeof app.clearFrontendTimeout === "function" && app.clearFrontendTimeout("koolkid_digit_analysis_render"))) {
         clearTimeout(digitAnalysisRenderTimer);

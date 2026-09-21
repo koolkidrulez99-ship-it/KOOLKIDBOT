@@ -130,9 +130,10 @@ export default function AIPage() {
       }).catch(() => {});
       aiControlService.autoStatus().then((d) => {
         setAutoStatus(d);
+        const config = d.config || {};
         if (d.enabled) {
-          if (d.config.execution_timeframe) setExecutionTimeframe(d.config.execution_timeframe);
-          if (d.config.bias_timeframe) setBiasTimeframe(d.config.bias_timeframe);
+          if (config.execution_timeframe) setExecutionTimeframe(config.execution_timeframe);
+          if (config.bias_timeframe) setBiasTimeframe(config.bias_timeframe);
         }
       }).catch(() => {});
       aiControlService.autoSelectStatus().then(setAutoSelectStatus).catch(() => {});
@@ -163,11 +164,13 @@ export default function AIPage() {
   useEffect(() => {
     if (!autoSelectStatus || autoSelectInitRef.current) return;
     autoSelectInitRef.current = true;
-    setAutoSelectMode(autoSelectStatus.config.mode || 'analysis');
-    const configured = autoSelectStatus.config.enabled_bot_ids || [];
-    setAutoSelectBotIds(configured.length ? configured : autoSelectStatus.available_presets.filter((p) => p.ready).map((p) => p.bot_id));
-    if (autoSelectStatus.enabled && autoSelectStatus.config.account_login) setAccountLogin(autoSelectStatus.config.account_login);
-    if (autoSelectStatus.enabled && autoSelectStatus.config.symbol) setSymbol(autoSelectStatus.config.symbol);
+    const config = autoSelectStatus.config || {};
+    const presets = Array.isArray(autoSelectStatus.available_presets) ? autoSelectStatus.available_presets : [];
+    setAutoSelectMode(config.mode || 'analysis');
+    const configured = Array.isArray(config.enabled_bot_ids) ? config.enabled_bot_ids : [];
+    setAutoSelectBotIds(configured.length ? configured : presets.filter((p) => p.ready).map((p) => p.bot_id));
+    if (autoSelectStatus.enabled && config.account_login) setAccountLogin(config.account_login);
+    if (autoSelectStatus.enabled && config.symbol) setSymbol(config.symbol);
   }, [autoSelectStatus]);
 
   const runTrial = async () => {
@@ -234,7 +237,7 @@ export default function AIPage() {
       pushToast('warning', 'Select an account and symbol');
       return;
     }
-    if (autoSelectStatus?.enabled && autoSelectStatus.config.mode === 'auto') {
+    if (autoSelectStatus?.enabled && autoSelectStatus.config?.mode === 'auto') {
       pushToast('warning', 'Auto Select auto mode is already active', 'Stop Auto Select automatic execution before starting Human Apostle Auto-Trading.');
       return;
     }
@@ -538,7 +541,7 @@ export default function AIPage() {
           <button
             className={autoStatus?.enabled ? 'btn-secondary' : 'btn-primary'}
             onClick={autoStatus?.enabled ? stopAutoTrading : startAutoTrading}
-            disabled={autoBusy || isSimulation || (!autoStatus?.enabled && (!accountLogin || (autoSelectStatus?.enabled && autoSelectStatus.config.mode === 'auto')))}
+            disabled={autoBusy || isSimulation || (!autoStatus?.enabled && (!accountLogin || (autoSelectStatus?.enabled && autoSelectStatus.config?.mode === 'auto')))}
           >
             {autoBusy ? <Spinner size={15} /> : <Activity size={15} />}
             {autoBusy ? 'Updating…' : autoStatus?.enabled ? 'Stop AI Auto-Trading' : 'Start AI Auto-Trading'}
@@ -621,8 +624,8 @@ export default function AIPage() {
             <div className="mt-4 grid grid-cols-2 lg:grid-cols-5 gap-2.5">
               <div className="rounded-xl bg-black/25 border border-white/[0.06] p-3"><p className="text-[9px] uppercase tracking-widest text-slate-600">{trial.execution_timeframe} structure</p><div className="mt-1"><Badge tone={structureTone(trial.execution_structure)}>{trial.execution_structure}</Badge></div></div>
               <div className="rounded-xl bg-black/25 border border-white/[0.06] p-3"><p className="text-[9px] uppercase tracking-widest text-slate-600">Trendline</p><p className="mt-1 text-xs font-bold text-slate-200">{trial.trendline ? 'BROKEN' : 'WAITING'}</p></div>
-              <div className="rounded-xl bg-black/25 border border-white/[0.06] p-3"><p className="text-[9px] uppercase tracking-widest text-slate-600">Structure shift</p><p className="mt-1 text-xs font-bold text-slate-200">{trial.structure_shift.confirmed ? 'CONFIRMED' : 'WAITING'}</p></div>
-              <div className="rounded-xl bg-black/25 border border-white/[0.06] p-3"><p className="text-[9px] uppercase tracking-widest text-slate-600">Later retest</p><p className="mt-1 text-xs font-bold text-slate-200">{trial.retest.touched ? 'TOUCHED' : 'WAITING'}</p></div>
+              <div className="rounded-xl bg-black/25 border border-white/[0.06] p-3"><p className="text-[9px] uppercase tracking-widest text-slate-600">Structure shift</p><p className="mt-1 text-xs font-bold text-slate-200">{trial.structure_shift?.confirmed ? 'CONFIRMED' : 'WAITING'}</p></div>
+              <div className="rounded-xl bg-black/25 border border-white/[0.06] p-3"><p className="text-[9px] uppercase tracking-widest text-slate-600">Later retest</p><p className="mt-1 text-xs font-bold text-slate-200">{trial.retest?.touched ? 'TOUCHED' : 'WAITING'}</p></div>
               <div className="rounded-xl bg-black/25 border border-white/[0.06] p-3"><p className="text-[9px] uppercase tracking-widest text-slate-600">{trial.bias_timeframe} bias</p><div className="mt-1"><Badge tone={structureTone(trial.bias_structure)}>{trial.bias_structure}</Badge></div></div>
             </div>
 
@@ -632,12 +635,12 @@ export default function AIPage() {
                 <p className="mt-1 text-slate-500">High: {trial.last_confirmed_high ? `${trial.last_confirmed_high.label} @ ${fmt(trial.last_confirmed_high.price)}` : '—'}</p>
                 <p className="text-slate-500">Low: {trial.last_confirmed_low ? `${trial.last_confirmed_low.label} @ ${fmt(trial.last_confirmed_low.price)}` : '—'}</p>
                 <p className="text-slate-500">Protected level: {fmt(trial.protected_structure)}</p>
-                <p className="text-slate-500">Retest level: {fmt(trial.retest.level)}</p>
+                <p className="text-slate-500">Retest level: {fmt(trial.retest?.level ?? null)}</p>
               </div>
               <div className="rounded-xl border border-white/[0.06] p-3 bg-black/15">
                 <div className="flex items-center justify-between"><p className="font-semibold text-slate-300">Confidence</p><span className="mono text-sm font-extrabold text-white">{trial.confidence}%</span></div>
                 <Progress value={trial.confidence} tone={trial.confidence >= 80 ? 'gain' : trial.confidence >= 55 ? 'brand' : 'warn'} />
-                <div className="mt-2 space-y-1">{trial.confidence_factors.length ? trial.confidence_factors.map((f) => <p key={f} className="text-slate-500">• {f}</p>) : <p className="text-slate-600">No setup factors confirmed yet.</p>}</div>
+                <div className="mt-2 space-y-1">{trial.confidence_factors?.length ? trial.confidence_factors.map((f) => <p key={f} className="text-slate-500">• {f}</p>) : <p className="text-slate-600">No setup factors confirmed yet.</p>}</div>
               </div>
             </div>
           </Panel>

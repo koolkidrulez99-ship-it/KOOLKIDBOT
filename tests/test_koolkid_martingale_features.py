@@ -193,3 +193,14 @@ def test_stop_and_profile_deactivation_invalidate_pending_requests():
     assert KOOLKID_JS.count('st.requestGeneration = Number(st.requestGeneration || 0) + 1;') >= 3
     assert 'if (st.requestGeneration !== requestGeneration || st.stopRequested) return;' in KOOLKID_JS
     assert 'clearKoolkidSingleMartingalePending();\n    resetKoolkidRecoveryRuntime(mgState, mgState.action);' in KOOLKID_JS
+
+
+def test_session_popup_supports_one_to_ten_runs_and_stops_at_limit():
+    assert 'id="koolkidMartingaleSessionRunLimit"' in KOOLKID_HTML
+    for value in range(1, 11):
+        assert f'<option value="{value}">{value}</option>' in KOOLKID_HTML
+    assert 'sessionRunLimit: 1' in KOOLKID_JS
+    assert 'sessionRunLimit: Number.isInteger(Number(saved.sessionRunLimit))' in KOOLKID_JS
+    assert 'st.sessionRunsCompleted = Math.max(0, Math.floor(Number(st.sessionRunsCompleted) || 0)) + 1;' in KOOLKID_JS
+    assert 'if (st.sessionRunsCompleted >= settings.sessionRunLimit)' in KOOLKID_JS
+    assert 'st.status = `Session complete (${completed}/${settings.sessionRunLimit})`;' in KOOLKID_JS

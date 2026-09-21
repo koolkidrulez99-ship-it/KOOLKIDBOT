@@ -157,14 +157,20 @@ export function HubProvider({ children }: { children: ReactNode }) {
           mt5AccountService.list(), mt5BotService.list(), mt5PositionService.list(),
           mt5HistoryService.stats(), mt5BridgeService.status(),
         ]);
-        setAccounts(a); setBots(b); setPositions(p); setStats(s); setBridge(br); setError(null);
+        setAccounts(Array.isArray(a) ? a : []);
+        setBots(Array.isArray(b) ? b : []);
+        setPositions(Array.isArray(p) ? p : []);
+        setStats(s && typeof s === 'object' ? s : null);
+        setBridge(br && typeof br === 'object' ? br : null);
+        setError(null);
         break;
       } catch (e) {
         if (attempt + 1 < attempts) {
           await new Promise((resolve) => window.setTimeout(resolve, 1500));
           continue;
         }
-        setError(isSimulation ? (e instanceof Error ? e.message : 'Failed to load MT5 Hub data.') : 'MT5 bridge is offline');
+        const message = e instanceof Error ? e.message : (isSimulation ? 'Failed to load MT5 Hub data.' : 'MT5 data refresh failed.');
+        setError(message);
       }
     }
     setBridgeStarting(false);
@@ -173,7 +179,10 @@ export function HubProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const refreshPositions = useCallback(async () => {
-    try { setPositions(await mt5PositionService.list()); } catch { /* silent */ }
+    try {
+      const rows = await mt5PositionService.list();
+      setPositions(Array.isArray(rows) ? rows : []);
+    } catch { /* silent */ }
   }, []);
 
   useEffect(() => { refresh(); }, [refresh]);

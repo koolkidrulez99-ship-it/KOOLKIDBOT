@@ -1275,13 +1275,21 @@ def _request_digit_proposal_for_buy(client_id, state, payload, timeout_sec=5.0):
         return proposal, None
 
     if _martha_self_heal_enabled(state) and last_error == "Proposal timeout":
+        request_meta = (state.get("req_meta") or {}).get(original_req_id) or (state.get("req_meta") or {}).get(str(original_req_id)) or {}
+        request_mode = str(request_meta.get("mode") or "").lower()
+        if request_mode == "jokerjoe_single_martingale":
+            recovery_action = "clear_jokerjoe_martingale_pending"
+        elif request_mode.startswith("koolkid_single_martingale"):
+            recovery_action = "clear_koolkid_martingale_pending"
+        else:
+            recovery_action = ""
         _martha_failure(
             client_id,
             state,
             "proposal_timeout",
             action="fresh_request_retry_exhausted",
             details={"attempts": max_attempts},
-            recovery_action="clear_koolkid_martingale_pending",
+            recovery_action=recovery_action,
         )
     return None, last_error
 

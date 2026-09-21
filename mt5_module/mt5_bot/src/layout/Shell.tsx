@@ -10,6 +10,7 @@ import { RefreshCw } from 'lucide-react';
 import { appVersion, isSimulation } from '../config/runtime';
 import WorkspaceRestorer from '../components/WorkspaceRestorer';
 import CopyTradeApproval from '../components/CopyTradeApproval';
+import AppErrorBoundary from '../components/AppErrorBoundary';
 
 function BootSkeleton() {
   return <div className="px-4 md:px-6 py-6 space-y-5 max-w-[1600px]"><Skel className="h-8 w-64" /><div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">{Array.from({ length: 4 }).map((_, i) => <Skel key={i} className="h-28" />)}</div><Skel className="h-[360px]" /><div className="grid grid-cols-1 lg:grid-cols-2 gap-4"><Skel className="h-56" /><Skel className="h-56" /></div></div>;
@@ -28,10 +29,25 @@ export default function Shell() {
       <div className="relative z-10 lg:pl-[248px] flex flex-col min-h-screen">
         <TopBar onMenu={() => setMenuOpen(true)} />
         <main className="flex-1">
-          {loading ? (bridgeStarting ? <div className="flex flex-col items-center justify-center py-32 px-6 text-center"><RefreshCw className="animate-spin text-brand-300" size={26} /><h3 className="mt-5 text-lg font-bold text-white">Connecting to MT5 bridge...</h3><p className="text-sm text-slate-500 mt-2">Waiting for the separate local bridge to become ready.</p></div> : <BootSkeleton />) : error ? (
-            <div className="flex flex-col items-center justify-center py-32 px-6 text-center"><div className="rounded-2xl bg-loss-500/10 border border-loss-500/25 p-4 text-loss-400 mb-5">!</div><h3 className="text-lg font-bold text-white">MT5 Hub could not load</h3><p className="text-sm text-slate-500 mt-2 max-w-sm">{error}</p><button className="btn-primary mt-6" onClick={() => refresh()}><RefreshCw size={15} /> Retry</button></div>
+          {loading ? (
+            bridgeStarting
+              ? <div className="flex flex-col items-center justify-center py-32 px-6 text-center"><RefreshCw className="animate-spin text-brand-300" size={26} /><h3 className="mt-5 text-lg font-bold text-white">Connecting to MT5 bridge...</h3><p className="text-sm text-slate-500 mt-2">Waiting for the separate local bridge to become ready.</p></div>
+              : <BootSkeleton />
           ) : (
-            <motion.div key={location.pathname} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.28, ease: 'easeOut' }} className="px-4 md:px-6 py-6 max-w-[1600px] max-md:py-4"><Outlet /></motion.div>
+            <>
+              {error && (
+                <div className="mx-4 mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-warn-500/20 bg-warn-500/[0.07] px-4 py-3 text-xs text-warn-200 md:mx-6">
+                  <span className="font-semibold">MT5 data refresh issue:</span>
+                  <span className="min-w-0 flex-1 text-warn-100/80">{error}. Keeping the last good Hub data on screen.</span>
+                  <button className="btn-ghost !py-1.5 text-[11px]" onClick={() => refresh()}><RefreshCw size={13} /> Retry</button>
+                </div>
+              )}
+              <motion.div key={location.pathname} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.28, ease: 'easeOut' }} className="px-4 md:px-6 py-6 max-w-[1600px] max-md:py-4">
+                <AppErrorBoundary compact resetKey={location.pathname}>
+                  <Outlet />
+                </AppErrorBoundary>
+              </motion.div>
+            </>
           )}
         </main>
         <footer className="px-6 py-4 text-[11px] text-slate-600 border-t border-white/[0.05] flex flex-wrap gap-x-6 gap-y-1"><span>MT5 Hub module v{appVersion}</span><span>{isSimulation ? 'Runtime: self-contained simulation' : `Bridge: ${bridge?.status || 'unknown'}`}</span><span className="mono">{isSimulation ? 'Real MT5 execution disabled' : (bridge?.endpoint || 'Bridge endpoint not configured')}</span></footer>
