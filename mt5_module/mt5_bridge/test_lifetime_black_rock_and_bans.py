@@ -88,3 +88,15 @@ def test_banned_user_cannot_log_in(monkeypatch, tmp_path):
         main.hub_login(main.HubAuthPayload(username="tester1", password="password123"))
     assert exc.value.status_code == 403
     assert "banned" in str(exc.value.detail).lower()
+
+
+def test_black_rock_resolver_uses_bundled_fallback(monkeypatch, tmp_path):
+    data_dir = tmp_path / "data"
+    bundled_dir = tmp_path / "bundled_eas"
+    data_dir.mkdir()
+    bundled_dir.mkdir()
+    fallback = bundled_dir / "Black_Rock.ex5"
+    fallback.write_bytes(b"EX5-test")
+    monkeypatch.setattr(store, "DATA_DIR", data_dir)
+    monkeypatch.setattr(store, "ROOT", tmp_path)
+    assert store.resolve_system_ea_file("Black_Rock.ex5") == fallback

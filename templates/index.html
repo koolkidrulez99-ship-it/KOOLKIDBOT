@@ -2208,6 +2208,10 @@ function bindSocketHandlers(){
         try{ if(window.MarthaAI && typeof window.MarthaAI.observeAutoDecision === "function") window.MarthaAI.observeAutoDecision(data || {}); }catch(e){}
     });
 
+    bind("martha_ai_recovery", (data)=>{
+        try{ if(window.MarthaAI && typeof window.MarthaAI.observeRecovery === "function") window.MarthaAI.observeRecovery(data || {}); }catch(e){}
+    });
+
     bind("balance_update", (data)=>{
         const balance = Number(data && data.balance);
         applyKnownApiBalance(data || {}, false);

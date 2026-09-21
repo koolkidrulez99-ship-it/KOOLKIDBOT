@@ -33,11 +33,11 @@ def test_overview_series_populates_daily_and_equity():
     assert equity[-1]["date"] == _day(0)
     assert equity[-1]["balance"] == 1500.0
     assert equity[-1]["equity"] == 1510.0
-    assert equity[-2]["equity"] == equity[-2]["balance"]
+    assert equity[-2]["equity"] - equity[-2]["balance"] == 10.0
     assert len(equity) >= 3
 
 
-def test_overview_equity_stops_before_impossible_balance_reset():
+def test_overview_curve_survives_impossible_balance_reset():
     accounts = [
         {"login": 1, "balance": 100.0, "equity": 100.0},
         {"login": 2, "balance": 500.0, "equity": 500.0},
@@ -50,6 +50,8 @@ def test_overview_equity_stops_before_impossible_balance_reset():
 
     equity, daily = main._overview_chart_series(accounts, history)
     dates = [row["date"] for row in equity]
-    assert _day(-2) not in dates
+    assert _day(-2) in dates
+    assert _day(-1) in dates
     assert dates[-1] == _day(0)
+    assert all(row["balance"] > 0 and row["equity"] > 0 for row in equity)
     assert daily[-1]["date"] == _day(0)

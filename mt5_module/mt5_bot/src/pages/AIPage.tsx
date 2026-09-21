@@ -44,6 +44,13 @@ type CopyAnywhereConfig = {
   lot_mode?: 'same' | 'fixed' | 'multiplier' | 'equity_proportional';
   fixed_lot?: number;
   multiplier?: number;
+  trail_by_shoulders?: boolean;
+  risk_reward_ratio?: number;
+  shoulder_timeframe?: 'M1' | 'M5' | 'M15' | 'M30' | 'H1';
+  shoulder_strength?: number;
+  shoulder_buffer_points?: number;
+  limit_copied_trades?: boolean;
+  max_copied_trades_per_slave?: number;
   source_filter?: 'all' | 'manual' | 'ea' | 'magic';
   magic_number?: number | null;
   poll_ms?: number;
@@ -392,6 +399,13 @@ export default function AIPage() {
         lot_mode: cfg.lot_mode || 'same',
         fixed_lot: cfg.fixed_lot ?? 0.01,
         multiplier: cfg.multiplier ?? 1,
+        trail_by_shoulders: Boolean(cfg.trail_by_shoulders),
+        risk_reward_ratio: cfg.risk_reward_ratio ?? 2,
+        shoulder_timeframe: cfg.shoulder_timeframe || 'M5',
+        shoulder_strength: cfg.shoulder_strength ?? 2,
+        shoulder_buffer_points: cfg.shoulder_buffer_points ?? 5,
+        limit_copied_trades: Boolean(cfg.limit_copied_trades),
+        max_copied_trades_per_slave: cfg.max_copied_trades_per_slave ?? 1,
         source_filter: enabled ? 'all' : (cfg.source_filter || 'all'),
         magic_number: cfg.magic_number ?? null,
         poll_ms: cfg.poll_ms ?? 300,

@@ -53,6 +53,33 @@ def test_auto_session_catalog_returns_profiles():
     assert all(int(item.get("button_count", 0) or 0) >= 1 for item in catalog)
 
 
+def test_koolkid_auto_session_uses_at_least_two_ticks(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        server,
+        "send_buy_with_profile",
+        lambda client_id, profile, contract_type, stake, symbol, barrier, **kwargs: (
+            calls.append({"profile": profile, "duration": kwargs.get("duration")}) or True,
+            "sent",
+        ),
+    )
+
+    server._execute_auto_session_plan("client", {}, {
+        "actions": [{
+            "kind": "digit",
+            "profile": "KOOLKID",
+            "contract_type": "OVER",
+            "stake": 1,
+            "symbol": "R_10",
+            "barrier": 3,
+            "duration": 1,
+            "duration_unit": "t",
+        }],
+    })
+
+    assert calls == [{"profile": "KOOLKID", "duration": 2}]
+
+
 def test_start_auto_session_can_build_unchain_profile_pool():
     state = {"strategies": {}}
     session = auto_session.start_auto_session(state, "UNCHAIN", budget=50, sl=10, tp=15)

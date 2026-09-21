@@ -773,6 +773,17 @@
     });
   }
 
+  function observeRecovery(data) {
+    const recovery = data || {};
+    console.warn("martha_ai_recovery", recovery);
+    if (recovery.action === "clear_koolkid_martingale_pending"
+      && typeof window.recoverKoolkidMartingaleFromMartha === "function") {
+      window.recoverKoolkidMartingaleFromMartha(recovery);
+      return;
+    }
+    if (recovery.message) showToast(recovery.message, recovery.safe_stop ? "error" : "warn");
+  }
+
   function init() {
     if (state.initialized) {
       bindUi();
@@ -804,6 +815,7 @@
     observeStats,
     observeTradeEvent,
     observeAutoDecision,
+    observeRecovery,
     scanCurrentProfile,
     evaluateAction,
     evaluateDiffersRepeatRisk,

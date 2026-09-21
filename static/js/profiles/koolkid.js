@@ -2150,6 +2150,24 @@
     st.pendingMartingale = false;
   }
 
+  window.recoverKoolkidMartingaleFromMartha = function (payload) {
+    const recovery = payload || {};
+    const st = getKoolkidSingleMartingaleState();
+    if (!st.inProgress && !st.pendingContractId && !st.pendingPair) return false;
+    st.requestGeneration = Number(st.requestGeneration || 0) + 1;
+    if (st.restartTimer) clearTimeout(st.restartTimer);
+    st.restartTimer = null;
+    clearKoolkidSingleMartingalePending();
+    st.running = false;
+    st.stopRequested = true;
+    st.waitingForTicks = false;
+    st.waitTicksRemaining = 0;
+    st.status = recovery.safe_stop ? "Stopped: repeated connection failures" : "Stopped: stalled request cleared";
+    updateKoolkidSingleMartingalePanel();
+    safeToast(recovery.message || "Martha cleared the stalled KOOLKID trade request. Review the connection, then restart.", "error");
+    return true;
+  };
+
   function updateKoolkidSingleMartingalePanel() {
     const st = getKoolkidSingleMartingaleState();
     const allowed = canUseKoolkidSingleMartingale();

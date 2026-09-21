@@ -4,6 +4,20 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 COPY_MAGIC = 987654
 
+COPY_PREFERENCE_DEFAULTS = {
+    "lot_mode": "same",
+    "fixed_lot": 0.01,
+    "multiplier": 1.0,
+    "trail_by_shoulders": False,
+    "risk_reward_ratio": 2.0,
+    "shoulder_timeframe": "M5",
+    "shoulder_strength": 2,
+    "shoulder_buffer_points": 5.0,
+    "limit_copied_trades": False,
+    "max_copied_trades_per_slave": 1,
+}
+
+
 class CopyEngine:
     def __init__(self, pool, state):
         self.pool = pool
@@ -12,6 +26,12 @@ class CopyEngine:
         self.stop_event = threading.Event()
         saved_state = self.state_store.load()
         self.config = saved_state.get("copy_config")
+        saved_preferences = dict(saved_state.get("copy_preferences") or {})
+        if self.config:
+            for key in COPY_PREFERENCE_DEFAULTS:
+                if key in self.config and key not in saved_preferences:
+                    saved_preferences[key] = self.config[key]
+        self.preferences = {**COPY_PREFERENCE_DEFAULTS, **saved_preferences}
         self.status = "stopped"
         self.activity = []
         self.copy_map = saved_state.get("copy_map", {})
@@ -34,6 +54,27 @@ class CopyEngine:
         s = self.state_store.load()
         s["copy_map"] = self.copy_map
         self.state_store.save(s)
+
+    def update_preferences(self, updates):
+        clean = {key: updates[key] for key in COPY_PREFERENCE_DEFAULTS if key in updates}
+        if "max_copied_trades_per_slave" in clean:
+            clean["max_copied_trades_per_slave"] = max(1, min(100, int(clean["max_copied_trades_per_slave"] or 1)))
+        if "risk_reward_ratio" in clean:
+            clean["risk_reward_ratio"] = max(1.0, float(clean["risk_reward_ratio"] or 2.0))
+        if "shoulder_strength" in clean:
+            clean["shoulder_strength"] = max(1, min(5, int(clean["shoulder_strength"] or 2)))
+        if "shoulder_buffer_points" in clean:
+            clean["shoulder_buffer_points"] = max(0.0, float(clean["shoulder_buffer_points"] or 0.0))
+        with self.lock:
+            self.preferences.update(clean)
+            if self.config is not None:
+                self.config.update(clean)
+            s = self.state_store.load()
+            s["copy_preferences"] = dict(self.preferences)
+            if s.get("copy_enabled") and isinstance(s.get("copy_config"), dict):
+                s["copy_config"].update(clean)
+            self.state_store.save(s)
+        return dict(self.preferences)
 
     def stop(self):
         thread = self.thread
@@ -58,9 +99,11 @@ class CopyEngine:
             raise RuntimeError("Copy Trader is still stopping the previous session. Try again in a few seconds.")
         self.thread = None
         self.stop_event = threading.Event()
-        self.config = cfg
+        self.config = dict(cfg)
+        self.update_preferences(cfg)
         saved = self.state_store.load()
-        saved["copy_config"] = dict(cfg)
+        saved["copy_config"] = dict(self.config)
+        saved["copy_preferences"] = dict(self.preferences)
         self.state_store.save(saved)
         try:
             existing = self.pool.call(cfg["master_account_id"], "positions")
@@ -104,6 +147,282 @@ class CopyEngine:
         if sl <= entry:
             raise RuntimeError("Trail by Shoulders requires the SELL stop above entry.")
         return entry - risk * ratio
+
+    def _open_copy_positions(self, slave_id):
+        try:
+            rows = self.pool.call(slave_id, "positions", timeout=8)
+        except Exception as exc:
+            raise RuntimeError(f"Could not verify copy slots for {slave_id}: {exc}") from exc
+        return [
+            row for row in rows
+            if int(row.get("magic") or 0) == COPY_MAGIC
+            or str(row.get("comment") or "").startswith("KKCOPY:")
+        ]
+
+    def _copy_slot_available(self, slave_id):
+        cfg = self.config or {}
+        if not bool(cfg.get("limit_copied_trades")):
+            return True, None
+        limit = max(1, int(cfg.get("max_copied_trades_per_slave") or 1))
+        count = len(self._open_copy_positions(slave_id))
+        if count >= limit:
+            return False, f"Copy limit reached ({count}/{limit}) for {slave_id}."
+        return True, {"count": count, "limit": limit}
+
+    @staticmethod
+    def _swing_indexes(candles, field, strength, mode):
+        indexes = []
+        for index in range(strength, len(candles) - strength):
+            value = float(candles[index][field])
+            neighbors = [
+                float(candles[i][field])
+                for i in range(index - strength, index + strength + 1)
+                if i != index
+            ]
+            if mode == "low" and all(value < item for item in neighbors):
+                indexes.append(index)
+            elif mode == "high" and all(value > item for item in neighbors):
+                indexes.append(index)
+        return indexes
+
+    @classmethod
+    def structure_shoulder_stop(
+        cls, candles, side, point, current_sl=0.0, current_price=0.0,
+        strength=2, buffer_points=5.0,
+    ):
+        # MT5 returns the current/forming candle last. Never use it for structure.
+        closed = list(candles or [])[:-1]
+        strength = max(1, int(strength or 2))
+        if len(closed) < strength * 2 + 6:
+            return None
+        side = str(side or "").lower()
+        point = max(float(point or 0.0), 1e-12)
+        buffer = max(0.0, float(buffer_points or 0.0)) * point
+        current_sl = float(current_sl or 0.0)
+        current_price = float(current_price or closed[-1].get("close") or 0.0)
+
+        if side == "buy":
+            swings = cls._swing_indexes(closed, "low", strength, "low")
+            for older, newer in zip(reversed(swings[:-1]), reversed(swings[1:])):
+                older_low = float(closed[older]["low"])
+                newer_low = float(closed[newer]["low"])
+                if newer_low <= older_low:
+                    continue
+                structure_high = max(float(row["high"]) for row in closed[older:newer + 1])
+                continuation = any(
+                    float(row["close"]) > structure_high
+                    for row in closed[newer + strength + 1:]
+                )
+                if not continuation:
+                    continue
+                candidate = newer_low - buffer
+                if candidate >= current_price:
+                    continue
+                if current_sl > 0 and candidate <= current_sl + point * 0.25:
+                    continue
+                return {
+                    "sl": candidate,
+                    "shoulder_time": int(closed[newer].get("time") or 0),
+                    "shoulder_price": newer_low,
+                    "structure_break": structure_high,
+                }
+        else:
+            swings = cls._swing_indexes(closed, "high", strength, "high")
+            for older, newer in zip(reversed(swings[:-1]), reversed(swings[1:])):
+                older_high = float(closed[older]["high"])
+                newer_high = float(closed[newer]["high"])
+                if newer_high >= older_high:
+                    continue
+                structure_low = min(float(row["low"]) for row in closed[older:newer + 1])
+                continuation = any(
+                    float(row["close"]) < structure_low
+                    for row in closed[newer + strength + 1:]
+                )
+                if not continuation:
+                    continue
+                candidate = newer_high + buffer
+                if current_price > 0 and candidate <= current_price:
+                    continue
+                if current_sl > 0 and candidate >= current_sl - point * 0.25:
+                    continue
+                return {
+                    "sl": candidate,
+                    "shoulder_time": int(closed[newer].get("time") or 0),
+                    "shoulder_price": newer_high,
+                    "structure_break": structure_low,
+                }
+        return None
+
+    def _trail_copy_by_structure(self, slave_id, meta):
+        ticket = int(meta.get("ticket") or 0)
+        if not ticket:
+            return False
+        now = time.time()
+        if now - float(meta.get("_structure_scan_at") or 0) < 5.0:
+            return False
+        meta["_structure_scan_at"] = now
+        positions = self.pool.call(slave_id, "positions", timeout=8)
+        position = next((row for row in positions if int(row.get("ticket") or 0) == ticket), None)
+        if not position:
+            return False
+
+        symbol = str(position.get("symbol") or meta.get("symbol") or "")
+        if not symbol:
+            return False
+        cfg = self.config or {}
+        timeframe = str(cfg.get("shoulder_timeframe") or "M5").upper()
+        candles = self.pool.call(
+            slave_id, "candles",
+            {"symbol": symbol, "timeframe": timeframe, "count": 120},
+            timeout=12,
+        )
+        symbol_info = self.pool.call(slave_id, "symbol_info", {"symbol": symbol}, timeout=8) or {}
+        point = float(symbol_info.get("point") or 0)
+        side = self.side(position)
+        current_sl = float(position.get("sl") or meta.get("last_sl") or 0)
+        current_price = float(position.get("price_current") or position.get("current_price") or 0)
+        shoulder = self.structure_shoulder_stop(
+            candles,
+            side,
+            point,
+            current_sl=current_sl,
+            current_price=current_price,
+            strength=int(cfg.get("shoulder_strength") or 2),
+            buffer_points=float(cfg.get("shoulder_buffer_points") or 5.0),
+        )
+        if not shoulder:
+            return False
+        if int(shoulder["shoulder_time"]) <= int(meta.get("last_shoulder_time") or 0):
+            return False
+
+        new_sl = float(shoulder["sl"])
+        tp = float(meta.get("last_tp") or position.get("tp") or 0)
+        self.pool.call(
+            slave_id,
+            "modify_position",
+            {"ticket": ticket, "sl": new_sl, "tp": tp},
+            timeout=15,
+        )
+        meta["last_sl"] = new_sl
+        meta["last_shoulder_time"] = int(shoulder["shoulder_time"])
+        meta["last_shoulder_price"] = float(shoulder["shoulder_price"])
+        meta["last_structure_break"] = float(shoulder["structure_break"])
+        self.persist_map()
+        self.log(
+            "shoulder_trail",
+            slave=slave_id,
+            slave_ticket=ticket,
+            symbol=symbol,
+            side=side,
+            sl=new_sl,
+            shoulder_price=meta["last_shoulder_price"],
+            timeframe=timeframe,
+        )
+        return True
+
+    def _confirm_copy_closed(self, slave_id, ticket):
+        positions = self.pool.call(slave_id, "positions", timeout=5)
+        return not any(int(row.get("ticket") or 0) == int(ticket) for row in positions)
+
+    def _close_mapped_slave(self, master_ticket, slave_id, meta):
+        ticket = int(meta.get("ticket") or 0)
+        if not ticket:
+            return True
+        try:
+            self.pool.call(slave_id, "close_position", {"ticket": ticket}, timeout=12)
+        except Exception as exc:
+            # A broker timeout can happen after MT5 actually closed the trade.
+            # Confirm the ticket before deciding whether this needs a retry.
+            try:
+                if self._confirm_copy_closed(slave_id, ticket):
+                    self.log("copied_close_confirmed", master_ticket=master_ticket, slave=slave_id, slave_ticket=ticket)
+                    return True
+            except Exception as confirm_exc:
+                meta["last_close_error"] = f"{exc}; confirmation failed: {confirm_exc}"
+            else:
+                meta["last_close_error"] = str(exc)
+            meta["close_retry_count"] = int(meta.get("close_retry_count") or 0) + 1
+            meta["last_close_attempt_at"] = time.time()
+            self.persist_map()
+            self.log(
+                "copied_close_retry",
+                master_ticket=master_ticket,
+                slave=slave_id,
+                slave_ticket=ticket,
+                attempt=meta["close_retry_count"],
+                error=meta.get("last_close_error"),
+            )
+            return False
+
+        # Do not forget the mapping until MT5 confirms the ticket is gone.
+        last_error = ""
+        for _ in range(3):
+            try:
+                if self._confirm_copy_closed(slave_id, ticket):
+                    self.log("copied_close", master_ticket=master_ticket, slave=slave_id, slave_ticket=ticket)
+                    return True
+                last_error = "MT5 still reports the copied ticket as open."
+            except Exception as exc:
+                last_error = str(exc)
+            time.sleep(0.2)
+
+        meta["close_retry_count"] = int(meta.get("close_retry_count") or 0) + 1
+        meta["last_close_attempt_at"] = time.time()
+        meta["last_close_error"] = last_error or "Copied close was not confirmed."
+        self.persist_map()
+        self.log(
+            "copied_close_retry",
+            master_ticket=master_ticket,
+            slave=slave_id,
+            slave_ticket=ticket,
+            attempt=meta["close_retry_count"],
+            error=meta["last_close_error"],
+        )
+        return False
+
+    def _close_master_mappings(self, master_ticket, cfg):
+        mapped = self.copy_map.get(master_ticket, {})
+        close_targets = [
+            (slave_id, meta)
+            for slave_id, meta in list(mapped.items())
+            if slave_id in cfg.get("slave_account_ids", [])
+        ]
+        if not close_targets:
+            return not bool(mapped)
+
+        def close_slave(target):
+            slave_id, meta = target
+            try:
+                closed = self._close_mapped_slave(master_ticket, slave_id, meta)
+                return slave_id, closed
+            except Exception as exc:
+                meta["close_retry_count"] = int(meta.get("close_retry_count") or 0) + 1
+                meta["last_close_attempt_at"] = time.time()
+                meta["last_close_error"] = str(exc)
+                self.log(
+                    "copied_close_retry",
+                    master_ticket=master_ticket,
+                    slave=slave_id,
+                    slave_ticket=int(meta.get("ticket") or 0),
+                    attempt=meta["close_retry_count"],
+                    error=str(exc),
+                )
+                return slave_id, False
+
+        with ThreadPoolExecutor(max_workers=len(close_targets) or 1) as executor:
+            results = list(executor.map(close_slave, close_targets))
+
+        changed = False
+        for slave_id, closed in results:
+            if closed and slave_id in mapped:
+                mapped.pop(slave_id, None)
+                changed = True
+        if not mapped:
+            self.copy_map.pop(master_ticket, None)
+            changed = True
+        if changed or any(not closed for _, closed in results):
+            self.persist_map()
+        return master_ticket not in self.copy_map
 
     def account_budget(self, account_id):
         cfg = (self.state_store.load().get("accounts") or {}).get(str(account_id)) or {}
@@ -168,6 +487,10 @@ class CopyEngine:
         return m
 
     def _copy_to_slave(self, master_ticket, pos, master_info, slave_id):
+        slot_ok, slot = self._copy_slot_available(slave_id)
+        if not slot_ok:
+            self.log("copy_limit_skipped", master_ticket=master_ticket, slave=slave_id, reason=slot)
+            return {"ok": False, "skipped": True, "error": slot}
         slave_info = self.pool.call(slave_id, "account_info")
         rt = self.pool.items[slave_id]
         aliases = rt.config.get("symbol_aliases") or {}
@@ -202,6 +525,7 @@ class CopyEngine:
             raise RuntimeError(f"Could not resolve slave ticket: {result}")
 
         final_tp = float(payload.get("tp") or 0)
+        slave_pos = None
         if bool((self.config or {}).get("trail_by_shoulders")):
             slave_positions = self.pool.call(slave_id, "positions", timeout=10)
             slave_pos = next((row for row in slave_positions if int(row.get("ticket") or 0) == slave_ticket), None)
@@ -216,6 +540,10 @@ class CopyEngine:
 
         self.copy_map.setdefault(master_ticket, {})[slave_id] = {
             "ticket": slave_ticket,
+            "symbol": symbol,
+            "side": side,
+            "entry": float((slave_pos or {}).get("price_open") or (slave_pos or {}).get("open_price") or result.get("price") or master_entry),
+            "initial_sl": stop_loss,
             "last_sl": stop_loss,
             "last_tp": final_tp,
             "trail_by_shoulders": bool((self.config or {}).get("trail_by_shoulders")),
@@ -345,50 +673,45 @@ class CopyEngine:
                                     self.ignored.add(master_ticket)
                                 self.log("copy_error", master_ticket=master_ticket, error=str(exc))
 
-                    # Sync protection. In Trail by Shoulders mode, the master SL
-                    # continues to trail the slave while the slave keeps its own fixed 2R TP.
+                    # Normal copies mirror the master's protection. Shoulder mode
+                    # is independent: it reads completed slave-market candles and only
+                    # advances the slave stop behind confirmed HL/LH structure.
                     for master_ticket, pos in current.items():
                         for slave_id, meta in self.copy_map.get(master_ticket, {}).items():
                             if slave_id not in cfg["slave_account_ids"]:
                                 continue
+                            shoulder_mode = bool(cfg.get("trail_by_shoulders"))
+                            if shoulder_mode:
+                                try:
+                                    self._trail_copy_by_structure(slave_id, meta)
+                                except Exception as exc:
+                                    self.log("copy_error", master_ticket=master_ticket, slave=slave_id, error=str(exc))
+                                continue
+
                             sl = float(pos.get("sl") or 0)
-                            shoulder_mode = bool(meta.get("trail_by_shoulders") or cfg.get("trail_by_shoulders"))
-                            tp = float(meta.get("last_tp") or 0) if shoulder_mode else float(pos.get("tp") or 0)
+                            tp = float(pos.get("tp") or 0)
                             sl_changed = sl != float(meta.get("last_sl") or 0)
-                            tp_changed = (not shoulder_mode) and tp != float(meta.get("last_tp") or 0)
+                            tp_changed = tp != float(meta.get("last_tp") or 0)
                             if sl_changed or tp_changed:
                                 try:
-                                    self.pool.call(slave_id, "modify_position", {"ticket": int(meta["ticket"]), "sl": sl, "tp": tp})
-                                    meta["last_sl"] = sl
-                                    if not shoulder_mode:
-                                        meta["last_tp"] = tp
+                                    self.pool.call(
+                                        slave_id,
+                                        "modify_position",
+                                        {"ticket": int(meta["ticket"]), "sl": sl, "tp": tp},
+                                    )
+                                    meta["last_sl"], meta["last_tp"] = sl, tp
                                     self.persist_map()
-                                    self.log("copied_modify", master_ticket=master_ticket, slave=slave_id, trail_by_shoulders=shoulder_mode)
+                                    self.log("copied_modify", master_ticket=master_ticket, slave=slave_id, trail_by_shoulders=False)
                                 except Exception as exc:
                                     self.log("copy_error", master_ticket=master_ticket, slave=slave_id, error=str(exc))
 
-                    # Close slave copies when master closes.
+                    # Close slave copies when the master ticket disappears.
+                    # This is identical in approval mode and Copy Trades From
+                    # Anywhere; failed closes stay mapped and retry next cycle.
                     for master_ticket in list(self.copy_map):
                         if master_ticket in current:
                             continue
-                        close_targets = [(slave_id, meta) for slave_id, meta in list(self.copy_map.get(master_ticket, {}).items()) if slave_id in cfg["slave_account_ids"]]
-                        def close_slave(target):
-                            slave_id, meta = target
-                            try:
-                                ticket = int(meta["ticket"])
-                                try:
-                                    self.pool.call(slave_id, "close_position", {"ticket": ticket}, timeout=12)
-                                except TimeoutError:
-                                    positions = self.pool.call(slave_id, "positions", timeout=3)
-                                    if any(int(row.get("ticket") or 0) == ticket for row in positions):
-                                        raise RuntimeError("MT5 did not confirm the copied close before the safety timeout.")
-                                self.log("copied_close", master_ticket=master_ticket, slave=slave_id)
-                            except Exception as exc:
-                                self.log("copy_error", master_ticket=master_ticket, slave=slave_id, error=str(exc))
-                        with ThreadPoolExecutor(max_workers=len(close_targets) or 1) as executor:
-                            list(executor.map(close_slave, close_targets))
-                        self.copy_map.pop(master_ticket, None)
-                        self.persist_map()
+                        self._close_master_mappings(master_ticket, cfg)
 
                     with self.lock:
                         for master_ticket in list(self.pending):
@@ -408,6 +731,7 @@ class CopyEngine:
         return {
             "status": self.status,
             "config": self.config,
+            "preferences": dict(self.preferences),
             "copy_map": self.copy_map,
             "activity": self.activity[:100],
             "pending_count": len(self.pending),

@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 import uuid
 from pathlib import Path
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from .models import ConnectRequest, CopyRequest, CopyDecisionRequest, ManualTradeRequest, CloseRequest, MultiCloseRequest, ModifyPositionRequest, PartialCloseRequest
@@ -705,6 +705,14 @@ def stop_copy():
 @app.get("/copy/status")
 def copy_status():
     return COPY.snapshot()
+
+@app.put("/copy/preferences")
+def copy_preferences(payload: dict = Body(default_factory=dict)):
+    try:
+        preferences = COPY.update_preferences(payload)
+        return {"ok": True, "preferences": preferences, "status": COPY.status}
+    except Exception as exc:
+        bad(exc)
 
 @app.get("/copy/pending")
 def copy_pending():

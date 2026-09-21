@@ -76,7 +76,7 @@ def register_cloud_routes(
     def _token_required_response():
         return jsonify({
             "status": "error",
-            "message": "Connect and verify the exact Deriv API token or Deriv account before starting or saving Cloud Trading.",
+            "message": "Connect and verify a Deriv PAT account before starting or saving Cloud Trading.",
             "requires_token_verification": True,
         }), 400
 
@@ -141,7 +141,7 @@ def register_cloud_routes(
         if hasattr(cloud_manager, "has_session") and not cloud_manager.has_session(username):
             return jsonify({
                 "status": "error",
-                "message": "No saved Cloud session was found for this verified token/account. Start Cloud Bot first.",
+                "message": "No saved Cloud session was found for this verified PAT account. Start Cloud Bot first.",
             }), 404
         status = cloud_manager.start(username, cid, None)
         if callable(ensure_cloud_runtime):
@@ -184,7 +184,7 @@ def register_cloud_routes(
                 "status": "success",
                 "cloud_enabled": False,
                 "running": False,
-                "cloud_status": "Connect the exact Deriv API token/account to verify this Cloud session.",
+                "cloud_status": "Connect and select a Deriv PAT account to verify this Cloud session.",
                 "requires_token_verification": True,
                 "token_verified": False,
                 "settings": {},

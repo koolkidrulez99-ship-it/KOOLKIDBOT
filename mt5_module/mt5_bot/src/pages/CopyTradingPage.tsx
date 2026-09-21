@@ -29,6 +29,8 @@ export default function CopyTradingPage() {
   const [fixedLot, setFixedLot] = useState('0.01');
   const [multiplier, setMultiplier] = useState('1.00');
   const [trailByShoulders, setTrailByShoulders] = useState(false);
+  const [limitCopiedTrades, setLimitCopiedTrades] = useState(false);
+  const [maxCopiedTrades, setMaxCopiedTrades] = useState('1');
   const configDirty = useRef(false);
 
   const workerByLogin = useMemo(() => new Map(accounts.map((account) => [account.login, {
@@ -68,19 +70,29 @@ export default function CopyTradingPage() {
       const configuredSlaves = rows.filter((row) => (accountData.slaves || []).includes(row.account_id)).map((row) => Number(row.login));
       setMaster(configuredMaster ? Number(configuredMaster) : null);
       setSlaves(configuredSlaves);
-      const config = (copyData.config || null) as {
+      const config = (copyData.config || copyData.preferences || null) as {
         lot_mode?: LotMode; fixed_lot?: number; multiplier?: number;
         trail_by_shoulders?: boolean; risk_reward_ratio?: number;
+        limit_copied_trades?: boolean; max_copied_trades_per_slave?: number;
       } | null;
       if (hydrateConfig && !configDirty.current) {
         if (config?.lot_mode) setLotMode(config.lot_mode);
         if (config?.fixed_lot !== undefined) setFixedLot(String(config.fixed_lot));
         if (config?.multiplier !== undefined) setMultiplier(String(config.multiplier));
         setTrailByShoulders(Boolean(config?.trail_by_shoulders));
+        setLimitCopiedTrades(Boolean(config?.limit_copied_trades));
+        if (config?.max_copied_trades_per_slave !== undefined) setMaxCopiedTrades(String(config.max_copied_trades_per_slave));
       }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'The multi-account worker is offline.');
     }
+  };
+
+  const savePreference = (patch: Record<string, unknown>) => {
+    configDirty.current = true;
+    void mt5MultiAccountService.saveCopyPreferences(patch).catch((reason) => {
+      pushToast('error', 'Could not save Copy Trader setting', reason instanceof Error ? reason.message : undefined);
+    });
   };
 
   useEffect(() => { void load(true); }, []);
@@ -134,13 +146,18 @@ export default function CopyTradingPage() {
         multiplier: Math.max(0.01, Number(multiplier) || 1),
         trail_by_shoulders: trailByShoulders,
         risk_reward_ratio: 2,
+        shoulder_timeframe: 'M5',
+        shoulder_strength: 2,
+        shoulder_buffer_points: 5,
+        limit_copied_trades: limitCopiedTrades,
+        max_copied_trades_per_slave: Math.max(1, Math.min(100, Number(maxCopiedTrades) || 1)),
         source_filter: 'all',
         poll_ms: 300,
         approval_required: true,
       });
       configDirty.current = false;
       pushToast('success', 'Copy link established', trailByShoulders
-        ? 'New master trades will ask for approval; copied trades use the master SL with a 1:2 target from the slave fill.'
+        ? 'New master trades will ask for approval; copied trades use a 1:2 target and trail behind confirmed market-structure shoulders.'
         : 'New master trades will ask before any slave order is submitted.');
       await load(true);
     } catch (reason) {
@@ -259,16 +276,32 @@ export default function CopyTradingPage() {
         <Panel className="p-5">
           <div className="flex items-center justify-between gap-3"><div><h3 className="text-sm font-bold text-white">Copy Link</h3><p className="mt-1 text-xs text-slate-500">Slave execution always waits for your confirmation popup.</p></div><Link2 size={19} className={running ? 'text-gain-400' : 'text-slate-600'} /></div>
           <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div><label className="label">Lot mode</label><select className="input" value={lotMode} onChange={(event) => { configDirty.current = true; setLotMode(event.target.value as LotMode); }}><option value="same">Same as master</option><option value="fixed">Fixed lot</option><option value="multiplier">Multiplier</option><option value="equity_proportional">Equity proportional</option></select></div>
-            {lotMode === 'fixed' && <div><label className="label">Fixed slave lot</label><NumberStepper value={fixedLot} onChange={(value) => { configDirty.current = true; setFixedLot(value); }} min={0.01} max={100} step={0.01} decimals={2} /></div>}
-            {lotMode === 'multiplier' && <div><label className="label">Lot multiplier</label><NumberStepper value={multiplier} onChange={(value) => { configDirty.current = true; setMultiplier(value); }} min={0.01} max={100} step={0.01} decimals={2} /></div>}
+            <div><label className="label">Lot mode</label><select className="input" value={lotMode} onChange={(event) => { const value = event.target.value as LotMode; setLotMode(value); savePreference({ lot_mode: value }); }}><option value="same">Same as master</option><option value="fixed">Fixed lot</option><option value="multiplier">Multiplier</option><option value="equity_proportional">Equity proportional</option></select></div>
+            {lotMode === 'fixed' && <div><label className="label">Fixed slave lot</label><NumberStepper value={fixedLot} onChange={(value) => { setFixedLot(value); savePreference({ fixed_lot: Math.max(0.01, Number(value) || 0.01) }); }} min={0.01} max={100} step={0.01} decimals={2} /></div>}
+            {lotMode === 'multiplier' && <div><label className="label">Lot multiplier</label><NumberStepper value={multiplier} onChange={(value) => { setMultiplier(value); savePreference({ multiplier: Math.max(0.01, Number(value) || 1) }); }} min={0.01} max={100} step={0.01} decimals={2} /></div>}
             <div className="flex items-end gap-2"><button className="btn-primary flex-1 justify-center" disabled={busy} onClick={establish}>{busy ? <Spinner size={14} /> : <Link2 size={14} />} Establish Link</button>{running && <button className="btn-danger justify-center" disabled={busy} onClick={stop}>Stop</button>}</div>
             <div className="md:col-span-3 flex items-start justify-between gap-4 rounded-xl border border-white/[0.07] bg-white/[0.025] px-4 py-3">
               <div>
                 <p className="text-[13px] font-semibold text-slate-200">Trail by Shoulders · 1:2</p>
-                <p className="mt-1 text-[11px] leading-relaxed text-slate-500">Use the master trade's protective stop as the copied risk boundary and set each slave's target at 2R from its actual fill. Master SL changes still trail the copy; master TP changes do not replace the 2R target.</p>
+                <p className="mt-1 text-[11px] leading-relaxed text-slate-500">Uses completed M5 candles and confirmed market structure. BUY stops trail below confirmed higher-low shoulders; SELL stops trail above confirmed lower-high shoulders. The stop never loosens, and the copied target stays at 2R.</p>
               </div>
-              <Toggle on={trailByShoulders} onChange={(value) => { configDirty.current = true; setTrailByShoulders(value); }} />
+              <Toggle on={trailByShoulders} onChange={(value) => { setTrailByShoulders(value); savePreference({ trail_by_shoulders: value }); }} />
+            </div>
+            <div className="md:col-span-3 rounded-xl border border-white/[0.07] bg-white/[0.025] px-4 py-3">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-[13px] font-semibold text-slate-200">Limit copied trades per account</p>
+                  <p className="mt-1 text-[11px] leading-relaxed text-slate-500">Off copies every eligible master trade. On gives each slave its own independent open-copy limit.</p>
+                </div>
+                <Toggle on={limitCopiedTrades} onChange={(value) => { setLimitCopiedTrades(value); savePreference({ limit_copied_trades: value }); }} />
+              </div>
+              {limitCopiedTrades && (
+                <div className="mt-3 max-w-xs">
+                  <label className="label">Maximum open copied trades per slave</label>
+                  <NumberStepper value={maxCopiedTrades} onChange={(value) => { const next = String(Math.max(1, Math.min(100, Number(value) || 1))); setMaxCopiedTrades(next); savePreference({ max_copied_trades_per_slave: Number(next) }); }} min={1} max={100} step={1} decimals={0} />
+                  <p className="mt-1 text-[10px] text-slate-600">Example: limit 2 + master opens 6 → each slave copies at most 2. When one closes, the next new master trade can use the free slot.</p>
+                </div>
+              )}
             </div>
           </div>
           <p className="mt-4 flex items-start gap-2 rounded-xl border border-warn-400/20 bg-warn-400/[0.06] px-4 py-3 text-[11px] leading-relaxed text-slate-400"><ShieldCheck size={14} className="mt-0.5 shrink-0 text-warn-400" />Manual, KOOLKID, Auto Trade and EA positions detected on the master create an approval popup before slave orders. The master position itself is never delayed or changed by Copy Trading.</p>

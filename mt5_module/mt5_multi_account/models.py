@@ -25,6 +25,11 @@ class CopyRequest(BaseModel):
     multiplier: float = 1.0
     trail_by_shoulders: bool = False
     risk_reward_ratio: float = 2.0
+    shoulder_timeframe: Literal["M1", "M5", "M15", "M30", "H1"] = "M5"
+    shoulder_strength: int = Field(default=2, ge=1, le=5)
+    shoulder_buffer_points: float = Field(default=5.0, ge=0)
+    limit_copied_trades: bool = False
+    max_copied_trades_per_slave: int = Field(default=1, ge=1, le=100)
     source_filter: Literal["all", "manual", "ea", "magic"] = "all"
     magic_number: Optional[int] = None
     poll_ms: int = 300

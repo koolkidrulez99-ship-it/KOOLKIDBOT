@@ -104,6 +104,7 @@ export const mt5MultiAccountService = {
   connect: (payload: Record<string, unknown>) => multiRequest<MultiAccount>('/accounts/connect', 'POST', payload),
   disconnect: (accountId: string) => multiRequest<{ ok: boolean }>(`/accounts/${encodeURIComponent(accountId)}/disconnect`, 'POST', {}),
   copyStatus: () => multiRequest<Record<string, unknown>>('/copy/status'),
+  saveCopyPreferences: (payload: Record<string, unknown>) => multiRequest<{ ok: boolean; preferences: Record<string, unknown>; status: string }>('/copy/preferences', 'PUT', payload),
   startCopy: (payload: Record<string, unknown>) => multiRequest<Record<string, unknown>>('/copy/start', 'POST', payload),
   stopCopy: () => multiRequest<Record<string, unknown>>('/copy/stop', 'POST', {}),
   pendingCopies: () => multiRequest<{ pending: PendingCopy[] }>('/copy/pending'),
@@ -114,6 +115,9 @@ export const mt5MultiAccountService = {
   }),
   manualTrade: (payload: Record<string, unknown>) => multiRequest<{ results: Record<string, { ok: boolean; result?: unknown; error?: string; timing?: Record<string, number> }> }>('/manual-trade', 'POST', payload, 18000),
   positions: () => multiRequest<{ positions: MultiPosition[]; errors: Record<string, string> }>('/positions'),
+  candles: (accountId: string, symbol: string, timeframe = 'M5', count = 220) => multiRequest<Array<{ time: number; open: number; high: number; low: number; close: number; volume?: number }>>(
+    `/accounts/${encodeURIComponent(accountId)}/candles/${encodeURIComponent(symbol)}?timeframe=${encodeURIComponent(timeframe)}&count=${count}`,
+  ),
   closePosition: (accountId: string, ticket: number) => multiRequest<Record<string, unknown>>('/positions/close', 'POST', { account_id: accountId, ticket }),
   closeMany: (targets: Array<{ account_id: string; ticket: number }>, uiClickedAt = Date.now() / 1000) => multiRequest<Record<string, unknown>>('/positions/close-many', 'POST', { targets, ui_clicked_at: uiClickedAt }),
 };

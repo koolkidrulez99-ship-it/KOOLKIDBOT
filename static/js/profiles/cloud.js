@@ -227,7 +227,7 @@
     updatePresetUI();
     const running = !!status.running;
     setText("cloudRunningBadge", running ? "Running" : "Stopped");
-    setText("cloudTokenBadge", status.token_verified ? "Token verified" : "Token verification needed");
+    setText("cloudTokenBadge", status.token_verified ? "PAT account verified" : "PAT connection needed");
     const badge = byId("cloudRunningBadge");
     if(badge){
       badge.style.background = running ? "rgba(34,197,94,.16)" : "rgba(239,68,68,.14)";
@@ -251,7 +251,7 @@
       `Jamaica time: ${status.jamaica_time || "--:--"} ${status.jamaica_timezone || "EST Jamaica"}`,
       `Time window: ${status.trade_window_label || "Anytime"}`,
       `Cloud ID: ${status.cloud_account_id || status.token_fingerprint || "not verified"}`,
-      `Token: ${status.token_verified ? "verified" : "connect the exact API token/account to view/run Cloud"}`,
+      `PAT account: ${status.token_verified ? "verified" : "connect and select a PAT account to view/run Cloud"}`,
     ];
     setText("cloudStatusText", statusLines.join("\n"));
     setText("cloudDecisionLog", statusLines.concat([

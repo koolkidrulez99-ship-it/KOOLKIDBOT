@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createChart, ColorType, CrosshairMode } from 'lightweight-charts';
-import type { CandlestickData, IChartApi, ISeriesApi, UTCTimestamp } from 'lightweight-charts';
+import type { CandlestickData, IChartApi, IPriceLine, ISeriesApi, UTCTimestamp } from 'lightweight-charts';
 import type { Candle } from '../lib/market';
 import type { Mt5Bot } from '../types';
 import { mt5MarketService } from '../services/mt5MarketService';
@@ -17,6 +17,9 @@ type SetupInfo = {
 };
 
 const QUIET_STAGES = new Set(['', 'SCANNING', 'WAITING_DATA', 'BUILDING_RANGE', 'WAITING_RANGE']);
+
+type SavedChartRange = { from: UTCTimestamp; to: UTCTimestamp };
+const SAVED_VIEWPORTS = new Map<string, SavedChartRange>();
 
 function numberOrUndefined(value: unknown) {
   const parsed = Number(value);
@@ -48,13 +51,18 @@ function setupInfo(bot: Mt5Bot): SetupInfo | null {
   return null;
 }
 
-function SetupChartCanvas({ candles, setup, height }: { candles: Candle[]; setup: SetupInfo; height: number }) {
+function SetupChartCanvas({ candles, setup, height, chartKey }: { candles: Candle[]; setup: SetupInfo; height: number; chartKey: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
+  const priceLinesRef = useRef<IPriceLine[]>([]);
+  const initialSavedRange = SAVED_VIEWPORTS.get(chartKey) || null;
+  const userMovedRef = useRef(Boolean(initialSavedRange));
+  const visibleRangeRef = useRef<SavedChartRange | null>(initialSavedRange);
+  const programmaticRangeRef = useRef(false);
 
   useEffect(() => {
-    if (!ref.current || !candles.length) return;
+    if (!ref.current) return;
     const chart = createChart(ref.current, {
       autoSize: true,
       height,
@@ -69,10 +77,61 @@ function SetupChartCanvas({ candles, setup, height }: { candles: Candle[]; setup
       borderUpColor: '#10b981', borderDownColor: '#f43f5e',
       wickUpColor: 'rgba(16,185,129,0.75)', wickDownColor: 'rgba(244,63,94,0.75)',
     });
+    const rememberRange = () => {
+      if (!userMovedRef.current || programmaticRangeRef.current) return;
+      const range = chart.timeScale().getVisibleRange();
+      if (range) {
+        const saved = { from: range.from as UTCTimestamp, to: range.to as UTCTimestamp };
+        visibleRangeRef.current = saved;
+        SAVED_VIEWPORTS.set(chartKey, saved);
+      }
+    };
+    chart.timeScale().subscribeVisibleTimeRangeChange(rememberRange);
+    chartRef.current = chart;
+    seriesRef.current = series;
+    return () => {
+      if (userMovedRef.current) {
+        const range = chart.timeScale().getVisibleRange();
+        if (range) SAVED_VIEWPORTS.set(chartKey, { from: range.from as UTCTimestamp, to: range.to as UTCTimestamp });
+      }
+      chart.timeScale().unsubscribeVisibleTimeRangeChange(rememberRange);
+      chart.remove();
+      chartRef.current = null;
+      seriesRef.current = null;
+      priceLinesRef.current = [];
+    };
+  }, [chartKey]);
+
+  useEffect(() => {
+    chartRef.current?.applyOptions({ height });
+  }, [height]);
+
+  useEffect(() => {
+    const chart = chartRef.current;
+    const series = seriesRef.current;
+    if (!chart || !series || !candles.length) return;
+    const savedRange = SAVED_VIEWPORTS.get(chartKey)
+      || (userMovedRef.current ? (visibleRangeRef.current || chart.timeScale().getVisibleRange() as SavedChartRange | null) : null);
     const data: CandlestickData<UTCTimestamp>[] = candles.map((c) => ({
       time: c.time as UTCTimestamp, open: c.open, high: c.high, low: c.low, close: c.close,
     }));
+    programmaticRangeRef.current = true;
     series.setData(data);
+    if (savedRange) {
+      const range = { from: savedRange.from as UTCTimestamp, to: savedRange.to as UTCTimestamp };
+      chart.timeScale().setVisibleRange(range);
+      visibleRangeRef.current = range;
+      SAVED_VIEWPORTS.set(chartKey, range);
+      userMovedRef.current = true;
+    } else {
+      chart.timeScale().fitContent();
+    }
+    window.requestAnimationFrame(() => { programmaticRangeRef.current = false; });
+  }, [candles, chartKey]);
+
+  useEffect(() => {
+    const series = seriesRef.current;
+    if (!series || !candles.length) return;
 
     let markerCandle = candles[candles.length - 1];
     if (setup.eventTime) {
@@ -92,20 +151,42 @@ function SetupChartCanvas({ candles, setup, height }: { candles: Candle[]; setup
       size: 1,
     }]);
 
-    if (setup.entry) series.createPriceLine({ price: setup.entry, color: '#5b8cff', lineWidth: 1, axisLabelVisible: true, title: 'Entry' });
-    if (setup.sl) series.createPriceLine({ price: setup.sl, color: '#f43f5e', lineWidth: 1, axisLabelVisible: true, title: 'SL' });
-    if (setup.tp) series.createPriceLine({ price: setup.tp, color: '#10b981', lineWidth: 1, axisLabelVisible: true, title: 'TP' });
-    chart.timeScale().fitContent();
-    chartRef.current = chart;
-    seriesRef.current = series;
-    return () => {
-      chart.remove();
-      chartRef.current = null;
-      seriesRef.current = null;
-    };
-  }, [candles, setup, height]);
+    priceLinesRef.current.forEach((line) => series.removePriceLine(line));
+    priceLinesRef.current = [];
+    if (setup.entry) priceLinesRef.current.push(series.createPriceLine({ price: setup.entry, color: '#5b8cff', lineWidth: 1, axisLabelVisible: true, title: 'Entry' }));
+    if (setup.sl) priceLinesRef.current.push(series.createPriceLine({ price: setup.sl, color: '#f43f5e', lineWidth: 1, axisLabelVisible: true, title: 'SL' }));
+    if (setup.tp) priceLinesRef.current.push(series.createPriceLine({ price: setup.tp, color: '#10b981', lineWidth: 1, axisLabelVisible: true, title: 'TP' }));
+  }, [candles, setup]);
 
-  return <div ref={ref} className="w-full" style={{ height }} />;
+  const rememberUserView = () => {
+    userMovedRef.current = true;
+    const range = chartRef.current?.timeScale().getVisibleRange();
+    if (range) {
+      const saved = { from: range.from as UTCTimestamp, to: range.to as UTCTimestamp };
+      visibleRangeRef.current = saved;
+      SAVED_VIEWPORTS.set(chartKey, saved);
+    }
+  };
+
+  const resetView = () => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    SAVED_VIEWPORTS.delete(chartKey);
+    visibleRangeRef.current = null;
+    userMovedRef.current = false;
+    programmaticRangeRef.current = true;
+    chart.timeScale().fitContent();
+    window.requestAnimationFrame(() => { programmaticRangeRef.current = false; });
+  };
+
+  return (
+    <div className="relative w-full">
+      <div ref={ref} className="w-full" style={{ height }} onPointerDown={rememberUserView} onWheel={rememberUserView} />
+      <button type="button" className="absolute right-2 top-2 rounded-md border border-white/[0.08] bg-black/55 px-2 py-1 text-[9px] text-slate-300 hover:text-white" onClick={resetView}>
+        Latest
+      </button>
+    </div>
+  );
 }
 
 export default function BotSetupPreview({ bot }: { bot: Mt5Bot }) {
@@ -129,21 +210,18 @@ export default function BotSetupPreview({ bot }: { bot: Mt5Bot }) {
 
   return (
     <>
-      <button
-        type="button"
-        onClick={() => setExpanded(true)}
-        className="mt-4 w-full overflow-hidden rounded-xl border border-white/[0.07] bg-black/20 text-left transition hover:border-brand-400/30 hover:bg-black/25"
-        title="Open larger setup chart"
-      >
+      <div className="mt-4 w-full overflow-hidden rounded-xl border border-white/[0.07] bg-black/20">
         <div className="flex items-center justify-between gap-3 px-3 py-2 border-b border-white/[0.06]">
           <div>
             <p className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold">Latest setup</p>
             <p className="text-[11px] text-slate-300">{bot.symbol} · {bot.timeframe} · {setup.label}</p>
           </div>
-          <span className="text-[10px] text-brand-300">Click to enlarge</span>
+          <button type="button" onClick={() => setExpanded(true)} className="text-[10px] text-brand-300 hover:text-brand-200">
+            Open larger chart
+          </button>
         </div>
-        <SetupChartCanvas candles={candles} setup={setup} height={155} />
-      </button>
+        <SetupChartCanvas candles={candles} setup={setup} height={155} chartKey={`bot-${bot.id}-compact`} />
+      </div>
 
       <Modal
         open={expanded}
@@ -153,7 +231,7 @@ export default function BotSetupPreview({ bot }: { bot: Mt5Bot }) {
         wide
       >
         <div className="rounded-xl border border-white/[0.07] bg-black/20 overflow-hidden">
-          <SetupChartCanvas candles={candles} setup={setup} height={460} />
+          <SetupChartCanvas candles={candles} setup={setup} height={460} chartKey={`bot-${bot.id}-expanded`} />
         </div>
         <div className="mt-3 flex flex-wrap gap-2 text-[10px] text-slate-500">
           {setup.direction && <span className="chip">{setup.direction}</span>}

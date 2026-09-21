@@ -110,6 +110,14 @@ from strategies.higher_lower_predictor import predict_higher_lower_percentages
 from strategies.hybrid import analyze_hybrid_market_state, build_hybrid_trade_plan, get_hybrid_market
 from strategies.market_moment import infer_simulation_winner, score_market_moment
 from strategies.martha_ai_guard import evaluate_martha_auto_signal, normalize_martha_settings
+from strategies.martha_self_heal import (
+    ensure_martha_health,
+    martha_cooldown_ready,
+    martha_health_snapshot,
+    record_martha_event,
+    record_martha_failure,
+    record_martha_success,
+)
 from strategies.primordial_blue import (
     analyze_primordial_blue_market_state,
     build_primordial_blue_trade_plan,
@@ -1135,6 +1143,62 @@ def _build_digit_proposal_payload(req_id, deriv_contract, stake, symbol, barrier
     }
 
 
+def _martha_self_heal_enabled(state):
+    return bool(isinstance(state, dict) and (state.get("martha_ai") or {}).get("enabled"))
+
+
+def _martha_audit(client_id, state, event, *, issue="", action="", details=None):
+    row = record_martha_event(
+        state,
+        event,
+        issue=issue,
+        action=action,
+        details=details,
+    )
+    logger.info(
+        "[%s] martha_self_heal event=%s issue=%s action=%s details=%s",
+        client_id,
+        row.get("event"),
+        row.get("issue"),
+        row.get("action"),
+        row.get("details"),
+    )
+    return row
+
+
+def _martha_failure(client_id, state, issue, *, action="", details=None, recovery_action=""):
+    health = record_martha_failure(state, issue, action=action, details=details)
+    logger.warning(
+        "[%s] martha_self_heal_failure issue=%s failures=%s/%s safe_stopped=%s",
+        client_id,
+        issue,
+        health.get("consecutive_failures"),
+        health.get("max_failures"),
+        health.get("safe_stopped"),
+    )
+    if health.get("safe_stopped"):
+        try:
+            profile = str((details or {}).get("profile") or state.get("active_profile") or "").upper()
+            strategy = (state.get("strategies") or {}).get(profile)
+            if strategy is not None and hasattr(strategy, "auto_trade"):
+                strategy.auto_trade = False
+        except Exception:
+            pass
+    emitted_action = recovery_action or ("safe_stop_automation" if health.get("safe_stopped") else "")
+    if emitted_action:
+        socketio.emit("martha_ai_recovery", {
+            "action": emitted_action,
+            "issue": issue,
+            "safe_stop": bool(health.get("safe_stopped")),
+            "message": (
+                "Martha stopped this automation after repeated recovery failures."
+                if health.get("safe_stopped")
+                else "Martha cleared a stalled trade request safely."
+            ),
+        }, room=client_id)
+    return health
+
+
 def _request_digit_proposal_for_buy(client_id, state, payload, timeout_sec=5.0):
     ws = state.get("ws") if isinstance(state, dict) else None
     if not ws:
@@ -1142,40 +1206,84 @@ def _request_digit_proposal_for_buy(client_id, state, payload, timeout_sec=5.0):
     rate_limit_msg = _proposal_rate_limit_wait_message(state)
     if rate_limit_msg:
         return None, rate_limit_msg
-    payload = _proposal_payload_for_connection(state, payload)
-    req_id = payload.get("req_id")
-    waiter = {"event": threading.Event(), "proposal": None, "error": None}
-    waiters = state.setdefault("_proposal_waiters", {})
-    waiters[req_id] = waiter
-    waiters[str(req_id)] = waiter
-    logger.info(
-        "[%s] TEMP proposal_about_to_be_sent token_type=%s payload=%s",
-        client_id,
-        _deriv_connection_type(state),
-        _safe_deriv_payload_text(payload),
-    )
-    try:
-        ws.send(json.dumps(payload))
-        logger.info("[%s] TEMP proposal_actually_sent req_id=%s token_type=%s", client_id, req_id, _deriv_connection_type(state))
-    except Exception as exc:
+    base_payload = _proposal_payload_for_connection(state, payload)
+    original_req_id = base_payload.get("req_id")
+    max_attempts = 2 if _martha_self_heal_enabled(state) else 1
+    last_error = "Proposal timeout"
+
+    for attempt in range(max_attempts):
+        request_payload = dict(base_payload)
+        req_id = original_req_id if attempt == 0 else _new_req_id()
+        request_payload["req_id"] = req_id
+        waiter = {
+            "event": threading.Event(),
+            "proposal": None,
+            "error": None,
+            "created_at": time.time(),
+            "attempt": attempt + 1,
+        }
+        waiters = state.setdefault("_proposal_waiters", {})
+        waiters[req_id] = waiter
+        waiters[str(req_id)] = waiter
+        logger.info(
+            "[%s] TEMP proposal_about_to_be_sent token_type=%s payload=%s",
+            client_id,
+            _deriv_connection_type(state),
+            _safe_deriv_payload_text(request_payload),
+        )
+        try:
+            ws.send(json.dumps(request_payload))
+            logger.info("[%s] TEMP proposal_actually_sent req_id=%s token_type=%s", client_id, req_id, _deriv_connection_type(state))
+        except Exception as exc:
+            waiters.pop(req_id, None)
+            waiters.pop(str(req_id), None)
+            last_error = str(exc)
+            break
+        if not waiter["event"].wait(max(0.40, float(timeout_sec))):
+            waiters.pop(req_id, None)
+            waiters.pop(str(req_id), None)
+            last_error = "Proposal timeout"
+            if attempt + 1 < max_attempts:
+                _martha_audit(
+                    client_id,
+                    state,
+                    "proposal_retry",
+                    issue="proposal_timeout",
+                    action="retry_with_fresh_request_id",
+                    details={"attempt": attempt + 1},
+                )
+                continue
+            break
         waiters.pop(req_id, None)
         waiters.pop(str(req_id), None)
-        return None, str(exc)
-    if not waiter["event"].wait(max(0.40, float(timeout_sec))):
-        waiters.pop(req_id, None)
-        waiters.pop(str(req_id), None)
-        return None, "Proposal timeout"
-    waiters.pop(req_id, None)
-    waiters.pop(str(req_id), None)
-    if waiter.get("error"):
-        err_payload = waiter.get("error")
-        _mark_proposal_rate_limited(state, err_payload)
-        return None, _friendly_proposal_error_message(err_payload)
-    proposal = waiter.get("proposal") or {}
-    proposal_id = proposal.get("id")
-    if proposal_id in (None, ""):
-        return None, "Proposal id missing"
-    return proposal, None
+        if waiter.get("error"):
+            err_payload = waiter.get("error")
+            _mark_proposal_rate_limited(state, err_payload)
+            return None, _friendly_proposal_error_message(err_payload)
+        proposal = waiter.get("proposal") or {}
+        proposal_id = proposal.get("id")
+        if proposal_id in (None, ""):
+            return None, "Proposal id missing"
+        if _martha_self_heal_enabled(state) and (
+            attempt > 0 or int(ensure_martha_health(state).get("consecutive_failures") or 0) > 0
+        ):
+            record_martha_success(
+                state,
+                "proposal_retry_succeeded" if attempt > 0 else "proposal_flow_healthy",
+                details={"attempt": attempt + 1},
+            )
+        return proposal, None
+
+    if _martha_self_heal_enabled(state) and last_error == "Proposal timeout":
+        _martha_failure(
+            client_id,
+            state,
+            "proposal_timeout",
+            action="fresh_request_retry_exhausted",
+            details={"attempts": max_attempts},
+            recovery_action="clear_koolkid_martingale_pending",
+        )
+    return None, last_error
 
 
 def _send_buy_from_proposal(client_id, state, req_id, proposal, stake):
@@ -4011,6 +4119,7 @@ def _build_default_client_state():
             "status": "Ready",
         },
         "martha_ai": normalize_martha_settings({}),
+        "martha_self_heal": ensure_martha_health({}),
         "balance": 0.0,
         "last_live_balance": 0.0,
         "last_known_trade_balance": 0.0,
@@ -4032,6 +4141,7 @@ def _build_default_client_state():
             "base_stake": 1.0,
             "current_stake": 1.0,
             "pending_buy": False,
+            "proposal_dispatching": False,
             "open_contract_id": "",
             "entry_tick_seq": 0,
             "close_requested": False,
@@ -4172,6 +4282,23 @@ def _ensure_cloud_runtime_for_state(source_state, cloud_key, status=None):
             logger.exception("cloud_single_session_cleanup_failed owner=%s", owner)
     runtime_cid = _cloud_runtime_client_id(cloud_key)
     runtime = clients.get(runtime_cid)
+    source_token_type = str(source_state.get("api_token_type") or "legacy").strip().lower()
+    if source_token_type not in ("legacy", "oauth", "pat"):
+        source_token_type = "legacy"
+    selected_account_id = str(source_state.get("deriv_account_id") or DERIV_ACCOUNT_ID or "").strip()
+    if isinstance(runtime, dict):
+        runtime_identity_changed = bool(
+            str(runtime.get("api_token") or "").strip() != token
+            or str(runtime.get("api_token_type") or "legacy").strip().lower() != source_token_type
+            or str(runtime.get("deriv_account_id") or "").strip() != selected_account_id
+        )
+        if runtime_identity_changed:
+            try:
+                _cleanup_client_runtime(runtime_cid, runtime, reason="cloud_pat_identity_changed")
+            except Exception:
+                logger.exception("[%s] cloud_runtime_identity_cleanup_failed", runtime_cid)
+            runtime = None
+            clients.pop(runtime_cid, None)
     if not isinstance(runtime, dict):
         runtime = _build_default_client_state()
         clients[runtime_cid] = runtime
@@ -4188,11 +4315,13 @@ def _ensure_cloud_runtime_for_state(source_state, cloud_key, status=None):
         "current_symbol": current_market,
         "human_symbol": current_market,
         "api_token": token,
-        "api_token_type": "oauth" if str(source_state.get("api_token_type") or "").lower() == "oauth" else "legacy",
-        "deriv_account_id": source_state.get("deriv_account_id") or DERIV_ACCOUNT_ID,
+        # Preserve PAT/OAuth identity so the background runtime obtains a fresh
+        # account OTP URL instead of attempting legacy {authorize: token}.
+        "api_token_type": source_token_type,
+        "deriv_account_id": selected_account_id,
         "options_account_id": source_state.get("options_account_id") or "",
         "oauth_options_account_id": source_state.get("oauth_options_account_id") or "",
-        "deriv_app_id": source_state.get("deriv_app_id") or DERIV_APP_ID,
+        "deriv_app_id": source_state.get("deriv_app_id") or (DERIV_PAT_APP_ID if source_token_type == "pat" else DERIV_APP_ID),
         "last_seen": time.time(),
     })
     runtime.setdefault("strategies", {})["CLOUD"] = runtime.setdefault("strategies", {}).get("CLOUD") or CloudProfileStrategy()
@@ -4536,7 +4665,7 @@ def emit_profile_snapshot(cid):
             socketio.emit("human_rf_status", strat.get_human_rf_payload(), room=cid)
         if prof == "CLOUD":
             cloud_key = _cloud_key_for_state(state)
-            socketio.emit("cloud_under9_status", cloud_manager.status(cloud_key) if cloud_key else {"status": "success", "running": False, "cloud_status": "Connect the exact Deriv API token to verify this Cloud session.", "requires_token_verification": True}, room=cid)
+            socketio.emit("cloud_under9_status", cloud_manager.status(cloud_key) if cloud_key else {"status": "success", "running": False, "cloud_status": "Connect and select a Deriv PAT account to verify this Cloud session.", "requires_token_verification": True}, room=cid)
     except Exception:
         pass
 
@@ -5225,6 +5354,9 @@ def _capture_koolkid_martingale_runtime(state, payload):
         "recovery_active": bool(data.get("recovery_active")),
         "cycle_attempt": cycle_attempt,
         "logical_round_id": str(data.get("logical_round_id") or ""),
+        "phase": "requesting",
+        "updated_at": time.time(),
+        "contract_ids": [],
     }
 
 
@@ -6794,6 +6926,12 @@ def _execute_auto_session_plan(client_id, state, plan):
                     mode=action.get("mode"),
                 )
             else:
+                action_duration = action.get("duration", 1)
+                if str(action.get("profile") or "").upper().strip() == "KOOLKID":
+                    try:
+                        action_duration = max(2, int(float(action_duration or 2)))
+                    except Exception:
+                        action_duration = 2
                 ok, msg = send_buy_with_profile(
                     client_id,
                     action.get("profile"),
@@ -6801,7 +6939,7 @@ def _execute_auto_session_plan(client_id, state, plan):
                     action.get("stake"),
                     action.get("symbol"),
                     action.get("barrier"),
-                    duration=action.get("duration", 1),
+                    duration=action_duration,
                     duration_unit=action.get("duration_unit", "t"),
                     mode=action.get("mode"),
                 )
@@ -18753,6 +18891,7 @@ def _ensure_human_koolkid_profit_state(state):
         "base_stake": 1.0,
         "current_stake": 1.0,
         "pending_buy": False,
+        "proposal_dispatching": False,
         "open_contract_id": "",
         "entry_tick_seq": 0,
         "close_requested": False,
@@ -18931,6 +19070,31 @@ def _send_human_koolkid_profit_buy(client_id, state):
         return False, str(exc)
 
 
+def _queue_human_koolkid_profit_buy(client_id, state):
+    runtime = _ensure_human_koolkid_profit_state(state)
+    if (
+        not runtime.get("enabled")
+        or runtime.get("pending_buy")
+        or runtime.get("open_contract_id")
+        or runtime.get("proposal_dispatching")
+    ):
+        return False
+    runtime["proposal_dispatching"] = True
+
+    def _worker():
+        try:
+            _send_human_koolkid_profit_buy(client_id, state)
+        finally:
+            runtime["proposal_dispatching"] = False
+            _emit_human_koolkid_profit_status(client_id, state)
+
+    try:
+        socketio.start_background_task(_worker)
+    except Exception:
+        threading.Thread(target=_worker, daemon=True).start()
+    return True
+
+
 def _human_koolkid_profit_buy_confirmed(client_id, state, contract_id, meta):
     if str((meta or {}).get("mode") or "").upper() != "HUMAN_KOOLKID_PROFIT":
         return
@@ -18974,7 +19138,7 @@ def _maybe_human_koolkid_profit_on_tick(client_id, state):
         _emit_human_koolkid_profit_status(client_id, state)
         return
     if runtime.get("enabled") and not runtime.get("pending_buy"):
-        _send_human_koolkid_profit_buy(client_id, state)
+        _queue_human_koolkid_profit_buy(client_id, state)
 
 
 def _settle_human_koolkid_profit(state, contract, meta, profit):
@@ -19034,6 +19198,16 @@ def _send_cloud_accumulator_buy(client_id, *, stake, symbol, growth_rate, signal
         return False, "Accumulator stake must be greater than zero"
     growth_rate = max(0.01, min(0.05, float(growth_rate or 0.05)))
     hold_ticks = max(1, min(50, int(hold_ticks or 2)))
+    requested_symbol = str(symbol or "").strip()
+    if _uses_new_deriv_trade_api(state):
+        symbol, symbol_err = resolve_new_api_symbol(
+            state,
+            requested_symbol,
+            context="CLOUD KOOLKID PROFIT",
+            client_id=client_id,
+        )
+        if symbol_err:
+            return False, symbol_err
     req_id = _new_req_id()
     meta = {
         "profile": "CLOUD",
@@ -19042,7 +19216,7 @@ def _send_cloud_accumulator_buy(client_id, *, stake, symbol, growth_rate, signal
         "deriv_contract_type": "ACCU",
         "barrier": None,
         "stake": stake,
-        "symbol": symbol,
+        "symbol": requested_symbol,
         "underlying_symbol": symbol,
         "time": now_time(),
         "mode": "CLOUD_KOOLKID_PROFIT",
@@ -19057,20 +19231,46 @@ def _send_cloud_accumulator_buy(client_id, *, stake, symbol, growth_rate, signal
     }
     state.setdefault("req_meta", {})[req_id] = meta
     _stamp_trade_latency(meta, "buy_send")
+    parameters = {
+        "amount": stake,
+        "basis": "stake",
+        "contract_type": "ACCU",
+        "currency": str(state.get("currency") or "USD"),
+        "growth_rate": growth_rate,
+        "symbol": symbol,
+    }
     payload = {
         "req_id": req_id,
         "buy": 1,
         "price": stake,
-        "parameters": {
-            "amount": stake,
-            "basis": "stake",
-            "contract_type": "ACCU",
-            "currency": str(state.get("currency") or "USD"),
-            "growth_rate": growth_rate,
-            "symbol": symbol,
-        },
+        "parameters": parameters,
     }
     try:
+        if _uses_new_deriv_trade_api(state):
+            proposal_payload = _proposal_payload_for_connection(
+                state,
+                {"proposal": 1, "req_id": req_id, **parameters},
+            )
+            proposal, proposal_err = _request_digit_proposal_for_buy(
+                client_id,
+                state,
+                proposal_payload,
+                timeout_sec=5.0,
+            )
+            if proposal_err:
+                raise ValueError(_friendly_proposal_error_message(proposal_err))
+            proposal_id = (proposal or {}).get("id")
+            if proposal_id in (None, ""):
+                raise ValueError("Deriv returned no proposal ID for the Cloud accumulator trade")
+            ask_price = _safe_float(
+                (proposal or {}).get("ask_price"),
+                _safe_float((proposal or {}).get("display_value"), stake),
+            )
+            payload = {
+                "req_id": req_id,
+                "buy": proposal_id,
+                "price": float(ask_price if ask_price is not None else stake),
+            }
         ws.send(json.dumps(payload))
         return True, "KOOLKID PROFIT accumulator sent"
     except Exception as exc:
@@ -19132,44 +19332,51 @@ def _handle_cloud_under9_action(client_id, state, action):
         duration_unit,
     )
     is_accumulator = str(intent.get("deriv_contract_type") or intent.get("contract_type") or "").upper() == "ACCU"
-    if is_accumulator:
-        ok, msg = _send_cloud_accumulator_buy(
-            client_id,
-            stake=stake,
-            symbol=symbol,
-            growth_rate=float(intent.get("growth_rate") or 0.05),
-            signal_id=signal_id,
-            hold_ticks=int(intent.get("hold_ticks") or 2),
-        )
-    else:
-        ok, msg = send_buy_with_profile(
-            client_id,
-            "CLOUD",
-            "UNDER",
-            stake,
-            symbol,
-            9,
-            duration=duration,
-            duration_unit=duration_unit,
-            mode="CLOUD_UNDER9",
-            emit_balance_after_send=False,
-            extra_meta={
-                "strategy_name": "Cloud Under 9",
-                "cloud_signal_id": signal_id,
-                "cloud_strategy": "under9_reinvest",
-                "button": "Cloud Under 9",
-            },
-        )
-    if ok:
-        cloud_manager.mark_trade_sent(username, signal_id)
-        logger.info("[%s] cloud_under9_trade_placed signal_id=%s", client_id, signal_id)
-    else:
-        cloud_manager.mark_trade_failed(username, msg)
-        logger.warning("[%s] cloud_under9_trade_failed signal_id=%s message=%s", client_id, signal_id, msg)
+
+    def _execute_cloud_trade():
+        if is_accumulator:
+            ok, msg = _send_cloud_accumulator_buy(
+                client_id,
+                stake=stake,
+                symbol=symbol,
+                growth_rate=float(intent.get("growth_rate") or 0.05),
+                signal_id=signal_id,
+                hold_ticks=int(intent.get("hold_ticks") or 2),
+            )
+        else:
+            ok, msg = send_buy_with_profile(
+                client_id,
+                "CLOUD",
+                "UNDER",
+                stake,
+                symbol,
+                9,
+                duration=duration,
+                duration_unit=duration_unit,
+                mode="CLOUD_UNDER9",
+                emit_balance_after_send=False,
+                extra_meta={
+                    "strategy_name": "Cloud Under 9",
+                    "cloud_signal_id": signal_id,
+                    "cloud_strategy": "under9_reinvest",
+                    "button": "Cloud Under 9",
+                },
+            )
+        if ok:
+            cloud_manager.mark_trade_sent(username, signal_id)
+            logger.info("[%s] cloud_under9_trade_placed signal_id=%s", client_id, signal_id)
+        else:
+            cloud_manager.mark_trade_failed(username, msg)
+            logger.warning("[%s] cloud_under9_trade_failed signal_id=%s message=%s", client_id, signal_id, msg)
+        try:
+            socketio.emit("cloud_under9_status", cloud_manager.status(username), room=client_id)
+        except Exception:
+            pass
+
     try:
-        socketio.emit("cloud_under9_status", cloud_manager.status(username), room=client_id)
+        socketio.start_background_task(_execute_cloud_trade)
     except Exception:
-        pass
+        threading.Thread(target=_execute_cloud_trade, daemon=True).start()
 
 
 def _get_tick_stream_health(client_id, state, *, self_heal=False, allow_reconnect=True):
@@ -20903,7 +21110,10 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 auto_digit = extract_last_decimal_digit(quote, pip_size)
                 auto_plan = process_auto_session_tick(state, tick, auto_digit)
                 if auto_plan:
-                    _execute_auto_session_plan(client_id, state, auto_plan)
+                    try:
+                        socketio.start_background_task(_execute_auto_session_plan, client_id, state, auto_plan)
+                    except Exception:
+                        threading.Thread(target=_execute_auto_session_plan, args=(client_id, state, auto_plan), daemon=True).start()
             except Exception:
                 pass
             # ==================== PATCH 1E: hook process_seqvix_tick ====================
@@ -20949,6 +21159,21 @@ def handle_on_message(client_id, ws, message, expected_nonce):
                 norm_contract_id = _normalize_contract_id(contract_id)
                 if norm_contract_id:
                     state["contract_meta"][norm_contract_id] = meta
+                try:
+                    runtime = state.get("koolkid_martingale_runtime") or {}
+                    if (
+                        str(meta.get("profile") or "").upper() == "KOOLKID"
+                        and str(meta.get("mode") or "").lower().startswith("koolkid_single_martingale")
+                        and str(runtime.get("logical_round_id") or "") == str(meta.get("logical_round_id") or "")
+                    ):
+                        contract_ids = runtime.setdefault("contract_ids", [])
+                        normalized_id = _normalize_contract_id(contract_id)
+                        if normalized_id and normalized_id not in contract_ids:
+                            contract_ids.append(normalized_id)
+                        runtime["phase"] = "open"
+                        runtime["updated_at"] = time.time()
+                except Exception:
+                    pass
                 is_auto_session_contract = str((meta or {}).get("mode") or "").startswith("AUTO_SESSION|")
                 duration_val = None
                 duration_unit_val = _clean_unchain_duration_unit(meta.get("duration_unit", "t"))
@@ -21625,6 +21850,18 @@ def process_contract(client_id, contract):
             return
 
         meta = _pull_contract_meta(state, contract_id) if contract_id is not None else None
+        try:
+            runtime = state.get("koolkid_martingale_runtime") or {}
+            if (
+                isinstance(meta, dict)
+                and str(meta.get("profile") or "").upper() == "KOOLKID"
+                and str(meta.get("mode") or "").lower().startswith("koolkid_single_martingale")
+                and str(runtime.get("logical_round_id") or "") == str(meta.get("logical_round_id") or "")
+            ):
+                runtime["phase"] = "settling"
+                runtime["updated_at"] = time.time()
+        except Exception:
+            pass
         if _is_human_profile_meta(meta):
             profit = _resolve_human_contract_profit(contract, meta)
         else:
@@ -23181,6 +23418,19 @@ def martha_ai_emergency_reconnect():
     }), status_code
 
 
+@app.route("/martha_ai/health", methods=["GET"])
+def martha_ai_health():
+    if not login_required():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    _cid, state = get_client_state()
+    return jsonify({
+        "status": "success",
+        "enabled": _martha_self_heal_enabled(state),
+        "health": martha_health_snapshot(state),
+    })
+
+
 @app.route("/clear_profile_history", methods=["POST"])
 def clear_profile_history():
     if not login_required():
@@ -23283,7 +23533,7 @@ def set_profile():
     cloud_status = None
     if profile == "CLOUD":
         cloud_key = _cloud_key_for_state(state)
-        cloud_status = cloud_manager.status(cloud_key) if cloud_key else {"current_market": "", "running": False, "cloud_status": "Connect the exact Deriv API token to verify this Cloud session.", "requires_token_verification": True}
+        cloud_status = cloud_manager.status(cloud_key) if cloud_key else {"current_market": "", "running": False, "cloud_status": "Connect and select a Deriv PAT account to verify this Cloud session.", "requires_token_verification": True}
         if cloud_key:
             _ensure_tick_subscription(state, cloud_status.get("current_market") or state.get("current_symbol"), reason="cloud_profile", client_id=cid)
     elif profile == "HUMAN":
@@ -26875,6 +27125,146 @@ def _run_websocket_health_check(client_id, state, now_ts=None):
     return bool(_schedule_ws_reconnect(client_id, state.get("ws_nonce"), delay_sec=delay))
 
 
+def _run_martha_self_heal_check(client_id, state, now_ts=None):
+    """Repair deterministic runtime stalls without inventing or duplicating trades."""
+    if not _martha_self_heal_enabled(state):
+        return {"enabled": False, "actions": []}
+
+    now_ts = float(now_ts if now_ts is not None else time.time())
+    health = ensure_martha_health(state)
+    health["last_check_at"] = now_ts
+    actions = []
+
+    # A waiter older than the complete proposal retry window is orphaned. Wake
+    # its caller with an error; never submit a buy from the watchdog.
+    waiters = state.get("_proposal_waiters") or {}
+    seen_waiters = set()
+    for key, waiter in list(waiters.items()):
+        if not isinstance(waiter, dict) or id(waiter) in seen_waiters:
+            continue
+        seen_waiters.add(id(waiter))
+        created_at = float(waiter.get("created_at", 0.0) or 0.0)
+        if not created_at or (now_ts - created_at) < 15.0:
+            continue
+        waiter["error"] = {"message": "Proposal waiter expired"}
+        event = waiter.get("event")
+        if event:
+            event.set()
+        for alias, candidate in list(waiters.items()):
+            if candidate is waiter:
+                waiters.pop(alias, None)
+        actions.append("expired_proposal_waiter")
+        _martha_failure(
+            client_id,
+            state,
+            "orphaned_proposal_waiter",
+            action="expired_waiter_released",
+            recovery_action="clear_koolkid_martingale_pending",
+        )
+
+    # Remove timer references only after their threads have finished. Active
+    # auto-close timers remain untouched.
+    timers = state.get("bot_auto_close_timers") or {}
+    for contract_id, timer in list(timers.items()):
+        try:
+            alive = bool(timer and timer.is_alive())
+        except Exception:
+            alive = False
+        if not alive:
+            timers.pop(contract_id, None)
+            actions.append("removed_finished_timer")
+
+    # If an open contract has stopped producing settlement events, request the
+    # same contract again. This is reconciliation only and can never buy twice.
+    if state.get("ws_connected") and state.get("ws"):
+        seen_contracts = set()
+        monotonic_now = _trade_latency_now()
+        for raw_contract_id, meta in list((state.get("contract_meta") or {}).items()):
+            contract_id = _normalize_contract_id(raw_contract_id)
+            if not contract_id or contract_id in seen_contracts or not isinstance(meta, dict):
+                continue
+            seen_contracts.add(contract_id)
+            buy_confirm_at = float((meta.get("_latency") or {}).get("buy_confirm", 0.0) or 0.0)
+            try:
+                duration_value = max(1, int(float(meta.get("duration") or 1)))
+            except Exception:
+                duration_value = 1
+            duration_unit = str(meta.get("duration_unit") or "t").lower()
+            if duration_unit == "s":
+                settlement_grace = duration_value + 6.0
+            elif duration_unit == "m":
+                settlement_grace = (duration_value * 60.0) + 10.0
+            elif duration_unit == "h":
+                settlement_grace = (duration_value * 3600.0) + 30.0
+            else:
+                settlement_grace = max(12.0, (duration_value * 3.0) + 5.0)
+            if not buy_confirm_at or (monotonic_now - buy_confirm_at) < settlement_grace:
+                continue
+            cooldown_key = f"settlement_refresh:{contract_id}"
+            if not martha_cooldown_ready(state, cooldown_key, 15.0, now=now_ts):
+                continue
+            payload = {"proposal_open_contract": 1, "contract_id": int(contract_id) if contract_id.isdigit() else contract_id}
+            if contract_id not in _get_open_contract_sub_map(state):
+                payload["subscribe"] = 1
+            try:
+                state["ws"].send(json.dumps(payload))
+                actions.append("refreshed_missing_settlement")
+                _martha_audit(
+                    client_id,
+                    state,
+                    "settlement_refresh",
+                    issue="missing_settlement_update",
+                    action="proposal_open_contract_refresh",
+                    details={"contract_id": contract_id},
+                )
+                if int(ensure_martha_health(state).get("consecutive_failures") or 0) > 0:
+                    record_martha_success(
+                        state,
+                        "settlement_refresh_succeeded",
+                        details={"contract_id": contract_id},
+                    )
+            except Exception as exc:
+                _martha_failure(
+                    client_id,
+                    state,
+                    "settlement_refresh_failed",
+                    action="websocket_recovery_requested",
+                    details={"contract_id": contract_id, "error": str(exc)[:160]},
+                )
+
+    runtime = state.get("koolkid_martingale_runtime") or {}
+    runtime_updated = float(runtime.get("updated_at", 0.0) or 0.0)
+    if (
+        runtime.get("phase") == "requesting"
+        and runtime_updated
+        and (now_ts - runtime_updated) >= 20.0
+        and martha_cooldown_ready(state, "koolkid_stale_request", 20.0, now=now_ts)
+    ):
+        runtime["phase"] = "recovered"
+        runtime["updated_at"] = now_ts
+        actions.append("cleared_stale_koolkid_request")
+        _martha_failure(
+            client_id,
+            state,
+            "koolkid_martingale_request_stalled",
+            action="frontend_pending_state_release",
+            details={"logical_round_id": runtime.get("logical_round_id") or ""},
+            recovery_action="clear_koolkid_martingale_pending",
+        )
+
+    if not state.get("ws_connected"):
+        if martha_cooldown_ready(state, "websocket_recovery", 10.0, now=now_ts):
+            actions.append("websocket_recovery")
+            _martha_audit(
+                client_id,
+                state,
+                "websocket_recovery",
+                issue="websocket_interrupted",
+                action="existing_reconnect_manager",
+            )
+    return {"enabled": True, "actions": actions, "health": martha_health_snapshot(state)}
+
+
 def websocket_health_sweeper():
     """Keep authenticated Deriv transports and their required tick streams healthy."""
     while True:
@@ -26882,6 +27272,7 @@ def websocket_health_sweeper():
         for client_id, state in list(clients.items()):
             try:
                 _run_websocket_health_check(client_id, state)
+                _run_martha_self_heal_check(client_id, state)
             except Exception:
                 logger.exception("[%s] websocket_health_sweeper_failed", client_id)
 

@@ -36,7 +36,7 @@ import ai_auto_select
 import mq5_compiler
 import backtest_manager
 import journal_manager
-from store import bot_library_revision, default_risk, read_state, remove_profile, update_state, upsert_profile
+from store import bot_library_revision, default_risk, read_state, remove_profile, resolve_system_ea_file, update_state, upsert_profile
 from ai_trial import clear_snapshot as clear_ai_trial_snapshot, load_snapshot as load_ai_trial_snapshot, save_snapshot as save_ai_trial_snapshot, run_human_apostle_trial
 
 app = FastAPI(title="KOOLKID Local MT5 Bridge", version="1.0.0")
@@ -1980,48 +1980,33 @@ def _overview_chart_series(
     if not live_accounts:
         return [], daily
 
-    history_floor = min(daily_days) if daily_days else today
-    account_floors: list[str] = []
+    curve_days = sorted(set(daily_days + [today]))
+
+    # Reconstruct continuous trend lines backwards from the live MT5 values.
+    # When a demo reset/funding event makes one backward step impossible, hold
+    # that series flat for the discontinuity instead of deleting the entire
+    # earlier curve. The latest point remains the authoritative live value.
+    account_curves: dict[int, dict[str, tuple[float, float]]] = {}
     for account in live_accounts:
         login = int(account.get("login") or 0)
         current_balance = float(account.get("balance") or 0)
-        account_days = sorted(daily_by_login.get(login, {}), reverse=True)
-        floor = history_floor if not account_days else today
-        for day in account_days:
-            previous_balance = current_balance - float(daily_by_login[login].get(day, 0.0))
-            if not math.isfinite(previous_balance) or previous_balance <= 0:
-                break
-            current_balance = previous_balance
-            floor = day
-        account_floors.append(floor)
-
-    common_floor = max(account_floors) if account_floors else today
-    curve_days = [day for day in daily_days if day >= common_floor]
-    if today not in curve_days:
-        curve_days.append(today)
-    curve_days = sorted(set(curve_days))
-
-    account_balances: dict[int, dict[str, float]] = {}
-    for account in live_accounts:
-        login = int(account.get("login") or 0)
-        current_balance = float(account.get("balance") or 0)
-        curve: dict[str, float] = {}
+        current_equity = float(account.get("equity") or current_balance)
+        curve: dict[str, tuple[float, float]] = {}
         for day in reversed(curve_days):
-            curve[day] = current_balance
-            current_balance -= float(daily_by_login.get(login, {}).get(day, 0.0))
-        account_balances[login] = curve
+            curve[day] = (current_balance, current_equity)
+            day_pl = float(daily_by_login.get(login, {}).get(day, 0.0))
+            previous_balance = current_balance - day_pl
+            previous_equity = current_equity - day_pl
+            if math.isfinite(previous_balance) and previous_balance > 0:
+                current_balance = previous_balance
+            if math.isfinite(previous_equity) and previous_equity > 0:
+                current_equity = previous_equity
+        account_curves[login] = curve
 
-    current_balance_total = sum(float(account.get("balance") or 0) for account in live_accounts)
-    current_equity_total = sum(float(account.get("equity") or 0) for account in live_accounts)
     equity = []
     for day in curve_days:
-        balance_value = sum(curve.get(day, 0.0) for curve in account_balances.values())
-        # Historical floating-P/L snapshots were not stored before this feature.
-        # Never invent them: historical equity follows known balance, while today's
-        # point uses the authoritative live MT5 equity.
-        equity_value = current_equity_total if day == today else balance_value
-        if day == today:
-            balance_value = current_balance_total
+        balance_value = sum(curve.get(day, (0.0, 0.0))[0] for curve in account_curves.values())
+        equity_value = sum(curve.get(day, (0.0, 0.0))[1] for curve in account_curves.values())
         equity.append({
             "date": day,
             "balance": round(balance_value, 2),
@@ -2597,12 +2582,28 @@ def start_bot(bot_id: int, payload: dict[str, Any] = Body(default_factory=dict))
 
     ea_rel = bot.get("ea_storage_path")
     if _is_black_rock_bot(bot):
-        bundled_black_rock = ROOT / "data" / "system_ea_library" / "Black_Rock.ex5"
+        bundled_black_rock = resolve_system_ea_file("Black_Rock.ex5")
         if bundled_black_rock.is_file():
-            ea_rel = str(bundled_black_rock.relative_to(ROOT))
+            # The isolated EA worker intentionally executes only from KOOLKID's
+            # managed EA library. Materialize the trusted system bundle there
+            # instead of weakening that worker-side path restriction.
+            black_rock_run_dir = EA_LIBRARY / current_workspace() / str(bot_id)
+            black_rock_run_dir.mkdir(parents=True, exist_ok=True)
+            black_rock_run_path = black_rock_run_dir / "Black_Rock.ex5"
+            source_bytes = bundled_black_rock.read_bytes()
+            if not black_rock_run_path.is_file() or black_rock_run_path.read_bytes() != source_bytes:
+                black_rock_run_path.write_bytes(source_bytes)
+            ea_rel = str(black_rock_run_path.relative_to(ROOT))
     if not ea_rel or not (ROOT / ea_rel).is_file():
         if _is_black_rock_bot(bot):
-            raise HTTPException(status_code=409, detail="BLACK ROCK compiled EA is unavailable on this server.")
+            checked = [
+                str(ROOT / "data" / "system_ea_library" / "Black_Rock.ex5"),
+                str(ROOT / "bundled_eas" / "Black_Rock.ex5"),
+            ]
+            raise HTTPException(
+                status_code=409,
+                detail="BLACK ROCK compiled EA is unavailable on this server. Checked bundled locations: " + " | ".join(checked),
+            )
         raise HTTPException(status_code=409, detail="Uploaded .ex5 file was not found. Upload the EA before starting it.")
     preset_rel = bot.get("preset_storage_path")
     worker_payload = {

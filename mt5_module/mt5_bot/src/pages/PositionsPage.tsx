@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Layers, ShieldAlert, TrendingDown, TrendingUp, X } from 'lucide-react';
+import { ChartCandlestick, Layers, ShieldAlert, TrendingDown, TrendingUp, X } from 'lucide-react';
 import { useHub } from '../context/HubContext';
 import { fmtPrice, fmtSigned, profitTone, timeAgo } from '../lib/format';
 import { Badge, EmptyState, PageHeader, Panel, Spinner } from '../components/ui';
 import ConfirmModal from '../components/ConfirmModal';
+import OpenPositionChart from '../components/OpenPositionChart';
 import { closeAllPositions, closePosition } from '../lib/actions';
 import { MARKET } from '../lib/market';
 import { isSimulation } from '../config/runtime';
@@ -50,6 +51,7 @@ export default function PositionsPage() {
   const [confirmBulk, setConfirmBulk] = useState<'profit' | 'loss' | null>(null);
   const [multiPositions, setMultiPositions] = useState<DisplayPosition[]>([]);
   const [multiOnline, setMultiOnline] = useState(false);
+  const [viewPosition, setViewPosition] = useState<DisplayPosition | null>(null);
 
   const loadMultiPositions = async () => {
     try {
@@ -78,6 +80,16 @@ export default function PositionsPage() {
       .sort((a, b) => openedAt(b) - openedAt(a) || b.ticket - a.ticket);
   }, [multiOnline, multiPositions, positions, scopePositions]);
   const shownProfit = (p: DisplayPosition) => p.multiAccountId ? Number(p.profit || 0) : liveProfit(p);
+
+  useEffect(() => {
+    if (!viewPosition) return;
+    const latest = shownPositions.find((row) =>
+      row.ticket === viewPosition.ticket
+      && (row.multiAccountId || String(row.account_login)) === (viewPosition.multiAccountId || String(viewPosition.account_login))
+    );
+    if (latest) setViewPosition(latest);
+    else setViewPosition(null);
+  }, [shownPositions, viewPosition?.ticket, viewPosition?.multiAccountId, viewPosition?.account_login]);
 
   const net = useMemo(() => shownPositions.reduce((s, p) => s + shownProfit(p), 0), [shownPositions]);
   const longs = shownPositions.filter((p) => p.type === 'buy');
@@ -226,14 +238,19 @@ export default function PositionsPage() {
                         )}
                       </td>
                       <td>
-                        <button
-                          className="btn-icon !p-1.5 hover:!text-loss-400 hover:!bg-loss-500/15"
-                          title="Close at market"
-                          disabled={closingId === p.id}
-                          onClick={() => close(p)}
-                        >
-                          {closingId === p.id ? <Spinner size={13} /> : <X size={14} />}
-                        </button>
+                        <div className="flex items-center justify-end gap-1">
+                          <button className="btn-icon !p-1.5" title="View chart" onClick={() => setViewPosition(p)}>
+                            <ChartCandlestick size={14} />
+                          </button>
+                          <button
+                            className="btn-icon !p-1.5 hover:!text-loss-400 hover:!bg-loss-500/15"
+                            title="Close at market"
+                            disabled={closingId === p.id}
+                            onClick={() => close(p)}
+                          >
+                            {closingId === p.id ? <Spinner size={13} /> : <X size={14} />}
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );
@@ -248,12 +265,17 @@ export default function PositionsPage() {
               return <div key={`${p.multiAccountId || p.account_login}:${p.ticket}`} className="p-4">
                 <div className="flex items-start justify-between gap-3"><div><p className="font-bold text-white">{p.symbol} <Badge tone={p.type === 'buy' ? 'brand' : 'loss'}>{p.type}</Badge></p><p className="mono text-[10px] text-slate-600 mt-1">#{p.ticket} · {timeAgo(p.open_time)}</p></div><p className={`mono text-sm font-bold ${profitTone(pl)}`}>{fmtSigned(pl)}</p></div>
                 <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-[11px]"><p className="text-slate-500">Account <span className="block text-slate-300">{p.multiAccountName || accountName(p.account_login)}</span></p><p className="text-slate-500">Source <span className="block text-slate-300">{p.source}</span></p><p className="text-slate-500">Volume <span className="mono block text-slate-300">{Number(p.volume).toFixed(2)}</span></p><p className="text-slate-500">Current <span className="mono block text-slate-300">{fmtPrice(cur, p.symbol)}</span></p></div>
-                <button className="btn-danger mt-3 w-full justify-center" disabled={closingId === p.id} onClick={() => close(p)}>{closingId === p.id ? <Spinner size={13} /> : <X size={14} />} Close Position</button>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <button className="btn-secondary w-full justify-center" onClick={() => setViewPosition(p)}><ChartCandlestick size={14} /> View Chart</button>
+                  <button className="btn-danger w-full justify-center" disabled={closingId === p.id} onClick={() => close(p)}>{closingId === p.id ? <Spinner size={13} /> : <X size={14} />} Close Position</button>
+                </div>
               </div>;
             })}
           </div>
         </Panel>
       )}
+
+      <OpenPositionChart position={viewPosition} onClose={() => setViewPosition(null)} />
 
       <ConfirmModal
         open={confirmBulk !== null}

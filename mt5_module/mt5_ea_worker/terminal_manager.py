@@ -87,7 +87,14 @@ def prepare_dedicated_terminal(source_value: str, source_data_value: str | None,
     target = target_dir / "terminal64.exe"
     if not target.is_file():
         target_dir.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(source.parent, target_dir, dirs_exist_ok=True)
+        # Never clone MT5's live runtime caches from an account terminal.
+        # Bases/history files are commonly locked while MT5 is connected and
+        # they are not required to launch an isolated EA terminal. Fresh logs
+        # are also important so EA verification only observes this assignment.
+        ignore_runtime = shutil.ignore_patterns(
+            "Bases", "bases", "logs", "Logs", "Cache", "cache", "Tester", "tester",
+        )
+        shutil.copytree(source.parent, target_dir, dirs_exist_ok=True, ignore=ignore_runtime)
     source_data = Path(source_data_value).expanduser().resolve() if source_data_value else None
     saved_accounts = target_dir / "Config" / "accounts.dat"
     if source_data and source_data.is_dir() and not saved_accounts.is_file():

@@ -65,6 +65,18 @@ def _system_ea_library() -> Path:
     return DATA_DIR / "system_ea_library"
 
 
+def resolve_system_ea_file(filename: str) -> Path:
+    name = Path(str(filename or "")).name
+    candidates = [
+        _system_ea_library() / name,
+        ROOT / "bundled_eas" / name,
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return candidates[0]
+
+
 def _merge_system_bots(existing: list[dict[str, Any]]) -> list[dict[str, Any]]:
     by_id = {int(row.get("id", 0)): dict(row) for row in existing if isinstance(row, dict)}
     system_ids = {int(p["id"]) for p in SYSTEM_BOT_PRESETS}
@@ -72,7 +84,7 @@ def _merge_system_bots(existing: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rows = [dict(row) for row in existing if int(row.get("id", 0)) not in reserved_ids]
     for preset in SYSTEM_BOT_PRESETS:
         bot_id = int(preset["id"])
-        path = _system_ea_library() / str(preset["file"])
+        path = resolve_system_ea_file(str(preset["file"]))
         native = dict(NATIVE_PRESETS.get(bot_id) or {})
         force_ea = str(preset.get("engine") or "").strip().lower() == "ea"
         native_ready = bool(native.get("ready")) and not force_ea
