@@ -19,14 +19,15 @@ COPY_PREFERENCE_DEFAULTS = {
 
 
 class CopyEngine:
-    def __init__(self, pool, state):
+    def __init__(self, pool, state, group_id="1"):
         self.pool = pool
         self.state_store = state
+        self.group_id = str(group_id or "1")
         self.thread = None
         self.stop_event = threading.Event()
         saved_state = self.state_store.load()
-        self.config = saved_state.get("copy_config")
-        saved_preferences = dict(saved_state.get("copy_preferences") or {})
+        self.config = saved_state.get(self.state_key("copy_config"))
+        saved_preferences = dict(saved_state.get(self.state_key("copy_preferences")) or {})
         if self.config:
             for key in COPY_PREFERENCE_DEFAULTS:
                 if key in self.config and key not in saved_preferences:
@@ -34,11 +35,14 @@ class CopyEngine:
         self.preferences = {**COPY_PREFERENCE_DEFAULTS, **saved_preferences}
         self.status = "stopped"
         self.activity = []
-        self.copy_map = saved_state.get("copy_map", {})
+        self.copy_map = saved_state.get(self.state_key("copy_map"), {})
         self.pending = {}
         self.ignored = set()
         self.lock = threading.RLock()
         self.pause_until = 0.0
+
+    def state_key(self, base):
+        return base if self.group_id == "1" else f"{base}_{self.group_id}"
 
     def pause_for_execution(self, seconds=20):
         self.pause_until = max(self.pause_until, time.time() + max(1, seconds))
@@ -47,12 +51,12 @@ class CopyEngine:
         self.pause_until = time.time()
 
     def log(self, event, **extra):
-        self.activity.insert(0, {"time": time.time(), "event": event, **extra})
+        self.activity.insert(0, {"time": time.time(), "event": event, "group_id": self.group_id, **extra})
         self.activity = self.activity[:200]
 
     def persist_map(self):
         s = self.state_store.load()
-        s["copy_map"] = self.copy_map
+        s[self.state_key("copy_map")] = self.copy_map
         self.state_store.save(s)
 
     def update_preferences(self, updates):
@@ -70,9 +74,12 @@ class CopyEngine:
             if self.config is not None:
                 self.config.update(clean)
             s = self.state_store.load()
-            s["copy_preferences"] = dict(self.preferences)
-            if s.get("copy_enabled") and isinstance(s.get("copy_config"), dict):
-                s["copy_config"].update(clean)
+            prefs_key = self.state_key("copy_preferences")
+            config_key = self.state_key("copy_config")
+            enabled_key = self.state_key("copy_enabled")
+            s[prefs_key] = dict(self.preferences)
+            if s.get(enabled_key) and isinstance(s.get(config_key), dict):
+                s[config_key].update(clean)
             self.state_store.save(s)
         return dict(self.preferences)
 
@@ -102,8 +109,8 @@ class CopyEngine:
         self.config = dict(cfg)
         self.update_preferences(cfg)
         saved = self.state_store.load()
-        saved["copy_config"] = dict(self.config)
-        saved["copy_preferences"] = dict(self.preferences)
+        saved[self.state_key("copy_config")] = dict(self.config)
+        saved[self.state_key("copy_preferences")] = dict(self.preferences)
         self.state_store.save(saved)
         try:
             existing = self.pool.call(cfg["master_account_id"], "positions")
@@ -111,13 +118,17 @@ class CopyEngine:
         except Exception:
             self.ignored = set()
         self.status = "running"
-        self.thread = threading.Thread(target=self.run, daemon=True, name="KOOLKID-CopyEngine")
+        self.thread = threading.Thread(target=self.run, daemon=True, name=f"KOOLKID-CopyEngine-{self.group_id}")
         self.thread.start()
         self.log("copy_started", master=cfg["master_account_id"], slaves=cfg["slave_account_ids"])
 
     def passes_filter(self, p):
         f = self.config["source_filter"]
         magic = int(p.get("magic") or 0)
+        # Never re-copy a position created by another Copy Trader group.
+        # This prevents copy loops if an account is both a slave and a master.
+        if magic == COPY_MAGIC:
+            return False
         if f == "all": return True
         if f == "manual": return magic == 0
         if f == "ea": return magic != 0 and magic != COPY_MAGIC
@@ -153,10 +164,12 @@ class CopyEngine:
             rows = self.pool.call(slave_id, "positions", timeout=8)
         except Exception as exc:
             raise RuntimeError(f"Could not verify copy slots for {slave_id}: {exc}") from exc
+        prefix = "KKCOPY:" if self.group_id == "1" else f"KKC{self.group_id}:"
+        legacy_prefix = "KKCOPY:" if self.group_id == "1" else None
         return [
             row for row in rows
-            if int(row.get("magic") or 0) == COPY_MAGIC
-            or str(row.get("comment") or "").startswith("KKCOPY:")
+            if str(row.get("comment") or "").startswith(prefix)
+            or (legacy_prefix is not None and str(row.get("comment") or "").startswith(legacy_prefix))
         ]
 
     def _copy_slot_available(self, slave_id):
@@ -497,7 +510,7 @@ class CopyEngine:
         symbol = aliases.get(pos["symbol"], pos["symbol"])
         master_id = str((self.config or {}).get("master_account_id") or "")
         volume = self.target_volume(pos, master_info, slave_info, master_id=master_id, slave_id=slave_id)
-        tag = f"KKCOPY:{master_ticket}"[:31]
+        tag = (f"KKCOPY:{master_ticket}" if self.group_id == "1" else f"KKC{self.group_id}:{master_ticket}")[:31]
         side = self.side(pos)
         stop_loss = float(pos.get("sl") or 0)
         master_entry = float(pos.get("price_open") or pos.get("open_price") or 0)
@@ -655,6 +668,7 @@ class CopyEngine:
                             if master_ticket in self.pending:
                                 continue
                             self.pending[master_ticket] = {
+                                "group_id": self.group_id,
                                 "master_ticket": int(master_ticket),
                                 "master_account_id": cfg["master_account_id"],
                                 "slave_account_ids": list(cfg["slave_account_ids"]),
@@ -729,6 +743,7 @@ class CopyEngine:
 
     def snapshot(self):
         return {
+            "group_id": self.group_id,
             "status": self.status,
             "config": self.config,
             "preferences": dict(self.preferences),

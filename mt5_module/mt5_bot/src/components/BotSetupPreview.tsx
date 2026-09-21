@@ -60,6 +60,7 @@ function SetupChartCanvas({ candles, setup, height, chartKey }: { candles: Candl
   const userMovedRef = useRef(Boolean(initialSavedRange));
   const visibleRangeRef = useRef<SavedChartRange | null>(initialSavedRange);
   const programmaticRangeRef = useRef(false);
+  const renderedLastTimeRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!ref.current) return;
@@ -99,6 +100,7 @@ function SetupChartCanvas({ candles, setup, height, chartKey }: { candles: Candl
       chartRef.current = null;
       seriesRef.current = null;
       priceLinesRef.current = [];
+      renderedLastTimeRef.current = null;
     };
   }, [chartKey]);
 
@@ -115,16 +117,38 @@ function SetupChartCanvas({ candles, setup, height, chartKey }: { candles: Candl
     const data: CandlestickData<UTCTimestamp>[] = candles.map((c) => ({
       time: c.time as UTCTimestamp, open: c.open, high: c.high, low: c.low, close: c.close,
     }));
+    const previousLastTime = renderedLastTimeRef.current;
     programmaticRangeRef.current = true;
-    series.setData(data);
-    if (savedRange) {
-      const range = { from: savedRange.from as UTCTimestamp, to: savedRange.to as UTCTimestamp };
-      chart.timeScale().setVisibleRange(range);
-      visibleRangeRef.current = range;
-      SAVED_VIEWPORTS.set(chartKey, range);
-      userMovedRef.current = true;
+    if (previousLastTime === null) {
+      series.setData(data);
+      renderedLastTimeRef.current = Number(data[data.length - 1].time);
+      if (savedRange) {
+        const range = { from: savedRange.from as UTCTimestamp, to: savedRange.to as UTCTimestamp };
+        chart.timeScale().setVisibleRange(range);
+        visibleRangeRef.current = range;
+        SAVED_VIEWPORTS.set(chartKey, range);
+        userMovedRef.current = true;
+      } else {
+        chart.timeScale().fitContent();
+      }
     } else {
-      chart.timeScale().fitContent();
+      const previousIndex = data.findIndex((row) => Number(row.time) === previousLastTime);
+      if (previousIndex >= 0) {
+        for (let index = previousIndex; index < data.length; index += 1) series.update(data[index]);
+        renderedLastTimeRef.current = Number(data[data.length - 1].time);
+      } else {
+        const rangeBeforeRebuild = savedRange || (userMovedRef.current ? chart.timeScale().getVisibleRange() : null);
+        series.setData(data);
+        renderedLastTimeRef.current = Number(data[data.length - 1].time);
+        if (rangeBeforeRebuild) {
+          const range = { from: rangeBeforeRebuild.from as UTCTimestamp, to: rangeBeforeRebuild.to as UTCTimestamp };
+          chart.timeScale().setVisibleRange(range);
+          visibleRangeRef.current = range;
+          SAVED_VIEWPORTS.set(chartKey, range);
+        } else {
+          chart.timeScale().fitContent();
+        }
+      }
     }
     window.requestAnimationFrame(() => { programmaticRangeRef.current = false; });
   }, [candles, chartKey]);
@@ -190,34 +214,39 @@ function SetupChartCanvas({ candles, setup, height, chartKey }: { candles: Candl
 }
 
 export default function BotSetupPreview({ bot }: { bot: Mt5Bot }) {
-  const setup = useMemo(() => setupInfo(bot), [bot.native_signal, bot.native_last_execution, bot.last_trade]);
+  const setup = useMemo<SetupInfo>(() => setupInfo(bot) || {
+    stage: 'SCANNING',
+    label: 'Live chart',
+  }, [bot.native_signal, bot.native_last_execution, bot.last_trade]);
   const [candles, setCandles] = useState<Candle[]>([]);
   const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    if (!setup || !bot.account_login || !bot.symbol || !bot.timeframe) {
+    if (!bot.account_login || !bot.symbol || !bot.timeframe) {
       setCandles([]);
       return;
     }
-    mt5MarketService.candles(bot.symbol, bot.timeframe, 90, bot.account_login)
-      .then((rows) => { if (!cancelled) setCandles(rows); })
-      .catch(() => { if (!cancelled) setCandles([]); });
-    return () => { cancelled = true; };
-  }, [bot.account_login, bot.symbol, bot.timeframe, setup?.stage, setup?.eventTime, setup?.entry, setup?.sl, setup?.tp]);
+    const load = () => mt5MarketService.candles(bot.symbol, bot.timeframe, 90, bot.account_login!)
+      .then((rows) => { if (!cancelled) setCandles(Array.isArray(rows) ? rows : []); })
+      .catch(() => { if (!cancelled && !candles.length) setCandles([]); });
+    void load();
+    const timer = window.setInterval(() => void load(), 3000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [bot.account_login, bot.symbol, bot.timeframe]);
 
-  if (!setup || !candles.length) return null;
+  if (!candles.length) return null;
 
   return (
     <>
       <div className="mt-4 w-full overflow-hidden rounded-xl border border-white/[0.07] bg-black/20">
         <div className="flex items-center justify-between gap-3 px-3 py-2 border-b border-white/[0.06]">
           <div>
-            <p className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold">Latest setup</p>
+            <p className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold">{setup.stage === 'SCANNING' ? 'Live bot chart' : 'Latest setup'}</p>
             <p className="text-[11px] text-slate-300">{bot.symbol} · {bot.timeframe} · {setup.label}</p>
           </div>
           <button type="button" onClick={() => setExpanded(true)} className="text-[10px] text-brand-300 hover:text-brand-200">
-            Open larger chart
+            View Chart
           </button>
         </div>
         <SetupChartCanvas candles={candles} setup={setup} height={155} chartKey={`bot-${bot.id}-compact`} />

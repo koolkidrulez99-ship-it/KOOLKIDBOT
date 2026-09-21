@@ -36,7 +36,7 @@ export default function CopyTradeApproval() {
 
   useEffect(() => {
     setSelected(current?.slave_account_ids || []);
-  }, [current?.master_ticket]);
+  }, [current?.group_id, current?.master_ticket]);
 
   const accountById = useMemo(() => new Map(accounts.map((account) => [account.account_id, account])), [accounts]);
 
@@ -48,7 +48,7 @@ export default function CopyTradeApproval() {
     }
     setBusy(true);
     try {
-      const result = await mt5MultiAccountService.decideCopy(current.master_ticket, copy, selected);
+      const result = await mt5MultiAccountService.decideCopy(current.master_ticket, copy, selected, current.group_id || '1');
       if (!copy) {
         pushToast('info', 'Master trade kept separate', `Position #${current.master_ticket} was not copied.`);
       } else {
@@ -67,7 +67,9 @@ export default function CopyTradeApproval() {
         }
         if (failed.length) pushToast('error', `${failed.length} slave order${failed.length === 1 ? '' : 's'} failed`, failed.map(([id, row]) => `${accountById.get(id)?.nickname || id}: ${row.error || 'Rejected'}`).join(' · '));
       }
-      setPending((items) => items.filter((item) => item.master_ticket !== current.master_ticket));
+      setPending((items) => items.filter((item) =>
+        !(item.master_ticket === current.master_ticket && (item.group_id || '1') === (current.group_id || '1'))
+      ));
     } catch (error) {
       pushToast('error', 'Copy decision failed', error instanceof Error ? error.message : undefined);
     } finally {
@@ -84,7 +86,7 @@ export default function CopyTradeApproval() {
               <span className="grid h-10 w-10 place-items-center rounded-lg bg-brand-500/15 text-brand-300"><ArrowRightLeft size={18} /></span>
               <div><p className="font-bold text-white">{current.position.symbol} · {String(current.position.side || current.position.type).toUpperCase()}</p><p className="mono text-[11px] text-slate-500">#{current.master_ticket} · {Number(current.position.volume || 0).toFixed(2)} lots</p></div>
             </div>
-            <Badge tone="brand">MASTER OPEN</Badge>
+            <div className="flex gap-2"><Badge tone="brand">GROUP {current.group_id || '1'}</Badge><Badge tone="brand">MASTER OPEN</Badge></div>
           </div>
           <div className="mt-3 grid grid-cols-2 gap-3 text-xs text-slate-400"><span>SL <b className="mono text-slate-200">{Number(current.position.sl || 0) || 'None'}</b></span><span>TP <b className="mono text-slate-200">{Number(current.position.tp || 0) || 'None'}</b></span></div>
         </div>

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { ChartCandlestick, Layers, ShieldAlert, TrendingDown, TrendingUp, X } from 'lucide-react';
 import { useHub } from '../context/HubContext';
 import { fmtPrice, fmtSigned, profitTone, timeAgo } from '../lib/format';
+import { normalizePositionSide } from '../lib/position';
 import { Badge, EmptyState, PageHeader, Panel, Spinner } from '../components/ui';
 import ConfirmModal from '../components/ConfirmModal';
 import OpenPositionChart from '../components/OpenPositionChart';
@@ -19,8 +20,7 @@ function openedAt(position: DisplayPosition): number {
 }
 
 function mapMultiPosition(row: MultiPosition, index: number): DisplayPosition {
-  const side = String(row.side || row.type || '').toUpperCase();
-  const type = side === 'SELL' || side === '1' ? 'sell' : 'buy';
+  const type = normalizePositionSide(row.side ?? row.type);
   const openTime = row.open_time || (row.time ? new Date(Number(row.time) * 1000).toISOString() : new Date().toISOString());
   return {
     id: Number(row.ticket) || index + 1,

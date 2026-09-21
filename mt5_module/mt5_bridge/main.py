@@ -1669,6 +1669,22 @@ def _enrich_bot_trade_row(row: dict[str, Any], bot_rows: list[dict[str, Any]]) -
     return item
 
 
+def _ui_position_row(row: dict[str, Any], bot_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    item = _enrich_bot_trade_row(dict(row), bot_rows)
+    raw_type = item.get("side", item.get("type"))
+    type_key = str(raw_type or "").strip().lower()
+    item["type"] = "sell" if raw_type == 1 or type_key in {"1", "sell", "position_type_sell"} else "buy"
+    item["id"] = int(item.get("id") or item.get("ticket") or 0)
+    item["open_price"] = float(item.get("open_price", item.get("price_open", 0)) or 0)
+    item["current_price"] = float(item.get("current_price", item.get("price_current", item["open_price"])) or item["open_price"])
+    if not item.get("open_time") and item.get("time"):
+        try:
+            item["open_time"] = datetime.fromtimestamp(float(item["time"]), tz=timezone.utc).isoformat()
+        except (TypeError, ValueError, OSError):
+            item["open_time"] = None
+    return item
+
+
 def _overlay_bot_activity(bot_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not bot_rows:
         return bot_rows
@@ -1768,7 +1784,7 @@ def positions():
         worker_rows = multi_account_client.request("/positions", timeout=10).get("positions", [])
         if worker_rows:
             bot_rows = list(read_state().get("bots") or [])
-            return [_enrich_bot_trade_row(dict(row), bot_rows) for row in worker_rows]
+            return [_ui_position_row(dict(row), bot_rows) for row in worker_rows]
     except RuntimeError:
         pass
     return []

@@ -87,7 +87,11 @@ class WorkspaceRuntime:
         self.state = State(root / "state.json")
         self.credentials = CredentialStore(root / "credentials")
         self.pool = ScopedPool(workspace_id)
-        self.copy = CopyEngine(self.pool, self.state)
+        self.copy_groups = {
+            "1": CopyEngine(self.pool, self.state, "1"),
+            "2": CopyEngine(self.pool, self.state, "2"),
+        }
+        self.copy = self.copy_groups["1"]
         self.session_backoff: dict[str, dict[str, object]] = {}
         self.started = False
 
@@ -111,6 +115,37 @@ STATE = _RuntimeProxy("state")
 CREDENTIALS = _RuntimeProxy("credentials")
 POOL = _RuntimeProxy("pool")
 COPY = _RuntimeProxy("copy")
+
+def _copy_group(group_id: str = "1") -> CopyEngine:
+    key = "2" if str(group_id) == "2" else "1"
+    return _runtime().copy_groups[key]
+
+def _copy_state_key(base: str, group_id: str) -> str:
+    return base if str(group_id) == "1" else f"{base}_2"
+
+def _copy_status_payload():
+    runtime = _runtime()
+    groups = {gid: engine.snapshot() for gid, engine in runtime.copy_groups.items()}
+    combined_activity = sorted(
+        [row for snapshot in groups.values() for row in snapshot.get("activity", [])],
+        key=lambda row: float(row.get("time") or 0),
+        reverse=True,
+    )[:200]
+    primary = groups["1"]
+    return {
+        **primary,
+        "status": "running" if any(item["status"] == "running" for item in groups.values()) else "stopped",
+        "pending_count": sum(int(item.get("pending_count") or 0) for item in groups.values()),
+        "activity": combined_activity,
+        "groups": groups,
+        "copy_anywhere_groups": [
+            gid for gid, item in groups.items()
+            if item.get("status") == "running"
+            and isinstance(item.get("config"), dict)
+            and item["config"].get("approval_required") is False
+        ],
+    }
+
 app = FastAPI(title="KOOLKID MT5 Multi-Account", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
@@ -193,6 +228,26 @@ def restore_saved_sessions():
                     _runtime().session_backoff[aid] = {"attempt": 1, "next_at": time.time() + 5, "error": str(exc)}
 
 
+def _restore_copy_groups_if_ready():
+    saved = STATE.load()
+    connected = set(POOL.ids())
+    for group_id in ("1", "2"):
+        cfg = saved.get(_copy_state_key("copy_config", group_id))
+        enabled = bool(saved.get(_copy_state_key("copy_enabled", group_id)))
+        engine = _copy_group(group_id)
+        if not cfg or not enabled or engine.status == "running":
+            continue
+        master_id = str(cfg.get("master_account_id") or "")
+        slave_ids = [str(item) for item in cfg.get("slave_account_ids", [])]
+        required = {master_id, *slave_ids} - {""}
+        if required and required.issubset(connected):
+            try:
+                engine.start(cfg)
+                engine.log("copy_restored_after_reconnect", accounts=sorted(required))
+            except Exception as exc:
+                engine.log("restore_error", error=str(exc))
+
+
 def keep_saved_sessions_connected():
     # If the broker/network/terminal is unavailable during startup, do not give up
     # after three attempts. Keep trying with bounded backoff until the saved account
@@ -218,6 +273,7 @@ def keep_saved_sessions_connected():
                 attempt = int(state.get("attempt") or 0) + 1
                 delay = min(120, 2 ** min(attempt, 7))
                 state.update({"attempt": attempt, "next_at": time.time() + delay, "error": str(exc)})
+        _restore_copy_groups_if_ready()
 
 
 @app.on_event("startup")
@@ -246,9 +302,17 @@ def _start_workspace(workspace_id: str) -> None:
                 fn()
                 if fn is restore_saved_sessions:
                     saved = STATE.load()
-                    cfg = saved.get("copy_config")
-                    if cfg and saved.get("copy_enabled"):
-                        COPY.start(cfg)
+                    for group_id in ("1", "2"):
+                        cfg = saved.get(_copy_state_key("copy_config", group_id))
+                        enabled = saved.get(_copy_state_key("copy_enabled", group_id))
+                        if cfg and enabled:
+                            try:
+                                _copy_group(group_id).start(cfg)
+                            except Exception:
+                                # Persistent session reconnect may still be finishing.
+                                # The copy group remains configured and can be started
+                                # from the UI once its accounts are online.
+                                pass
             finally:
                 reset_workspace(token)
         threading.Thread(target=runner, daemon=True, name=name).start()
@@ -569,8 +633,9 @@ def disconnect(account_id: str):
         s["accounts"][account_id]["auto_reconnect"] = False
         STATE.save(s)
     _runtime().session_backoff.pop(account_id, None)
-    if s.get("master") == account_id:
-        COPY.stop()
+    for group_id in ("1", "2"):
+        if s.get(_copy_state_key("master", group_id)) == account_id:
+            _copy_group(group_id).stop()
     return {"ok": True}
 
 @app.post("/accounts/{account_id}/cancel")
@@ -584,10 +649,22 @@ def remove_account(account_id: str):
     _runtime().session_backoff.pop(account_id, None)
     s = STATE.load()
     s.get("accounts", {}).pop(account_id, None)
-    if s.get("master") == account_id:
-        COPY.stop()
-        s["master"] = None
-    s["slaves"] = [item for item in s.get("slaves", []) if item != account_id]
+    for group_id in ("1", "2"):
+        master_key = _copy_state_key("master", group_id)
+        slaves_key = _copy_state_key("slaves", group_id)
+        enabled_key = _copy_state_key("copy_enabled", group_id)
+        config_key = _copy_state_key("copy_config", group_id)
+        map_key = _copy_state_key("copy_map", group_id)
+        if s.get(master_key) == account_id:
+            _copy_group(group_id).stop()
+            s[master_key] = None
+            s[enabled_key] = False
+            s[config_key] = None
+            s[map_key] = {}
+        s[slaves_key] = [item for item in s.get(slaves_key, []) if item != account_id]
+        cfg = s.get(config_key)
+        if isinstance(cfg, dict):
+            cfg["slave_account_ids"] = [item for item in cfg.get("slave_account_ids", []) if item != account_id]
     STATE.save(s)
     return {"ok": True}
 
@@ -601,8 +678,10 @@ def accounts():
         aid, cfg = item
         row = dict(cfg)
         row.update(pool.status(aid))
-        row["is_master"] = s.get("master") == aid
-        row["is_slave"] = aid in s.get("slaves", [])
+        masters = [s.get(_copy_state_key("master", gid)) for gid in ("1", "2")]
+        slave_lists = [s.get(_copy_state_key("slaves", gid), []) for gid in ("1", "2")]
+        row["is_master"] = aid in masters
+        row["is_slave"] = any(aid in values for values in slave_lists)
         row["remembered"] = credentials.has(aid)
         row["access_mode"] = str(cfg.get("access_mode") or "trading")
         row["read_only"] = row["access_mode"] == "investor"
@@ -623,7 +702,21 @@ def accounts():
     items = list(s.get("accounts", {}).items())[:10]
     with ThreadPoolExecutor(max_workers=len(items) or 1) as executor:
         rows = list(executor.map(snapshot, items))
-    return {"accounts": rows, "master": s.get("master"), "slaves": s.get("slaves", [])}
+    groups = {
+        gid: {
+            "group_id": gid,
+            "master": s.get(_copy_state_key("master", gid)),
+            "slaves": s.get(_copy_state_key("slaves", gid), []),
+            "enabled": bool(s.get(_copy_state_key("copy_enabled", gid))),
+        }
+        for gid in ("1", "2")
+    }
+    return {
+        "accounts": rows,
+        "master": groups["1"]["master"],
+        "slaves": groups["1"]["slaves"],
+        "groups": groups,
+    }
 
 @app.get("/accounts/{account_id}/quotes")
 def account_quotes(account_id: str, symbols: str = Query(default="")):
@@ -664,10 +757,17 @@ def account_history(account_id: str, days: int = 30):
 @app.post("/copy/start")
 def start_copy(req: CopyRequest):
     try:
+        group_id = str(req.group_id)
+        engine = _copy_group(group_id)
         if req.master_account_id not in POOL.ids():
             raise RuntimeError("Master is not connected")
         if req.master_account_id in req.slave_account_ids:
-            raise RuntimeError("Master cannot also be a slave")
+            raise RuntimeError("Master cannot also be a slave in the same group")
+        other_group = "2" if group_id == "1" else "1"
+        other_engine = _copy_group(other_group)
+        other_master = str((other_engine.config or {}).get("master_account_id") or "")
+        if other_master and other_master == req.master_account_id:
+            raise RuntimeError("The same account cannot be used as Master in both Copy Trader groups.")
         for aid in req.slave_account_ids:
             if aid not in POOL.ids():
                 raise RuntimeError(f"Slave not connected: {aid}")
@@ -675,53 +775,61 @@ def start_copy(req: CopyRequest):
             if str(slave_cfg.get("access_mode") or "trading").lower() == "investor":
                 raise RuntimeError(f"Investor/read-only account cannot be used as a Copy Trader slave: {aid}")
         cfg = req.model_dump()
-        COPY.start(cfg)
+        cfg.pop("group_id", None)
+        engine.start(cfg)
         s = STATE.load()
-        s["master"], s["slaves"] = req.master_account_id, req.slave_account_ids
-        s["copy_enabled"] = True
+        s[_copy_state_key("master", group_id)] = req.master_account_id
+        s[_copy_state_key("slaves", group_id)] = req.slave_account_ids
+        s[_copy_state_key("copy_enabled", group_id)] = True
         STATE.save(s)
-        return COPY.snapshot()
+        return _copy_status_payload()
     except Exception as exc:
         bad(exc)
 
 @app.post("/copy/stop")
-def stop_copy():
+def stop_copy(group_id: str = Query(default="1")):
+    group_id = "2" if str(group_id) == "2" else "1"
     runtime = _runtime()
-    runtime.copy.stop()
-    runtime.copy.config = None
-    with runtime.copy.lock:
-        runtime.copy.copy_map.clear()
-        runtime.copy.pending.clear()
-        runtime.copy.ignored.clear()
+    engine = runtime.copy_groups[group_id]
+    engine.stop()
+    engine.config = None
+    with engine.lock:
+        engine.copy_map.clear()
+        engine.pending.clear()
+        engine.ignored.clear()
     s = runtime.state.load()
-    s["copy_enabled"] = False
-    s["copy_config"] = None
-    s["copy_map"] = {}
-    s["master"] = None
-    s["slaves"] = []
+    s[_copy_state_key("copy_enabled", group_id)] = False
+    s[_copy_state_key("copy_config", group_id)] = None
+    s[_copy_state_key("copy_map", group_id)] = {}
+    s[_copy_state_key("master", group_id)] = None
+    s[_copy_state_key("slaves", group_id)] = []
     runtime.state.save(s)
-    return runtime.copy.snapshot()
+    return _copy_status_payload()
 
 @app.get("/copy/status")
 def copy_status():
-    return COPY.snapshot()
+    return _copy_status_payload()
 
 @app.put("/copy/preferences")
-def copy_preferences(payload: dict = Body(default_factory=dict)):
+def copy_preferences(payload: dict = Body(default_factory=dict), group_id: str = Query(default="1")):
     try:
-        preferences = COPY.update_preferences(payload)
-        return {"ok": True, "preferences": preferences, "status": COPY.status}
+        engine = _copy_group(group_id)
+        preferences = engine.update_preferences(payload)
+        return {"ok": True, "group_id": engine.group_id, "preferences": preferences, "status": engine.status}
     except Exception as exc:
         bad(exc)
 
 @app.get("/copy/pending")
 def copy_pending():
-    return {"pending": COPY.pending_items()}
+    pending = []
+    for group_id in ("1", "2"):
+        pending.extend(_copy_group(group_id).pending_items())
+    return {"pending": pending}
 
 @app.post("/copy/decision")
 def copy_decision(req: CopyDecisionRequest):
     try:
-        return COPY.decide(req.master_ticket, req.should_copy, req.slave_account_ids)
+        return _copy_group(req.group_id).decide(req.master_ticket, req.should_copy, req.slave_account_ids)
     except Exception as exc:
         bad(exc)
 
@@ -731,8 +839,16 @@ def manual_trade(req: ManualTradeRequest):
     runtime = _runtime()
     pool = runtime.pool
     copy_engine = runtime.copy
-    copy_config = copy_engine.config if copy_engine.status == "running" else None
-    master_id = str((copy_config or {}).get("master_account_id") or "")
+    copy_engines = list(runtime.copy_groups.values())
+    active_copy_engines = [
+        engine for engine in copy_engines
+        if engine.status == "running" and isinstance(engine.config, dict)
+    ]
+    master_ids = {
+        str(engine.config.get("master_account_id") or "")
+        for engine in active_copy_engines
+    } - {""}
+    master_id = next(iter(master_ids), "")
     targets = list(dict.fromkeys(req.target_account_ids))[:10]
     for aid in targets:
         try:
@@ -759,7 +875,7 @@ def manual_trade(req: ManualTradeRequest):
         tag = f"{prefix}:{uuid.uuid4().hex[:8]}"[:31]
         try:
             volume = req.volume
-            if aid != master_id:
+            if aid not in master_ids:
                 if req.lot_mode == "fixed": volume = req.fixed_lot
                 elif req.lot_mode == "multiplier": volume = req.volume * req.multiplier
             order_payload = {
@@ -781,19 +897,34 @@ def manual_trade(req: ManualTradeRequest):
         except Exception as exc:
             return aid, {"ok": False, "error": str(exc)}
     out = {}
-    copy_engine.pause_for_execution(20)
+    for engine in copy_engines:
+        engine.pause_for_execution(20)
     try:
         with ThreadPoolExecutor(max_workers=len(targets) or 1) as executor:
             for future in as_completed([executor.submit(submit, aid) for aid in targets]):
                 aid, result = future.result()
                 out[aid] = result
-        master_row = out.get(master_id) if master_id else None
-        master_result = (master_row or {}).get("result") or {}
-        master_ticket = int(master_result.get("ticket") or master_result.get("order") or 0)
-        if master_ticket:
-            copy_engine.register_concurrent_open(master_ticket, {"symbol": req.symbol, "side": req.side, "volume": req.volume, "sl": req.sl, "tp": req.tp}, {aid: row for aid, row in out.items() if aid != master_id})
+        for engine in active_copy_engines:
+            cfg = engine.config or {}
+            group_master_id = str(cfg.get("master_account_id") or "")
+            master_row = out.get(group_master_id) if group_master_id else None
+            master_result = (master_row or {}).get("result") or {}
+            master_ticket = int(master_result.get("ticket") or master_result.get("order") or 0)
+            if not master_ticket:
+                continue
+            group_slaves = set(str(item) for item in cfg.get("slave_account_ids", []))
+            already_submitted_slaves = {
+                aid: row for aid, row in out.items()
+                if aid in group_slaves and aid != group_master_id
+            }
+            engine.register_concurrent_open(
+                master_ticket,
+                {"symbol": req.symbol, "side": req.side, "volume": req.volume, "sl": req.sl, "tp": req.tp},
+                already_submitted_slaves,
+            )
     finally:
-        copy_engine.resume_after_execution()
+        for engine in copy_engines:
+            engine.resume_after_execution()
     return {"results": out, "backend_received_at": backend_received_at, "backend_result_at": time.time()}
 
 @app.post("/positions/modify")
@@ -869,7 +1000,8 @@ def cleanup():
     try:
         _SESSION_STOP.set()
         for runtime in list(_RUNTIMES.values()):
-            runtime.copy.stop()
+            for engine in runtime.copy_groups.values():
+                engine.stop()
         _CORE_POOL.close_all()
     except Exception:
         pass

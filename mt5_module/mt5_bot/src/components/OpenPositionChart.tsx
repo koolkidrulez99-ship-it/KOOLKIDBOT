@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { createChart, ColorType, CrosshairMode } from 'lightweight-charts';
 import type { CandlestickData, IChartApi, IPriceLine, ISeriesApi, UTCTimestamp } from 'lightweight-charts';
 import type { Candle } from '../lib/market';
+import { normalizePositionSide } from '../lib/position';
 import { mt5MarketService } from '../services/mt5MarketService';
 import { mt5MultiAccountService } from '../services/mt5MultiAccountService';
 import Modal from './Modal';
@@ -156,12 +157,13 @@ export default function OpenPositionChart({ position, onClose }: { position: Cha
     window.requestAnimationFrame(() => { programmaticRangeRef.current = false; });
     const opened = Math.floor(Date.parse(position.open_time) / 1000);
     const marker = candles.reduce((best, row) => Math.abs(row.time - opened) < Math.abs(best.time - opened) ? row : best, candles[0]);
+    const side = normalizePositionSide(position.type);
     series.setMarkers([{
       time: marker.time as UTCTimestamp,
-      position: position.type === 'buy' ? 'belowBar' : 'aboveBar',
-      color: position.type === 'buy' ? '#10b981' : '#f43f5e',
-      shape: position.type === 'buy' ? 'arrowUp' : 'arrowDown',
-      text: `${position.type.toUpperCase()} #${position.ticket}`,
+      position: side === 'buy' ? 'belowBar' : 'aboveBar',
+      color: side === 'buy' ? '#10b981' : '#f43f5e',
+      shape: side === 'buy' ? 'arrowUp' : 'arrowDown',
+      text: `${side === 'sell' ? 'SELL' : 'BUY'} #${position.ticket}`,
       size: 1,
     }]);
   }, [candles, position]);
@@ -179,7 +181,7 @@ export default function OpenPositionChart({ position, onClose }: { position: Cha
   }, [position?.open_price, position?.current_price, position?.sl, position?.tp, position?.ticket]);
 
   return (
-    <Modal open={position !== null} onClose={onClose} title={position ? `${position.symbol} · #${position.ticket}` : 'Position chart'} sub={position ? `${position.type.toUpperCase()} · ${position.volume} lots · live MT5 data` : undefined} wide>
+    <Modal open={position !== null} onClose={onClose} title={position ? `${position.symbol} · #${position.ticket}` : 'Position chart'} sub={position ? `${normalizePositionSide(position.type) === 'sell' ? 'SELL' : 'BUY'} · ${position.volume} lots · live MT5 data` : undefined} wide>
       <div className="mb-3 flex flex-wrap gap-2">
         {['M1', 'M5', 'M15', 'H1'].map((tf) => <button key={tf} type="button" className={timeframe === tf ? 'btn-primary !px-3 !py-1.5 text-xs' : 'btn-secondary !px-3 !py-1.5 text-xs'} onClick={() => setTimeframe(tf)}>{tf}</button>)}
       </div>

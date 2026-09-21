@@ -18,6 +18,7 @@ class ConnectRequest(BaseModel):
     symbol_aliases: Dict[str, str] = Field(default_factory=dict)
 
 class CopyRequest(BaseModel):
+    group_id: Literal["1", "2"] = "1"
     master_account_id: str
     slave_account_ids: List[str]
     lot_mode: Literal["same", "fixed", "multiplier", "equity_proportional"] = "same"
@@ -36,6 +37,7 @@ class CopyRequest(BaseModel):
     approval_required: bool = True
 
 class CopyDecisionRequest(BaseModel):
+    group_id: Literal["1", "2"] = "1"
     master_ticket: int
     should_copy: bool
     slave_account_ids: List[str] = Field(default_factory=list)

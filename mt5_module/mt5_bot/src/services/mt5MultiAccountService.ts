@@ -82,6 +82,7 @@ export interface MultiPosition {
 }
 
 export interface PendingCopy {
+  group_id?: '1' | '2';
   master_ticket: number;
   master_account_id: string;
   slave_account_ids: string[];
@@ -100,15 +101,21 @@ export interface CopyDecisionResult {
 export const mt5MultiAccountService = {
   health: () => multiRequest<{ ok: boolean; connected: number; max_accounts: number; copy_status: string }>('/health'),
   bootstrapSimulation: () => multiRequest<{ ok: boolean; accounts: string[]; master: string; slaves: string[] }>('/demo/bootstrap', 'POST', {}),
-  accounts: () => multiRequest<{ accounts: MultiAccount[]; master?: string | null; slaves: string[] }>('/accounts'),
+  accounts: () => multiRequest<{
+    accounts: MultiAccount[];
+    master?: string | null;
+    slaves: string[];
+    groups?: Record<'1' | '2', { group_id: '1' | '2'; master?: string | null; slaves: string[]; enabled: boolean }>;
+  }>('/accounts'),
   connect: (payload: Record<string, unknown>) => multiRequest<MultiAccount>('/accounts/connect', 'POST', payload),
   disconnect: (accountId: string) => multiRequest<{ ok: boolean }>(`/accounts/${encodeURIComponent(accountId)}/disconnect`, 'POST', {}),
   copyStatus: () => multiRequest<Record<string, unknown>>('/copy/status'),
-  saveCopyPreferences: (payload: Record<string, unknown>) => multiRequest<{ ok: boolean; preferences: Record<string, unknown>; status: string }>('/copy/preferences', 'PUT', payload),
+  saveCopyPreferences: (groupId: '1' | '2', payload: Record<string, unknown>) => multiRequest<{ ok: boolean; preferences: Record<string, unknown>; status: string }>(`/copy/preferences?group_id=${groupId}`, 'PUT', payload),
   startCopy: (payload: Record<string, unknown>) => multiRequest<Record<string, unknown>>('/copy/start', 'POST', payload),
-  stopCopy: () => multiRequest<Record<string, unknown>>('/copy/stop', 'POST', {}),
+  stopCopy: (groupId: '1' | '2' = '1') => multiRequest<Record<string, unknown>>(`/copy/stop?group_id=${groupId}`, 'POST', {}),
   pendingCopies: () => multiRequest<{ pending: PendingCopy[] }>('/copy/pending'),
-  decideCopy: (masterTicket: number, copy: boolean, slaveAccountIds: string[]) => multiRequest<CopyDecisionResult>('/copy/decision', 'POST', {
+  decideCopy: (masterTicket: number, copy: boolean, slaveAccountIds: string[], groupId: '1' | '2' = '1') => multiRequest<CopyDecisionResult>('/copy/decision', 'POST', {
+    group_id: groupId,
     master_ticket: masterTicket,
     should_copy: copy,
     slave_account_ids: slaveAccountIds,

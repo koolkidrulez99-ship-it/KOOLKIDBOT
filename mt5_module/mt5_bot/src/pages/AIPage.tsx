@@ -57,10 +57,21 @@ type CopyAnywhereConfig = {
   approval_required?: boolean;
 };
 
+type CopyAnywhereGroupId = '1' | '2';
+
+type CopyAnywhereGroup = {
+  group_id?: CopyAnywhereGroupId;
+  status?: string;
+  config?: CopyAnywhereConfig | null;
+  pending_count?: number;
+};
+
 type CopyAnywhereStatus = {
   status?: string;
   config?: CopyAnywhereConfig | null;
   pending_count?: number;
+  groups?: Record<CopyAnywhereGroupId, CopyAnywhereGroup>;
+  copy_anywhere_groups?: CopyAnywhereGroupId[];
 };
 
 type LiveRiskAction = 'trial' | 'human_auto' | 'auto_select' | 'auto_select_execute' | null;
@@ -88,7 +99,8 @@ export default function AIPage() {
   const [autoSelectMode, setAutoSelectMode] = useState<AiAutoSelectMode>('analysis');
   const [autoSelectBotIds, setAutoSelectBotIds] = useState<number[]>([]);
   const autoSelectInitRef = useRef(false);
-  const [copyAnywhere, setCopyAnywhere] = useState(false);
+  const [copyAnywhereGroups, setCopyAnywhereGroups] = useState<CopyAnywhereGroupId[]>([]);
+  const copyAnywhere = copyAnywhereGroups.length > 0;
   const [copyAnywhereBusy, setCopyAnywhereBusy] = useState(false);
   const [copyStatus, setCopyStatus] = useState<CopyAnywhereStatus | null>(null);
   const [copyStatusError, setCopyStatusError] = useState('');
@@ -102,12 +114,17 @@ export default function AIPage() {
     try {
       const status = await mt5MultiAccountService.copyStatus() as CopyAnywhereStatus;
       setCopyStatus(status);
-      const cfg = status.config || null;
-      setCopyAnywhere(status.status === 'running' && cfg?.approval_required === false && cfg?.source_filter === 'all');
+      const activeGroups = Array.isArray(status.copy_anywhere_groups)
+        ? status.copy_anywhere_groups
+        : (['1', '2'] as CopyAnywhereGroupId[]).filter((groupId) => {
+            const group = status.groups?.[groupId];
+            return group?.status === 'running' && group.config?.approval_required === false && group.config?.source_filter === 'all';
+          });
+      setCopyAnywhereGroups(activeGroups);
       setCopyStatusError('');
     } catch (e) {
       setCopyStatus(null);
-      setCopyAnywhere(false);
+      setCopyAnywhereGroups([]);
       setCopyStatusError(e instanceof Error ? e.message : 'Copy worker unavailable.');
     }
   };
@@ -383,7 +400,7 @@ export default function AIPage() {
     void doExecuteAutoSelectSelection(false);
   };
 
-  const toggleCopyAnywhere = async (enabled: boolean) => {
+  const toggleCopyAnywhere = async (groupId: CopyAnywhereGroupId, enabled: boolean) => {
     if (isSimulation) {
       pushToast('warning', 'Real multi-account worker required');
       return;
@@ -391,12 +408,14 @@ export default function AIPage() {
     setCopyAnywhereBusy(true);
     try {
       const latest = await mt5MultiAccountService.copyStatus() as CopyAnywhereStatus;
-      const cfg = latest.config || null;
+      const group = latest.groups?.[groupId];
+      const cfg = group?.config || (groupId === '1' ? latest.config : null);
       if (!cfg?.master_account_id || !cfg.slave_account_ids?.length) {
-        pushToast('warning', 'Set up Copy Trading first', 'Choose a master and at least one slave on the Copy Trading page, then return here.');
+        pushToast('warning', `Set up Master Group ${groupId} first`, 'Choose a master and at least one slave on the Copy Trading page, then return here.');
         return;
       }
       await mt5MultiAccountService.startCopy({
+        group_id: groupId,
         master_account_id: cfg.master_account_id,
         slave_account_ids: cfg.slave_account_ids,
         lot_mode: cfg.lot_mode || 'same',
@@ -414,10 +433,16 @@ export default function AIPage() {
         poll_ms: cfg.poll_ms ?? 300,
         approval_required: !enabled,
       });
-      setCopyAnywhere(enabled);
-      pushToast(enabled ? 'success' : 'info', enabled ? 'Copy Trades From Anywhere enabled' : 'Copy Trades From Anywhere disabled', enabled
-        ? 'New eligible trades that appear on the connected master account will copy automatically to linked slaves.'
-        : 'The copy link stays active, but new master trades return to the normal approval popup.');
+      setCopyAnywhereGroups((current) => enabled
+        ? Array.from(new Set([...current, groupId]))
+        : current.filter((value) => value !== groupId));
+      pushToast(
+        enabled ? 'success' : 'info',
+        `Copy From Anywhere · Group ${groupId} ${enabled ? 'enabled' : 'disabled'}`,
+        enabled
+          ? `New eligible trades from Master Group ${groupId} copy automatically to that group's slaves.`
+          : `Master Group ${groupId} stays linked but returns to the normal approval popup.`,
+      );
       await loadCopyAnywhere();
     } catch (e) {
       pushToast('error', 'Could not change Copy Trades From Anywhere', e instanceof Error ? e.message : undefined);
@@ -599,15 +624,39 @@ export default function AIPage() {
             <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-gain-500/25 bg-gain-500/10 text-gain-400"><ArrowRightLeft size={18} /></span>
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2"><p className="text-[14px] font-bold text-white">Copy Trades From Anywhere</p><Badge tone={copyAnywhere ? 'gain' : 'slate'}>{copyAnywhere ? 'AUTO COPY ON' : 'APPROVAL MODE'}</Badge></div>
-              <p className="mt-1 max-w-4xl text-[12px] leading-relaxed text-slate-500">When enabled, KOOLKID watches the connected Master account itself. Any eligible new trade that appears on that Master can be copied automatically to the linked Slave accounts — whether it was opened from KOOLKID, MT5 desktop, MT5 mobile, WebTerminal, an EA, a VPS, another bot, or another connected trading app. The trade must appear on the same connected Master account.</p>
-              <p className="mt-2 text-[10px] text-slate-600">Uses your existing Copy Trading master/slave link and lot settings. Existing open positions are not copied when the toggle is switched on; only new positions detected afterward are eligible.</p>
+              <p className="mt-1 max-w-4xl text-[12px] leading-relaxed text-slate-500">Choose which Copy Trader master groups should auto-copy trades detected directly on their Master account — including trades opened from KOOLKID, MT5 desktop/mobile, WebTerminal, an EA, VPS or another connected trading app.</p>
+              <p className="mt-2 text-[10px] text-slate-600">Group 1 and Group 2 are independent. You can enable one group or both. Existing open positions are not backfilled when a group is switched on.</p>
               {copyStatusError && <p className="mt-2 text-[10px] text-loss-400">Copy worker: {copyStatusError}</p>}
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <div className="text-right"><p className="text-[10px] uppercase tracking-widest text-slate-600">Copy link</p><p className="text-[11px] font-semibold text-slate-300">{copyStatus?.config?.master_account_id && copyStatus?.config?.slave_account_ids?.length ? `${copyStatus.status === 'running' ? 'Active' : 'Saved'} · ${copyStatus.config.slave_account_ids.length} slave${copyStatus.config.slave_account_ids.length === 1 ? '' : 's'}` : 'Not configured'}</p></div>
-            {copyAnywhereBusy ? <Spinner size={18} /> : <Toggle on={copyAnywhere} onChange={toggleCopyAnywhere} disabled={isSimulation || !copyStatus?.config?.master_account_id || !copyStatus?.config?.slave_account_ids?.length} />}
+            <div className="text-right">
+              <p className="text-[10px] uppercase tracking-widest text-slate-600">Auto-copy groups</p>
+              <p className="text-[11px] font-semibold text-slate-300">{copyAnywhereGroups.length ? copyAnywhereGroups.map((id) => `Group ${id}`).join(' + ') : 'None'}</p>
+            </div>
+            {copyAnywhereBusy && <Spinner size={18} />}
           </div>
+        </div>
+        <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3 border-t border-white/[0.07] pt-4">
+          {(['1', '2'] as CopyAnywhereGroupId[]).map((groupId) => {
+            const group = copyStatus?.groups?.[groupId];
+            const cfg = group?.config || (groupId === '1' ? copyStatus?.config : null);
+            const configured = Boolean(cfg?.master_account_id && cfg?.slave_account_ids?.length);
+            const enabled = copyAnywhereGroups.includes(groupId);
+            return (
+              <div key={groupId} className="flex items-center justify-between gap-4 rounded-xl border border-white/[0.07] bg-white/[0.025] px-4 py-3">
+                <div>
+                  <p className="text-[12px] font-semibold text-slate-200">Master Group {groupId}</p>
+                  <p className="mt-1 text-[10px] text-slate-600">{configured ? `${group?.status === 'running' ? 'Active' : 'Saved'} · ${cfg?.slave_account_ids?.length || 0} slave${cfg?.slave_account_ids?.length === 1 ? '' : 's'}` : 'Not configured'}</p>
+                </div>
+                <Toggle
+                  on={enabled}
+                  onChange={(value) => void toggleCopyAnywhere(groupId, value)}
+                  disabled={isSimulation || copyAnywhereBusy || !configured}
+                />
+              </div>
+            );
+          })}
         </div>
       </Panel>
 

@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { ReactNode } from 'react';
 import { isSimulation } from '../config/runtime';
 import { MARKET, SYMBOL_LIST, calcProfit } from '../lib/market';
+import { normalizePositionSide } from '../lib/position';
 import { aiControlService } from '../services/aiControlService';
 import { mt5AccountService } from '../services/mt5AccountService';
 import { mt5BotService } from '../services/mt5BotService';
@@ -365,7 +366,7 @@ export function HubProvider({ children }: { children: ReactNode }) {
           if (!previousPositionsRef.current.has(key)) {
             void showBrowserNotification(
               'Trade opened',
-              `${position.type.toUpperCase()} ${position.symbol} · ${position.volume} lot · #${position.ticket}`,
+              `${normalizePositionSide(position.type) === 'sell' ? 'SELL' : 'BUY'} ${position.symbol} · ${position.volume} lot · #${position.ticket}`,
               `trade-open-${key}`,
             );
           }
