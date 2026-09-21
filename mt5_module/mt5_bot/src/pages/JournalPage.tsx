@@ -186,26 +186,28 @@ export default function JournalPage() {
             ))}
           </div>
 
-          <Panel className="md:hidden p-2.5">
-            <div className="grid grid-cols-7 gap-1 mb-1">
-              {WEEKDAYS.map((day) => <div key={day} className="py-1 text-center text-[8px] font-bold uppercase tracking-wider text-slate-600">{day.slice(0, 1)}</div>)}
-            </div>
-            <div className="grid grid-cols-7 gap-1">
-              {Array.from({ length: startOffset }).map((_, index) => <div key={`mobile-empty-${index}`} />)}
-              {monthData.days.map((day) => (
-                <button
-                  key={`mobile-${day.date}`}
-                  className={`min-h-[72px] rounded-lg border p-1.5 text-left transition ${dayCardClass(day, selectedDay?.date === day.date)}`}
-                  onClick={() => setSelectedDay(day)}
-                >
-                  <div className="flex items-center justify-between gap-1">
-                    <span className="mono text-[10px] font-bold text-slate-300">{day.day}</span>
-                    {day.trades > 0 && <span className="h-1.5 w-1.5 rounded-full bg-brand-400" />}
-                  </div>
-                  <p className={`mono mt-2 truncate text-[9px] font-extrabold ${pnlClass(day.pnl)}`}>{money(day.pnl, currency)}</p>
-                  <p className="mt-1 truncate text-[8px] text-slate-600">{day.trades ? `${day.trades} trade${day.trades === 1 ? '' : 's'}` : '—'}</p>
-                </button>
-              ))}
+          <Panel className="md:hidden overflow-x-auto p-2.5">
+            <div className="min-w-[700px]">
+              <div className="grid grid-cols-7 gap-2 mb-2">
+                {WEEKDAYS.map((day) => <div key={day} className="py-1.5 text-center text-[10px] font-bold uppercase tracking-wider text-slate-600">{day}</div>)}
+              </div>
+              <div className="grid grid-cols-7 gap-2">
+                {Array.from({ length: startOffset }).map((_, index) => <div key={`mobile-empty-${index}`} />)}
+                {monthData.days.map((day) => (
+                  <button
+                    key={`mobile-${day.date}`}
+                    className={`min-h-[112px] rounded-xl border p-2.5 text-left transition ${dayCardClass(day, selectedDay?.date === day.date)}`}
+                    onClick={() => setSelectedDay(day)}
+                  >
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="mono text-xs font-bold text-slate-300">{day.day}</span>
+                      {day.trades > 0 && <span className="h-2 w-2 rounded-full bg-brand-400" />}
+                    </div>
+                    <p className={`mono mt-3 text-[11px] font-extrabold ${pnlClass(day.pnl)}`}>{money(day.pnl, currency)}</p>
+                    <p className="mt-1.5 text-[10px] text-slate-600">{day.trades ? `${day.trades} trade${day.trades === 1 ? '' : 's'}` : 'No trades'}</p>
+                  </button>
+                ))}
+              </div>
             </div>
           </Panel>
 

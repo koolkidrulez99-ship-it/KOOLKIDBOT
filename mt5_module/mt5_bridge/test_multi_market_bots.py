@@ -230,3 +230,85 @@ def test_native_mt5_comment_uses_bot_name_and_mt5_length_limit():
     assert comment.startswith("KKBOT(")
     assert comment.endswith(")")
     assert len(comment) <= 31
+
+
+class _ValidSignal:
+    def to_dict(self):
+        return {
+            "valid": True, "stage": "READY", "score": 90.0,
+            "confidence": 90.0, "signal_key": "sig-1",
+            "direction": "BUY", "entry": 1.1, "sl": 1.0, "tp": 1.3,
+            "rules": {}, "context": {},
+        }
+
+
+def _cycle_slot_mocks(monkeypatch, bot, active_positions):
+    monkeypatch.setattr(native_runtime, "_bot", lambda bot_id: bot)
+    monkeypatch.setattr(native_runtime, "_verify_account", lambda *args, **kwargs: ({}, {"equity": 1000.0}))
+    monkeypatch.setattr(native_runtime, "configured_timeframes", lambda *args, **kwargs: ("M5", "H1"))
+    market = {"symbol_info": {}, "M5": object(), "H1": object()}
+    monkeypatch.setattr(native_runtime, "_fetch_market", lambda *args, **kwargs: (dict(market), {}))
+    monkeypatch.setattr(native_runtime, "prepare_strategy_market", lambda *args, **kwargs: (args[1], "M5", "H1"))
+    monkeypatch.setattr(native_runtime, "evaluate", lambda *args, **kwargs: _ValidSignal())
+    monkeypatch.setattr(native_runtime, "_positions", lambda login: list(active_positions))
+    monkeypatch.setattr(
+        native_runtime,
+        "_managed_position",
+        lambda runtime_bot, positions: next(
+            (row for row in positions if row.get("symbol") == runtime_bot.get("symbol")), None
+        ),
+    )
+    monkeypatch.setattr(native_runtime, "_active_managed_positions", lambda *args, **kwargs: list(active_positions))
+    monkeypatch.setattr(native_runtime, "_daily_guard", lambda *args, **kwargs: (True, ""))
+    monkeypatch.setattr(native_runtime, "_already_attempted", lambda *args, **kwargs: False)
+    monkeypatch.setattr(native_runtime, "_patch_bot", lambda *args, **kwargs: bot)
+    monkeypatch.setattr(native_runtime, "_runtime", lambda *args, **kwargs: {})
+
+
+def test_native_multi_market_can_fill_an_open_slot_on_another_market(monkeypatch):
+    bot = {
+        "id": 1010, "native_key": "koolkid_scalper_x",
+        "account_login": 123, "symbol": "EURUSD",
+        "symbols": ["EURUSD", "GBPUSD", "USDJPY"],
+        "settings": {"multi_trade_enabled": True, "max_concurrent_trades": 2},
+        "native_config": {
+            "enabled": True, "account_login": 123,
+            "symbols": ["EURUSD", "GBPUSD", "USDJPY"],
+            "execution_timeframe": "M5", "bias_timeframe": "H1",
+        },
+    }
+    active = [{"ticket": 1, "symbol": "EURUSD"}]
+    _cycle_slot_mocks(monkeypatch, bot, active)
+    monkeypatch.setattr(native_runtime, "_execute", lambda *args, **kwargs: {"ticket": 2, "symbol": "GBPUSD"})
+
+    result = native_runtime._cycle(1010, "GBPUSD", execute_allowed=True)
+
+    assert result["active_trade_count"] == 1
+    assert result["max_concurrent_trades"] == 2
+    assert result["execution"]["ticket"] == 2
+
+
+def test_native_one_trade_mode_keeps_other_market_scanning_but_blocks_entry(monkeypatch):
+    bot = {
+        "id": 1010, "native_key": "koolkid_scalper_x",
+        "account_login": 123, "symbol": "EURUSD",
+        "symbols": ["EURUSD", "GBPUSD"],
+        "settings": {"multi_trade_enabled": False, "max_concurrent_trades": 2},
+        "native_config": {
+            "enabled": True, "account_login": 123,
+            "symbols": ["EURUSD", "GBPUSD"],
+            "execution_timeframe": "M5", "bias_timeframe": "H1",
+        },
+    }
+    active = [{"ticket": 1, "symbol": "EURUSD"}]
+    _cycle_slot_mocks(monkeypatch, bot, active)
+    executed = []
+    monkeypatch.setattr(native_runtime, "_execute", lambda *args, **kwargs: executed.append(True) or {"ticket": 2})
+
+    result = native_runtime._cycle(1010, "GBPUSD", execute_allowed=True)
+
+    assert result["valid"] is True
+    assert result["active_trade_count"] == 1
+    assert result["max_concurrent_trades"] == 1
+    assert "scanner remains active" in result["execution_blocked"]
+    assert executed == []

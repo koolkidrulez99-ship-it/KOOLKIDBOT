@@ -1984,14 +1984,14 @@ def _overview_chart_series(
     account_floors: list[str] = []
     for account in live_accounts:
         login = int(account.get("login") or 0)
-        current = float(account.get("equity") or 0)
+        current_balance = float(account.get("balance") or 0)
         account_days = sorted(daily_by_login.get(login, {}), reverse=True)
         floor = history_floor if not account_days else today
         for day in account_days:
-            previous = current - float(daily_by_login[login].get(day, 0.0))
-            if not math.isfinite(previous) or previous <= 0:
+            previous_balance = current_balance - float(daily_by_login[login].get(day, 0.0))
+            if not math.isfinite(previous_balance) or previous_balance <= 0:
                 break
-            current = previous
+            current_balance = previous_balance
             floor = day
         account_floors.append(floor)
 
@@ -2001,20 +2001,33 @@ def _overview_chart_series(
         curve_days.append(today)
     curve_days = sorted(set(curve_days))
 
-    account_curves: dict[int, dict[str, float]] = {}
+    account_balances: dict[int, dict[str, float]] = {}
     for account in live_accounts:
         login = int(account.get("login") or 0)
-        current = float(account.get("equity") or 0)
+        current_balance = float(account.get("balance") or 0)
         curve: dict[str, float] = {}
         for day in reversed(curve_days):
-            curve[day] = current
-            current -= float(daily_by_login.get(login, {}).get(day, 0.0))
-        account_curves[login] = curve
+            curve[day] = current_balance
+            current_balance -= float(daily_by_login.get(login, {}).get(day, 0.0))
+        account_balances[login] = curve
 
+    current_balance_total = sum(float(account.get("balance") or 0) for account in live_accounts)
+    current_equity_total = sum(float(account.get("equity") or 0) for account in live_accounts)
     equity = []
     for day in curve_days:
-        value = sum(curve.get(day, 0.0) for curve in account_curves.values())
-        equity.append({"date": day, "equity": round(value, 2), "daily_pl": round(daily_total.get(day, 0.0), 2)})
+        balance_value = sum(curve.get(day, 0.0) for curve in account_balances.values())
+        # Historical floating-P/L snapshots were not stored before this feature.
+        # Never invent them: historical equity follows known balance, while today's
+        # point uses the authoritative live MT5 equity.
+        equity_value = current_equity_total if day == today else balance_value
+        if day == today:
+            balance_value = current_balance_total
+        equity.append({
+            "date": day,
+            "balance": round(balance_value, 2),
+            "equity": round(equity_value, 2),
+            "daily_pl": round(daily_total.get(day, 0.0), 2),
+        })
     return equity, daily
 
 

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis,
+  Area, Bar, BarChart, CartesianGrid, Cell, ComposedChart, Line, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts';
 import {
   Activity, ArrowRight, Brain, ChevronRight, Crosshair, Cpu, Gauge, Scale, ShieldAlert, Square,
@@ -16,12 +16,19 @@ import type { AiInsight } from '../types';
 import { aiControlService } from '../services/aiControlService';
 import { isSimulation } from '../config/runtime';
 
-const ChartTip = ({ active, payload, label }: { active?: boolean; payload?: { value: number }[]; label?: string }) => {
+const ChartTip = ({ active, payload, label }: {
+  active?: boolean;
+  payload?: { value: number; dataKey?: string; name?: string }[];
+  label?: string;
+}) => {
   if (!active || !payload?.length) return null;
+  const balance = payload.find((item) => item.dataKey === 'balance');
+  const equity = payload.find((item) => item.dataKey === 'equity');
   return (
     <div className="glass-strong rounded-lg px-3 py-2 text-xs shadow-xl">
-      <p className="text-slate-500 mb-0.5">{label ? fmtDay(label) : ''}</p>
-      <p className="mono font-bold text-white">{fmtUSD(payload[0].value)}</p>
+      <p className="text-slate-500 mb-1.5">{label ? fmtDay(label) : ''}</p>
+      <p className="flex items-center justify-between gap-4"><span className="text-slate-400">Balance</span><span className="mono font-bold text-white">{fmtUSD(balance?.value ?? 0)}</span></p>
+      <p className="mt-1 flex items-center justify-between gap-4"><span className="text-brand-300">Equity</span><span className="mono font-bold text-brand-200">{fmtUSD(equity?.value ?? 0)}</span></p>
     </div>
   );
 };
@@ -146,8 +153,11 @@ export default function OverviewPage() {
         <Panel className="xl:col-span-2 p-5">
           <div className="flex items-center justify-between mb-4">
             <div>
-              <h3 className="text-sm font-bold text-white">Equity Curve</h3>
-              <p className="text-[11px] text-slate-500">Consolidated across linked accounts</p>
+              <h3 className="text-sm font-bold text-white">Balance &amp; Equity Curve</h3>
+              <div className="mt-1 flex items-center gap-3 text-[10px]">
+                <span className="inline-flex items-center gap-1.5 text-slate-400"><span className="h-2 w-2 rounded-full bg-slate-300" />Balance</span>
+                <span className="inline-flex items-center gap-1.5 text-brand-300"><span className="h-2 w-2 rounded-full bg-brand-500" />Equity</span>
+              </div>
             </div>
             <div className="flex gap-1.5">
               {(['30', '60', 'all'] as const).map((r) => (
@@ -165,7 +175,7 @@ export default function OverviewPage() {
           </div>
           <div className="h-[280px]">
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={equityData} margin={{ top: 4, right: 4, left: 4, bottom: 0 }}>
+              <ComposedChart data={equityData} margin={{ top: 4, right: 4, left: 4, bottom: 0 }}>
                 <defs>
                   <linearGradient id="eqGrad" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.35} />
@@ -183,8 +193,9 @@ export default function OverviewPage() {
                   tickFormatter={(v: number) => `${(v / 1000).toFixed(0)}K`}
                 />
                 <Tooltip content={<ChartTip />} cursor={{ stroke: 'rgba(91,140,255,0.4)' }} />
-                <Area type="monotone" dataKey="equity" stroke="#3b82f6" strokeWidth={2.2} fill="url(#eqGrad)" />
-              </AreaChart>
+                <Area type="monotone" dataKey="equity" name="Equity" stroke="#3b82f6" strokeWidth={2.2} fill="url(#eqGrad)" />
+                <Line type="monotone" dataKey="balance" name="Balance" stroke="#cbd5e1" strokeWidth={2} dot={false} />
+              </ComposedChart>
             </ResponsiveContainer>
           </div>
         </Panel>

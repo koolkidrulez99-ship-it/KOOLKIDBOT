@@ -256,10 +256,7 @@ def _daily_guard(bot: dict[str, Any], info: dict[str, Any], positions: list[dict
     if losses >= 2:
         return False, "KOOLKID native daily loss-streak cap reached."
     if _has_position_conflict(int(bot["id"]), str(bot.get("symbol") or ""), positions):
-        managed = dict(bot.get("native_managed_position") or {})
-        ticket = int(managed.get("ticket") or 0)
-        if not ticket or not any(int(row.get("ticket") or 0) == ticket for row in positions):
-            return False, "Source one-trade-per-symbol guard is active."
+        return False, "Source one-trade-per-symbol guard is active."
     return True, ""
 
 def _normalize_volume(value: float, info: dict[str, Any]) -> float:
@@ -291,40 +288,108 @@ def _risk_volume(signal: dict[str, Any], account: dict[str, Any], symbol_info: d
         volume = min(volume, _normalize_volume(max_lot, symbol_info))
     return volume
 
+def _managed_map(bot: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    rows = {
+        str(symbol): dict(meta)
+        for symbol, meta in dict(bot.get("native_managed_positions") or {}).items()
+        if symbol and isinstance(meta, dict)
+    }
+    legacy = dict(bot.get("native_managed_position") or {})
+    legacy_symbol = str(legacy.get("symbol") or "")
+    if legacy_symbol and legacy.get("ticket") and legacy_symbol not in rows:
+        rows[legacy_symbol] = legacy
+    return rows
+
+
+def _save_managed_meta(bot_id: int, symbol: str, managed: dict[str, Any] | None) -> None:
+    current = _bot(bot_id) or {}
+    rows = _managed_map(current)
+    if managed:
+        rows[str(symbol)] = dict(managed)
+    else:
+        rows.pop(str(symbol), None)
+    legacy = next(iter(rows.values()), None)
+    _patch_bot(bot_id, native_managed_positions=rows, native_managed_position=legacy)
+
+
 def _managed_position(bot: dict[str, Any], positions: list[dict[str, Any]]) -> dict[str, Any] | None:
-    managed = dict(bot.get("native_managed_position") or {})
-    ticket = int(managed.get("ticket") or 0)
-    if ticket:
-        row = next((p for p in positions if int(p.get("ticket") or 0) == ticket), None)
-        if row:
-            return row
     bot_id = int(bot["id"])
     symbol = str(bot.get("symbol") or "")
+    managed = dict(_managed_map(bot).get(symbol) or {})
+    ticket = int(managed.get("ticket") or 0)
+    if ticket:
+        row = next((
+            p for p in positions
+            if int(p.get("ticket") or 0) == ticket
+            and (not symbol or str(p.get("symbol") or "") == symbol)
+        ), None)
+        if row:
+            return row
+        _save_managed_meta(bot_id, symbol, None)
+        managed = {}
+
     magic = int((_preset(bot_id) or {}).get("magic") or 0)
-    row = next((
-        p for p in positions
-        if (not symbol or str(p.get("symbol") or "") == symbol)
-        and magic
-        and int(p.get("magic") or 0) == magic
-    ), None)
+    expected_comment = _mt5_bot_comment(bot)
+    legacy_prefix = _source_prefix(bot_id)
+    same_symbol = [p for p in positions if not symbol or str(p.get("symbol") or "") == symbol]
+    row = next((p for p in same_symbol if str(p.get("comment") or "") == expected_comment), None)
     if not row:
-        legacy_prefix = _source_prefix(bot_id)
-        row = next((p for p in positions if str(p.get("comment") or "").startswith(legacy_prefix)), None)
-    if not row:
-        expected_comment = _mt5_bot_comment(bot)
-        row = next((p for p in positions if str(p.get("comment") or "") == expected_comment), None)
+        row = next((p for p in same_symbol if str(p.get("comment") or "").startswith(legacy_prefix)), None)
+    if not row and magic:
+        row = next((p for p in same_symbol if int(p.get("magic") or 0) == magic), None)
     if row:
-        managed["ticket"] = int(row.get("ticket") or 0)
-        _patch_bot(bot_id, native_managed_position=managed)
+        open_price = float(row.get("price_open") or row.get("open_price") or 0)
+        sl = float(row.get("sl") or 0)
+        recovered = {
+            **managed,
+            "ticket": int(row.get("ticket") or 0),
+            "entry": managed.get("entry") or open_price,
+            "initial_risk": managed.get("initial_risk") or (abs(open_price - sl) if open_price and sl else 0),
+            "account_login": int(bot.get("account_login") or 0),
+            "account_id": str(row.get("account_id") or managed.get("account_id") or ""),
+            "symbol": symbol or str(row.get("symbol") or ""),
+        }
+        _save_managed_meta(bot_id, symbol or str(row.get("symbol") or ""), recovered)
     return row
 
 
+def _active_managed_positions(
+    bot: dict[str, Any],
+    positions: list[dict[str, Any]],
+    symbols: list[str],
+) -> list[dict[str, Any]]:
+    found: list[dict[str, Any]] = []
+    tickets: set[int] = set()
+    for symbol in symbols:
+        row = _managed_position({**bot, "symbol": symbol}, positions)
+        ticket = int((row or {}).get("ticket") or 0)
+        if row and ticket and ticket not in tickets:
+            tickets.add(ticket)
+            found.append(row)
+    return found
+
+
+def _max_concurrent_trades(bot: dict[str, Any], symbols: list[str]) -> int:
+    if len(symbols) <= 1:
+        return 1
+    settings = dict(bot.get("settings") or {})
+    if not bool(settings.get("multi_trade_enabled", False)):
+        return 1
+    try:
+        requested = int(settings.get("max_concurrent_trades") or 1)
+    except (TypeError, ValueError):
+        requested = 1
+    return max(1, min(requested, len(symbols), 10))
+
+
 def _manage_open_position(bot: dict[str, Any], positions: list[dict[str, Any]], m5: Series, symbol_info: dict[str, Any]) -> None:
+    symbol = str(bot.get("symbol") or "")
     pos = _managed_position(bot, positions)
-    managed = dict(bot.get("native_managed_position") or {})
+    latest_bot = _bot(int(bot["id"])) or bot
+    managed = dict(_managed_map(latest_bot).get(symbol) or {})
     if not pos:
         if managed.get("ticket"):
-            _patch_bot(int(bot["id"]), native_managed_position=None)
+            _save_managed_meta(int(bot["id"]), symbol, None)
         return
     ticket = int(pos.get("ticket") or 0)
     account_id = str(pos.get("account_id") or "")
@@ -380,7 +445,7 @@ def _manage_open_position(bot: dict[str, Any], positions: list[dict[str, Any]], 
                 changed = True
     if changed:
         managed["last_managed_at"] = _now()
-        _patch_bot(int(bot["id"]), native_managed_position=managed)
+        _save_managed_meta(int(bot["id"]), symbol, managed)
 
 def _execute(
     bot: dict[str, Any],
@@ -458,7 +523,17 @@ def _execute(
             "executed_at": _now(), "result": order, "engine": "native",
         }
         _record_attempt(int(bot["id"]), signal_key, "executed", ticket=ticket, volume=volume)
-        _patch_bot(int(bot["id"]), native_last_execution=execution, native_managed_position=managed)
+        executions = dict(bot.get("native_last_executions") or {})
+        executions[str(bot["symbol"])] = execution
+        managed_positions = _managed_map(bot)
+        managed_positions[str(bot["symbol"])] = managed
+        _patch_bot(
+            int(bot["id"]),
+            native_last_execution=execution,
+            native_last_executions=executions,
+            native_managed_positions=managed_positions,
+            native_managed_position=managed,
+        )
         return execution
     except Exception as exc:
         _record_attempt(int(bot["id"]), signal_key, "failed", error=str(exc), volume=volume)
@@ -507,15 +582,19 @@ def _cycle(bot_id: int, symbol_override: str | None = None, *, execute_allowed: 
     if original_signal_key:
         signal["signal_key"] = f"{symbol}:{original_signal_key}"
     positions = _positions(login)
-    managed = _managed_position(bot, positions)
+    runtime_bot = {**bot, "account_login": login, "symbol": symbol}
+    managed = _managed_position(runtime_bot, positions)
     canonical_exec = str((_preset(bot_id) or {}).get("entry_tf") or "M5").upper()
     if managed and str(managed.get("symbol") or "") == symbol:
         _manage_open_position(
-            {**bot, "symbol": symbol},
+            runtime_bot,
             positions,
             strategy_market.get(canonical_exec) or market["M5"],
             market["symbol_info"],
         )
+    selected_symbols = _selected_symbols(bot, config)
+    active_positions = _active_managed_positions(runtime_bot, positions, selected_symbols)
+    max_concurrent = _max_concurrent_trades(runtime_bot, selected_symbols)
     previous_runtime = dict(bot.get("native_runtime") or {})
     market_scans = dict(previous_runtime.get("market_scans") or {})
     market_scans[symbol] = {
@@ -526,12 +605,14 @@ def _cycle(bot_id: int, symbol_override: str | None = None, *, execute_allowed: 
         "direction": signal.get("direction"),
         "reason": signal.get("reason"),
         "error": None,
+        "in_trade": bool(managed),
     }
     runtime = {
-        **previous_runtime, "status": "managing" if managed else "running", "last_scan_at": _now(),
+        **previous_runtime, "status": "running", "last_scan_at": _now(),
         "last_signal": signal, "last_stage": signal.get("stage"), "last_score": signal.get("score"),
         "last_error": None, "account_login": login, "symbol": symbol,
-        "symbols": _selected_symbols(bot, config), "market_scans": market_scans,
+        "symbols": selected_symbols, "market_scans": market_scans,
+        "active_trade_count": len(active_positions), "max_concurrent_trades": max_concurrent,
     }
     _patch_bot(bot_id, native_signal=signal, native_runtime=runtime)
     result = {
@@ -540,17 +621,22 @@ def _cycle(bot_id: int, symbol_override: str | None = None, *, execute_allowed: 
         "score": float(signal.get("score") or signal.get("confidence") or 0),
         "valid": bool(signal.get("valid")),
         "market": market,
+        "in_trade": bool(managed),
+        "active_trade_count": len(active_positions),
+        "max_concurrent_trades": max_concurrent,
     }
     if not execute_allowed or not signal.get("valid"):
         return result
-    runtime_bot = {**(_bot(bot_id) or bot), "account_login": login, "symbol": symbol}
+    if managed:
+        result["execution_blocked"] = "A position is already open on this market."
+        return result
+    if len(active_positions) >= max_concurrent:
+        result["execution_blocked"] = f"Trade slots full ({len(active_positions)}/{max_concurrent}); scanner remains active."
+        return result
     ok, reason = _daily_guard(runtime_bot, account, positions)
     if not ok:
+        result["execution_blocked"] = reason
         _runtime(bot_id, status="guarded", last_error=reason)
-        return result
-    managed = _managed_position(runtime_bot, positions)
-    if managed:
-        _runtime(bot_id, status="managing", last_error=None)
         return result
     signal_key = str(signal.get("signal_key") or "")
     if signal_key and not _already_attempted(bot_id, signal_key):
@@ -592,13 +678,30 @@ def _runner(workspace_id: str, bot_id: int, stop_event: threading.Event) -> None
                         _runtime(bot_id, market_scans=market_scans, symbols=symbols)
                 latest = _bot(bot_id) or bot
                 login = int(config.get("account_login") or latest.get("account_login") or 0)
-                managed = _managed_position(latest, _positions(login)) if login else None
-                candidates = [row for row in results if row.get("valid")]
+                positions = _positions(login) if login else []
+                active_positions = _active_managed_positions(latest, positions, symbols) if login else []
+                max_concurrent = _max_concurrent_trades(latest, symbols)
+                candidates = sorted(
+                    [row for row in results if row.get("valid") and not row.get("in_trade")],
+                    key=lambda row: float(row.get("score") or 0),
+                    reverse=True,
+                )
+                _runtime(
+                    bot_id,
+                    active_trade_count=len(active_positions),
+                    max_concurrent_trades=max_concurrent,
+                    symbols=symbols,
+                )
                 if bot.get("status") == "paused":
                     _runtime(bot_id, status="paused", last_error=None)
-                elif not managed and candidates:
-                    winner = max(candidates, key=lambda row: float(row.get("score") or 0))
-                    _cycle(bot_id, str(winner["symbol"]), execute_allowed=True)
+                else:
+                    slots = max(0, max_concurrent - len(active_positions))
+                    for candidate in candidates:
+                        if slots <= 0:
+                            break
+                        outcome = _cycle(bot_id, str(candidate["symbol"]), execute_allowed=True)
+                        if outcome.get("execution"):
+                            slots -= 1
             except Exception as exc:
                 _runtime(bot_id, status="waiting", last_error=str(exc), last_error_at=_now())
             bot = _bot(bot_id) or {}

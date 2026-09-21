@@ -23,6 +23,8 @@ class CopyRequest(BaseModel):
     lot_mode: Literal["same", "fixed", "multiplier", "equity_proportional"] = "same"
     fixed_lot: float = 0.01
     multiplier: float = 1.0
+    trail_by_shoulders: bool = False
+    risk_reward_ratio: float = 2.0
     source_filter: Literal["all", "manual", "ea", "magic"] = "all"
     magic_number: Optional[int] = None
     poll_ms: int = 300

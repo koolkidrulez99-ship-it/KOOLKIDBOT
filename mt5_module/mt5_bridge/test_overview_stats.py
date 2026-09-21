@@ -19,8 +19,8 @@ def _row(login: int, day: str, value: float) -> dict:
 
 def test_overview_series_populates_daily_and_equity():
     accounts = [
-        {"login": 1, "equity": 1000.0},
-        {"login": 2, "equity": 500.0},
+        {"login": 1, "balance": 1000.0, "equity": 1020.0},
+        {"login": 2, "balance": 500.0, "equity": 490.0},
     ]
     history = [
         _row(1, _day(-2), 100.0),
@@ -31,14 +31,16 @@ def test_overview_series_populates_daily_and_equity():
     assert {row["date"]: row["pl"] for row in daily}[_day(-2)] == 100.0
     assert {row["date"]: row["pl"] for row in daily}[_day(-1)] == -50.0
     assert equity[-1]["date"] == _day(0)
-    assert equity[-1]["equity"] == 1500.0
+    assert equity[-1]["balance"] == 1500.0
+    assert equity[-1]["equity"] == 1510.0
+    assert equity[-2]["equity"] == equity[-2]["balance"]
     assert len(equity) >= 3
 
 
 def test_overview_equity_stops_before_impossible_balance_reset():
     accounts = [
-        {"login": 1, "equity": 100.0},
-        {"login": 2, "equity": 500.0},
+        {"login": 1, "balance": 100.0, "equity": 100.0},
+        {"login": 2, "balance": 500.0, "equity": 500.0},
     ]
     history = [
         _row(1, _day(-2), 1000.0),

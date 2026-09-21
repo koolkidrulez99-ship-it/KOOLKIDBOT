@@ -82,6 +82,13 @@ export default function RunningBotsPage() {
             const runningNow = b.status === 'running';
             const pausedNow = b.status === 'paused';
             const today = botLiveToday(b);
+            const nativeRuntime = (b.native_runtime || {}) as {
+              status?: string;
+              active_trade_count?: number;
+              max_concurrent_trades?: number;
+              market_scans?: Record<string, { symbol?: string; stage?: string; valid?: boolean; in_trade?: boolean; error?: string | null }>;
+            };
+            const marketScans = Object.values(nativeRuntime.market_scans || {});
             return (
               <Panel key={b.id} hover className="p-4 md:p-5">
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
@@ -102,11 +109,26 @@ export default function RunningBotsPage() {
                       {b.symbol} &middot; {b.timeframe} &middot; {b.native_engine ? 'source risk sizing' : `${b.lot_size.toFixed(2)} lots`} &middot; on <span className="text-slate-300">{accountName(b.account_login)}</span>
                     </p>
                     {b.native_engine ? (
-                      <p className="text-[10px] text-slate-600 mt-1">
-                        Engine: <span className="text-gain-400">KOOLKID Native</span>
-                        {' · '}Scanner: <span className={b.status === 'running' ? 'text-gain-400' : 'text-warn-400'}>{String((b.native_runtime as { status?: string } | null)?.status || b.status || 'starting')}</span>
-                        {' · '}Setup: <span className="text-slate-300">{String((b.native_signal as { stage?: string } | null)?.stage || 'SCANNING')}</span>
-                      </p>
+                      <>
+                        <p className="text-[10px] text-slate-600 mt-1">
+                          Engine: <span className="text-gain-400">KOOLKID Native</span>
+                          {' · '}Scanner: <span className={b.status === 'running' ? 'text-gain-400' : 'text-warn-400'}>{String(nativeRuntime.status || b.status || 'starting')}</span>
+                          {' · '}Setup: <span className="text-slate-300">{String((b.native_signal as { stage?: string } | null)?.stage || 'SCANNING')}</span>
+                          {marketScans.length > 1 ? <>{' · '}Trade slots: <span className="text-slate-300">{Number(nativeRuntime.active_trade_count || 0)}/{Number(nativeRuntime.max_concurrent_trades || 1)}</span></> : null}
+                        </p>
+                        {marketScans.length > 1 && (
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {marketScans.map((scan) => (
+                              <span
+                                key={String(scan.symbol)}
+                                className={`rounded-lg border px-2 py-1 text-[9px] font-semibold ${scan.error ? 'border-loss-500/25 bg-loss-500/[0.06] text-loss-300' : scan.in_trade ? 'border-gain-500/25 bg-gain-500/[0.06] text-gain-300' : 'border-white/[0.07] bg-white/[0.025] text-slate-400'}`}
+                              >
+                                {scan.symbol} · {scan.in_trade ? 'IN TRADE' : scan.error ? 'ERROR' : String(scan.stage || 'SCANNING')}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </>
                     ) : (
                       <p className="text-[10px] text-slate-600 mt-1">Terminal: <span className={b.terminal_status === 'online' ? 'text-gain-400' : 'text-loss-400'}>{b.terminal_status || 'unknown'}</span> · EA: <span className={b.ea_verified ? 'text-gain-400' : 'text-warn-400'}>{b.ea_verified ? 'verified active' : 'verifying'}</span>{b.last_activity ? ` · last EA activity ${new Date(b.last_activity).toLocaleString()}` : ''}</p>
                     )}

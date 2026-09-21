@@ -85,6 +85,26 @@ class CopyEngine:
         if p.get("side"): return str(p["side"]).lower()
         return "buy" if int(p.get("type") or 0) == 0 else "sell"
 
+    def shoulder_target(self, entry, sl, side):
+        if not bool((self.config or {}).get("trail_by_shoulders")):
+            return 0.0
+        entry = float(entry or 0)
+        sl = float(sl or 0)
+        ratio = max(1.0, float((self.config or {}).get("risk_reward_ratio") or 2.0))
+        if entry <= 0 or sl <= 0:
+            raise RuntimeError("Trail by Shoulders requires a valid master stop loss.")
+        risk = abs(entry - sl)
+        if risk <= 0:
+            raise RuntimeError("Trail by Shoulders requires a non-zero stop distance.")
+        side = str(side or "").lower()
+        if side == "buy":
+            if sl >= entry:
+                raise RuntimeError("Trail by Shoulders requires the BUY stop below entry.")
+            return entry + risk * ratio
+        if sl <= entry:
+            raise RuntimeError("Trail by Shoulders requires the SELL stop above entry.")
+        return entry - risk * ratio
+
     def account_budget(self, account_id):
         cfg = (self.state_store.load().get("accounts") or {}).get(str(account_id)) or {}
         value = cfg.get("budget")
@@ -155,12 +175,16 @@ class CopyEngine:
         master_id = str((self.config or {}).get("master_account_id") or "")
         volume = self.target_volume(pos, master_info, slave_info, master_id=master_id, slave_id=slave_id)
         tag = f"KKCOPY:{master_ticket}"[:31]
+        side = self.side(pos)
+        stop_loss = float(pos.get("sl") or 0)
+        master_entry = float(pos.get("price_open") or pos.get("open_price") or 0)
+        shoulder_tp = self.shoulder_target(master_entry, stop_loss, side)
         payload = {
             "symbol": symbol,
-            "side": self.side(pos),
+            "side": side,
             "volume": volume,
-            "sl": float(pos.get("sl") or 0),
-            "tp": float(pos.get("tp") or 0),
+            "sl": stop_loss,
+            "tp": shoulder_tp if shoulder_tp else float(pos.get("tp") or 0),
             "magic": COPY_MAGIC,
             "comment": tag,
         }
@@ -176,13 +200,35 @@ class CopyEngine:
         slave_ticket = int(result.get("ticket") or 0)
         if not slave_ticket:
             raise RuntimeError(f"Could not resolve slave ticket: {result}")
+
+        final_tp = float(payload.get("tp") or 0)
+        if bool((self.config or {}).get("trail_by_shoulders")):
+            slave_positions = self.pool.call(slave_id, "positions", timeout=10)
+            slave_pos = next((row for row in slave_positions if int(row.get("ticket") or 0) == slave_ticket), None)
+            fill_price = float((slave_pos or {}).get("price_open") or (slave_pos or {}).get("open_price") or result.get("price") or master_entry)
+            final_tp = self.shoulder_target(fill_price, stop_loss, side)
+            self.pool.call(
+                slave_id,
+                "modify_position",
+                {"ticket": slave_ticket, "sl": stop_loss, "tp": final_tp},
+                timeout=15,
+            )
+
         self.copy_map.setdefault(master_ticket, {})[slave_id] = {
             "ticket": slave_ticket,
-            "last_sl": float(pos.get("sl") or 0),
-            "last_tp": float(pos.get("tp") or 0),
+            "last_sl": stop_loss,
+            "last_tp": final_tp,
+            "trail_by_shoulders": bool((self.config or {}).get("trail_by_shoulders")),
         }
         self.persist_map()
-        self.log("copied_open", master_ticket=master_ticket, slave=slave_id, slave_ticket=slave_ticket)
+        self.log(
+            "copied_open",
+            master_ticket=master_ticket,
+            slave=slave_id,
+            slave_ticket=slave_ticket,
+            trail_by_shoulders=bool((self.config or {}).get("trail_by_shoulders")),
+            target_tp=final_tp,
+        )
         return {"ok": True, "ticket": slave_ticket}
 
     def pending_items(self):
@@ -299,19 +345,25 @@ class CopyEngine:
                                     self.ignored.add(master_ticket)
                                 self.log("copy_error", master_ticket=master_ticket, error=str(exc))
 
-                    # Sync SL/TP.
+                    # Sync protection. In Trail by Shoulders mode, the master SL
+                    # continues to trail the slave while the slave keeps its own fixed 2R TP.
                     for master_ticket, pos in current.items():
                         for slave_id, meta in self.copy_map.get(master_ticket, {}).items():
                             if slave_id not in cfg["slave_account_ids"]:
                                 continue
                             sl = float(pos.get("sl") or 0)
-                            tp = float(pos.get("tp") or 0)
-                            if sl != float(meta.get("last_sl") or 0) or tp != float(meta.get("last_tp") or 0):
+                            shoulder_mode = bool(meta.get("trail_by_shoulders") or cfg.get("trail_by_shoulders"))
+                            tp = float(meta.get("last_tp") or 0) if shoulder_mode else float(pos.get("tp") or 0)
+                            sl_changed = sl != float(meta.get("last_sl") or 0)
+                            tp_changed = (not shoulder_mode) and tp != float(meta.get("last_tp") or 0)
+                            if sl_changed or tp_changed:
                                 try:
                                     self.pool.call(slave_id, "modify_position", {"ticket": int(meta["ticket"]), "sl": sl, "tp": tp})
-                                    meta["last_sl"], meta["last_tp"] = sl, tp
+                                    meta["last_sl"] = sl
+                                    if not shoulder_mode:
+                                        meta["last_tp"] = tp
                                     self.persist_map()
-                                    self.log("copied_modify", master_ticket=master_ticket, slave=slave_id)
+                                    self.log("copied_modify", master_ticket=master_ticket, slave=slave_id, trail_by_shoulders=shoulder_mode)
                                 except Exception as exc:
                                     self.log("copy_error", master_ticket=master_ticket, slave=slave_id, error=str(exc))
 

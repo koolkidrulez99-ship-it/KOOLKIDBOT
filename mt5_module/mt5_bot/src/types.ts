@@ -41,6 +41,8 @@ export interface BotSettings {
   max_daily_loss: number;
   slippage?: number;
   max_open_positions?: number;
+  multi_trade_enabled?: boolean;
+  max_concurrent_trades?: number;
   trading_session?: string;
 }
 
@@ -281,6 +283,7 @@ export interface CopyState {
 
 export interface EquityPoint {
   date: string;
+  balance: number;
   equity: number;
   daily_pl: number;
 }

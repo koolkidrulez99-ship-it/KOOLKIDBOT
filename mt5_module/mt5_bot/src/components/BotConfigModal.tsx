@@ -45,6 +45,8 @@ export default function BotConfigModal({
   const [maxSpread, setMaxSpread] = useState('3.5');
   const [maxDailyLoss, setMaxDailyLoss] = useState('250');
   const [maxOpenPositions, setMaxOpenPositions] = useState('3');
+  const [multiTradeEnabled, setMultiTradeEnabled] = useState(false);
+  const [maxConcurrentTrades, setMaxConcurrentTrades] = useState('1');
   const [tradingSession, setTradingSession] = useState('All Sessions');
   const [trailing, setTrailing] = useState(true);
   const [confirmLive, setConfirmLive] = useState(false);
@@ -78,6 +80,8 @@ export default function BotConfigModal({
     setMaxSpread(String(bot.settings?.max_spread ?? 3.5));
     setMaxDailyLoss(String(bot.settings?.max_daily_loss ?? 250));
     setMaxOpenPositions(String(bot.settings?.max_open_positions ?? 3));
+    setMultiTradeEnabled(Boolean(bot.settings?.multi_trade_enabled ?? false));
+    setMaxConcurrentTrades(String(bot.settings?.max_concurrent_trades ?? 1));
     setTradingSession(String(bot.settings?.trading_session ?? 'All Sessions'));
     setTrailing(Boolean(bot.settings?.trailing_stop ?? true));
     setConfirmLive(false);
@@ -101,6 +105,10 @@ export default function BotConfigModal({
     if (forStart && nativePreset && !nativeReady) errs.push('This preset needs its MQ5 source before native execution can be started.');
     const maxOpenNum = Number(maxOpenPositions);
     if (!maxOpenNum || maxOpenNum < 1 || maxOpenNum > 100) errs.push('Maximum open positions must be between 1 and 100.');
+    const maxConcurrentNum = marketMode === 'multi' && multiTradeEnabled ? Number(maxConcurrentTrades) : 1;
+    if (!maxConcurrentNum || maxConcurrentNum < 1 || maxConcurrentNum > Math.min(10, effectiveSymbols.length)) {
+      errs.push(`Simultaneous trades must be between 1 and ${Math.min(10, effectiveSymbols.length)} for the selected markets.`);
+    }
     if (!accountLogin) errs.push('Assign a connected MT5 account.');
     if (forStart && selectedAccount?.account_type === 'live' && !liveConfirmed) errs.push('Confirm the LIVE-account risk warning before starting this bot.');
     if (forStart && bot.dll_required && !allowDll) errs.push('This EA requires explicit DLL-import approval.');
@@ -113,6 +121,8 @@ export default function BotConfigModal({
       max_spread: Number(maxSpread) || 3.5,
       max_daily_loss: Number(maxDailyLoss) || 250,
       max_open_positions: maxOpenNum,
+      multi_trade_enabled: marketMode === 'multi' && multiTradeEnabled,
+      max_concurrent_trades: Math.max(1, Math.min(10, maxConcurrentNum)),
       trading_session: tradingSession,
       trailing_stop: trailing,
     };
@@ -164,7 +174,7 @@ export default function BotConfigModal({
         'success',
         `${bot.name} started`,
         nativePreset
-          ? `${marketLabel} · native scanner · one active trade per bot`
+          ? `${marketLabel} · native scanner · ${marketMode === 'multi' && multiTradeEnabled ? `${Math.max(1, Number(maxConcurrentTrades) || 1)} trade slots` : '1 trade slot'} · all markets keep scanning`
           : `${marketLabel} · ${timeframe} · ${selectedMarkets.length} isolated EA instance${selectedMarkets.length === 1 ? '' : 's'}`,
       );
       await refresh(true);
@@ -295,6 +305,40 @@ export default function BotConfigModal({
           <p className="mt-1 text-[10px] text-slate-600">
             Markets come directly from the selected MT5 account. Native presets scan all selected markets from one engine; uploaded EAs run one isolated market instance per selection.
           </p>
+          {nativePreset && marketMode === 'multi' && (
+            <div className="mt-3 rounded-xl border border-white/[0.07] bg-white/[0.025] p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-[12px] font-bold text-slate-200">Concurrent trades</p>
+                  <p className="mt-0.5 text-[10px] text-slate-600">All selected markets keep scanning even when every trade slot is occupied.</p>
+                </div>
+                <Toggle on={multiTradeEnabled} onChange={setMultiTradeEnabled} />
+              </div>
+              <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => { setMultiTradeEnabled(false); setMaxConcurrentTrades('1'); }}
+                  className={`rounded-lg border px-3 py-2 text-xs font-bold ${!multiTradeEnabled ? 'border-brand-500/50 bg-brand-500/10 text-brand-200' : 'border-white/[0.08] bg-white/[0.03] text-slate-400'}`}
+                >
+                  One trade total
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setMultiTradeEnabled(true); if (Number(maxConcurrentTrades) < 2) setMaxConcurrentTrades('2'); }}
+                  className={`rounded-lg border px-3 py-2 text-xs font-bold ${multiTradeEnabled ? 'border-brand-500/50 bg-brand-500/10 text-brand-200' : 'border-white/[0.08] bg-white/[0.03] text-slate-400'}`}
+                >
+                  Multiple markets
+                </button>
+              </div>
+              {multiTradeEnabled && (
+                <div className="mt-3">
+                  <label className="label">Maximum simultaneous trades</label>
+                  <NumberStepper value={maxConcurrentTrades} onChange={setMaxConcurrentTrades} min={1} max={Math.max(1, Math.min(10, symbols.length))} step={1} decimals={0} />
+                  <p className="mt-1 text-[10px] text-slate-600">Maximum one open position per selected market for this bot.</p>
+                </div>
+              )}
+            </div>
+          )}
         </div>
         <div>
           <label className="label">Timeframe</label>

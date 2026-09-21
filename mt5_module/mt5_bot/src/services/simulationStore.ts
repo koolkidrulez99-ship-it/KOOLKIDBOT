@@ -667,12 +667,13 @@ export async function simStats(): Promise<Mt5Stats> {
     const dailyMap = new Map<string, number>();
     for (const h of state.history) dailyMap.set(h.close_time.slice(0, 10), money((dailyMap.get(h.close_time.slice(0, 10)) || 0) + h.profit));
     const rangeRealized = dates.reduce((sum, date) => sum + (dailyMap.get(date) || 0), 0);
-    let curveEquity = money(totalEquity - floating - rangeRealized);
+    let curveBalance = money(totalBalance - rangeRealized);
     const equity = dates.map((date, idx) => {
       const dailyPl = dailyMap.get(date) || 0;
-      curveEquity = money(curveEquity + dailyPl);
-      const endEquity = idx === dates.length - 1 ? totalEquity : curveEquity;
-      return { date, equity: endEquity, daily_pl: dailyPl };
+      curveBalance = money(curveBalance + dailyPl);
+      const endBalance = idx === dates.length - 1 ? totalBalance : curveBalance;
+      const endEquity = idx === dates.length - 1 ? totalEquity : endBalance;
+      return { date, balance: endBalance, equity: endEquity, daily_pl: dailyPl };
     });
     const peakEquity = equity.reduce((peak, point) => Math.max(peak, point.equity), equity[0]?.equity || totalEquity);
     const drawdownPct = peakEquity > 0 ? Number((((peakEquity - totalEquity) / peakEquity) * 100).toFixed(2)) : 0;
