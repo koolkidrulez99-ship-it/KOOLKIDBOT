@@ -31,6 +31,8 @@ _CORE_POOL = Pool()
 _SESSION_STOP = threading.Event()
 _RUNTIMES: dict[str, "WorkspaceRuntime"] = {}
 _RUNTIMES_LOCK = threading.RLock()
+_REAPER_STARTED = False
+WORKSPACE_IDLE_SECONDS = max(60, int(os.getenv("MT5_WORKSPACE_IDLE_SECONDS", "300")))
 
 
 class ScopedPool:
@@ -46,11 +48,15 @@ class ScopedPool:
 
     @property
     def items(self):
-        return {self._external(aid): runtime for aid, runtime in _CORE_POOL.items.items() if str(runtime.config.get("_workspace") or "") == self.workspace_id}
+        with _CORE_POOL.lock:
+            items = list(_CORE_POOL.items.items())
+        return {self._external(aid): runtime for aid, runtime in items if str(runtime.config.get("_workspace") or "") == self.workspace_id}
 
     @property
     def pending(self):
-        return {self._external(aid): value for aid, value in _CORE_POOL.pending.items() if aid.startswith(f"{self.workspace_id}--")}
+        with _CORE_POOL.lock:
+            pending = list(_CORE_POOL.pending.items())
+        return {self._external(aid): value for aid, value in pending if aid.startswith(f"{self.workspace_id}--")}
 
     def connect(self, cfg, password=""):
         external = str(cfg["account_id"])
@@ -94,7 +100,16 @@ class WorkspaceRuntime:
         self.copy = self.copy_groups["1"]
         self.copy_restore_lock = threading.Lock()
         self.session_backoff: dict[str, dict[str, object]] = {}
+        self.session_stop = threading.Event()
+        self.last_activity = time.time()
+        self.read_cache: dict[str, tuple[float, object]] = {}
+        self.read_cache_lock = threading.RLock()
+        self.accounts_snapshot_lock = threading.Lock()
+        self.positions_snapshot_lock = threading.Lock()
         self.started = False
+
+    def touch(self) -> None:
+        self.last_activity = time.time()
 
 
 def _runtime() -> WorkspaceRuntime:
@@ -116,6 +131,32 @@ STATE = _RuntimeProxy("state")
 CREDENTIALS = _RuntimeProxy("credentials")
 POOL = _RuntimeProxy("pool")
 COPY = _RuntimeProxy("copy")
+
+
+def _snapshot_cache_get(runtime: WorkspaceRuntime, key: str, ttl: float):
+    now = time.monotonic()
+    with runtime.read_cache_lock:
+        item = runtime.read_cache.get(key)
+        if not item:
+            return None
+        created_at, value = item
+        if now - created_at > ttl:
+            runtime.read_cache.pop(key, None)
+            return None
+        return value
+
+
+def _snapshot_cache_set(runtime: WorkspaceRuntime, key: str, value):
+    with runtime.read_cache_lock:
+        runtime.read_cache[key] = (time.monotonic(), value)
+    return value
+
+
+def _snapshot_cache_clear(runtime: WorkspaceRuntime, *keys: str) -> None:
+    with runtime.read_cache_lock:
+        for key in keys:
+            runtime.read_cache.pop(key, None)
+
 
 def _copy_group(group_id: str = "1") -> CopyEngine:
     key = "2" if str(group_id) == "2" else "1"
@@ -180,6 +221,8 @@ async def require_workspace(request: Request, call_next):
         return JSONResponse(status_code=401, content={"detail": "Sign in to your MT5 Hub workspace."})
     token = set_workspace(workspace_id)
     try:
+        runtime = _runtime()
+        runtime.touch()
         _start_workspace(workspace_id)
         return await call_next(request)
     finally:
@@ -194,6 +237,20 @@ def _saved_real_accounts():
         if cfg.get("auto_reconnect", True) is False:
             continue
         rows.append(dict(cfg))
+
+    preferred: list[str] = []
+    for group_id in ("1", "2"):
+        if not state.get(_copy_state_key("copy_enabled", group_id)):
+            continue
+        cfg = state.get(_copy_state_key("copy_config", group_id))
+        if not isinstance(cfg, dict):
+            continue
+        for aid in [cfg.get("master_account_id"), *(cfg.get("slave_account_ids") or [])]:
+            key = str(aid or "")
+            if key and key not in preferred:
+                preferred.append(key)
+    order = {aid: index for index, aid in enumerate(preferred)}
+    rows.sort(key=lambda cfg: (order.get(str(cfg.get("account_id") or ""), len(order)), str(cfg.get("account_id") or "")))
     return rows
 
 
@@ -257,11 +314,21 @@ def _restore_copy_groups_if_ready():
                     engine.log("restore_error", error=str(exc))
 
 
+def _runtime_requires_persistence(runtime: WorkspaceRuntime) -> bool:
+    state = runtime.state.load()
+    return bool(
+        state.get("copy_enabled")
+        or state.get("copy_enabled_2")
+        or any(engine.status == "running" for engine in runtime.copy_groups.values())
+    )
+
+
 def keep_saved_sessions_connected():
     # If the broker/network/terminal is unavailable during startup, do not give up
     # after three attempts. Keep trying with bounded backoff until the saved account
     # is back online or the user explicitly disconnects/removes it.
-    while not _SESSION_STOP.wait(5):
+    runtime = _runtime()
+    while not _SESSION_STOP.is_set() and not runtime.session_stop.wait(5):
         now = time.time()
         saved = {str(cfg.get("account_id") or ""): cfg for cfg in _saved_real_accounts()}
         backoff = _runtime().session_backoff
@@ -285,13 +352,51 @@ def keep_saved_sessions_connected():
         _restore_copy_groups_if_ready()
 
 
+def _workspace_saved_copy_enabled(workspace_id: str) -> bool:
+    state = State(BASE / "data" / "workspaces" / workspace_id / "state.json").load()
+    return bool(state.get("copy_enabled") or state.get("copy_enabled_2"))
+
+
+def _release_idle_workspace(runtime: WorkspaceRuntime) -> bool:
+    if not runtime.started or _runtime_requires_persistence(runtime):
+        return False
+    if time.time() - float(runtime.last_activity or 0) < WORKSPACE_IDLE_SECONDS:
+        return False
+
+    runtime.session_stop.set()
+    for aid in list(runtime.pool.ids()):
+        try:
+            runtime.pool.disconnect(aid)
+        except Exception:
+            pass
+    runtime.session_backoff.clear()
+    runtime.started = False
+    return True
+
+
+def _workspace_reaper():
+    while not _SESSION_STOP.wait(30):
+        with _RUNTIMES_LOCK:
+            runtimes = list(_RUNTIMES.values())
+        for runtime in runtimes:
+            try:
+                _release_idle_workspace(runtime)
+            except Exception:
+                pass
+
+
 @app.on_event("startup")
 def startup_restore():
+    global _REAPER_STARTED
+    if not _REAPER_STARTED:
+        _REAPER_STARTED = True
+        threading.Thread(target=_workspace_reaper, daemon=True, name="KOOLKID-MT5-Workspace-Reaper").start()
     if os.getenv("MT5_SKIP_SESSION_RESTORE", "").strip().lower() in {"1", "true", "yes", "on"}:
         return
     users_file = BASE.parent / "mt5_bridge" / "data" / "mt5_hub_users.json"
     for workspace_id in workspace_ids(users_file):
-        _start_workspace(workspace_id)
+        if _workspace_saved_copy_enabled(workspace_id):
+            _start_workspace(workspace_id)
 
 
 def _start_workspace(workspace_id: str) -> None:
@@ -302,21 +407,25 @@ def _start_workspace(workspace_id: str) -> None:
             _RUNTIMES[workspace_id] = runtime
         if runtime.started:
             return
+        runtime.session_stop.clear()
+        runtime.touch()
         runtime.started = True
 
-    def run_in_workspace(fn, name):
-        def runner():
-            token = set_workspace(workspace_id)
-            try:
-                fn()
-                if fn is restore_saved_sessions:
-                    _restore_copy_groups_if_ready()
-            finally:
-                reset_workspace(token)
-        threading.Thread(target=runner, daemon=True, name=name).start()
+    def session_manager():
+        token = set_workspace(workspace_id)
+        try:
+            restore_saved_sessions()
+            _restore_copy_groups_if_ready()
+            if not runtime.session_stop.is_set() and not _SESSION_STOP.is_set():
+                keep_saved_sessions_connected()
+        finally:
+            reset_workspace(token)
 
-    run_in_workspace(restore_saved_sessions, f"KOOLKID-MT5-Session-Restore-{workspace_id[:8]}")
-    run_in_workspace(keep_saved_sessions_connected, f"KOOLKID-MT5-Persistent-Sessions-{workspace_id[:8]}")
+    threading.Thread(
+        target=session_manager,
+        daemon=True,
+        name=f"KOOLKID-MT5-Session-Manager-{workspace_id[:8]}",
+    ).start()
 
 def bad(exc):
     message = str(exc)
@@ -506,7 +615,7 @@ def health():
     return {
         "ok": True,
         "service": "mt5-multi-account-worker",
-        "revision": "mt5-routing-v5",
+        "revision": "mt5-routing-v8",
     }
 
 @app.post("/demo/bootstrap")
@@ -669,58 +778,75 @@ def remove_account(account_id: str):
 @app.get("/accounts")
 def accounts():
     runtime = _runtime()
-    pool = runtime.pool
-    credentials = runtime.credentials
-    s = runtime.state.load()
-    def snapshot(item):
-        aid, cfg = item
-        row = dict(cfg)
-        row.update(pool.status(aid))
-        masters = [s.get(_copy_state_key("master", gid)) for gid in ("1", "2")]
-        slave_lists = [s.get(_copy_state_key("slaves", gid), []) for gid in ("1", "2")]
-        row["is_master"] = aid in masters
-        row["is_slave"] = any(aid in values for values in slave_lists)
-        row["remembered"] = credentials.has(aid)
-        row["access_mode"] = str(cfg.get("access_mode") or "trading")
-        row["read_only"] = row["access_mode"] == "investor"
-        row["auto_reconnect"] = cfg.get("auto_reconnect", True) is not False
-        row["budget"] = cfg.get("budget")
-        row["budget_enabled"] = cfg.get("budget") is not None
-        if row.get("connected"):
-            try:
-                row["account_info"] = pool.call(aid, "account_info", timeout=2)
-                row["last_heartbeat"] = time.time()
-            except Exception as exc:
-                status = pool.status(aid)
-                cached = pool.cached(aid, "account_info", {})
-                if cached:
-                    row["account_info"] = cached
-                row.update({"connected": bool(status.get("connected")), "connecting": bool(status.get("connecting")), "recovering": bool(status.get("recovering")), "busy": bool(status.get("connected")), "error": str(exc)})
-        return row
-    items = list(s.get("accounts", {}).items())[:10]
-    with ThreadPoolExecutor(max_workers=len(items) or 1) as executor:
-        rows = list(executor.map(snapshot, items))
-    groups = {
-        gid: {
-            "group_id": gid,
-            "master": s.get(_copy_state_key("master", gid)),
-            "slaves": s.get(_copy_state_key("slaves", gid), []),
-            "enabled": bool(s.get(_copy_state_key("copy_enabled", gid))),
+    cached = _snapshot_cache_get(runtime, "accounts", 0.8)
+    if cached is not None:
+        return cached
+
+    with runtime.accounts_snapshot_lock:
+        cached = _snapshot_cache_get(runtime, "accounts", 0.8)
+        if cached is not None:
+            return cached
+
+        pool = runtime.pool
+        credentials = runtime.credentials
+        s = runtime.state.load()
+
+        def snapshot(item):
+            aid, cfg = item
+            row = dict(cfg)
+            row.update(pool.status(aid))
+            masters = [s.get(_copy_state_key("master", gid)) for gid in ("1", "2")]
+            slave_lists = [s.get(_copy_state_key("slaves", gid), []) for gid in ("1", "2")]
+            row["is_master"] = aid in masters
+            row["is_slave"] = any(aid in values for values in slave_lists)
+            row["remembered"] = credentials.has(aid)
+            row["access_mode"] = str(cfg.get("access_mode") or "trading")
+            row["read_only"] = row["access_mode"] == "investor"
+            row["auto_reconnect"] = cfg.get("auto_reconnect", True) is not False
+            row["budget"] = cfg.get("budget")
+            row["budget_enabled"] = cfg.get("budget") is not None
+            if row.get("connected"):
+                try:
+                    row["account_info"] = pool.call(aid, "account_info", timeout=2)
+                    row["last_heartbeat"] = time.time()
+                except Exception as exc:
+                    status = pool.status(aid)
+                    account_info = pool.cached(aid, "account_info", {})
+                    if account_info:
+                        row["account_info"] = account_info
+                    row.update({"connected": bool(status.get("connected")), "connecting": bool(status.get("connecting")), "recovering": bool(status.get("recovering")), "busy": bool(status.get("connected")), "error": str(exc)})
+            return row
+
+        items = list(s.get("accounts", {}).items())[:10]
+        with ThreadPoolExecutor(max_workers=len(items) or 1) as executor:
+            rows = list(executor.map(snapshot, items))
+        groups = {
+            gid: {
+                "group_id": gid,
+                "master": s.get(_copy_state_key("master", gid)),
+                "slaves": s.get(_copy_state_key("slaves", gid), []),
+                "enabled": bool(s.get(_copy_state_key("copy_enabled", gid))),
+            }
+            for gid in ("1", "2")
         }
-        for gid in ("1", "2")
-    }
-    return {
-        "accounts": rows,
-        "master": groups["1"]["master"],
-        "slaves": groups["1"]["slaves"],
-        "groups": groups,
-    }
+        result = {
+            "accounts": rows,
+            "master": groups["1"]["master"],
+            "slaves": groups["1"]["slaves"],
+            "groups": groups,
+        }
+        return _snapshot_cache_set(runtime, "accounts", result)
 
 @app.get("/accounts/{account_id}/quotes")
 def account_quotes(account_id: str, symbols: str = Query(default="")):
     try:
+        runtime = _runtime()
         requested = [item.strip() for item in symbols.split(",") if item.strip()]
-        return POOL.call(account_id, "quotes", {"symbols": requested}, timeout=8)
+        key = f"quotes:{account_id}:{','.join(requested)}"
+        cached = _snapshot_cache_get(runtime, key, 0.25)
+        if cached is not None:
+            return cached
+        return _snapshot_cache_set(runtime, key, runtime.pool.call(account_id, "quotes", {"symbols": requested}, timeout=8))
     except Exception as exc:
         bad(exc)
 
@@ -734,21 +860,38 @@ def account_symbols(account_id: str, visible_only: bool = True, limit: int = 100
 @app.get("/accounts/{account_id}/symbol-info/{symbol}")
 def account_symbol_info(account_id: str, symbol: str):
     try:
-        return POOL.call(account_id, "symbol_info", {"symbol": symbol}, timeout=8)
+        runtime = _runtime()
+        key = f"symbol-info:{account_id}:{symbol}"
+        cached = _snapshot_cache_get(runtime, key, 15.0)
+        if cached is not None:
+            return cached
+        return _snapshot_cache_set(runtime, key, runtime.pool.call(account_id, "symbol_info", {"symbol": symbol}, timeout=8))
     except Exception as exc:
         bad(exc)
 
 @app.get("/accounts/{account_id}/candles/{symbol}")
 def account_candles(account_id: str, symbol: str, timeframe: str = "M15", count: int = 220):
     try:
-        return POOL.call(account_id, "candles", {"symbol": symbol, "timeframe": timeframe, "count": count}, timeout=12)
+        runtime = _runtime()
+        key = f"candles:{account_id}:{symbol}:{timeframe}:{int(count)}"
+        cached = _snapshot_cache_get(runtime, key, 1.0)
+        if cached is not None:
+            return cached
+        value = runtime.pool.call(account_id, "candles", {"symbol": symbol, "timeframe": timeframe, "count": count}, timeout=12)
+        return _snapshot_cache_set(runtime, key, value)
     except Exception as exc:
         bad(exc)
 
 @app.get("/accounts/{account_id}/history")
 def account_history(account_id: str, days: int = 30):
     try:
-        return POOL.call(account_id, "history", {"days": days}, timeout=15)
+        runtime = _runtime()
+        key = f"history:{account_id}:{int(days)}"
+        cached = _snapshot_cache_get(runtime, key, 5.0)
+        if cached is not None:
+            return cached
+        value = runtime.pool.call(account_id, "history", {"days": days}, timeout=15)
+        return _snapshot_cache_set(runtime, key, value)
     except Exception as exc:
         bad(exc)
 
@@ -923,19 +1066,24 @@ def manual_trade(req: ManualTradeRequest):
     finally:
         for engine in copy_engines:
             engine.resume_after_execution()
+    _snapshot_cache_clear(runtime, "positions", "accounts")
     return {"results": out, "backend_received_at": backend_received_at, "backend_result_at": time.time()}
 
 @app.post("/positions/modify")
 def modify_position(req: ModifyPositionRequest):
     try:
-        return POOL.call(req.account_id, "modify_position", {"ticket": req.ticket, "sl": req.sl, "tp": req.tp}, timeout=15)
+        result = POOL.call(req.account_id, "modify_position", {"ticket": req.ticket, "sl": req.sl, "tp": req.tp}, timeout=15)
+        _snapshot_cache_clear(_runtime(), "positions")
+        return result
     except Exception as exc:
         bad(exc)
 
 @app.post("/positions/close-partial")
 def close_partial(req: PartialCloseRequest):
     try:
-        return POOL.call(req.account_id, "close_partial", {"ticket": req.ticket, "volume": req.volume}, timeout=20)
+        result = POOL.call(req.account_id, "close_partial", {"ticket": req.ticket, "volume": req.volume}, timeout=20)
+        _snapshot_cache_clear(_runtime(), "positions", "accounts")
+        return result
     except Exception as exc:
         bad(exc)
 
@@ -956,30 +1104,47 @@ def close_many(req: MultiCloseRequest):
         for future in as_completed([executor.submit(submit, target) for target in targets]):
             aid, result = future.result()
             out[aid] = result
+    _snapshot_cache_clear(_runtime(), "positions", "accounts")
     return {"results": out, "backend_received_at": received, "backend_result_at": time.time()}
 
 @app.get("/positions")
 def positions():
-    rows, errors = [], {}
-    for aid in POOL.ids():
-        try:
-            for p in POOL.call(aid, "positions"):
-                p = dict(p)
-                p["account_id"] = aid
-                p["account_login"] = int(POOL.items[aid].config.get("login") or 0)
-                p["account_nickname"] = str(POOL.items[aid].config.get("nickname") or aid)
-                magic = int(p.get("magic") or 0)
-                comment = str(p.get("comment") or "")
-                p["source"] = "native" if comment.startswith("KKN") else ("manual" if magic == 0 else ("copy" if magic == COPY_MAGIC else "ea"))
-                rows.append(p)
-        except Exception as exc:
-            errors[aid] = str(exc)
-    return {"positions": rows, "errors": errors}
+    runtime = _runtime()
+    cached = _snapshot_cache_get(runtime, "positions", 0.5)
+    if cached is not None:
+        return cached
+
+    with runtime.positions_snapshot_lock:
+        cached = _snapshot_cache_get(runtime, "positions", 0.5)
+        if cached is not None:
+            return cached
+
+        rows, errors = [], {}
+        pool = runtime.pool
+        pool_items = pool.items
+        for aid in pool.ids():
+            try:
+                for position in pool.call(aid, "positions"):
+                    position = dict(position)
+                    position["account_id"] = aid
+                    runtime_row = pool_items.get(aid)
+                    config = runtime_row.config if runtime_row else {}
+                    position["account_login"] = int(config.get("login") or 0)
+                    position["account_nickname"] = str(config.get("nickname") or aid)
+                    magic = int(position.get("magic") or 0)
+                    comment = str(position.get("comment") or "")
+                    position["source"] = "native" if comment.startswith("KKN") else ("manual" if magic == 0 else ("copy" if magic == COPY_MAGIC else "ea"))
+                    rows.append(position)
+            except Exception as exc:
+                errors[aid] = str(exc)
+        return _snapshot_cache_set(runtime, "positions", {"positions": rows, "errors": errors})
 
 @app.post("/positions/close")
 def close(req: CloseRequest):
     try:
-        return POOL.call(req.account_id, "close_position", {"ticket": req.ticket}, timeout=35)
+        result = POOL.call(req.account_id, "close_position", {"ticket": req.ticket}, timeout=35)
+        _snapshot_cache_clear(_runtime(), "positions", "accounts")
+        return result
     except TimeoutError:
         try:
             positions = POOL.call(req.account_id, "positions", timeout=15)

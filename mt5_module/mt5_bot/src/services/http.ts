@@ -1,6 +1,6 @@
 import { apiBase, isSimulation } from '../config/runtime';
 
-const localBridgeBase = 'http://127.0.0.1:8000';
+const localBridgeBase = 'http://127.0.0.1:5055/mt5-api';
 let resolvedBridgeBase: string | null =
   window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost'
     ? localBridgeBase
@@ -18,7 +18,7 @@ async function resolveBridgeBase(): Promise<string> {
   if (resolvingBridgeBase) return resolvingBridgeBase;
   resolvingBridgeBase = (async () => {
     const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), 450);
+    const timer = window.setTimeout(() => controller.abort(), 1200);
     try {
       const response = await fetch(`${localBridgeBase}/health`, {
         method: 'GET',

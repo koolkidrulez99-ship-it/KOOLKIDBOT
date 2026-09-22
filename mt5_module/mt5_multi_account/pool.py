@@ -245,7 +245,9 @@ class Pool:
         return rt.cache.get(op, default) if rt else default
 
     def ids(self):
-        return [aid for aid,rt in self.items.items() if rt.process.is_alive()]
+        with self.lock:
+            items = list(self.items.items())
+        return [aid for aid, rt in items if rt.process.is_alive()]
 
     def status(self, aid):
         rt=self.items.get(aid)

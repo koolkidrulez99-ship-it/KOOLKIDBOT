@@ -1,5 +1,5 @@
 const isLocalHost = window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost';
-const localMultiBase = 'http://127.0.0.1:8002';
+const localMultiBase = 'http://127.0.0.1:5055/mt5-multi';
 const publicMultiBase = String(import.meta.env.VITE_MT5_MULTI_ACCOUNT_API_BASE || 'http://127.0.0.1:8002').replace(/\/$/, '');
 let resolvedMultiBase: string | null = isLocalHost ? localMultiBase : null;
 let resolvingMultiBase: Promise<string> | null = null;
@@ -9,7 +9,7 @@ async function resolveMultiBase(): Promise<string> {
   if (resolvingMultiBase) return resolvingMultiBase;
   resolvingMultiBase = (async () => {
     const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), 450);
+    const timer = window.setTimeout(() => controller.abort(), 1200);
     try {
       const response = await fetch(`${localMultiBase}/health`, {
         method: 'GET',

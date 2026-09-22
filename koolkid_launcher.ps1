@@ -91,7 +91,7 @@ if ($Action -eq 'Stop') {
 
 Write-Host 'Starting KOOLKID local services...'
 
-$serviceRevision = 'mt5-routing-v5'
+$serviceRevision = 'mt5-routing-v8'
 $bridgeRevision = 'mt5-bridge-ea-v6'
 $eaWorkerRevision = 'mt5-ea-native-v6'
 if ((Test-Url $multiHealth) -and !(Test-Revision $multiHealth $serviceRevision)) {

@@ -20,6 +20,11 @@ DIST_DIR = BASE_DIR / "mt5_bot" / "dist"
 
 
 def _proxy_mt5_request(upstream_base: str, upstream_path: str) -> Response:
+    # Browser private-network/CORS preflights must terminate on the local
+    # Flask proxy. Forwarding OPTIONS into an older MT5 worker can return
+    # 400 before the browser is allowed to use the fast local route.
+    if request.method == "OPTIONS":
+        return Response(status=204)
     query = request.query_string.decode("utf-8")
     url = f"{upstream_base.rstrip('/')}/{upstream_path}"
     if query:
@@ -48,6 +53,26 @@ def create_mt5_blueprint(
     bp = Blueprint("mt5_hub", __name__)
     bridge_url = os.getenv("MT5_BRIDGE_PROXY_URL", "http://127.0.0.1:8003")
     multi_url = os.getenv("MT5_MULTI_PROXY_URL", "http://127.0.0.1:8002")
+    local_browser_origins = {
+        "https://koolkidbot.org",
+        "https://www.koolkidbot.org",
+        "http://127.0.0.1:5055",
+        "http://localhost:5055",
+    }
+
+    @bp.after_request
+    def allow_local_mt5_browser_proxy(response: Response):
+        origin = str(request.headers.get("Origin") or "")
+        if origin in local_browser_origins:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Vary"] = "Origin"
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+            response.headers["Access-Control-Allow-Headers"] = request.headers.get(
+                "Access-Control-Request-Headers", "Authorization, Content-Type, Accept"
+            )
+            if str(request.headers.get("Access-Control-Request-Private-Network") or "").lower() == "true":
+                response.headers["Access-Control-Allow-Private-Network"] = "true"
+        return response
 
     @bp.route("/mt5-api", defaults={"upstream_path": ""}, methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
     @bp.route("/mt5-api/<path:upstream_path>", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])

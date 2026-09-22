@@ -19,6 +19,10 @@ function openedAt(position: DisplayPosition): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function positionAccountKey(position: DisplayPosition): string {
+  return position.multiAccountId || `login-${position.account_login}`;
+}
+
 function mapMultiPosition(row: MultiPosition, index: number): DisplayPosition {
   const type = normalizePositionSide(row.side ?? row.type);
   const openTime = row.open_time || (row.time ? new Date(Number(row.time) * 1000).toISOString() : new Date().toISOString());
@@ -51,6 +55,7 @@ export default function PositionsPage() {
   const [confirmBulk, setConfirmBulk] = useState<'profit' | 'loss' | null>(null);
   const [multiPositions, setMultiPositions] = useState<DisplayPosition[]>([]);
   const [multiOnline, setMultiOnline] = useState(false);
+  const [accountFilter, setAccountFilter] = useState('all');
   const [viewPosition, setViewPosition] = useState<DisplayPosition | null>(null);
 
   const loadMultiPositions = async () => {
@@ -70,7 +75,7 @@ export default function PositionsPage() {
     return () => window.clearInterval(timer);
   }, []);
 
-  const shownPositions: DisplayPosition[] = useMemo(() => {
+  const allPositions: DisplayPosition[] = useMemo(() => {
     if (!multiOnline) {
       return [...(scopePositions as DisplayPosition[])].sort((a, b) => openedAt(b) - openedAt(a) || b.ticket - a.ticket);
     }
@@ -79,6 +84,31 @@ export default function PositionsPage() {
     return [...multiPositions, ...(bridgeOnly as DisplayPosition[])]
       .sort((a, b) => openedAt(b) - openedAt(a) || b.ticket - a.ticket);
   }, [multiOnline, multiPositions, positions, scopePositions]);
+
+  const accountOptions = useMemo(() => {
+    const seen = new Map<string, { key: string; label: string }>();
+    for (const position of allPositions) {
+      const key = positionAccountKey(position);
+      if (!seen.has(key)) {
+        const name = position.multiAccountName || accountName(position.account_login);
+        seen.set(key, { key, label: `${name} · #${position.account_login}` });
+      }
+    }
+    return [...seen.values()].sort((a, b) => a.label.localeCompare(b.label));
+  }, [allPositions, accountName]);
+
+  useEffect(() => {
+    if (accountFilter !== 'all' && !accountOptions.some((option) => option.key === accountFilter)) {
+      setAccountFilter('all');
+    }
+  }, [accountFilter, accountOptions]);
+
+  const shownPositions = useMemo(
+    () => accountFilter === 'all'
+      ? allPositions
+      : allPositions.filter((position) => positionAccountKey(position) === accountFilter),
+    [accountFilter, allPositions],
+  );
   const shownProfit = (p: DisplayPosition) => p.multiAccountId ? Number(p.profit || 0) : liveProfit(p);
 
   useEffect(() => {
@@ -175,6 +205,23 @@ export default function PositionsPage() {
           ) : undefined
         }
       />
+
+      <div className="mb-4 flex flex-wrap items-end justify-between gap-3 rounded-xl border border-white/[0.07] bg-white/[0.025] px-4 py-3">
+        <div>
+          <label className="label">Show positions for</label>
+          <select className="input min-w-[240px]" value={accountFilter} onChange={(event) => setAccountFilter(event.target.value)}>
+            <option value="all">All Accounts</option>
+            {accountOptions.map((option) => (
+              <option key={option.key} value={option.key}>{option.label}</option>
+            ))}
+          </select>
+        </div>
+        <p className="text-[10px] text-slate-600">
+          {accountFilter === 'all'
+            ? `Showing all ${shownPositions.length} open position${shownPositions.length === 1 ? '' : 's'}`
+            : `Showing ${shownPositions.length} open position${shownPositions.length === 1 ? '' : 's'} for the selected account`}
+        </p>
+      </div>
 
       <div className="flex flex-wrap gap-2.5 mb-5">
         <span className="chip"><span className="text-slate-500">Open</span><span className="mono font-bold text-white">{shownPositions.length}</span></span>

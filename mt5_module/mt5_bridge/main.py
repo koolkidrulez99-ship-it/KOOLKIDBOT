@@ -47,6 +47,10 @@ MAX_EA_FILE_BYTES = 25 * 1024 * 1024
 MAX_MQ5_FILE_BYTES = 5 * 1024 * 1024
 _stats_history_lock = threading.Lock()
 _stats_history_cache: dict[str, dict[str, Any]] = {}
+_session_snapshot_lock = threading.RLock()
+_session_snapshot_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_SESSION_SNAPSHOT_TTL = max(0.25, float(os.getenv("MT5_SESSION_SNAPSHOT_TTL", "0.75")))
+_SESSION_SNAPSHOT_STALE_TTL = max(_SESSION_SNAPSHOT_TTL, float(os.getenv("MT5_SESSION_SNAPSHOT_STALE_TTL", "4.0")))
 _AI_SCANNERS: dict[str, threading.Thread] = {}
 _AI_SCANNER_STOPS: dict[str, threading.Event] = {}
 _AI_EXECUTION_LOCKS: dict[str, threading.RLock] = {}
@@ -820,10 +824,28 @@ def session_error(exc: Exception):
     raise HTTPException(status_code=400, detail=message)
 
 
-def session_snapshot() -> dict[str, Any]:
+def _clear_session_snapshot_cache() -> None:
+    with _session_snapshot_lock:
+        _session_snapshot_cache.pop(current_workspace(), None)
+
+
+def session_snapshot(*, fresh: bool = False) -> dict[str, Any]:
+    workspace_id = current_workspace()
+    now = time.monotonic()
+    with _session_snapshot_lock:
+        cached = _session_snapshot_cache.get(workspace_id)
+        if not fresh and cached and now - cached[0] < _SESSION_SNAPSHOT_TTL:
+            return cached[1]
     try:
-        return multi_account_client.accounts()
+        value = multi_account_client.accounts()
+        with _session_snapshot_lock:
+            _session_snapshot_cache[workspace_id] = (time.monotonic(), value)
+        return value
     except RuntimeError:
+        with _session_snapshot_lock:
+            cached = _session_snapshot_cache.get(workspace_id)
+            if cached and now - cached[0] < _SESSION_SNAPSHOT_STALE_TTL:
+                return cached[1]
         return {"accounts": [], "master": None, "slaves": [], "offline": True}
 
 
@@ -1478,6 +1500,7 @@ def test_account(payload: AccountPayload):
     try:
         engine.shutdown_terminal()
         result = multi_account_client.connect(profile, payload.password)
+        _clear_session_snapshot_cache()
         mode_label = "investor/read-only" if access_mode == "investor" else "trading"
         return {"ok": True, "mode": "bridge", "message": f"Connected to {payload.server or 'MT5'} as #{payload.login} using {mode_label} access.", "session": result}
     except RuntimeError as exc:
@@ -1493,6 +1516,7 @@ def connect_account(payload: AccountPayload):
     try:
         engine.shutdown_terminal()
         session = multi_account_client.connect(profile, payload.password or "")
+        _clear_session_snapshot_cache()
     except RuntimeError as exc:
         session_error(exc)
     info = session.get("account_info") or {}
@@ -1546,6 +1570,7 @@ def delete_account(profile_id: int):
         raise HTTPException(status_code=404, detail="Account profile not found.")
     try:
         multi_account_client.remove(int(profile.get("login", 0)))
+        _clear_session_snapshot_cache()
     except RuntimeError:
         pass
     return {"ok": remove_profile(profile_id)}
@@ -1563,11 +1588,12 @@ def account_action(profile_id: int, payload: dict[str, Any] = Body(default_facto
         engine.set_active_login(login)
         return next((x for x in accounts() if int(x["id"]) == profile_id), profile)
     if action in {"toggle", "connect", "disconnect"}:
-        live = {int(row.get("login") or 0): row for row in session_snapshot().get("accounts", []) if row.get("connected")}
+        live = {int(row.get("login") or 0): row for row in session_snapshot(fresh=True).get("accounts", []) if row.get("connected")}
         should_disconnect = action == "disconnect" or (action == "toggle" and login in live)
         if should_disconnect:
             try:
                 multi_account_client.disconnect(login)
+                _clear_session_snapshot_cache()
             except RuntimeError:
                 pass
         elif login not in live:
@@ -1575,6 +1601,7 @@ def account_action(profile_id: int, payload: dict[str, Any] = Body(default_facto
             try:
                 engine.shutdown_terminal()
                 multi_account_client.connect(profile, password or "")
+                _clear_session_snapshot_cache()
             except RuntimeError as exc:
                 session_error(exc)
         return next((x for x in accounts() if int(x["id"]) == profile_id), profile)
