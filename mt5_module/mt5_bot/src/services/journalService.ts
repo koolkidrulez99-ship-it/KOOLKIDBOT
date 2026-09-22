@@ -27,6 +27,7 @@ export interface JournalDay {
   losses: number;
   win_rate: number;
   motivation?: string | null;
+  note?: string;
   trade_rows: JournalTrade[];
 }
 
@@ -90,4 +91,6 @@ export const journalService = {
     apiRequest<JournalMonth>(`/api/mt5/journal/${accountLogin}?view=month&year=${year}&month=${month}`),
   year: (accountLogin: number, year: number) =>
     apiRequest<JournalYear>(`/api/mt5/journal/${accountLogin}?view=year&year=${year}`),
+  saveNote: (day: string, note: string) =>
+    apiRequest<{ date: string; note: string }>(`/api/mt5/journal/note/${encodeURIComponent(day)}`, 'PUT', { note }),
 };

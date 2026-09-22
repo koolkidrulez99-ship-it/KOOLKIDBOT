@@ -120,9 +120,15 @@ def _analyze_set_data(data: bytes) -> dict[str, Any]:
     return {"format": "MT5 SET", "input_count": len(inputs), "inputs": inputs[:100], "truncated": len(inputs) > 100}
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:5055", "http://localhost:5055"],
+    allow_origins=[
+        "http://127.0.0.1:5055",
+        "http://localhost:5055",
+        "https://koolkidbot.org",
+        "https://www.koolkidbot.org",
+    ],
     allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=False,
+    allow_private_network=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Accept", "Authorization"],
 )
@@ -748,6 +754,14 @@ def journal(account_login: int, year: int | None = None, month: int | None = Non
         return journal_manager.month_view(account_login, target_year, target_month)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.put("/api/mt5/journal/note/{day}")
+def save_journal_note(day: str, payload: dict = Body(default_factory=dict)):
+    try:
+        return journal_manager.save_note(day, str(payload.get("note") or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/mt5/admin/backtests")

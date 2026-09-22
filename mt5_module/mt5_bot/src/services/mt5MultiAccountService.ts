@@ -1,34 +1,85 @@
 const isLocalHost = window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost';
-const multiBase = String(isLocalHost ? 'http://127.0.0.1:8002' : (import.meta.env.VITE_MT5_MULTI_ACCOUNT_API_BASE || 'http://127.0.0.1:8002')).replace(/\/$/, '');
+const localMultiBase = 'http://127.0.0.1:8002';
+const publicMultiBase = String(import.meta.env.VITE_MT5_MULTI_ACCOUNT_API_BASE || 'http://127.0.0.1:8002').replace(/\/$/, '');
+let resolvedMultiBase: string | null = isLocalHost ? localMultiBase : null;
+let resolvingMultiBase: Promise<string> | null = null;
+
+async function resolveMultiBase(): Promise<string> {
+  if (resolvedMultiBase) return resolvedMultiBase;
+  if (resolvingMultiBase) return resolvingMultiBase;
+  resolvingMultiBase = (async () => {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 450);
+    try {
+      const response = await fetch(`${localMultiBase}/health`, {
+        method: 'GET',
+        cache: 'no-store',
+        signal: controller.signal,
+      });
+      resolvedMultiBase = response.ok ? localMultiBase : publicMultiBase;
+    } catch {
+      resolvedMultiBase = publicMultiBase;
+    } finally {
+      window.clearTimeout(timer);
+    }
+    return resolvedMultiBase!;
+  })();
+  try {
+    return await resolvingMultiBase;
+  } finally {
+    resolvingMultiBase = null;
+  }
+}
 
 function authHeaders(): Record<string, string> {
   const token = sessionStorage.getItem('koolkid_mt5_hub_token');
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+const inflightGets = new Map<string, Promise<unknown>>();
+
 async function multiRequest<T>(path: string, method = 'GET', body?: unknown, timeoutMs = 20000): Promise<T> {
-  const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  const normalizedMethod = method.toUpperCase();
+  const base = await resolveMultiBase();
+  const url = `${base}${path.startsWith('/') ? path : `/${path}`}`;
+  const dedupeKey = normalizedMethod === 'GET' && body === undefined ? url : '';
+  const existing = dedupeKey ? inflightGets.get(dedupeKey) : undefined;
+  if (existing) return existing as Promise<T>;
+
+  const task = (async (): Promise<T> => {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const request: RequestInit & { priority?: 'high' | 'low' | 'auto' } = {
+        method: normalizedMethod,
+        headers: { ...authHeaders(), ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal: controller.signal,
+        cache: 'no-store',
+        priority: normalizedMethod === 'GET' ? 'low' : 'high',
+      };
+      const res = await fetch(url, request);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const err = data as { detail?: string; error?: string };
+        throw new Error(err.detail || err.error || `Multi-account request failed (${res.status})`);
+      }
+      return data as T;
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        throw new Error('MT5 order routing timed out. Check the selected account worker and try again.');
+      }
+      throw error;
+    } finally {
+      window.clearTimeout(timer);
+    }
+  })();
+
+  if (dedupeKey) inflightGets.set(dedupeKey, task);
   try {
-    const res = await fetch(`${multiBase}${path.startsWith('/') ? path : `/${path}`}`, {
-      method,
-      headers: { ...authHeaders(), ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
-      body: body === undefined ? undefined : JSON.stringify(body),
-      signal: controller.signal,
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      const err = data as { detail?: string; error?: string };
-      throw new Error(err.detail || err.error || `Multi-account request failed (${res.status})`);
-    }
-    return data as T;
-  } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') {
-      throw new Error('MT5 order routing timed out. Check the selected account worker and try again.');
-    }
-    throw error;
+    return await task;
   } finally {
-    window.clearTimeout(timer);
+    if (dedupeKey && inflightGets.get(dedupeKey) === task) inflightGets.delete(dedupeKey);
   }
 }
 

@@ -4,6 +4,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$cmdHost = if ($env:ComSpec) { $env:ComSpec } else { Join-Path $env:SystemRoot 'System32\cmd.exe' }
 $root = $PSScriptRoot
 $runDir = Join-Path $root '.koolkid-run'
 $bridgePidFile = Join-Path $runDir 'mt5-bridge.pid'
@@ -90,9 +91,9 @@ if ($Action -eq 'Stop') {
 
 Write-Host 'Starting KOOLKID local services...'
 
-$serviceRevision = 'mt5-routing-v4'
-$bridgeRevision = 'mt5-bridge-ea-v5'
-$eaWorkerRevision = 'mt5-ea-native-v5'
+$serviceRevision = 'mt5-routing-v5'
+$bridgeRevision = 'mt5-bridge-ea-v6'
+$eaWorkerRevision = 'mt5-ea-native-v6'
 if ((Test-Url $multiHealth) -and !(Test-Revision $multiHealth $serviceRevision)) {
     Stop-OutdatedListener 8002 'mt5_multi_account.app:app' 'MT5 multi-account worker'
 }
@@ -104,7 +105,7 @@ if (Test-Url $multiHealth) {
     if (!(Test-Path -LiteralPath $multiPython)) { throw "MT5 multi-account Python runtime was not found: $multiPython" }
     if (!(Test-Path -LiteralPath (Join-Path $multiModuleDir 'mt5_multi_account\app.py'))) { throw "MT5 multi-account module was not found under: $multiModuleDir" }
     $multiCommand = "cd /d `"$multiModuleDir`" && `"$multiPython`" -m uvicorn mt5_multi_account.app:app --host 127.0.0.1 --port 8002"
-    $multiProcess = Start-Process -FilePath $env:ComSpec -ArgumentList @('/k', $multiCommand) -WorkingDirectory $multiModuleDir -PassThru
+    $multiProcess = Start-Process -FilePath $cmdHost -ArgumentList @('/k', $multiCommand) -WorkingDirectory $multiModuleDir -PassThru
     Save-Pid $multiProcess $multiPidFile
     if (!(Wait-Healthy $multiHealth 60 'MT5 multi-account worker')) {
         Write-Host ''
@@ -125,7 +126,7 @@ if (Test-Url $bridgeHealth) {
     $bridgeScript = Join-Path $root 'mt5_module\START_MT5_BRIDGE.bat'
     if (!(Test-Path -LiteralPath $bridgeScript)) { throw "MT5 bridge launcher was not found: $bridgeScript" }
     $bridgeCommand = "call `"$bridgeScript`""
-    $bridgeProcess = Start-Process -FilePath $env:ComSpec -ArgumentList @('/k', $bridgeCommand) -WorkingDirectory $root -PassThru
+    $bridgeProcess = Start-Process -FilePath $cmdHost -ArgumentList @('/k', $bridgeCommand) -WorkingDirectory $root -PassThru
     Save-Pid $bridgeProcess $bridgePidFile
     if (!(Wait-Healthy $bridgeHealth 90 'MT5 bridge')) {
         Write-Host ''
@@ -146,7 +147,7 @@ if (Test-Url $workerHealth) {
     $workerScript = Join-Path $root 'mt5_module\START_MT5_EA_WORKER.bat'
     if (!(Test-Path -LiteralPath $workerScript)) { throw "MT5 EA worker launcher was not found: $workerScript" }
     $workerCommand = "call `"$workerScript`""
-    $workerProcess = Start-Process -FilePath $env:ComSpec -ArgumentList @('/k', $workerCommand) -WorkingDirectory $root -PassThru
+    $workerProcess = Start-Process -FilePath $cmdHost -ArgumentList @('/k', $workerCommand) -WorkingDirectory $root -PassThru
     Save-Pid $workerProcess $workerPidFile
     if (!(Wait-Healthy $workerHealth 90 'MT5 EA worker')) {
         Write-Host ''
@@ -161,7 +162,7 @@ if (Test-Url $mainUrl) {
     Write-Host "KOOLKID server is already running at $mainUrl"
 } else {
     $mainCommand = "cd /d `"$root`" && set `"PORT=$mainPort`" && set `"MT5_BRIDGE_PROXY_URL=http://127.0.0.1:8000`" && set `"MT5_MULTI_PROXY_URL=http://127.0.0.1:8002`" && python server.py"
-    $mainProcess = Start-Process -FilePath $env:ComSpec -ArgumentList @('/k', $mainCommand) -WorkingDirectory $root -PassThru
+    $mainProcess = Start-Process -FilePath $cmdHost -ArgumentList @('/k', $mainCommand) -WorkingDirectory $root -PassThru
     Save-Pid $mainProcess $mainPidFile
     if (!(Wait-Healthy $mainUrl 60 'KOOLKID server')) {
         Write-Host ''

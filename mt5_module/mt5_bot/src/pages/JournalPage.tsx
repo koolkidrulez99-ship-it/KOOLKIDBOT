@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { BookOpenText, CalendarDays, ChevronLeft, ChevronRight, Quote, RefreshCw, TrendingDown, TrendingUp } from 'lucide-react';
+import { BookOpenText, CalendarDays, ChevronLeft, ChevronRight, MessageSquareText, Quote, RefreshCw, Save, TrendingDown, TrendingUp } from 'lucide-react';
 import { useHub } from '../context/HubContext';
 import { journalService } from '../services/journalService';
 import type { JournalDay, JournalMonth, JournalYear } from '../services/journalService';
@@ -42,6 +42,8 @@ export default function JournalPage() {
   const [monthData, setMonthData] = useState<JournalMonth | null>(null);
   const [yearData, setYearData] = useState<JournalYear | null>(null);
   const [selectedDay, setSelectedDay] = useState<JournalDay | null>(null);
+  const [noteDraft, setNoteDraft] = useState('');
+  const [noteSaving, setNoteSaving] = useState(false);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -74,7 +76,31 @@ export default function JournalPage() {
     void load();
   }, [accountLogin, view, year, month]);
 
+  useEffect(() => {
+    setNoteDraft(selectedDay?.note || '');
+  }, [selectedDay?.date, selectedDay?.note]);
+
+  const saveSelectedNote = async () => {
+    if (!selectedDay || noteSaving) return;
+    setNoteSaving(true);
+    try {
+      const saved = await journalService.saveNote(selectedDay.date, noteDraft);
+      setSelectedDay((current) => current?.date === saved.date ? { ...current, note: saved.note } : current);
+      setMonthData((current) => current ? {
+        ...current,
+        days: current.days.map((day) => day.date === saved.date ? { ...day, note: saved.note } : day),
+      } : current);
+      setNoteDraft(saved.note);
+      pushToast('success', saved.note ? 'Journal note saved' : 'Journal note cleared', saved.note ? 'Your daily review is saved to this date.' : undefined);
+    } catch (error) {
+      pushToast('error', 'Could not save journal note', error instanceof Error ? error.message : undefined);
+    } finally {
+      setNoteSaving(false);
+    }
+  };
+
   const currency = monthData?.account.currency || yearData?.account.currency || accounts.find((a) => a.login === accountLogin)?.currency || 'USD';
+  const noteDirty = Boolean(selectedDay) && noteDraft !== (selectedDay?.note || '');
   const startOffset = useMemo(() => {
     if (!monthData) return 0;
     const jsDay = new Date(monthData.year, monthData.month - 1, 1).getDay();
@@ -201,7 +227,10 @@ export default function JournalPage() {
                   >
                     <div className="flex items-center justify-between gap-1">
                       <span className="mono text-xs font-bold text-slate-300">{day.day}</span>
-                      {day.trades > 0 && <span className="h-2 w-2 rounded-full bg-brand-400" />}
+                      <div className="flex items-center gap-1.5">
+                        {day.note && <MessageSquareText size={12} className="text-brand-300" />}
+                        {day.trades > 0 && <span className="h-2 w-2 rounded-full bg-brand-400" />}
+                      </div>
                     </div>
                     <p className={`mono mt-3 text-[11px] font-extrabold ${pnlClass(day.pnl)}`}>{money(day.pnl, currency)}</p>
                     <p className="mt-1.5 text-[10px] text-slate-600">{day.trades ? `${day.trades} trade${day.trades === 1 ? '' : 's'}` : 'No trades'}</p>
@@ -226,7 +255,10 @@ export default function JournalPage() {
                   >
                     <div className="flex items-start justify-between gap-2">
                       <span className="mono text-xs font-bold text-slate-300">{day.day}</span>
-                      {day.trades > 0 && <Badge tone={day.pnl > 0 ? 'gain' : day.pnl < 0 ? 'loss' : 'slate'}>{day.trades} trade{day.trades === 1 ? '' : 's'}</Badge>}
+                      <div className="flex items-center gap-2">
+                        {day.note && <MessageSquareText size={13} className="text-brand-300" />}
+                        {day.trades > 0 && <Badge tone={day.pnl > 0 ? 'gain' : day.pnl < 0 ? 'loss' : 'slate'}>{day.trades} trade{day.trades === 1 ? '' : 's'}</Badge>}
+                      </div>
                     </div>
                     <p className={`mono mt-3 text-base font-extrabold ${pnlClass(day.pnl)}`}>{money(day.pnl, currency)}</p>
                     <p className="mt-1 text-[10px] text-slate-600">{day.trades ? `${day.wins}W · ${day.losses}L · ${day.win_rate.toFixed(0)}%` : 'No trades'}</p>
@@ -276,6 +308,30 @@ export default function JournalPage() {
             <div className="text-right max-md:text-left">
               <p className={`mono text-xl font-extrabold ${pnlClass(selectedDay.pnl)}`}>{money(selectedDay.pnl, currency)}</p>
               <p className="text-[10px] text-slate-600">{selectedDay.trades} trades · {selectedDay.wins} wins · {selectedDay.losses} losses</p>
+            </div>
+          </div>
+
+          <div className="mt-4 rounded-xl border border-brand-500/15 bg-brand-500/[0.035] p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <MessageSquareText size={15} className="text-brand-300" />
+                <p className="text-[12px] font-bold text-slate-200">Daily Journal Note</p>
+              </div>
+              <span className="text-[9px] text-slate-600">{noteDraft.length}/5000</span>
+            </div>
+            <p className="mt-1 text-[10px] leading-relaxed text-slate-500">Write what went wrong or right, what you noticed, and what you want to improve next time. This note belongs to the calendar day, so it stays the same when you switch account filters.</p>
+            <textarea
+              className="input mt-3 min-h-[130px] w-full resize-y text-sm leading-relaxed"
+              maxLength={5000}
+              value={noteDraft}
+              onChange={(event) => setNoteDraft(event.target.value)}
+              placeholder="Example: I entered too early after two losses. Next session I will wait for the full confirmation and stop after my daily loss limit."
+            />
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+              <p className="text-[10px] text-slate-600">{selectedDay.note ? 'Saved note on this day' : 'No saved note yet'}</p>
+              <button className="btn-primary justify-center max-md:w-full" disabled={noteSaving || !noteDirty} onClick={() => void saveSelectedNote()}>
+                {noteSaving ? <Spinner size={14} /> : <Save size={14} />} {noteSaving ? 'Saving…' : 'Save Note'}
+              </button>
             </div>
           </div>
 

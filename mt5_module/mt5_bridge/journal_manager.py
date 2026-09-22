@@ -8,11 +8,17 @@ from pathlib import Path
 from typing import Any
 
 import multi_account_client
+from hub_auth import current_workspace
 from store import read_state
 
 ROOT = Path(__file__).resolve().parent
 DATA_FILE = ROOT / "data" / "journal_archive.json"
 _LOCK = threading.RLock()
+_NOTES_LOCK = threading.RLock()
+
+
+def _notes_file() -> Path:
+    return ROOT / "data" / "workspaces" / current_workspace() / "journal_notes.json"
 JOURNAL_TIMEZONE = timezone(timedelta(hours=-5))
 
 
@@ -132,6 +138,58 @@ def motivation_for(day: date) -> str:
     return MOTIVATIONS[(day.toordinal() - 1) % len(MOTIVATIONS)]
 
 
+def _load_notes() -> dict[str, str]:
+    path = _notes_file()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    raw = data.get("notes") if isinstance(data, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    return {str(key): str(value) for key, value in raw.items() if isinstance(value, str) and value.strip()}
+
+
+def _save_notes(notes: dict[str, str]) -> None:
+    path = _notes_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"version": 1, "notes": notes, "updated_at": datetime.now(timezone.utc).isoformat()}
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _parse_note_date(value: str) -> date:
+    try:
+        parsed = date.fromisoformat(str(value))
+    except ValueError as exc:
+        raise ValueError("Journal note date must use YYYY-MM-DD.") from exc
+    if parsed.year < 2010 or parsed > journal_today() + timedelta(days=1):
+        raise ValueError("Journal note date is outside the supported range.")
+    return parsed
+
+
+def note_for(day_value: date | str) -> str:
+    day = day_value if isinstance(day_value, date) else _parse_note_date(day_value)
+    with _NOTES_LOCK:
+        return _load_notes().get(day.isoformat(), "")
+
+
+def save_note(day_value: str, text: str) -> dict[str, Any]:
+    day = _parse_note_date(day_value)
+    clean = str(text or "").strip()
+    if len(clean) > 5000:
+        raise ValueError("Journal note is too long. Keep it under 5000 characters.")
+    with _NOTES_LOCK:
+        notes = _load_notes()
+        if clean:
+            notes[day.isoformat()] = clean
+        else:
+            notes.pop(day.isoformat(), None)
+        _save_notes(notes)
+    return {"date": day.isoformat(), "note": clean}
+
+
 def _close_date(row: dict[str, Any]) -> date | None:
     raw = str(row.get("close_time") or "")
     if not raw:
@@ -197,7 +255,7 @@ def _archived_rows(account_login: int) -> tuple[list[dict[str, Any]], str | None
         return rows, bucket.get("updated_at")
 
 
-def _daily_summary(rows: list[dict[str, Any]], day: date) -> dict[str, Any]:
+def _daily_summary(rows: list[dict[str, Any]], day: date, note: str = "") -> dict[str, Any]:
     pnl = sum(float(row.get("net_pl") or 0) for row in rows)
     wins = sum(1 for row in rows if float(row.get("net_pl") or 0) > 0)
     losses = sum(1 for row in rows if float(row.get("net_pl") or 0) < 0)
@@ -210,6 +268,7 @@ def _daily_summary(rows: list[dict[str, Any]], day: date) -> dict[str, Any]:
         "losses": losses,
         "win_rate": round((wins / len(rows) * 100), 1) if rows else 0.0,
         "motivation": motivation_for(day) if day <= journal_today() else None,
+        "note": note,
         "trade_rows": rows,
     }
 
@@ -226,8 +285,14 @@ def month_view(account_login: int, year: int, month: int) -> dict[str, Any]:
             grouped.setdefault(day, []).append(row)
 
     days_in_month = monthrange(year, month)[1]
+    with _NOTES_LOCK:
+        notes = _load_notes()
     days = [
-        _daily_summary(grouped.get(date(year, month, number), []), date(year, month, number))
+        _daily_summary(
+            grouped.get(date(year, month, number), []),
+            date(year, month, number),
+            notes.get(date(year, month, number).isoformat(), ""),
+        )
         for number in range(1, days_in_month + 1)
     ]
     trade_days = [day for day in days if day["trades"] > 0]

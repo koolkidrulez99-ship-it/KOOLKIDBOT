@@ -235,7 +235,7 @@ export default function BotSetupPreview({ bot }: { bot: Mt5Bot }) {
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [bot.account_login, bot.symbol, bot.timeframe]);
 
-  if (!candles.length) return null;
+  const hasCandles = candles.length > 0;
 
   return (
     <>
@@ -249,7 +249,9 @@ export default function BotSetupPreview({ bot }: { bot: Mt5Bot }) {
             View Chart
           </button>
         </div>
-        <SetupChartCanvas candles={candles} setup={setup} height={155} chartKey={`bot-${bot.id}-compact`} />
+        {hasCandles
+          ? <SetupChartCanvas candles={candles} setup={setup} height={155} chartKey={`bot-${bot.id}-compact`} />
+          : <div className="grid h-[155px] place-items-center px-4 text-center text-[11px] text-slate-600">Waiting for live MT5 candle data…</div>}
       </div>
 
       <Modal
@@ -260,7 +262,9 @@ export default function BotSetupPreview({ bot }: { bot: Mt5Bot }) {
         wide
       >
         <div className="rounded-xl border border-white/[0.07] bg-black/20 overflow-hidden">
-          <SetupChartCanvas candles={candles} setup={setup} height={460} chartKey={`bot-${bot.id}-expanded`} />
+          {hasCandles
+          ? <SetupChartCanvas candles={candles} setup={setup} height={460} chartKey={`bot-${bot.id}-expanded`} />
+          : <div className="grid h-[460px] place-items-center px-6 text-center text-sm text-slate-500">Waiting for live MT5 candle data for {bot.symbol || 'this bot'}…</div>}
         </div>
         <div className="mt-3 flex flex-wrap gap-2 text-[10px] text-slate-500">
           {setup.direction && <span className="chip">{setup.direction}</span>}

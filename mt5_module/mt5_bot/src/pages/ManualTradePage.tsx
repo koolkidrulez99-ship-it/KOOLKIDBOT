@@ -38,7 +38,7 @@ function diffMs(later: unknown, earlier: unknown) {
 }
 
 export default function ManualTradePage() {
-  const { accounts, activeAccount, market, livePrice, liveQuote, pushToast, refresh } = useHub();
+  const { accounts, activeAccount, market, livePrice, liveQuote, pushToast, refresh, refreshPositions } = useHub();
   const connected = useMemo(() => accounts.filter((a) => a.status === 'connected'), [accounts]);
 
   const [login, setLogin] = usePersistentState<number | ''>('manual_account_login', '');
@@ -91,13 +91,19 @@ export default function ManualTradePage() {
     if (isSimulation) return;
     Promise.all([mt5MultiAccountService.accounts(), mt5MultiAccountService.copyStatus()]).then(([accountData, copyData]) => {
       const rows = accountData.accounts || [];
-      const config = (copyData.config || {}) as { slave_account_ids?: string[] };
-      const slaves = (config.slave_account_ids || accountData.slaves || []).filter((id) => rows.some((row) => row.account_id === id && row.connected));
+      const selectedMasterId = rows.find((row) => Number(row.login) === Number(acc?.login))?.account_id || '';
+      const groups = (copyData.groups || {}) as Record<string, { config?: { master_account_id?: string; slave_account_ids?: string[] } | null }>;
+      const matchingGroup = Object.values(groups).find((group) => group?.config?.master_account_id === selectedMasterId);
+      const legacyConfig = (copyData.config || {}) as { master_account_id?: string; slave_account_ids?: string[] };
+      const slaveIds = matchingGroup?.config?.slave_account_ids
+        || (legacyConfig.master_account_id === selectedMasterId ? legacyConfig.slave_account_ids : [])
+        || [];
+      const slaves = slaveIds.filter((id) => rows.some((row) => row.account_id === id && row.connected));
       setMultiAccounts(rows);
       setConfiguredSlaves(slaves);
       setSelectedSlaves(slaves);
     }).catch(() => { setMultiAccounts([]); setConfiguredSlaves([]); setSelectedSlaves([]); });
-  }, [accounts]);
+  }, [accounts, acc?.login]);
 
   useEffect(() => {
     if (isSimulation || !acc) {
@@ -263,7 +269,8 @@ export default function ManualTradePage() {
       }
       setSl('');
       setTp('');
-      await refresh(true);
+      // The order response is authoritative. Do not block the UI on a second
+      // full Hub refresh before releasing the trade button and showing timing.
       const uiUpdatedAt = Date.now() / 1000;
       if (timingDraft) {
         const sample: ExecutionLatencySample = {
@@ -274,7 +281,9 @@ export default function ManualTradePage() {
         setLatencySamples((previous) => [sample, ...previous].slice(0, 30));
       }
       console.info('KOOLKID MT5 UI updated', { ui_updated_at: uiUpdatedAt, ui_clicked_at: uiClickedAt });
-      loadManual();
+      void refreshPositions();
+      window.setTimeout(() => void refresh(true), 500);
+      window.setTimeout(loadManual, 0);
     } catch (e) {
       pushToast('error', 'Order rejected', e instanceof Error ? e.message : undefined);
     } finally {

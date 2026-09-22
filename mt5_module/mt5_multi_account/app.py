@@ -92,6 +92,7 @@ class WorkspaceRuntime:
             "2": CopyEngine(self.pool, self.state, "2"),
         }
         self.copy = self.copy_groups["1"]
+        self.copy_restore_lock = threading.Lock()
         self.session_backoff: dict[str, dict[str, object]] = {}
         self.started = False
 
@@ -149,9 +150,15 @@ def _copy_status_payload():
 app = FastAPI(title="KOOLKID MT5 Multi-Account", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:5055", "http://localhost:5055"],
+    allow_origins=[
+        "http://127.0.0.1:5055",
+        "http://localhost:5055",
+        "https://koolkidbot.org",
+        "https://www.koolkidbot.org",
+    ],
     allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=False,
+    allow_private_network=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -229,23 +236,25 @@ def restore_saved_sessions():
 
 
 def _restore_copy_groups_if_ready():
-    saved = STATE.load()
-    connected = set(POOL.ids())
-    for group_id in ("1", "2"):
-        cfg = saved.get(_copy_state_key("copy_config", group_id))
-        enabled = bool(saved.get(_copy_state_key("copy_enabled", group_id)))
-        engine = _copy_group(group_id)
-        if not cfg or not enabled or engine.status == "running":
-            continue
-        master_id = str(cfg.get("master_account_id") or "")
-        slave_ids = [str(item) for item in cfg.get("slave_account_ids", [])]
-        required = {master_id, *slave_ids} - {""}
-        if required and required.issubset(connected):
-            try:
-                engine.start(cfg)
-                engine.log("copy_restored_after_reconnect", accounts=sorted(required))
-            except Exception as exc:
-                engine.log("restore_error", error=str(exc))
+    runtime = _runtime()
+    with runtime.copy_restore_lock:
+        saved = STATE.load()
+        connected = set(POOL.ids())
+        for group_id in ("1", "2"):
+            cfg = saved.get(_copy_state_key("copy_config", group_id))
+            enabled = bool(saved.get(_copy_state_key("copy_enabled", group_id)))
+            engine = _copy_group(group_id)
+            if not cfg or not enabled or engine.status == "running":
+                continue
+            master_id = str(cfg.get("master_account_id") or "")
+            slave_ids = [str(item) for item in cfg.get("slave_account_ids", [])]
+            required = {master_id, *slave_ids} - {""}
+            if required and required.issubset(connected):
+                try:
+                    engine.start(cfg)
+                    engine.log("copy_restored_after_reconnect", accounts=sorted(required))
+                except Exception as exc:
+                    engine.log("restore_error", error=str(exc))
 
 
 def keep_saved_sessions_connected():
@@ -301,18 +310,7 @@ def _start_workspace(workspace_id: str) -> None:
             try:
                 fn()
                 if fn is restore_saved_sessions:
-                    saved = STATE.load()
-                    for group_id in ("1", "2"):
-                        cfg = saved.get(_copy_state_key("copy_config", group_id))
-                        enabled = saved.get(_copy_state_key("copy_enabled", group_id))
-                        if cfg and enabled:
-                            try:
-                                _copy_group(group_id).start(cfg)
-                            except Exception:
-                                # Persistent session reconnect may still be finishing.
-                                # The copy group remains configured and can be started
-                                # from the UI once its accounts are online.
-                                pass
+                    _restore_copy_groups_if_ready()
             finally:
                 reset_workspace(token)
         threading.Thread(target=runner, daemon=True, name=name).start()
@@ -508,7 +506,7 @@ def health():
     return {
         "ok": True,
         "service": "mt5-multi-account-worker",
-        "revision": "mt5-routing-v4",
+        "revision": "mt5-routing-v5",
     }
 
 @app.post("/demo/bootstrap")
