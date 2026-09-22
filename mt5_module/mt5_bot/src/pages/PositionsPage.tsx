@@ -49,7 +49,7 @@ function mapMultiPosition(row: MultiPosition, index: number): DisplayPosition {
 }
 
 export default function PositionsPage() {
-  const { positions, scopePositions, livePrice, liveProfit, accountName, pushToast, refresh, prefs, derived } = useHub();
+  const { accounts, positions, scopePositions, livePrice, liveProfit, accountName, pushToast, refresh, prefs, derived } = useHub();
   const [closingId, setClosingId] = useState<number | null>(null);
   const [confirmCloseAll, setConfirmCloseAll] = useState(false);
   const [confirmBulk, setConfirmBulk] = useState<'profit' | 'loss' | null>(null);
@@ -75,15 +75,20 @@ export default function PositionsPage() {
     return () => window.clearInterval(timer);
   }, []);
 
+  const linkedAccountLogins = useMemo(() => new Set(accounts.map((item) => Number(item.login))), [accounts]);
+
   const allPositions: DisplayPosition[] = useMemo(() => {
     if (!multiOnline) {
-      return [...(scopePositions as DisplayPosition[])].sort((a, b) => openedAt(b) - openedAt(a) || b.ticket - a.ticket);
+      return [...(scopePositions as DisplayPosition[])]
+        .filter((position) => linkedAccountLogins.has(Number(position.account_login)))
+        .sort((a, b) => openedAt(b) - openedAt(a) || b.ticket - a.ticket);
     }
     const workerKeys = new Set(multiPositions.map((p) => `${p.account_login}:${p.ticket}`));
     const bridgeOnly = positions.filter((p) => !workerKeys.has(`${p.account_login}:${p.ticket}`));
     return [...multiPositions, ...(bridgeOnly as DisplayPosition[])]
+      .filter((position) => linkedAccountLogins.has(Number(position.account_login)))
       .sort((a, b) => openedAt(b) - openedAt(a) || b.ticket - a.ticket);
-  }, [multiOnline, multiPositions, positions, scopePositions]);
+  }, [linkedAccountLogins, multiOnline, multiPositions, positions, scopePositions]);
 
   const accountOptions = useMemo(() => {
     const seen = new Map<string, { key: string; label: string }>();

@@ -751,9 +751,15 @@ def cancel_connect(account_id: str):
 
 @app.delete("/accounts/{account_id}")
 def remove_account(account_id: str):
+    runtime = _runtime()
     POOL.disconnect(account_id)
     CREDENTIALS.delete(account_id)
-    _runtime().session_backoff.pop(account_id, None)
+    runtime.session_backoff.pop(account_id, None)
+    _snapshot_cache_clear(runtime, "positions", "accounts")
+    with runtime.read_cache_lock:
+        for key in list(runtime.read_cache):
+            if key.startswith(f"history:{account_id}:"):
+                runtime.read_cache.pop(key, None)
     s = STATE.load()
     s.get("accounts", {}).pop(account_id, None)
     for group_id in ("1", "2"):

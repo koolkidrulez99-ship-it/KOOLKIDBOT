@@ -1562,17 +1562,39 @@ def set_account_budget(profile_id: int, payload: dict[str, Any] = Body(default_f
     return {**row, **{k: v for k, v in result.items() if k.startswith("budget") or k.startswith("virtual_") or k.startswith("actual_") or k == "margin_used"}}
 
 
+def _purge_removed_account_history(account_login: int) -> None:
+    login = int(account_login or 0)
+    if not login:
+        return
+    workspace_id = current_workspace()
+
+    def mutate(state):
+        state["history_archive"] = [
+            row for row in state.get("history_archive", [])
+            if int((row or {}).get("account_login") or 0) != login
+        ]
+        # Force a complete archive refresh if this login is ever added again.
+        state["history_archive_full_sync_at"] = 0
+        return True
+
+    update_state(mutate)
+    with _stats_history_lock:
+        _stats_history_cache.pop(workspace_id, None)
+
+
 @app.delete("/api/mt5/accounts/{profile_id}")
 def delete_account(profile_id: int):
     state = read_state()
     profile = next((x for x in state.get("profiles", []) if int(x.get("id", 0)) == profile_id), None)
     if not profile:
         raise HTTPException(status_code=404, detail="Account profile not found.")
+    login = int(profile.get("login", 0))
     try:
-        multi_account_client.remove(int(profile.get("login", 0)))
-        _clear_session_snapshot_cache()
+        multi_account_client.remove(login)
     except RuntimeError:
         pass
+    _clear_session_snapshot_cache()
+    _purge_removed_account_history(login)
     return {"ok": remove_profile(profile_id)}
 
 
@@ -1821,10 +1843,20 @@ def _overlay_bot_activity(bot_rows: list[dict[str, Any]]) -> list[dict[str, Any]
 
 @app.get("/api/mt5/positions")
 def positions():
+    state = read_state()
+    linked_logins = {
+        int(profile.get("login") or 0)
+        for profile in state.get("profiles", [])
+        if int(profile.get("login") or 0)
+    }
     try:
         worker_rows = multi_account_client.request("/positions", timeout=10).get("positions", [])
+        worker_rows = [
+            row for row in worker_rows
+            if int((row or {}).get("account_login") or 0) in linked_logins
+        ]
         if worker_rows:
-            bot_rows = list(read_state().get("bots") or [])
+            bot_rows = list(state.get("bots") or [])
             return [_ui_position_row(dict(row), bot_rows) for row in worker_rows]
     except RuntimeError:
         pass
@@ -1941,7 +1973,15 @@ def _filter_history_archive(rows: list[dict[str, Any]], days: int | None) -> lis
 def history(days: int | None = None):
     requested_days = int(days or 0)
     state = read_state()
-    archive_before = list(state.get("history_archive") or [])
+    linked_logins = {
+        int(profile.get("login") or 0)
+        for profile in state.get("profiles", [])
+        if int(profile.get("login") or 0)
+    }
+    archive_before = [
+        row for row in state.get("history_archive", [])
+        if int((row or {}).get("account_login") or 0) in linked_logins
+    ]
     full_sync_at = float(state.get("history_archive_full_sync_at") or 0)
     full_sync_due = requested_days <= 0 and (
         not archive_before or time.time() - full_sync_at > 6 * 60 * 60
@@ -1951,7 +1991,7 @@ def history(days: int | None = None):
     bot_rows = list(state.get("bots") or [])
     fetched: list[dict[str, Any]] = []
     for session in session_snapshot().get("accounts", []):
-        if not session.get("connected"):
+        if not session.get("connected") or int(session.get("login") or 0) not in linked_logins:
             continue
         try:
             rows = multi_account_client.request(
@@ -1963,6 +2003,14 @@ def history(days: int | None = None):
             continue
 
     archive = _store_history_archive(fetched)
+    archive = [
+        row for row in archive
+        if int((row or {}).get("account_login") or 0) in linked_logins
+    ]
+    if len(archive) != len(read_state().get("history_archive") or []):
+        update_state(lambda current: current.update({"history_archive": list(archive)}) or True)
+        with _stats_history_lock:
+            _stats_history_cache.pop(current_workspace(), None)
     if full_sync_due:
         update_state(lambda current: current.update({"history_archive_full_sync_at": time.time()}) or True)
     archive = [_enrich_bot_trade_row(dict(row), bot_rows) for row in archive]

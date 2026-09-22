@@ -29,6 +29,7 @@ export default function HistoryPage() {
   const [account, setAccount] = usePersistentState('history_account_filter', 'all');
   const [clearedAt, setClearedAt] = usePersistentState<string | null>('history_cleared_at', null);
   const [clearOpen, setClearOpen] = useState(false);
+  const linkedAccountLogins = useMemo(() => new Set(accounts.map((item) => String(item.login))), [accounts]);
 
   const load = (force = false) => {
     mt5HistoryService.list(force)
@@ -47,8 +48,14 @@ export default function HistoryPage() {
     };
   }, []);
 
+  useEffect(() => {
+    if (account !== 'all' && !linkedAccountLogins.has(account)) {
+      setAccount('all');
+    }
+  }, [account, linkedAccountLogins, setAccount]);
+
   const filtered = useMemo(() => {
-    let out = rows || [];
+    let out = (rows || []).filter((r) => linkedAccountLogins.has(String(r.account_login)));
     if (account !== 'all') out = out.filter((r) => String(r.account_login) === account);
     if (symbol !== 'all') out = out.filter((r) => r.symbol === symbol);
     if (result === 'win') out = out.filter((r) => netPl(r) > 0);
@@ -66,7 +73,7 @@ export default function HistoryPage() {
       if (clearedAt) out = out.filter((r) => new Date(r.close_time).getTime() > new Date(clearedAt).getTime());
     }
     return out;
-  }, [rows, account, symbol, result, sourceFilter, dateFilter, clearedAt]);
+  }, [rows, linkedAccountLogins, account, symbol, result, sourceFilter, dateFilter, clearedAt]);
 
   const summary = useMemo(() => {
     const list = filtered;

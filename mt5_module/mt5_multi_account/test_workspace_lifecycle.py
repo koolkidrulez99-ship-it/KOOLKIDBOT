@@ -118,3 +118,51 @@ def test_saved_copy_workspace_filter(monkeypatch, tmp_path):
 
     assert app_module._workspace_saved_copy_enabled("copy-ws") is True
     assert app_module._workspace_saved_copy_enabled("idle-ws") is False
+
+
+def test_remove_account_clears_position_and_history_snapshots(monkeypatch):
+    class Runtime:
+        session_backoff = {"session-a": {"attempt": 1}}
+        read_cache = {
+            "positions": {"positions": [{"account_id": "session-a"}]},
+            "accounts": {"accounts": [{"account_id": "session-a"}]},
+            "history:session-a:30": [{"ticket": 1}],
+            "history:session-b:30": [{"ticket": 2}],
+        }
+        read_cache_lock = threading.RLock()
+
+    class StateStore:
+        def __init__(self):
+            self.payload = {"accounts": {"session-a": {"account_id": "session-a"}}}
+
+        def load(self):
+            return self.payload
+
+        def save(self, payload):
+            self.payload = payload
+
+    class Credentials:
+        def __init__(self):
+            self.deleted = []
+
+        def delete(self, account_id):
+            self.deleted.append(account_id)
+
+    runtime = Runtime()
+    state = StateStore()
+    pool = FakePool(["session-a"])
+    credentials = Credentials()
+
+    monkeypatch.setattr(app_module, "_runtime", lambda: runtime)
+    monkeypatch.setattr(app_module, "POOL", pool)
+    monkeypatch.setattr(app_module, "STATE", state)
+    monkeypatch.setattr(app_module, "CREDENTIALS", credentials)
+
+    assert app_module.remove_account("session-a") == {"ok": True}
+    assert pool.disconnected == ["session-a"]
+    assert credentials.deleted == ["session-a"]
+    assert "session-a" not in state.payload["accounts"]
+    assert "positions" not in runtime.read_cache
+    assert "accounts" not in runtime.read_cache
+    assert "history:session-a:30" not in runtime.read_cache
+    assert "history:session-b:30" in runtime.read_cache

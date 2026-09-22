@@ -9,6 +9,7 @@ import ConfirmModal from '../components/ConfirmModal';
 import { accountAction, addAccount, removeAccount, testAccount } from '../lib/actions';
 import { isSimulation } from '../config/runtime';
 import { mt5AccountService } from '../services/mt5AccountService';
+import { mt5HistoryService } from '../services/mt5HistoryService';
 import type { Mt5Account } from '../types';
 
 const BROKER_PRESETS = [
@@ -225,6 +226,7 @@ export default function AccountsPage() {
           if (!removeTarget) return;
           try {
             await removeAccount(removeTarget.id);
+            mt5HistoryService.invalidate();
             pushToast('info', 'Account removed', `#${removeTarget.login} unlinked from the hub.`);
             await refresh(true);
           } catch (e) {
