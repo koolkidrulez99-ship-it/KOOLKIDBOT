@@ -304,6 +304,12 @@ input, select{
     background:#334155;
     box-shadow:0 0 14px rgba(148,163,184,0.16);
 }
+#marthaAiChatBtn{
+    min-width:118px;
+    background:#0ea5e9;
+    color:#f0f9ff;
+    box-shadow:0 0 18px rgba(14,165,233,0.28);
+}
 #marthaAiToggleBtn.martha-toggle-on{
     background:#22c55e;
     color:#04130a;
@@ -1307,7 +1313,7 @@ body.mobile-only-ui #profileContainer .unchain-history-grid{
     </div>
     <div class="custom-edits-toolbar">
         {% if license_context and (license_context.is_full_access or license_context.is_lifetime) %}
-        <label class="ai-bubble-setting"><input id="aiBubblePreference" type="checkbox" checked> AI Intelligence Bubble</label>
+        <label class="ai-bubble-setting"><input id="aiBubblePreference" type="checkbox" checked> Martha AI Bubble</label>
         {% endif %}
         <button id="customEditsOpenBtn" class="custom-edits-open-btn" type="button" onclick="window.BotApp && BotApp.openCustomUiEditor && BotApp.openCustomUiEditor()">Custom Edits</button>
     </div>
@@ -1349,11 +1355,12 @@ body.mobile-only-ui #profileContainer .unchain-history-grid{
     <div id="marthaAiPanel" class="card martha-ai-panel" style="display:none;">
         <div class="martha-ai-header">
             <div>
-                <div class="martha-ai-kicker">Local smart assistant</div>
+                <div class="martha-ai-kicker">Deriv smart assistant</div>
                 <h3 class="martha-ai-title">Martha AI</h3>
-                <p class="martha-ai-sub">Quietly watches the active profile and only shows its confidence after you press a trade button.</p>
+                <p class="martha-ai-sub">Talk to Martha about your connected Deriv bot, or let her quietly watch the active profile and check trades.</p>
             </div>
             <div class="martha-ai-controls">
+                <button id="marthaAiChatBtn" type="button" onclick="window.openMarthaAiChat && window.openMarthaAiChat()">Talk to Martha</button>
                 <span id="marthaAiStatus" class="martha-ai-pill">Martha AI: OFF</span>
                 <label class="martha-ai-threshold" title="Minimum confidence needed before Martha allows a manual trade">
                     Min
@@ -2495,7 +2502,7 @@ const patConnectedAccountSelectEl = document.getElementById("patConnectedAccount
 const patAccountSwitchBtnEl = document.getElementById("patAccountSwitchBtn");
 const apiStatusRow = document.getElementById("apiStatusRow");
 
-const tradeStore = { KOOLKID: [], JOKERJOE: [], HUMAN: [], UNCHAIN: [], NTT: [] };
+const tradeStore = { KOOLKID: [], JOKERJOE: [], HUMAN: [], UNCHAIN: [], NTT: [], CLOUD: [] };
 const profileBudgetState = {};
 const tradeHistoryFilterByProfile = {};
 const TRADE_TOAST_MULTI_JOIN_MS = 900;

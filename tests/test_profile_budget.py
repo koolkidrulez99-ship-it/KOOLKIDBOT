@@ -151,3 +151,63 @@ def test_profile_budget_route_updates_display_balance(monkeypatch):
     assert payload["total_balance"] == 100.0
     assert payload["active_profile_budget"]["enabled"] is True
     assert payload["active_profile_budget"]["configured_budget"] == 20.0
+
+
+def test_cloud_budget_is_saved_with_the_cloud_session(monkeypatch):
+    state = {
+        "profile_budgets": {
+            "CLOUD": {"amount": 75.0, "realized_pnl": 4.25, "reserved": 0.0},
+        },
+    }
+    saved = {}
+    monkeypatch.setattr(server, "_cloud_key_for_state", lambda _state: "cloud-user")
+    monkeypatch.setattr(server.cloud_manager, "update_settings", lambda key, settings: saved.update({"key": key, **settings}))
+
+    server._persist_cloud_budget(state)
+
+    assert saved == {
+        "key": "cloud-user",
+        "profile_budget": 75.0,
+        "profile_budget_realized_pnl": 4.25,
+    }
+
+
+def test_cloud_budget_restores_from_cloud_settings(monkeypatch):
+    state = {"profile_budgets": server._new_profile_budget_map()}
+    monkeypatch.setattr(server, "_estimate_profile_open_budget_exposure", lambda *_args: 0.0)
+
+    server._restore_cloud_budget_from_status(state, {
+        "settings": {"profile_budget": 50.0, "profile_budget_realized_pnl": -2.5},
+    })
+
+    assert state["profile_budgets"]["CLOUD"] == {
+        "amount": 50.0,
+        "realized_pnl": -2.5,
+        "reserved": 0.0,
+    }
+
+
+def test_cloud_history_snapshot_uses_persisted_cloud_rows(monkeypatch):
+    state = server._build_default_client_state()
+    state["username"] = "alice"
+    monkeypatch.setattr(server, "login_required", lambda: True)
+    monkeypatch.setattr(server, "get_client_state", lambda: ("cid-cloud-history", state))
+    monkeypatch.setattr(server, "_cloud_key_for_state", lambda _state: "cloud-user")
+    monkeypatch.setattr(server.cloud_manager, "history", lambda _key: [{
+        "contract_id": "cloud-1",
+        "time": "2026-09-22 12:00:00",
+        "trade_type": "under9",
+        "market": "R_25",
+        "stake": 1.0,
+        "profit": 0.8,
+        "result": "WIN",
+    }])
+
+    with server.app.test_client() as client:
+        response = client.get("/profile_history_snapshot?profile=CLOUD")
+
+    payload = response.get_json()
+    assert response.status_code == 200
+    assert payload["profiles"]["CLOUD"][0]["contract_id"] == "cloud-1"
+    assert payload["profiles"]["CLOUD"][0]["symbol"] == "R_25"
+    assert payload["profiles"]["CLOUD"][0]["type"] == "under9"

@@ -143,6 +143,21 @@ class Bridge:
                 "active_strategies": [name for name, st in (state.get("strategies") or {}).items()
                                       if getattr(st, "auto_trade", False) or any(v is True for k, v in vars(st).items() if k.endswith("_auto"))]}
 
+    def diagnostics(self, state):
+        now = time.time()
+        last_message = float(state.get("ws_last_message_at", 0.0) or 0.0)
+        health = self.s.martha_health_snapshot(state)
+        return {
+            "connected": bool(state.get("ws_connected") and state.get("ws")),
+            "connection_type": str(state.get("api_token_type") or "unknown"),
+            "reconnect_pending": bool(state.get("ws_reconnect_pending")),
+            "reconnect_attempts": int(state.get("ws_reconnect_attempts", 0) or 0),
+            "seconds_since_message": round(max(0.0, now - last_message), 1) if last_message else None,
+            "proposal_waiters": len({id(row) for row in (state.get("_proposal_waiters") or {}).values() if isinstance(row, dict)}),
+            "tracked_contracts": len(state.get("contract_meta") or {}),
+            "martha": health,
+        }
+
     @staticmethod
     def currency(state):
         account = state.get("options_account_id") or state.get("deriv_account_id") or state.get("loginid")
@@ -211,6 +226,15 @@ class Bridge:
                     raise CommandError("Connect a Deriv account before starting AUTO.")
             if name in ("get_trade_history",):
                 a["limit"] = int(number(a.get("limit", 5), "history limit", 1, 50))
+            if name == "get_development_requests":
+                a["limit"] = int(number(a.get("limit", 10), "request limit", 1, 25))
+            if name == "submit_development_request":
+                category = str(a.get("category") or "").strip().lower()
+                summary = str(a.get("summary") or "").strip()
+                if category not in ("bug", "feature") or not 5 <= len(summary) <= 1200:
+                    raise CommandError("Development requests need a bug/feature category and a clear description.")
+                a["category"] = category
+                a["summary"] = redact(summary)
             if "today" in a and not isinstance(a["today"], bool):
                 raise CommandError("Invalid statistics period.")
             if name == "change_barrier":
@@ -430,6 +454,24 @@ class Bridge:
             return {"status": "completed", "message": f"Current market: {settings['market']}."}
         if name in ("get_account_information", "get_current_settings"):
             return {"status": "completed", "data": settings, "message": json.dumps(settings, indent=2)}
+        if name == "get_connection_health":
+            data = self.diagnostics(state)
+            status = "connected" if data["connected"] else ("reconnecting" if data["reconnect_pending"] else "disconnected")
+            age = "unknown" if data["seconds_since_message"] is None else f"{data['seconds_since_message']} seconds ago"
+            return {"status": "completed", "data": data, "message": f"Deriv is {status}. Last WebSocket message: {age}. Pending proposal requests: {data['proposal_waiters']}. Tracked contracts: {data['tracked_contracts']}."}
+        if name == "get_martha_health":
+            data = self.diagnostics(state)["martha"]
+            issue = data.get("last_issue") or "none"
+            action = data.get("last_action") or "none"
+            return {"status": "completed", "data": data, "message": f"Martha health: {data.get('status')}. Consecutive failures: {data.get('consecutive_failures')}/{data.get('max_failures')}. Last issue: {issue}. Last recovery: {action}."}
+        if name == "get_development_requests":
+            rows = self.intelligence_store.development_requests(session["user"], a.get("limit", 10))
+            if not rows:
+                return {"status": "completed", "requests": [], "message": "You have no saved Martha development requests."}
+            lines = [f"{row['id'][:8]} · {row['category'].upper()} · {row['status'].upper()} · {row['summary']}" for row in rows]
+            return {"status": "completed", "requests": rows, "message": "Your Martha development requests:\n" + "\n".join(lines)}
+        if name == "get_research_status":
+            return {"status": "completed", "message": "Live internet research is not configured. Martha can use the OpenAI language provider when credits are available, but it will not claim current web research without a separate trusted search connector.", "data": {"connected": False, "provider": None}}
         profiles = self.s._get_profile_trade_history_snapshot(state)
         history = {row["contract_id"]: row for rows in profiles.values() for row in rows}
         rows = sorted(history.values(), key=lambda r: r.get("_sort_ts", 0), reverse=True)
@@ -452,6 +494,20 @@ class Bridge:
         if name == "resume_trading":
             hub(state).stopped = False
             return {"status": "completed", "message": "New orders are allowed. No strategies were automatically restarted."}
+        if name == "run_safe_recovery":
+            if not (state.get("martha_ai") or {}).get("enabled"):
+                raise CommandError("Turn Martha AI ON before running its safe recovery checks.")
+            self.s._run_websocket_health_check(cid, state)
+            result = self.s._run_martha_self_heal_check(cid, state)
+            actions = list(result.get("actions") or [])
+            message = "Safe recovery completed. " + ("Actions: " + ", ".join(actions) + "." if actions else "No stale state required repair.")
+            return {"status": "completed", "message": message, "data": self.diagnostics(state)}
+        if name == "submit_development_request":
+            request_id = self.intelligence_store.create_development_request(
+                session["user"], a["category"], a["summary"],
+                {"profile": state.get("active_profile"), "diagnostics": self.diagnostics(state)},
+            )
+            return {"status": "completed", "request_id": request_id, "message": f"Saved {a['category']} request {request_id[:8]} for developer review. No code or live trading behavior was changed."}
         if name == "stop_auto_strategy":
             return self.stop(cid, state, "JOKERJOE" if a["profile"] == "KIDGX" else a["profile"])
         if name == "change_stake":

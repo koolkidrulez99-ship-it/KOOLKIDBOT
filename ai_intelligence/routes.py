@@ -12,6 +12,7 @@ from .commands import CommandError, READ_ACTIONS, emergency, parse, safe_input
 from .apostle import ApostleEngine, DEAR_BRUCE_BIAS, SetupState, TIMEFRAMES, approve_ex5_signal, backtest, completed, confirmed_swings, market_structure
 from .intelligence_store import IntelligenceStore
 from .mt5_provider import Mt5ReadProvider
+from .config import provider_status
 
 
 def register(app, namespace):
@@ -80,6 +81,11 @@ def register(app, namespace):
         _, state, ai = current()
         context_id = hashlib.sha256(repr(binding(state)).encode()).hexdigest()[:24]
         return jsonify(csrf=ai.csrf, context_id=context_id, visible=bridge.preference(), messages=ai.messages, settings=bridge.settings(state))
+
+    @bp.get("/provider/status")
+    def ai_provider_status():
+        current()
+        return jsonify(provider_status())
 
     def intelligence_identity(account):
         try:
@@ -303,7 +309,16 @@ def register(app, namespace):
                 plan = copy.deepcopy(clarification["plan"])
                 plan["actions"][clarification["index"]]["barrier"] = text
             else:
-                plan = parse(text, bridge.settings(state), ai.previous, ai.messages)
+                context = bridge.settings(state)
+                context["diagnostics"] = bridge.diagnostics(state)
+                plan = parse(text, context, ai.previous, ai.messages)
+            if "answer" in plan:
+                if binding(state) != captured or generation != ai.generation:
+                    raise CommandError("The account or stop state changed while preparing the answer. Ask again.")
+                remember(ai, "user", text)
+                remember(ai, "assistant", plan["answer"])
+                bridge.audit({"action": "bot_question"}, {"status": "answered"})
+                return jsonify(results=[{"status": "answered", "message": plan["answer"]}], settings=bridge.settings(state))
             try:
                 actions = bridge.prepare(cid, state, plan)
             except CommandError as error:

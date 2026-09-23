@@ -15,6 +15,7 @@
 #aiIntelligence .ai-ready{font-size:12px;color:var(--ai-accent)}
 #aiIntelligence .ai-tool{background:transparent;color:var(--ai-muted);width:32px;height:32px;display:inline-grid;place-items:center;border:0;padding:6px;border-radius:4px;flex-shrink:0}
 #aiIntelligence .ai-tool:hover{background:var(--ai-line);color:var(--ai-fg)}
+#aiIntelligence .ai-voice.is-active{color:var(--ai-accent);background:color-mix(in srgb,var(--ai-accent) 14%,transparent)}
 #aiIntelligence .ai-tool svg{width:18px;height:18px}
 #aiIntelligence .ai-messages{padding:16px;overflow:auto;flex:1;min-height:0;overscroll-behavior:contain}
 #aiIntelligence .ai-message{max-width:94%;margin:0 0 12px;padding:10px 12px;border-radius:8px;white-space:pre-wrap;overflow-wrap:anywhere;background:#252c34;color:var(--ai-fg);text-align:left}

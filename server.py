@@ -13,6 +13,10 @@ import secrets
 import hashlib
 import math
 import statistics
+from ai_intelligence.config import load_local_ai_environment
+
+load_local_ai_environment()
+
 from ai_intelligence.bridge import check_buy as _ai_check_buy, observe_response as _ai_observe_response
 from ai_intelligence.routes import register as _register_ai_intelligence
 import ipaddress
@@ -543,8 +547,8 @@ def _send_ws_request_for_response(client_id, state, payload, response_key, waite
     return waiter.get("payload"), None
 
 
-_ACTIVE_SYMBOLS_CACHE_TTL_SEC = 300.0
-_CONTRACTS_FOR_CACHE_TTL_SEC = 300.0
+_ACTIVE_SYMBOLS_CACHE_TTL_SEC = 900.0
+_CONTRACTS_FOR_CACHE_TTL_SEC = 900.0
 _LEGACY_SYMBOL_ALIASES = {
     "R_10": ("R_10",),
     "R_25": ("R_25",),
@@ -1709,6 +1713,21 @@ def execute_deriv_trade(trade_request):
                 pass
             return False, msg
         ask_price = _safe_float((proposal or {}).get("ask_price"), _safe_float((proposal or {}).get("display_value"), stake))
+        if str(trade_request.get("mode") or req_meta.get("mode") or "").upper() == "CLOUD_REINVEST_100":
+            payout = _safe_float((proposal or {}).get("payout"), None)
+            proposal_profit = _proposal_profit_value(proposal, stake)
+            profit_percent = ((float(proposal_profit) / float(ask_price)) * 100.0) if proposal_profit is not None and ask_price not in (None, 0) else None
+            minimum_profit = _safe_float(trade_request.get("minimum_profit"), 0.0)
+            if minimum_profit > 0 and (proposal_profit is None or float(proposal_profit) + 1e-9 < minimum_profit):
+                state.get("req_meta", {}).pop(req_id, None)
+                return False, "SETUP_REJECTED_LOW_PAYOUT"
+            req_meta.update({
+                "proposal_id": proposal_id,
+                "proposal_ask_price": ask_price,
+                "proposal_payout": payout,
+                "proposal_profit": proposal_profit,
+                "proposal_profit_percent": profit_percent,
+            })
         buy_payload = {
             "req_id": req_id,
             "buy": proposal_id,
@@ -4272,6 +4291,27 @@ def _cloud_key_for_state(state):
     ).strip().lower()
 
 
+def _restore_cloud_budget_from_status(state, status):
+    settings = (status or {}).get("settings") or {}
+    if "profile_budget" not in settings:
+        return
+    entry = _ensure_profile_budget(state, "CLOUD")
+    entry["amount"] = max(0.0, round(_safe_money(settings.get("profile_budget")), 2))
+    entry["realized_pnl"] = round(_safe_money(settings.get("profile_budget_realized_pnl")), 2)
+    entry["reserved"] = _estimate_profile_open_budget_exposure(state, "CLOUD")
+
+
+def _persist_cloud_budget(state):
+    cloud_key = _cloud_key_for_state(state)
+    if not cloud_key:
+        return
+    entry = _ensure_profile_budget(state, "CLOUD")
+    cloud_manager.update_settings(cloud_key, {
+        "profile_budget": round(_safe_money(entry.get("amount")), 2),
+        "profile_budget_realized_pnl": round(_safe_money(entry.get("realized_pnl")), 2),
+    })
+
+
 def _ensure_cloud_runtime_for_state(source_state, cloud_key, status=None):
     source_state = source_state if isinstance(source_state, dict) else {}
     cloud_key = str(cloud_key or "").strip().lower()
@@ -4338,7 +4378,9 @@ def _ensure_cloud_runtime_for_state(source_state, cloud_key, status=None):
     if not runtime.get("ws_connected") and not thread_alive and not connecting:
         _start_ws_worker_thread(runtime_cid, runtime, reason="cloud_under9_runtime")
     elif runtime.get("ws_connected"):
-        _ensure_tick_subscription(runtime, current_market, force=False, reason="cloud_under9_runtime", client_id=runtime_cid)
+        needed_markets = (status or {}).get("allowed_markets") if str((status or {}).get("strategy_name") or "") == "reinvest_profits_100" else [current_market]
+        for market in needed_markets or [current_market]:
+            _ensure_tick_subscription(runtime, market, force=False, reason="cloud_under9_runtime", client_id=runtime_cid)
     logger.info(
         "[%s] cloud_runtime_ensured key=%s token_fp=%s market=%s running=%s",
         runtime_cid,
@@ -18482,10 +18524,13 @@ def _active_tick_symbols_for_state(state):
     try:
         cloud_key = _cloud_key_for_state(state)
         cloud_status = cloud_manager.status(cloud_key) if cloud_key else {}
-        raw = cloud_status.get("current_market") if cloud_status.get("running") else None
-        sym = _normalize_tick_symbol(raw)
-        if sym and sym not in symbols:
-            symbols.append(sym)
+        cloud_symbols = []
+        if cloud_status.get("running"):
+            cloud_symbols = cloud_status.get("allowed_markets") if cloud_status.get("strategy_name") == "reinvest_profits_100" else [cloud_status.get("current_market")]
+        for raw in cloud_symbols or []:
+            sym = _normalize_tick_symbol(raw)
+            if sym and sym not in symbols:
+                symbols.append(sym)
     except Exception:
         pass
     return symbols
@@ -18878,6 +18923,52 @@ def _restore_required_tick_subscriptions(client_id, state, reason):
     return restored
 
 
+def _filter_cloud_reinvest_markets(client_id, state, settings):
+    if str((settings or {}).get("strategy_name") or "").strip().lower() != "reinvest_profits_100":
+        return settings
+    stake_mode = str((settings or {}).get("stake_mode") or "FIXED").strip().upper()
+    if stake_mode == "PERCENT":
+        try:
+            balance_percent = float((settings or {}).get("balance_percent"))
+        except Exception:
+            raise ValueError("Balance percentage must be between 10% and 20%.")
+        if balance_percent < 10.0 or balance_percent > 20.0:
+            raise ValueError("Balance percentage must be between 10% and 20%.")
+    trade_type = str((settings or {}).get("cloud_trade_type") or "under9").strip().lower()
+    wanted_contract = {
+        "under9": "DIGITUNDER",
+        "digit_differs": "DIGITDIFF",
+        "kid100wins": "DIGITDIFF",
+    }.get(trade_type, "DIGITOVER")
+    requested = list((settings or {}).get("allowed_markets") or [])
+    active, active_error = _get_active_symbols_for_state(client_id, state)
+    if active_error:
+        raise ValueError(f"Cloud market list unavailable: {active_error}")
+    active_map = {
+        str((item or {}).get("symbol") or (item or {}).get("underlying_symbol") or "").upper():
+        str((item or {}).get("symbol") or (item or {}).get("underlying_symbol") or "")
+        for item in active
+        if isinstance(item, dict)
+    }
+    eligible = []
+    for raw_symbol in requested:
+        symbol = active_map.get(str(raw_symbol or "").upper())
+        if not symbol:
+            continue
+        contracts_for, error = _get_contracts_for_symbol(client_id, state, symbol)
+        if error:
+            logger.info("[%s] cloud_scanner_market_skipped symbol=%s error=%s", client_id, symbol, error)
+            continue
+        if _contracts_for_has_contract_type(contracts_for, wanted_contract):
+            eligible.append(symbol)
+    if not eligible:
+        raise ValueError(f"No selected active market supports {wanted_contract}.")
+    out = dict(settings or {})
+    out["allowed_markets"] = eligible
+    logger.info("[%s] cloud_scanner_eligible trade_type=%s contract=%s markets=%s", client_id, trade_type, wanted_contract, ",".join(eligible))
+    return out
+
+
 register_cloud_routes(
     app,
     cloud_manager=cloud_manager,
@@ -18889,6 +18980,7 @@ register_cloud_routes(
     ensure_cloud_runtime=_ensure_cloud_runtime_for_state,
     stop_cloud_runtime=_stop_cloud_runtime_for_key,
     can_use_cloud_profile=is_lifetime_feature_user,
+    filter_cloud_markets=_filter_cloud_reinvest_markets,
 )
 
 
@@ -19342,6 +19434,10 @@ def _handle_cloud_under9_action(client_id, state, action):
     is_accumulator = str(intent.get("deriv_contract_type") or intent.get("contract_type") or "").upper() == "ACCU"
 
     def _execute_cloud_trade():
+        valid, invalid_reason = cloud_manager.pending_trade_valid(username, signal_id)
+        if not valid:
+            cloud_manager.mark_trade_failed(username, invalid_reason)
+            return
         if is_accumulator:
             ok, msg = _send_cloud_accumulator_buy(
                 client_id,
@@ -19352,23 +19448,28 @@ def _handle_cloud_under9_action(client_id, state, action):
                 hold_ticks=int(intent.get("hold_ticks") or 2),
             )
         else:
+            trade_type = str(intent.get("contract_type") or "UNDER").upper().replace("DIGIT", "")
+            barrier = int(intent.get("barrier", 9))
+            cloud_strategy = str(intent.get("cloud_trade_type") or "under9_reinvest")
+            cloud_mode = "CLOUD_REINVEST_100" if cloud_strategy != "under9_reinvest" else "CLOUD_UNDER9"
             ok, msg = send_buy_with_profile(
                 client_id,
                 "CLOUD",
-                "UNDER",
+                trade_type,
                 stake,
                 symbol,
-                9,
+                barrier,
                 duration=duration,
                 duration_unit=duration_unit,
-                mode="CLOUD_UNDER9",
+                mode=cloud_mode,
                 emit_balance_after_send=False,
                 extra_meta={
-                    "strategy_name": "Cloud Under 9",
+                    "strategy_name": "REINVEST PROFITS 100%" if cloud_mode == "CLOUD_REINVEST_100" else "Cloud Under 9",
                     "cloud_signal_id": signal_id,
-                    "cloud_strategy": "under9_reinvest",
-                    "button": "Cloud Under 9",
+                    "cloud_strategy": cloud_strategy,
+                    "button": "REINVEST PROFITS 100%" if cloud_mode == "CLOUD_REINVEST_100" else "Cloud Under 9",
                 },
+                minimum_profit=(stake * max(0.0, float(intent.get("min_profit_percent") or 0.0)) / 100.0) if float(intent.get("min_profit_percent") or 0.0) > 0 else None,
             )
         if ok:
             cloud_manager.mark_trade_sent(username, signal_id)
@@ -21921,10 +22022,11 @@ def process_contract(client_id, contract):
         elif (
             profile_for_contract == "CLOUD"
             and not is_auto_session_contract
-            and str((meta or {}).get("mode") or "").upper() in ("CLOUD_UNDER9", "CLOUD_KOOLKID_PROFIT")
+            and str((meta or {}).get("mode") or "").upper() in ("CLOUD_UNDER9", "CLOUD_KOOLKID_PROFIT", "CLOUD_REINVEST_100")
         ):
             cloud_key = _cloud_key_for_state(state)
             cloud_row = cloud_manager.on_contract_result(cloud_key, contract, meta, profit)
+            _persist_cloud_budget(state)
             entry = {
                 "profile": "CLOUD",
                 "type": (meta or {}).get("type") or "UNDER",
@@ -23300,6 +23402,8 @@ def profile_budget_route():
         entry["realized_pnl"] = 0.0
         entry["reserved"] = _estimate_profile_open_budget_exposure(state, profile)
         message = f"{profile} budget set to {_format_state_money(state, entry['amount'])}"
+    if profile == "CLOUD":
+        _persist_cloud_budget(state)
     logger.info(
         "[%s] TEMP session_budget_set profile=%s configured=%s remaining=%s realized_pnl=%s live_account=%s",
         cid,
@@ -23543,6 +23647,7 @@ def set_profile():
         cloud_key = _cloud_key_for_state(state)
         cloud_status = cloud_manager.status(cloud_key) if cloud_key else {"current_market": "", "running": False, "cloud_status": "Connect and select a Deriv PAT account to verify this Cloud session.", "requires_token_verification": True}
         if cloud_key:
+            _restore_cloud_budget_from_status(state, cloud_status)
             _ensure_tick_subscription(state, cloud_status.get("current_market") or state.get("current_symbol"), reason="cloud_profile", client_id=cid)
     elif profile == "HUMAN":
         _ensure_tick_subscription(state, state.get("human_symbol") or state.get("current_symbol"))
@@ -23603,6 +23708,18 @@ def profile_history_snapshot():
         return jsonify({"error": "Invalid profile"}), 400
 
     profiles = _get_profile_trade_history_snapshot(state, requested or None)
+    if not requested or requested == "CLOUD":
+        cloud_key = _cloud_key_for_state(state)
+        cloud_items = []
+        if cloud_key:
+            for index, raw in enumerate(cloud_manager.history(cloud_key)):
+                row = dict(raw or {})
+                row.setdefault("symbol", row.get("market"))
+                row.setdefault("type", row.get("trade_type") or row.get("strategy") or "Cloud Trade")
+                serialized = _serialize_profile_trade_history_entry("CLOUD", row, index)
+                if serialized:
+                    cloud_items.append(serialized)
+        profiles["CLOUD"] = cloud_items
     return jsonify({"status": "success", "profiles": profiles})
 
 

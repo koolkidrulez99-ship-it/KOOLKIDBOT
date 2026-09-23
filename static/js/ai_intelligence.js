@@ -5,20 +5,19 @@
   if (!preference || document.getElementById("aiIntelligence")) return;
   const root = document.createElement("section");
   root.id = "aiIntelligence";
-  root.setAttribute("aria-label", "AI Intelligence");
+  root.setAttribute("aria-label", "Martha AI for Deriv");
   root.innerHTML = `
-    <button class="ai-launcher" type="button" title="Open AI Intelligence" aria-label="Open AI Intelligence" aria-expanded="false" hidden><img src="/static/images/logo.png" alt="KOOLKID"></button>
-    <section class="ai-panel" role="dialog" aria-label="AI Intelligence chat" hidden>
-      <header class="ai-header"><img src="/static/images/logo.png" alt=""><div class="ai-heading"><strong>AI Intelligence</strong><span class="ai-ready">Connecting</span></div>
-        <button class="ai-tool" data-tool="intelligence" title="Trading intelligence" aria-label="Trading intelligence"><i data-lucide="brain-circuit"></i></button>
+    <button class="ai-launcher" type="button" title="Talk to Martha AI" aria-label="Talk to Martha AI" aria-expanded="false" hidden><img src="/static/images/logo.png" alt="KOOLKID"></button>
+    <section class="ai-panel" role="dialog" aria-label="Martha AI Deriv chat" hidden>
+      <header class="ai-header"><img src="/static/images/logo.png" alt=""><div class="ai-heading"><strong>Martha AI</strong><span class="ai-ready">Deriv assistant · Connecting</span></div>
+        <button class="ai-tool ai-voice" data-tool="voice" title="Turn spoken replies off" aria-label="Turn spoken replies off" aria-pressed="true"><i data-lucide="volume-2"></i></button>
         <button class="ai-tool" data-tool="clear" title="Clear chat" aria-label="Clear chat"><i data-lucide="trash-2"></i></button>
         <button class="ai-tool" data-tool="minimize" title="Minimize" aria-label="Minimize"><i data-lucide="minus"></i></button>
         <button class="ai-tool" data-tool="close" title="Close chat" aria-label="Close chat"><i data-lucide="x"></i></button>
       </header>
-      <nav class="ai-tabs"><button type="button" data-ai-view="chat" class="is-active">Assistant</button><button type="button" data-ai-view="monitor">Intelligence</button></nav>
       <div class="ai-messages ai-chat-view" role="log" aria-live="polite"></div>
       <div class="ai-thinking ai-chat-view" role="status" hidden>Thinking...</div>
-      <form class="ai-compose ai-chat-view"><textarea aria-label="Message AI Intelligence" maxlength="1200" placeholder="Ask AI Intelligence" rows="2"></textarea><button type="submit" class="ai-tool ai-send" title="Send" aria-label="Send"><i data-lucide="send"></i></button></form>
+      <form class="ai-compose ai-chat-view"><textarea aria-label="Message Martha AI" maxlength="1200" placeholder="Tell Martha what to do on your Deriv bot" rows="2"></textarea><button type="submit" class="ai-tool ai-send" title="Send" aria-label="Send"><i data-lucide="send"></i></button></form>
       <section class="ai-monitor" hidden>
         <div class="ai-monitor-head"><div><strong>Market Intelligence</strong><span class="ai-engine-mode">SIGNAL ONLY</span></div><button type="button" class="ai-refresh">Refresh</button></div>
         <div class="ai-status-grid"><div><span>AI status</span><strong data-ai-stat="status">CONNECTING</strong></div><div><span>Decision</span><strong data-ai-stat="decision">SCANNING</strong></div><div><span>Confidence</span><strong data-ai-stat="score">0%</strong></div><div><span>Stage</span><strong data-ai-stat="stage">SCANNING</strong></div></div>
@@ -55,6 +54,7 @@
   let socketBound = null;
   let contextId = null;
   let intelligenceLoaded = false;
+  let voiceEnabled = localStorage.getItem("koolkid_ai_voice_enabled") !== "false";
 
   async function api(path, data) {
     const response = await fetch(`/ai-intelligence/${path}`, {
@@ -70,13 +70,35 @@
     return body;
   }
 
-  function message(text, role = "assistant") {
+  function renderVoiceButton() {
+    const button = root.querySelector('[data-tool="voice"]');
+    if (!button) return;
+    button.classList.toggle("is-active", voiceEnabled);
+    button.setAttribute("aria-pressed", String(voiceEnabled));
+    button.title = voiceEnabled ? "Turn spoken replies off" : "Turn spoken replies on";
+    button.setAttribute("aria-label", button.title);
+    button.innerHTML = `<i data-lucide="${voiceEnabled ? "volume-2" : "volume-x"}"></i>`;
+    if (window.lucide) window.lucide.createIcons({root: button});
+  }
+
+  function speak(text) {
+    if (!voiceEnabled || !("speechSynthesis" in window) || typeof SpeechSynthesisUtterance === "undefined") return;
+    const spoken = String(text || "").replace(/\s+/g, " ").trim().slice(0, 700);
+    if (!spoken) return;
+    const utterance = new SpeechSynthesisUtterance(spoken);
+    utterance.rate = 1;
+    utterance.pitch = 1;
+    window.speechSynthesis.speak(utterance);
+  }
+
+  function message(text, role = "assistant", options = {}) {
     const node = document.createElement("div");
     node.className = `ai-message${role === "user" ? " ai-user" : ""}`;
     node.textContent = String(text);
     log.append(node);
     while (log.children.length > 80) log.firstElementChild.remove();
     log.scrollTop = log.scrollHeight;
+    if (role !== "user" && options.speak !== false) speak(text);
     return node;
   }
 
@@ -167,7 +189,7 @@
   function quickActions() {
     const group = document.createElement("div");
     group.className = "ai-quick";
-    for (const [label, command] of [["Check Balance", "What's my balance?"], ["Trade History", "Show my last 5 trades"], ["Current Settings", "Current settings"], ["Resume Trading", "Resume trading"]]) {
+    for (const [label, command] of [["Check Balance", "What's my balance?"], ["Trade History", "Show my last 5 trades"], ["Connection Health", "Check connection health"], ["Martha Health", "Check Martha health"], ["Safe Recovery", "Run safe recovery"], ["My Requests", "Show my development requests"], ["Research Status", "Check research status"]]) {
       const b = document.createElement("button");
       b.className = "ai-command";
       b.type = "button";
@@ -223,7 +245,7 @@
   const stopControls = {
     HUMAN: ["quickStopHumanRfMartingale", "quickStopHumanSingleMartingale", "quickStopHumanDualMartingale", "stopHumanParityMartingale", "quickStopHumanSpecialAuto"],
     KOOLKID: ["quickStopKoolkidSingleMartingale", "stopOver3Under6PairMartingaleKoolkid", "stopKoolkidOver6ScanMartingale", "stopKoolkidBalancedRecovery", "stopKoolkidPairRecovery"],
-    JOKERJOE: ["quickStopJokerjoeBatchMartingale", "stopKid100WinsAutosJokerjoe"]
+    JOKERJOE: ["quickStopJokerjoeSingleMartingale", "quickStopJokerjoeBatchMartingale", "stopKid100WinsAutosJokerjoe"]
   };
 
   function stopBrowser(profile) {
@@ -267,7 +289,7 @@
       if (!result.trades.length) message("No trades are available in this bot session.");
       for (const trade of result.trades) message(`${trade.time} | ${trade.type} | ${trade.symbol} | ${trade.result} | P/L ${trade.profit}`);
     }
-    if (result.data) message(martingaleSnapshot());
+    if (result.data && (result.data.profile || result.data.active_strategies)) message(martingaleSnapshot());
   }
 
   function actionLabel(a) {
@@ -351,7 +373,12 @@
   }
 
   launcher.addEventListener("click", () => show(panel.hidden));
-  root.querySelector('[data-tool="intelligence"]').addEventListener("click", () => { show(true); showView("monitor"); });
+  root.querySelector('[data-tool="voice"]').addEventListener("click", () => {
+    voiceEnabled = !voiceEnabled;
+    localStorage.setItem("koolkid_ai_voice_enabled", String(voiceEnabled));
+    if (!voiceEnabled && "speechSynthesis" in window) window.speechSynthesis.cancel();
+    renderVoiceButton();
+  });
   root.querySelectorAll("[data-ai-view]").forEach(button => button.addEventListener("click", () => showView(button.dataset.aiView)));
   root.querySelector(".ai-refresh").addEventListener("click", loadIntelligence);
   root.querySelector('.ai-scan-form [name="account"]').addEventListener("change", event => loadIntelligenceSymbols(event.target.value));
@@ -421,15 +448,17 @@
     launcher.hidden = !data.visible;
     preference.checked = data.visible;
     lastProfile = data.settings.profile;
-    ready.textContent = "Ready";
+    ready.textContent = "Deriv assistant · Ready";
     if (contextId !== data.context_id) {
       if (contextId !== null) cancelled++;
       log.replaceChildren();
-      for (const item of data.messages) message(item.text, item.role);
+      for (const item of data.messages) message(item.text, item.role, {speak: false});
       if (!data.messages.length) quickActions();
       contextId = data.context_id;
     }
     bindSocket();
   }
+  renderVoiceButton();
+  window.openMarthaAiChat = () => { show(true); showView("chat"); };
   loadState().catch(e => { preference.closest("label").hidden = true; ready.textContent = e.message; });
 })();

@@ -18,6 +18,7 @@ class IntelligenceStore:
             "CREATE TABLE IF NOT EXISTS ai_intelligence_knowledge (id TEXT PRIMARY KEY, username TEXT NOT NULL, strategy TEXT NOT NULL, rule_text TEXT NOT NULL, structured_rule TEXT NOT NULL, priority INTEGER NOT NULL, version INTEGER NOT NULL, enabled INTEGER NOT NULL, created_at TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS ai_intelligence_profiles (id TEXT PRIMARY KEY, username TEXT NOT NULL, name TEXT NOT NULL, config TEXT NOT NULL, updated_at TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS ai_intelligence_backtests (id TEXT PRIMARY KEY, username TEXT NOT NULL, strategy TEXT NOT NULL, result TEXT NOT NULL, created_at TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS ai_intelligence_development_requests (id TEXT PRIMARY KEY, username TEXT NOT NULL, category TEXT NOT NULL, summary TEXT NOT NULL, diagnostics TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
         ]
         for statement in statements:
             self.bridge.db(statement)
@@ -90,3 +91,24 @@ class IntelligenceStore:
     def save_backtest(self, username, strategy, result):
         self.ensure()
         self.bridge.db("INSERT INTO ai_intelligence_backtests (id,username,strategy,result,created_at) VALUES (?,?,?,?,?)", (secrets.token_hex(16), username, strategy, json.dumps(result), self.now()))
+
+    def create_development_request(self, username, category, summary, diagnostics):
+        self.ensure()
+        request_id = secrets.token_hex(16)
+        now = self.now()
+        self.bridge.db(
+            "INSERT INTO ai_intelligence_development_requests (id,username,category,summary,diagnostics,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)",
+            (request_id, username, category, summary, json.dumps(diagnostics), "queued", now, now),
+        )
+        return request_id
+
+    def development_requests(self, username, limit=10):
+        self.ensure()
+        with self.bridge.schema_lock:
+            conn = self.bridge.s._db_connect()
+            try:
+                cur = conn.cursor()
+                self.bridge.s._db_execute(cur, "SELECT id,category,summary,status,created_at,updated_at FROM ai_intelligence_development_requests WHERE username=? ORDER BY created_at DESC LIMIT ?", (username, int(limit)))
+                return [{"id": row[0], "category": row[1], "summary": row[2], "status": row[3], "created_at": row[4], "updated_at": row[5]} for row in cur.fetchall()]
+            finally:
+                conn.close()

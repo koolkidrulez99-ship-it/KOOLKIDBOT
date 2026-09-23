@@ -30,6 +30,24 @@ def _parse_settings_payload(data: dict | None) -> dict:
         "custom_trade_start_time",
         "custom_trade_end_time",
         "compound_percent",
+        "cloud_trade_type",
+        "cloud_trade_mode",
+        "kid100_mode",
+        "stake_mode",
+        "balance_percent",
+        "trades_per_session",
+        "session_runs",
+        "session_delay",
+        "session_delay_unit",
+        "stop_after_one_win",
+        "stop_after_one_loss",
+        "scanner_rank_interval",
+        "scanner_top_count",
+        "scanner_cooldown_seconds",
+        "minimum_history",
+        "min_profit_percent",
+        "max_signal_age_ticks",
+        "target_cooldown_ticks",
         "max_digit9_last10",
         "max_digit9_last20",
         "max_digit9_last5",
@@ -59,6 +77,7 @@ def register_cloud_routes(
     ensure_cloud_runtime=None,
     stop_cloud_runtime=None,
     can_use_cloud_profile=None,
+    filter_cloud_markets=None,
 ):
     def _current_user():
         return str(session.get("user") or "").strip().lower()
@@ -116,11 +135,17 @@ def register_cloud_routes(
         if not username:
             return _token_required_response()
         settings = _parse_settings_payload(request.json or {})
+        try:
+            if callable(filter_cloud_markets):
+                settings = filter_cloud_markets(cid, state, settings)
+        except ValueError as exc:
+            return jsonify({"status": "error", "message": str(exc)}), 400
         status = cloud_manager.start(username, cid, settings)
         if callable(ensure_cloud_runtime):
             ensure_cloud_runtime(state, username, status)
         else:
-            ensure_tick_subscription(state, status.get("current_market"), force=False, reason="cloud_under9_start", client_id=cid)
+            for symbol in status.get("allowed_markets") or [status.get("current_market")]:
+                ensure_tick_subscription(state, symbol, force=False, reason="cloud_under9_start", client_id=cid)
         status = _attach_identity(status, ident)
         if socketio:
             socketio.emit("cloud_under9_status", status, room=cid)
@@ -210,6 +235,23 @@ def register_cloud_routes(
         username = ident.get("key") or ""
         return jsonify({"status": "success", "history": cloud_manager.history(username) if username else []})
 
+    @app.route("/cloud/under9/session-events/<event_id>", methods=["DELETE"])
+    def cloud_under9_clear_session_event(event_id):
+        if not login_required():
+            return jsonify({"error": "Unauthorized"}), 403
+        if not _cloud_allowed():
+            return _cloud_forbidden_response()
+        ident = _identity(require_token=False)
+        cid = ident.get("client_id")
+        username = ident.get("key") or ""
+        if not username:
+            return jsonify({"status": "error", "message": "No verified Cloud account session is selected."}), 400
+        status = cloud_manager.clear_session_event(username, event_id)
+        status = _attach_identity(status, ident)
+        if socketio:
+            socketio.emit("cloud_under9_status", status, room=cid)
+        return jsonify(status)
+
     @app.route("/cloud/under9/settings", methods=["POST"])
     def cloud_under9_settings():
         if not login_required():
@@ -223,6 +265,11 @@ def register_cloud_routes(
         if not username:
             return _token_required_response()
         settings = _parse_settings_payload(request.json or {})
+        try:
+            if callable(filter_cloud_markets):
+                settings = filter_cloud_markets(cid, state, settings)
+        except ValueError as exc:
+            return jsonify({"status": "error", "message": str(exc)}), 400
         status = cloud_manager.update_settings(username, settings)
         if status.get("running"):
             if callable(ensure_cloud_runtime):

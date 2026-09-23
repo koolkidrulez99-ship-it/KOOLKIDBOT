@@ -156,6 +156,63 @@ def test_read_only_real_state(bot):
     assert not bot.buys
 
 
+def test_martha_answers_bot_help_without_creating_an_action_plan(bot):
+    response = bot.command("What can Martha do?")
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["results"][0]["status"] == "answered"
+    assert "edit server files" in data["results"][0]["message"]
+    assert "plan_id" not in data
+
+
+def test_martha_connection_and_health_diagnostics_are_read_only(bot):
+    connection = bot.command("Check connection health").get_json()["results"][0]
+    assert connection["status"] == "completed"
+    assert connection["data"]["connected"] is True
+    hub(bot.state).last_command = 0
+    health = bot.command("Check Martha health").get_json()["results"][0]
+    assert health["status"] == "completed"
+    assert "consecutive_failures" in health["data"]
+    assert not bot.buys
+
+
+def test_safe_recovery_requires_confirmation_and_uses_existing_repair_manager(bot, monkeypatch):
+    bot.state["martha_ai"] = {"enabled": True}
+    monkeypatch.setattr(server, "_run_websocket_health_check", lambda *a, **kw: True)
+    monkeypatch.setattr(server, "_run_martha_self_heal_check", lambda *a, **kw: {"enabled": True, "actions": ["expired_proposal_waiter"]})
+    plan = bot.command("Run safe recovery").get_json()
+    assert plan["actions"] == [{"action": "run_safe_recovery"}]
+    result = bot.post("execute", {"plan_id": plan["plan_id"], "index": 0}).get_json()["result"]
+    assert result["status"] == "completed"
+    assert "expired_proposal_waiter" in result["message"]
+    assert not bot.buys
+
+
+def test_development_requests_require_confirmation_and_are_isolated_per_user(bot):
+    plan = bot.command("Bug report: proposal timeout leaves my martingale waiting").get_json()
+    assert plan["actions"][0]["action"] == "submit_development_request"
+    saved = bot.post("execute", {"plan_id": plan["plan_id"], "index": 0}).get_json()["result"]
+    assert saved["status"] == "completed"
+    assert saved["request_id"]
+
+    hub(bot.state).last_command = 0
+    own = bot.command("Show my development requests").get_json()["results"][0]
+    assert len(own["requests"]) == 1
+    assert "proposal timeout" in own["requests"][0]["summary"]
+
+    bob, bob_state = bot.client_for("bob")
+    bob_csrf = bob.get("/ai-intelligence/state").get_json()["csrf"]
+    hub(bob_state).last_command = 0
+    other = bot.post("command", {"message": "Show my development requests"}, use_client=bob, csrf=bob_csrf).get_json()["results"][0]
+    assert other["requests"] == []
+
+
+def test_research_status_is_truthful_when_no_connector_exists(bot):
+    result = bot.command("Check research status").get_json()["results"][0]
+    assert result["data"] == {"connected": False, "provider": None}
+    assert "not configured" in result["message"]
+
+
 @pytest.mark.parametrize("message", [
     "Trade Over on V25", "Trade Under 0 on V25", "Trade Over 9 on V25", "Trade Over 2.5 on V25",
     "Trade Even on invented with $1", "Trade Even on V25 with $0", "Trade Even on V25 with $-3",
@@ -418,6 +475,22 @@ def test_provider_failure_and_malformed_output_fail_closed(monkeypatch):
     with pytest.raises(CommandError) as error:
         parse("Could you retrieve the balance please", {})
     assert "test-provider-secret" not in str(error.value)
+
+
+def test_provider_bot_question_returns_answer_without_actions(monkeypatch):
+    import ai_intelligence.commands as commands
+    monkeypatch.setenv("AI_INTELLIGENCE_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("AI_INTELLIGENCE_MODEL", "test-model")
+    monkeypatch.setenv("AI_INTELLIGENCE_API_KEY", "test-provider-secret")
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def read(self, *args):
+            return json.dumps({"choices": [{"finish_reason": "stop", "message": {"content": '{"answer":"The KOOLKID profile uses its visible strategy controls."}'}}]}).encode()
+    monkeypatch.setattr(commands.urllib.request, "build_opener", lambda *a: SimpleNamespace(open=lambda *a, **kw: Response()))
+    result = parse("Explain how the KOOLKID profile works", {"profile": "KOOLKID"})
+    assert result == {"answer": "The KOOLKID profile uses its visible strategy controls."}
+    assert "actions" not in result
 
 
 def test_two_users_execute_concurrently_without_crossing_responses(bot, monkeypatch):

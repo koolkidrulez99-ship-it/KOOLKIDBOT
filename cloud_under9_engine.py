@@ -248,7 +248,7 @@ class CloudUnder9Engine:
         self.session_trade_count = 0
         self.wins = int((restored or {}).get("wins") or 0)
         self.losses = int((restored or {}).get("losses") or 0)
-        self.history = list((restored or {}).get("history") or [])[-200:]
+        self.history = list((restored or {}).get("history") or [])[-500:]
         runtime = self.settings.get("_runtime_state") if isinstance(self.settings.get("_runtime_state"), dict) else {}
         self.price_ticks = deque(maxlen=120)
         self.ticks_since_crash = max(0, _int_value(runtime.get("ticks_since_crash"), 0))
@@ -360,6 +360,25 @@ class CloudUnder9Engine:
         self.last_signal = self.cloud_status
         self.log("cloud stopped reason=%s", self.cloud_status)
 
+    def reset_after_history_clear(self):
+        self.stop("Stopped")
+        self.history = []
+        self.current_market = self.settings["allowed_markets"][0]
+        self.current_stake = round(float(self.settings["base_stake"]), 2)
+        self.session_profit = 0.0
+        self.daily_profit = 0.0
+        self.reinvest_step = 0
+        self.last_trade_result = ""
+        self.session_trade_count = 0
+        self.daily_trade_count = 0
+        self.wins = 0
+        self.losses = 0
+        self.last_trade_at = 0.0
+        self.base_stake_reset_pending = False
+        self.reset_market_buffer("history cleared")
+        self.cloud_status = "Stopped"
+        self.last_signal = "History and Cloud engine cleared"
+
     def reset_market_buffer(self, reason: str = ""):
         self.tick_digits.clear()
         self.total_ticks = 0
@@ -394,7 +413,7 @@ class CloudUnder9Engine:
         row = dict(entry or {})
         row.setdefault("time", time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()))
         self.history.append(row)
-        self.history = self.history[-200:]
+        self.history = self.history[-500:]
 
     def _should_stop_for_limits(self, balance: float | None) -> str:
         if balance is not None and self.settings["low_balance_stop"] > 0 and balance <= self.settings["low_balance_stop"]:
@@ -791,7 +810,7 @@ class CloudUnder9Engine:
             "session_profit": self.session_profit,
             "daily_profit": self.daily_profit,
             "reinvest_step": self.reinvest_step,
-            "history": list(self.history[-200:]),
+            "history": list(self.history[-500:]),
         }
 
     def runtime_state(self) -> dict:

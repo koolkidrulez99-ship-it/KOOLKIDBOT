@@ -35,9 +35,17 @@
 #cloudProfilePanel .cloud-save{background:#0ea5e9;color:#e0f2fe;}
 #cloudProfilePanel .cloud-history-stats{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-top:12px;}
 #cloudProfilePanel .cloud-history-stats>div{background:#0f172a;border:1px solid #334155;border-radius:10px;padding:10px;text-align:center;}
-#cloudProfilePanel #profileTradeList{height:330px;overflow-y:auto;margin-top:12px;padding-right:6px;}
+#cloudProfilePanel #profileTradeList{height:360px;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;touch-action:pan-y;margin-top:14px;padding-right:6px;scrollbar-width:thin;scrollbar-color:#475569 transparent;}
+#cloudProfilePanel #profileTradeList::-webkit-scrollbar{width:8px;}
+#cloudProfilePanel #profileTradeList::-webkit-scrollbar-track{background:transparent;}
+#cloudProfilePanel #profileTradeList::-webkit-scrollbar-thumb{background:#334155;border-radius:999px;}
 #cloudProfilePanel .cloud-log{font-size:12px;color:#94a3b8;line-height:1.45;max-height:220px;overflow:auto;border:1px solid rgba(148,163,184,.2);border-radius:10px;padding:10px;background:rgba(2,6,23,.7);}
-#cloudProfilePanel .cloud-budget-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;}
+#cloudProfilePanel .cloud-budget-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:8px;}
+#cloudProfilePanel .cloud-session-events{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;}
+#cloudProfilePanel .cloud-session-event{display:inline-flex;align-items:center;gap:8px;max-width:100%;border:1px solid rgba(148,163,184,.28);background:rgba(15,23,42,.78);border-radius:999px;padding:7px 8px 7px 10px;color:#dbeafe;font-size:12px;font-weight:800;}
+#cloudProfilePanel .cloud-session-event.won{border-color:rgba(34,197,94,.42);color:#bbf7d0;}
+#cloudProfilePanel .cloud-session-event.lost{border-color:rgba(239,68,68,.42);color:#fecaca;}
+#cloudProfilePanel .cloud-session-event button{min-height:22px;width:22px;border-radius:50%;background:#334155;color:#fff;font-size:14px;line-height:1;}
 #cloudProfilePanel .ui-group{background:#0f172a;border:1px solid #334155;border-radius:10px;overflow:hidden;}
 #cloudProfilePanel .ui-group summary{cursor:pointer;list-style:none;padding:10px 12px;font-weight:900;color:#e2e8f0;display:flex;justify-content:space-between;}
 #cloudProfilePanel .ui-group summary::-webkit-details-marker{display:none;}
@@ -48,6 +56,8 @@
 }
 @media(max-width:520px){
   #cloudProfilePanel .cloud-grid,#cloudProfilePanel .cloud-settings-grid,#cloudProfilePanel .cloud-toggle-row,#cloudProfilePanel .cloud-actions,#cloudProfilePanel .cloud-history-stats,#cloudProfilePanel .cloud-market-picker{grid-template-columns:1fr;}
+  #cloudProfilePanel .cloud-budget-row{grid-template-columns:1fr 1fr;}
+  #cloudProfilePanel .cloud-budget-row input{grid-column:1/-1;}
 }
 </style>
 
@@ -55,8 +65,8 @@
   <div class="cloud-shell">
     <section class="cloud-panel cloud-hero">
       <div class="cloud-kicker">Cloud Trading Engine</div>
-      <h2 class="cloud-title" id="cloudPresetTitle">Under 9 Reinvest</h2>
-      <p class="cloud-sub" id="cloudPresetDescription">Scans every configured volatility and jump market, waits for digit 9 frequency to be 9% or lower, then places one Under 9 trade when a fresh 9 prints.</p>
+      <h2 class="cloud-title" id="cloudPresetTitle">REINVEST PROFITS 100%</h2>
+      <p class="cloud-sub" id="cloudPresetDescription">Scans eligible markets in two stages, trades one setup at a time, and reinvests every confirmed profit within the current session.</p>
       <div class="cloud-badges">
         <span class="cloud-badge" id="cloudRunningBadge">Stopped</span>
         <span class="cloud-badge" id="cloudTokenBadge">Token not verified</span>
@@ -78,6 +88,7 @@
       <div class="cloud-kicker">Settings</div>
       <label style="margin-top:10px;">Cloud Preset
         <select id="cloudPreset">
+          <option value="reinvest_profits_100" selected>REINVEST PROFITS 100%</option>
           <option value="under9_reinvest">Under 9 Reinvest</option>
           <option value="koolkid_profit">KOOLKID PROFIT</option>
         </select>
@@ -94,6 +105,57 @@
           <span class="cloud-badge">30 ticks + 5 confirmations</span>
           <span class="cloud-badge">Cloud auto-resume</span>
         </div>
+      </div>
+      <div id="cloudReinvest100Settings" hidden style="margin-top:10px;">
+        <div class="cloud-badges" style="margin-bottom:10px;">
+          <span class="cloud-badge">One trade at a time</span>
+          <span class="cloud-badge">100% profit reinvest</span>
+          <span class="cloud-badge">All-market scanner</span>
+        </div>
+        <div class="cloud-settings-grid">
+          <label>Stake Mode
+            <select id="cloudReinvestStakeMode">
+              <option value="FIXED">Fixed Stake</option>
+              <option value="PERCENT">Balance Percentage</option>
+            </select>
+          </label>
+          <label id="cloudReinvestFixedStakeWrap">Starting Stake <input id="cloudReinvestStake" type="number" min="0.35" step="0.01" value="1"></label>
+          <label id="cloudReinvestPercentWrap" hidden>Balance Percentage <input id="cloudReinvestPercent" type="number" min="10" max="20" step="0.5" value="10"></label>
+          <label>Trade Type
+            <select id="cloudReinvestTradeType">
+              <option value="kidpairs">KIDPAIRS (executes Over 1)</option>
+              <option value="over3_analysis">Over 3 Analysis (executes Over 1)</option>
+              <option value="mpull_over5">MPULL Over 5 (executes Over 1)</option>
+              <option value="under9">Under 9</option>
+              <option value="over0">Over 0</option>
+              <option value="digit_differs">Digit Differ</option>
+              <option value="kid100wins">KID100%WINS</option>
+            </select>
+          </label>
+          <label id="cloudReinvestModeWrap">Trade Mode
+            <select id="cloudReinvestMode">
+              <option value="SAFE">🟢 SAFE - 12</option>
+              <option value="MODERATE">🟠 MODERATE - 20</option>
+              <option value="AGGRESSIVE">🔴 AGGRESSIVE - 30</option>
+            </select>
+          </label>
+          <label id="cloudKid100ModeWrap" hidden>KID100%WINS Mode
+            <select id="cloudKid100Mode">
+              <option value="LOW">Low % Auto</option>
+              <option value="HIGH">High % Auto</option>
+            </select>
+          </label>
+          <label>Minimum Profit % <input id="cloudMinProfitPercent" type="number" min="0" step="0.1" value="0"></label>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:10px;border:1px solid rgba(59,130,246,.35);background:rgba(30,64,175,.16);border-radius:10px;padding:10px;">
+          <div><div style="font-size:12px;color:#dbeafe;font-weight:900;">Trade Sessions</div><div id="cloudSessionSummary" class="cloud-market-count" style="margin-top:3px;">1 trade, 1 run, 30 seconds wait</div></div>
+          <button type="button" onclick="openCloudSessionPopup()" style="background:#1d4ed8;color:#eff6ff;min-width:82px;padding:0 12px;">Session</button>
+        </div>
+        <div class="cloud-toggle-row">
+          <label class="cloud-check">Stop After One Win Today <input id="cloudStopAfterOneWin" type="checkbox"></label>
+          <label class="cloud-check">Stop After One Loss Today <input id="cloudStopAfterOneLoss" type="checkbox"></label>
+        </div>
+        <div class="cloud-market-count">Any loss ends the current session immediately. Every new session resets to its configured starting stake before compounding again.</div>
       </div>
       <div id="cloudUnder9Settings">
       <div class="cloud-settings-grid" style="margin-top:10px;">
@@ -178,6 +240,7 @@
       <div class="cloud-budget-row">
         <input id="cloudBudget" data-draft-ignore="1" type="number" min="0" step="0.01" placeholder="Budget cap">
         <button type="button" onclick="saveProfileBudget('CLOUD')" style="background:#0ea5e9;color:#e0f2fe;padding:0 14px;">Set Budget</button>
+        <button type="button" onclick="resetCloudBudget()" style="background:#475569;color:#f8fafc;padding:0 12px;">Reset</button>
       </div>
     </div>
     <div id="cloudDecisionLog" class="cloud-log" style="margin-top:12px;">Decision log will appear here.</div>
@@ -186,7 +249,7 @@
   <section class="cloud-panel" style="margin-top:14px;">
     <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
       <h3 style="margin:0;color:#f8fafc;">Cloud Trade History</h3>
-      <button onclick="clearProfileHistory()" style="background:#334155;color:#e2e8f0;padding:8px 12px;">Clear</button>
+      <button onclick="clearProfileHistory()" style="background:#fb7185;color:#fff;padding:8px 12px;">Clear History</button>
     </div>
     <div class="cloud-history-stats">
       <div data-history-filter-card="ALL" onclick="toggleTradeHistoryFilter('ALL')" role="button" tabindex="0"><div style="color:#94a3b8;font-size:12px;">Total</div><div id="profileTotalTrades" style="font-size:22px;font-weight:bold;">0</div></div>
@@ -196,5 +259,23 @@
       <div><div style="color:#94a3b8;font-size:12px;">Net P/L</div><div id="profileNetProfitLoss" style="font-size:1rem;color:#e2e8f0;">0.00</div></div>
     </div>
     <div id="profileTradeList"></div>
+    <div style="margin-top:16px;border-top:1px solid rgba(148,163,184,.2);padding-top:12px;">
+      <div class="cloud-kicker">Saved Session Results</div>
+      <div id="cloudSessionEvents" class="cloud-session-events"><span class="cloud-market-count">No completed Cloud sessions yet.</span></div>
+    </div>
   </section>
+
+  <div id="cloudSessionPopup" onclick="if(event.target===this) closeCloudSessionPopup()" style="display:none;position:fixed;inset:0;z-index:10050;padding:18px;align-items:center;justify-content:center;background:rgba(2,6,23,.78);">
+    <div style="width:min(380px,100%);background:#0f172a;border:1px solid #334155;border-radius:12px;padding:14px;box-shadow:0 24px 54px rgba(0,0,0,.48);">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;"><div><strong>Cloud Trade Session</strong><div style="color:#94a3b8;font-size:11px;margin-top:2px;">Configure each session and the wait before the next run.</div></div><button type="button" onclick="closeCloudSessionPopup()" style="background:#1e293b;color:#fff;min-width:34px;">x</button></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px;">
+        <label id="cloudTradesPerSessionWrap" style="grid-column:1/-1;">Trades Per Session<input id="cloudTradesPerSession" type="number" min="1" max="100" step="1" value="1"></label>
+        <label>Wait for<input id="cloudSessionDelay" type="number" min="1" step="1" value="30"></label>
+        <label>Unit<select id="cloudSessionDelayUnit"><option value="ticks">Ticks</option><option value="seconds" selected>Seconds</option><option value="minutes">Minutes</option></select></label>
+        <label style="grid-column:1/-1;">Number of session runs<select id="cloudSessionRuns"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option></select></label>
+      </div>
+      <div id="cloudModeSessionNote" class="cloud-market-count" hidden style="margin-top:10px;">Trades per session are controlled by the selected Safe, Moderate, or Aggressive target.</div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px;"><button type="button" onclick="closeCloudSessionPopup()" style="background:#475569;color:#fff;">Cancel</button><button type="button" onclick="applyCloudSessionPopup()" style="background:#2563eb;color:#eff6ff;">Apply Session</button></div>
+    </div>
+  </div>
 </div>

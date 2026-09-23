@@ -5,6 +5,7 @@ import threading
 from typing import Any
 
 from cloud_alerts import CloudAlertDispatcher
+from cloud_reinvest_engine import CloudReinvestEngine
 from cloud_under9_engine import CloudUnder9Engine
 
 
@@ -97,7 +98,7 @@ class CloudPersistence:
         now_s = self.utc_now_str()
         allowed = json.dumps(settings.get("allowed_markets") or [])
         settings_json = json.dumps(settings or {}, sort_keys=True)
-        history_json = json.dumps(list(history or [])[-200:])
+        history_json = json.dumps(list(history or [])[-500:])
         conn = self.db_connect()
         cur = conn.cursor()
         self.db_execute(
@@ -165,6 +166,19 @@ class CloudSessionManager:
     def _key(self, username: str) -> str:
         return str(username or "").strip().lower()
 
+    @staticmethod
+    def _engine_class(settings: dict | None):
+        strategy_name = str((settings or {}).get("strategy_name") or "reinvest_profits_100").strip().lower()
+        return CloudReinvestEngine if strategy_name == "reinvest_profits_100" else CloudUnder9Engine
+
+    @staticmethod
+    def _label(engine) -> str:
+        if getattr(engine, "strategy_name", "") == "koolkid_profit":
+            return "KOOLKID PROFIT"
+        if getattr(engine, "strategy_name", "") == "reinvest_profits_100":
+            return "REINVEST PROFITS 100%"
+        return "Cloud Under 9"
+
     def _persist(self, session: CloudUnder9Engine):
         if not self.persistence or not session:
             return
@@ -181,6 +195,20 @@ class CloudSessionManager:
         with self._lock:
             if key in self._sessions:
                 engine = self._sessions[key]
+                requested_class = self._engine_class(settings) if settings and settings.get("strategy_name") else type(engine)
+                if requested_class is not type(engine):
+                    restored_status = engine.export_state() if hasattr(engine, "export_state") else engine.status()
+                    merged_settings = dict(getattr(engine, "settings", {}) or {})
+                    merged_settings.update(settings or {})
+                    engine.stop("Cloud preset changed")
+                    engine = requested_class(
+                        key,
+                        client_id or getattr(engine, "client_id", ""),
+                        merged_settings,
+                        restored=restored_status,
+                        logger=self.logger,
+                    )
+                    self._sessions[key] = engine
                 if client_id:
                     engine.client_id = client_id
                 if settings:
@@ -190,9 +218,12 @@ class CloudSessionManager:
             restored_settings = {}
             if isinstance(restored.get("settings_json"), dict):
                 restored_settings.update(restored.get("settings_json") or {})
+            if restored.get("strategy_name"):
+                restored_settings.setdefault("strategy_name", restored.get("strategy_name"))
             if settings:
                 restored_settings.update(settings)
-            engine = CloudUnder9Engine(
+            engine_class = self._engine_class(restored_settings)
+            engine = engine_class(
                 key,
                 client_id or "",
                 restored_settings,
@@ -203,6 +234,9 @@ class CloudSessionManager:
                     "reinvest_step": restored.get("reinvest_step"),
                     "last_trade_result": restored.get("last_trade_result"),
                     "history": restored.get("history_json") or [],
+                    "daily_profit": restored_settings.get("_runtime_state", {}).get("daily_profit", 0),
+                    "wins": restored_settings.get("_runtime_state", {}).get("wins", 0),
+                    "losses": restored_settings.get("_runtime_state", {}).get("losses", 0),
                 },
                 logger=self.logger,
             )
@@ -220,7 +254,7 @@ class CloudSessionManager:
                 engine.update_settings(settings)
             engine.start(client_id)
             self._persist(engine)
-            label = "KOOLKID PROFIT" if engine.strategy_name == "koolkid_profit" else "Cloud Under 9"
+            label = self._label(engine)
             self.alerts.send("cloud_started", f"{label} started on {engine.current_market}.", engine.settings)
             return engine.status()
 
@@ -265,15 +299,29 @@ class CloudSessionManager:
     def history(self, username: str) -> list[dict]:
         with self._lock:
             engine = self.get_or_create(username)
-            return list(engine.history[-200:])
+            return list(engine.history[-500:])
 
     def clear_history(self, username: str) -> dict:
         with self._lock:
             engine = self.get_or_create(username)
-            engine.history = []
-            engine.wins = 0
-            engine.losses = 0
-            engine.last_trade_result = ""
+            if hasattr(engine, "reset_after_history_clear"):
+                engine.reset_after_history_clear()
+            else:
+                engine.history = []
+                engine.wins = 0
+                engine.losses = 0
+                engine.daily_profit = 0.0
+                engine.session_profit = 0.0
+                engine.last_trade_result = ""
+            self._persist(engine)
+            return engine.status()
+
+    def clear_session_event(self, username: str, event_id: str) -> dict:
+        with self._lock:
+            engine = self.get_or_create(username)
+            if not hasattr(engine, "clear_session_event"):
+                return engine.status()
+            engine.clear_session_event(event_id)
             self._persist(engine)
             return engine.status()
 
@@ -282,14 +330,19 @@ class CloudSessionManager:
         sym = str(symbol or "").upper().strip()
         with self._lock:
             engine = self._sessions.get(key)
-            return bool(engine and engine.running and str(engine.current_market).upper() == sym)
+            if not engine or not engine.running:
+                return False
+            if hasattr(engine, "needed_symbols"):
+                return sym in {str(item).upper() for item in engine.needed_symbols()}
+            return str(engine.current_market).upper() == sym
 
     def all_needed_symbols(self) -> set[str]:
         with self._lock:
             return {
-                str(engine.current_market).upper()
+                str(symbol).upper()
                 for engine in self._sessions.values()
                 if engine and engine.running and engine.current_market
+                for symbol in (engine.needed_symbols() if hasattr(engine, "needed_symbols") else [engine.current_market])
             }
 
     def on_tick(self, username: str, client_id: str, tick: dict, digit: int, *, balance: float | None = None) -> list[dict]:
@@ -308,6 +361,13 @@ class CloudSessionManager:
             engine.mark_trade_sent(signal_id)
             self._persist(engine)
 
+    def pending_trade_valid(self, username: str, signal_id: str):
+        with self._lock:
+            engine = self.get_or_create(username)
+            if hasattr(engine, "pending_trade_valid"):
+                return engine.pending_trade_valid(signal_id)
+            return (bool(getattr(engine, "running", False)), "Cloud session stopped")
+
     def mark_trade_open(self, username: str, contract_id: Any, meta: dict | None = None):
         with self._lock:
             engine = self.get_or_create(username)
@@ -319,7 +379,7 @@ class CloudSessionManager:
             engine = self.get_or_create(username)
             engine.mark_trade_failed(reason)
             self._persist(engine)
-            label = "KOOLKID PROFIT" if engine.strategy_name == "koolkid_profit" else "Cloud Under 9"
+            label = self._label(engine)
             self.alerts.send("cloud_trade_failed", f"{label} trade failed: {reason}", engine.settings)
 
     def mark_close_failed(self, username: str, reason: str):
@@ -334,7 +394,7 @@ class CloudSessionManager:
             row = engine.on_contract_result(contract, meta, profit)
             self._persist(engine)
             event = "cloud_trade_win" if profit > 0 else "cloud_trade_loss"
-            label = "KOOLKID PROFIT" if engine.strategy_name == "koolkid_profit" else "Cloud Under 9"
+            label = self._label(engine)
             self.alerts.send(event, f"{label} {row.get('result')}: {row.get('profit')} on {row.get('market')}.", engine.settings)
             if row.get("tp_hit"):
                 self.alerts.send("cloud_tp_reached", "Cloud Under 9 TP reached. Reinvest chain reset.", engine.settings)
