@@ -717,6 +717,72 @@ def test_process_contract_forces_settled_result_off_pending_labels(monkeypatch):
     assert trade_events[-1]["status"] == "sold"
 
 
+def test_cloud_settlement_event_keeps_contract_id_for_history_upsert(monkeypatch):
+    emitted = []
+    state = {
+        "balance": 100.0,
+        "balance_updated_at": 0.0,
+        "active_profile": "CLOUD",
+        "cloud_session_key": "cloud-user",
+        "strategies": {},
+        "profile_budgets": server._new_profile_budget_map(),
+        "contract_meta": {
+            54321: {
+                "profile": "CLOUD",
+                "type": "OVER",
+                "stake": 1.0,
+                "symbol": "R_25",
+                "time": "09:59:00",
+                "duration": 1,
+                "duration_unit": "t",
+                "mode": "CLOUD_REINVEST_100",
+                "strategy_name": "REINVEST PROFITS 100%",
+            }
+        },
+    }
+
+    monkeypatch.setitem(server.clients, "test-cloud-contract-id", state)
+    monkeypatch.setattr(server.socketio, "emit", lambda event, payload, room=None: emitted.append((event, payload, room)))
+    monkeypatch.setattr(server, "send_stats_update", lambda _client_id: None)
+    monkeypatch.setattr(server.cloud_manager, "on_contract_result", lambda *_args: {
+        "stake": 1.0,
+        "market": "R_25",
+        "strategy": "REINVEST PROFITS 100%",
+        "result": "WIN",
+        "action": "Reinvested 100% of settled profit",
+        "reinvest_step": 1,
+        "next_stake": 1.8,
+    })
+    monkeypatch.setattr(server.cloud_manager, "status", lambda _key: {
+        "running": True,
+        "history_profit": 0.8,
+        "settings": {},
+    })
+    monkeypatch.setattr(server.cloud_manager, "update_settings", lambda *_args, **_kwargs: {})
+
+    try:
+        process_contract("test-cloud-contract-id", {
+            "contract_id": 54321,
+            "status": "won",
+            "profit": 0.8,
+            "buy_price": 1.0,
+            "sell_price": 1.8,
+            "is_sold": True,
+            "underlying": "R_25",
+            "current_spot_display_value": "100.127",
+        })
+    finally:
+        server.clients.pop("test-cloud-contract-id", None)
+
+    trade_events = [payload for event, payload, _room in emitted if event == "trade_result"]
+    assert len(trade_events) == 1
+    assert trade_events[0]["contract_id"] == 54321
+    assert trade_events[0]["profit"] == pytest.approx(0.8)
+    assert trade_events[0]["duration"] == 1
+    assert trade_events[0]["duration_unit"] == "t"
+    assert trade_events[0]["exit_digit"] == 7
+
+
 def test_process_contract_extracts_exit_digit_from_current_spot_display_value(monkeypatch):
     emitted = []
 

@@ -4754,6 +4754,10 @@ function applyTradeHistorySnapshotProfiles(profiles){
             upsertTradeInStore(Object.assign({}, trade, { profile }), { persist: false });
         });
         existingSettled.forEach((trade)=>{
+            // Cloud history is persisted by its server-side engine. Treat that
+            // snapshot as authoritative so legacy no-ID settlement rows cannot
+            // survive beside the real contract record.
+            if(profile === "CLOUD") return;
             if(!trade || typeof trade !== "object") return;
             const cid = normalizeContractId(trade.contract_id ?? trade.contractId);
             if(!cid){

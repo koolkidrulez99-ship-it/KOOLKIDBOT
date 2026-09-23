@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 import server
 
 
@@ -211,3 +213,29 @@ def test_cloud_history_snapshot_uses_persisted_cloud_rows(monkeypatch):
     assert payload["profiles"]["CLOUD"][0]["contract_id"] == "cloud-1"
     assert payload["profiles"]["CLOUD"][0]["symbol"] == "R_25"
     assert payload["profiles"]["CLOUD"][0]["type"] == "under9"
+
+
+def test_cloud_stats_use_the_same_persisted_history_profit_as_trade_history(monkeypatch):
+    emitted = []
+    state = {
+        "active_profile": "CLOUD",
+        "cloud_session_key": "cloud-user",
+    }
+    monkeypatch.setitem(server.clients, "cid-cloud-stats", state)
+    monkeypatch.setattr(server.cloud_manager, "status", lambda _key: {
+        "wins": 2,
+        "losses": 1,
+        "daily_profit": 99.0,
+        "history_profit": 1.6,
+        "running": True,
+    })
+    monkeypatch.setattr(server.socketio, "emit", lambda event, payload, room=None: emitted.append((event, payload, room)))
+
+    try:
+        server.send_stats_update("cid-cloud-stats")
+    finally:
+        server.clients.pop("cid-cloud-stats", None)
+
+    stats = [payload for event, payload, _room in emitted if event == "stats_update"]
+    assert len(stats) == 1
+    assert stats[0]["net_pnl"] == pytest.approx(1.6)

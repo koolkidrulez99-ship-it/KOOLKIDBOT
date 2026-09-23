@@ -64,6 +64,22 @@ def test_cloud_under9_reinvests_full_profit_then_resets_on_loss():
     assert engine.reinvest_step == 0
 
 
+def test_cloud_under9_history_persists_duration_and_exit_digit():
+    engine = CloudUnder9Engine("alice", "cid", {"base_stake": 1, "duration": 2, "duration_unit": "t"})
+    engine.start("cid")
+
+    row = engine.on_contract_result(
+        {"contract_id": "duration-exit"},
+        {"duration": 2, "duration_unit": "t", "exit_digit": 6},
+        0.8,
+    )
+
+    assert row["duration"] == 2
+    assert row["duration_unit"] == "t"
+    assert row["exit_digit"] == 6
+    assert engine.history[-1]["exit_digit"] == 6
+
+
 def test_cloud_under9_capital_build_resets_at_double_base():
     engine = CloudUnder9Engine("alice", "cid", {"base_stake": 10, "capital_build_mode": True})
     engine.start("cid")

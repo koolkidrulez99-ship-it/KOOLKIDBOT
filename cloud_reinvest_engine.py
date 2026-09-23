@@ -25,6 +25,7 @@ SUPPORTED_TRADE_TYPES = {
     "over0",
     "digit_differs",
     "kid100wins",
+    "ai_auto_trading",
 }
 
 
@@ -133,18 +134,27 @@ class CloudReinvestEngine:
         trade_type = str(raw.get("cloud_trade_type") or "under9").strip().lower()
         mode = str(raw.get("cloud_trade_mode") or "SAFE").strip().upper()
         stake_mode = str(raw.get("stake_mode") or "FIXED").strip().upper()
+        market_scan_scope = str(raw.get("market_scan_scope") or "ALL").strip().upper()
         delay_unit = str(raw.get("session_delay_unit") or "seconds").strip().lower()
         kid100_mode = str(raw.get("kid100_mode") or "LOW").strip().upper()
+        ai_auto_strategy = str(raw.get("ai_auto_strategy") or "GOLDEN_CARD").strip().upper()
+        allowed_markets = _normalize_markets(raw.get("allowed_markets"))
+        selected_market = str(raw.get("selected_market") or allowed_markets[0]).strip().upper()
+        if market_scan_scope == "ONE":
+            allowed_markets = [selected_market]
         return {
             **raw,
             "strategy_name": "reinvest_profits_100",
             "cloud_trade_type": trade_type if trade_type in SUPPORTED_TRADE_TYPES else "under9",
             "cloud_trade_mode": mode if mode in MODE_TARGETS else "SAFE",
             "kid100_mode": kid100_mode if kid100_mode in {"LOW", "HIGH"} else "LOW",
+            "ai_auto_strategy": ai_auto_strategy if ai_auto_strategy in {"GOLDEN_CARD", "LOWEST_PERCENT"} else "GOLDEN_CARD",
             "stake_mode": stake_mode if stake_mode in {"FIXED", "PERCENT"} else "FIXED",
             "base_stake": max(0.35, round(_float(raw.get("base_stake"), 1.0), 2)),
-            "balance_percent": max(10.0, min(20.0, _float(raw.get("balance_percent"), 10.0))),
-            "allowed_markets": _normalize_markets(raw.get("allowed_markets")),
+            "balance_percent": min((10.0, 15.0, 20.0), key=lambda value: abs(value - _float(raw.get("balance_percent"), 10.0))),
+            "market_scan_scope": market_scan_scope if market_scan_scope in {"ALL", "ONE"} else "ALL",
+            "selected_market": selected_market,
+            "allowed_markets": allowed_markets,
             "duration": max(1, min(10, _int(raw.get("duration"), 1))),
             "duration_unit": "t",
             "trades_per_session": max(1, min(100, _int(raw.get("trades_per_session"), 1))),
@@ -166,12 +176,27 @@ class CloudReinvestEngine:
 
     def update_settings(self, settings=None):
         previous = self.settings
-        self.settings = self.normalize_settings({**previous, **(settings or {})})
-        if previous.get("cloud_trade_type") != self.settings["cloud_trade_type"]:
+        incoming = dict(settings or {})
+        self.settings = self.normalize_settings({**previous, **incoming})
+        if (
+            previous.get("cloud_trade_type") != self.settings["cloud_trade_type"]
+            or previous.get("ai_auto_strategy") != self.settings["ai_auto_strategy"]
+        ):
             self._clear_scanner("trade type changed")
         if self.current_market not in self.settings["allowed_markets"]:
             self.current_market = self.settings["allowed_markets"][0]
-        if not self.trade_locked and not self.open_contract_id and self.state not in {"SESSION_WAIT", "DAILY_STOP_LOSS", "DAILY_STOP_WIN"}:
+        stake_settings_changed = any(
+            key in incoming and previous.get(key) != self.settings.get(key)
+            for key in ("base_stake", "stake_mode", "balance_percent")
+        )
+        cycle_has_not_started = self.session_wins == 0 and self.reinvest_step == 0
+        if (
+            stake_settings_changed
+            and cycle_has_not_started
+            and not self.trade_locked
+            and not self.open_contract_id
+            and self.state not in {"SESSION_WAIT", "DAILY_STOP_LOSS", "DAILY_STOP_WIN"}
+        ):
             self.current_stake = self._base_stake(self.last_balance)
 
     def _clear_scanner(self, reason=""):
@@ -327,6 +352,86 @@ class CloudReinvestEngine:
             return None
         return {"contract_type": "OVER", "barrier": 1, "score": self.market_scores.get(symbol, 0.0), "source_signal": signal}
 
+    def _golden_card_signal(self, symbol, market):
+        digits = list(market["digits"])
+        strategy = self.shadow[symbol]
+        counts = strategy._golden_card_counts_from_ticks(digits)
+        chosen = strategy._golden_card_pick_trade(digits, filter_mode="ALL4")
+        golden_keys = {"over0", "over1", "under8", "under9"}
+        candidates = [row for row in chosen.get("candidates", []) if row.get("key") in golden_keys]
+        candidates.sort(key=lambda row: (
+            0 if not row.get("blocked") else 1,
+            -float(row.get("confidence_pct", 0.0) or 0.0),
+            str(row.get("label") or ""),
+        ))
+        if candidates:
+            chosen = dict(candidates[0])
+        confidence = float(chosen.get("confidence_pct", 0.0) or 0.0)
+        if len(digits) < 20 or confidence < 55.0 or chosen.get("blocked"):
+            return None
+        return {
+            "contract_type": str(chosen.get("type") or "OVER").upper(),
+            "barrier": int(chosen.get("barrier", 1)),
+            "score": confidence,
+            "source_signal": "GOLDEN_CARD",
+            "recommended_label": str(chosen.get("label") or ""),
+            "golden_counts": counts,
+        }
+
+    def _lowest_percent_signal(self, market):
+        digits = list(market["digits"])
+        frequencies = self._frequency_snapshot(digits)[100]
+        eligible = sorted(
+            ({"digit": digit, "pct": float(frequencies[digit])} for digit in range(10) if frequencies[digit] < 10.0),
+            key=lambda row: (row["pct"], row["digit"]),
+        )
+        eligible_map = {row["digit"]: row["pct"] for row in eligible}
+        tick_number = int(market["tick"])
+        last_digit = int(digits[-1])
+
+        armed = market.get("ai_lowest_armed")
+        if armed and tick_number >= int(armed.get("trade_on_tick", tick_number + 1)):
+            market["ai_lowest_armed"] = None
+            market["ai_lowest_touches"] = {}
+            digit = int(armed["digit"])
+            return {
+                "contract_type": "DIFFERS",
+                "barrier": digit,
+                "score": round(100.0 - float(eligible_map.get(digit, armed.get("pct", 0.0))), 2),
+                "source_signal": "LOWEST_PERCENT",
+                "lowest_percent": float(eligible_map.get(digit, armed.get("pct", 0.0))),
+            }
+
+        previous = market.get("ai_lowest_touches") or {}
+        touches = {digit: dict(value) for digit, value in previous.items() if int(digit) in eligible_map}
+        if last_digit in eligible_map:
+            touch = touches.setdefault(last_digit, {})
+            touch["touched_tick"] = tick_number
+
+        valid = []
+        for digit, touch in touches.items():
+            digit = int(digit)
+            if digit == last_digit or touch.get("touched_tick") is None:
+                continue
+            if touch.get("valid_since_tick") is None:
+                touch["valid_since_tick"] = tick_number
+            valid.append({
+                "digit": digit,
+                "pct": eligible_map[digit],
+                "valid_since_tick": int(touch["valid_since_tick"]),
+            })
+        if valid:
+            valid.sort(key=lambda row: (row["valid_since_tick"], row["pct"], row["digit"]))
+            chosen = valid[0]
+            market["ai_lowest_armed"] = {
+                "digit": chosen["digit"],
+                "pct": chosen["pct"],
+                "trade_on_tick": tick_number + 1,
+            }
+            touches = {}
+        market["ai_lowest_touches"] = touches
+        return None
+
     def _analyze(self, symbol, market):
         trade_type = self.settings["cloud_trade_type"]
         digits = list(market["digits"])
@@ -337,11 +442,14 @@ class CloudReinvestEngine:
         if trade_type == "digit_differs":
             row = self._differ_candidate(market)
             return ({"contract_type": "DIFFERS", "barrier": row["digit"], **row} if row else None)
-        frequencies = self._frequency_snapshot(digits)
-        if trade_type == "under9" and digits[-1] == 9 and frequencies[100][9] <= 9.0:
-            return {"contract_type": "UNDER", "barrier": 9, "score": 100.0 - frequencies[100][9]}
-        if trade_type == "over0" and digits[-1] == 0 and frequencies[100][0] <= 9.0:
-            return {"contract_type": "OVER", "barrier": 0, "score": 100.0 - frequencies[100][0]}
+        if trade_type == "under9" and digits[-1] == 9 and 9 not in digits[-11:-1]:
+            return {"contract_type": "UNDER", "barrier": 9, "score": 100.0, "source_signal": "TEN_TICK_ABSENCE"}
+        if trade_type == "over0" and digits[-1] == 0 and 0 not in digits[-11:-1]:
+            return {"contract_type": "OVER", "barrier": 0, "score": 100.0, "source_signal": "TEN_TICK_ABSENCE"}
+        if trade_type == "ai_auto_trading":
+            if self.settings["ai_auto_strategy"] == "LOWEST_PERCENT":
+                return self._lowest_percent_signal(market)
+            return self._golden_card_signal(symbol, market)
         if trade_type == "kid100wins":
             counts = Counter(digits[-100:])
             reverse = self.settings["kid100_mode"] == "HIGH"
@@ -368,6 +476,7 @@ class CloudReinvestEngine:
             return
         self.session_number += 1
         self.session_wins = 0
+        self.session_profit = 0.0
         self.session_result = ""
         self.current_stake = self._base_stake(self.last_balance)
         self.reinvest_step = 0
@@ -397,6 +506,7 @@ class CloudReinvestEngine:
             "session_number": int(self.session_number),
             "result": outcome,
             "label": f"{label} for session {self.session_number}",
+            "profit": round(float(self.session_profit), 2),
             "time": datetime.fromtimestamp(float(now_ts), timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
         })
         self.session_events = self.session_events[-100:]
@@ -490,7 +600,8 @@ class CloudReinvestEngine:
             return []
         candidate = self._analyze(symbol, market)
         if not candidate:
-            self.market_cooldowns[symbol] = now_ts + self.settings["scanner_cooldown_seconds"]
+            if self.settings["cloud_trade_type"] not in {"under9", "over0", "ai_auto_trading"}:
+                self.market_cooldowns[symbol] = now_ts + self.settings["scanner_cooldown_seconds"]
             self._log("setup_rejected", symbol=symbol, reason="STRATEGY_CONDITIONS_NOT_MET", cooldown=self.settings["scanner_cooldown_seconds"])
             return []
         self.current_market = symbol
@@ -572,6 +683,12 @@ class CloudReinvestEngine:
         won = profit > 0
         result = "WIN" if won else ("BREAKEVEN" if profit == 0 else "LOSS")
         previous_stake = round(float(self.current_stake), 2)
+        settled_buy_price = round(max(0.0, _float(
+            (contract or {}).get("buy_price"),
+            _float((meta or {}).get("proposal_ask_price"), previous_stake),
+        )), 2)
+        if settled_buy_price <= 0:
+            settled_buy_price = previous_stake
         self.session_profit = round(self.session_profit + profit, 2)
         self.daily_profit = round(self.daily_profit + profit, 2)
         self.last_trade_result = result
@@ -580,7 +697,7 @@ class CloudReinvestEngine:
             self.completed_wins += 1
             self.session_wins += 1
             self.reinvest_step += 1
-            self.current_stake = round(max(0.35, previous_stake + profit), 2)
+            self.current_stake = round(max(0.35, settled_buy_price + profit), 2)
         elif result == "LOSS":
             self.losses += 1
         signal = dict(self.pending_signal or {})
@@ -598,6 +715,8 @@ class CloudReinvestEngine:
             self.daily_stop = True
             self.daily_stop_reason = "DAILY_STOP_LOSS"
         if self.daily_stop:
+            self.session_result = "WON" if won else "LOST"
+            self._record_session_event(self.session_result, now_ts)
             self.state = self.daily_stop_reason
             self.cloud_status = self.daily_stop_reason
             self.current_stake = self._base_stake(self.last_balance)
@@ -616,7 +735,8 @@ class CloudReinvestEngine:
             "trade_type": self.settings["cloud_trade_type"],
             "market": signal.get("symbol") or self.current_market,
             "contract_id": contract_id,
-            "stake": previous_stake,
+            "stake": settled_buy_price,
+            "requested_stake": previous_stake,
             "profit": profit,
             "result": result,
             "action": action,
@@ -625,9 +745,12 @@ class CloudReinvestEngine:
             "session_number": self.session_number,
             "session_result": self.session_result,
             "proposal_id": (meta or {}).get("proposal_id"),
-            "buy_price": (meta or {}).get("proposal_ask_price", previous_stake),
+            "buy_price": settled_buy_price,
             "payout": (meta or {}).get("proposal_payout"),
             "proposal_profit_percent": (meta or {}).get("proposal_profit_percent"),
+            "duration": (meta or {}).get("duration", self.settings["duration"]),
+            "duration_unit": (meta or {}).get("duration_unit", self.settings["duration_unit"]),
+            "exit_digit": (meta or {}).get("exit_digit"),
         }
         self.history.append({"time": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"), **row})
         self.history = self.history[-500:]
@@ -636,6 +759,7 @@ class CloudReinvestEngine:
 
     def status(self):
         required = MODE_TARGETS[self.settings["cloud_trade_mode"]] if self.settings["cloud_trade_type"] in MODE_TRADE_TYPES else self.settings["trades_per_session"]
+        history_profit = round(sum(_float((row or {}).get("profit"), 0.0) for row in self.history), 2)
         return {
             "status": "success",
             "strategy_name": self.strategy_name,
@@ -649,6 +773,7 @@ class CloudReinvestEngine:
             "base_stake": self.settings["base_stake"],
             "session_profit": self.session_profit,
             "daily_profit": self.daily_profit,
+            "history_profit": history_profit,
             "reinvest_step": self.reinvest_step,
             "last_trade_result": self.last_trade_result,
             "last_signal": self.last_signal,

@@ -18940,6 +18940,10 @@ def _filter_cloud_reinvest_markets(client_id, state, settings):
         "digit_differs": "DIGITDIFF",
         "kid100wins": "DIGITDIFF",
     }.get(trade_type, "DIGITOVER")
+    ai_auto_strategy = str((settings or {}).get("ai_auto_strategy") or "GOLDEN_CARD").strip().upper()
+    wanted_contracts = {wanted_contract}
+    if trade_type == "ai_auto_trading":
+        wanted_contracts = {"DIGITDIFF"} if ai_auto_strategy == "LOWEST_PERCENT" else {"DIGITOVER", "DIGITUNDER"}
     requested = list((settings or {}).get("allowed_markets") or [])
     active, active_error = _get_active_symbols_for_state(client_id, state)
     if active_error:
@@ -18959,13 +18963,13 @@ def _filter_cloud_reinvest_markets(client_id, state, settings):
         if error:
             logger.info("[%s] cloud_scanner_market_skipped symbol=%s error=%s", client_id, symbol, error)
             continue
-        if _contracts_for_has_contract_type(contracts_for, wanted_contract):
+        if all(_contracts_for_has_contract_type(contracts_for, contract) for contract in wanted_contracts):
             eligible.append(symbol)
     if not eligible:
-        raise ValueError(f"No selected active market supports {wanted_contract}.")
+        raise ValueError(f"No selected active market supports {', '.join(sorted(wanted_contracts))}.")
     out = dict(settings or {})
     out["allowed_markets"] = eligible
-    logger.info("[%s] cloud_scanner_eligible trade_type=%s contract=%s markets=%s", client_id, trade_type, wanted_contract, ",".join(eligible))
+    logger.info("[%s] cloud_scanner_eligible trade_type=%s contract=%s markets=%s", client_id, trade_type, ",".join(sorted(wanted_contracts)), ",".join(eligible))
     return out
 
 
@@ -22025,17 +22029,23 @@ def process_contract(client_id, contract):
             and str((meta or {}).get("mode") or "").upper() in ("CLOUD_UNDER9", "CLOUD_KOOLKID_PROFIT", "CLOUD_REINVEST_100")
         ):
             cloud_key = _cloud_key_for_state(state)
-            cloud_row = cloud_manager.on_contract_result(cloud_key, contract, meta, profit)
+            cloud_meta = dict(meta or {})
+            cloud_exit_digit = extract_exit_digit_from_contract(contract)
+            if cloud_exit_digit is not None:
+                cloud_meta["exit_digit"] = cloud_exit_digit
+            cloud_row = cloud_manager.on_contract_result(cloud_key, contract, cloud_meta, profit)
             _persist_cloud_budget(state)
             entry = {
                 "profile": "CLOUD",
+                "contract_id": contract_id,
                 "type": (meta or {}).get("type") or "UNDER",
                 "barrier": (meta or {}).get("barrier", 9),
                 "stake": (meta or {}).get("stake") or cloud_row.get("stake"),
                 "symbol": (meta or {}).get("symbol") or cloud_row.get("market"),
                 "time": (meta or {}).get("time") or now_time(),
-                "duration": (meta or {}).get("duration"),
-                "duration_unit": (meta or {}).get("duration_unit"),
+                "duration": cloud_meta.get("duration") or cloud_row.get("duration"),
+                "duration_unit": cloud_meta.get("duration_unit") or cloud_row.get("duration_unit"),
+                "exit_digit": cloud_exit_digit,
                 "mode": (meta or {}).get("mode") or "CLOUD_UNDER9",
                 "strategy_name": (meta or {}).get("strategy_name") or cloud_row.get("strategy") or "Cloud Under 9",
                 "result": cloud_row.get("result"),
@@ -22260,7 +22270,7 @@ def send_stats_update(client_id):
             "losses": losses,
             "winrate": round((wins / total) * 100, 1) if total else 0.0,
             "loserate": round((losses / total) * 100, 1) if total else 0.0,
-            "net_pnl": float(status.get("daily_profit", 0.0) or 0.0),
+            "net_pnl": float(status.get("history_profit", status.get("daily_profit", 0.0)) or 0.0),
             "auto_trade": bool(status.get("running")),
         }, room=client_id)
         socketio.emit("cloud_under9_status", status, room=client_id)

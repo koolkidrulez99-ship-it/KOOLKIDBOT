@@ -26,6 +26,25 @@ def test_percentage_stake_is_limited_and_uses_live_balance():
     assert valid._base_stake(200) == 30
 
 
+@pytest.mark.parametrize("requested,expected", [(10, 10), (12, 10), (14, 15), (18, 20), (20, 20)])
+def test_percentage_stake_uses_only_supported_dropdown_values(requested, expected):
+    engine = CloudReinvestEngine("alice", "cid", {"stake_mode": "PERCENT", "balance_percent": requested})
+
+    assert engine.settings["balance_percent"] == expected
+
+
+def test_one_market_scope_limits_scanner_to_selected_market():
+    engine = CloudReinvestEngine("alice", "cid", {
+        "market_scan_scope": "ONE",
+        "selected_market": "R_50",
+        "allowed_markets": ["R_10", "R_25", "R_50"],
+    })
+    engine.start("cid")
+
+    assert engine.settings["allowed_markets"] == ["R_50"]
+    assert engine.needed_symbols() == ["R_50"]
+
+
 def test_under9_scanner_emits_only_one_trade_and_locks():
     engine = CloudReinvestEngine("alice", "cid", {"cloud_trade_type": "under9", "allowed_markets": ["R_10"]})
     engine.start("cid")
@@ -37,6 +56,88 @@ def test_under9_scanner_emits_only_one_trade_and_locks():
     assert actions[0]["intent"]["barrier"] == 9
     assert engine.trade_locked is True
     assert engine.on_tick(_tick("R_10", 9, 100), 9, balance=100, now_ts=1100) == []
+
+
+def test_under9_requires_ten_ticks_without_nine_before_fresh_nine():
+    engine = CloudReinvestEngine("alice", "cid", {"cloud_trade_type": "under9"})
+    market = engine._market("R_10")
+    market["digits"].extend(([1] * 89) + [9] + ([2] * 9) + [9])
+    market["tick"] = 100
+
+    assert engine._analyze("R_10", market) is None
+
+    market["digits"].extend([2] * 10)
+    market["tick"] += 10
+    market["digits"].append(9)
+    market["tick"] += 1
+    signal = engine._analyze("R_10", market)
+
+    assert signal["contract_type"] == "UNDER"
+    assert signal["barrier"] == 9
+
+
+def test_over0_requires_ten_ticks_without_zero_before_fresh_zero():
+    engine = CloudReinvestEngine("alice", "cid", {"cloud_trade_type": "over0"})
+    market = engine._market("R_10")
+    market["digits"].extend(([1] * 89) + [0] + ([2] * 9) + [0])
+    market["tick"] = 100
+
+    assert engine._analyze("R_10", market) is None
+
+    market["digits"].extend([2] * 10)
+    market["tick"] += 10
+    market["digits"].append(0)
+    market["tick"] += 1
+    signal = engine._analyze("R_10", market)
+
+    assert signal["contract_type"] == "OVER"
+    assert signal["barrier"] == 0
+
+
+def test_ai_auto_strategy_setting_is_user_selected_and_validated():
+    golden = CloudReinvestEngine("alice", "cid", {"cloud_trade_type": "ai_auto_trading", "ai_auto_strategy": "GOLDEN_CARD"})
+    lowest = CloudReinvestEngine("bob", "cid", {"cloud_trade_type": "ai_auto_trading", "ai_auto_strategy": "LOWEST_PERCENT"})
+    invalid = CloudReinvestEngine("eve", "cid", {"cloud_trade_type": "ai_auto_trading", "ai_auto_strategy": "UNKNOWN"})
+
+    assert golden.settings["ai_auto_strategy"] == "GOLDEN_CARD"
+    assert lowest.settings["ai_auto_strategy"] == "LOWEST_PERCENT"
+    assert invalid.settings["ai_auto_strategy"] == "GOLDEN_CARD"
+
+
+def test_ai_auto_lowest_percent_reuses_touch_move_away_next_tick_sequence():
+    engine = CloudReinvestEngine("alice", "cid", {"cloud_trade_type": "ai_auto_trading", "ai_auto_strategy": "LOWEST_PERCENT"})
+    market = engine._market("R_10")
+    market["digits"].extend(([0] * 12) + ([1] * 11) + ([2] * 11) + ([3] * 11) + ([4] * 11) + ([5] * 11) + ([6] * 11) + ([7] * 11) + ([8] * 11))
+    market["tick"] = len(market["digits"])
+
+    market["digits"].append(9)
+    market["tick"] += 1
+    assert engine._analyze("R_10", market) is None
+
+    market["digits"].append(1)
+    market["tick"] += 1
+    assert engine._analyze("R_10", market) is None
+
+    market["digits"].append(2)
+    market["tick"] += 1
+    signal = engine._analyze("R_10", market)
+
+    assert signal["contract_type"] == "DIFFERS"
+    assert signal["barrier"] == 9
+    assert signal["source_signal"] == "LOWEST_PERCENT"
+
+
+def test_ai_auto_golden_card_reuses_existing_koolkid_recommendation():
+    engine = CloudReinvestEngine("alice", "cid", {"cloud_trade_type": "ai_auto_trading", "ai_auto_strategy": "GOLDEN_CARD"})
+    market = engine._market("R_10")
+    market["digits"].extend((([9] * 9) + [0]) * 10)
+    market["tick"] = 100
+
+    signal = engine._analyze("R_10", market)
+
+    assert signal["contract_type"] == "OVER"
+    assert signal["barrier"] == 0
+    assert signal["source_signal"] == "GOLDEN_CARD"
 
 
 def test_win_reinvests_full_profit_inside_session():
@@ -51,6 +152,86 @@ def test_win_reinvests_full_profit_inside_session():
     assert engine.current_stake == 17.5
     assert engine.session_wins == 1
     assert engine.state == "SCANNING_AGAIN"
+
+
+def test_reinvest_history_persists_duration_and_exit_digit():
+    engine = CloudReinvestEngine("alice", "cid", {
+        "base_stake": 1,
+        "trades_per_session": 3,
+        "cloud_trade_type": "kidpairs",
+        "duration": 2,
+    })
+    engine.start("cid")
+    engine.pending_signal = {"symbol": "R_25", "barrier": 1, "tick": 100}
+
+    row = engine.on_contract_result(
+        {"contract_id": "duration-exit", "buy_price": 1},
+        {"duration": 2, "duration_unit": "t", "exit_digit": 7},
+        0.8,
+    )
+
+    assert row["duration"] == 2
+    assert row["duration_unit"] == "t"
+    assert row["exit_digit"] == 7
+    assert engine.history[-1]["exit_digit"] == 7
+
+
+@pytest.mark.parametrize("trade_type", sorted({
+    "kidpairs", "over3_analysis", "mpull_over5", "under9", "over0", "digit_differs", "kid100wins", "ai_auto_trading",
+}))
+def test_every_reinvest_trade_type_compounds_the_actual_settled_buy_price(trade_type):
+    settings = {
+        "base_stake": 10,
+        "trades_per_session": 3,
+        "cloud_trade_type": trade_type,
+        "cloud_trade_mode": "SAFE",
+    }
+    engine = CloudReinvestEngine("alice", "cid", settings)
+    engine.start("cid")
+    engine.current_stake = 10
+    engine.pending_signal = {"symbol": "R_10", "barrier": 1, "tick": 100}
+
+    row = engine.on_contract_result(
+        {"contract_id": f"{trade_type}-win", "buy_price": 9.5},
+        {"proposal_ask_price": 9.75},
+        7.5,
+    )
+
+    assert row["buy_price"] == 9.5
+    assert row["requested_stake"] == 10
+    assert row["next_stake"] == 17.0
+    assert engine.current_stake == 17.0
+    assert engine.state == "SCANNING_AGAIN"
+
+
+def test_budget_or_market_settings_update_does_not_reset_compounded_stake():
+    engine = CloudReinvestEngine("alice", "cid", {
+        "base_stake": 10,
+        "trades_per_session": 3,
+        "cloud_trade_type": "kidpairs",
+        "allowed_markets": ["R_10", "R_25"],
+    })
+    engine.start("cid")
+    engine.pending_signal = {"symbol": "R_10", "barrier": 1, "tick": 100}
+    engine.on_contract_result({"contract_id": "win", "buy_price": 10}, {}, 7.5)
+
+    engine.update_settings({"profile_budget_realized_pnl": 7.5})
+    engine.update_settings({"allowed_markets": ["R_25"]})
+
+    assert engine.current_market == "R_25"
+    assert engine.current_stake == 17.5
+    assert engine.reinvest_step == 1
+
+
+def test_history_profit_is_the_authoritative_sum_of_persisted_cloud_rows():
+    engine = CloudReinvestEngine("alice", "cid", {})
+    engine.history = [
+        {"contract_id": "one", "profit": 0.8, "result": "WIN"},
+        {"contract_id": "two", "profit": -1.0, "result": "LOSS"},
+    ]
+    engine.daily_profit = 99.0
+
+    assert engine.status()["history_profit"] == -0.2
 
 
 def test_any_loss_ends_session_and_resets_next_session_stake():
@@ -319,5 +500,6 @@ def test_completed_cloud_sessions_are_persisted_and_can_be_removed_individually(
 
     assert event["result"] == "WON"
     assert event["label"] == "Target profit hit for session 1"
+    assert event["profit"] == 0.8
     remaining = manager.clear_session_event("alice", event["id"])
     assert remaining["session_events"] == []

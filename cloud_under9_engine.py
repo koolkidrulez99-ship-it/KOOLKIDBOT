@@ -753,6 +753,9 @@ class CloudUnder9Engine:
             "tp_hit": tp_hit,
             "next_stake": self.current_stake,
             "reinvest_step": self.reinvest_step,
+            "duration": (meta or {}).get("duration", self.settings["duration"]),
+            "duration_unit": (meta or {}).get("duration_unit", self.settings["duration_unit"]),
+            "exit_digit": (meta or {}).get("exit_digit"),
         }
         self._append_history(row)
         self.log("trade %s profit=%s next_stake=%s action=%s", result.lower(), profit, self.current_stake, action)

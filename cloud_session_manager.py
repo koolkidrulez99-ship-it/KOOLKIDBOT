@@ -250,8 +250,6 @@ class CloudSessionManager:
     def start(self, username: str, client_id: str, settings: dict | None = None) -> dict:
         with self._lock:
             engine = self.get_or_create(username, client_id, settings)
-            if settings:
-                engine.update_settings(settings)
             engine.start(client_id)
             self._persist(engine)
             label = self._label(engine)

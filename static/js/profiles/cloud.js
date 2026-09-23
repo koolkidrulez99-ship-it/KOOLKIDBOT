@@ -25,6 +25,8 @@
   let socketBound = false;
   let latestStatus = null;
   let settingsDirty = false;
+  let statusRequest = null;
+  let actionBusy = "";
 
   function app(){ return window.BotApp || {}; }
   function byId(id){ return document.getElementById(id); }
@@ -118,7 +120,12 @@
   function readSettings(){
     const preset = ((byId("cloudPreset") || {}).value || "reinvest_profits_100");
     const selected = selectedMarkets();
-    const markets = preset === "koolkid_profit" ? selected.filter((symbol)=> KOOLKID_PROFIT_MARKETS.includes(symbol)) : selected;
+    const marketScope = ((byId("cloudReinvestMarketScope") || {}).value || "ALL");
+    const singleMarket = ((byId("cloudReinvestSingleMarket") || {}).value || DEFAULT_MARKET_LIST[0]);
+    const reinvestMarkets = marketScope === "ONE" ? [singleMarket] : DEFAULT_MARKET_LIST.slice();
+    const markets = preset === "koolkid_profit"
+      ? selected.filter((symbol)=> KOOLKID_PROFIT_MARKETS.includes(symbol))
+      : (preset === "reinvest_profits_100" ? reinvestMarkets : selected);
     if(preset === "koolkid_profit" && !markets.length) markets.push(...KOOLKID_PROFIT_MARKETS);
     if(!markets.length) throw new Error("Choose at least one Cloud market.");
     if(preset === "reinvest_profits_100"){
@@ -152,9 +159,12 @@
       min_seconds_between_99_streaks: readNumber("cloudStreakCooldown", 20),
       stake_mode: ((byId("cloudReinvestStakeMode") || {}).value || "FIXED"),
       balance_percent: readNumber("cloudReinvestPercent", 10),
+      market_scan_scope: marketScope,
+      selected_market: singleMarket,
       cloud_trade_type: ((byId("cloudReinvestTradeType") || {}).value || "under9"),
       cloud_trade_mode: ((byId("cloudReinvestMode") || {}).value || "SAFE"),
       kid100_mode: ((byId("cloudKid100Mode") || {}).value || "LOW"),
+      ai_auto_strategy: ((byId("cloudAiAutoStrategy") || {}).value || "GOLDEN_CARD"),
       trades_per_session: readNumber("cloudTradesPerSession", 1),
       session_runs: readNumber("cloudSessionRuns", 1),
       session_delay: readNumber("cloudSessionDelay", 30),
@@ -177,17 +187,23 @@
     const tradeType = ((byId("cloudReinvestTradeType") || {}).value || "under9");
     const modeDriven = ["digit_differs", "under9", "over0"].includes(tradeType);
     const kid100 = tradeType === "kid100wins";
+    const aiAuto = tradeType === "ai_auto_trading";
     const stakeMode = ((byId("cloudReinvestStakeMode") || {}).value || "FIXED");
     const fixedWrap = byId("cloudReinvestFixedStakeWrap");
     const percentWrap = byId("cloudReinvestPercentWrap");
     const modeWrap = byId("cloudReinvestModeWrap");
     const tradesWrap = byId("cloudTradesPerSessionWrap");
     const kid100Wrap = byId("cloudKid100ModeWrap");
+    const aiAutoWrap = byId("cloudAiAutoStrategyWrap");
+    const marketScope = ((byId("cloudReinvestMarketScope") || {}).value || "ALL");
+    const singleMarketWrap = byId("cloudReinvestSingleMarketWrap");
     if(fixedWrap) fixedWrap.hidden = stakeMode !== "FIXED";
     if(percentWrap) percentWrap.hidden = stakeMode !== "PERCENT";
     if(modeWrap) modeWrap.hidden = !modeDriven;
     if(tradesWrap) tradesWrap.hidden = modeDriven;
     if(kid100Wrap) kid100Wrap.hidden = !kid100;
+    if(aiAutoWrap) aiAutoWrap.hidden = !aiAuto;
+    if(singleMarketWrap) singleMarketWrap.hidden = marketScope !== "ONE";
     const modeNote = byId("cloudModeSessionNote");
     if(modeNote) modeNote.hidden = !modeDriven;
     updateCloudSessionSummary();
@@ -221,7 +237,7 @@
         });
         el.addEventListener("change", ()=> {
           if(el.id === "cloudAllowedMarkets") writeMarketPicker(parseMarkets(el.value));
-          if(["cloudPreset","cloudReinvestStakeMode","cloudReinvestTradeType"].includes(el.id)) updatePresetUI();
+          if(["cloudPreset","cloudReinvestStakeMode","cloudReinvestTradeType","cloudReinvestMarketScope"].includes(el.id)) updatePresetUI();
           if(["cloudTradesPerSession","cloudSessionRuns","cloudSessionDelay","cloudSessionDelayUnit","cloudReinvestMode"].includes(el.id)) updateCloudSessionSummary();
           settingsDirty = true;
         });
@@ -238,9 +254,12 @@
       cloudReinvestStake: settings.base_stake,
       cloudReinvestStakeMode: settings.stake_mode,
       cloudReinvestPercent: settings.balance_percent,
+      cloudReinvestMarketScope: settings.market_scan_scope,
+      cloudReinvestSingleMarket: settings.selected_market,
       cloudReinvestTradeType: settings.cloud_trade_type,
       cloudReinvestMode: settings.cloud_trade_mode,
       cloudKid100Mode: settings.kid100_mode,
+      cloudAiAutoStrategy: settings.ai_auto_strategy,
       cloudTradesPerSession: settings.trades_per_session,
       cloudSessionRuns: settings.session_runs,
       cloudSessionDelay: settings.session_delay,
@@ -293,29 +312,48 @@
     if(!root) return;
     const events = Array.isArray(status && status.session_events) ? status.session_events : [];
     root.innerHTML = "";
+    root.hidden = !events.length;
     if(!events.length){
-      const empty = document.createElement("span");
-      empty.className = "cloud-market-count";
-      empty.textContent = "No completed Cloud sessions yet.";
-      root.appendChild(empty);
       return;
     }
     events.slice().reverse().forEach((event)=> {
       const item = document.createElement("div");
       const result = String((event || {}).result || "").toLowerCase();
       item.className = `cloud-session-event ${result === "won" ? "won" : (result === "lost" ? "lost" : "")}`;
+      const copy = document.createElement("div");
+      copy.className = "cloud-session-event-copy";
       const label = document.createElement("span");
+      label.className = "cloud-session-event-title";
       label.textContent = String((event || {}).label || "Completed Cloud session");
       if((event || {}).time) label.title = String(event.time);
+      const profit = document.createElement("strong");
+      profit.className = "cloud-session-event-profit";
+      profit.textContent = signedMoney((event || {}).profit);
+      copy.append(label, profit);
       const clear = document.createElement("button");
       clear.type = "button";
       clear.title = "Clear this session result";
       clear.setAttribute("aria-label", "Clear this session result");
       clear.textContent = "x";
       clear.addEventListener("click", ()=> clearCloudSessionEvent((event || {}).id));
-      item.append(label, clear);
+      item.append(copy, clear);
       root.appendChild(item);
     });
+  }
+  function renderCloudToggle(running){
+    const button = byId("cloudToggleBtn");
+    if(!button) return;
+    const restart = byId("cloudRestartBtn");
+    const isRunning = !!running;
+    button.dataset.running = isRunning ? "1" : "0";
+    button.disabled = !!actionBusy;
+    if(restart) restart.disabled = !!actionBusy;
+    if(actionBusy === "start") button.textContent = "Starting...";
+    else if(actionBusy === "stop") button.textContent = "Stopping...";
+    else if(actionBusy === "restart") button.textContent = "Restarting...";
+    else button.textContent = isRunning ? "Stop Cloud Bot" : "Start Cloud Bot";
+    button.classList.toggle("cloud-start", !isRunning && actionBusy !== "stop");
+    button.classList.toggle("cloud-stop", isRunning || actionBusy === "stop");
   }
   async function clearCloudSessionEvent(eventId){
     const id = String(eventId || "").trim();
@@ -336,6 +374,7 @@
     updatePresetUI();
     renderSessionEvents(status);
     const running = !!status.running;
+    renderCloudToggle(running);
     setText("cloudRunningBadge", running ? "Running" : "Stopped");
     setText("cloudTokenBadge", status.token_verified ? "PAT account verified" : "PAT connection needed");
     const badge = byId("cloudRunningBadge");
@@ -371,14 +410,20 @@
     ]).join("\n"));
   }
   async function refreshStatus(silent){
-    try{
-      const status = await getJSON("/cloud/under9/status");
-      renderStatus(status);
-      return status;
-    }catch(e){
-      if(!silent && typeof showToast === "function") showToast(e.message || "Cloud status failed", "error");
-      return null;
-    }
+    if(statusRequest) return statusRequest;
+    statusRequest = (async()=>{
+      try{
+        const status = await getJSON("/cloud/under9/status");
+        renderStatus(status);
+        return status;
+      }catch(e){
+        if(!silent && typeof showToast === "function") showToast(e.message || "Cloud status failed", "error");
+        return null;
+      }finally{
+        statusRequest = null;
+      }
+    })();
+    return statusRequest;
   }
   function startPoll(){
     stopPoll();
@@ -404,41 +449,39 @@
     }
   }
 
-  window.startCloudUnder9 = async function(){
+  async function runCloudAction(action){
+    if(actionBusy) return;
+    const normalized = String(action || "").toLowerCase();
+    if(!["start","stop","restart"].includes(normalized)) return;
+    actionBusy = normalized;
+    renderCloudToggle(normalized === "stop" ? true : !!(latestStatus && latestStatus.running));
     try{
-      const data = await postJSON("/cloud/under9/start", readSettings());
+      const body = normalized === "start" ? readSettings() : {};
+      const data = await postJSON(`/cloud/under9/${normalized}`, body);
       settingsDirty = false;
       writeSettings(data, true);
+      latestStatus = data;
       renderStatus(data);
-      startPoll();
-      if(typeof showToast === "function") showToast(`${presetLabel(data)} started`, "success");
+      if(data.running) startPoll();
+      if(typeof showToast === "function"){
+        if(normalized === "stop") showToast("Cloud Bot stopped", "error");
+        else if(normalized === "restart") showToast("Cloud Bot restarted", "success");
+        else showToast(`${presetLabel(data)} started`, "success");
+      }
     }catch(e){
-      if(typeof showToast === "function") showToast(e.message || "Cloud start failed", "error");
+      if(typeof showToast === "function") showToast(e.message || `Cloud ${normalized} failed`, "error");
+    }finally{
+      actionBusy = "";
+      renderCloudToggle(!!(latestStatus && latestStatus.running));
     }
+  }
+  window.toggleCloudUnder9 = function(){
+    const running = !!(latestStatus && latestStatus.running);
+    return runCloudAction(running ? "stop" : "start");
   };
-  window.stopCloudUnder9 = async function(){
-    try{
-      const data = await postJSON("/cloud/under9/stop", {});
-      settingsDirty = false;
-      writeSettings(data, true);
-      renderStatus(data);
-      if(typeof showToast === "function") showToast("Cloud Under 9 stopped", "error");
-    }catch(e){
-      if(typeof showToast === "function") showToast(e.message || "Cloud stop failed", "error");
-    }
-  };
-  window.restartCloudUnder9 = async function(){
-    try{
-      const data = await postJSON("/cloud/under9/restart", {});
-      settingsDirty = false;
-      writeSettings(data, true);
-      renderStatus(data);
-      startPoll();
-      if(typeof showToast === "function") showToast("Cloud Under 9 restarted", "success");
-    }catch(e){
-      if(typeof showToast === "function") showToast(e.message || "Cloud restart failed", "error");
-    }
-  };
+  window.startCloudUnder9 = function(){ return runCloudAction("start"); };
+  window.stopCloudUnder9 = function(){ return runCloudAction("stop"); };
+  window.restartCloudUnder9 = function(){ return runCloudAction("restart"); };
   window.saveCloudUnder9Settings = async function(){
     try{
       const data = await postJSON("/cloud/under9/settings", readSettings());
