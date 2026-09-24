@@ -11,21 +11,25 @@ import { ChartMarkupOverlay, ChartMarkupToolbar, useChartMarkup } from './ChartM
 export default function CandleChart({
   symbol,
   tfSeconds,
+  historyDays = 7,
   livePrice,
   positions,
   height = 460,
   onLastCandle,
   digitsOverride,
+  accountLogin,
   accountKey,
   accountLabel,
 }: {
   symbol: string;
   tfSeconds: number;
+  historyDays?: number;
   livePrice: number;
   positions: Mt5Position[];
   height?: number;
   onLastCandle?: (c: Candle) => void;
   digitsOverride?: number;
+  accountLogin?: number;
   accountKey?: string | number | null;
   accountLabel?: string;
 }) {
@@ -114,10 +118,11 @@ export default function CandleChart({
     setChartRevision((value) => value + 1);
 
     if (isSimulation) {
-      applyData(genCandles(symbol, tfSeconds, 220));
+      const simulatedBars = Math.max(220, Math.min(5000, Math.ceil((Math.max(1, Math.min(30, historyDays)) * 86400) / tfSeconds) + 4));
+      applyData(genCandles(symbol, tfSeconds, simulatedBars));
     } else {
       const tf = (Object.entries(TF_SECONDS).find(([, seconds]) => seconds === tfSeconds)?.[0] || 'M15');
-      mt5MarketService.candles(symbol, tf, 220).then(applyData).catch(() => {
+      mt5MarketService.candles(symbol, tf, 220, accountLogin, historyDays).then(applyData).catch(() => {
         // Keep the live bridge chart empty instead of fabricating historical candles.
       });
     }
@@ -130,7 +135,7 @@ export default function CandleChart({
       volSeriesRef.current = null;
       lastRef.current = null;
     };
-  }, [symbol, tfSeconds, digits, height]);
+  }, [symbol, tfSeconds, historyDays, digits, height, accountLogin]);
 
   // live price tick -> update/append last candle
   useEffect(() => {

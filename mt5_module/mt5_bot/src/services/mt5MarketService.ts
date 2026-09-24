@@ -32,8 +32,12 @@ export const mt5MarketService = {
     const params = new URLSearchParams({ symbols: requested.join(','), account_login: String(accountLogin) });
     return apiRequest<Mt5Quote[]>(`/api/mt5/quotes?${params.toString()}`);
   },
-  candles: (symbol: string, timeframe: string, count = 220, accountLogin?: number): Promise<Candle[]> =>
-    apiRequest<Candle[]>(`/api/mt5/candles/${encodeURIComponent(symbol)}?timeframe=${encodeURIComponent(timeframe)}&count=${count}${accountLogin ? `&account_login=${accountLogin}` : ''}`),
+  candles: (symbol: string, timeframe: string, count = 220, accountLogin?: number, days?: number): Promise<Candle[]> => {
+    const params = new URLSearchParams({ timeframe, count: String(count) });
+    if (accountLogin) params.set('account_login', String(accountLogin));
+    if (days) params.set('days', String(Math.max(1, Math.min(30, Math.round(days)))));
+    return apiRequest<Candle[]>(`/api/mt5/candles/${encodeURIComponent(symbol)}?${params.toString()}`);
+  },
   symbols: (accountLogin?: number): Promise<Mt5SymbolInfo[]> => loadSymbols(accountLogin),
   invalidateSymbols: (accountLogin?: number) => {
     if (accountLogin) {

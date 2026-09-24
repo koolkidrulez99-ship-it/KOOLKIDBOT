@@ -15,11 +15,20 @@ import MarketSelect from '../components/MarketSelect';
 import ConfirmModal from '../components/ConfirmModal';
 import { usePersistentState } from '../hooks/usePersistentState';
 
+const HISTORY_RANGES = [
+  { label: '1D', days: 1 },
+  { label: '3D', days: 3 },
+  { label: '7D', days: 7 },
+  { label: '14D', days: 14 },
+  { label: '30D', days: 30 },
+] as const;
+
 export default function ChartsPage() {
   const { market, positions, livePrice, liveQuote, liveProfit, mt5Symbols, accounts, active, activeAccount, pushToast, refresh } = useHub();
   const [source, setSource] = usePersistentState<'mt5' | 'deriv'>('charts_source', 'mt5');
   const [symbol, setSymbol] = usePersistentState('mt5_chart_symbol', 'XAUUSD');
   const [tf, setTf] = usePersistentState<Timeframe>('mt5_chart_timeframe', 'M15');
+  const [historyDays, setHistoryDays] = usePersistentState<number>('mt5_chart_history_days', 7);
   const [volume, setVolume] = useState('0.10');
   const [busy, setBusy] = useState<'buy' | 'sell' | null>(null);
   const [closingId, setClosingId] = useState<number | null>(null);
@@ -138,7 +147,8 @@ export default function ChartsPage() {
                 );
               })}
             </div>
-            <div className="ml-auto flex gap-1.5">
+            <div className="ml-auto flex flex-wrap items-center justify-end gap-1.5">
+              <span className="text-[9px] font-bold uppercase tracking-wider text-slate-600 mr-0.5">Timeframe</span>
               {TIMEFRAMES.map((t) => (
                 <button
                   key={t}
@@ -148,6 +158,20 @@ export default function ChartsPage() {
                   }`}
                 >
                   {t}
+                </button>
+              ))}
+              <span className="mx-1 h-5 w-px bg-white/[0.08]" />
+              <span className="text-[9px] font-bold uppercase tracking-wider text-slate-600 mr-0.5">History</span>
+              {HISTORY_RANGES.map((range) => (
+                <button
+                  key={range.days}
+                  onClick={() => setHistoryDays(range.days)}
+                  title={`Show the previous ${range.days === 1 ? 'day' : `${range.days} days`} of ${symbol}`}
+                  className={`rounded-lg px-2.5 py-1.5 text-[11px] font-bold cursor-pointer transition-colors ${
+                    historyDays === range.days ? 'bg-brand-500/20 text-brand-200 border border-brand-500/30' : 'bg-white/[0.04] text-slate-400 border border-transparent hover:text-white'
+                  }`}
+                >
+                  {range.label}
                 </button>
               ))}
             </div>
@@ -168,7 +192,7 @@ export default function ChartsPage() {
                 </span>
               </div>
             </div>
-            <CandleChart symbol={symbol} tfSeconds={TF_SECONDS[tf]} livePrice={price} positions={symbolPositions} height={440} digitsOverride={quote?.digits} accountKey={active === 'all' ? 'all' : active} accountLabel={activeAccount?.nickname || (active === 'all' ? 'All accounts' : account?.nickname)} />
+            <CandleChart symbol={symbol} tfSeconds={TF_SECONDS[tf]} historyDays={historyDays} livePrice={price} positions={symbolPositions} height={440} digitsOverride={quote?.digits} accountLogin={account?.login} accountKey={active === 'all' ? 'all' : active} accountLabel={activeAccount?.nickname || (active === 'all' ? 'All accounts' : account?.nickname)} />
           </Panel>
 
           {/* positions on symbol */}

@@ -1,4 +1,5 @@
 import json
+import time
 
 import server
 from strategies.jokerjoe import JokerJoeStrategy
@@ -48,6 +49,9 @@ def test_jokerjoe_kidgx_differs_has_no_server_side_five_second_throttle(monkeypa
     try:
         server.process_tick(cid, _tick("R_10", 1, 1))
         server.process_tick(cid, _tick("R_10", 2, 2))
+        deadline = time.time() + 1.0
+        while len(state["ws"].sent) < 2 and time.time() < deadline:
+            time.sleep(0.01)
 
         assert len(state["ws"].sent) == 2
         payloads = [json.loads(item) for item in state["ws"].sent]

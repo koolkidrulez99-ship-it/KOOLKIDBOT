@@ -4,17 +4,16 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>KOOLKID AI BOT</title>
-<link rel="icon" type="image/png" href="/static/images/favicon.png">
-<link rel="shortcut icon" type="image/png" href="/static/images/favicon.png">
+<link rel="icon" type="image/png" href="/static/images/favicon.png?v={{ asset_version }}">
+<link rel="shortcut icon" type="image/png" href="/static/images/favicon.png?v={{ asset_version }}">
 
 <!-- ✅ BULLETPROOF: Local Socket.IO client (v4) -->
-<script src="/static/vendor/socket.io.min.js"></script>
-<script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
-<script src="/static/js/martha_ai.js"></script>
+<script src="/static/vendor/socket.io.min.js?v={{ asset_version }}"></script>
+<script src="/static/js/martha_ai.js?v={{ asset_version }}"></script>
 {% if license_context and (license_context.is_full_access or license_context.is_lifetime) %}
-<link rel="stylesheet" href="/static/css/ai_intelligence.css">
-<script defer src="/static/vendor/lucide.min.js"></script>
-<script defer src="/static/js/ai_intelligence.js"></script>
+<link rel="stylesheet" href="/static/css/ai_intelligence.css?v={{ asset_version }}">
+<script defer src="/static/vendor/lucide.min.js?v={{ asset_version }}"></script>
+<script defer src="/static/js/ai_intelligence.js?v={{ asset_version }}"></script>
 {% endif %}
 
 
@@ -1336,6 +1335,7 @@ body.mobile-only-ui #profileContainer .unchain-history-grid{
         </div>
     </div>
     <a href="/logout" style="color:#ef4444; font-weight:bold;">Logout</a>
+    <a href="/backtest-tools" style="color:#38bdf8; margin-left:14px;">KOOLKID Backtest Tools</a>
     <button id="koolkidAutoTradeLaunchBtn" class="koolkid-auto-trade-launch" type="button" onclick="openKoolkidAutoTradePlaceholder()">
         KOOLKID AUTO TRADE
     </button>
@@ -2557,8 +2557,8 @@ let globalObservedTickCount = 0;
 const API_CONNECT_POLL_INTERVAL_MS = 2000;
 const API_CONNECT_POLL_MAX_ATTEMPTS = 180;
 const API_CONNECT_PENDING_TIMEOUT_MS = 360000;
-const TICK_UI_THROTTLE_MS = 300;
-const DIGIT_ANALYSIS_UI_THROTTLE_MS = 350;
+const TICK_UI_THROTTLE_MS = 100;
+const DIGIT_ANALYSIS_UI_THROTTLE_MS = 150;
 let sessionStartBalanceForMilestone = null;
 let lastKnownBalanceForMilestone = null;
 let shownBalanceMilestones = {};
@@ -5896,7 +5896,7 @@ window.registerProfileModule = window.registerProfileModule || registerProfileMo
 
 const __phase2ScriptLoaded = window.__phase2ScriptLoaded || (window.__phase2ScriptLoaded = {});
 let __phase2AppLoaded = !!window.__phase2AppLoaded;
-const __phase2AssetVersion = window.__phase2AssetVersion || (window.__phase2AssetVersion = String(Date.now()));
+const __phase2AssetVersion = window.__phase2AssetVersion || (window.__phase2AssetVersion = {{ (asset_version|default('dev'))|tojson }});
 const __profileComponentCache = window.__profileComponentCache || (window.__profileComponentCache = {});
 const __profileComponentInflight = window.__profileComponentInflight || (window.__profileComponentInflight = {});
 let __profileAssetsPrefetchStarted = false;
@@ -5952,8 +5952,7 @@ function warmProfileComponent(profile){
     if(__profileComponentCache[url]) return Promise.resolve(__profileComponentCache[url]);
     if(__profileComponentInflight[url]) return __profileComponentInflight[url];
     __profileComponentInflight[url] = fetch(url, {
-        cache: "no-store",
-        headers: { "Cache-Control": "no-cache" }
+        cache: "force-cache"
     })
         .then((res) => {
             if(!res.ok) throw new Error(`Profile component request failed (${res.status}).`);
@@ -5973,22 +5972,8 @@ function warmProfileComponent(profile){
 function scheduleProfileAssetPrefetch(){
     if(__profileAssetsPrefetchStarted) return;
     __profileAssetsPrefetchStarted = true;
-    const run = () => {
-        try{
-            ["KOOLKID", "JOKERJOE", "HUMAN", "UNCHAIN", "NTT", "CLOUD"].forEach((profile) => {
-                const scriptPath = getProfileModuleScriptPath(profile);
-                if(scriptPath) prefetchPhase2Asset(scriptPath, "script");
-                const componentPath = `/static/components/${getProfileComponentFile(profile)}`;
-                prefetchPhase2Asset(componentPath, "fetch");
-                warmProfileComponent(profile).catch(()=>{});
-            });
-        }catch(e){}
-    };
-    if(typeof requestIdleCallback === "function"){
-        requestIdleCallback(run, { timeout: 2500 });
-    }else{
-        setTimeout(run, 1200);
-    }
+    // Inactive profiles are intentionally lazy-loaded. The old idle prefetch
+    // downloaded and parsed every profile after each fresh page load.
 }
 
 function loadScriptOncePhase2(src){
@@ -6491,6 +6476,14 @@ function sendFastProfileTradeBatchOverSocket(profile, payloads, options){
     });
 }
 
+function needsBacktestAcknowledgement(payload){
+    const mode = String((payload || {}).mode || (payload || {}).source || '').trim().toUpperCase();
+    const exempt = new Set(['KOOLKID_SINGLE_MARTINGALE', 'KOOLKID_SINGLE_MARTINGALE_PAIR', 'KOOLKID_TARGET_PROFIT_MARTINGALE', 'KOOLKID_OVER3_UNDER6_PAIR_MARTINGALE']);
+    if(exempt.has(mode)) return false;
+    const manual = new Set(['MANUAL', 'MANUAL_TRADE', 'KOOLKID_PAIR_MANUAL', 'HUMAN_MANUAL_CONTRACT', 'HUMAN_DUAL_MARKET_CONTRACTS']);
+    return !!((payload || {}).automated || (mode && !manual.has(mode)));
+}
+
 async function sendFastProfileTradeNow(profile, payload, options){
     const built = buildFastProfileTradePayload(profile, payload, options || {});
     const useSocket = !!((options && options.useSocket) || built.turboRequested);
@@ -6499,7 +6492,9 @@ async function sendFastProfileTradeNow(profile, payload, options){
         const fireAndForget = options && Object.prototype.hasOwnProperty.call(options, "fireAndForget")
             ? !!options.fireAndForget
             : !!built.turboRequested;
-        return sendFastProfileTradeOverSocket(built.key, built.requestPayload, { fireAndForget });
+        return sendFastProfileTradeOverSocket(built.key, built.requestPayload, {
+            fireAndForget: fireAndForget && !needsBacktestAcknowledgement(built.requestPayload)
+        });
     }
     try{
         const res = await fetch("/manual_trade", {
@@ -6526,7 +6521,9 @@ async function sendFastProfileTradeBatchNow(profile, payloads, options){
         const fireAndForget = options && Object.prototype.hasOwnProperty.call(options, "fireAndForget")
             ? !!options.fireAndForget
             : !!turboRequested;
-        return sendFastProfileTradeBatchOverSocket(key, trades, { fireAndForget });
+        return sendFastProfileTradeBatchOverSocket(key, trades, {
+            fireAndForget: fireAndForget && !trades.some(needsBacktestAcknowledgement)
+        });
     }
     const settled = await Promise.allSettled(trades.map((payload)=> sendFastProfileTradeNow(key || profile, payload, Object.assign({}, options || {}, { queue: false }))));
     const responses = settled.map((item)=> item.status === "fulfilled" ? (item.value && item.value.data) : { status: "error", message: (item.reason && item.reason.message) || "Trade failed" });
@@ -8538,6 +8535,39 @@ let humanAutoFit = true;
 let humanHasFitOnce = false;
 
 let lastHumanChartPayload = null;
+let humanChartLibraryPromise = null;
+
+function ensureHumanChartLibrary(){
+    if(typeof LightweightCharts !== "undefined") return Promise.resolve(true);
+    if(humanChartLibraryPromise) return humanChartLibraryPromise;
+    humanChartLibraryPromise = new Promise((resolve) => {
+        try{
+            const existing = document.querySelector('script[data-human-chart-library="1"]');
+            if(existing){
+                existing.addEventListener("load", () => resolve(typeof LightweightCharts !== "undefined"), { once: true });
+                existing.addEventListener("error", () => {
+                    humanChartLibraryPromise = null;
+                    resolve(false);
+                }, { once: true });
+                return;
+            }
+            const script = document.createElement("script");
+            script.src = `/static/vendor/lightweight-charts.min.js?v=${encodeURIComponent(__phase2AssetVersion)}`;
+            script.dataset.humanChartLibrary = "1";
+            script.async = true;
+            script.onload = () => resolve(typeof LightweightCharts !== "undefined");
+            script.onerror = () => {
+                humanChartLibraryPromise = null;
+                resolve(false);
+            };
+            document.head.appendChild(script);
+        }catch(e){
+            humanChartLibraryPromise = null;
+            resolve(false);
+        }
+    });
+    return humanChartLibraryPromise;
+}
 
 function _normSec(t){
     const n = Number(t);
@@ -8563,7 +8593,12 @@ function initHumanChartIfPresent(){
         humanChartContainer = null;
         return;
     }
-    if(typeof LightweightCharts === "undefined") return;
+    if(typeof LightweightCharts === "undefined"){
+        ensureHumanChartLibrary().then((ready) => {
+            if(ready) initHumanChartIfPresent();
+        });
+        return;
+    }
 
     // Already initialized on same element
     if(humanChart && humanChartContainer === el) return;

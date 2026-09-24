@@ -133,6 +133,8 @@ def _fetch_market(
     login: int,
     symbol: str,
     extra_timeframes: set[str] | list[str] | tuple[str, ...] | None = None,
+    *,
+    required_timeframes_only: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     quote_rows = multi_account_client.account_request(login, f"/quotes?symbols={quote(symbol)}", timeout=8)
     if not quote_rows:
@@ -140,10 +142,12 @@ def _fetch_market(
     q = dict(quote_rows[0])
     symbol_info = multi_account_client.account_request(login, f"/symbol-info/{quote(symbol)}", timeout=8)
     data: dict[str, Any] = {"quote": q, "symbol_info": dict(symbol_info or {})}
-    counts = dict(_BASE_TIMEFRAME_COUNTS)
-    for tf in {str(item).upper() for item in (extra_timeframes or [])}:
-        if tf in _TIMEFRAME_COUNTS:
-            counts[tf] = max(counts.get(tf, 0), _TIMEFRAME_COUNTS[tf])
+    requested = {str(item).upper() for item in (extra_timeframes or []) if str(item).upper() in _TIMEFRAME_COUNTS}
+    counts = {} if required_timeframes_only else dict(_BASE_TIMEFRAME_COUNTS)
+    for tf in requested:
+        counts[tf] = max(counts.get(tf, 0), _TIMEFRAME_COUNTS[tf])
+    if not counts:
+        counts["M5"] = _TIMEFRAME_COUNTS["M5"]
     for tf, count in counts.items():
         rows = multi_account_client.account_request(login, f"/candles/{quote(symbol)}?timeframe={tf}&count={count}", timeout=15)
         data[tf] = Series.from_rows(rows)
@@ -567,7 +571,15 @@ def _cycle(bot_id: int, symbol_override: str | None = None, *, execute_allowed: 
         raise RuntimeError("Native preset requires an account and symbol.")
     _, account = _verify_account(login, bool(config.get("allow_live")))
     exec_tf, bias_tf = configured_timeframes(bot_id, bot)
-    market, _ = _fetch_market(login, symbol, {exec_tf, bias_tf})
+    # Dear Bruce evaluates only its configured execution + bias pair. Fetching
+    # unrelated M15/H1/D1 history made an otherwise healthy market show ERROR
+    # whenever one optional history request failed on the broker.
+    market, _ = _fetch_market(
+        login,
+        symbol,
+        {exec_tf, bias_tf},
+        required_timeframes_only=int(bot_id) == 1009,
+    )
     market.update({"symbol": symbol, "account_login": login})
     strategy_market, exec_tf, bias_tf = prepare_strategy_market(bot_id, market, bot)
     signal = evaluate(str(bot.get("native_key") or ""), strategy_market).to_dict()

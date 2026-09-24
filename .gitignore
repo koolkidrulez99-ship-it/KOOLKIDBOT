@@ -50,3 +50,4 @@ mt5_module/mt5_bridge/data/ai_trial_state.json
 # Local Weltrade setup/test artifacts - never push
 .tmp_weltrade_*.py
 .weltrade5setup.exe
+instance/deriv_intelligence/

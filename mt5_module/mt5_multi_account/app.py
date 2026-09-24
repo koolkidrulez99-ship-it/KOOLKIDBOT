@@ -876,14 +876,18 @@ def account_symbol_info(account_id: str, symbol: str):
         bad(exc)
 
 @app.get("/accounts/{account_id}/candles/{symbol}")
-def account_candles(account_id: str, symbol: str, timeframe: str = "M15", count: int = 220):
+def account_candles(account_id: str, symbol: str, timeframe: str = "M15", count: int = 220, days: int | None = None):
     try:
         runtime = _runtime()
-        key = f"candles:{account_id}:{symbol}:{timeframe}:{int(count)}"
+        safe_days = max(1, min(int(days), 30)) if days is not None else None
+        key = f"candles:{account_id}:{symbol}:{timeframe}:{int(count)}:{safe_days or 0}"
         cached = _snapshot_cache_get(runtime, key, 1.0)
         if cached is not None:
             return cached
-        value = runtime.pool.call(account_id, "candles", {"symbol": symbol, "timeframe": timeframe, "count": count}, timeout=12)
+        payload = {"symbol": symbol, "timeframe": timeframe, "count": count}
+        if safe_days is not None:
+            payload["days"] = safe_days
+        value = runtime.pool.call(account_id, "candles", payload, timeout=20 if safe_days and safe_days > 7 else 12)
         return _snapshot_cache_set(runtime, key, value)
     except Exception as exc:
         bad(exc)

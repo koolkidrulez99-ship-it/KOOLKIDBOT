@@ -545,7 +545,14 @@ def run_worker(config, password, command_q, response_q):
         info = symbol_info(str(p["symbol"]))
         if not info:
             raise RuntimeError(f"Symbol unavailable: {p['symbol']}")
-        rates = mt5.copy_rates_from_pos(str(info.get("name") or p["symbol"]), getattr(mt5, names[timeframe]), 0, max(10, min(int(p.get("count") or 220), 1000)))
+        mt5_symbol = str(info.get("name") or p["symbol"])
+        safe_days = max(1, min(int(p.get("days") or 0), 30)) if p.get("days") is not None else 0
+        if safe_days:
+            end = datetime.now(timezone.utc)
+            start = end - timedelta(days=safe_days)
+            rates = mt5.copy_rates_range(mt5_symbol, getattr(mt5, names[timeframe]), start, end)
+        else:
+            rates = mt5.copy_rates_from_pos(mt5_symbol, getattr(mt5, names[timeframe]), 0, max(10, min(int(p.get("count") or 220), 1000)))
         if rates is None:
             raise RuntimeError(f"Could not load candles: {mt5.last_error()}")
         return [{"time": int(r["time"]), "open": float(r["open"]), "high": float(r["high"]), "low": float(r["low"]), "close": float(r["close"]), "volume": int(r["tick_volume"])} for r in rates]

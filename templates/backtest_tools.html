@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#0b1120"><title>Research Lab · KOOLKID</title><link rel="stylesheet" href="/static/css/backtest_tools.css?v={{ asset_version }}"></head>
+<body><div class="app-shell">
+<aside class="sidebar" aria-label="Main navigation">
+  <a class="brand" href="/"><span>KOOLKID<small>TRADING WORKSPACE</small></span></a>
+  <div class="nav-label">WORKSPACE</div><nav><a href="/">⌂ <span>Home</span></a><a href="/deriv-bot">↗ <span>Trading desk</span></a><a href="/backtest-tools" class="active" aria-current="page">◈ <span>Research Lab</span><i class="nav-dot"></i></a></nav>
+  <div class="sidebar-note"><span class="eyebrow">ALWAYS LEARNING</span><p>Real market ticks.<br>Paper observations.<br>Clearer trade decisions.</p><span class="small-muted">Research continues while the server is online.</span></div>
+  <div class="sidebar-footer"><span class="mini-mark">K</span> Built for a clearer view.</div>
+</aside>
+<main>
+<header class="topbar"><div class="breadcrumb">Workspace <span>/</span> Research Lab</div><a class="back-link" href="/deriv-bot">Open trading desk <span>↗</span></a></header>
+<section class="hero"><div><div class="eyebrow accent">KOOLKID BACKTEST TOOLS</div><h1>Confidence starts<br>with evidence<span>.</span></h1><p class="hero-copy">Explore your strategies, understand their track record,<br class="desktop-only"> and see what confirms an automated trade.</p></div><div class="connection-card"><div class="connection-top"><span id="btLiveDot" class="status-dot"></span><span id="btLiveLabel">Connecting to research</span><span class="live-icon">⌁</span></div><p id="btHealth" role="status" aria-live="polite">Loading engine status…</p><div class="connection-bottom"><span>Latest market tick</span><strong id="btTickTime">—</strong></div></div></section>
+<section class="metrics" aria-label="Research overview">
+  <article class="metric"><span class="metric-label">Markets monitored <span>◉</span></span><strong id="btMarketsCount">—</strong><small>Live research subscriptions</small></article>
+  <article class="metric"><span class="metric-label">Strategy adapters <span>◈</span></span><strong id="btBotsCount">—</strong><small>Independent paper evaluation</small></article>
+  <article class="metric"><span class="metric-label">Paper outcomes <span>↗</span></span><strong id="btPapersCount">—</strong><small>Observed wins and losses</small></article>
+  <article class="metric"><span class="metric-label">Ticks recorded <span>⌁</span></span><strong id="btTicksCount">—</strong><small id="btCounts">Collecting market history</small></article>
+</section>
+<section class="confirmation-banner" aria-label="Automated trade confirmation"><div class="shield">✓</div><div><h2 id="btGuardTitle">Checking trade confirmation</h2><p id="btGuardCopy">Original signal → research confirmation → trade submission.</p></div><span class="pill" id="btGuardBadge">Loading</span></section>
+<section class="panel research-panel">
+  <div class="panel-heading"><div><div class="eyebrow">THE BIG PICTURE</div><h2>Strategy performance</h2><p>Compare results within the tick window you choose.</p></div><button id="btRefresh" class="button secondary" type="button">↻ <span>Refresh</span></button></div>
+  <div class="filter-row">
+    <label>Strategy<select id="btBot"><option value="">All strategies</option></select></label><label>Market<select id="btMarket"><option value="">All markets</option></select></label>
+    <label>Tick window<select id="btWindow"><option>50</option><option>100</option><option>200</option><option selected>500</option><option value="ALL">All recorded ticks</option></select></label>
+    <label>Research stage<select id="btStatus"><option value="">All stages</option><option value="INSUFFICIENT_DATA">Gathering samples</option><option value="RESEARCHING">Researching</option><option value="PAPER_TESTING">Paper testing</option><option value="VALIDATED">Sample validated</option><option value="DEGRADED">Below criteria</option></select></label>
+    <label>Sort by<select id="btSort"><option value="score">Research score</option><option value="win_rate">Win rate</option><option value="ev">Expected value</option><option value="paper_trades">Paper outcomes</option><option value="max_drawdown">Lowest drawdown</option></select></label>
+  </div>
+  <div class="results-meta"><span id="btResultsLabel">Loading research…</span><span>Score is an index out of 100</span></div>
+  <div class="table-wrap"><table class="ranking-table"><thead><tr><th>#</th><th>Strategy</th><th>Market</th><th title="Research index, not win probability">Score / 100</th><th>Win rate</th><th title="Average priced paper profit per unit staked">Expected value</th><th>Outcomes</th><th title="Maximum paper equity decline in stake units">Drawdown</th><th>Research stage</th><th><span class="sr-only">Details</span></th></tr></thead><tbody id="btRows"></tbody></table></div>
+  <div id="btEmpty" class="empty-state"><div class="empty-icon">◈</div><h3 id="btEmptyTitle">Building your research view</h3><p id="btEmptyCopy">Results will appear as the engine collects market data.</p><button id="btResetFilters" class="button secondary" type="button" hidden>Clear filters</button></div>
+  <div class="panel-foot"><span class="small-dot"></span><span id="btUpdated">Research refreshes every 10 seconds</span></div>
+</section>
+<section id="btDetails" class="panel details-panel" hidden aria-labelledby="btDetailTitle" tabindex="-1">
+  <div class="panel-heading"><div><div class="eyebrow accent">A CLOSER LOOK</div><h2 id="btDetailTitle"></h2><p id="btDetailConfirmation"></p></div><button id="btCloseDetails" class="button secondary" type="button" aria-label="Close strategy details">Close ×</button></div>
+  <div class="detail-body"><div class="detail-chart"><h3>Recent paper equity</h3><p>Cumulative unit-stake profit across the priced outcomes shown below.</p><div id="btEquity"></div></div><h3>Across tick windows</h3><div id="btComparison" class="table-wrap"></div><h3 class="history-title">Recent paper outcomes</h3><div id="btHistory" class="table-wrap"></div></div>
+</section>
+<div class="bottom-grid">
+  <section class="panel decisions-panel"><div class="panel-heading"><div><div class="eyebrow">YOUR AUTOMATION</div><h2>Confirmation activity</h2><p>Your recent checks before a trade is sent.</p></div><span class="pill neutral">Private to you</span></div><div id="btDecisions" class="decision-list"><p class="quiet-empty">No confirmation activity yet. Start an automated strategy to see its checks here.</p></div></section>
+  <section class="panel guide"><div class="eyebrow accent">KNOW WHAT YOU’RE SEEING</div><h2>A little context goes a long way.</h2><details open><summary>What confirms a trade?</summary><p id="btCriteria">Fresh, matching research must pass sample, payout coverage, expected value and risk checks.</p></details><details><summary>Why is a strategy waiting?</summary><p>It may need more samples, fresh market data, or an exact research adapter. Unsupported strategies stay blocked while confirmation is enabled.</p></details><details><summary>What does the score mean?</summary><p>An index combining expected value, drawdown, losing streak and data coverage. A score of 80 is not an 80% chance of winning.</p></details><details><summary>Are these live trading profits?</summary><p>No. These are paper observations using a one-unit stake. Unpriced results have no assumed payout. Actual execution and future results can differ.</p></details></section>
+</div>
+<footer class="page-footer"><span>KOOLKID <span class="footer-separator">/</span> Research Lab</span><span>Observe. Understand. Confirm.</span></footer>
+</main></div><script src="/static/js/backtest_tools.js?v={{ asset_version }}"></script></body></html>

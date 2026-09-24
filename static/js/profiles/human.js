@@ -3007,6 +3007,8 @@
           duration_ticks: settings.duration,
           duration_unit: settings.durationUnit,
           ignore_cooldown: true,
+          automated: true,
+          mode: 'human_rf_martingale',
         };
         const data = await guardMartha({
           profile: PROFILE,

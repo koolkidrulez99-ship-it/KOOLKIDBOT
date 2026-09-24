@@ -20,3 +20,15 @@ def test_unchain_on_tick_counts_new_tick_when_price_changes_same_epoch():
 
     assert strat.tick_count == 2
     assert strat.market_tick_counter == 2
+
+
+def test_unchain_warmed_tick_analysis_does_not_raise_on_deque_history():
+    strat = UnchainStrategy()
+    base = 7215.6
+    for i in range(300):
+        tick = {"symbol": "1HZ30V", "quote": base + (i * 0.01), "epoch": 2000 + i}
+        strat.on_tick(tick, digit=i % 10)
+
+    assert strat.tick_count == 300
+    assert strat.market_tick_counter == 300
+    assert strat.signal_state in {"WAIT", "READY", "TAKE NOW"}

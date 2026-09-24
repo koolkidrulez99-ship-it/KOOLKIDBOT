@@ -1651,9 +1651,10 @@ def get_quotes(symbols: str = Query(default=""), account_login: int | None = Non
 
 
 @app.get("/api/mt5/candles/{symbol}")
-def get_candles(symbol: str, timeframe: str = "M15", count: int = 220, account_login: int | None = None):
+def get_candles(symbol: str, timeframe: str = "M15", count: int = 220, account_login: int | None = None, days: int | None = None):
     try:
-        return multi_account_client.account_request(account_login, f"/candles/{quote(symbol)}?timeframe={quote(timeframe)}&count={count}", timeout=15)
+        day_part = f"&days={max(1, min(int(days), 30))}" if days is not None else ""
+        return multi_account_client.account_request(account_login, f"/candles/{quote(symbol)}?timeframe={quote(timeframe)}&count={count}{day_part}", timeout=20)
     except RuntimeError as exc:
         session_error(exc)
 

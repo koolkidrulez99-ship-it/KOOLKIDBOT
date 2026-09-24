@@ -185,6 +185,37 @@ def test_native_symbol_selection_deduplicates_and_caps():
         )
 
 
+def test_dear_bruce_market_fetch_skips_unrelated_timeframes(monkeypatch):
+    calls = []
+
+    def account_request(login, path, timeout=0):
+        calls.append(path)
+        if path.startswith("/quotes"):
+            return [{"bid": 1.1, "ask": 1.2}]
+        if path.startswith("/symbol-info"):
+            return {"name": "Jump 10 Index", "point": 0.01}
+        if "timeframe=M15" in path or "timeframe=H4" in path:
+            return [
+                {"time": 1_700_000_000 + i * 60, "open": 100 + i, "high": 101 + i, "low": 99 + i, "close": 100.5 + i, "volume": 10}
+                for i in range(60)
+            ]
+        raise RuntimeError(f"Unexpected optional timeframe request: {path}")
+
+    monkeypatch.setattr(native_runtime.multi_account_client, "account_request", account_request)
+    market, _ = native_runtime._fetch_market(
+        123,
+        "Jump 10 Index",
+        {"M15", "H4"},
+        required_timeframes_only=True,
+    )
+
+    assert market["M15"].rows
+    assert market["H4"].rows
+    assert not any("timeframe=M5" in path for path in calls)
+    assert not any("timeframe=H1" in path for path in calls)
+    assert not any("timeframe=D1" in path for path in calls)
+
+
 def test_bot_trade_attribution_does_not_rewrite_display_source():
     bots = [
         {

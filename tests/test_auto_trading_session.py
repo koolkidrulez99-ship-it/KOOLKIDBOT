@@ -59,7 +59,7 @@ def test_koolkid_auto_session_uses_at_least_two_ticks(monkeypatch):
         server,
         "send_buy_with_profile",
         lambda client_id, profile, contract_type, stake, symbol, barrier, **kwargs: (
-            calls.append({"profile": profile, "duration": kwargs.get("duration")}) or True,
+            calls.append({"profile": profile, "duration": kwargs.get("duration"), "mode": kwargs.get("mode"), "extra_meta": kwargs.get("extra_meta")}) or True,
             "sent",
         ),
     )
@@ -77,7 +77,7 @@ def test_koolkid_auto_session_uses_at_least_two_ticks(monkeypatch):
         }],
     })
 
-    assert calls == [{"profile": "KOOLKID", "duration": 2}]
+    assert calls == [{"profile": "KOOLKID", "duration": 2, "mode": "AUTO_SESSION", "extra_meta": {"automated": True, "entry_source": "AUTO_SESSION"}}]
 
 
 def test_start_auto_session_can_build_unchain_profile_pool():
@@ -779,3 +779,28 @@ def test_unchain_refresh_barriers_route_resets_current_market_defaults(monkeypat
     assert payload["payload"]["unchain"]["lower_barrier"] == "-0.17"
 
     server.clients.pop(cid, None)
+
+
+def test_seqvix_koolkid_trade_carries_automated_mode(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        server,
+        "send_buy_with_profile",
+        lambda client_id, profile, contract_type, stake, symbol, barrier, **kwargs: (
+            calls.append({"profile": profile, "mode": kwargs.get("mode"), "symbol": symbol}) or True,
+            "sent",
+        ),
+    )
+    state = {
+        "auto_stake": 1.0,
+        "seqvix": {
+            "KOOLKID": {
+                "samples": {"R_10": list(range(30))},
+                "sample_size": 30,
+                "trades_per_market": 1,
+                "config": {"contract_type": "OVER", "barrier": 3},
+            }
+        },
+    }
+    assert server._seqvix_execute_one_market("client", state, "KOOLKID", "R_10") is True
+    assert calls == [{"profile": "KOOLKID", "mode": "SEQVIX", "symbol": "R_10"}]

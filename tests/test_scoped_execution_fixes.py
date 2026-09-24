@@ -131,7 +131,7 @@ def test_queued_auto_does_not_run_after_context_change(monkeypatch, changed):
     executed = []
     state = {"active_profile": "KOOLKID", "ws_nonce": 1, "current_symbol": "R_10", "ws_connected": True}
     monkeypatch.setattr(server, "clients", {"test": state})
-    monkeypatch.setattr(server.threading, "Thread", lambda target, **kwargs: SimpleNamespace(start=lambda: workers.append(target)))
+    monkeypatch.setattr(server, "_PROFILE_AUTO_EXECUTOR", SimpleNamespace(submit=lambda target: workers.append(target)))
     monkeypatch.setattr(server, "run_auto_trade", lambda *args: executed.append(args))
     assert server._schedule_profile_auto_trade("test", state)
     state[changed] = "changed"

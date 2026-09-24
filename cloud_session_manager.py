@@ -380,6 +380,20 @@ class CloudSessionManager:
             label = self._label(engine)
             self.alerts.send("cloud_trade_failed", f"{label} trade failed: {reason}", engine.settings)
 
+    def mark_trade_waiting(self, username: str, reason: str):
+        """A research veto is not a purchased contract or a trading loss."""
+        with self._lock:
+            engine = self.get_or_create(username)
+            engine.trade_locked = False
+            engine.pending_signal_id = ''
+            if hasattr(engine, 'pending_signal'):
+                engine.pending_signal = None
+            if hasattr(engine, 'state'):
+                engine.state = 'SCANNING' if engine.running else 'STOPPED'
+            engine.cloud_status = 'Waiting for backtest confirmation'
+            engine.last_signal = reason
+            self._persist(engine)
+
     def mark_close_failed(self, username: str, reason: str):
         with self._lock:
             engine = self.get_or_create(username)

@@ -134,9 +134,9 @@ def test_busy_auto_dispatch_coalesces_one_follow_up(monkeypatch):
     }
     monkeypatch.setattr(server, "clients", {"client": state})
     monkeypatch.setattr(
-        server.threading,
-        "Thread",
-        lambda target, **_kwargs: SimpleNamespace(start=lambda: workers.append(target)),
+        server,
+        "_PROFILE_AUTO_EXECUTOR",
+        SimpleNamespace(submit=lambda target: workers.append(target)),
     )
     monkeypatch.setattr(
         server.threading,
@@ -165,3 +165,15 @@ def test_frontend_long_session_history_guards_are_present():
     assert 'document.hidden) return false' not in source
     assert 'upsertTradeInStore(Object.assign({}, trade, { profile }), { persist: false })' in source
     assert "Math.min(TRADE_STORE_MAX_ITEMS, Number(expectedSettledCount || 0))" in source
+
+
+def test_frontend_profile_assets_are_lazy_and_cacheable():
+    source = (ROOT / "templates" / "index.html").read_text(encoding="utf-8")
+    assert 'window.__phase2AssetVersion = String(Date.now())' not in source
+    assert 'cache: "force-cache"' in source
+    assert 'cache: "no-store",\n        headers: { "Cache-Control": "no-cache" }' not in source
+    assert 'Inactive profiles are intentionally lazy-loaded.' in source
+    assert 'https://unpkg.com/lightweight-charts' not in source
+    assert '/static/vendor/lightweight-charts.min.js?v=' in source
+    assert 'const TICK_UI_THROTTLE_MS = 100;' in source
+    assert 'const DIGIT_ANALYSIS_UI_THROTTLE_MS = 150;' in source

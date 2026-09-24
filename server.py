@@ -18,6 +18,7 @@ from ai_intelligence.config import load_local_ai_environment
 load_local_ai_environment()
 
 from ai_intelligence.bridge import check_buy as _ai_check_buy, observe_response as _ai_observe_response
+from deriv_backtest.confirmation import check as _backtest_check, requires_adapter as _backtest_requires_adapter
 from ai_intelligence.routes import register as _register_ai_intelligence
 import ipaddress
 import base64
@@ -26,6 +27,7 @@ import urllib.parse
 import urllib.request
 from decimal import Decimal, ROUND_DOWN
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 
 from flask import Flask, render_template, render_template_string, request, jsonify, redirect, url_for, session, send_file
 from flask_socketio import SocketIO, join_room
@@ -208,12 +210,62 @@ SERVER_HOSTNAME = (
 )
 SERVER_INSTANCE_ID = f"{SERVER_HOSTNAME}:{os.getpid()}:{int(PROCESS_STARTED_AT)}"
 
+try:
+    PROFILE_AUTO_WORKERS = max(8, min(128, int(os.environ.get("KOOLKID_PROFILE_AUTO_WORKERS", "32"))))
+except Exception:
+    PROFILE_AUTO_WORKERS = 32
+_PROFILE_AUTO_EXECUTOR = ThreadPoolExecutor(max_workers=PROFILE_AUTO_WORKERS, thread_name_prefix="profile_auto")
+
 app = Flask(__name__, template_folder="templates")
 
 # ===============================
 # ENV VARIABLES (SAFE DEFAULTS)
 # ===============================
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "koolkid-secret-key-2025")
+
+
+def _compute_static_asset_version():
+    override = str(os.environ.get("KOOLKID_ASSET_VERSION") or os.environ.get("RENDER_GIT_COMMIT") or "").strip()
+    if override:
+        return override
+    static_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+    latest_ns = 0
+    total_bytes = 0
+    try:
+        for dirpath, _dirnames, filenames in os.walk(static_root):
+            for filename in filenames:
+                try:
+                    stat = os.stat(os.path.join(dirpath, filename))
+                    latest_ns = max(latest_ns, int(getattr(stat, "st_mtime_ns", 0) or 0))
+                    total_bytes += int(stat.st_size or 0)
+                except OSError:
+                    continue
+    except OSError:
+        pass
+    return f"{latest_ns:x}-{total_bytes:x}" if latest_ns else str(int(PROCESS_STARTED_AT))
+
+
+DERIV_ASSET_VERSION = _compute_static_asset_version()
+
+
+@app.after_request
+def _cache_versioned_static_assets(response):
+    try:
+        if request.method == "GET" and request.path.startswith("/static/") and request.args.get("v"):
+            access_sensitive = {
+                "/static/components/mutant.html",
+                "/static/components/ntt.html",
+                "/static/js/profiles/mutant.js",
+                "/static/js/profiles/ntt.js",
+            }
+            if request.path in access_sensitive:
+                response.headers["Cache-Control"] = "private, no-store"
+            else:
+                response.headers["Cache-Control"] = "public, max-age=604800, immutable"
+    except Exception:
+        pass
+    return response
+
 
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "koolkidrulez")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "Koolkid@12345")
@@ -1298,10 +1350,29 @@ def _request_digit_proposal_for_buy(client_id, state, payload, timeout_sec=5.0):
     return None, last_error
 
 
+def _check_backtest_order(client_id, state, meta):
+    error = _backtest_check(state, meta)
+    if error:
+        try:
+            socketio.emit('backtest_confirmation', state.get('backtest_confirmation'), room=client_id)
+        except Exception:
+            pass
+    return error
+
+
+def _check_backtest_request(client_id, state, req_id):
+    meta = (state.get('req_meta') or {}).get(req_id) or (state.get('req_meta') or {}).get(str(req_id))
+    # A final purchase without provenance must not bypass the guard.
+    return _check_backtest_order(client_id, state, meta if meta is not None else {'automated': True})
+
+
 def _send_buy_from_proposal(client_id, state, req_id, proposal, stake):
     ai_error = _ai_check_buy(state, req_id)
     if ai_error:
         return False, ai_error
+    research_error = _check_backtest_request(client_id, state, req_id)
+    if research_error:
+        return False, research_error
     ws = state.get("ws") if isinstance(state, dict) else None
     proposal_id = (proposal or {}).get("id")
     if not ws:
@@ -1442,6 +1513,7 @@ def _execute_oauth_options_trade_engine(trade_request, *, state, req_id, stake, 
         "stamp_latency": _stamp_trade_latency,
         "mark_ws_unhealthy": _mark_ws_unhealthy_and_reconnect,
         "should_force_reconnect": _should_force_ws_reconnect_on_send_exception,
+        "check_backtest": _check_backtest_request,
     }
     intent = TradeIntent.from_request(
         trade_request,
@@ -1483,6 +1555,12 @@ def execute_deriv_trade(trade_request):
 
     duration_unit = _normalize_trade_duration_unit(trade_request.get("duration_unit", "t"))
     duration = _sanitize_trade_duration_for_unit(trade_request.get("duration", 1), duration_unit, default=1)
+    research_meta = {**trade_request, **(trade_request.get('req_meta') or {})}
+    research_meta.update(symbol=requested_symbol, deriv_contract_type=deriv_contract,
+                         duration=duration, duration_unit=duration_unit)
+    research_error = _check_backtest_order(client_id, state, research_meta)
+    if research_error:
+        return False, research_error
     if _uses_new_deriv_trade_api(state):
         return _execute_oauth_options_trade_engine(
             trade_request,
@@ -1738,6 +1816,9 @@ def execute_deriv_trade(trade_request):
         debug["otp_authenticated"] = _is_otp_authenticated_socket(state)
         _deriv_trade_debug_log(client_id, "buy_send", debug)
         try:
+            research_error = _check_backtest_request(client_id, state, req_id)
+            if research_error:
+                return False, research_error
             ws.send(json.dumps(buy_payload))
         except Exception as exc:
             debug["error"] = str(exc)
@@ -1807,6 +1888,9 @@ def execute_deriv_trade(trade_request):
 
     debug["buy_payload"] = legacy_payload
     _deriv_trade_debug_log(client_id, "legacy_buy_send", debug)
+    research_error = _check_backtest_request(client_id, state, req_id)
+    if research_error:
+        return False, research_error
     try:
         ws.send(json.dumps(legacy_payload))
         return True, "Trade sent"
@@ -1825,6 +1909,9 @@ def _send_trade_payload_with_oauth_proposal(client_id, state, req_id, payload, s
     ws = state.get("ws") if isinstance(state, dict) else None
     if not ws:
         return False, "Not connected"
+    research_error = _check_backtest_request(client_id, state, req_id)
+    if research_error:
+        return False, research_error
     if _uses_new_deriv_trade_api(state):
         params = dict((payload or {}).get("parameters") or {})
         if not params:
@@ -5454,7 +5541,7 @@ def _handle_fast_profile_trade_payload(client_id, state, payload, *, emit_balanc
     duration_unit = str(payload.get("duration_unit") or "t").strip().lower() or "t"
     if duration_unit not in ("t", "s", "m", "h"):
         duration_unit = "t"
-    mode = str(payload.get("mode") or "").strip() or None
+    mode = str(payload.get("mode") or payload.get('source') or "").strip() or None
     leg_action = str(payload.get("leg_action") or "").strip() or None
 
     send_kwargs = {
@@ -5666,6 +5753,7 @@ def deriv_bot_home():
         deriv_oauth_auth_url=DERIV_OAUTH_AUTH_URL,
         deriv_oauth_client_id=DERIV_OAUTH_CLIENT_ID,
         deriv_oauth_redirect_uri=DERIV_OAUTH_REDIRECT_URI,
+        asset_version=DERIV_ASSET_VERSION,
     )
 
 
@@ -6336,6 +6424,7 @@ def place_risefall_order(client_id, signal):
         "symbol": symbol_to_use,
         "time": now_time(),
         "mode": signal.get("mode") or "human_rf",
+        "automated": bool(signal.get('automated')),
         "duration": duration,
         "duration_unit": duration_unit,
         "allow_equals": allow_equals,
@@ -6646,6 +6735,10 @@ def place_human_manual_contract(
         "buy": quote.get("id"),
         "price": float(quote.get("ask_price") or stake_value),
     }
+    research_error = _check_backtest_request(client_id, state, req_id)
+    if research_error:
+        _cleanup_failed_buy_request(state, req_id)
+        return False, research_error, None
     try:
         _log_trade_path(client_id, "buy_about_to_be_sent", state, req_id=req_id, action=action_key, symbol=symbol)
         logger.info("[%s] TEMP buy_about_to_be_sent token_type=%s payload=%s", client_id, _deriv_connection_type(state), _safe_deriv_payload_text(payload))
@@ -6909,6 +7002,10 @@ def _retry_human_manual_pair_leg_after_error(client_id, state, meta, error_messa
     retry_meta["retry_of_req_id"] = meta.get("req_id")
     retry_meta["last_buy_error"] = str(error_message or "")
     state.setdefault("req_meta", {})[new_req_id] = retry_meta
+    research_error = _check_backtest_request(client_id, state, new_req_id)
+    if research_error:
+        _cleanup_failed_buy_request(state, new_req_id)
+        return False, research_error
     _stamp_trade_latency(state["req_meta"][new_req_id], "buy_send")
     try:
         state["ws"].send(json.dumps({
@@ -6959,7 +7056,8 @@ def _execute_auto_session_plan(client_id, state, plan):
                     "duration": action.get("duration", 5),
                     "duration_unit": action.get("duration_unit", "t"),
                     "symbol": action.get("symbol"),
-                    "mode": action.get("mode"),
+                    "mode": action.get("mode") or "AUTO_SESSION",
+                    "automated": True,
                 }
                 ok, msg = place_risefall_order(client_id, signal)
             elif kind == "unchain_hl":
@@ -6991,7 +7089,8 @@ def _execute_auto_session_plan(client_id, state, plan):
                     action.get("barrier"),
                     duration=action_duration,
                     duration_unit=action.get("duration_unit", "t"),
-                    mode=action.get("mode"),
+                    mode=action.get("mode") or "AUTO_SESSION",
+                    extra_meta={"automated": True, "entry_source": "AUTO_SESSION"},
                 )
             if not ok:
                 handle_auto_session_buy_failed(state, action, msg)
@@ -17045,6 +17144,10 @@ def _send_unchain_buy(client_id, *, stake, symbol, growth_rate, mode="AUTO", exi
     _stamp_trade_latency(req_meta, "buy_send")
 
     # mark pending in strategy immediately to prevent duplicate entries before buy ack
+    research_error = _check_backtest_request(client_id, state, req_id)
+    if research_error:
+        state['req_meta'].pop(req_id, None)
+        return False, research_error
     try:
         if hasattr(strat, "on_trade_request_sent"):
             strat.on_trade_request_sent(mode=req_meta["mode"], exit_ticks=exit_ticks, manual=(req_meta["mode"] == "MANUAL"), stake=stake)
@@ -17295,7 +17398,10 @@ def _schedule_profile_auto_trade(client_id, state, *, refresh_quotes=False):
                 timer.start()
 
     try:
-        threading.Thread(target=_worker, daemon=True, name=f"profile_auto_{client_id}").start()
+        # Reuse a bounded worker pool instead of creating a fresh OS thread on
+        # every eligible tick. The per-client lock above preserves the exact
+        # one-at-a-time execution semantics and pending rerun behavior.
+        _PROFILE_AUTO_EXECUTOR.submit(_worker)
     except Exception:
         lock.release()
         raise
@@ -17308,6 +17414,17 @@ def run_auto_trade(client_id, state):
     strategies = state.get("strategies", {})
     strategy = strategies.get(active_profile)
     if not strategy:
+        return
+
+    if _backtest_requires_adapter():
+        # These stateful profile detectors have no equivalent replay adapter yet.
+        # Some consume sequence steps while producing a signal, so wait before
+        # invoking them. Orders from other paths still face the final buy guard.
+        if _should_emit_ui_event(state, 'backtest_adapter_wait', 10.0):
+            _check_backtest_order(client_id, state, {
+                'profile': active_profile, 'mode': 'AUTO', 'automated': True,
+                'symbol': state.get('current_symbol'),
+            })
         return
 
     signals = None
@@ -17377,7 +17494,7 @@ def run_auto_trade(client_id, state):
             stake = float(sig.get("stake", state.get("auto_stake", 1.0)) or state.get("auto_stake", 1.0))
             duration = sig.get("duration", 1)
             duration_unit = sig.get("duration_unit", "t")
-            mode = sig.get("mode")
+            mode = sig.get("mode") or 'AUTO'
             if str(mode or "").upper() == "KIDGX":
                 if _uses_new_deriv_trade_api(state) and bool(
                     getattr(strategy, "tradeInProgress", False)
@@ -18072,11 +18189,11 @@ def _seqvix_execute_one_market(client_id, state, profile, sym):
     ct = run["config"].get("contract_type", "OVER")
     barrier = int(run["config"].get("barrier", 1))
     if trade_count == 1:
-        ok1, _ = send_buy_with_profile(client_id, "KOOLKID", ct, stake, sym, barrier)
+        ok1, _ = send_buy_with_profile(client_id, "KOOLKID", ct, stake, sym, barrier, mode="SEQVIX")
         return ok1
     else:
-        ok1, _ = send_buy_with_profile(client_id, "KOOLKID", ct, stake, sym, barrier)
-        ok2, _ = send_buy_with_profile(client_id, "KOOLKID", ct, stake, sym, barrier)
+        ok1, _ = send_buy_with_profile(client_id, "KOOLKID", ct, stake, sym, barrier, mode="SEQVIX")
+        ok2, _ = send_buy_with_profile(client_id, "KOOLKID", ct, stake, sym, barrier, mode="SEQVIX")
         return ok1 and ok2
 
 def process_seqvix_tick(client_id, tick):
@@ -19109,6 +19226,12 @@ def _send_human_koolkid_profit_buy(client_id, state):
         "budget_reservation": budget_reservation,
     }
     state.setdefault("req_meta", {})[req_id] = meta
+    research_error = _check_backtest_order(client_id, state, meta)
+    if research_error:
+        _cleanup_failed_buy_request(state, req_id)
+        runtime['status'] = research_error
+        runtime['retry_at'] = time.time() + 2.0
+        return False, research_error
     runtime["pending_buy"] = True
     runtime["running"] = True
     runtime["status"] = "Opening 5% accumulator"
@@ -19159,6 +19282,9 @@ def _send_human_koolkid_profit_buy(client_id, state):
                 "buy": proposal_id,
                 "price": float(ask_price if ask_price is not None else stake),
             }
+        research_error = _check_backtest_request(client_id, state, req_id)
+        if research_error:
+            raise ValueError(research_error)
         ws.send(json.dumps(payload))
         _emit_human_koolkid_profit_status(client_id, state)
         return True, "KOOLKID PROFIT accumulator sent"
@@ -19333,6 +19459,9 @@ def _send_cloud_accumulator_buy(client_id, *, stake, symbol, growth_rate, signal
         "cloud_strategy": "koolkid_profit",
         "button": "KOOLKID PROFIT",
     }
+    research_error = _check_backtest_order(client_id, state, meta)
+    if research_error:
+        return False, research_error
     state.setdefault("req_meta", {})[req_id] = meta
     _stamp_trade_latency(meta, "buy_send")
     parameters = {
@@ -19375,6 +19504,9 @@ def _send_cloud_accumulator_buy(client_id, *, stake, symbol, growth_rate, signal
                 "buy": proposal_id,
                 "price": float(ask_price if ask_price is not None else stake),
             }
+        research_error = _check_backtest_request(client_id, state, req_id)
+        if research_error:
+            raise ValueError(research_error)
         ws.send(json.dumps(payload))
         return True, "KOOLKID PROFIT accumulator sent"
     except Exception as exc:
@@ -19479,7 +19611,10 @@ def _handle_cloud_under9_action(client_id, state, action):
             cloud_manager.mark_trade_sent(username, signal_id)
             logger.info("[%s] cloud_under9_trade_placed signal_id=%s", client_id, signal_id)
         else:
-            cloud_manager.mark_trade_failed(username, msg)
+            if str(msg).startswith('Backtest '):
+                cloud_manager.mark_trade_waiting(username, msg)
+            else:
+                cloud_manager.mark_trade_failed(username, msg)
             logger.warning("[%s] cloud_under9_trade_failed signal_id=%s message=%s", client_id, signal_id, msg)
         try:
             socketio.emit("cloud_under9_status", cloud_manager.status(username), room=client_id)
@@ -21746,6 +21881,7 @@ def process_tick(client_id, tick):
                             rf_sig = strat.build_human_rf_trade_signal(force_direction=None, require_threshold=True)
                             if rf_sig:
                                 rf_sig["symbol"] = human_symbol
+                                rf_sig['automated'] = True
                                 ok, _msg = place_risefall_order(client_id, rf_sig)
                                 if not ok:
                                     logger.warning(f"[{client_id}] HUMAN RF auto trade blocked: {_msg}")
@@ -27026,6 +27162,9 @@ def human_rf_trade():
     sig["symbol"] = state.get("human_symbol") or state.get("current_symbol")
     sig["duration"] = requested_duration
     sig["duration_unit"] = duration_unit
+    if data.get('automated') or ignore_cooldown:
+        sig['automated'] = True
+        sig['mode'] = str(data.get('mode') or 'human_rf_martingale')
     if allow_equals:
         sig["allow_equals"] = True
     ok, msg = place_risefall_order(cid, sig)
@@ -27529,6 +27668,10 @@ def toggle_named_ai_mode_route():
 
 ai_intelligence_bridge = _register_ai_intelligence(app, globals())
 
+from deriv_backtest.web import register as register_backtest_tools, launch_daemon as launch_backtest_daemon
+register_backtest_tools(app, login_required, is_admin)
+launch_backtest_daemon()
+
 threading.Thread(target=heartbeat_sweeper, daemon=True, name="client_heartbeat_sweeper").start()
 threading.Thread(target=websocket_health_sweeper, daemon=True, name="deriv_websocket_health_sweeper").start()
 
@@ -27548,4 +27691,12 @@ if __name__ == "__main__":
 ╚══════════════════════════════════════════════════════════════╝
     """)
 
-    socketio.run(app, host="0.0.0.0", port=port, debug=True, allow_unsafe_werkzeug=True)
+    debug_enabled = str(os.environ.get("KOOLKID_DEBUG", "")).strip().lower() in {"1", "true", "yes", "on"}
+    socketio.run(
+        app,
+        host="0.0.0.0",
+        port=port,
+        debug=debug_enabled,
+        use_reloader=debug_enabled,
+        allow_unsafe_werkzeug=True,
+    )

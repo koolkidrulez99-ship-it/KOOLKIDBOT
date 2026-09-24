@@ -362,6 +362,11 @@ class OAuthDerivTradeEngine:
         ask_price = d["safe_float"]((proposal or {}).get("ask_price"), d["safe_float"]((proposal or {}).get("display_value"), intent.stake))
         buy_payload = {"req_id": req_id, "buy": proposal_id, "price": float(ask_price if ask_price is not None else intent.stake)}
         debug["buy_payload"] = buy_payload
+        check_backtest = d.get('check_backtest')
+        if check_backtest:
+            research_error = check_backtest(client_id, state, req_id)
+            if research_error:
+                return False, research_error
         d["debug_log"](client_id, "oauth_buy_send", debug)
         try:
             state.get("ws").send(json.dumps(buy_payload))

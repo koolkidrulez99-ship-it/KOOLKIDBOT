@@ -755,11 +755,14 @@ class UnchainStrategy:
         fast = self._mean(p5)
         slow = self._mean(p15)
         very_slow = self._mean(p20)
-        current = self.price_history[-1]
-        prev2 = self.price_history[-3] if len(self.price_history) >= 3 else current
+        # Convert the bounded deque once for the indexed/sliced calculations below.
+        # deque slicing is invalid and used to raise on every warmed-up tick.
+        prices = list(self.price_history)
+        current = prices[-1]
+        prev2 = prices[-3] if len(prices) >= 3 else current
 
-        momentum5 = current - self.price_history[-6]
-        momentum10 = current - self.price_history[-11]
+        momentum5 = current - prices[-6]
+        momentum10 = current - prices[-11]
 
         recent_d = list(self.delta_history)[-20:]
         flips = 0
@@ -793,12 +796,12 @@ class UnchainStrategy:
 
         # trigger (micro resumption)
         last2 = list(self.delta_history)[-3:]
-        trigger_rise = (current > max(self.price_history[-3:-1])) or (len(last2) >= 2 and last2[-1] > 0 and last2[-2] > 0)
-        trigger_fall = (current < min(self.price_history[-3:-1])) or (len(last2) >= 2 and last2[-1] < 0 and last2[-2] < 0)
+        trigger_rise = (current > max(prices[-3:-1])) or (len(last2) >= 2 and last2[-1] > 0 and last2[-2] > 0)
+        trigger_fall = (current < min(prices[-3:-1])) or (len(last2) >= 2 and last2[-1] < 0 and last2[-2] < 0)
 
         # chop / cleanliness
         noise_ratio = 0.0
-        net_move = abs(current - self.price_history[-16])
+        net_move = abs(current - prices[-16])
         gross_move = sum(abs(x) for x in list(self.delta_history)[-15:])
         if gross_move > 0:
             noise_ratio = 1.0 - min(1.0, net_move / gross_move)
