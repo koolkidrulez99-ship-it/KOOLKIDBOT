@@ -13,13 +13,6 @@
 <button type="button" data-intelligence="start">Start Engine</button>
 <a href="/backtest-tools" style="color:#7dd3fc">Open Backtest Tools</a>
 </div><p id="globalIntelligenceStatus" role="status">Loading engine status...</p>
-<fieldset style="margin-top:16px;padding:16px;border:1px solid #475569;border-radius:8px;">
-<legend>Automated trade confirmation</legend>
-<label><input id="globalConfirmationEnabled" type="checkbox" checked> Require backtest confirmation before automated trades</label>
-<label for="globalConfirmationWindow">Confirmation tick window</label>
-<select id="globalConfirmationWindow"><option>50</option><option>100</option><option>200</option><option selected>500</option><option>ALL</option></select>
-<p>Unmatched strategies, stale data and insufficient samples block entries. Manual trades remain available. Viewing a different window on the research page does not change this setting.</p>
-<button type="button" data-intelligence="confirmation">Save confirmation settings</button>
-</fieldset>
+<p style="margin-top:12px;">Research only: backtest results run independently in the background and never approve, reject, pause, or delay live trades.</p>
 <script src="/static/js/intelligence_admin.js"></script>
 </section>

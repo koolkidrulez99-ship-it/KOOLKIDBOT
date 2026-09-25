@@ -1,4 +1,4 @@
-"""Read-only pre-buy confirmation. Never alters a strategy, stake or contract."""
+"""Read-only research annotation. Never alters, delays, approves, or blocks live trading."""
 import math
 import time
 
@@ -57,15 +57,8 @@ def strategy_for(meta):
 
 
 def requires_adapter():
-    """Backend profiles currently lack equivalent stateful research adapters.
-
-    Check before consuming a signal: several legacy detectors increment sequence
-    counters while returning it. Never call those detectors merely to reject them.
-    """
-    try:
-        return bool(policy(store())['enabled'])
-    except Exception:
-        return True
+    """Research adapters never gate live strategy execution."""
+    return False
 
 
 def signature(contract, barrier, duration=1, unit='t'):
@@ -127,10 +120,10 @@ def check(state, meta, db=None):
         result.update(profile=str(meta.get('profile') or ''), mode=str(meta.get('mode') or ''), contract=key)
         db.record_decision(str(state.get('username') or ''), result)
     except Exception:
-        result = dict(decision='WAIT', reason='Research confirmation unavailable; trade was not sent',
+        result = dict(decision='WAIT', reason='Research analysis unavailable',
                       created=time.time(), profile=str(meta.get('profile') or ''), mode=str(meta.get('mode') or ''))
     state['backtest_confirmation'] = result
     meta['backtest_confirmation'] = result
-    if result['decision'] in {'APPROVE', 'BYPASS'}:
-        return None
-    return 'Backtest ' + result['decision'] + ': ' + result['reason']
+    # Analysis is observational only. WAIT/REJECT are research labels, never
+    # execution decisions, so live trading always continues independently.
+    return None

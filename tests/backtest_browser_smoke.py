@@ -65,17 +65,17 @@ def main():
                 page.locator('#btEmptyTitle').filter(has_text='No results match').wait_for()
                 page.get_by_role('button',name='Clear filters').click()
                 page.locator('#btRows tr').wait_for()
+                store.set('enabled', True); e.health('READY', True)
                 page.goto(base+'/fixture-admin')
-                page.wait_for_function("document.querySelector('#globalIntelligenceStatus').textContent.includes('STOPPED')")
+                page.wait_for_function("document.querySelector('#globalIntelligenceStatus').textContent.includes('READY')")
                 assert page.locator('#globalIntelligencePat').get_attribute('type')=='password'
-                assert page.locator('[data-intelligence]').count()==6
-                page.locator('#globalConfirmationEnabled').uncheck()
-                page.get_by_role('button',name='Save confirmation settings').click()
-                page.wait_for_function("!document.querySelector('[data-intelligence=confirmation]').disabled")
-                assert store.get('confirmation_policy')['enabled'] is False
+                assert page.locator('[data-intelligence]').count()==5
+                page.get_by_role('button',name='Stop Engine').click()
+                page.wait_for_function("document.querySelector('#globalIntelligenceStatus').textContent.includes('STOPPED')")
+                assert store.get('enabled') is False
                 assert not errors,errors
                 browser.close()
-                print('PASS: desktop/mobile layout, window changes, details, admin masking, confirmation settings, no JS errors. Isolated fixture; no broker trades.')
+                print('PASS: desktop/mobile layout, research details, admin masking, Stop Engine, no JS errors. Isolated fixture; no broker trades.')
         finally:
             server.shutdown();thread.join(timeout=5)
 

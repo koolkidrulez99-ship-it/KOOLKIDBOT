@@ -18,7 +18,6 @@ from ai_intelligence.config import load_local_ai_environment
 load_local_ai_environment()
 
 from ai_intelligence.bridge import check_buy as _ai_check_buy, observe_response as _ai_observe_response
-from deriv_backtest.confirmation import check as _backtest_check, requires_adapter as _backtest_requires_adapter
 from ai_intelligence.routes import register as _register_ai_intelligence
 import ipaddress
 import base64
@@ -1343,19 +1342,13 @@ def _request_digit_proposal_for_buy(client_id, state, payload, timeout_sec=5.0):
 
 
 def _check_backtest_order(client_id, state, meta):
-    error = _backtest_check(state, meta)
-    if error:
-        try:
-            socketio.emit('backtest_confirmation', state.get('backtest_confirmation'), room=client_id)
-        except Exception:
-            pass
-    return error
+    # Backtest/Research is analysis-only. Live execution must never wait for,
+    # depend on, or be rejected by research state, samples, adapters, or health.
+    return None
 
 
 def _check_backtest_request(client_id, state, req_id):
-    meta = (state.get('req_meta') or {}).get(req_id) or (state.get('req_meta') or {}).get(str(req_id))
-    # A final purchase without provenance must not bypass the guard.
-    return _check_backtest_order(client_id, state, meta if meta is not None else {'automated': True})
+    return None
 
 
 def _send_buy_from_proposal(client_id, state, req_id, proposal, stake):
@@ -17109,17 +17102,7 @@ def run_auto_trade(client_id, state):
     if not strategy:
         return
 
-    if _backtest_requires_adapter():
-        # These stateful profile detectors have no equivalent replay adapter yet.
-        # Some consume sequence steps while producing a signal, so wait before
-        # invoking them. Orders from other paths still face the final buy guard.
-        if _should_emit_ui_event(state, 'backtest_adapter_wait', 10.0):
-            _check_backtest_order(client_id, state, {
-                'profile': active_profile, 'mode': 'AUTO', 'automated': True,
-                'symbol': state.get('current_symbol'),
-            })
-        return
-
+    # Research/backtesting runs independently and never pauses live auto trading.
     signals = None
 
     if active_profile == "JOKERJOE" and hasattr(strategy, "check_multig_signal"):

@@ -144,6 +144,12 @@ def register(app, login_required, is_admin, store=None):
                 launch_daemon()
             elif action == 'stop':
                 store.set('enabled', False)
+                # Force the research loop to notice the stop immediately and
+                # reflect it in Admin without affecting any live trading path.
+                store.set('revision', secrets.token_hex(12))
+                stopped = dict(store.get('health', {}) or {})
+                stopped.update(state='STOPPED', connected=False, authorized=False, error='', updated=time.time())
+                store.set('health', stopped)
             elif action == 'test':
                 # Process a test on the SAME daemon/connection, never create a second socket in Flask.
                 if not store.get('enabled', False):

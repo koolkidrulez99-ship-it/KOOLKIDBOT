@@ -63,7 +63,8 @@ def test_exact_contract_statistics_enforced(ready, field, value, decision):
     row['variants']['DIGITUNDER:9:1:t'][field] = value
     write_row(db, row)
     state = {'username': 'alice', 'martingale_step': 2, 'current_stake': 4}
-    assert gate.check(state, meta(), db).startswith('Backtest ' + decision)
+    assert gate.check(state, meta(), db) is None
+    assert state['backtest_confirmation']['decision'] == decision
     assert (state['martingale_step'], state['current_stake']) == (2, 4)
 
 
@@ -75,7 +76,9 @@ def test_exact_contract_statistics_enforced(ready, field, value, decision):
 def test_other_markets_strategies_and_contracts_cannot_approve(ready, change):
     db, _ = ready
     order = meta(); order.update(change)
-    assert gate.check({}, order, db).startswith('Backtest WAIT')
+    state = {}
+    assert gate.check(state, order, db) is None
+    assert state['backtest_confirmation']['decision'] == 'WAIT'
 
 
 @pytest.mark.parametrize('failure', ['health_stale', 'cache_stale', 'market_stale', 'paused', 'disconnected', 'unauthorized'])
@@ -89,14 +92,17 @@ def test_stale_or_disconnected_data_blocks(ready, failure):
     if failure == 'market_stale': row['latest_market_tick'] = time.time() - 31
     db.set('health', h)
     write_row(db, row, time.time() - 31 if failure == 'cache_stale' else None)
-    assert gate.check({}, meta(), db).startswith('Backtest WAIT')
+    state = {}
+    assert gate.check(state, meta(), db) is None
+    assert state['backtest_confirmation']['decision'] == 'WAIT'
 
 
 def test_store_failure_never_allows_auto_or_blocks_manual(monkeypatch):
     def broken(): raise OSError('private database path must not escape')
     monkeypatch.setattr(gate, 'store', broken)
     state = {}
-    assert gate.check(state, meta()).startswith('Backtest WAIT')
+    assert gate.check(state, meta()) is None
+    assert state['backtest_confirmation']['decision'] == 'WAIT'
     assert 'private' not in state['backtest_confirmation']['reason']
     assert gate.check({}, {'mode': 'MANUAL'}) is None
 
@@ -120,25 +126,26 @@ class Socket:
 
 
 @pytest.mark.parametrize('token_type', ['pat', 'oauth'])
-def test_common_execution_rejects_before_routing_or_socket(ready, monkeypatch, token_type):
+def test_common_execution_is_never_blocked_by_backtest(ready, monkeypatch, token_type):
     state = {'ws': Socket(), 'api_token_type': token_type, 'req_meta': {}, 'username': 'alice'}
+    called = []
     monkeypatch.setattr(server, '_ensure_trade_socket_ready', lambda *a, **k: (True, ''))
-    monkeypatch.setattr(server, '_execute_oauth_options_trade_engine', lambda *a, **k: pytest.fail('Rejected intent reached broker engine'))
+    monkeypatch.setattr(server, '_execute_oauth_options_trade_engine', lambda *a, **k: called.append(True) or (True, 'Trade sent'))
     request = dict(client_id='cid', state=state, contract_type='DIGITUNDER', stake=2,
                    symbol='R_25', barrier=9, duration=1, mode='unknown_auto')
     ok, message = server.execute_deriv_trade(request)
-    assert not ok and message.startswith('Backtest WAIT')
-    assert state['ws'].messages == []
+    assert ok is True and message == 'Trade sent'
+    assert called == [True]
 
 
-def test_final_proposal_check_revalidates_after_data_expires(ready):
+def test_final_proposal_still_sends_when_research_data_expires(ready):
     db, _ = ready
     state = {'ws': Socket(), 'username': 'alice', 'req_meta': {1: meta()}}
     assert gate.check(state, state['req_meta'][1], db) is None
     h = db.get('health'); h['updated'] = time.time() - 60; db.set('health', h)
     ok, msg = server._send_buy_from_proposal('cid', state, 1, {'id': 'quoted', 'ask_price': 3.5}, 3.5)
-    assert not ok and msg.startswith('Backtest WAIT')
-    assert state['ws'].messages == []
+    assert ok is True and msg == 'Trade sent'
+    assert state['ws'].messages == [{'req_id': 1, 'buy': 'quoted', 'price': 3.5}]
 
 
 def test_approved_proposal_sends_original_order(ready):
@@ -148,18 +155,17 @@ def test_approved_proposal_sends_original_order(ready):
     assert state['ws'].messages == [{'req_id': 1, 'buy': 'quoted', 'price': 3.5}]
 
 
-def test_missing_final_provenance_fails_closed(ready):
+def test_missing_backtest_provenance_does_not_block_final_buy(ready):
     state = {'ws': Socket(), 'req_meta': {}}
     ok, msg = server._send_buy_from_proposal('cid', state, 1, {'id': 'quoted'}, 1)
-    assert not ok and msg.startswith('Backtest WAIT') and not state['ws'].messages
+    assert ok is True and msg == 'Trade sent'
+    assert state['ws'].messages == [{'req_id': 1, 'buy': 'quoted', 'price': 1.0}]
 
 
-def test_stateful_signal_not_consumed_without_adapter(ready, monkeypatch):
-    strategy = SimpleNamespace(check_auto_trade_signal=lambda: pytest.fail('Sequence consumed'), step=3)
-    state = {'strategies': {'JOKERJOE': strategy}, 'active_profile': 'JOKERJOE', 'auto_stake': 8}
-    monkeypatch.setattr(server, '_should_emit_ui_event', lambda *a: True)
-    server.run_auto_trade('cid', state)
-    assert strategy.step == 3 and state['auto_stake'] == 8
+def test_research_adapter_never_pauses_live_auto_trading():
+    assert gate.requires_adapter() is False
+    assert server._check_backtest_order('cid', {}, {'automated': True}) is None
+    assert server._check_backtest_request('cid', {}, 123) is None
 
 
 def test_variant_totals_persist_and_do_not_mix_barriers(tmp_path):
