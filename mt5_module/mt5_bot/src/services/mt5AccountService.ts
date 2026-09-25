@@ -16,7 +16,9 @@ export const mt5AccountService = {
   cancelConnect: (login: number): Promise<{ ok: boolean }> => isSimulation ? Promise.resolve({ ok: true }) : apiRequest<{ ok: boolean }>('/api/mt5/accounts/connect/cancel', 'POST', { login }, 7000),
   remove: (id: number): Promise<{ ok: boolean }> => isSimulation ? simRemoveAccount(id) : apiRequest<{ ok: boolean }>(`/api/mt5/accounts/${id}`, 'DELETE'),
   action: (id: number, action: string, extra: Record<string, unknown> = {}): Promise<Mt5Account> =>
-    isSimulation ? simAccountAction(id, action, extra) : apiRequest<Mt5Account>(`/api/mt5/accounts/${id}`, 'PUT', { action, ...extra }, 45000),
+    isSimulation
+      ? simAccountAction(id, action, extra)
+      : apiRequest<Mt5Account>(`/api/mt5/accounts/${id}`, 'PUT', { action, ...extra }, action === 'connect' ? 100000 : 45000),
   setBudget: (id: number, budget: number): Promise<Mt5Account> =>
     isSimulation ? Promise.reject(new Error('Account budgets require bridge mode.')) : apiRequest<Mt5Account>(`/api/mt5/accounts/${id}/budget`, 'PUT', { budget }, 15000),
   resetBudget: (id: number): Promise<Mt5Account> =>

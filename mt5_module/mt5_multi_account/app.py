@@ -746,6 +746,11 @@ def connect(req: ConnectRequest):
             cfg["terminal_path"] = isolated_terminal(f"{current_workspace()}--{req.account_id}", terminal_source, req.broker)
             cfg["portable"] = True
             cfg["broker_seeded"] = broker_seed_dir(req.broker) is not None
+        if req.account_id in POOL.items and req.account_id not in POOL.ids():
+            # A dead worker can briefly remain registered after a terminal exits.
+            # Remove that stale runtime so an explicit reconnect always starts a
+            # fresh worker instead of returning the dead session's status.
+            POOL.disconnect(req.account_id)
         if req.account_id in POOL.ids():
             info = POOL.call(req.account_id, "account_info", timeout=5)
             actual_server = str(info.get("server") or "").strip()

@@ -1605,7 +1605,19 @@ def account_action(profile_id: int, payload: dict[str, Any] = Body(default_facto
     if action == "set_active":
         engine.set_active_login(login)
         return next((x for x in accounts() if int(x["id"]) == profile_id), profile)
-    if action in {"toggle", "connect", "disconnect"}:
+    if action == "connect":
+        password = str(payload.get("password") or "") or None
+        try:
+            # A cold reconnect after an idle terminal was released can take much
+            # longer than an ordinary refresh. Start it immediately instead of
+            # first waiting for a full workspace session snapshot.
+            engine.shutdown_terminal()
+            multi_account_client.connect(profile, password or "")
+            _clear_session_snapshot_cache()
+        except RuntimeError as exc:
+            session_error(exc)
+        return next((x for x in accounts() if int(x["id"]) == profile_id), profile)
+    if action in {"toggle", "disconnect"}:
         live = {int(row.get("login") or 0): row for row in session_snapshot(fresh=True).get("accounts", []) if row.get("connected")}
         should_disconnect = action == "disconnect" or (action == "toggle" and login in live)
         if should_disconnect:
