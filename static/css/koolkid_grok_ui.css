@@ -1,0 +1,58 @@
+/* KOOLKID Grok concept UI. Only active while .kk-grok-active is present. */
+#kkGrokModeBar{display:flex;justify-content:flex-end;align-items:center;gap:8px;margin:0 0 12px}
+#kkGrokModeBar span{font-size:11px;color:#77849a;font-weight:800;letter-spacing:.08em;text-transform:uppercase}
+#kkGrokToggle{min-height:38px;padding:8px 14px;border-radius:12px!important;background:#121b2d!important;border:1px solid #24324a!important;color:#e8eef8!important;font-size:12px;font-weight:900;box-shadow:none!important}
+#kkGrokToggle.is-on{background:#40bef0!important;color:#04121b!important;border-color:#40bef0!important}
+#kkGrokShell{display:none;max-width:738px;margin:0 auto;color:#e7edf8}
+body.kk-grok-active{background:#070c15!important}
+body.kk-grok-active #kkGrokShell{display:block}
+body.kk-grok-active #koolkidProfileUi>.card{display:none!important}
+body.kk-grok-active #koolkidTradeHistoryCard{margin:0!important}
+.kkg-head{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:12px}
+.kkg-brand{display:flex;align-items:center;gap:10px;min-width:0}
+.kkg-logo{width:32px;height:32px;border:1px solid #1e88b8;border-radius:8px;display:grid;place-items:center;color:#39c3f7;background:#08131f;font-size:20px;font-weight:900}
+.kkg-title{font-size:14px;font-weight:900;color:#edf4ff}
+.kkg-sub{font-size:10px;color:#8794aa;margin-top:2px}
+.kkg-head-actions{display:flex;gap:6px}
+.kkg-head-actions button{height:44px!important;padding:0 14px!important;border:0!important;border-radius:13px!important;background:#131d30!important;color:#e8eef8!important;box-shadow:none!important}
+.kkg-head-actions button:first-child{min-width:105px}
+.kkg-tape{background:#0d1525;border:1px solid rgba(148,163,184,.10);border-radius:25px;padding:15px 16px;margin-bottom:11px}
+.kkg-tape-top{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px;color:#7e8aa0;font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+.kkg-market{color:#8ca0bd}.kkg-market:before{content:"⌁";color:#3cc5f7;margin-right:7px}
+.kkg-state{font-family:monospace;color:#738097}
+.kkg-stats{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}
+.kkg-stat{background:#131d30;border-radius:13px;padding:9px 8px;text-align:center}
+.kkg-stat label{display:block;color:#6f7d94;font-size:10px;text-transform:uppercase;letter-spacing:.04em}
+.kkg-stat strong{display:block;margin-top:6px;color:#edf4ff;font-size:16px;font-weight:500;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#kkgDigit{color:#35c7ff}.kkg-pnl-win{color:#45d694!important}.kkg-pnl-loss{color:#ff6575!important}
+.kkg-tabs{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;padding:4px;background:#0d1525;border:1px solid rgba(148,163,184,.10);border-radius:17px;margin-bottom:19px}
+.kkg-tabs button{height:45px!important;margin:0!important;border:0!important;border-radius:12px!important;background:transparent!important;color:#8491a8!important;box-shadow:none!important;font-size:11px!important;font-weight:700!important}
+.kkg-tabs button.is-active{background:#40bef0!important;color:#04121b!important}
+.kkg-panel{display:none}.kkg-panel.is-active{display:block}
+.kkg-card{background:#0d1525;border:1px solid rgba(148,163,184,.10);border-radius:24px;padding:16px;margin-bottom:14px}
+.kkg-section-label{font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:#d9b968;font-weight:900;margin-bottom:8px}
+.kkg-section-title{font-size:16px;font-weight:800;color:#e8eef8;margin-bottom:4px}
+.kkg-section-note{font-size:12px;color:#8b98ae;line-height:1.45;margin-bottom:14px}
+body.kk-grok-active .kkg-panel input,
+body.kk-grok-active .kkg-panel select{background:#131d30!important;border:1px solid rgba(148,163,184,.12)!important;color:#e8eef8!important;border-radius:12px!important;box-shadow:none!important}
+body.kk-grok-active .kkg-panel button{border-radius:13px!important;box-shadow:none!important}
+body.kk-grok-active .kkg-panel .ui-group{background:#0d1525!important;border:1px solid rgba(148,163,184,.10)!important;border-radius:22px!important;margin:8px 0!important;overflow:hidden}
+body.kk-grok-active .kkg-panel .ui-group summary{background:#0d1525!important;color:#e8eef8!important;padding:18px 16px!important}
+body.kk-grok-active .kkg-panel .ui-group-body{background:#0b1321!important;padding:14px!important}
+body.kk-grok-active .kkg-panel .ui-primary-stack{gap:8px!important}
+body.kk-grok-active #kkgStrategies .ui-primary-stack>button,
+body.kk-grok-active #kkgStrategies .ui-primary-stack>.ui-btn-grid-2,
+body.kk-grok-active #kkgStrategies .ui-primary-stack>div{background:#0d1525;border:1px solid rgba(148,163,184,.10);border-radius:22px;padding:10px}
+body.kk-grok-active #kkgAnalysis #digitGrid{display:grid!important;grid-template-columns:repeat(5,minmax(0,1fr))!important;gap:8px!important}
+body.kk-grok-active #kkgAnalysis #digitGrid>*{background:#131d30!important;border-radius:13px!important;box-shadow:none!important}
+body.kk-grok-active #koolkidGoldenCardPromo{margin:0!important;background:#0d1525!important;border:1px solid rgba(217,185,104,.22)!important;border-radius:24px!important;box-shadow:none!important;padding:17px!important}
+body.kk-grok-active #koolkidGoldenCardPromo button{background:#dfbe6f!important;color:#191404!important;border:0!important;box-shadow:none!important}
+body.kk-grok-active #koolkidTradeHistoryCard{background:#0d1525!important;border:1px solid rgba(148,163,184,.10)!important;border-radius:24px!important;box-shadow:none!important}
+body.kk-grok-active #profileTradeList{background:#08101c;border-radius:14px;padding:8px}
+@media(max-width:700px){
+  #kkGrokShell{max-width:100%}.kkg-head{align-items:flex-start}.kkg-head-actions button:first-child{min-width:auto}
+  .kkg-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.kkg-stat:last-child{grid-column:1/-1}
+  .kkg-tabs button{font-size:10px!important;padding:0 4px!important}
+  body.kk-grok-active #kkgAnalysis #digitGrid{grid-template-columns:repeat(2,minmax(0,1fr))!important}
+}
+body.kk-grok-active #kkGrokModeBar{display:none}
