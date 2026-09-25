@@ -1,0 +1,37 @@
+/* Optional KOOLKID organized UI preview. Original UI remains underneath. */
+#kkOrgModeBar{display:flex;justify-content:flex-end;align-items:center;gap:8px;margin:0 0 12px}
+#kkOrgModeBar span{font-size:11px;color:#7c8aa0;font-weight:800;letter-spacing:.08em;text-transform:uppercase}
+#kkOrgToggle{min-height:38px;padding:8px 14px;border-radius:12px!important;background:#121b2d!important;border:1px solid #26354e!important;color:#edf4ff!important;font-size:12px;font-weight:900;box-shadow:none!important}
+#kkOrgToggle.is-on{background:#38bdf8!important;color:#04121b!important;border-color:#38bdf8!important}
+#kkOrgShell{display:none;max-width:940px;margin:0 auto 16px;color:#e8eef8}
+body.kk-org-active #kkOrgShell{display:block}
+body.kk-org-active #kkOrgModeBar{display:none}
+body.kk-org-active #koolkidProfileUi>.card{display:none!important}
+.kk-org-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}
+.kk-org-title{font-size:18px;font-weight:900;color:#f8fafc}
+.kk-org-sub{font-size:11px;color:#94a3b8;margin-top:3px}
+.kk-org-head button{background:#1e293b!important;border:1px solid #334155!important;border-radius:12px!important;box-shadow:none!important}
+.kk-org-setup{background:#0f172a;border:1px solid #263449;border-radius:18px;padding:14px;margin-bottom:12px}
+.kk-org-setup-title{font-size:11px;font-weight:900;color:#94a3b8;letter-spacing:.08em;text-transform:uppercase;margin-bottom:10px}
+#kkOrgSharedSetup{display:grid;gap:10px}
+#kkOrgSharedSetup>div:first-child,#kkOrgSharedSetup>.koolkid-budget-row{background:#111827;border:1px solid #243047;border-radius:14px;padding:10px}
+.kk-org-tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;padding:5px;background:#0b1220;border:1px solid #263449;border-radius:16px;margin-bottom:12px}
+.kk-org-tab{height:52px!important;margin:0!important;background:transparent!important;border:0!important;border-radius:12px!important;color:#94a3b8!important;box-shadow:none!important;font-size:12px!important;font-weight:900!important}
+.kk-org-tab.is-active{background:#38bdf8!important;color:#06131f!important}
+.kk-org-panel{display:none}.kk-org-panel.is-active{display:block}
+.kk-org-section{background:#0f172a;border:1px solid #263449;border-radius:18px;padding:14px;margin-bottom:12px}
+.kk-org-section h3{margin:0 0 4px;color:#f8fafc;font-size:15px}
+.kk-org-section p{margin:0 0 12px;color:#94a3b8;font-size:12px}
+.kk-org-stack{display:grid;gap:8px}
+body.kk-org-active .kk-org-panel button{border-radius:12px!important;box-shadow:none!important}
+body.kk-org-active .kk-org-panel input,body.kk-org-active .kk-org-panel select{background:#111827!important;border:1px solid #334155!important;color:#f8fafc!important;border-radius:12px!important}
+body.kk-org-active .kk-org-panel .ui-group{margin:0!important;background:#0b1220!important;border:1px solid #263449!important;border-radius:16px!important;overflow:hidden}
+body.kk-org-active .kk-org-panel .ui-group summary{background:#0f172a!important;padding:14px!important;color:#f8fafc!important}
+body.kk-org-active .kk-org-panel .ui-group-body{background:#0b1220!important;padding:12px!important}
+body.kk-org-active #kkOrgAuto .ui-primary-stack{display:grid!important;gap:8px!important;margin:0!important}
+body.kk-org-active #kkOrgManual .ui-group,body.kk-org-active #kkOrgAutomated .ui-group{margin-bottom:8px!important}
+.kk-org-empty{padding:16px;text-align:center;color:#64748b;border:1px dashed #334155;border-radius:14px}
+@media(max-width:700px){
+ .kk-org-tabs{grid-template-columns:1fr}.kk-org-tab{height:44px!important}
+ .kk-org-head{align-items:flex-start}.kk-org-head .kk-org-sub{max-width:240px}
+}
