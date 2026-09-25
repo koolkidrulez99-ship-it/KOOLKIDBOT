@@ -1,0 +1,54 @@
+/* Optional Grok-inspired KOOLKID skin. Active only while body.koolkid-concept-ui is set. */
+.koolkid-ui-mode-bar{display:flex;justify-content:flex-end;align-items:center;gap:8px;margin:0 0 10px}
+.koolkid-ui-mode-label{font-size:11px;color:#8b97ad;letter-spacing:.08em;text-transform:uppercase;font-weight:800}
+.koolkid-ui-mode-switch{min-height:38px;padding:8px 14px;border-radius:12px;background:#131c2e!important;border:1px solid #26334a!important;color:#e8eef8!important;font-size:12px;font-weight:900;box-shadow:none!important}
+.koolkid-ui-mode-switch.is-concept{background:#3ec8ff!important;border-color:#3ec8ff!important;color:#041018!important}
+.koolkid-concept-shell{display:none;margin:0 0 12px}
+.koolkid-concept-brand{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}
+.koolkid-concept-brand-main{display:flex;align-items:center;gap:10px;min-width:0}
+.koolkid-concept-mark{width:34px;height:34px;border-radius:9px;border:1px solid rgba(62,200,255,.45);display:flex;align-items:center;justify-content:center;background:#0d1422;color:#3ec8ff;font-size:20px;font-weight:900}
+.koolkid-concept-brand-title{font-size:14px;font-weight:900;letter-spacing:.02em;color:#e8eef8}
+.koolkid-concept-brand-sub{font-size:10px;color:#8b97ad;margin-top:2px}
+.koolkid-concept-preview-pill{padding:7px 10px;border-radius:999px;background:#131c2e;border:1px solid rgba(232,238,248,.08);color:#8b97ad;font-size:10px;font-weight:900;letter-spacing:.08em;text-transform:uppercase}
+.koolkid-concept-hud{background:#0d1422;border:1px solid rgba(232,238,248,.08);border-radius:24px;padding:14px 16px}
+.koolkid-concept-market-row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px;color:#8b97ad;font-size:11px;letter-spacing:.04em;text-transform:uppercase}
+.koolkid-concept-market-row strong{color:#3ec8ff;font-weight:900}
+.koolkid-concept-hud-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}
+.koolkid-concept-stat{background:#131c2e;border-radius:13px;padding:10px 8px;text-align:center;min-width:0}
+.koolkid-concept-stat-label{font-size:10px;color:#65738b;text-transform:uppercase;letter-spacing:.06em}
+.koolkid-concept-stat-value{margin-top:6px;color:#e8eef8;font-size:15px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#koolkidConceptDigit{color:#3ec8ff}
+#koolkidConceptPnl.is-win{color:#3dd68c}
+#koolkidConceptPnl.is-loss{color:#ff6b7a}
+.koolkid-concept-nav{margin-top:10px;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px;padding:4px;background:#0d1422;border:1px solid rgba(232,238,248,.08);border-radius:16px}
+.koolkid-concept-nav button{height:46px;margin:0!important;border:0!important;border-radius:12px!important;background:transparent!important;color:#8b97ad!important;box-shadow:none!important;font-size:11px;font-weight:800}
+.koolkid-concept-nav button.is-active{background:#3ec8ff!important;color:#041018!important}
+body.koolkid-concept-ui{background:#070b14!important}
+body.koolkid-concept-ui #koolkidConceptShell{display:block}
+body.koolkid-concept-ui #koolkidProfileUi{max-width:900px}
+body.koolkid-concept-ui #koolkidProfileUi>.card{background:transparent!important;border:0!important;box-shadow:none!important;padding:0!important;backdrop-filter:none!important}
+body.koolkid-concept-ui #koolkidProfileUi>.card>h3{display:none}
+body.koolkid-concept-ui #koolkidGoldenCardPromo{background:#0d1422!important;border:1px solid rgba(215,181,109,.24)!important;border-radius:24px!important;box-shadow:none!important;padding:16px!important}
+body.koolkid-concept-ui #koolkidGoldenCardPromo button{background:#d7b56d!important;color:#1a1406!important;border:0!important;box-shadow:none!important}
+body.koolkid-concept-ui #koolkidProfileUi .panelGrid{grid-template-columns:1fr!important;gap:12px!important}
+body.koolkid-concept-ui #koolkidProfileUi .panelGrid>div>div,
+body.koolkid-concept-ui #koolkidProfileUi .ui-group,
+body.koolkid-concept-ui #koolkidTradeHistoryCard{background:#0d1422!important;border:1px solid rgba(232,238,248,.08)!important;border-radius:18px!important;box-shadow:none!important}
+body.koolkid-concept-ui #koolkidProfileUi .ui-group summary{background:#0d1422!important;color:#e8eef8!important;padding:14px 16px!important}
+body.koolkid-concept-ui #koolkidProfileUi input,
+body.koolkid-concept-ui #koolkidProfileUi select{background:#131c2e!important;border:1px solid rgba(232,238,248,.08)!important;color:#e8eef8!important;border-radius:12px!important}
+body.koolkid-concept-ui #koolkidProfileUi button:not(.golden-card-hero-btn):not(.koolkid-ui-mode-switch){border-radius:12px!important;box-shadow:none!important}
+body.koolkid-concept-ui #profileTradeList{background:#070b14;border-radius:14px;padding:8px}
+body.koolkid-concept-ui #koolkidProfileUi .digit-grid>div{border-radius:12px!important;box-shadow:none!important}
+body.koolkid-concept-ui #koolkidProfileUi .confidence-wrap,
+body.koolkid-concept-ui #koolkidProfileUi .conf-item{background:#0d1422!important;border-color:rgba(232,238,248,.08)!important}
+body.koolkid-concept-ui .koolkid-ui-mode-bar{max-width:900px;margin-left:auto;margin-right:auto}
+body.koolkid-concept-ui #koolkidTradeHistoryCard h3{color:#e8eef8!important}
+@media(max-width:700px){
+  .koolkid-concept-hud-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .koolkid-concept-stat:last-child{grid-column:1/-1}
+  .koolkid-concept-preview-pill{display:none}
+  .koolkid-concept-nav button{font-size:10px;padding:0 4px}
+  .koolkid-concept-brand{align-items:flex-start}
+  body.koolkid-concept-ui #koolkidProfileUi{max-width:100%}
+}

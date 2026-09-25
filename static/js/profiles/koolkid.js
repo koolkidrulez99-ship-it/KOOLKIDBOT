@@ -5882,6 +5882,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
 
   async function onMount() {
     mountKoolkidViewportPopups(true);
+    try { window.KoolkidConceptUI && window.KoolkidConceptUI.applySaved(); } catch (e) {}
     try { App().ensureDigitClickPatchSoon && App().ensureDigitClickPatchSoon(); } catch (e) {}
     try { App().applyDigitSelectionUI && App().applyDigitSelectionUI(); } catch (e) {}
     bindSocketListeners();
@@ -5907,6 +5908,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
 
   async function onActivate() {
     mountKoolkidViewportPopups();
+    try { window.KoolkidConceptUI && window.KoolkidConceptUI.applySaved(); } catch (e) {}
     try { App().applyDigitSelectionUI && App().applyDigitSelectionUI(); } catch (e) {}
     bindSocketListeners();
     updateDual2xUIKoolkid();
@@ -5930,6 +5932,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
 
   async function afterLoadProfileUI() {
     mountKoolkidViewportPopups();
+    try { window.KoolkidConceptUI && window.KoolkidConceptUI.applySaved(); } catch (e) {}
     try { App().applyDigitSelectionUI && App().applyDigitSelectionUI(); } catch (e) {}
     bindSocketListeners();
     updateDual2xUIKoolkid();
@@ -5952,6 +5955,7 @@ const optionE = document.getElementById("dual2xCustomComboBtnKoolkid");
 
   async function onDeactivate() {
     const app = App();
+    try { window.KoolkidConceptUI && window.KoolkidConceptUI.deactivate(); } catch (e) {}
     const mgState = getKoolkidSingleMartingaleState();
     if (mgState.restartTimer) {
       clearTimeout(mgState.restartTimer);
