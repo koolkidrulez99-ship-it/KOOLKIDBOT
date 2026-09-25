@@ -852,16 +852,8 @@ def session_snapshot(*, fresh: bool = False) -> dict[str, Any]:
 def _run_ai_trial_scan(payload: AiTrialScanPayload) -> dict[str, Any]:
     exec_tf = str(payload.execution_timeframe).upper()
     bias_tf = str(payload.bias_timeframe).upper()
-    execution_rows = multi_account_client.account_request(
-        payload.account_login,
-        f"/candles/{quote(payload.symbol)}?timeframe={quote(exec_tf)}&count=700",
-        timeout=20,
-    )
-    bias_rows = multi_account_client.account_request(
-        payload.account_login,
-        f"/candles/{quote(payload.symbol)}?timeframe={quote(bias_tf)}&count=350",
-        timeout=20,
-    )
+    execution_rows = native_runtime.cached_candle_rows(payload.account_login, payload.symbol, exec_tf, 700)
+    bias_rows = native_runtime.cached_candle_rows(payload.account_login, payload.symbol, bias_tf, 350)
     previous = load_ai_trial_snapshot()
     snapshot = run_human_apostle_trial(
         execution_rows,
@@ -1444,7 +1436,10 @@ def save_hub_preferences(payload: dict[str, Any] = Body(default_factory=dict)):
 
 @app.get("/api/mt5/accounts")
 def accounts():
-    rows = engine.list_accounts()
+    # Multi-account workers are the live source of truth. Avoid polling the legacy
+    # base MT5 terminal just to render the account list; that terminal is not used
+    # for copy trading, native bot execution, or per-account market data.
+    rows = [dict(row) for row in read_state().get("profiles", [])]
     snapshot = session_snapshot()
     try:
         known = {int(row.get("login") or 0) for row in rows}
@@ -1452,7 +1447,7 @@ def accounts():
             login = int(saved.get("login") or 0)
             if not login or login in known:
                 continue
-            engine.upsert_profile({
+            profile = upsert_profile({
                 "login": login, "nickname": saved.get("nickname") or f"MT5 #{login}",
                 "broker": saved.get("broker") or "MetaTrader 5", "server": saved.get("server") or "",
                 "access_mode": saved.get("access_mode") or "trading", "balance": 0,
@@ -1460,7 +1455,8 @@ def accounts():
                 "leverage": 0, "currency": "USD", "status": "disconnected",
                 "is_active": False, "account_type": "demo", "connection_status": "offline",
             }, make_active=False)
-        rows = engine.list_accounts()
+            rows.append(dict(profile))
+            known.add(login)
     except Exception:
         pass
     sessions = {int(item.get("login") or 0): item for item in snapshot.get("accounts", [])}

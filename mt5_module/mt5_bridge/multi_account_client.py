@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -11,6 +13,17 @@ from urllib.request import Request, urlopen
 BASE_URL = os.getenv("MT5_MULTI_ACCOUNT_URL", "http://127.0.0.1:8002").rstrip("/")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from hub_auth import current_workspace, internal_workspace_signature
+
+
+_ROUTING_CACHE: dict[str, tuple[float, dict[int, dict[str, Any]]]] = {}
+_ROUTING_CACHE_LOCK = threading.RLock()
+_ROUTING_CACHE_TTL = max(1.0, float(os.getenv("MT5_ACCOUNT_ROUTING_CACHE_SECONDS", "5")))
+
+
+def _clear_routing_cache(workspace_id: str | None = None) -> None:
+    workspace_id = str(workspace_id or current_workspace() or "")
+    with _ROUTING_CACHE_LOCK:
+        _ROUTING_CACHE.pop(workspace_id, None)
 
 
 def request(path: str, method: str = "GET", payload: dict[str, Any] | None = None, timeout: float = 30.0):
@@ -54,31 +67,49 @@ def accounts() -> dict[str, Any]:
 
 def connect(profile: dict[str, Any], password: str) -> dict[str, Any]:
     login = int(profile["login"])
-    return request("/accounts/connect", "POST", {
+    result = request("/accounts/connect", "POST", {
         "account_id": f"session-{login}", "nickname": profile.get("nickname") or f"MT5 #{login}",
         "login": login, "broker": profile.get("broker") or "MetaTrader 5",
         "server": profile.get("server") or "", "password": password,
         "access_mode": profile.get("access_mode") or "trading",
         "mode": "real", "symbol_aliases": {},
     }, timeout=90)
+    _clear_routing_cache()
+    return result
 
 
 def disconnect(login: int) -> None:
     request(f"/accounts/session-{int(login)}/disconnect", "POST", {}, timeout=10)
+    _clear_routing_cache()
 
 
 def remove(login: int) -> None:
     request(f"/accounts/session-{int(login)}", "DELETE", timeout=10)
+    _clear_routing_cache()
 
 
-def connected_by_login() -> dict[int, dict[str, Any]]:
-    return {int(row.get("login") or 0): row for row in accounts().get("accounts", []) if row.get("connected")}
+def connected_by_login(force: bool = False) -> dict[int, dict[str, Any]]:
+    workspace_id = str(current_workspace() or "")
+    now = time.monotonic()
+    if not force:
+        with _ROUTING_CACHE_LOCK:
+            cached = _ROUTING_CACHE.get(workspace_id)
+            if cached and now - cached[0] <= _ROUTING_CACHE_TTL:
+                return dict(cached[1])
+    value = {int(row.get("login") or 0): row for row in accounts().get("accounts", []) if row.get("connected")}
+    with _ROUTING_CACHE_LOCK:
+        _ROUTING_CACHE[workspace_id] = (now, dict(value))
+    return value
 
 
 def worker_for_login(login: int | None = None) -> dict[str, Any]:
     connected = connected_by_login()
     if login is not None:
         worker = connected.get(int(login))
+        if not worker:
+            # A recent connect/reconnect can make the short routing cache stale.
+            connected = connected_by_login(force=True)
+            worker = connected.get(int(login))
         if not worker:
             raise RuntimeError(f"MT5 account #{int(login)} is disconnected.")
         return worker

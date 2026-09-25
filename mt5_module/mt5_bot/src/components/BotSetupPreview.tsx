@@ -231,7 +231,7 @@ export default function BotSetupPreview({ bot }: { bot: Mt5Bot }) {
       .then((rows) => { if (!cancelled) setCandles(Array.isArray(rows) ? rows : []); })
       .catch(() => { if (!cancelled && !candles.length) setCandles([]); });
     void load();
-    const timer = window.setInterval(() => void load(), 3000);
+    const timer = window.setInterval(() => void load(), 10000);
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [bot.account_login, bot.symbol, bot.timeframe]);
 

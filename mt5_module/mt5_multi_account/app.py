@@ -33,6 +33,7 @@ _RUNTIMES: dict[str, "WorkspaceRuntime"] = {}
 _RUNTIMES_LOCK = threading.RLock()
 _REAPER_STARTED = False
 WORKSPACE_IDLE_SECONDS = max(60, int(os.getenv("MT5_WORKSPACE_IDLE_SECONDS", "300")))
+ACCOUNT_IDLE_SECONDS = max(120, int(os.getenv("MT5_ACCOUNT_IDLE_SECONDS", "300")))
 
 
 class ScopedPool:
@@ -104,8 +105,10 @@ class WorkspaceRuntime:
         self.last_activity = time.time()
         self.read_cache: dict[str, tuple[float, object]] = {}
         self.read_cache_lock = threading.RLock()
+        self.read_cache_flights: dict[str, threading.Lock] = {}
         self.accounts_snapshot_lock = threading.Lock()
         self.positions_snapshot_lock = threading.Lock()
+        self.account_activity: dict[str, float] = {}
         self.started = False
 
     def touch(self) -> None:
@@ -156,6 +159,12 @@ def _snapshot_cache_clear(runtime: WorkspaceRuntime, *keys: str) -> None:
     with runtime.read_cache_lock:
         for key in keys:
             runtime.read_cache.pop(key, None)
+
+
+def _snapshot_flight_lock(runtime: WorkspaceRuntime, key: str) -> threading.Lock:
+    # Collapse simultaneous requests for the same expensive MT5 read into one IPC call.
+    with runtime.read_cache_lock:
+        return runtime.read_cache_flights.setdefault(key, threading.Lock())
 
 
 def _copy_group(group_id: str = "1") -> CopyEngine:
@@ -223,32 +232,86 @@ async def require_workspace(request: Request, call_next):
     try:
         runtime = _runtime()
         runtime.touch()
+        parts = [part for part in request.url.path.split('/') if part]
+        if len(parts) >= 2 and parts[0] == 'accounts' and parts[1] not in {'connect'}:
+            runtime.account_activity[parts[1]] = time.time()
         _start_workspace(workspace_id)
         return await call_next(request)
     finally:
         reset_workspace(token)
 
-def _saved_real_accounts():
-    state = STATE.load()
-    rows = []
-    for cfg in list(state.get("accounts", {}).values())[:10]:
-        if str(cfg.get("mode") or "real") != "real":
+def _bridge_bot_required_accounts(workspace_id: str) -> set[str]:
+    required: set[str] = set()
+    path = BASE.parent / 'mt5_bridge' / 'data' / 'workspaces' / workspace_id / 'bridge_state.json'
+    try:
+        state = json.loads(path.read_text(encoding='utf-8'))
+    except Exception:
+        return required
+    bots = state.get('bots') or state.get('running_bots') or []
+    if isinstance(bots, dict):
+        bots = list(bots.values())
+    for bot in bots:
+        if not isinstance(bot, dict) or str(bot.get('status') or '').lower() not in {'running', 'paused', 'starting'}:
             continue
-        if cfg.get("auto_reconnect", True) is False:
-            continue
-        rows.append(dict(cfg))
+        cfg = dict(bot.get('native_config') or {})
+        login = int(cfg.get('account_login') or bot.get('account_login') or 0)
+        if login:
+            required.add(f'session-{login}')
+    return required
 
+
+def _required_account_ids(runtime: WorkspaceRuntime) -> set[str]:
+    state = runtime.state.load()
+    required = _bridge_bot_required_accounts(runtime.workspace_id)
+    for group_id in ('1', '2'):
+        if not state.get(_copy_state_key('copy_enabled', group_id)):
+            continue
+        cfg = state.get(_copy_state_key('copy_config', group_id))
+        if not isinstance(cfg, dict):
+            continue
+        for aid in [cfg.get('master_account_id'), *(cfg.get('slave_account_ids') or [])]:
+            if aid:
+                required.add(str(aid))
+    now = time.time()
+    for aid, touched_at in list(runtime.account_activity.items()):
+        if now - float(touched_at or 0) <= ACCOUNT_IDLE_SECONDS:
+            required.add(str(aid))
+        else:
+            runtime.account_activity.pop(aid, None)
+    return required
+
+
+def _saved_real_accounts(required_only: bool = False):
+    state = STATE.load()
+    runtime = _runtime() if required_only else None
+    required_ids = _required_account_ids(runtime) if runtime is not None else None
+    # Copy Trader dependencies are stronger than the user's ordinary auto-reconnect
+    # preference. If an enabled copy group needs an account, keep that session alive
+    # even when the account was previously marked auto_reconnect=False.
     preferred: list[str] = []
     for group_id in ("1", "2"):
         if not state.get(_copy_state_key("copy_enabled", group_id)):
             continue
-        cfg = state.get(_copy_state_key("copy_config", group_id))
-        if not isinstance(cfg, dict):
+        group_cfg = state.get(_copy_state_key("copy_config", group_id))
+        if not isinstance(group_cfg, dict):
             continue
-        for aid in [cfg.get("master_account_id"), *(cfg.get("slave_account_ids") or [])]:
+        for aid in [group_cfg.get("master_account_id"), *(group_cfg.get("slave_account_ids") or [])]:
             key = str(aid or "")
             if key and key not in preferred:
                 preferred.append(key)
+
+    rows = []
+    preferred_set = set(preferred)
+    for cfg in list(state.get("accounts", {}).values())[:10]:
+        if str(cfg.get("mode") or "real") != "real":
+            continue
+        aid = str(cfg.get("account_id") or "")
+        if required_ids is not None and aid not in required_ids:
+            continue
+        if cfg.get("auto_reconnect", True) is False and aid not in preferred_set:
+            continue
+        rows.append(dict(cfg))
+
     order = {aid: index for index, aid in enumerate(preferred)}
     rows.sort(key=lambda cfg: (order.get(str(cfg.get("account_id") or ""), len(order)), str(cfg.get("account_id") or "")))
     return rows
@@ -278,7 +341,7 @@ def _connect_saved(cfg: dict) -> None:
 def restore_saved_sessions():
     # Startup is intentionally sequential. MT5 portable terminals are much more
     # reliable when restored one at a time instead of all racing for IPC at boot.
-    for cfg in _saved_real_accounts():
+    for cfg in _saved_real_accounts(required_only=True):
         aid = str(cfg.get("account_id") or "")
         for attempt in range(3):
             try:
@@ -330,7 +393,7 @@ def keep_saved_sessions_connected():
     runtime = _runtime()
     while not _SESSION_STOP.is_set() and not runtime.session_stop.wait(5):
         now = time.time()
-        saved = {str(cfg.get("account_id") or ""): cfg for cfg in _saved_real_accounts()}
+        saved = {str(cfg.get("account_id") or ""): cfg for cfg in _saved_real_accounts(required_only=True)}
         backoff = _runtime().session_backoff
         for aid in list(backoff):
             if aid not in saved:
@@ -374,12 +437,38 @@ def _release_idle_workspace(runtime: WorkspaceRuntime) -> bool:
     return True
 
 
+def _release_idle_accounts(runtime: WorkspaceRuntime) -> int:
+    if not runtime.started:
+        return 0
+    required = _required_account_ids(runtime)
+    released = 0
+    for aid in list(runtime.pool.ids()):
+        if aid in required:
+            continue
+        # Never sleep an account while the broker still reports an open position.
+        # If the check itself fails, keep the terminal alive rather than guessing.
+        try:
+            open_positions = runtime.pool.call(aid, "positions", timeout=6)
+        except Exception:
+            continue
+        if open_positions:
+            continue
+        try:
+            runtime.pool.disconnect(aid)
+            runtime.session_backoff.pop(aid, None)
+            released += 1
+        except Exception:
+            pass
+    return released
+
+
 def _workspace_reaper():
     while not _SESSION_STOP.wait(30):
         with _RUNTIMES_LOCK:
             runtimes = list(_RUNTIMES.values())
         for runtime in runtimes:
             try:
+                _release_idle_accounts(runtime)
                 _release_idle_workspace(runtime)
             except Exception:
                 pass
@@ -642,6 +731,7 @@ def demo_bootstrap():
 def connect(req: ConnectRequest):
     try:
         saved = STATE.load()
+        _runtime().account_activity[str(req.account_id)] = time.time()
         if req.account_id not in saved.get("accounts", {}) and len(saved.get("accounts", {})) >= 10:
             raise RuntimeError("Maximum of 10 MT5 accounts per workspace reached")
         prior_cfg = dict((saved.get("accounts") or {}).get(req.account_id) or {})
@@ -784,12 +874,12 @@ def remove_account(account_id: str):
 @app.get("/accounts")
 def accounts():
     runtime = _runtime()
-    cached = _snapshot_cache_get(runtime, "accounts", 0.8)
+    cached = _snapshot_cache_get(runtime, "accounts", 10.0)
     if cached is not None:
         return cached
 
     with runtime.accounts_snapshot_lock:
-        cached = _snapshot_cache_get(runtime, "accounts", 0.8)
+        cached = _snapshot_cache_get(runtime, "accounts", 10.0)
         if cached is not None:
             return cached
 
@@ -849,7 +939,7 @@ def account_quotes(account_id: str, symbols: str = Query(default="")):
         runtime = _runtime()
         requested = [item.strip() for item in symbols.split(",") if item.strip()]
         key = f"quotes:{account_id}:{','.join(requested)}"
-        cached = _snapshot_cache_get(runtime, key, 0.25)
+        cached = _snapshot_cache_get(runtime, key, 1.0)
         if cached is not None:
             return cached
         return _snapshot_cache_set(runtime, key, runtime.pool.call(account_id, "quotes", {"symbols": requested}, timeout=8))
@@ -868,7 +958,7 @@ def account_symbol_info(account_id: str, symbol: str):
     try:
         runtime = _runtime()
         key = f"symbol-info:{account_id}:{symbol}"
-        cached = _snapshot_cache_get(runtime, key, 15.0)
+        cached = _snapshot_cache_get(runtime, key, 60.0)
         if cached is not None:
             return cached
         return _snapshot_cache_set(runtime, key, runtime.pool.call(account_id, "symbol_info", {"symbol": symbol}, timeout=8))
@@ -880,17 +970,43 @@ def account_candles(account_id: str, symbol: str, timeframe: str = "M15", count:
     try:
         runtime = _runtime()
         safe_days = max(1, min(int(days), 30)) if days is not None else None
-        key = f"candles:{account_id}:{symbol}:{timeframe}:{int(count)}:{safe_days or 0}"
+        requested_count = max(1, int(count))
+        # Share one candle snapshot across callers even when they ask for different counts.
+        # A larger cached history safely satisfies smaller bot/chart requests by tail slicing.
+        key = f"candles:{account_id}:{symbol}:{timeframe}:{safe_days or 0}"
+        cached = _snapshot_cache_get(runtime, key, 8.0)
+        if isinstance(cached, dict) and int(cached.get("count") or 0) >= requested_count:
+            rows = list(cached.get("rows") or [])
+            return rows[-requested_count:]
+        with _snapshot_flight_lock(runtime, key):
+            cached = _snapshot_cache_get(runtime, key, 8.0)
+            if isinstance(cached, dict) and int(cached.get("count") or 0) >= requested_count:
+                rows = list(cached.get("rows") or [])
+                return rows[-requested_count:]
+            fetch_count = max(requested_count, int((cached or {}).get("count") or 0) if isinstance(cached, dict) else 0)
+            payload = {"symbol": symbol, "timeframe": timeframe, "count": fetch_count}
+            if safe_days is not None:
+                payload["days"] = safe_days
+            value = runtime.pool.call(account_id, "candles", payload, timeout=20 if safe_days and safe_days > 7 else 12)
+            rows = list(value or [])
+            _snapshot_cache_set(runtime, key, {"count": fetch_count, "rows": rows})
+            return rows[-requested_count:]
+    except Exception as exc:
+        bad(exc)
+
+@app.get("/accounts/{account_id}/positions")
+def account_positions(account_id: str):
+    try:
+        runtime = _runtime()
+        key = f"account-positions:{account_id}"
         cached = _snapshot_cache_get(runtime, key, 1.0)
         if cached is not None:
             return cached
-        payload = {"symbol": symbol, "timeframe": timeframe, "count": count}
-        if safe_days is not None:
-            payload["days"] = safe_days
-        value = runtime.pool.call(account_id, "candles", payload, timeout=20 if safe_days and safe_days > 7 else 12)
+        value = runtime.pool.call(account_id, "positions", timeout=8)
         return _snapshot_cache_set(runtime, key, value)
     except Exception as exc:
         bad(exc)
+
 
 @app.get("/accounts/{account_id}/history")
 def account_history(account_id: str, days: int = 30):
@@ -1120,12 +1236,12 @@ def close_many(req: MultiCloseRequest):
 @app.get("/positions")
 def positions():
     runtime = _runtime()
-    cached = _snapshot_cache_get(runtime, "positions", 0.5)
+    cached = _snapshot_cache_get(runtime, "positions", 3.0)
     if cached is not None:
         return cached
 
     with runtime.positions_snapshot_lock:
-        cached = _snapshot_cache_get(runtime, "positions", 0.5)
+        cached = _snapshot_cache_get(runtime, "positions", 3.0)
         if cached is not None:
             return cached
 

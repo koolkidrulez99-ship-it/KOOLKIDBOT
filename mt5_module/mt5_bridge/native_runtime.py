@@ -8,7 +8,7 @@ from typing import Any
 from urllib.parse import quote
 
 import multi_account_client
-from hub_auth import reset_workspace, set_workspace
+from hub_auth import current_workspace, reset_workspace, set_workspace
 from store import read_state, update_state
 from native_strategies import NATIVE_PRESETS, evaluate
 from native_strategies.common import Series, atr
@@ -18,6 +18,11 @@ _STOPS: dict[tuple[str, int], threading.Event] = {}
 _LOCK = threading.RLock()
 _TIMEFRAME_COUNTS = {"M1": 700, "M5": 500, "M15": 500, "M30": 450, "H1": 360, "H4": 260, "D1": 180}
 _BASE_TIMEFRAME_COUNTS = {"M5": 500, "M15": 500, "H1": 360, "H4": 260, "D1": 10}
+_TIMEFRAME_SECONDS = {"M1": 60, "M5": 300, "M15": 900, "M30": 1800, "H1": 3600, "H4": 14400, "D1": 86400}
+_CANDLE_CACHE: dict[tuple[str, int, str, str, int, int], list[dict[str, Any]]] = {}
+_SYMBOL_INFO_CACHE: dict[tuple[str, int, str], tuple[float, dict[str, Any]]] = {}
+_POSITIONS_CACHE: dict[tuple[str, int], tuple[float, list[dict[str, Any]]]] = {}
+_SNAPSHOT_CACHE_LOCK = threading.RLock()
 
 
 def _now() -> str:
@@ -129,36 +134,108 @@ def _verify_account(login: int, allow_live: bool) -> tuple[dict[str, Any], dict[
         raise PermissionError("LIVE native preset execution requires explicit LIVE confirmation.")
     return worker, info
 
+
+def _cache_workspace() -> str:
+    try:
+        return current_workspace()
+    except Exception:
+        return "global"
+
+
+def _cached_symbol_info(login: int, symbol: str) -> dict[str, Any]:
+    key = (_cache_workspace(), int(login), str(symbol))
+    now = time.time()
+    with _SNAPSHOT_CACHE_LOCK:
+        cached = _SYMBOL_INFO_CACHE.get(key)
+        if cached and now - cached[0] < 60.0:
+            return dict(cached[1])
+    value = dict(multi_account_client.account_request(login, f"/symbol-info/{quote(symbol)}", timeout=8) or {})
+    with _SNAPSHOT_CACHE_LOCK:
+        _SYMBOL_INFO_CACHE[key] = (now, value)
+        if len(_SYMBOL_INFO_CACHE) > 512:
+            oldest = min(_SYMBOL_INFO_CACHE.items(), key=lambda item: item[1][0])[0]
+            _SYMBOL_INFO_CACHE.pop(oldest, None)
+    return dict(value)
+
+
+def _cached_candles(login: int, symbol: str, timeframe: str, count: int) -> list[dict[str, Any]]:
+    tf = str(timeframe).upper()
+    seconds = _TIMEFRAME_SECONDS[tf]
+    bucket = int(time.time()) // seconds
+    key = (_cache_workspace(), int(login), str(symbol), tf, int(count), bucket)
+    with _SNAPSHOT_CACHE_LOCK:
+        cached = _CANDLE_CACHE.get(key)
+        if cached is not None:
+            return [dict(row) for row in cached]
+    rows = multi_account_client.account_request(
+        login, f"/candles/{quote(symbol)}?timeframe={tf}&count={int(count)}", timeout=15,
+    ) or []
+    clean = [dict(row) for row in rows]
+    with _SNAPSHOT_CACHE_LOCK:
+        _CANDLE_CACHE[key] = clean
+        if len(_CANDLE_CACHE) > 2048:
+            current_buckets = {(cache_key[3], cache_key[5]) for cache_key in _CANDLE_CACHE}
+            for cache_key in list(_CANDLE_CACHE):
+                tf_key, bucket_key = cache_key[3], cache_key[5]
+                expected = int(time.time()) // _TIMEFRAME_SECONDS[tf_key]
+                if bucket_key < expected:
+                    _CANDLE_CACHE.pop(cache_key, None)
+            while len(_CANDLE_CACHE) > 2048:
+                _CANDLE_CACHE.pop(next(iter(_CANDLE_CACHE)))
+    return [dict(row) for row in clean]
+
+
 def _fetch_market(
     login: int,
     symbol: str,
     extra_timeframes: set[str] | list[str] | tuple[str, ...] | None = None,
     *,
     required_timeframes_only: bool = False,
+    count_overrides: dict[str, int] | None = None,
+    quote_override: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    quote_rows = multi_account_client.account_request(login, f"/quotes?symbols={quote(symbol)}", timeout=8)
-    if not quote_rows:
-        raise RuntimeError(f"No live quote is available for {symbol}.")
-    q = dict(quote_rows[0])
-    symbol_info = multi_account_client.account_request(login, f"/symbol-info/{quote(symbol)}", timeout=8)
-    data: dict[str, Any] = {"quote": q, "symbol_info": dict(symbol_info or {})}
+    if quote_override is None:
+        quote_rows = multi_account_client.account_request(login, f"/quotes?symbols={quote(symbol)}", timeout=8)
+        if not quote_rows:
+            raise RuntimeError(f"No live quote is available for {symbol}.")
+        q = dict(quote_rows[0])
+    else:
+        q = dict(quote_override)
+    symbol_info = _cached_symbol_info(login, symbol)
+    data: dict[str, Any] = {"quote": q, "symbol_info": symbol_info}
     requested = {str(item).upper() for item in (extra_timeframes or []) if str(item).upper() in _TIMEFRAME_COUNTS}
     counts = {} if required_timeframes_only else dict(_BASE_TIMEFRAME_COUNTS)
+    overrides = {str(k).upper(): max(20, int(v)) for k, v in (count_overrides or {}).items() if str(k).upper() in _TIMEFRAME_COUNTS}
     for tf in requested:
-        counts[tf] = max(counts.get(tf, 0), _TIMEFRAME_COUNTS[tf])
+        requested_count = overrides.get(tf, _TIMEFRAME_COUNTS[tf])
+        counts[tf] = max(counts.get(tf, 0), requested_count)
+    for tf in list(counts):
+        if tf in overrides:
+            counts[tf] = overrides[tf]
     if not counts:
-        counts["M5"] = _TIMEFRAME_COUNTS["M5"]
+        counts["M5"] = overrides.get("M5", _TIMEFRAME_COUNTS["M5"])
     for tf, count in counts.items():
-        rows = multi_account_client.account_request(login, f"/candles/{quote(symbol)}?timeframe={tf}&count={count}", timeout=15)
+        rows = _cached_candles(login, symbol, tf, count)
         data[tf] = Series.from_rows(rows)
         if tf == "D1" and rows:
             data["day_start"] = int(rows[-1].get("time") or 0)
     return data, q
 
 
-def _positions(login: int) -> list[dict[str, Any]]:
-    rows = multi_account_client.request("/positions", timeout=10).get("positions", [])
-    return [dict(row) for row in rows if int(row.get("account_login") or 0) == int(login)]
+def _positions(login: int, *, fresh: bool = False) -> list[dict[str, Any]]:
+    # Scanner passes can share a very short position snapshot. Execution paths
+    # request fresh=True immediately before buying, so trade-slot protection stays exact.
+    key = (_cache_workspace(), int(login))
+    now = time.monotonic()
+    if not fresh:
+        with _SNAPSHOT_CACHE_LOCK:
+            cached = _POSITIONS_CACHE.get(key)
+            if cached and now - cached[0] <= 2.0:
+                return [dict(row) for row in cached[1]]
+    rows = [dict(row) for row in (multi_account_client.account_request(login, "/positions", timeout=10) or [])]
+    with _SNAPSHOT_CACHE_LOCK:
+        _POSITIONS_CACHE[key] = (now, rows)
+    return [dict(row) for row in rows]
 
 
 def _history(login: int, days: int = 2) -> list[dict[str, Any]]:
@@ -560,7 +637,14 @@ def _selected_symbols(bot: dict[str, Any], config: dict[str, Any]) -> list[str]:
     return symbols
 
 
-def _cycle(bot_id: int, symbol_override: str | None = None, *, execute_allowed: bool = True) -> dict[str, Any]:
+def _cycle(
+    bot_id: int,
+    symbol_override: str | None = None,
+    *,
+    execute_allowed: bool = True,
+    positions_override: list[dict[str, Any]] | None = None,
+    quote_override: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     bot = _bot(bot_id)
     if not bot:
         raise RuntimeError("Native bot state was not found.")
@@ -574,11 +658,25 @@ def _cycle(bot_id: int, symbol_override: str | None = None, *, execute_allowed: 
     # Dear Bruce evaluates only its configured execution + bias pair. Fetching
     # unrelated M15/H1/D1 history made an otherwise healthy market show ERROR
     # whenever one optional history request failed on the broker.
+    required_only = int(bot_id) in {1008, 1009, 1010}
+    count_overrides = None
+    if int(bot_id) == 1010:
+        # Scalper X only needs 40 M5 and 60 H1 completed candles; keep a wide
+        # safety margin while avoiding 500/360-bar transfers every 20 seconds.
+        count_overrides = {exec_tf: 120, bias_tf: 120}
+    elif int(bot_id) in {1000, 1001}:
+        # Primordial Black/Blue use M5 + M15 + H1 + H4, with lookbacks <= 100.
+        # 160 bars preserves the strategy context while shrinking Wine IPC work.
+        count_overrides = {"M5": 160, "M15": 160, "H1": 160, "H4": 160}
     market, _ = _fetch_market(
         login,
         symbol,
         {exec_tf, bias_tf},
-        required_timeframes_only=int(bot_id) == 1009,
+        # These presets use only their configured execution/bias candle sets.
+        # Avoid loading unrelated M15/H1/H4/D1 histories every scanner pass.
+        required_timeframes_only=required_only,
+        count_overrides=count_overrides,
+        quote_override=quote_override,
     )
     market.update({"symbol": symbol, "account_login": login})
     strategy_market, exec_tf, bias_tf = prepare_strategy_market(bot_id, market, bot)
@@ -593,7 +691,7 @@ def _cycle(bot_id: int, symbol_override: str | None = None, *, execute_allowed: 
     original_signal_key = str(signal.get("signal_key") or "")
     if original_signal_key:
         signal["signal_key"] = f"{symbol}:{original_signal_key}"
-    positions = _positions(login)
+    positions = list(positions_override) if positions_override is not None else _positions(login, fresh=execute_allowed)
     runtime_bot = {**bot, "account_login": login, "symbol": symbol}
     managed = _managed_position(runtime_bot, positions)
     canonical_exec = str((_preset(bot_id) or {}).get("entry_tf") or "M5").upper()
@@ -675,10 +773,29 @@ def _runner(workspace_id: str, bot_id: int, stop_event: threading.Event) -> None
             try:
                 config = dict(bot.get("native_config") or {})
                 symbols = _selected_symbols(bot, config)
+                login = int(config.get("account_login") or bot.get("account_login") or 0)
+                # One broker position snapshot is enough for all symbols in this
+                # scanner pass. Execution candidates still re-check positions fresh.
+                positions = _positions(login) if login else []
+                scan_quotes: dict[str, dict[str, Any]] = {}
+                if login and symbols:
+                    try:
+                        quote_rows = multi_account_client.account_request(
+                            login, f"/quotes?symbols={quote(','.join(symbols), safe=',')}", timeout=8,
+                        ) or []
+                        scan_quotes = {str(row.get('symbol') or ''): dict(row) for row in quote_rows if row.get('symbol')}
+                    except Exception:
+                        scan_quotes = {}
                 results: list[dict[str, Any]] = []
                 for symbol in symbols:
                     try:
-                        results.append(_cycle(bot_id, symbol, execute_allowed=False))
+                        results.append(_cycle(
+                            bot_id,
+                            symbol,
+                            execute_allowed=False,
+                            positions_override=positions,
+                            quote_override=scan_quotes.get(symbol),
+                        ))
                     except Exception as scan_exc:
                         latest_scan = _bot(bot_id) or bot
                         scan_runtime = dict(latest_scan.get("native_runtime") or {})
@@ -689,8 +806,6 @@ def _runner(workspace_id: str, bot_id: int, stop_event: threading.Event) -> None
                         }
                         _runtime(bot_id, market_scans=market_scans, symbols=symbols)
                 latest = _bot(bot_id) or bot
-                login = int(config.get("account_login") or latest.get("account_login") or 0)
-                positions = _positions(login) if login else []
                 active_positions = _active_managed_positions(latest, positions, symbols) if login else []
                 max_concurrent = _max_concurrent_trades(latest, symbols)
                 candidates = sorted(
@@ -731,6 +846,18 @@ def _runner(workspace_id: str, bot_id: int, stop_event: threading.Event) -> None
                 _STOPS.pop(_key(workspace_id, bot_id), None)
 
 
+def cached_candle_rows(account_login: int, symbol: str, timeframe: str, count: int) -> list[dict[str, Any]]:
+    """Return candle rows cached until the next timeframe boundary.
+
+    Strategies use completed candles only, so reusing the same rows inside the
+    current forming candle cannot change a signal and avoids repeated MT5 IPC.
+    """
+    tf = str(timeframe).upper()
+    if tf not in _TIMEFRAME_SECONDS:
+        raise RuntimeError(f"Unsupported candle timeframe: {tf}")
+    return _cached_candles(int(account_login), str(symbol), tf, int(count))
+
+
 def fetch_market_snapshot(
     account_login: int,
     symbol: str,
@@ -746,7 +873,7 @@ def manage_positions_once(
     market: dict[str, Any] | None = None,
 ) -> None:
     market = market or _fetch_market(int(account_login), str(symbol))[0]
-    positions = _positions(int(account_login))
+    positions = _positions(int(account_login), fresh=True)
     m5 = market.get("M5")
     symbol_info = dict(market.get("symbol_info") or {})
     if not isinstance(m5, Series):
@@ -776,7 +903,7 @@ def execute_signal_once(
     if not bot:
         raise RuntimeError("Native bot state was not found.")
     runtime_bot = {**bot, "account_login": int(account_login), "symbol": str(symbol)}
-    positions = _positions(int(account_login))
+    positions = _positions(int(account_login), fresh=True)
     ok, reason = _daily_guard(runtime_bot, account, positions)
     if not ok:
         raise RuntimeError(reason)

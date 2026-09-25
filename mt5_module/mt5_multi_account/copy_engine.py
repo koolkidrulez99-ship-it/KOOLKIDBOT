@@ -40,6 +40,7 @@ class CopyEngine:
         self.ignored = set()
         self.lock = threading.RLock()
         self.pause_until = 0.0
+        self._structure_market_cache = {}
 
     def state_key(self, base):
         return base if self.group_id == "1" else f"{base}_{self.group_id}"
@@ -266,6 +267,28 @@ class CopyEngine:
                 }
         return None
 
+    def _structure_market_data(self, slave_id, symbol, timeframe):
+        tf = str(timeframe or "M5").upper()
+        seconds = {"M1": 60, "M5": 300, "M15": 900, "M30": 1800, "H1": 3600, "H4": 14400, "D1": 86400}.get(tf, 300)
+        bucket = int(time.time()) // seconds
+        key = (str(slave_id), str(symbol), tf)
+        with self.lock:
+            cached = self._structure_market_cache.get(key)
+            if cached and int(cached[0]) == bucket:
+                return list(cached[1]), dict(cached[2])
+        candles = self.pool.call(
+            slave_id, "candles",
+            {"symbol": symbol, "timeframe": tf, "count": 120},
+            timeout=12,
+        )
+        symbol_info = self.pool.call(slave_id, "symbol_info", {"symbol": symbol}, timeout=8) or {}
+        with self.lock:
+            self._structure_market_cache[key] = (bucket, list(candles or []), dict(symbol_info))
+            if len(self._structure_market_cache) > 128:
+                oldest = next(iter(self._structure_market_cache))
+                self._structure_market_cache.pop(oldest, None)
+        return list(candles or []), dict(symbol_info)
+
     def _trail_copy_by_structure(self, slave_id, meta):
         ticket = int(meta.get("ticket") or 0)
         if not ticket:
@@ -284,12 +307,7 @@ class CopyEngine:
             return False
         cfg = self.config or {}
         timeframe = str(cfg.get("shoulder_timeframe") or "M5").upper()
-        candles = self.pool.call(
-            slave_id, "candles",
-            {"symbol": symbol, "timeframe": timeframe, "count": 120},
-            timeout=12,
-        )
-        symbol_info = self.pool.call(slave_id, "symbol_info", {"symbol": symbol}, timeout=8) or {}
+        candles, symbol_info = self._structure_market_data(slave_id, symbol, timeframe)
         point = float(symbol_info.get("point") or 0)
         side = self.side(position)
         current_sl = float(position.get("sl") or meta.get("last_sl") or 0)
@@ -651,9 +669,8 @@ class CopyEngine:
                     master_positions = self.pool.call(cfg["master_account_id"], "positions")
                     if self.stop_event.is_set():
                         return
-                    master_info = self.pool.call(cfg["master_account_id"], "account_info")
-                    if self.stop_event.is_set():
-                        return
+                    # Account info is fetched only when a new copy is actually executed.
+                    # The old per-second call was unused and created needless MT5 IPC load.
                     current = {str(int(p["ticket"])): p for p in master_positions if self.passes_filter(p)}
 
                     # New master positions can either wait for approval (normal Copy Trading)

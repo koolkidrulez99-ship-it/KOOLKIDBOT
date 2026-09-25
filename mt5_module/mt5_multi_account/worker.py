@@ -122,6 +122,20 @@ def ensure_terminal_trading_permissions(terminal_path):
         encoding = "utf-16" if raw.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig"
         if raw:
             parser.read_string(raw.decode(encoding, errors="strict"))
+    if not parser.has_section("Common"):
+        parser.add_section("Common")
+    # Worker terminals do not use MT5's built-in news feed. Disabling it removes
+    # background UI/network work without affecting broker ticks, orders, or EAs.
+    parser.set("Common", "NewsEnable", "0")
+    if not parser.has_section("Charts"):
+        parser.add_section("Charts")
+    # These private worker terminals are never shown to users. Keep an empty chart
+    # profile selected so MT5 does not render the four default desktop charts in
+    # the background. Python/MT5 market-data calls are independent of open charts.
+    headless_profile = "KOOLKID_HEADLESS"
+    os.makedirs(os.path.join(os.path.dirname(config_dir), "Profiles", "Charts", headless_profile), exist_ok=True)
+    parser.set("Charts", "ProfileLast", headless_profile)
+    parser.set("Charts", "PreloadCharts", "0")
     if not parser.has_section("Experts"):
         parser.add_section("Experts")
     # MT5 common.ini: Enabled=1 turns Algo Trading on; Api=0 keeps external
@@ -279,6 +293,9 @@ def run_worker(config, password, command_q, response_q):
     sim_positions = {}
     next_ticket = 100000
     mt5 = None
+    # Per-account candle history cache. Strategy windows stay identical; only
+    # repeated historical copying is reduced by merging a few fresh bars.
+    candle_cache = {}
 
     try:
         if mode == "real":
@@ -539,6 +556,7 @@ def run_worker(config, password, command_q, response_q):
         if mode == "simulation":
             return []
         names = {"M1": "TIMEFRAME_M1", "M5": "TIMEFRAME_M5", "M15": "TIMEFRAME_M15", "M30": "TIMEFRAME_M30", "H1": "TIMEFRAME_H1", "H4": "TIMEFRAME_H4", "D1": "TIMEFRAME_D1"}
+        frame_seconds = {"M1": 60, "M5": 300, "M15": 900, "M30": 1800, "H1": 3600, "H4": 14400, "D1": 86400}
         timeframe = str(p.get("timeframe") or "M15").upper()
         if timeframe not in names:
             raise RuntimeError(f"Unsupported timeframe '{timeframe}'.")
@@ -547,15 +565,63 @@ def run_worker(config, password, command_q, response_q):
             raise RuntimeError(f"Symbol unavailable: {p['symbol']}")
         mt5_symbol = str(info.get("name") or p["symbol"])
         safe_days = max(1, min(int(p.get("days") or 0), 30)) if p.get("days") is not None else 0
+
+        def pack(r):
+            return {"time": int(r["time"]), "open": float(r["open"]), "high": float(r["high"]), "low": float(r["low"]), "close": float(r["close"]), "volume": int(r["tick_volume"])}
+
         if safe_days:
+            # User-requested chart/history ranges keep their exact range behavior.
             end = datetime.now(timezone.utc)
             start = end - timedelta(days=safe_days)
             rates = mt5.copy_rates_range(mt5_symbol, getattr(mt5, names[timeframe]), start, end)
+            if rates is None:
+                raise RuntimeError(f"Could not load candles: {mt5.last_error()}")
+            return [pack(r) for r in rates]
+
+        count = max(10, min(int(p.get("count") or 220), 1000))
+        key = (mt5_symbol, timeframe)
+        now_mono = time.monotonic()
+        now_epoch = time.time()
+        cached = candle_cache.get(key)
+        cached_rows = list((cached or {}).get("rows") or [])
+
+        # Native strategies discard the final (forming) candle before evaluation.
+        # Until that candle's timeframe boundary is reached, the completed-candle
+        # input is literally unchanged, so serve the same history from memory and
+        # avoid touching MT5 at all. Quotes/positions are still refreshed separately.
+        if cached_rows and len(cached_rows) >= count:
+            latest_open = int(cached_rows[-1].get("time") or 0)
+            next_boundary = latest_open + int(frame_seconds[timeframe]) + 1
+            retry_after = float((cached or {}).get("retry_after") or 0)
+            if now_epoch < next_boundary or now_mono < retry_after:
+                return cached_rows[-count:]
+
+        needs_full = not cached_rows or len(cached_rows) < count
+        if needs_full:
+            rates = mt5.copy_rates_from_pos(mt5_symbol, getattr(mt5, names[timeframe]), 0, count)
+            if rates is None:
+                raise RuntimeError(f"Could not load candles: {mt5.last_error()}")
+            rows = [pack(r) for r in rates]
         else:
-            rates = mt5.copy_rates_from_pos(mt5_symbol, getattr(mt5, names[timeframe]), 0, max(10, min(int(p.get("count") or 220), 1000)))
-        if rates is None:
-            raise RuntimeError(f"Could not load candles: {mt5.last_error()}")
-        return [{"time": int(r["time"]), "open": float(r["open"]), "high": float(r["high"]), "low": float(r["low"]), "close": float(r["close"]), "volume": int(r["tick_volume"])} for r in rates]
+            # A timeframe boundary passed. Pull only a handful of bars so the newly
+            # completed candle enters the cached window without recopying 500-700 bars.
+            recent_count = min(count, 6)
+            rates = mt5.copy_rates_from_pos(mt5_symbol, getattr(mt5, names[timeframe]), 0, recent_count)
+            if rates is None:
+                raise RuntimeError(f"Could not refresh candles: {mt5.last_error()}")
+            merged = {int(row["time"]): dict(row) for row in cached_rows}
+            for rate in rates:
+                row = pack(rate)
+                merged[int(row["time"])] = row
+            rows = [merged[t] for t in sorted(merged)][-count:]
+
+        # Closed/paused markets can pass a wall-clock boundary without publishing a
+        # new bar. Back off briefly so an inactive symbol cannot create a tight poll.
+        prior_latest = int(cached_rows[-1].get("time") or 0) if cached_rows else 0
+        latest_open = int(rows[-1].get("time") or 0) if rows else 0
+        retry_after = (now_mono + 30.0) if prior_latest and latest_open <= prior_latest and now_epoch >= prior_latest + int(frame_seconds[timeframe]) else 0.0
+        candle_cache[key] = {"updated": now_mono, "rows": rows, "retry_after": retry_after}
+        return list(rows)
 
     def history(p):
         if mode == "simulation":

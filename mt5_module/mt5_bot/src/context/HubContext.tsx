@@ -103,7 +103,7 @@ export function HubProvider({ children }: { children: ReactNode }) {
 
   const [prefs, setPrefsState] = useState<HubPreferences>(() => {
     const defaults: HubPreferences = {
-      pollMs: isSimulation ? 15000 : 5000,
+      pollMs: isSimulation ? 15000 : 10000,
       confirmDanger: true,
       restoreWorkspace: true,
       reconnectOnStartup: true,
@@ -215,19 +215,19 @@ export function HubProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!serverPrefsLoaded || loading || didApplyStartupReconnect.current || !accounts.length) return;
     didApplyStartupReconnect.current = true;
+    if (!prefs.reconnectOnStartup) return;
     const remembered = workspaceService.getRaw<ActiveSel>('active_account', 'all');
-    const preferred = accounts.find((a) => a.login === remembered) || accounts.find((a) => a.is_active);
-    const ordered = preferred ? [preferred, ...accounts.filter((a) => a.id !== preferred.id)] : accounts;
+    const preferred = accounts.find((a) => a.login === remembered)
+      || accounts.find((a) => a.is_active)
+      || accounts.find((a) => a.status === 'connected')
+      || accounts[0];
     let cancelled = false;
     void (async () => {
-      for (const account of ordered) {
-        if (cancelled) return;
-        const action = prefs.reconnectOnStartup ? 'connect' : 'disconnect';
-        if ((action === 'connect' && account.status === 'connected') || (action === 'disconnect' && account.status !== 'connected')) continue;
+      if (preferred && preferred.status !== 'connected') {
         try {
-          await mt5AccountService.action(account.id, action);
+          await mt5AccountService.action(preferred.id, 'connect');
         } catch {
-          // Continue sequentially so one account requiring fresh credentials does not block the rest.
+          // The account remains saved; the user can reconnect it with fresh credentials if required.
         }
       }
       if (!cancelled) await refresh(true);
@@ -251,7 +251,7 @@ export function HubProvider({ children }: { children: ReactNode }) {
   }, [accounts]);
 
   useEffect(() => {
-    const id = window.setInterval(() => refresh(true), prefs.pollMs);
+    const id = window.setInterval(() => refresh(true), Math.max(10000, prefs.pollMs));
     return () => window.clearInterval(id);
   }, [refresh, prefs.pollMs]);
 
@@ -315,7 +315,7 @@ export function HubProvider({ children }: { children: ReactNode }) {
       finally { inFlight = false; }
     };
     load();
-    const id = window.setInterval(load, 3000);
+    const id = window.setInterval(load, 5000);
     return () => { cancelled = true; window.clearInterval(id); };
   }, [marketAccountLogin, mt5Symbols]);
 
