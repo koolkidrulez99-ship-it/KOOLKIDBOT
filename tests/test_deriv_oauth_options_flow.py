@@ -233,24 +233,43 @@ def test_pat_authenticated_connection_event_includes_switch_accounts(monkeypatch
     assert sent == [json.dumps({"balance": 1, "subscribe": 1})]
 
 
-def test_switch_pat_account_rejects_oauth_session(monkeypatch):
+def test_switch_account_supports_oauth_demo_to_live_without_relogin(monkeypatch):
+    captured = {}
     state = server._build_default_client_state()
     state.update({
         "api_token": "oauth-secret-token",
         "api_token_type": "oauth",
+        "deriv_app_id": server.DERIV_OAUTH_APP_ID,
         "ws_connected": True,
         "ws": object(),
         "oauth_options_account_id": "DOT111",
+        "options_account_id": "DOT111",
+        "deriv_account_id": "DOT111",
+        "oauth_accounts": [
+            {"account_id": "DOT111", "account_type": "demo", "currency": "USD"},
+            {"account_id": "CR222", "account_type": "real", "currency": "USD"},
+        ],
     })
     monkeypatch.setattr(server, "login_required", lambda: True)
     monkeypatch.setattr(server, "get_client_state", lambda: ("cid-oauth", state))
+    monkeypatch.setattr(server, "_fetch_deriv_oauth_accounts", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("cached OAuth accounts should be used")))
+
+    def fake_start(cid, live_state, token, token_type, account_id, reason, app_id=None):
+        captured["start"] = (cid, token, token_type, account_id, reason, app_id)
+        live_state["api_token_type"] = token_type
+        live_state["oauth_options_account_id"] = account_id
+        live_state["options_account_id"] = account_id
+
+    monkeypatch.setattr(server, "_start_deriv_connection_for_state", fake_start)
 
     with server.app.test_request_context("/switch_pat_account", method="POST", json={"account_id": "CR222"}):
-        response, status = server.switch_pat_account()
+        response = server.switch_pat_account()
 
     data = response.get_json()
-    assert status == 409
-    assert "PAT connections" in data["message"]
+    assert data["status"] == "switching"
+    assert data["token_type"] == "oauth"
+    assert data["account_id"] == "CR222"
+    assert captured["start"] == ("cid-oauth", "oauth-secret-token", "oauth", "CR222", "account_switch", server.DERIV_OAUTH_APP_ID)
 
 
 def test_switch_pat_account_uses_stored_token_and_selected_account(monkeypatch):
@@ -277,11 +296,7 @@ def test_switch_pat_account_uses_stored_token_and_selected_account(monkeypatch):
     monkeypatch.setattr(server, "login_required", lambda: True)
     monkeypatch.setattr(server, "get_client_state", lambda: ("cid-pat-switch", state))
 
-    def fake_fetch(token, app_id=None):
-        captured["fetch"] = (token, app_id)
-        return accounts
-
-    monkeypatch.setattr(server, "_fetch_deriv_pat_accounts", fake_fetch)
+    monkeypatch.setattr(server, "_fetch_deriv_pat_accounts", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("cached PAT accounts should be used")))
 
     def fake_start(cid, live_state, token, token_type, account_id, reason, app_id=None):
         captured["start"] = (cid, token, token_type, account_id, reason, app_id)
@@ -298,8 +313,7 @@ def test_switch_pat_account_uses_stored_token_and_selected_account(monkeypatch):
     encoded = json.dumps(data)
     assert data["status"] == "switching"
     assert data["account_id"] == "CR222"
-    assert captured["fetch"] == ("pat-secret-token", "pat-app")
-    assert captured["start"] == ("cid-pat-switch", "pat-secret-token", "pat", "CR222", "pat_account_switch", "pat-app")
+    assert captured["start"] == ("cid-pat-switch", "pat-secret-token", "pat", "CR222", "account_switch", "pat-app")
     assert "pat-secret-token" not in encoded
 
 

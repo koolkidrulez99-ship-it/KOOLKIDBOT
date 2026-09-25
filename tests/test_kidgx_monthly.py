@@ -34,6 +34,8 @@ def test_jokerjoe_kidgx_differs_has_no_server_side_five_second_throttle(monkeypa
         "human_symbol": "R_10",
         "ws_connected": True,
         "ws": DummyWS(),
+        "api_token_type": "legacy",
+        "api_token": "test-token",
         "balance": 1000.0,
         "last_live_balance": 1000.0,
         "last_known_trade_balance": 1000.0,
@@ -45,6 +47,13 @@ def test_jokerjoe_kidgx_differs_has_no_server_side_five_second_throttle(monkeypa
     strat.set_kidgx_barrier(4)
 
     monkeypatch.setattr(server.socketio, "emit", lambda *args, **kwargs: None)
+
+    def fake_send_buy(client_id, contract_type, stake, symbol, barrier, **kwargs):
+        wire_type = "DIGITDIFF" if str(contract_type).upper() in {"DIFFERS", "DIGITDIFF"} else contract_type
+        state["ws"].send(json.dumps({"parameters": {"contract_type": wire_type, "barrier": str(barrier)}}))
+        return True, "Trade sent"
+
+    monkeypatch.setattr(server, "send_buy", fake_send_buy)
 
     try:
         server.process_tick(cid, _tick("R_10", 1, 1))

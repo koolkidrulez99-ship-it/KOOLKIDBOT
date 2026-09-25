@@ -159,6 +159,13 @@ class ResearchEngine:
             db.execute('INSERT OR REPLACE INTO settings VALUES(?,?)', ('variant_totals', json.dumps(self.variant_totals)))
             db.execute('INSERT OR REPLACE INTO settings VALUES(?,?)', ('sequences', json.dumps(self.seq)))
             db.execute('INSERT OR REPLACE INTO settings VALUES(?,?)', ('last_epochs', json.dumps(self.last_epochs)))
+            # Bound raw tick storage without touching cumulative paper outcomes/statistics.
+            max_ticks = max(1, int(os.environ.get('KOOLKID_INTELLIGENCE_MAX_TICKS', '500')))
+            touched = {row[0] for row in self.write_batch}
+            for symbol in touched:
+                cutoff_seq = int(self.seq.get(symbol, 0)) - max_ticks + 1
+                if cutoff_seq > 0:
+                    db.execute('DELETE FROM ticks WHERE symbol=? AND seq<?', (symbol, cutoff_seq))
         self.write_batch.clear()
         self.setup_batch.clear()
         self.paper_batch.clear()
@@ -337,7 +344,7 @@ def run_engine():
                         raise ResearchError('Global market data is stale; reconnecting.')
                 if now >= next_snapshot:
                     engine.snapshots()
-                    engine.store.prune(max(1, int(os.environ.get('KOOLKID_INTELLIGENCE_RETENTION_DAYS', '7'))))
+                    engine.store.trim_ticks(int(os.environ.get('KOOLKID_INTELLIGENCE_MAX_TICKS', '500')))
                     next_snapshot = now + 10
                 if now >= next_ping:
                     feed.request({'ping': 1})

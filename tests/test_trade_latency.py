@@ -502,6 +502,7 @@ def test_tick_ui_throttle_does_not_block_trade_result(monkeypatch):
 def test_send_buy_allows_authorized_stale_transport_and_sends_trade(monkeypatch):
     emitted = []
     reconnects = []
+    engine_calls = []
     ws = _DummyWs()
     state = {
         "ws_nonce": "nonce-1",
@@ -510,6 +511,7 @@ def test_send_buy_allows_authorized_stale_transport_and_sends_trade(monkeypatch)
         "ws_last_message_at": time.time() - (server.DERIV_WS_STALE_TIMEOUT_SEC + 5),
         "ws": ws,
         "api_token": "token",
+        "api_token_type": "oauth",
         "ws_reconnect_pending": False,
         "ws_stop_event": threading.Event(),
         "req_meta": {},
@@ -524,6 +526,7 @@ def test_send_buy_allows_authorized_stale_transport_and_sends_trade(monkeypatch)
     monkeypatch.setattr(server, "clients", {"cid-stale": state})
     monkeypatch.setattr(server.socketio, "emit", lambda event, payload=None, room=None: emitted.append((event, payload, room)))
     monkeypatch.setattr(server, "_schedule_ws_reconnect", lambda cid, nonce, delay_sec=0.25: reconnects.append((cid, nonce, delay_sec)) or True)
+    monkeypatch.setattr(server, "_execute_oauth_options_trade_engine", lambda trade_request, **kwargs: engine_calls.append((trade_request, kwargs)) or (True, "Trade sent"))
 
     ok, msg = server.send_buy("cid-stale", "OVER", 1.0, "R_10", 5)
 
@@ -532,7 +535,7 @@ def test_send_buy_allows_authorized_stale_transport_and_sends_trade(monkeypatch)
     assert state["ws_connected"] is True
     assert ws.closed is False
     assert reconnects == []
-    assert any(message.get("buy") == 1 for message in ws.messages)
+    assert len(engine_calls) == 1
 
 
 def test_api_connection_status_keeps_authorized_stale_socket_trade_ready(monkeypatch):
@@ -546,6 +549,7 @@ def test_api_connection_status_keeps_authorized_stale_socket_trade_ready(monkeyp
         "ws_last_message_at": time.time() - (server.DERIV_WS_STALE_TIMEOUT_SEC + 5),
         "ws": ws,
         "api_token": "token",
+        "api_token_type": "oauth",
         "ws_reconnect_pending": False,
         "ws_stop_event": threading.Event(),
         "balance": 55.0,
@@ -585,6 +589,7 @@ def test_api_connection_status_reconnects_when_authorize_stays_pending_too_long(
         "ws_last_message_at": time.time(),
         "ws": ws,
         "api_token": "token",
+        "api_token_type": "oauth",
         "ws_reconnect_pending": False,
         "ws_stop_event": threading.Event(),
         "balance": 55.0,
@@ -629,6 +634,7 @@ def test_ensure_trade_socket_ready_skips_reconnect_during_tick_warmup(monkeypatc
         "ws_transport_connected": True,
         "ws": ws,
         "api_token": "token",
+        "api_token_type": "oauth",
         "current_symbol": "R_10",
         "human_symbol": "R_10",
         "ws_last_message_at": now - 200.0,

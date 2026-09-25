@@ -23,9 +23,9 @@
       let data = {};
       if (action === 'save') data = {pat: field.value, app_id: el('globalIntelligenceAppId').value};
       if (action === 'confirmation') data = {enabled: el('globalConfirmationEnabled').checked, window: el('globalConfirmationWindow').value};
-      field.value = '';
       const r = await fetch('/admin/intelligence/' + action, {method:'POST',headers:{'Content-Type':'application/json','X-Intelligence-CSRF':csrf},body:JSON.stringify(data)});
       const d = await r.json(); if (!r.ok) throw Error(d.error || 'Command failed.');
+      if (action === 'save') field.value = '';
       await refresh();
     } catch (e) { status.textContent = e.message; }
     finally { busy = false; buttons.forEach(x => x.disabled = false); }

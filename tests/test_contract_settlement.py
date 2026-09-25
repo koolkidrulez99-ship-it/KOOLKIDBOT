@@ -1051,7 +1051,7 @@ def test_resolve_post_contract_balance_uses_fresher_current_balance_when_live_ba
     assert state["local_balance_adjustment"] == pytest.approx(0.0)
 
 
-def test_send_buy_allows_trade_when_current_balance_is_higher_than_stale_live_balance():
+def test_send_buy_allows_trade_when_current_balance_is_higher_than_stale_live_balance(monkeypatch):
     class DummyWs:
         def __init__(self):
             self.sent = []
@@ -1069,6 +1069,9 @@ def test_send_buy_allows_trade_when_current_balance_is_higher_than_stale_live_ba
     state["last_live_balance"] = 6000.0
     state["last_known_trade_balance"] = 6000.0
     state["active_profile"] = "KOOLKID"
+    captured = []
+    monkeypatch.setattr(server, "_ensure_trade_socket_ready", lambda *args, **kwargs: (True, None))
+    monkeypatch.setattr(server, "execute_deriv_trade", lambda request: captured.append(request) or (True, "Trade sent"))
 
     try:
         ok, msg = server.send_buy(cid, "OVER", 7000.0, "R_10", 5)
@@ -1077,7 +1080,8 @@ def test_send_buy_allows_trade_when_current_balance_is_higher_than_stale_live_ba
 
     assert ok is True
     assert msg == "Trade sent"
-    assert len(state["ws"].sent) == 1
+    assert len(captured) == 1
+    assert captured[0]["stake"] == pytest.approx(7000.0)
 
 
 def test_process_contract_ignores_duplicate_non_unchain_settlement(monkeypatch):
@@ -1144,7 +1148,7 @@ def test_process_contract_ignores_duplicate_non_unchain_settlement(monkeypatch):
     assert len(trade_events) == 1
 
 
-def test_send_buy_allows_stake_equal_to_rounded_balance():
+def test_send_buy_allows_stake_equal_to_rounded_balance(monkeypatch):
     class DummyWs:
         def __init__(self):
             self.sent = []
@@ -1160,6 +1164,9 @@ def test_send_buy_allows_stake_equal_to_rounded_balance():
     state["ws"] = DummyWs()
     state["balance"] = 99.995
     state["active_profile"] = "KOOLKID"
+    captured = []
+    monkeypatch.setattr(server, "_ensure_trade_socket_ready", lambda *args, **kwargs: (True, None))
+    monkeypatch.setattr(server, "execute_deriv_trade", lambda request: captured.append(request) or (True, "Trade sent"))
 
     try:
         ok, msg = server.send_buy(cid, "OVER", 100.0, "R_10", 5)
@@ -1168,7 +1175,8 @@ def test_send_buy_allows_stake_equal_to_rounded_balance():
 
     assert ok is True
     assert msg == "Trade sent"
-    assert len(state["ws"].sent) == 1
+    assert len(captured) == 1
+    assert captured[0]["stake"] == pytest.approx(100.0)
 
 
 def test_send_unchain_hl_trade_uses_half_barrier_setting(monkeypatch):
@@ -1186,6 +1194,7 @@ def test_send_unchain_hl_trade_uses_half_barrier_setting(monkeypatch):
     }
     server.clients["test-half-barrier"] = state
     monkeypatch.setattr(server, "_check_unchain_hl_risk_block", lambda state: None)
+    monkeypatch.setattr(server, "execute_deriv_trade", lambda request: sent.append({"parameters": {"barrier": request["barrier"]}}) or (True, "Trade sent"))
 
     try:
         ok, msg = _send_unchain_hl_trade(
@@ -1221,6 +1230,7 @@ def test_send_unchain_hl_trade_can_skip_saved_half_toggle(monkeypatch):
     }
     server.clients["test-skip-half-barrier"] = state
     monkeypatch.setattr(server, "_check_unchain_hl_risk_block", lambda state: None)
+    monkeypatch.setattr(server, "execute_deriv_trade", lambda request: sent.append({"parameters": {"barrier": request["barrier"]}}) or (True, "Trade sent"))
 
     try:
         ok, msg = _send_unchain_hl_trade(

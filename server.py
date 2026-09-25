@@ -302,6 +302,8 @@ DERIV_ACCOUNTS_URL = os.environ.get(
     "DERIV_ACCOUNTS_URL",
     f"{DERIV_OPTIONS_API_BASE_URL}/trading/v1/options/accounts",
 )
+DERIV_AUTH_REST_TIMEOUT_SEC = max(2.0, float(os.environ.get("DERIV_AUTH_REST_TIMEOUT_SEC", "4")))
+DERIV_AUTH_REST_RETRIES = max(1, int(os.environ.get("DERIV_AUTH_REST_RETRIES", "2")))
 
 ACTIVE_BROADCAST_NOTICE = None
 BROADCAST_NOTICE_LOCK = threading.RLock()
@@ -366,16 +368,13 @@ def _safe_deriv_payload_text(payload):
 
 
 def _deriv_connection_type(state):
-    return str((state or {}).get("api_token_type") or "legacy").strip().lower() or "legacy"
+    token_type = str((state or {}).get("api_token_type") or "").strip().lower()
+    return token_type if token_type in ("oauth", "pat") else "none"
 
 
 def _deriv_trade_connection_mode(state):
     token_type = _deriv_connection_type(state)
-    if token_type == "oauth":
-        return "oauth"
-    if token_type == "pat":
-        return "pat"
-    return "legacy_token"
+    return token_type if token_type in ("oauth", "pat") else "disconnected"
 
 
 def _uses_new_deriv_trade_api(state):
@@ -463,13 +462,6 @@ def _is_noisy_deriv_rate_limit_message(value):
         or "ratelimit" in text
         or "exceeded" in text and ("buy" in text or "proposal" in text or "rate" in text)
         or "contract proposal" in text and ("reached" in text or "limit" in text)
-    )
-
-
-def _should_suppress_user_rate_limit_popup(state, message):
-    return bool(
-        _deriv_trade_connection_mode(state) == "legacy_token"
-        and _is_noisy_deriv_rate_limit_message(message)
     )
 
 
@@ -1532,6 +1524,8 @@ def execute_deriv_trade(trade_request):
     state = trade_request.get("state") or clients.get(client_id)
     if not client_id or not isinstance(state, dict):
         return False, "No client state"
+    if not _uses_new_deriv_trade_api(state):
+        return False, "Deriv trading requires an OAuth or PAT connection"
     ready, ready_msg = _ensure_trade_socket_ready(client_id, state)
     if not ready:
         return False, ready_msg
@@ -1570,339 +1564,6 @@ def execute_deriv_trade(trade_request):
             duration=duration,
             duration_unit=duration_unit,
         )
-    barrier = trade_request.get("barrier")
-    requested_barrier = barrier
-    req_meta = dict(trade_request.get("req_meta") or {})
-    mode = _deriv_trade_connection_mode(state)
-    account_type = "demo" if _oauth_account_is_demo({"account_id": state.get("deriv_account_id")}) else "real"
-    debug = {
-        "button": trade_request.get("button") or trade_request.get("strategy_name"),
-        "profile": trade_request.get("profile"),
-        "connection_mode": mode,
-        "account_id": state.get("deriv_account_id"),
-        "account_type": account_type,
-        "ws_ready_state": _websocket_ready_state_label(state),
-        "otp_authenticated": _is_otp_authenticated_socket(state),
-        "requested_symbol": requested_symbol,
-        "requested_contract_type": requested_contract,
-        "deriv_contract_type": deriv_contract,
-        "requested_barrier": requested_barrier,
-    }
-
-    underlying_symbol = requested_symbol
-    if _uses_new_deriv_trade_api(state):
-        logger.info(
-            "[%s] auth_state_before_trade profile=%s button=%s connection_mode=%s account_id=%s account_type=%s ws_ready_state=%s otp_authenticated=%s",
-            client_id,
-            trade_request.get("profile") or state.get("active_profile"),
-            trade_request.get("button") or trade_request.get("strategy_name") or trade_request.get("mode") or "",
-            mode,
-            _mask_account_id(state.get("deriv_account_id") or ""),
-            account_type,
-            _websocket_ready_state_label(state),
-            _is_otp_authenticated_socket(state),
-        )
-        trade_context = trade_request.get("button") or trade_request.get("strategy_name") or trade_request.get("profile") or "trade"
-        is_kidgx_trade = str(trade_request.get("mode") or req_meta.get("mode") or "").upper() == "KIDGX"
-        underlying_symbol, symbol_err = resolve_new_api_symbol(state, requested_symbol, context=trade_context, client_id=client_id)
-        debug["underlying_symbol"] = underlying_symbol
-        debug["ws_ready_state"] = _websocket_ready_state_label(state)
-        debug["otp_authenticated"] = _is_otp_authenticated_socket(state)
-        if symbol_err:
-            debug["error"] = symbol_err
-            debug["failed_at"] = "symbol_resolver"
-            _deriv_trade_debug_log(client_id, "blocked", debug)
-            return False, symbol_err
-        if is_kidgx_trade:
-            logger.info(
-                "[%s] kidgx_symbol_resolved profile=%s original_symbol=%s resolved_symbol=%s",
-                client_id,
-                trade_request.get("profile") or state.get("active_profile"),
-                requested_symbol,
-                underlying_symbol,
-            )
-        contracts_for, contracts_err = _get_contracts_for_symbol(client_id, state, underlying_symbol)
-        if contracts_err:
-            debug["error"] = contracts_err
-            debug["failed_at"] = "contracts_for_error"
-            _deriv_trade_debug_log(client_id, "blocked", debug)
-            return False, contracts_err
-        available = _contracts_for_has_contract_type(contracts_for, deriv_contract)
-        debug["contract_available"] = bool(available)
-        if not available:
-            msg = f"Contract type {deriv_contract} is not available for {underlying_symbol}"
-            debug["error"] = msg
-            debug["failed_at"] = "contract_resolver"
-            _deriv_trade_debug_log(client_id, "blocked", debug)
-            return False, msg
-        if is_kidgx_trade:
-            logger.info(
-                "[%s] kidgx_contract_resolved profile=%s original_contract_type=%s resolved_contract_type=%s barrier=%s available=%s",
-                client_id,
-                trade_request.get("profile") or state.get("active_profile"),
-                requested_contract,
-                deriv_contract,
-                barrier,
-                bool(available),
-            )
-        debug["resolved_barrier"] = None
-    else:
-        debug["underlying_symbol"] = underlying_symbol
-        debug["contract_available"] = True
-        debug["resolved_barrier"] = barrier
-
-    parameters = {
-        "amount": float(stake),
-        "basis": "stake",
-        "contract_type": deriv_contract,
-        "currency": str(trade_request.get("currency") or "USD"),
-        "duration": int(duration),
-        "duration_unit": duration_unit,
-        "symbol": underlying_symbol,
-    }
-    if barrier not in (None, ""):
-        parameters["barrier"] = barrier
-    if trade_request.get("barrier2") not in (None, ""):
-        parameters["barrier2"] = trade_request.get("barrier2")
-    if deriv_contract.startswith("DIGIT") and barrier not in (None, ""):
-        try:
-            parameters["barrier"] = int(float(barrier))
-        except Exception:
-            parameters["barrier"] = str(barrier)
-    if _uses_new_deriv_trade_api(state):
-        original_parameters = dict(parameters)
-        parameters, sanitize_err, sanitize_meta = sanitize_new_api_trade_parameters(
-            state,
-            client_id,
-            contracts_for,
-            deriv_contract,
-            parameters,
-            requested_barrier,
-            duration,
-            duration_unit,
-            trade_request.get("button") or trade_request.get("strategy_name") or trade_request.get("profile") or "trade",
-        )
-        debug["original_payload"] = original_parameters
-        debug["sanitized_payload"] = parameters
-        debug["resolved_barrier"] = (sanitize_meta or {}).get("resolved_barrier")
-        debug["matched_contract"] = (sanitize_meta or {}).get("matched_item")
-        removed_fields = (sanitize_meta or {}).get("removed") or {}
-        if removed_fields:
-            debug["removed_fields"] = ",".join(sorted(removed_fields.keys()))
-        if sanitize_err:
-            debug["error"] = sanitize_err
-            debug["failed_at"] = "parameter_sanitizer"
-            _deriv_trade_debug_log(client_id, "blocked", debug)
-            logger.info(
-                "[%s] auth_state_after_trade profile=%s button=%s connection_mode=%s ws_ready_state=%s otp_authenticated=%s trade_failed_without_disconnect=true failed_at=parameter_sanitizer",
-                client_id,
-                trade_request.get("profile") or state.get("active_profile"),
-                trade_request.get("button") or trade_request.get("strategy_name") or trade_request.get("mode") or "",
-                mode,
-                _websocket_ready_state_label(state),
-                _is_otp_authenticated_socket(state),
-            )
-            return False, sanitize_err
-
-    req_meta.setdefault("profile", trade_request.get("profile") or state.get("active_profile"))
-    req_meta.setdefault("type", requested_contract)
-    req_meta.setdefault("contract_type", requested_contract)
-    req_meta.setdefault("deriv_contract_type", deriv_contract)
-    req_meta["requested_barrier"] = requested_barrier
-    req_meta["barrier"] = parameters.get("barrier")
-    req_meta["resolved_barrier"] = parameters.get("barrier")
-    req_meta.setdefault("stake", float(stake))
-    req_meta.setdefault("symbol", requested_symbol)
-    req_meta.setdefault("underlying_symbol", underlying_symbol)
-    req_meta.setdefault("time", now_time())
-    req_meta.setdefault("mode", trade_request.get("mode"))
-    req_meta.setdefault("duration", int(duration))
-    req_meta.setdefault("duration_unit", duration_unit)
-    if trade_request.get("budget_reservation") is not None:
-        req_meta.setdefault("budget_reservation", trade_request.get("budget_reservation"))
-    state.setdefault("req_meta", {})[req_id] = req_meta
-    _stamp_trade_latency(req_meta, "buy_send")
-
-    legacy_payload = {
-        "req_id": req_id,
-        "buy": 1,
-        "price": float(stake),
-        "parameters": dict(parameters),
-    }
-    if _uses_new_deriv_trade_api(state):
-        proposal_payload = _proposal_payload_for_connection(state, {"proposal": 1, "req_id": req_id, **parameters})
-        debug["proposal_payload"] = proposal_payload
-        debug["ws_ready_state"] = _websocket_ready_state_label(state)
-        debug["otp_authenticated"] = _is_otp_authenticated_socket(state)
-        if str(trade_request.get("mode") or req_meta.get("mode") or "").upper() == "KIDGX":
-            logger.info(
-                "[%s] kidgx_final_proposal_payload profile=%s payload=%s",
-                client_id,
-                trade_request.get("profile") or state.get("active_profile"),
-                _safe_deriv_payload_text(proposal_payload),
-            )
-        _deriv_trade_debug_log(client_id, "proposal_send", debug)
-        proposal, proposal_err = _request_digit_proposal_for_buy(client_id, state, proposal_payload, timeout_sec=float(trade_request.get("proposal_timeout_sec", 5.0) or 5.0))
-        debug["proposal_response"] = proposal or {"error": proposal_err}
-        debug["proposal_id"] = (proposal or {}).get("id")
-        if str(trade_request.get("mode") or req_meta.get("mode") or "").upper() == "KIDGX":
-            logger.info(
-                "[%s] kidgx_deriv_response profile=%s stage=proposal response=%s",
-                client_id,
-                trade_request.get("profile") or state.get("active_profile"),
-                _safe_deriv_payload_text(proposal or {"error": proposal_err}),
-            )
-        if proposal_err:
-            debug["error"] = proposal_err
-            debug["failed_at"] = "proposal_response"
-            _deriv_trade_debug_log(client_id, "proposal_failed", debug)
-            logger.info(
-                "[%s] auth_state_after_trade profile=%s button=%s connection_mode=%s ws_ready_state=%s otp_authenticated=%s trade_failed_without_disconnect=true failed_at=proposal_response",
-                client_id,
-                trade_request.get("profile") or state.get("active_profile"),
-                trade_request.get("button") or trade_request.get("strategy_name") or trade_request.get("mode") or "",
-                mode,
-                _websocket_ready_state_label(state),
-                _is_otp_authenticated_socket(state),
-            )
-            try:
-                state.get("req_meta", {}).pop(req_id, None)
-            except Exception:
-                pass
-            return False, proposal_err
-        proposal_id = (proposal or {}).get("id")
-        if proposal_id in (None, ""):
-            msg = "Proposal id missing"
-            debug["error"] = msg
-            debug["failed_at"] = "proposal_id_missing"
-            _deriv_trade_debug_log(client_id, "proposal_failed", debug)
-            logger.info(
-                "[%s] auth_state_after_trade profile=%s button=%s connection_mode=%s ws_ready_state=%s otp_authenticated=%s trade_failed_without_disconnect=true failed_at=proposal_id_missing",
-                client_id,
-                trade_request.get("profile") or state.get("active_profile"),
-                trade_request.get("button") or trade_request.get("strategy_name") or trade_request.get("mode") or "",
-                mode,
-                _websocket_ready_state_label(state),
-                _is_otp_authenticated_socket(state),
-            )
-            try:
-                state.get("req_meta", {}).pop(req_id, None)
-            except Exception:
-                pass
-            return False, msg
-        ask_price = _safe_float((proposal or {}).get("ask_price"), _safe_float((proposal or {}).get("display_value"), stake))
-        if str(trade_request.get("mode") or req_meta.get("mode") or "").upper() == "CLOUD_REINVEST_100":
-            payout = _safe_float((proposal or {}).get("payout"), None)
-            proposal_profit = _proposal_profit_value(proposal, stake)
-            profit_percent = ((float(proposal_profit) / float(ask_price)) * 100.0) if proposal_profit is not None and ask_price not in (None, 0) else None
-            minimum_profit = _safe_float(trade_request.get("minimum_profit"), 0.0)
-            if minimum_profit > 0 and (proposal_profit is None or float(proposal_profit) + 1e-9 < minimum_profit):
-                state.get("req_meta", {}).pop(req_id, None)
-                return False, "SETUP_REJECTED_LOW_PAYOUT"
-            req_meta.update({
-                "proposal_id": proposal_id,
-                "proposal_ask_price": ask_price,
-                "proposal_payout": payout,
-                "proposal_profit": proposal_profit,
-                "proposal_profit_percent": profit_percent,
-            })
-        buy_payload = {
-            "req_id": req_id,
-            "buy": proposal_id,
-            "price": float(ask_price if ask_price is not None else stake),
-        }
-        debug["buy_payload"] = buy_payload
-        debug["ws_ready_state"] = _websocket_ready_state_label(state)
-        debug["otp_authenticated"] = _is_otp_authenticated_socket(state)
-        _deriv_trade_debug_log(client_id, "buy_send", debug)
-        try:
-            research_error = _check_backtest_request(client_id, state, req_id)
-            if research_error:
-                return False, research_error
-            ws.send(json.dumps(buy_payload))
-        except Exception as exc:
-            debug["error"] = str(exc)
-            debug["failed_at"] = "buy_send"
-            _deriv_trade_debug_log(client_id, "buy_failed", debug)
-            _mark_ws_unhealthy_and_reconnect(client_id, state, "Deriv connection failed while sending a trade. Reconnecting now...")
-            try:
-                state.get("req_meta", {}).pop(req_id, None)
-            except Exception:
-                pass
-            return False, str(exc)
-        logger.info(
-            "[%s] auth_state_after_trade profile=%s button=%s connection_mode=%s ws_ready_state=%s otp_authenticated=%s",
-            client_id,
-            trade_request.get("profile") or state.get("active_profile"),
-            trade_request.get("button") or trade_request.get("strategy_name") or trade_request.get("mode") or "",
-            mode,
-            _websocket_ready_state_label(state),
-            _is_otp_authenticated_socket(state),
-        )
-        return True, "Trade sent"
-
-    if trade_request.get("minimum_profit") not in (None, ""):
-        proposal_payload = {"proposal": 1, "req_id": req_id, **parameters}
-        debug["proposal_payload"] = proposal_payload
-        debug["minimum_profit"] = trade_request.get("minimum_profit")
-        _deriv_trade_debug_log(client_id, "legacy_min_profit_proposal_send", debug)
-        proposal_req_id, proposal, proposal_err = _request_min_profit_proposal_for_buy(
-            client_id,
-            state,
-            proposal_payload,
-            req_meta,
-            stake=stake,
-            minimum_profit=trade_request.get("minimum_profit"),
-            retries=trade_request.get("minimum_profit_retries") or 0,
-            buy_best_available=bool(trade_request.get("buy_best_available")),
-        )
-        debug["proposal_response"] = proposal or {"error": proposal_err}
-        debug["proposal_profit"] = _proposal_profit_value(proposal, stake) if proposal else None
-        debug["proposal_id"] = (proposal or {}).get("id")
-        if proposal_err:
-            debug["error"] = proposal_err
-            debug["failed_at"] = "minimum_profit_filter"
-            _deriv_trade_debug_log(client_id, "legacy_min_profit_blocked", debug)
-            try:
-                state.get("req_meta", {}).pop(req_id, None)
-                state.get("req_meta", {}).pop(str(req_id), None)
-            except Exception:
-                pass
-            return False, proposal_err
-        buy_req_id = proposal_req_id or req_id
-        debug["buy_payload"] = {"req_id": buy_req_id, "buy": (proposal or {}).get("id")}
-        _deriv_trade_debug_log(client_id, "legacy_min_profit_buy_send", debug)
-        try:
-            return _send_buy_from_proposal(client_id, state, buy_req_id, proposal, stake)
-        except Exception as exc:
-            debug["error"] = str(exc)
-            debug["failed_at"] = "buy_send"
-            _deriv_trade_debug_log(client_id, "legacy_min_profit_buy_failed", debug)
-            _mark_ws_unhealthy_and_reconnect(client_id, state, "Deriv connection failed while sending a trade. Reconnecting now...")
-            try:
-                state.get("req_meta", {}).pop(buy_req_id, None)
-                state.get("req_meta", {}).pop(str(buy_req_id), None)
-            except Exception:
-                pass
-            return False, str(exc)
-
-    debug["buy_payload"] = legacy_payload
-    _deriv_trade_debug_log(client_id, "legacy_buy_send", debug)
-    research_error = _check_backtest_request(client_id, state, req_id)
-    if research_error:
-        return False, research_error
-    try:
-        ws.send(json.dumps(legacy_payload))
-        return True, "Trade sent"
-    except Exception as exc:
-        debug["error"] = str(exc)
-        _deriv_trade_debug_log(client_id, "legacy_buy_failed", debug)
-        _mark_ws_unhealthy_and_reconnect(client_id, state, "Deriv connection failed while sending a trade. Reconnecting now...")
-        try:
-            state.get("req_meta", {}).pop(req_id, None)
-        except Exception:
-            pass
-        return False, str(exc)
 
 
 def _send_trade_payload_with_oauth_proposal(client_id, state, req_id, payload, stake):
@@ -1916,11 +1577,6 @@ def _send_trade_payload_with_oauth_proposal(client_id, state, req_id, payload, s
         params = dict((payload or {}).get("parameters") or {})
         if not params:
             return False, "Proposal parameters missing"
-        logger.info(
-            "[%s] deriv_legacy_direct_buy_payload_for_compare payload=%s",
-            client_id,
-            _safe_deriv_payload_text(payload),
-        )
         meta = {}
         try:
             meta = dict((state.get("req_meta") or {}).get(req_id) or (state.get("req_meta") or {}).get(str(req_id)) or {})
@@ -1942,15 +1598,7 @@ def _send_trade_payload_with_oauth_proposal(client_id, state, req_id, payload, s
             "budget_reservation": meta.get("budget_reservation"),
             "req_meta": meta,
         })
-    logger.info(
-        "[%s] TEMP buy_about_to_be_sent token_type=%s payload=%s",
-        client_id,
-        _deriv_connection_type(state),
-        _safe_deriv_payload_text(payload),
-    )
-    ws.send(json.dumps(payload))
-    logger.info("[%s] TEMP buy_actually_sent req_id=%s token_type=%s", client_id, req_id, _deriv_connection_type(state))
-    return True, "Trade sent"
+    return False, "Deriv trading requires an OAuth or PAT connection"
 
 
 def _oauth_account_is_demo(account):
@@ -2008,9 +1656,7 @@ def _request_options_authenticated_ws_url(client_id, token, account_id, app_id=N
         app_id,
     )
     try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            status = getattr(resp, "status", 200)
-            body = resp.read().decode("utf-8", errors="replace")
+        status, body = _read_deriv_auth_response(req)
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
         message = _extract_deriv_rest_error(body)
@@ -2023,8 +1669,9 @@ def _request_options_authenticated_ws_url(client_id, token, account_id, app_id=N
             _sanitize_deriv_oauth_response_text(body),
         )
         raise RuntimeError(f"Deriv OTP request failed ({exc.code}): {message}") from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"Deriv OTP request failed: {exc.reason}") from exc
+    except (urllib.error.URLError, TimeoutError) as exc:
+        reason = getattr(exc, "reason", exc)
+        raise RuntimeError(f"Deriv OTP request failed: {reason}") from exc
 
     try:
         payload = json.loads(body or "{}")
@@ -2055,6 +1702,27 @@ def _safe_token_scoped_message(message, token):
     if secret and secret in text:
         text = text.replace(secret, _mask_api_token(secret) or "<redacted>")
     return text
+
+
+def _read_deriv_auth_response(req):
+    last_error = None
+    for attempt in range(DERIV_AUTH_REST_RETRIES):
+        try:
+            with urllib.request.urlopen(req, timeout=DERIV_AUTH_REST_TIMEOUT_SEC) as resp:
+                return getattr(resp, "status", 200), resp.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            last_error = exc
+            transient = exc.code == 429 or 500 <= int(exc.code or 0) < 600
+            if not transient or attempt + 1 >= DERIV_AUTH_REST_RETRIES:
+                raise
+        except (urllib.error.URLError, TimeoutError) as exc:
+            last_error = exc
+            if attempt + 1 >= DERIV_AUTH_REST_RETRIES:
+                raise
+        time.sleep(0.15 * (attempt + 1))
+    if last_error:
+        raise last_error
+    raise RuntimeError("Deriv authentication request failed")
 
 
 def _get_deriv_pat_app_id():
@@ -2094,11 +1762,9 @@ def _fetch_deriv_pat_accounts(pat_token, app_id=None, allow_empty=False):
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            status_code = getattr(resp, "status", 200)
-            body_text = resp.read().decode("utf-8", errors="replace")
-            logger.info("[pat] deriv_pat_accounts_response status=%s app_id=%s", status_code, app_id)
-            payload = json.loads(body_text or "{}")
+        status_code, body_text = _read_deriv_auth_response(req)
+        logger.info("[pat] deriv_pat_accounts_response status=%s app_id=%s", status_code, app_id)
+        payload = json.loads(body_text or "{}")
     except urllib.error.HTTPError as exc:
         body_text = exc.read().decode("utf-8", errors="replace")
         logger.warning("[pat] deriv_pat_accounts_response status=%s response_text=%s", exc.code, _sanitize_deriv_oauth_response_text(body_text))
@@ -2184,29 +1850,46 @@ def _find_deriv_options_account(accounts, account_id):
     return None
 
 
-def _pat_account_switch_payload(state):
+def _deriv_account_switch_payload(state):
     token_type = _deriv_connection_type(state)
+    if token_type == "oauth":
+        accounts = _safe_deriv_options_accounts_for_response((state or {}).get("oauth_accounts") or [])
+        current_account_id = str(
+            (state or {}).get("oauth_options_account_id")
+            or (state or {}).get("options_account_id")
+            or (state or {}).get("deriv_account_id")
+            or ""
+        ).strip()
+    elif token_type == "pat":
+        accounts = _safe_deriv_options_accounts_for_response((state or {}).get("pat_accounts") or [])
+        current_account_id = str(
+            (state or {}).get("pat_options_account_id")
+            or (state or {}).get("options_account_id")
+            or (state or {}).get("deriv_account_id")
+            or ""
+        ).strip()
+    else:
+        accounts = []
+        current_account_id = ""
+
+    available = bool(str((state or {}).get("api_token") or "").strip() and len(accounts) > 1)
     payload = {
         "connection_mode": token_type,
-        "pat_account_switch_available": False,
-        "pat_current_account_id": "",
-        "pat_accounts": [],
+        "account_switch_available": available,
+        "current_account_id": current_account_id,
+        "accounts": accounts,
+        "pat_account_switch_available": bool(token_type == "pat" and available),
+        "pat_current_account_id": current_account_id if token_type == "pat" else "",
+        "pat_accounts": accounts if token_type == "pat" else [],
+        "oauth_account_switch_available": bool(token_type == "oauth" and available),
+        "oauth_current_account_id": current_account_id if token_type == "oauth" else "",
+        "oauth_accounts": accounts if token_type == "oauth" else [],
     }
-    if token_type != "pat":
-        return payload
-    accounts = _safe_deriv_options_accounts_for_response((state or {}).get("pat_accounts") or [])
-    current_account_id = str(
-        (state or {}).get("pat_options_account_id")
-        or (state or {}).get("options_account_id")
-        or (state or {}).get("deriv_account_id")
-        or ""
-    ).strip()
-    payload.update({
-        "pat_account_switch_available": bool(str((state or {}).get("api_token") or "").strip() and accounts),
-        "pat_current_account_id": current_account_id,
-        "pat_accounts": accounts,
-    })
     return payload
+
+
+def _pat_account_switch_payload(state):
+    return _deriv_account_switch_payload(state)
 
 
 def _base64url_no_padding(raw_bytes):
@@ -2269,7 +1952,7 @@ def _exchange_deriv_oauth_code(code, code_verifier, redirect_uri):
     )
     logger.info("[oauth] backend_token_exchange_start endpoint=%s redirect_uri=%s", DERIV_OAUTH_TOKEN_URL, redirect_uri)
     try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
+        with urllib.request.urlopen(req, timeout=DERIV_AUTH_REST_TIMEOUT_SEC) as resp:
             status_code = getattr(resp, "status", 200)
             body_text = resp.read().decode("utf-8", errors="replace")
             logger.info(
@@ -2288,9 +1971,10 @@ def _exchange_deriv_oauth_code(code, code_verifier, redirect_uri):
             _sanitize_deriv_oauth_response_text(body_text),
         )
         raise RuntimeError(f"Deriv OAuth token exchange failed ({exc.code}): {_extract_deriv_rest_error(body_text)}") from exc
-    except urllib.error.URLError as exc:
-        logger.warning("[oauth] backend_token_exchange_transport_error endpoint=%s error=%s", DERIV_OAUTH_TOKEN_URL, exc.reason)
-        raise RuntimeError(f"Deriv OAuth token exchange failed: {exc.reason}") from exc
+    except (urllib.error.URLError, TimeoutError) as exc:
+        reason = getattr(exc, "reason", exc)
+        logger.warning("[oauth] backend_token_exchange_transport_error endpoint=%s error=%s", DERIV_OAUTH_TOKEN_URL, reason)
+        raise RuntimeError(f"Deriv OAuth token exchange failed: {reason}") from exc
     token = str(payload.get("access_token") or "").strip()
     if not token:
         raise RuntimeError("Deriv OAuth did not return an access token")
@@ -2332,17 +2016,16 @@ def _fetch_deriv_oauth_accounts(access_token, allow_empty=False):
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            status_code = getattr(resp, "status", 200)
-            body_text = resp.read().decode("utf-8", errors="replace")
-            logger.info("[oauth] deriv_oauth_accounts_response status=%s response_text=%s", status_code, _sanitize_deriv_oauth_response_text(body_text))
-            payload = json.loads(body_text or "{}")
+        status_code, body_text = _read_deriv_auth_response(req)
+        logger.info("[oauth] deriv_oauth_accounts_response status=%s response_text=%s", status_code, _sanitize_deriv_oauth_response_text(body_text))
+        payload = json.loads(body_text or "{}")
     except urllib.error.HTTPError as exc:
         body_text = exc.read().decode("utf-8", errors="replace")
         logger.warning("[oauth] deriv_oauth_accounts_response status=%s response_text=%s", exc.code, _sanitize_deriv_oauth_response_text(body_text))
         raise RuntimeError(f"Deriv account list failed ({exc.code}): {_extract_deriv_rest_error(body_text)}") from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"Deriv account list failed: {exc.reason}") from exc
+    except (urllib.error.URLError, TimeoutError) as exc:
+        reason = getattr(exc, "reason", exc)
+        raise RuntimeError(f"Deriv account list failed: {reason}") from exc
     raw_accounts = payload.get("data") or payload.get("accounts") or []
     if isinstance(raw_accounts, dict):
         candidates = []
@@ -2491,7 +2174,7 @@ WS_RECONNECT_MAX_DELAY_SEC = float(os.environ.get("WS_RECONNECT_MAX_DELAY_SEC", 
 DERIV_WS_STALE_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_STALE_TIMEOUT_SEC", "1200"))
 DERIV_WS_PING_INTERVAL_SEC = float(os.environ.get("DERIV_WS_PING_INTERVAL_SEC", "20"))
 DERIV_WS_PING_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_PING_TIMEOUT_SEC", "25"))
-DERIV_WS_CONNECT_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_CONNECT_TIMEOUT_SEC", "75"))
+DERIV_WS_CONNECT_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_CONNECT_TIMEOUT_SEC", "20"))
 DERIV_WS_AUTHORIZE_TIMEOUT_SEC = float(os.environ.get("DERIV_WS_AUTHORIZE_TIMEOUT_SEC", "60"))
 GOLDEN_CARD_WS_RECONNECT_DELAY_SEC = float(os.environ.get("GOLDEN_CARD_WS_RECONNECT_DELAY_SEC", "1.0"))
 GOLDEN_CARD_WS_UI_EMIT_INTERVAL_SEC = float(os.environ.get("GOLDEN_CARD_WS_UI_EMIT_INTERVAL_SEC", "0.35"))
@@ -4064,11 +3747,12 @@ def _build_default_client_state():
         "username": None,
         "license_access_cache": {"checked_at": 0.0, "ok": False, "reason": "not checked"},
         "api_token": "",
-        "api_token_type": "legacy",
-        "deriv_account_id": DERIV_ACCOUNT_ID,
-        "deriv_app_id": DERIV_APP_ID,
+        "api_token_type": "none",
+        "deriv_account_id": "",
+        "deriv_app_id": "",
         "options_account_id": "",
         "oauth_options_account_id": "",
+        "oauth_accounts": [],
         "oauth_pending_access_token": "",
         "oauth_pending_accounts": [],
         "pat_options_account_id": "",
@@ -4417,14 +4101,18 @@ def _ensure_cloud_runtime_for_state(source_state, cloud_key, status=None):
             logger.exception("cloud_single_session_cleanup_failed owner=%s", owner)
     runtime_cid = _cloud_runtime_client_id(cloud_key)
     runtime = clients.get(runtime_cid)
-    source_token_type = str(source_state.get("api_token_type") or "legacy").strip().lower()
-    if source_token_type not in ("legacy", "oauth", "pat"):
-        source_token_type = "legacy"
-    selected_account_id = str(source_state.get("deriv_account_id") or DERIV_ACCOUNT_ID or "").strip()
+    source_token_type = _deriv_connection_type(source_state)
+    if source_token_type not in ("oauth", "pat"):
+        logger.warning("cloud_runtime_rejected unsupported Deriv connection type=%s", source_token_type)
+        return False
+    selected_account_id = str(source_state.get("deriv_account_id") or source_state.get("options_account_id") or "").strip()
+    if not selected_account_id:
+        logger.warning("cloud_runtime_rejected missing Deriv Options account")
+        return False
     if isinstance(runtime, dict):
         runtime_identity_changed = bool(
             str(runtime.get("api_token") or "").strip() != token
-            or str(runtime.get("api_token_type") or "legacy").strip().lower() != source_token_type
+            or _deriv_connection_type(runtime) != source_token_type
             or str(runtime.get("deriv_account_id") or "").strip() != selected_account_id
         )
         if runtime_identity_changed:
@@ -4450,13 +4138,16 @@ def _ensure_cloud_runtime_for_state(source_state, cloud_key, status=None):
         "current_symbol": current_market,
         "human_symbol": current_market,
         "api_token": token,
-        # Preserve PAT/OAuth identity so the background runtime obtains a fresh
-        # account OTP URL instead of attempting legacy {authorize: token}.
+        # Preserve the OAuth/PAT identity so the background runtime obtains a fresh
+        # authenticated Options WebSocket URL for the selected account.
         "api_token_type": source_token_type,
         "deriv_account_id": selected_account_id,
-        "options_account_id": source_state.get("options_account_id") or "",
-        "oauth_options_account_id": source_state.get("oauth_options_account_id") or "",
-        "deriv_app_id": source_state.get("deriv_app_id") or (DERIV_PAT_APP_ID if source_token_type == "pat" else DERIV_APP_ID),
+        "options_account_id": source_state.get("options_account_id") or selected_account_id,
+        "oauth_options_account_id": source_state.get("oauth_options_account_id") or (selected_account_id if source_token_type == "oauth" else ""),
+        "pat_options_account_id": source_state.get("pat_options_account_id") or (selected_account_id if source_token_type == "pat" else ""),
+        "oauth_accounts": list(source_state.get("oauth_accounts") or []),
+        "pat_accounts": list(source_state.get("pat_accounts") or []),
+        "deriv_app_id": source_state.get("deriv_app_id") or (DERIV_PAT_APP_ID if source_token_type == "pat" else DERIV_OAUTH_APP_ID),
         "last_seen": time.time(),
     })
     runtime.setdefault("strategies", {})["CLOUD"] = runtime.setdefault("strategies", {}).get("CLOUD") or CloudProfileStrategy()
@@ -4557,11 +4248,13 @@ def _connection_trade_ready_payload(state):
 def _is_trade_ready(state):
     if not isinstance(state, dict):
         return False, "No client state"
-    token_type = str(state.get("api_token_type") or "legacy").lower()
-    if token_type == "oauth_pending":
+    raw_token_type = str(state.get("api_token_type") or "").lower()
+    if raw_token_type == "oauth_pending":
         return False, "Select a Deriv account before trading"
-    if token_type == "pat_pending":
+    if raw_token_type == "pat_pending":
         return False, "Select a Deriv Options account before trading"
+    if _deriv_connection_type(state) not in ("oauth", "pat"):
+        return False, "Connect with Deriv OAuth or PAT before trading"
     if not state.get("ws_connected"):
         return False, "Deriv websocket is not authenticated"
     if not state.get("ws"):
@@ -4580,8 +4273,8 @@ def _has_live_trade_balance(state):
 
 
 def _should_skip_local_balance_precheck(state):
-    """OAuth OTP sockets can be trade-ready before the first balance event arrives."""
-    return _deriv_connection_type(state) == "oauth" and not _has_live_trade_balance(state)
+    """Authenticated OAuth/PAT OTP sockets can be ready before the first balance event."""
+    return _deriv_connection_type(state) in ("oauth", "pat") and not _has_live_trade_balance(state)
 
 
 def _log_trade_path(client_id, stage, state, **extra):
@@ -11340,7 +11033,7 @@ def _restore_pending_contract_subscriptions(client_id, state, ws):
     return restored
 
 
-def _pat_account_switch_block_reason(state):
+def _deriv_account_switch_block_reason(state):
     if not isinstance(state, dict):
         return "Session is not ready for account switching"
     human_pending = state.get("human_pending_contracts")
@@ -20204,29 +19897,27 @@ def _start_koolkid_golden_card_ws(client_id, state, *, reason="start"):
     if not scan.get("running"):
         return False
     token = str(state.get("api_token", "") or "").strip()
-    token_type = str(state.get("api_token_type") or "legacy").lower()
-    scanner_ws_url = DERIV_WS
-    scanner_authorize_token = ""
-    if _token_uses_deriv_otp_ws(token, token_type):
-        if token_type == "pat":
-            account_id = str(state.get("pat_options_account_id") or state.get("options_account_id") or state.get("deriv_account_id") or "").strip()
-        else:
-            account_id = str(state.get("options_account_id") or state.get("oauth_options_account_id") or state.get("deriv_account_id") or "").strip()
-        if not account_id:
-            _log_koolkid_golden_card_audit(client_id, state, "golden_scanner_ws_account_missing")
-            _schedule_koolkid_golden_card_ws_reconnect(client_id, state, delay_sec=3.0)
-            return False
-        try:
-            if token_type == "pat":
-                scanner_ws_url = _request_pat_options_ws_url(client_id, token, account_id, state.get("deriv_app_id"))
-            else:
-                scanner_ws_url = _request_oauth_options_ws_url(client_id, token, account_id, state.get("deriv_app_id"))
-        except Exception as exc:
-            _log_koolkid_golden_card_audit(client_id, state, "golden_scanner_ws_otp_url_failed", error=str(exc))
-            _schedule_koolkid_golden_card_ws_reconnect(client_id, state, delay_sec=3.0)
-            return False
+    token_type = _deriv_connection_type(state)
+    if not token or token_type not in ("oauth", "pat"):
+        _log_koolkid_golden_card_audit(client_id, state, "golden_scanner_ws_auth_missing", token_type=token_type)
+        return False
+    if token_type == "pat":
+        account_id = str(state.get("pat_options_account_id") or state.get("options_account_id") or state.get("deriv_account_id") or "").strip()
     else:
-        scanner_authorize_token = token
+        account_id = str(state.get("oauth_options_account_id") or state.get("options_account_id") or state.get("deriv_account_id") or "").strip()
+    if not account_id:
+        _log_koolkid_golden_card_audit(client_id, state, "golden_scanner_ws_account_missing")
+        _schedule_koolkid_golden_card_ws_reconnect(client_id, state, delay_sec=3.0)
+        return False
+    try:
+        if token_type == "pat":
+            scanner_ws_url = _request_pat_options_ws_url(client_id, token, account_id, state.get("deriv_app_id"))
+        else:
+            scanner_ws_url = _request_oauth_options_ws_url(client_id, token, account_id, state.get("deriv_app_id"))
+    except Exception as exc:
+        _log_koolkid_golden_card_audit(client_id, state, "golden_scanner_ws_otp_url_failed", error=str(exc))
+        _schedule_koolkid_golden_card_ws_reconnect(client_id, state, delay_sec=3.0)
+        return False
     lock = _get_koolkid_golden_card_ws_lock(state)
     with lock:
         existing = state.get("golden_card_ws_thread")
@@ -20258,18 +19949,6 @@ def _start_koolkid_golden_card_ws(client_id, state, *, reason="start"):
         if live_state is not state or live_state.get("golden_card_ws_nonce") != nonce:
             return
         live_state["golden_card_ws_last_message_at"] = time.time()
-        if scanner_authorize_token:
-            try:
-                ws.send(json.dumps({"authorize": scanner_authorize_token}))
-                _log_koolkid_golden_card_audit(cid, live_state, "golden_scanner_ws_open_authorizing", nonce=nonce, reason=reason)
-                return
-            except Exception as exc:
-                _log_koolkid_golden_card_audit(cid, live_state, "golden_scanner_ws_authorize_send_failed", error=str(exc), nonce=nonce)
-                try:
-                    ws.close()
-                except Exception:
-                    pass
-                return
         live_state["golden_card_ws_connected"] = True
         _log_koolkid_golden_card_audit(cid, live_state, "golden_scanner_ws_open", nonce=nonce, reason=reason)
         _subscribe_koolkid_golden_card_ws_symbols(cid, live_state, force=True)
@@ -20285,11 +19964,6 @@ def _start_koolkid_golden_card_ws(client_id, state, *, reason="start"):
             return
         if data.get("error"):
             _log_koolkid_golden_card_audit(cid, live_state, "golden_scanner_ws_error_payload", error=data.get("error"))
-            return
-        if data.get("authorize"):
-            live_state["golden_card_ws_connected"] = True
-            _log_koolkid_golden_card_audit(cid, live_state, "golden_scanner_ws_authorized", nonce=nonce)
-            _subscribe_koolkid_golden_card_ws_symbols(cid, live_state, force=True)
             return
         if "tick" not in data:
             return
@@ -20926,6 +20600,15 @@ def _prime_oauth_options_market_validation(client_id, state):
         logger.warning("[%s] oauth_options_market_prime_error error=%s", client_id, exc)
 
 
+def _restore_deriv_post_auth_runtime(client_id, state, source):
+    try:
+        if _uses_new_deriv_trade_api(state):
+            _prime_oauth_options_market_validation(client_id, state)
+        _restore_required_tick_subscriptions(client_id, state, f"{source}_restore")
+    except Exception as exc:
+        logger.warning("[%s] deriv_post_auth_restore_failed source=%s error=%s", client_id, source, exc)
+
+
 def _complete_deriv_authenticated_session(client_id, state, ws, loginid="UNKNOWN", balance=0.0, source="authorize", subscribe_balance=True):
     state["ws_connected"] = True
     state["ws_last_authorized_at"] = time.time()
@@ -20952,7 +20635,6 @@ def _complete_deriv_authenticated_session(client_id, state, ws, loginid="UNKNOWN
 
     logger.info("[%s] TEMP %s_success loginid=%s live_account_balance=%s", client_id, source, loginid, balance if balance_known else "pending")
 
-    _restore_required_tick_subscriptions(client_id, state, f"{source}_restore")
     _restore_pending_contract_subscriptions(client_id, state, ws)
     tick_health = _get_tick_stream_health(client_id, state, self_heal=False)
     state["tick_stream_last_emitted_healthy"] = bool(tick_health.get("tick_stream_healthy"))
@@ -20981,10 +20663,10 @@ def _complete_deriv_authenticated_session(client_id, state, ws, loginid="UNKNOWN
     request_human_seed(client_id)
     if _uses_new_deriv_trade_api(state):
         threading.Thread(
-            target=_prime_oauth_options_market_validation,
-            args=(client_id, state),
+            target=_restore_deriv_post_auth_runtime,
+            args=(client_id, state, source),
             daemon=True,
-            name=f"oauth_options_prime_{client_id}",
+            name=f"deriv_post_auth_{client_id}",
         ).start()
 
 
@@ -21224,40 +20906,12 @@ def handle_on_message(client_id, ws, message, expected_nonce):
             logger.error(f"[{client_id}] API Error: {msg}")
             if retry_human_pair_msg:
                 logger.warning("[%s] human_manual_pair_retry_failed reason=%s", client_id, retry_human_pair_msg)
-            if _should_suppress_user_rate_limit_popup(state, msg):
-                logger.info(
-                    "[%s] suppressed_legacy_rate_limit_popup profile=%s mode=%s message=%s",
-                    client_id,
-                    (failed_buy_meta or {}).get("profile") or state.get("active_profile"),
-                    (failed_buy_meta or {}).get("mode"),
-                    msg,
-                )
-                return
             socketio.emit("api_error", {"message": msg}, room=client_id)
             return
-
-        if "authorize" in data:
-            loginid = data["authorize"].get("loginid", "UNKNOWN")
-            balance = float(data["authorize"].get("balance", 0))
-            logger.info(f"[{client_id}] ✅ Authorized: {loginid} Balance={balance}")
-            _complete_deriv_authenticated_session(client_id, state, ws, loginid, balance, source="authorize")
 
         if "balance" in data:
             try:
                 balance = float(data["balance"]["balance"])
-                if _deriv_connection_type(state) == "pat" and not state.get("ws_connected"):
-                    loginid = str(state.get("pat_options_account_id") or state.get("options_account_id") or state.get("deriv_account_id") or "PAT").strip() or "PAT"
-                    logger.info("[%s] TEMP pat_options_balance_authenticated account_id=%s balance=%s", client_id, _mask_account_id(loginid), balance)
-                    _complete_deriv_authenticated_session(
-                        client_id,
-                        state,
-                        ws,
-                        loginid,
-                        balance,
-                        source="pat_options_balance",
-                        subscribe_balance=False,
-                    )
-                    return
                 state["balance"] = balance
                 state["last_live_balance"] = balance
                 if balance > 0.0:
@@ -22441,31 +22095,38 @@ def handle_on_open(client_id, ws, expected_nonce):
     state["ws_last_message_at"] = time.time()
     state["ws_last_authorized_at"] = 0.0
     _start_deriv_keepalive(client_id, state, ws, expected_nonce)
-    token_type = str(state.get("api_token_type") or "legacy").lower()
-    state["ws_authorize_deadline_at"] = 0.0 if _token_uses_deriv_otp_ws(state.get("api_token"), token_type) else time.time() + float(DERIV_WS_AUTHORIZE_TIMEOUT_SEC)
+    token_type = _deriv_connection_type(state)
+    state["ws_authorize_deadline_at"] = 0.0
 
-    api_token = state.get("api_token")
-    if api_token:
+    api_token = str(state.get("api_token") or "").strip()
+    if not api_token or token_type not in ("oauth", "pat"):
+        logger.warning("[%s] deriv_authenticated_websocket_open_rejected token_type=%s token_present=%s", client_id, token_type, bool(api_token))
         try:
-            if _token_uses_deriv_otp_ws(api_token, token_type):
-                loginid = str(state.get("options_account_id") or state.get("deriv_account_id") or token_type.upper()).strip() or token_type.upper()
-                if token_type == "pat":
-                    state["pat_ws_pending_balance_auth"] = True
-                    logger.info("[%s] TEMP pat_options_websocket_open_waiting_balance nonce=%s account_id=%s token_type=%s", client_id, expected_nonce, _mask_account_id(loginid), token_type)
-                    ws.send(json.dumps({"balance": 1, "subscribe": 1}))
-                else:
-                    # OAuth Options websockets are authenticated by the REST OTP URL before connection.
-                    logger.info("[%s] TEMP oauth_options_websocket_authenticated nonce=%s account_id=%s token_type=%s", client_id, expected_nonce, loginid, token_type)
-                    _complete_deriv_authenticated_session(client_id, state, ws, loginid, None, source="oauth_options_otp")
-            else:
-                # Old Deriv tokens still use the legacy authorize message over WebSocket.
-                logger.info("[%s] TEMP authorize_sent token_present=True nonce=%s", client_id, expected_nonce)
-                ws.send(json.dumps({"authorize": api_token}))
-        except Exception as exc:
-            logger.exception("[%s] TEMP authorize_failure send_exception=%s", client_id, exc)
-            socketio.emit("api_error", {"message": f"Authentication failed: {exc}"}, room=client_id)
-    else:
-            logger.warning("[%s] TEMP authorize_failure token_present=False", client_id)
+            ws.close()
+        except Exception:
+            pass
+        return
+
+    try:
+        loginid = str(state.get("options_account_id") or state.get("deriv_account_id") or token_type.upper()).strip() or token_type.upper()
+        logger.info(
+            "[%s] deriv_options_websocket_authenticated nonce=%s account_id=%s token_type=%s",
+            client_id,
+            expected_nonce,
+            _mask_account_id(loginid),
+            token_type,
+        )
+        _complete_deriv_authenticated_session(
+            client_id,
+            state,
+            ws,
+            loginid,
+            None,
+            source=f"{token_type}_options_otp",
+        )
+    except Exception as exc:
+        logger.exception("[%s] deriv_authenticated_session_start_failed token_type=%s error=%s", client_id, token_type, exc)
+        socketio.emit("api_error", {"message": f"Authentication failed: {exc}"}, room=client_id)
 
 
 def _start_deriv_keepalive(client_id, state, ws, expected_nonce):
@@ -22796,9 +22457,15 @@ def start_ws_for_client(client_id):
 
     token = str(state.get("api_token", "") or "").strip()
     stored_token_type = str(state.get("api_token_type") or "").lower()
-    token_type = "oauth" if stored_token_type == "oauth" else ("pat" if stored_token_type == "pat" else "legacy")
+    token_type = stored_token_type if stored_token_type in ("oauth", "pat") else "none"
     state["api_token_type"] = token_type
-    ws_url = DERIV_WS
+    if token_type == "none":
+        logger.warning("[%s] deriv_websocket_start_rejected unsupported connection type", client_id)
+        with lock:
+            state["ws_connect_started_at"] = 0.0
+            state["ws_thread"] = None
+        return
+    ws_url = ""
     if _token_uses_deriv_otp_ws(token, token_type):
         if token_type == "pat":
             account_id = str(state.get("pat_options_account_id") or state.get("options_account_id") or state.get("deriv_account_id") or "").strip()
@@ -22833,7 +22500,7 @@ def start_ws_for_client(client_id):
                 state["pat_otp_ws_url"] = "<redacted>"
             else:
                 state["oauth_options_account_id"] = account_id
-                state["pat_otp_ws_url"] = ws_url
+                state["pat_otp_ws_url"] = "<redacted>"
         except Exception as exc:
             message = _safe_token_scoped_message(str(exc) or "Failed to get Deriv authenticated WebSocket URL", token)
             logger.warning("[%s] deriv_options_otp_failed token_type=%s account_id=%s token=%s error=%s", client_id, token_type, _mask_account_id(account_id), _mask_api_token(token), message)
@@ -23007,7 +22674,9 @@ def _pause_for_pat_account_selection(client_id, state, pat_token, accounts, app_
 
 
 def _start_deriv_connection_for_state(cid, state, token, token_type, account_id, reason, app_id=None):
-    normalized_token_type = str(token_type or "legacy").strip().lower() or "legacy"
+    normalized_token_type = str(token_type or "").strip().lower()
+    if normalized_token_type not in ("oauth", "pat"):
+        raise ValueError("Only Deriv OAuth and PAT connections are supported")
     state["api_token"] = token
     state["api_token_type"] = normalized_token_type
     state["deriv_account_id"] = account_id
@@ -23016,16 +22685,12 @@ def _start_deriv_connection_for_state(cid, state, token, token_type, account_id,
         state["oauth_options_account_id"] = account_id
         state["pat_options_account_id"] = ""
         state["pat_accounts"] = []
-    elif normalized_token_type == "pat":
+    else:
         state["options_account_id"] = account_id
         state["oauth_options_account_id"] = ""
         state["pat_options_account_id"] = account_id
-    else:
-        state["options_account_id"] = ""
-        state["oauth_options_account_id"] = ""
-        state["pat_options_account_id"] = ""
-        state["pat_accounts"] = []
-    app_id_default = DERIV_OAUTH_APP_ID if normalized_token_type == "oauth" else ((str(app_id or "").strip() or _get_deriv_pat_app_id()) if normalized_token_type == "pat" else DERIV_APP_ID)
+        state["oauth_accounts"] = []
+    app_id_default = DERIV_OAUTH_APP_ID if normalized_token_type == "oauth" else (str(app_id or "").strip() or _get_deriv_pat_app_id())
     state["deriv_app_id"] = str(app_id or app_id_default or "1089").strip() or "1089"
     if normalized_token_type == "pat":
         state["pat_pending_access_token"] = ""
@@ -23140,9 +22805,11 @@ def deriv_oauth_callback():
         session.pop("deriv_oauth_redirect_uri", None)
 
     cid, state = get_client_state()
+    safe_accounts = _safe_deriv_options_accounts_for_response(accounts)
     state["oauth_pending_access_token"] = access_token
-    state["oauth_pending_accounts"] = accounts
-    logger.info("[%s] deriv_oauth_accounts_loaded count=%s token=%s", cid, len(accounts), _mask_api_token(access_token))
+    state["oauth_pending_accounts"] = safe_accounts
+    state["oauth_accounts"] = safe_accounts
+    logger.info("[%s] deriv_oauth_accounts_loaded count=%s token=%s", cid, len(safe_accounts), _mask_api_token(access_token))
     _pause_for_oauth_account_selection(cid, state, accounts)
 
     return render_template_string("""
@@ -23250,7 +22917,7 @@ def set_token():
 
     same_token = token == str(state.get("api_token", "") or "").strip()
     same_token_type = str(state.get("api_token_type") or "").lower() == "pat"
-    same_app_id = app_id == str(state.get("deriv_app_id") or DERIV_APP_ID or "1089").strip()
+    same_app_id = app_id == str(state.get("deriv_app_id") or "").strip()
     ws_thread_alive = bool(state.get("ws_thread") and state["ws_thread"].is_alive())
     same_token_authorized = bool(same_token and same_token_type and same_app_id and state.get("ws_connected") and state.get("ws"))
     same_token_in_progress = bool(
@@ -23278,12 +22945,17 @@ def set_token():
             "message": "Connection already in progress",
         })
 
-    try:
-        accounts = _fetch_deriv_pat_accounts(token, app_id=app_id)
-    except Exception as exc:
-        message = _safe_token_scoped_message(str(exc), token)
-        logger.warning("[%s] deriv_pat_account_list_failed token=%s error=%s", cid, _mask_api_token(token), message)
-        return jsonify({"status": "error", "message": message}), 400
+    cached_accounts = _safe_deriv_options_accounts_for_response(state.get("pat_accounts") or []) if (same_token and same_token_type and same_app_id) else []
+    if cached_accounts:
+        accounts = cached_accounts
+        logger.info("[%s] deriv_pat_accounts_reused_cached count=%s", cid, len(accounts))
+    else:
+        try:
+            accounts = _fetch_deriv_pat_accounts(token, app_id=app_id)
+        except Exception as exc:
+            message = _safe_token_scoped_message(str(exc), token)
+            logger.warning("[%s] deriv_pat_account_list_failed token=%s error=%s", cid, _mask_api_token(token), message)
+            return jsonify({"status": "error", "message": message}), 400
     state["pat_accounts"] = _safe_deriv_options_accounts_for_response(accounts)
 
     if selected_account_id:
@@ -23311,6 +22983,7 @@ def set_token():
     return jsonify({"status": "connecting", "token_type": token_type, "account_id": account_id})
 
 
+@app.route("/switch_deriv_account", methods=["POST"])
 @app.route("/switch_pat_account", methods=["POST"])
 def switch_pat_account():
     if not login_required():
@@ -23320,65 +22993,69 @@ def switch_pat_account():
     data = request.get_json(silent=True) or {}
     selected_account_id = str(data.get("account_id") or "").strip()
     token_type = _deriv_connection_type(state)
-    if token_type != "pat":
+    if token_type not in ("oauth", "pat"):
         return jsonify({
             "status": "error",
-            "message": "Account switching without re-entering the key is only available for PAT connections",
+            "message": "Connect with Deriv OAuth or PAT before switching accounts",
         }), 409
     token = str(state.get("api_token") or "").strip()
     if not token:
-        return jsonify({"status": "error", "message": "PAT session is missing. Enter your PAT and connect again."}), 400
+        return jsonify({"status": "error", "message": "Deriv session is missing. Connect again."}), 400
     if not selected_account_id:
         return jsonify({"status": "error", "message": "Select a Deriv Options account to switch to"}), 400
     if not state.get("ws_connected") or not state.get("ws"):
-        return jsonify({"status": "error", "message": "PAT connection is not ready yet. Wait for Connected, then switch accounts."}), 409
+        return jsonify({"status": "error", "message": "Deriv connection is not ready yet. Wait for Connected, then switch accounts."}), 409
 
-    blocked_reason = _pat_account_switch_block_reason(state)
+    blocked_reason = _deriv_account_switch_block_reason(state)
     if blocked_reason:
         return jsonify({"status": "error", "message": blocked_reason}), 409
 
-    try:
-        app_id = str(state.get("deriv_app_id") or _get_deriv_pat_app_id()).strip()
-        fresh_accounts = _fetch_deriv_pat_accounts(token, app_id=app_id)
-    except Exception as exc:
-        message = _safe_token_scoped_message(str(exc), token)
-        logger.warning("[%s] deriv_pat_account_switch_account_list_failed token=%s error=%s", cid, _mask_api_token(token), message)
-        return jsonify({"status": "error", "message": message}), 400
+    accounts_key = "oauth_accounts" if token_type == "oauth" else "pat_accounts"
+    safe_accounts = _safe_deriv_options_accounts_for_response(state.get(accounts_key) or [])
+    app_id = DERIV_OAUTH_APP_ID if token_type == "oauth" else str(state.get("deriv_app_id") or _get_deriv_pat_app_id()).strip()
+    if not safe_accounts:
+        try:
+            fresh_accounts = _fetch_deriv_oauth_accounts(token) if token_type == "oauth" else _fetch_deriv_pat_accounts(token, app_id=app_id)
+            safe_accounts = _safe_deriv_options_accounts_for_response(fresh_accounts)
+            state[accounts_key] = safe_accounts
+        except Exception as exc:
+            message = _safe_token_scoped_message(str(exc), token)
+            logger.warning("[%s] deriv_account_switch_account_list_failed token_type=%s error=%s", cid, token_type, message)
+            return jsonify({"status": "error", "message": message}), 400
 
-    safe_accounts = _safe_deriv_options_accounts_for_response(fresh_accounts)
     selected_account = _find_deriv_options_account(safe_accounts, selected_account_id)
-    state["pat_accounts"] = safe_accounts
     if not selected_account:
-        return jsonify({"status": "error", "message": "Selected Deriv Options account is unavailable for this PAT"}), 400
+        return jsonify({"status": "error", "message": "Selected Deriv Options account is unavailable"}), 400
 
-    current_account_id = str(state.get("pat_options_account_id") or state.get("options_account_id") or "").strip()
+    current_account_id = str(state.get("options_account_id") or state.get("deriv_account_id") or "").strip()
     if selected_account_id == current_account_id and state.get("ws_connected") and state.get("ws"):
-        return jsonify({
+        payload = {
             "status": "connected",
-            "token_type": "pat",
+            "token_type": token_type,
             "account_id": selected_account_id,
-            "pat_current_account_id": selected_account_id,
-            "pat_accounts": safe_accounts,
-            "message": "Already connected to this PAT account",
-        })
+            "message": "Already connected to this Deriv account",
+        }
+        payload.update(_deriv_account_switch_payload(state))
+        return jsonify(payload)
 
     logger.info(
-        "[%s] deriv_pat_account_switch_requested from_account=%s to_account=%s to_kind=%s app_id=%s",
+        "[%s] deriv_account_switch_requested token_type=%s from_account=%s to_account=%s to_kind=%s app_id=%s",
         cid,
+        token_type,
         _mask_account_id(current_account_id),
         _mask_account_id(selected_account_id),
         _oauth_account_label(selected_account),
         app_id,
     )
-    _start_deriv_connection_for_state(cid, state, token, "pat", selected_account_id, "pat_account_switch", app_id)
-    return jsonify({
+    _start_deriv_connection_for_state(cid, state, token, token_type, selected_account_id, "account_switch", app_id)
+    payload = {
         "status": "switching",
-        "token_type": "pat",
+        "token_type": token_type,
         "account_id": selected_account_id,
-        "pat_current_account_id": selected_account_id,
-        "pat_accounts": safe_accounts,
-        "message": "Switching PAT account...",
-    })
+        "message": "Switching Deriv account...",
+    }
+    payload.update(_deriv_account_switch_payload(state))
+    return jsonify(payload)
 
 
 @app.route("/api_connection_status", methods=["GET"])

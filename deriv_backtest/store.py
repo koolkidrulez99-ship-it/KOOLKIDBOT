@@ -91,11 +91,22 @@ class Store:
         with self.connect() as db:
             db.executemany('INSERT OR IGNORE INTO ticks(symbol,epoch,quote,precision,digit,received,connection,origin,seq) VALUES(?,?,?,?,?,?,?,?,?)', rows)
 
-    def prune(self, days):
-        # Only raw ticks expire. Paper outcomes and all-data statistics remain intact.
+    def trim_ticks(self, max_per_symbol=500):
+        """Keep only the newest raw ticks per market; paper outcomes/statistics stay cumulative."""
+        limit = max(1, int(max_per_symbol or 500))
         with self.connect() as db:
-            db.execute('DELETE FROM ticks WHERE id IN (SELECT id FROM ticks WHERE received<? LIMIT 10000)',
-                       (time.time() - days * 86400,))
+            symbols = [row[0] for row in db.execute('SELECT symbol FROM markets')]
+            for symbol in symbols:
+                cutoff = db.execute(
+                    'SELECT seq FROM ticks WHERE symbol=? ORDER BY seq DESC LIMIT 1 OFFSET ?',
+                    (symbol, limit - 1),
+                ).fetchone()
+                if cutoff:
+                    db.execute('DELETE FROM ticks WHERE symbol=? AND seq<?', (symbol, cutoff[0]))
+
+    def prune(self, days):
+        # Compatibility path for older callers. Raw tick retention is now count-based.
+        self.trim_ticks(int(os.environ.get('KOOLKID_INTELLIGENCE_MAX_TICKS', '500')))
 
 
 class Secrets:

@@ -119,7 +119,7 @@ class Socket:
     def send(self, text): self.messages.append(json.loads(text))
 
 
-@pytest.mark.parametrize('token_type', ['legacy', 'pat', 'oauth'])
+@pytest.mark.parametrize('token_type', ['pat', 'oauth'])
 def test_common_execution_rejects_before_routing_or_socket(ready, monkeypatch, token_type):
     state = {'ws': Socket(), 'api_token_type': token_type, 'req_meta': {}, 'username': 'alice'}
     monkeypatch.setattr(server, '_ensure_trade_socket_ready', lambda *a, **k: (True, ''))

@@ -124,7 +124,10 @@ def register(app, login_required, is_admin, store=None):
                     return jsonify(error='Choose an enabled state and valid research window.'), 400
                 store.set('confirmation_policy', {**DEFAULT_POLICY, 'enabled': enabled, 'window': window})
             elif action == 'save':
-                if not request.is_secure and urlsplit(request.host_url).hostname not in {'localhost', '127.0.0.1', '::1'}:
+                forwarded_proto = str(request.headers.get('X-Forwarded-Proto') or '').split(',', 1)[0].strip().lower()
+                forwarded_ssl = str(request.headers.get('X-Forwarded-Ssl') or '').strip().lower()
+                secure_request = request.is_secure or forwarded_proto == 'https' or forwarded_ssl == 'on'
+                if not secure_request and urlsplit(request.host_url).hostname not in {'localhost', '127.0.0.1', '::1'}:
                     return jsonify(error='HTTPS is required to save the global PAT.'), 400
                 Secrets(store).save(data.get('pat'))
                 app_id = str(data.get('app_id') or '').strip()

@@ -39,7 +39,7 @@ def _base_state(api_token_type="legacy"):
     }
 
 
-def test_legacy_token_execute_deriv_trade_keeps_old_buy_payload(monkeypatch):
+def test_legacy_token_execute_deriv_trade_is_blocked(monkeypatch):
     state = _base_state("legacy")
     monkeypatch.setattr(server, "clients", {"cid-legacy": state})
     called = []
@@ -56,11 +56,10 @@ def test_legacy_token_execute_deriv_trade_keeps_old_buy_payload(monkeypatch):
         "duration_unit": "t",
     })
 
-    assert ok is True
-    assert msg == "Trade sent"
+    assert ok is False
+    assert "OAuth or PAT" in msg
     assert called == []
-    assert state["ws"].messages[-1]["buy"] == 1
-    assert state["ws"].messages[-1]["parameters"]["symbol"] == "R_10"
+    assert state["ws"].messages == []
 
 
 def test_oauth_execute_deriv_trade_routes_to_oauth_engine(monkeypatch):
@@ -138,7 +137,7 @@ def test_pat_token_routes_to_options_trade_engine(monkeypatch):
     assert state["ws"].messages == []
 
 
-def test_pat_ws_open_never_sends_authorize_and_waits_for_balance(monkeypatch):
+def test_pat_ws_open_is_authenticated_immediately_without_authorize(monkeypatch):
     state = _base_state("pat")
     state.update({
         "ws_nonce": 7,
@@ -163,7 +162,8 @@ def test_pat_ws_open_never_sends_authorize_and_waits_for_balance(monkeypatch):
     server.handle_on_open("cid-pat-open", ws, 7)
 
     assert state["ws_transport_connected"] is True
-    assert state["ws_connected"] is False
+    assert state["ws_connected"] is True
+    assert state["loginid"] == "DOT789"
     assert {"authorize": "pat_manual_user_token"} not in ws.messages
     assert ws.messages == [{"balance": 1, "subscribe": 1}]
 
