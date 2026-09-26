@@ -148,6 +148,9 @@ from bot_modules.human_manual_contracts import (
 )
 from deriv_engines.unchain_barrier import (
     choose_unchain_contract,
+    contract_item_barrier_values as _unchain_contract_item_barrier_values,
+    contract_item_second_barrier_value as _unchain_contract_item_second_barrier_value,
+    contract_item_supports_second_barrier as _unchain_contract_item_supports_second_barrier,
     normalize_unchain_direction,
     relevant_unchain_contracts,
     validate_unchain_higher_lower_barrier,
@@ -382,6 +385,7 @@ def _uses_new_deriv_trade_api(state):
 
 def _proposal_payload_for_connection(state, payload):
     final_payload = dict(payload or {})
+    allow_barrier2 = bool(final_payload.pop("_unchain_allow_barrier2", False))
     if _uses_new_deriv_trade_api(state) and "symbol" in final_payload:
         symbol = str(final_payload.pop("symbol") or "").strip()
         if symbol:
@@ -409,7 +413,7 @@ def _proposal_payload_for_connection(state, payload):
             "DIGITODD",
             "ONETOUCH",
             "NOTOUCH",
-        }:
+        } and not allow_barrier2:
             final_payload.pop("barrier2", None)
         if contract_type in ("DIGITEVEN", "DIGITODD"):
             final_payload.pop("barrier", None)
@@ -8087,6 +8091,36 @@ def _resolve_contract_default_barrier_from_state(state, symbol, duration, durati
     return None, f"No Deriv default barrier found for {deriv_contract} on this market/duration"
 
 
+def _resolve_unchain_contract_from_state(
+    state,
+    symbol,
+    duration,
+    duration_unit,
+    side,
+    *,
+    client_id=None,
+    context="unchain_contract_resolver",
+):
+    cid = client_id or _client_id_for_state(state)
+    underlying_symbol, symbol_err = resolve_new_api_symbol(state, symbol, context=context, client_id=cid)
+    if symbol_err:
+        return None, None, None, symbol_err
+    contracts_for, contracts_err = _get_contracts_for_symbol(cid, state, underlying_symbol)
+    if contracts_err:
+        return underlying_symbol, None, None, contracts_err
+    direction = normalize_unchain_direction(side)
+    chosen, choose_err = choose_unchain_contract(
+        contracts_for,
+        direction,
+        duration=duration,
+        duration_unit=duration_unit,
+        duration_matcher=_duration_matches_contracts_for,
+    )
+    if choose_err:
+        return underlying_symbol, contracts_for, None, choose_err
+    return underlying_symbol, contracts_for, chosen, None
+
+
 def _fetch_ntt_market_default_barrier(symbol, duration, duration_unit):
     return _fetch_unchain_market_default_barrier(symbol, duration, _clean_ntt_duration_unit(duration_unit))
 
@@ -14390,7 +14424,6 @@ def _request_unchain_proposal_quote(state, *, side, stake, symbol, barrier, dura
     side = str(side or "").upper().strip()
     if side not in ("HIGHER", "LOWER"):
         return None, "Invalid side"
-
     try:
         amount = float(stake)
     except Exception:
@@ -14400,36 +14433,56 @@ def _request_unchain_proposal_quote(state, *, side, stake, symbol, barrier, dura
 
     unit = _clean_unchain_duration_unit(duration_unit)
     duration_val = _sanitize_unchain_duration(duration, unit)
-
-    barrier_value = None
-    if barrier not in (None, ""):
-        try:
-            barrier_value = _format_unchain_barrier(barrier, side, unit)
-        except Exception as e:
-            return None, str(e)
+    try:
+        barrier_value = _format_unchain_barrier(barrier, side, unit)
+    except Exception as exc:
+        return None, str(exc)
 
     contract_type = "CALL" if side == "HIGHER" else "PUT"
+    second_barrier = None
+    allow_barrier2 = False
     if _uses_new_deriv_trade_api(state):
-        symbol, sym_err = resolve_new_api_symbol(state, symbol, context="unchain_proposal_quote", client_id=client_id)
-        if sym_err:
-            return None, sym_err
-        contracts_for, contracts_err = _get_contracts_for_symbol(client_id, state, symbol)
-        if contracts_err:
-            return None, contracts_err
-        if not _contracts_for_has_contract_type(contracts_for, contract_type):
-            return None, f"Contract type {contract_type} is not available for {symbol}"
-        barrier_value, barrier_err = resolve_new_api_barrier(
+        symbol, _contracts_for, matched_contract, resolve_err = _resolve_unchain_contract_from_state(
             state,
-            contracts_for,
-            contract_type,
-            barrier_value,
+            symbol,
             duration_val,
             unit,
-            context="unchain_proposal_quote",
+            side,
             client_id=client_id,
+            context="unchain_proposal_quote",
+        )
+        if resolve_err:
+            return None, resolve_err
+        contract_type = str((matched_contract or {}).get("contract_type") or "").upper().strip()
+        if not contract_type:
+            return None, "Deriv returned no contract_type for UNCHAIN Higher/Lower"
+        barrier_value, barrier_err = validate_unchain_higher_lower_barrier(
+            barrier_value,
+            side,
+            matched_contract,
         )
         if barrier_err:
             return None, barrier_err
+        if _unchain_contract_item_supports_second_barrier(matched_contract):
+            second_barrier = _unchain_contract_item_second_barrier_value(matched_contract)
+            if second_barrier in (None, ""):
+                return None, "Matched Deriv Higher/Lower contract requires barrier2 but did not advertise a usable value"
+            allow_barrier2 = True
+
+        if client_id is not None:
+            logger.info(
+                "[%s] unchain_quote_contract_chosen side=%s symbol=%s duration=%s duration_unit=%s contract_type=%s advertised_barriers=%s requested_barrier=%s resolved_barrier=%s matched_contract=%s",
+                client_id,
+                side,
+                symbol,
+                duration_val,
+                unit,
+                contract_type,
+                _safe_deriv_payload_text(_unchain_contract_item_barrier_values(matched_contract)),
+                barrier,
+                barrier_value,
+                _safe_deriv_payload_text(matched_contract or {}),
+            )
 
     req_id = _new_req_id()
     waiter = {"event": threading.Event(), "proposal": None, "error": None}
@@ -14450,20 +14503,21 @@ def _request_unchain_proposal_quote(state, *, side, stake, symbol, barrier, dura
     }
     if barrier_value not in (None, ""):
         payload["barrier"] = barrier_value
+    if allow_barrier2:
+        payload["barrier2"] = second_barrier
+        payload["_unchain_allow_barrier2"] = True
     payload = _proposal_payload_for_connection(state, payload)
 
     try:
         if client_id is not None:
-            logger.info("[%s] TEMP proposal_about_to_be_sent token_type=%s payload=%s", client_id, _deriv_connection_type(state), _safe_deriv_payload_text(payload))
+            logger.info("[%s] unchain_quote_final_proposal payload=%s", client_id, _safe_deriv_payload_text(payload))
         ws.send(json.dumps(payload))
-        if client_id is not None:
-            logger.info("[%s] TEMP proposal_actually_sent req_id=%s token_type=%s", client_id, req_id, _deriv_connection_type(state))
-    except Exception as e:
+    except Exception as exc:
         if client_id is not None:
             _mark_ws_unhealthy_and_reconnect(client_id, state, "Deriv connection failed while requesting a quote. Reconnecting now...", emit_error=False)
         waiters.pop(req_id, None)
         waiters.pop(str(req_id), None)
-        return None, str(e)
+        return None, str(exc)
 
     if not waiter["event"].wait(max(0.40, float(timeout_sec))):
         waiters.pop(req_id, None)
@@ -14596,28 +14650,37 @@ _UNCHAIN_MARKET_BARRIER_CACHE = {}
 def _fetch_unchain_market_default_barrier(symbol, duration, duration_unit, state=None, side="HIGHER"):
     sym = str(symbol or "").strip().upper()
     unit = _clean_unchain_duration_unit(duration_unit)
+    side_name = "LOWER" if str(side or "").upper() == "LOWER" else "HIGHER"
     try:
         dur = int(float(duration))
     except Exception:
         dur = 5 if unit == "t" else 15
-    cache_key = (sym, dur, unit)
+    cache_key = (sym, dur, unit, side_name)
     cached = _UNCHAIN_MARKET_BARRIER_CACHE.get(cache_key)
     now_ts = time.time()
     if isinstance(cached, dict) and (now_ts - float(cached.get("ts", 0.0) or 0.0)) < 300.0:
         return cached.get("barrier"), cached.get("error")
 
     if state is not None and _uses_new_deriv_trade_api(state):
-        contract_type = "PUT" if str(side or "").upper() == "LOWER" else "CALL"
-        barrier, err = _resolve_contract_default_barrier_from_state(
+        _resolved_symbol, _contracts_for, matched_contract, err = _resolve_unchain_contract_from_state(
             state,
             sym,
             dur,
             unit,
-            contract_type,
+            side_name,
             context="unchain_market_default_barrier",
         )
-        _UNCHAIN_MARKET_BARRIER_CACHE[cache_key] = {"ts": now_ts, "barrier": barrier, "error": err}
-        return barrier, err
+        if err:
+            _UNCHAIN_MARKET_BARRIER_CACHE[cache_key] = {"ts": now_ts, "barrier": None, "error": err}
+            return None, err
+        values = _unchain_contract_item_barrier_values(matched_contract)
+        if not values:
+            err = "Matched Deriv Higher/Lower contract did not advertise a default barrier"
+            _UNCHAIN_MARKET_BARRIER_CACHE[cache_key] = {"ts": now_ts, "barrier": None, "error": err}
+            return None, err
+        barrier_text = str(values[0]).strip()
+        _UNCHAIN_MARKET_BARRIER_CACHE[cache_key] = {"ts": now_ts, "barrier": barrier_text, "error": None}
+        return barrier_text, None
 
     ws = None
     try:
@@ -14628,39 +14691,27 @@ def _fetch_unchain_market_default_barrier(symbol, duration, duration_unit, state
             err = str((response.get("error") or {}).get("message") or "contracts_for failed")
             _UNCHAIN_MARKET_BARRIER_CACHE[cache_key] = {"ts": now_ts, "barrier": None, "error": err}
             return None, err
-        available = ((response.get("contracts_for") or {}).get("available") or [])
-        candidates = []
-        for item in available:
-            if str((item or {}).get("contract_type") or "").upper() != "CALL":
-                continue
-            if str((item or {}).get("start_type") or "").lower() != "spot":
-                continue
-            if str((item or {}).get("barrier_category") or "").lower() != "euro_non_atm":
-                continue
-            try:
-                barrier_count = int((item or {}).get("barriers") or 0)
-            except Exception:
-                barrier_count = 0
-            if barrier_count < 1:
-                continue
-            barrier_text = str((item or {}).get("barrier") or "").strip()
-            if not barrier_text:
-                continue
-            if not _duration_matches_contracts_for(item, dur, unit):
-                continue
-            candidates.append(item)
-
-        if not candidates:
-            err = "No Deriv default barrier found for this market/duration"
+        contracts_for = response.get("contracts_for") or {}
+        chosen, choose_err = choose_unchain_contract(
+            contracts_for,
+            side_name,
+            duration=dur,
+            duration_unit=unit,
+            duration_matcher=_duration_matches_contracts_for,
+        )
+        if choose_err:
+            _UNCHAIN_MARKET_BARRIER_CACHE[cache_key] = {"ts": now_ts, "barrier": None, "error": choose_err}
+            return None, choose_err
+        values = _unchain_contract_item_barrier_values(chosen)
+        if not values:
+            err = "Matched Deriv Higher/Lower contract did not advertise a default barrier"
             _UNCHAIN_MARKET_BARRIER_CACHE[cache_key] = {"ts": now_ts, "barrier": None, "error": err}
             return None, err
-
-        chosen = candidates[0]
-        barrier_text = str(chosen.get("barrier") or "").strip()
+        barrier_text = str(values[0]).strip()
         _UNCHAIN_MARKET_BARRIER_CACHE[cache_key] = {"ts": now_ts, "barrier": barrier_text, "error": None}
         return barrier_text, None
-    except Exception as e:
-        err = str(e)
+    except Exception as exc:
+        err = str(exc)
         _UNCHAIN_MARKET_BARRIER_CACHE[cache_key] = {"ts": now_ts, "barrier": None, "error": err}
         return None, err
     finally:
@@ -14670,47 +14721,36 @@ def _fetch_unchain_market_default_barrier(symbol, duration, duration_unit, state
         except Exception:
             pass
 
+
 def _apply_unchain_market_default_barriers(state, symbol):
     u = _ensure_unchain_hl_state(state)
     safe_symbol = str(symbol or state.get("current_symbol") or "R_25")
     higher_duration, higher_duration_unit = _get_unchain_side_duration(u, "HIGHER")
     lower_duration, lower_duration_unit = _get_unchain_side_duration(u, "LOWER")
-    if _uses_new_deriv_trade_api(state):
-        higher_quote_barrier, higher_err = _resolve_contract_default_barrier_from_state(
-            state,
-            safe_symbol,
-            higher_duration,
-            higher_duration_unit,
-            "CALL",
-            context="unchain_market_default_barrier",
-        )
-    else:
-        higher_quote_barrier, higher_err = _fetch_unchain_market_default_barrier(
-            safe_symbol,
-            higher_duration,
-            higher_duration_unit,
-        )
+    higher_quote_barrier, higher_err = _fetch_unchain_market_default_barrier(
+        safe_symbol,
+        higher_duration,
+        higher_duration_unit,
+        state=state,
+        side="HIGHER",
+    )
     if higher_err:
         return False, str(higher_err)
-    if _uses_new_deriv_trade_api(state):
-        lower_quote_barrier, lower_err = _resolve_contract_default_barrier_from_state(
-            state,
-            safe_symbol,
-            lower_duration,
-            lower_duration_unit,
-            "PUT",
-            context="unchain_market_default_barrier",
-        )
-    else:
-        lower_quote_barrier, lower_err = _fetch_unchain_market_default_barrier(
-            safe_symbol,
-            lower_duration,
-            lower_duration_unit,
-        )
+    lower_quote_barrier, lower_err = _fetch_unchain_market_default_barrier(
+        safe_symbol,
+        lower_duration,
+        lower_duration_unit,
+        state=state,
+        side="LOWER",
+    )
     if lower_err:
         return False, str(lower_err)
-    higher_default = _format_unchain_market_default_barrier(higher_quote_barrier, "HIGHER")
-    lower_default = _format_unchain_market_default_barrier(lower_quote_barrier, "LOWER")
+    if _uses_new_deriv_trade_api(state):
+        higher_default = str(higher_quote_barrier or "").strip()
+        lower_default = str(lower_quote_barrier or "").strip()
+    else:
+        higher_default = _format_unchain_market_default_barrier(higher_quote_barrier, "HIGHER")
+        lower_default = _format_unchain_market_default_barrier(lower_quote_barrier, "LOWER")
     if not higher_default or not lower_default:
         return False, "Could not resolve market default barrier"
     u["higher_barrier"] = higher_default

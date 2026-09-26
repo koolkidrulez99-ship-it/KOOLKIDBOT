@@ -5,6 +5,7 @@ import server
 from deriv_engines.oauth_engine import OAuthDerivTradeEngine
 from deriv_engines.trade_intent import TradeIntent
 from deriv_engines.unchain_barrier import (
+    choose_unchain_contract,
     sanitize_unchain_higher_lower_barrier,
     validate_unchain_higher_lower_barrier,
 )
@@ -210,7 +211,7 @@ def test_unchain_oauth_higher_and_lower_use_fresh_call_put_relative_barriers(mon
     assert state["ws_connected"] is True
 
 
-def test_unchain_oauth_blocks_obsolete_higher_lower_contract_type_from_contracts_for(monkeypatch):
+def test_unchain_oauth_preserves_server_higher_lower_contract_type(monkeypatch):
     cid = "cid-unchain-oauth-blocks-obsolete-contract"
     server.clients.pop(cid, None)
     server.init_client(cid)
@@ -233,8 +234,8 @@ def test_unchain_oauth_blocks_obsolete_higher_lower_contract_type_from_contracts
         server,
         "_get_contracts_for_symbol",
         lambda client_id, state, symbol: ({"available": [
-            {"contract_type": "HIGHER", "sentiment": "up", "contract_category": "callput", "barriers": 1, "barrier": "+0.17"},
-            {"contract_type": "LOWER", "sentiment": "down", "contract_category": "callput", "barriers": 1, "barrier": "-0.17"},
+            {"contract_type": "HIGHER", "sentiment": "up", "contract_category": "callput", "barriers": 1, "barrier": "+0.17", "expiry_type": "tick", "min_contract_duration": "3t", "max_contract_duration": "10t"},
+            {"contract_type": "LOWER", "sentiment": "down", "contract_category": "callput", "barriers": 1, "barrier": "-0.17", "expiry_type": "tick", "min_contract_duration": "3t", "max_contract_duration": "10t"},
         ]}, None),
     )
     monkeypatch.setattr(server.socketio, "emit", lambda *args, **kwargs: None)
@@ -255,9 +256,10 @@ def test_unchain_oauth_blocks_obsolete_higher_lower_contract_type_from_contracts
         duration_unit="t",
     )
 
-    assert ok is False
-    assert "No Deriv Higher/Lower contract is available" in msg
-    assert captured == {}
+    assert ok is True
+    assert msg == "HIGHER trade sent"
+    assert captured["contract_type"] == "HIGHER"
+    assert captured["barrier"] == "+0.17"
 
 
 def test_unchain_barrier_sanitizer_preserves_signed_price_barrier_and_fixes_side():
@@ -354,7 +356,7 @@ def test_oauth_engine_unchain_keeps_relative_barrier_in_proposal():
     assert state["ws_connected"] is True
 
 
-def test_oauth_engine_unchain_blocks_unsupported_relative_barrier():
+def test_oauth_engine_unchain_replaces_stale_requested_barrier_with_server_value():
     proposal_payloads = []
     state = {
         "ws": DummyWs(),
@@ -401,9 +403,9 @@ def test_oauth_engine_unchain_blocks_unsupported_relative_barrier():
 
     ok, msg = OAuthDerivTradeEngine(deps).execute(intent, state=state)
 
-    assert ok is False
-    assert "not supported" in msg
-    assert proposal_payloads == []
+    assert ok is True
+    assert msg == "Trade sent"
+    assert proposal_payloads[-1]["barrier"] == "+0.17"
     assert state["ws_connected"] is True
 
 
@@ -752,3 +754,372 @@ def test_oauth_engine_nonfatal_buy_send_error_does_not_reconnect():
     assert "temporary backpressure" in msg
     assert marked == []
     assert state["ws_connected"] is True
+
+
+def test_unchain_server_advertised_zero_higher_is_preserved_exactly():
+    barrier, err = validate_unchain_higher_lower_barrier(
+        "+0.10",
+        "HIGHER",
+        {
+            "contract_type": "CALL",
+            "sentiment": "up",
+            "contract_category": "callput",
+            "barriers": 1,
+            "barrier": "+0.0",
+        },
+    )
+    assert err is None
+    assert barrier == "+0.0"
+
+
+def test_unchain_server_advertised_negative_zero_lower_is_preserved_exactly():
+    barrier, err = validate_unchain_higher_lower_barrier(
+        "-0.10",
+        "LOWER",
+        {
+            "contract_type": "PUT",
+            "sentiment": "down",
+            "contract_category": "callput",
+            "barriers": 1,
+            "barrier": "-0.0",
+        },
+    )
+    assert err is None
+    assert barrier == "-0.0"
+
+
+def test_unchain_server_precision_is_preserved_exactly():
+    barrier, err = validate_unchain_higher_lower_barrier(
+        "+0.10",
+        "HIGHER",
+        {
+            "contract_type": "CALL",
+            "sentiment": "up",
+            "contract_category": "callput",
+            "barriers": 1,
+            "barrier": "+0.072",
+        },
+    )
+    assert err is None
+    assert barrier == "+0.072"
+
+
+def test_unchain_plain_rise_fall_without_barrier_metadata_is_not_selected():
+    contracts = {
+        "available": [
+            {
+                "contract_type": "CALL",
+                "sentiment": "up",
+                "contract_category": "callput",
+                "barriers": 0,
+                "min_contract_duration": "1t",
+                "max_contract_duration": "10t",
+                "expiry_type": "tick",
+            }
+        ]
+    }
+    chosen, err = choose_unchain_contract(
+        contracts,
+        "HIGHER",
+        duration=5,
+        duration_unit="t",
+        duration_matcher=server._duration_matches_contracts_for,
+    )
+    assert chosen is None
+    assert "No Deriv Higher/Lower contract" in err
+
+
+def test_unchain_contract_selection_does_not_borrow_wrong_duration_barrier():
+    contracts = {
+        "available": [
+            {
+                "contract_type": "CALL",
+                "sentiment": "up",
+                "contract_category": "callput",
+                "barriers": 1,
+                "barrier": "+0.072",
+                "expiry_type": "tick",
+                "min_contract_duration": "3t",
+                "max_contract_duration": "3t",
+            },
+            {
+                "contract_type": "CALL",
+                "sentiment": "up",
+                "contract_category": "callput",
+                "barriers": 1,
+                "barrier": "+0.0",
+                "expiry_type": "tick",
+                "min_contract_duration": "5t",
+                "max_contract_duration": "5t",
+            },
+        ]
+    }
+    chosen, err = choose_unchain_contract(
+        contracts,
+        "HIGHER",
+        duration=5,
+        duration_unit="t",
+        duration_matcher=server._duration_matches_contracts_for,
+    )
+    assert err is None
+    assert chosen["barrier"] == "+0.0"
+
+
+def test_oauth_engine_unchain_uses_exact_server_zero_and_proposal_first():
+    proposal_payloads = []
+    state = {
+        "ws": DummyWs(),
+        "ws_connected": True,
+        "api_token_type": "pat",
+        "deriv_account_id": "VRTC-DEMO",
+        "req_meta": {},
+    }
+    deps = {
+        "logger": server.logger,
+        "connection_mode": lambda state: "pat",
+        "is_demo": lambda account: True,
+        "mask_account": lambda account_id: account_id,
+        "ws_ready_state": lambda state: "OPEN",
+        "otp_authenticated": lambda state: True,
+        "active_symbols": lambda client_id, state: ([{"symbol": "stpRNG"}], None),
+        "contracts_for": lambda client_id, state, symbol: ({
+            "available": [{
+                "contract_type": "CALL",
+                "sentiment": "up",
+                "contract_category": "callput",
+                "barriers": 1,
+                "barrier": "+0.0",
+                "expiry_type": "tick",
+                "min_contract_duration": "5t",
+                "max_contract_duration": "5t",
+            }]
+        }, None),
+        "legacy_aliases": {},
+        "duration_matches": server._duration_matches_contracts_for,
+        "safe_payload": server._safe_deriv_payload_text,
+        "proposal_payload_for_connection": server._proposal_payload_for_connection,
+        "request_proposal": lambda client_id, state, payload, timeout_sec=5.0: proposal_payloads.append(dict(payload)) or ({"id": "proposal-zero", "ask_price": 0.35}, None),
+        "new_req_id": lambda: 999,
+        "debug_log": lambda *args, **kwargs: None,
+        "safe_float": server._safe_float,
+        "now_time": server.now_time,
+        "stamp_latency": lambda meta, stage: None,
+        "mark_ws_unhealthy": lambda *args, **kwargs: None,
+        "should_force_reconnect": lambda state, exc: False,
+    }
+    intent = TradeIntent(
+        client_id="cid-pat-zero",
+        req_id=810,
+        profile="UNCHAIN",
+        strategy_name="UNCHAIN",
+        button="UNCHAIN HIGHER",
+        contract_type="CALL",
+        stake=0.35,
+        symbol="stpRNG",
+        barrier="+0.10",
+        duration=5,
+        duration_unit="t",
+    )
+    ok, msg = OAuthDerivTradeEngine(deps).execute(intent, state=state)
+    assert (ok, msg) == (True, "Trade sent")
+    assert proposal_payloads == [{
+        "proposal": 1,
+        "req_id": 810,
+        "amount": 0.35,
+        "basis": "stake",
+        "contract_type": "CALL",
+        "currency": "USD",
+        "duration": 5,
+        "duration_unit": "t",
+        "underlying_symbol": "stpRNG",
+        "barrier": "+0.0",
+    }]
+    sent = [json.loads(x) for x in state["ws"].sent]
+    assert sent == [{"req_id": 810, "buy": "proposal-zero", "price": 0.35}]
+
+
+def test_oauth_engine_unchain_preserves_exact_higher_contract_type():
+    proposals = []
+    state = {
+        "ws": DummyWs(),
+        "ws_connected": True,
+        "api_token_type": "pat",
+        "deriv_account_id": "VRTC-DEMO",
+        "req_meta": {},
+    }
+    deps = {
+        "logger": server.logger,
+        "connection_mode": lambda state: "pat",
+        "is_demo": lambda account: True,
+        "mask_account": lambda account_id: account_id,
+        "ws_ready_state": lambda state: "OPEN",
+        "otp_authenticated": lambda state: True,
+        "active_symbols": lambda client_id, state: ([{"symbol": "stpRNG"}], None),
+        "contracts_for": lambda client_id, state, symbol: ({
+            "available": [{
+                "contract_type": "HIGHER",
+                "sentiment": "up",
+                "contract_category": "callput",
+                "barriers": 1,
+                "barrier": "+0.0",
+                "expiry_type": "tick",
+                "min_contract_duration": "5t",
+                "max_contract_duration": "5t",
+            }]
+        }, None),
+        "legacy_aliases": {},
+        "duration_matches": server._duration_matches_contracts_for,
+        "safe_payload": server._safe_deriv_payload_text,
+        "proposal_payload_for_connection": server._proposal_payload_for_connection,
+        "request_proposal": lambda client_id, state, payload, timeout_sec=5.0: proposals.append(dict(payload)) or ({"id": "proposal-higher", "ask_price": 0.35}, None),
+        "new_req_id": lambda: 999,
+        "debug_log": lambda *args, **kwargs: None,
+        "safe_float": server._safe_float,
+        "now_time": server.now_time,
+        "stamp_latency": lambda meta, stage: None,
+        "mark_ws_unhealthy": lambda *args, **kwargs: None,
+        "should_force_reconnect": lambda state, exc: False,
+    }
+    intent = TradeIntent(
+        client_id="cid-pat-higher-exact",
+        req_id=811,
+        profile="UNCHAIN",
+        strategy_name="UNCHAIN",
+        button="UNCHAIN HIGHER",
+        contract_type="CALL",
+        stake=0.35,
+        symbol="stpRNG",
+        barrier="+0.10",
+        duration=5,
+        duration_unit="t",
+    )
+    ok, msg = OAuthDerivTradeEngine(deps).execute(intent, state=state)
+    assert (ok, msg) == (True, "Trade sent")
+    assert proposals[-1]["contract_type"] == "HIGHER"
+    assert proposals[-1]["barrier"] == "+0.0"
+
+
+def test_oauth_engine_unchain_barrier2_only_when_matched_contract_requires_it():
+    proposals = []
+    state = {
+        "ws": DummyWs(),
+        "ws_connected": True,
+        "api_token_type": "pat",
+        "deriv_account_id": "VRTC-DEMO",
+        "req_meta": {},
+    }
+    deps = {
+        "logger": server.logger,
+        "connection_mode": lambda state: "pat",
+        "is_demo": lambda account: True,
+        "mask_account": lambda account_id: account_id,
+        "ws_ready_state": lambda state: "OPEN",
+        "otp_authenticated": lambda state: True,
+        "active_symbols": lambda client_id, state: ([{"symbol": "stpRNG"}], None),
+        "contracts_for": lambda client_id, state, symbol: ({
+            "available": [{
+                "contract_type": "CALL",
+                "sentiment": "up",
+                "contract_category": "callput",
+                "barriers": 2,
+                "barrier": "+0.0",
+                "barrier2": "+0.5",
+                "expiry_type": "tick",
+                "min_contract_duration": "5t",
+                "max_contract_duration": "5t",
+            }]
+        }, None),
+        "legacy_aliases": {},
+        "duration_matches": server._duration_matches_contracts_for,
+        "safe_payload": server._safe_deriv_payload_text,
+        "proposal_payload_for_connection": server._proposal_payload_for_connection,
+        "request_proposal": lambda client_id, state, payload, timeout_sec=5.0: proposals.append(dict(payload)) or ({"id": "proposal-two-barrier", "ask_price": 0.35}, None),
+        "new_req_id": lambda: 999,
+        "debug_log": lambda *args, **kwargs: None,
+        "safe_float": server._safe_float,
+        "now_time": server.now_time,
+        "stamp_latency": lambda meta, stage: None,
+        "mark_ws_unhealthy": lambda *args, **kwargs: None,
+        "should_force_reconnect": lambda state, exc: False,
+    }
+    intent = TradeIntent(
+        client_id="cid-pat-two-barrier",
+        req_id=812,
+        profile="UNCHAIN",
+        strategy_name="UNCHAIN",
+        button="UNCHAIN HIGHER",
+        contract_type="CALL",
+        stake=0.35,
+        symbol="stpRNG",
+        barrier="+0.10",
+        duration=5,
+        duration_unit="t",
+    )
+    ok, msg = OAuthDerivTradeEngine(deps).execute(intent, state=state)
+    assert (ok, msg) == (True, "Trade sent")
+    assert proposals[-1]["barrier"] == "+0.0"
+    assert proposals[-1]["barrier2"] == "+0.5"
+    assert "_unchain_allow_barrier2" not in proposals[-1]
+
+
+def test_oauth_engine_unchain_keeps_barrier2_only_when_matched_contract_requires_it():
+    proposal_payloads = []
+    state = {
+        "ws": DummyWs(),
+        "ws_connected": True,
+        "api_token_type": "pat",
+        "deriv_account_id": "VRTC-DEMO",
+        "req_meta": {},
+    }
+    deps = {
+        "logger": server.logger,
+        "connection_mode": lambda state: "pat",
+        "is_demo": lambda account: True,
+        "mask_account": lambda account_id: account_id,
+        "ws_ready_state": lambda state: "OPEN",
+        "otp_authenticated": lambda state: True,
+        "active_symbols": lambda client_id, state: ([{"symbol": "stpRNG"}], None),
+        "contracts_for": lambda client_id, state, symbol: ({
+            "available": [{
+                "contract_type": "CALL",
+                "sentiment": "up",
+                "contract_category": "callput",
+                "barriers": 2,
+                "barrier": "+0.0",
+                "barrier2": "+0.1",
+                "expiry_type": "tick",
+                "min_contract_duration": "5t",
+                "max_contract_duration": "5t",
+            }]
+        }, None),
+        "legacy_aliases": {},
+        "duration_matches": server._duration_matches_contracts_for,
+        "safe_payload": server._safe_deriv_payload_text,
+        "proposal_payload_for_connection": server._proposal_payload_for_connection,
+        "request_proposal": lambda client_id, state, payload, timeout_sec=5.0: proposal_payloads.append(dict(payload)) or ({"id": "proposal-two-barriers", "ask_price": 0.35}, None),
+        "new_req_id": lambda: 999,
+        "debug_log": lambda *args, **kwargs: None,
+        "safe_float": server._safe_float,
+        "now_time": server.now_time,
+        "stamp_latency": lambda meta, stage: None,
+        "mark_ws_unhealthy": lambda *args, **kwargs: None,
+        "should_force_reconnect": lambda state, exc: False,
+    }
+    intent = TradeIntent(
+        client_id="cid-pat-two-barriers",
+        req_id=811,
+        profile="UNCHAIN",
+        strategy_name="UNCHAIN",
+        button="UNCHAIN HIGHER",
+        contract_type="CALL",
+        stake=0.35,
+        symbol="stpRNG",
+        barrier="+0.10",
+        duration=5,
+        duration_unit="t",
+    )
+    ok, msg = OAuthDerivTradeEngine(deps).execute(intent, state=state)
+    assert (ok, msg) == (True, "Trade sent")
+    assert proposal_payloads[-1]["barrier"] == "+0.0"
+    assert proposal_payloads[-1]["barrier2"] == "+0.1"
+    assert "_unchain_allow_barrier2" not in proposal_payloads[-1]

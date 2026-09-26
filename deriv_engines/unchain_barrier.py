@@ -1,10 +1,6 @@
 from decimal import Decimal, InvalidOperation
 
 
-DEFAULT_HIGHER_BARRIER = Decimal("0.10")
-DEFAULT_LOWER_BARRIER = Decimal("0.10")
-
-
 def _to_decimal(value):
     try:
         return Decimal(str(value).strip()).copy_abs()
@@ -46,27 +42,27 @@ def _format_decimal(value):
 
 
 def sanitize_unchain_higher_lower_barrier(barrier, contract_type):
-    """Return a signed relative price barrier for UNCHAIN CALL/PUT trades."""
+    """Normalize only the sign for an explicit UNCHAIN Higher/Lower barrier.
+
+    This helper never invents a default magnitude. The authoritative value for
+    OAuth/PAT trades is resolved later from the matched contracts_for item.
+    """
     direction = normalize_unchain_direction(contract_type)
     if direction not in ("up", "down"):
         return barrier
-
-    sign = "+" if direction == "up" else "-"
-    default_value = DEFAULT_HIGHER_BARRIER if direction == "up" else DEFAULT_LOWER_BARRIER
     raw = "" if barrier in (None, "") else str(barrier).strip()
-    magnitude = None
-
-    if raw:
-        signed = raw[0] in "+-"
-        candidate = raw[1:] if signed else raw
-        parsed = _to_decimal(candidate)
-        if parsed is not None and parsed > 0:
-            magnitude = parsed
-
+    if not raw:
+        return None
+    candidate = raw[1:] if raw[:1] in "+-" else raw
+    magnitude = _to_decimal(candidate)
     if magnitude is None:
-        magnitude = default_value
-
-    return f"{sign}{_format_decimal(magnitude)}"
+        return barrier
+    return _format_signed_barrier(
+        magnitude,
+        direction,
+        _decimal_places(raw),
+        allow_zero=True,
+    )
 
 
 def normalize_unchain_direction(value):
@@ -96,6 +92,21 @@ def contract_item_barrier_values(item):
     return [v for v in values if v]
 
 
+def contract_item_supports_second_barrier(item):
+    try:
+        count = int(float((item or {}).get("barriers") or 0))
+    except Exception:
+        count = 0
+    return count >= 2 or (item or {}).get("barrier2") not in (None, "")
+
+
+def contract_item_second_barrier_value(item):
+    value = (item or {}).get("barrier2")
+    if value in (None, ""):
+        return None
+    return str(value).strip()
+
+
 def _item_text(item):
     keys = (
         "contract_type",
@@ -111,23 +122,33 @@ def _item_text(item):
 
 def _item_is_higher_lower_contract(item):
     contract_type = str((item or {}).get("contract_type") or "").upper().strip()
-    if contract_type not in ("CALL", "PUT"):
+    if contract_type not in ("CALL", "PUT", "HIGHER", "LOWER"):
         return False
+
     has_barrier = bool(contract_item_barrier_values(item))
     try:
         has_barrier = has_barrier or int(float((item or {}).get("barriers") or 0)) > 0
     except Exception:
         has_barrier = has_barrier or bool((item or {}).get("barriers"))
-    if not has_barrier:
-        return False
-    return True
+    range_rule = (item or {}).get("barrier_range")
+    if isinstance(range_rule, dict) and range_rule:
+        has_barrier = True
+    if (item or {}).get("barrier2") not in (None, ""):
+        has_barrier = True
+
+    # Plain Rise/Fall CALL/PUT has no Higher/Lower barrier requirement and
+    # must not be selected for UNCHAIN.
+    return bool(has_barrier)
 
 
 def contract_item_direction(item):
+    sentiment = normalize_unchain_direction((item or {}).get("sentiment"))
+    if sentiment in ("up", "down"):
+        return sentiment
     contract_type = str((item or {}).get("contract_type") or "").upper().strip()
-    if contract_type == "CALL":
+    if contract_type in ("CALL", "HIGHER"):
         return "up"
-    if contract_type == "PUT":
+    if contract_type in ("PUT", "LOWER"):
         return "down"
     return ""
 
@@ -165,7 +186,7 @@ def choose_unchain_contract(contracts_for, direction, *, duration=None, duration
         contract_type = str((item or {}).get("contract_type") or "").upper().strip()
         return (
             2 if str((item or {}).get("sentiment") or "").lower().strip() == wanted_direction else 0,
-            1 if contract_type in ("CALL", "PUT") else 0,
+            1 if contract_type in ("CALL", "PUT", "HIGHER", "LOWER") else 0,
             1 if contract_item_barrier_values(item) else 0,
             1 if "callput" in text or "higher" in text or "lower" in text else 0,
         )
@@ -205,33 +226,47 @@ def _barrier_precision(contract_item, requested=None):
     return _decimal_places(requested)
 
 
-def _format_signed_barrier(magnitude, direction, places=None):
-    if magnitude is None or magnitude <= 0:
+def _format_signed_barrier(magnitude, direction, places=None, *, allow_zero=False):
+    if magnitude is None or magnitude < 0 or (magnitude == 0 and not allow_zero):
         return None
     text = format(magnitude, "f")
     if places is not None:
         text = f"{magnitude:.{int(places)}f}"
     elif "." in text:
         text = text.rstrip("0").rstrip(".")
+    if not text:
+        text = "0"
     sign = "+" if normalize_unchain_direction(direction) == "up" else "-"
     return f"{sign}{text}"
 
 
 def _normalize_allowed_barrier(value, direction):
-    parsed = _to_decimal(value)
-    if parsed is None or parsed <= 0:
+    raw = "" if value in (None, "") else str(value).strip()
+    if not raw:
         return None
-    places = _decimal_places(value)
-    return _format_signed_barrier(parsed, direction, places)
+    parsed = _to_signed_decimal(raw)
+    if parsed is None:
+        return None
+
+    # Preserve Deriv's exact signed representation, including +0.0/-0.0 and
+    # decimal precision. If Deriv omitted a sign, add only the side sign.
+    if raw[:1] in "+-":
+        return raw
+    return _format_signed_barrier(
+        parsed.copy_abs(),
+        direction,
+        _decimal_places(raw),
+        allow_zero=True,
+    )
 
 
 def _requested_barrier_magnitude(value):
     raw = "" if value in (None, "") else str(value).strip()
     if not raw:
         return None, None
-    candidate = raw[1:] if raw[0] in "+-" else raw
+    candidate = raw[1:] if raw[:1] in "+-" else raw
     parsed = _to_decimal(candidate)
-    if parsed is None or parsed <= 0:
+    if parsed is None:
         return None, raw
     return parsed, raw
 
@@ -282,46 +317,61 @@ def validate_unchain_higher_lower_barrier(barrier, direction, contract_item=None
     wanted_direction = normalize_unchain_direction(direction)
     if wanted_direction not in ("up", "down"):
         return None, "Invalid UNCHAIN direction"
-    contract_type = str((contract_item or {}).get("contract_type") or "").upper().strip()
-    expected_contract = "CALL" if wanted_direction == "up" else "PUT"
-    if contract_type != expected_contract:
-        return None, f"Deriv Higher/Lower requires {expected_contract} for the selected side"
+
+    matched_direction = contract_item_direction(contract_item)
+    if matched_direction != wanted_direction:
+        return None, "Matched Deriv contract does not represent the selected Higher/Lower side"
 
     requested_magnitude, raw_requested = _requested_barrier_magnitude(barrier)
     if requested_magnitude is None:
         return None, "Invalid UNCHAIN Higher/Lower barrier"
-    requested_places = _decimal_places(raw_requested)
-    requested = _format_signed_barrier(requested_magnitude, wanted_direction, requested_places)
-    requested_decimal = _to_signed_decimal(requested)
-    if requested_decimal is None or requested_decimal == 0:
-        return None, "Invalid UNCHAIN Higher/Lower barrier"
-    if wanted_direction == "up" and requested_decimal <= 0:
-        return None, "Higher requires a positive relative barrier"
-    if wanted_direction == "down" and requested_decimal >= 0:
-        return None, "Lower requires a negative relative barrier"
 
+    # Explicit server-advertised barriers are authoritative. Preserve the
+    # exact value/precision/sign Deriv supplied. Existing new-API behavior is
+    # to replace a stale requested barrier with the server-defined equivalent.
     allowed_values = []
     for value in contract_item_barrier_values(contract_item):
         normalized = _normalize_allowed_barrier(value, wanted_direction)
-        if normalized:
+        if normalized is not None:
             allowed_values.append(normalized)
     allowed_values = list(dict.fromkeys(allowed_values))
-    requested_magnitude = requested_decimal.copy_abs()
     if allowed_values:
         for allowed in allowed_values:
             allowed_decimal = _to_signed_decimal(allowed)
             if allowed_decimal is not None and allowed_decimal.copy_abs() == requested_magnitude:
                 return allowed, None
-        return None, (
-            f"Barrier {requested} is not supported for this UNCHAIN Higher/Lower contract; "
-            f"supported barriers: {', '.join(allowed_values[:8])}"
-        )
+        return allowed_values[0], None
 
-    precision = _barrier_precision(contract_item, requested)
-    formatted = _format_signed_barrier(requested_magnitude, wanted_direction, precision)
-    if not formatted or formatted[0] not in "+-":
+    requested_places = _decimal_places(raw_requested)
+    allow_zero = requested_magnitude == 0
+    formatted = _format_signed_barrier(
+        requested_magnitude,
+        wanted_direction,
+        requested_places,
+        allow_zero=allow_zero,
+    )
+    if not formatted or formatted[:1] not in "+-":
         return None, "Invalid UNCHAIN Higher/Lower barrier"
+
+    parsed = _to_signed_decimal(formatted)
+    if parsed is None:
+        return None, "Invalid UNCHAIN Higher/Lower barrier"
+    if parsed != 0:
+        if wanted_direction == "up" and parsed <= 0:
+            return None, "Higher requires a positive relative barrier"
+        if wanted_direction == "down" and parsed >= 0:
+            return None, "Lower requires a negative relative barrier"
+
     rule = _barrier_range_rule(contract_item)
+    if parsed == 0 and not rule:
+        return None, "Zero UNCHAIN Higher/Lower barrier is only valid when Deriv advertises it"
+    precision = _barrier_precision(contract_item, formatted)
+    formatted = _format_signed_barrier(
+        requested_magnitude,
+        wanted_direction,
+        precision,
+        allow_zero=allow_zero,
+    )
     if not _barrier_allowed_by_range(formatted, rule):
         return None, f"Barrier {formatted} is outside Deriv's supported range for this market"
     return formatted, None
