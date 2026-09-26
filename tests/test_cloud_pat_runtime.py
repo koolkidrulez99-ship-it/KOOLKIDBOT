@@ -324,3 +324,46 @@ def test_cloud_background_runtime_routes_ticks_without_browser_runtime(monkeypat
         assert calls[0][3] == 5
     finally:
         server.clients.pop(runtime_cid, None)
+
+
+def test_cloud_websocket_tick_passes_license_guard_and_reaches_background_engine(monkeypatch):
+    cloud_key = "user:alice:token:abc123"
+    runtime_cid = server._cloud_runtime_client_id(cloud_key)
+    runtime = server._build_default_client_state()
+    runtime.update({
+        "username": cloud_key,
+        "cloud_runtime": True,
+        "cloud_owner_username": "alice",
+        "cloud_session_key": cloud_key,
+        "active_profile": "CLOUD",
+        "current_symbol": "R_75",
+        "human_symbol": "R_75",
+        "balance": 100.0,
+        "ws_nonce": 77,
+    })
+    server.clients[runtime_cid] = runtime
+    ticks = []
+
+    monkeypatch.setattr(server, "_get_user_row", lambda username: {"username": username} if username == "alice" else None)
+    monkeypatch.setattr(server, "check_user_license_access", lambda row: (True, "ok"))
+    monkeypatch.setattr(server, "process_seqvix_tick", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "_process_unchain_scanner_tick", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "_process_koolkid_golden_card_tick", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "_process_human_parity_market_scan_tick", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "process_tick", lambda cid, tick: ticks.append((cid, tick)))
+    monkeypatch.setattr(server.socketio, "emit", lambda *args, **kwargs: None)
+
+    try:
+        server.handle_on_message(
+            runtime_cid,
+            object(),
+            json.dumps({"tick": {"symbol": "R_75", "quote": 123.45, "pip_size": 2}, "subscription": {"id": "sub-cloud"}}),
+            77,
+        )
+
+        assert len(ticks) == 1
+        assert ticks[0][0] == runtime_cid
+        assert ticks[0][1]["symbol"] == "R_75"
+        assert runtime.get("license_access_cache", {}).get("ok") is True
+    finally:
+        server.clients.pop(runtime_cid, None)
