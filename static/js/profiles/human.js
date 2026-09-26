@@ -13,7 +13,6 @@
   let humanManualContracts = null;
   let humanManualContractsSymbol = "";
   let humanManualLoading = false;
-  let humanKoolkidProfitStatus = null;
   const HUMAN_PARITY_DIGIT_SEQUENCE = [];
   let humanParityLastTickKey = "";
   const HUMAN_PARITY_DIGIT_LIMIT = 24;
@@ -612,109 +611,6 @@
     if(!res.ok && data && data.message) throw new Error(data.message);
     if(!res.ok) throw new Error("Request failed");
     return data;
-  }
-
-  function mountHumanKoolkidProfitOverlay(resetExisting){
-    let host = document.getElementById("humanKoolkidProfitViewport");
-    if(resetExisting && host){ host.remove(); host = null; }
-    if(!host){
-      host = document.createElement("div");
-      host.id = "humanKoolkidProfitViewport";
-      document.body.appendChild(host);
-    }
-    const overlay = document.getElementById("humanKoolkidProfitOverlay");
-    if(overlay && overlay.parentElement !== host) host.appendChild(overlay);
-  }
-
-  function renderHumanKoolkidProfitStatus(payload){
-    if(!payload) return;
-    humanKoolkidProfitStatus = payload;
-    const enabled = !!payload.enabled;
-    const busy = !!(payload.pending_buy || payload.open_contract_id);
-    const btn = byId("humanKoolkidProfitBtn");
-    if(btn){
-      btn.textContent = `KOOLKID PROFIT: ${enabled ? "ON" : "OFF"}`;
-      btn.style.background = enabled ? "#22c55e" : "#0ea5e9";
-      btn.style.color = enabled ? "#052e16" : "#082f49";
-    }
-    const stake = byId("humanKoolkidProfitStake");
-    if(stake && document.activeElement !== stake && !enabled) stake.value = String(Number(payload.base_stake || 1).toFixed(2));
-    const status = byId("humanKoolkidProfitStatus");
-    if(status){
-      status.textContent = [
-        `State: ${payload.runtime_status || (enabled ? "Running" : "Stopped")}`,
-        `Market: ${payload.symbol || "--"}`,
-        `Current stake: ${money(payload.current_stake || payload.base_stake || 0)}`,
-        `Session P/L: ${signedMoney(payload.session_profit || 0)}`,
-        `Trades: ${Number(payload.trade_count || 0)} | Wins: ${Number(payload.wins || 0)} | Losses: ${Number(payload.losses || 0)}`,
-        `Contract: 5% accumulator | 2 ticks`,
-        payload.last_result ? `Last result: ${payload.last_result}` : "Last result: none",
-        payload.last_error ? `Error: ${payload.last_error}` : "",
-      ].filter(Boolean).join("\n");
-      status.style.color = payload.last_error ? "#fca5a5" : (enabled || busy ? "#86efac" : "#94a3b8");
-    }
-    const startBtn = byId("humanKoolkidProfitStartBtn");
-    if(startBtn) startBtn.disabled = enabled || busy;
-    const stopBtn = byId("humanKoolkidProfitStopBtn");
-    if(stopBtn) stopBtn.disabled = !enabled && !busy;
-  }
-
-  async function fetchHumanKoolkidProfitStatus(){
-    try{
-      const res = await fetch("/human/koolkid-profit/status", { cache:"no-store" });
-      const data = await res.json().catch(()=>({}));
-      if(res.ok) renderHumanKoolkidProfitStatus(data);
-      return data;
-    }catch(e){ return null; }
-  }
-
-  function openHumanKoolkidProfitPopup(){
-    mountHumanKoolkidProfitOverlay(false);
-    const overlay = byId("humanKoolkidProfitOverlay");
-    if(!overlay) return;
-    overlay.classList.add("is-open");
-    overlay.setAttribute("aria-hidden", "false");
-    fetchHumanKoolkidProfitStatus();
-  }
-
-  function closeHumanKoolkidProfitPopup(){
-    const overlay = byId("humanKoolkidProfitOverlay");
-    if(!overlay) return;
-    overlay.classList.remove("is-open");
-    overlay.setAttribute("aria-hidden", "true");
-  }
-
-  async function startHumanKoolkidProfit(){
-    const stakeEl = byId("humanKoolkidProfitStake");
-    const baseStake = clampNum(stakeEl && stakeEl.value, 0.35, 1000000, 1);
-    if(stakeEl) stakeEl.value = baseStake.toFixed(2);
-    try{
-      const data = await postJSON("/human/koolkid-profit/start", { base_stake: baseStake });
-      renderHumanKoolkidProfitStatus(data);
-      closeHumanKoolkidProfitPopup();
-      if(typeof showToast === "function") showToast("HUMAN KOOLKID PROFIT started", "success");
-    }catch(e){
-      if(typeof showToast === "function") showToast(e.message || "KOOLKID PROFIT could not start", "error");
-      fetchHumanKoolkidProfitStatus();
-    }
-  }
-
-  async function stopHumanKoolkidProfit(){
-    try{
-      const data = await postJSON("/human/koolkid-profit/stop", {});
-      renderHumanKoolkidProfitStatus(data);
-      if(typeof showToast === "function") showToast(data.running ? "KOOLKID PROFIT will stop after the current trade" : "KOOLKID PROFIT stopped", "warn");
-    }catch(e){
-      if(typeof showToast === "function") showToast(e.message || "KOOLKID PROFIT stop failed", "error");
-    }
-  }
-
-  function toggleHumanKoolkidProfit(){
-    if(humanKoolkidProfitStatus && humanKoolkidProfitStatus.enabled){
-      stopHumanKoolkidProfit();
-    }else{
-      openHumanKoolkidProfitPopup();
-    }
   }
 
   function normalizeHumanParityMode(value){
@@ -4158,7 +4054,6 @@
     bindUI(root);
     bindHumanDropdownPanels(root);
     bindSocketIfPossible();
-    mountHumanKoolkidProfitOverlay(true);
 
     // expose globals for inline onclick in human.html
     window.humanRFTrade = humanRFTrade;
@@ -4198,11 +4093,6 @@
     window.updateHumanParityMartingalePanel = updateHumanParityMartingalePanel;
     window.startHumanParityMartingale = startHumanParityMartingale;
     window.stopHumanParityMartingale = stopHumanParityMartingale;
-    window.toggleHumanKoolkidProfit = toggleHumanKoolkidProfit;
-    window.openHumanKoolkidProfitPopup = openHumanKoolkidProfitPopup;
-    window.closeHumanKoolkidProfitPopup = closeHumanKoolkidProfitPopup;
-    window.startHumanKoolkidProfit = startHumanKoolkidProfit;
-    window.stopHumanKoolkidProfit = stopHumanKoolkidProfit;
     removeHumanParitySyntheticBatchRows();
 
     // initial render/poll
@@ -4217,13 +4107,11 @@
     renderHumanParityDigitScreen();
     removeHumanParitySyntheticBatchRows();
     maybeAutoFormulaX();
-    fetchHumanKoolkidProfitStatus();
   }
 
   async function afterLoadProfileUI() {
     bindHumanDropdownPanels(byId("profileContainer"));
     bindSocketIfPossible();
-    mountHumanKoolkidProfitOverlay(false);
     startPolling();
     refreshHumanManualContracts(false);
     populateHumanDualMarketSelects();
@@ -4235,13 +4123,11 @@
     renderHumanParityDigitScreen();
     removeHumanParitySyntheticBatchRows();
     maybeAutoFormulaX();
-    fetchHumanKoolkidProfitStatus();
   }
 
   async function onActivate() {
     bindHumanDropdownPanels(byId("profileContainer"));
     startPolling();
-    mountHumanKoolkidProfitOverlay(false);
     try{
       if(typeof refreshHumanKeepAliveUI === "function") await refreshHumanKeepAliveUI();
     }catch(e){}
@@ -4254,14 +4140,12 @@
     updateHumanParityMartingalePanel();
     renderHumanParityDigitScreen();
     maybeAutoFormulaX();
-    fetchHumanKoolkidProfitStatus();
   }
 
   async function onDeactivate() {
     stopPolling();
     clearStatusRenderTimer();
     stopHumanParityMartingale();
-    closeHumanKoolkidProfitPopup();
     socketHooked = false;
   }
 
