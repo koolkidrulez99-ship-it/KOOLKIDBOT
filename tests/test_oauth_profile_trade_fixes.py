@@ -113,7 +113,7 @@ def test_unchain_oauth_higher_routes_to_execute_deriv_trade(monkeypatch):
         server,
         "_get_contracts_for_symbol",
         lambda client_id, state, symbol: ({"available": [{
-            "contract_type": "CALL",
+            "contract_type": "HIGHER",
             "sentiment": "up",
             "contract_category": "callput",
             "barriers": 1,
@@ -143,14 +143,14 @@ def test_unchain_oauth_higher_routes_to_execute_deriv_trade(monkeypatch):
     assert ok is True
     assert msg == "HIGHER trade sent"
     assert captured["profile"] == "UNCHAIN"
-    assert captured["contract_type"] == "CALL"
+    assert captured["contract_type"] == "HIGHER"
     assert captured["symbol"] == "R_10"
     assert captured["duration"] == 5
     assert captured["duration_unit"] == "t"
     assert state["ws_connected"] is True
 
 
-def test_unchain_oauth_higher_and_lower_use_fresh_call_put_relative_barriers(monkeypatch):
+def test_unchain_oauth_higher_and_lower_use_genuine_contract_types(monkeypatch):
     cid = "cid-unchain-oauth-barrier"
     server.clients.pop(cid, None)
     server.init_client(cid)
@@ -173,8 +173,8 @@ def test_unchain_oauth_higher_and_lower_use_fresh_call_put_relative_barriers(mon
         server,
         "_get_contracts_for_symbol",
         lambda client_id, state, symbol: ({"available": [
-            {"contract_type": "CALL", "sentiment": "up", "contract_category": "callput", "barriers": 1, "barrier": "+0.10", "expiry_type": "tick", "min_contract_duration": "1t", "max_contract_duration": "10t"},
-            {"contract_type": "PUT", "sentiment": "down", "contract_category": "callput", "barriers": 1, "barrier": "-0.10", "expiry_type": "tick", "min_contract_duration": "1t", "max_contract_duration": "10t"},
+            {"contract_type": "HIGHER", "sentiment": "up", "contract_category": "callput", "barriers": 1, "barrier": "+0.10", "expiry_type": "tick", "min_contract_duration": "1t", "max_contract_duration": "10t"},
+            {"contract_type": "LOWER", "sentiment": "down", "contract_category": "callput", "barriers": 1, "barrier": "-0.10", "expiry_type": "tick", "min_contract_duration": "1t", "max_contract_duration": "10t"},
         ]}, None),
     )
     monkeypatch.setattr(server.socketio, "emit", lambda *args, **kwargs: None)
@@ -206,8 +206,8 @@ def test_unchain_oauth_higher_and_lower_use_fresh_call_put_relative_barriers(mon
 
     assert ok_higher is True
     assert ok_lower is True
-    assert captured["CALL"][0]["barrier"] == "+0.10"
-    assert captured["PUT"][0]["barrier"] == "-0.10"
+    assert captured["HIGHER"][0]["barrier"] == "+0.10"
+    assert captured["LOWER"][0]["barrier"] == "-0.10"
     assert state["ws_connected"] is True
 
 
@@ -274,7 +274,7 @@ def test_unchain_barrier_validator_does_not_treat_barriers_count_as_allowed_valu
     barrier, err = validate_unchain_higher_lower_barrier(
         "+0.12",
         "HIGHER",
-        {"contract_type": "CALL", "sentiment": "up", "contract_category": "callput", "barriers": 1},
+        {"contract_type": "HIGHER", "sentiment": "up", "contract_category": "callput", "barriers": 1},
     )
 
     assert err is None
@@ -286,7 +286,7 @@ def test_unchain_barrier_validator_accepts_lower_with_unsigned_range_rules():
         "-0.10",
         "LOWER",
         {
-            "contract_type": "PUT",
+            "contract_type": "LOWER",
             "sentiment": "down",
             "contract_category": "callput",
             "barriers": 1,
@@ -315,7 +315,7 @@ def test_oauth_engine_unchain_keeps_relative_barrier_in_proposal():
         "ws_ready_state": lambda state: "OPEN",
         "otp_authenticated": lambda state: True,
         "active_symbols": lambda client_id, state: ([{"symbol": "R_10"}], None),
-        "contracts_for": lambda client_id, state, symbol: ({"available": [{"contract_type": "CALL", "sentiment": "up", "contract_category": "callput", "barriers": 1, "barrier": "+0.10"}]}, None),
+        "contracts_for": lambda client_id, state, symbol: ({"available": [{"contract_type": "HIGHER", "sentiment": "up", "contract_category": "callput", "barriers": 1, "barrier": "+0.10"}]}, None),
         "legacy_aliases": {},
         "duration_matches": lambda item, duration, duration_unit: True,
         "safe_payload": server._safe_deriv_payload_text,
@@ -347,7 +347,7 @@ def test_oauth_engine_unchain_keeps_relative_barrier_in_proposal():
 
     assert ok is True
     assert msg == "Trade sent"
-    assert proposal_payloads[-1]["contract_type"] == "CALL"
+    assert proposal_payloads[-1]["contract_type"] == "HIGHER"
     assert proposal_payloads[-1]["barrier"] == "+0.10"
     assert proposal_payloads[-1]["duration"] == 1
     assert proposal_payloads[-1]["duration_unit"] == "t"
@@ -373,7 +373,7 @@ def test_oauth_engine_unchain_replaces_stale_requested_barrier_with_server_value
         "ws_ready_state": lambda state: "OPEN",
         "otp_authenticated": lambda state: True,
         "active_symbols": lambda client_id, state: ([{"symbol": "R_10"}], None),
-        "contracts_for": lambda client_id, state, symbol: ({"available": [{"contract_type": "CALL", "sentiment": "up", "contract_category": "callput", "barriers": 1, "barrier": "+0.17"}]}, None),
+        "contracts_for": lambda client_id, state, symbol: ({"available": [{"contract_type": "HIGHER", "sentiment": "up", "contract_category": "callput", "barriers": 1, "barrier": "+0.17"}]}, None),
         "legacy_aliases": {},
         "duration_matches": lambda item, duration, duration_unit: True,
         "safe_payload": server._safe_deriv_payload_text,
@@ -426,7 +426,7 @@ def test_oauth_engine_unchain_blocks_stale_digit_barrier_text():
         "ws_ready_state": lambda state: "OPEN",
         "otp_authenticated": lambda state: True,
         "active_symbols": lambda client_id, state: ([{"symbol": "R_10"}], None),
-        "contracts_for": lambda client_id, state, symbol: ({"available": [{"contract_type": "PUT", "sentiment": "down", "contract_category": "callput", "barriers": 1, "barrier": "-0.10"}]}, None),
+        "contracts_for": lambda client_id, state, symbol: ({"available": [{"contract_type": "LOWER", "sentiment": "down", "contract_category": "callput", "barriers": 1, "barrier": "-0.10"}]}, None),
         "legacy_aliases": {},
         "duration_matches": lambda item, duration, duration_unit: True,
         "safe_payload": server._safe_deriv_payload_text,
@@ -485,8 +485,8 @@ def test_oauth_engine_unchain_pair_uses_independent_proposals_and_buys():
         "otp_authenticated": lambda state: True,
         "active_symbols": lambda client_id, state: ([{"symbol": "R_10"}], None),
         "contracts_for": lambda client_id, state, symbol: ({"available": [
-            {"contract_type": "CALL", "sentiment": "up", "contract_category": "callput", "barriers": 1, "barrier": "+0.10"},
-            {"contract_type": "PUT", "sentiment": "down", "contract_category": "callput", "barriers": 1, "barrier": "-0.10"},
+            {"contract_type": "HIGHER", "sentiment": "up", "contract_category": "callput", "barriers": 1, "barrier": "+0.10"},
+            {"contract_type": "LOWER", "sentiment": "down", "contract_category": "callput", "barriers": 1, "barrier": "-0.10"},
         ]}, None),
         "legacy_aliases": {},
         "duration_matches": lambda item, duration, duration_unit: True,
@@ -538,7 +538,7 @@ def test_oauth_engine_unchain_pair_uses_independent_proposals_and_buys():
             "req_id": 401,
             "amount": 1.0,
             "basis": "stake",
-            "contract_type": "CALL",
+            "contract_type": "HIGHER",
             "currency": "USD",
             "duration": 1,
             "duration_unit": "t",
@@ -550,7 +550,7 @@ def test_oauth_engine_unchain_pair_uses_independent_proposals_and_buys():
             "req_id": 402,
             "amount": 1.0,
             "basis": "stake",
-            "contract_type": "PUT",
+            "contract_type": "LOWER",
             "currency": "USD",
             "duration": 1,
             "duration_unit": "t",
@@ -761,7 +761,7 @@ def test_unchain_server_advertised_zero_higher_is_omitted_for_new_api():
         "+0.10",
         "HIGHER",
         {
-            "contract_type": "CALL",
+            "contract_type": "HIGHER",
             "sentiment": "up",
             "contract_category": "callput",
             "barriers": 1,
@@ -777,7 +777,7 @@ def test_unchain_server_advertised_negative_zero_lower_is_omitted_for_new_api():
         "-0.10",
         "LOWER",
         {
-            "contract_type": "PUT",
+            "contract_type": "LOWER",
             "sentiment": "down",
             "contract_category": "callput",
             "barriers": 1,
@@ -793,7 +793,7 @@ def test_unchain_server_precision_is_preserved_exactly():
         "+0.10",
         "HIGHER",
         {
-            "contract_type": "CALL",
+            "contract_type": "HIGHER",
             "sentiment": "up",
             "contract_category": "callput",
             "barriers": 1,
@@ -833,7 +833,7 @@ def test_unchain_contract_selection_does_not_borrow_wrong_duration_barrier():
     contracts = {
         "available": [
             {
-                "contract_type": "CALL",
+                "contract_type": "HIGHER",
                 "sentiment": "up",
                 "contract_category": "callput",
                 "barriers": 1,
@@ -843,7 +843,7 @@ def test_unchain_contract_selection_does_not_borrow_wrong_duration_barrier():
                 "max_contract_duration": "3t",
             },
             {
-                "contract_type": "CALL",
+                "contract_type": "HIGHER",
                 "sentiment": "up",
                 "contract_category": "callput",
                 "barriers": 1,
@@ -884,7 +884,7 @@ def test_oauth_engine_unchain_uses_exact_server_zero_and_proposal_first():
         "active_symbols": lambda client_id, state: ([{"symbol": "stpRNG"}], None),
         "contracts_for": lambda client_id, state, symbol: ({
             "available": [{
-                "contract_type": "CALL",
+                "contract_type": "HIGHER",
                 "sentiment": "up",
                 "contract_category": "callput",
                 "barriers": 1,
@@ -927,7 +927,7 @@ def test_oauth_engine_unchain_uses_exact_server_zero_and_proposal_first():
         "req_id": 810,
         "amount": 0.35,
         "basis": "stake",
-        "contract_type": "CALL",
+        "contract_type": "HIGHER",
         "currency": "USD",
         "duration": 5,
         "duration_unit": "t",
@@ -1017,7 +1017,7 @@ def test_oauth_engine_unchain_barrier2_only_when_matched_contract_requires_it():
         "active_symbols": lambda client_id, state: ([{"symbol": "stpRNG"}], None),
         "contracts_for": lambda client_id, state, symbol: ({
             "available": [{
-                "contract_type": "CALL",
+                "contract_type": "HIGHER",
                 "sentiment": "up",
                 "contract_category": "callput",
                 "barriers": 2,
@@ -1080,7 +1080,7 @@ def test_oauth_engine_unchain_keeps_barrier2_only_when_matched_contract_requires
         "active_symbols": lambda client_id, state: ([{"symbol": "stpRNG"}], None),
         "contracts_for": lambda client_id, state, symbol: ({
             "available": [{
-                "contract_type": "CALL",
+                "contract_type": "HIGHER",
                 "sentiment": "up",
                 "contract_category": "callput",
                 "barriers": 2,
@@ -1122,3 +1122,48 @@ def test_oauth_engine_unchain_keeps_barrier2_only_when_matched_contract_requires
     assert "barrier" not in proposal_payloads[-1]
     assert proposal_payloads[-1]["barrier2"] == "+0.1"
     assert "_unchain_allow_barrier2" not in proposal_payloads[-1]
+
+
+def test_unchain_rejects_call_put_even_when_step_metadata_has_barrier():
+    contracts = {
+        "available": [
+            {
+                "contract_type": "CALL",
+                "sentiment": "up",
+                "contract_category": "callput",
+                "barriers": 1,
+                "barrier": "+0.0",
+                "expiry_type": "tick",
+                "min_contract_duration": "1t",
+                "max_contract_duration": "10t",
+            },
+            {
+                "contract_type": "PUT",
+                "sentiment": "down",
+                "contract_category": "callput",
+                "barriers": 1,
+                "barrier": "+0.0",
+                "expiry_type": "tick",
+                "min_contract_duration": "1t",
+                "max_contract_duration": "10t",
+            },
+        ]
+    }
+    higher, higher_err = choose_unchain_contract(
+        contracts,
+        "HIGHER",
+        duration=5,
+        duration_unit="t",
+        duration_matcher=server._duration_matches_contracts_for,
+    )
+    lower, lower_err = choose_unchain_contract(
+        contracts,
+        "LOWER",
+        duration=5,
+        duration_unit="t",
+        duration_matcher=server._duration_matches_contracts_for,
+    )
+    assert higher is None
+    assert lower is None
+    assert "No Deriv Higher/Lower contract" in higher_err
+    assert "No Deriv Higher/Lower contract" in lower_err

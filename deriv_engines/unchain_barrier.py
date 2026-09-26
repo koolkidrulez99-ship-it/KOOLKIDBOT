@@ -122,23 +122,9 @@ def _item_text(item):
 
 def _item_is_higher_lower_contract(item):
     contract_type = str((item or {}).get("contract_type") or "").upper().strip()
-    if contract_type not in ("CALL", "PUT", "HIGHER", "LOWER"):
-        return False
-
-    has_barrier = bool(contract_item_barrier_values(item))
-    try:
-        has_barrier = has_barrier or int(float((item or {}).get("barriers") or 0)) > 0
-    except Exception:
-        has_barrier = has_barrier or bool((item or {}).get("barriers"))
-    range_rule = (item or {}).get("barrier_range")
-    if isinstance(range_rule, dict) and range_rule:
-        has_barrier = True
-    if (item or {}).get("barrier2") not in (None, ""):
-        has_barrier = True
-
-    # Plain Rise/Fall CALL/PUT has no Higher/Lower barrier requirement and
-    # must not be selected for UNCHAIN.
-    return bool(has_barrier)
+    # New Deriv API exposes genuine Higher/Lower as distinct contract types.
+    # CALL/PUT are Rise/Fall and must never qualify for UNCHAIN Higher/Lower.
+    return contract_type in ("HIGHER", "LOWER")
 
 
 def contract_item_direction(item):
@@ -146,9 +132,9 @@ def contract_item_direction(item):
     if sentiment in ("up", "down"):
         return sentiment
     contract_type = str((item or {}).get("contract_type") or "").upper().strip()
-    if contract_type in ("CALL", "HIGHER"):
+    if contract_type == "HIGHER":
         return "up"
-    if contract_type in ("PUT", "LOWER"):
+    if contract_type == "LOWER":
         return "down"
     return ""
 
@@ -186,7 +172,7 @@ def choose_unchain_contract(contracts_for, direction, *, duration=None, duration
         contract_type = str((item or {}).get("contract_type") or "").upper().strip()
         return (
             2 if str((item or {}).get("sentiment") or "").lower().strip() == wanted_direction else 0,
-            1 if contract_type in ("CALL", "PUT", "HIGHER", "LOWER") else 0,
+            1 if contract_type in ("HIGHER", "LOWER") else 0,
             1 if contract_item_barrier_values(item) else 0,
             1 if "callput" in text or "higher" in text or "lower" in text else 0,
         )
@@ -318,6 +304,8 @@ def validate_unchain_higher_lower_barrier(barrier, direction, contract_item=None
     if wanted_direction not in ("up", "down"):
         return None, "Invalid UNCHAIN direction"
 
+    if not _item_is_higher_lower_contract(contract_item):
+        return None, "Matched Deriv contract is Rise/Fall, not Higher/Lower"
     matched_direction = contract_item_direction(contract_item)
     if matched_direction != wanted_direction:
         return None, "Matched Deriv contract does not represent the selected Higher/Lower side"
