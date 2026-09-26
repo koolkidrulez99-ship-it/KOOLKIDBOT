@@ -756,7 +756,7 @@ def test_oauth_engine_nonfatal_buy_send_error_does_not_reconnect():
     assert state["ws_connected"] is True
 
 
-def test_unchain_server_advertised_zero_higher_is_preserved_exactly():
+def test_unchain_server_advertised_zero_higher_is_omitted_for_new_api():
     barrier, err = validate_unchain_higher_lower_barrier(
         "+0.10",
         "HIGHER",
@@ -769,10 +769,10 @@ def test_unchain_server_advertised_zero_higher_is_preserved_exactly():
         },
     )
     assert err is None
-    assert barrier == "+0.0"
+    assert barrier is None
 
 
-def test_unchain_server_advertised_negative_zero_lower_is_preserved_exactly():
+def test_unchain_server_advertised_negative_zero_lower_is_omitted_for_new_api():
     barrier, err = validate_unchain_higher_lower_barrier(
         "-0.10",
         "LOWER",
@@ -785,7 +785,7 @@ def test_unchain_server_advertised_negative_zero_lower_is_preserved_exactly():
         },
     )
     assert err is None
-    assert barrier == "-0.0"
+    assert barrier is None
 
 
 def test_unchain_server_precision_is_preserved_exactly():
@@ -932,7 +932,6 @@ def test_oauth_engine_unchain_uses_exact_server_zero_and_proposal_first():
         "duration": 5,
         "duration_unit": "t",
         "underlying_symbol": "stpRNG",
-        "barrier": "+0.0",
     }]
     sent = [json.loads(x) for x in state["ws"].sent]
     assert sent == [{"req_id": 810, "buy": "proposal-zero", "price": 0.35}]
@@ -996,7 +995,7 @@ def test_oauth_engine_unchain_preserves_exact_higher_contract_type():
     ok, msg = OAuthDerivTradeEngine(deps).execute(intent, state=state)
     assert (ok, msg) == (True, "Trade sent")
     assert proposals[-1]["contract_type"] == "HIGHER"
-    assert proposals[-1]["barrier"] == "+0.0"
+    assert "barrier" not in proposals[-1]
 
 
 def test_oauth_engine_unchain_barrier2_only_when_matched_contract_requires_it():
@@ -1057,7 +1056,7 @@ def test_oauth_engine_unchain_barrier2_only_when_matched_contract_requires_it():
     )
     ok, msg = OAuthDerivTradeEngine(deps).execute(intent, state=state)
     assert (ok, msg) == (True, "Trade sent")
-    assert proposals[-1]["barrier"] == "+0.0"
+    assert "barrier" not in proposals[-1]
     assert proposals[-1]["barrier2"] == "+0.5"
     assert "_unchain_allow_barrier2" not in proposals[-1]
 
@@ -1120,6 +1119,6 @@ def test_oauth_engine_unchain_keeps_barrier2_only_when_matched_contract_requires
     )
     ok, msg = OAuthDerivTradeEngine(deps).execute(intent, state=state)
     assert (ok, msg) == (True, "Trade sent")
-    assert proposal_payloads[-1]["barrier"] == "+0.0"
+    assert "barrier" not in proposal_payloads[-1]
     assert proposal_payloads[-1]["barrier2"] == "+0.1"
     assert "_unchain_allow_barrier2" not in proposal_payloads[-1]

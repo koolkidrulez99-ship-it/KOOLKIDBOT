@@ -132,12 +132,15 @@ class OAuthDerivTradeEngine:
                 unchain_direction,
                 unchain_contract_item,
             )
-            if barrier_err or resolved_barrier in (None, "", "NaN", "nan"):
+            if barrier_err:
                 debug["original_payload"] = parameters
                 debug["sanitized_payload"] = sanitized
                 debug["matched_contract"] = unchain_contract_item
-                return self._fail("parameter_sanitizer", barrier_err or "Invalid barrier for UNCHAIN Higher/Lower", client_id, debug, state)
-            sanitized["barrier"] = resolved_barrier
+                return self._fail("parameter_sanitizer", barrier_err, client_id, debug, state)
+            if resolved_barrier in (None, ""):
+                removed["barrier"] = sanitized.pop("barrier", None)
+            else:
+                sanitized["barrier"] = resolved_barrier
 
             if contract_item_supports_second_barrier(unchain_contract_item):
                 second_barrier = intent.barrier2

@@ -322,25 +322,43 @@ def validate_unchain_higher_lower_barrier(barrier, direction, contract_item=None
     if matched_direction != wanted_direction:
         return None, "Matched Deriv contract does not represent the selected Higher/Lower side"
 
-    requested_magnitude, raw_requested = _requested_barrier_magnitude(barrier)
-    if requested_magnitude is None:
-        return None, "Invalid UNCHAIN Higher/Lower barrier"
-
-    # Explicit server-advertised barriers are authoritative. Preserve the
-    # exact value/precision/sign Deriv supplied. Existing new-API behavior is
-    # to replace a stale requested barrier with the server-defined equivalent.
+    # New Deriv Options contracts can advertise +0.0 as the ATM/default
+    # barrier sentinel while rejecting a literal barrier="+0.0" proposal.
+    # For that server-advertised zero, the valid proposal form is to omit the
+    # barrier field. Non-zero advertised barriers remain literal.
     allowed_values = []
     for value in contract_item_barrier_values(contract_item):
         normalized = _normalize_allowed_barrier(value, wanted_direction)
         if normalized is not None:
             allowed_values.append(normalized)
     allowed_values = list(dict.fromkeys(allowed_values))
+
+    requested_magnitude, raw_requested = _requested_barrier_magnitude(barrier)
     if allowed_values:
+        allowed_decimals = [
+            _to_signed_decimal(value)
+            for value in allowed_values
+            if _to_signed_decimal(value) is not None
+        ]
+        zero_only = bool(allowed_decimals) and all(value == 0 for value in allowed_decimals)
+        if requested_magnitude is None:
+            if zero_only:
+                return None, None
+            return None, "Invalid UNCHAIN Higher/Lower barrier"
         for allowed in allowed_values:
             allowed_decimal = _to_signed_decimal(allowed)
             if allowed_decimal is not None and allowed_decimal.copy_abs() == requested_magnitude:
+                if allowed_decimal == 0:
+                    return None, None
                 return allowed, None
-        return allowed_values[0], None
+        chosen = allowed_values[0]
+        chosen_decimal = _to_signed_decimal(chosen)
+        if chosen_decimal == 0:
+            return None, None
+        return chosen, None
+
+    if requested_magnitude is None:
+        return None, "Invalid UNCHAIN Higher/Lower barrier"
 
     requested_places = _decimal_places(raw_requested)
     allow_zero = requested_magnitude == 0
