@@ -264,3 +264,63 @@ def test_verified_cloud_identity_is_saved_in_signed_session_for_later_disconnect
 
         with client.session_transaction() as sess:
             assert sess["cloud_session_key"] == cloud_key
+
+
+def test_cloud_runtime_license_check_uses_real_owner_username(monkeypatch):
+    cloud_key = "user:alice:token:abc123"
+    runtime = server._build_default_client_state()
+    runtime.update({
+        "username": cloud_key,
+        "cloud_runtime": True,
+        "cloud_owner_username": "alice",
+        "cloud_session_key": cloud_key,
+    })
+    looked_up = []
+
+    monkeypatch.setattr(server, "_get_user_row", lambda username: looked_up.append(username) or {"username": username})
+    monkeypatch.setattr(server, "check_user_license_access", lambda row: (True, "ok"))
+
+    ok, reason = server._client_license_access("cloud-runtime-test", runtime, force=True)
+
+    assert ok is True
+    assert reason == "ok"
+    assert looked_up == ["alice"]
+
+
+def test_cloud_background_runtime_routes_ticks_without_browser_runtime(monkeypatch):
+    cloud_key = "user:alice:token:abc123"
+    runtime_cid = server._cloud_runtime_client_id(cloud_key)
+    runtime = server._build_default_client_state()
+    runtime.update({
+        "username": cloud_key,
+        "cloud_runtime": True,
+        "cloud_owner_username": "alice",
+        "cloud_session_key": cloud_key,
+        "active_profile": "CLOUD",
+        "current_symbol": "R_75",
+        "human_symbol": "R_75",
+        "balance": 100.0,
+    })
+    server.clients[runtime_cid] = runtime
+    calls = []
+
+    monkeypatch.setattr(server.cloud_manager, "is_symbol_needed", lambda key, symbol: key == cloud_key and str(symbol).upper() == "R_75")
+    monkeypatch.setattr(
+        server.cloud_manager,
+        "on_tick",
+        lambda key, cid, tick, digit, balance=None: calls.append((key, cid, tick["symbol"], digit, balance)) or [],
+    )
+    monkeypatch.setattr(server.cloud_manager, "status", lambda key: {"current_market": "R_75", "running": True})
+    monkeypatch.setattr(server, "_schedule_profile_auto_trade", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server.socketio, "emit", lambda *args, **kwargs: None)
+
+    try:
+        server.process_tick(runtime_cid, {"symbol": "R_75", "quote": 123.45, "pip_size": 2, "epoch": 1})
+
+        assert len(calls) == 1
+        assert calls[0][0] == cloud_key
+        assert calls[0][1] == runtime_cid
+        assert calls[0][2] == "R_75"
+        assert calls[0][3] == 5
+    finally:
+        server.clients.pop(runtime_cid, None)

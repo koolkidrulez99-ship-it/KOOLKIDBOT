@@ -4394,7 +4394,15 @@ def _client_license_access(client_id, state=None, force=False):
     ):
         return bool(cache.get("ok")), cache.get("reason") or "cached"
 
-    username = runtime_state.get("username")
+    # Dedicated Cloud runtimes use the opaque Cloud session key as their
+    # runtime username so the CloudSessionManager can address the correct
+    # trading session. License checks, however, must validate the real site
+    # account that owns that Cloud runtime.
+    username = (
+        runtime_state.get("cloud_owner_username")
+        if isinstance(runtime_state, dict) and runtime_state.get("cloud_runtime")
+        else runtime_state.get("username")
+    )
     if not username:
         result = (False, "No user is linked to this bot session.")
     else:
@@ -27425,7 +27433,8 @@ def heartbeat_sweeper():
         for client_id, state in list(clients.items()):
             if isinstance(state, dict) and state.get("cloud_runtime"):
                 try:
-                    if cloud_manager.status(state.get("username")).get("running"):
+                    cloud_key = _cloud_key_for_state(state)
+                    if cloud_key and cloud_manager.status(cloud_key).get("running"):
                         continue
                 except Exception:
                     pass
