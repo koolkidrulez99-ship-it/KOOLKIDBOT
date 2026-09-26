@@ -70,3 +70,88 @@ def test_cloud_accumulator_pat_uses_proposal_id(monkeypatch):
     assert state["ws"].messages[-1]["buy"] == "cloud-proposal"
     assert next(iter(state["req_meta"].values()))["exit_ticks"] == 2
     server.clients.pop("cloud-test", None)
+
+
+def test_cloud_identity_uses_preserved_session_key_after_pat_disconnect():
+    state = server._build_default_client_state()
+    state.update({
+        "username": "alice",
+        "cloud_session_key": "user:alice:token:abc123",
+        "api_token": "",
+        "api_token_type": "none",
+        "deriv_account_id": "",
+    })
+
+    status_identity = server._cloud_identity_for_state(state, require_token=False)
+    protected_identity = server._cloud_identity_for_state(state, require_token=True)
+
+    assert status_identity["key"] == "user:alice:token:abc123"
+    assert status_identity["token_verified"] is False
+    assert status_identity["identity_type"] == "preserved_cloud_session"
+    assert protected_identity["key"] == ""
+
+
+def test_pat_disconnect_preserves_cloud_key_and_does_not_kill_cloud_runtime(monkeypatch):
+    browser_cid = "browser-cloud-disconnect"
+    cloud_key = "user:alice:token:abc123"
+    runtime_cid = server._cloud_runtime_client_id(cloud_key)
+
+    browser = server._build_default_client_state()
+    browser.update({
+        "username": "alice",
+        "cloud_session_key": cloud_key,
+        "api_token": "pat-secret",
+        "api_token_type": "pat",
+        "deriv_account_id": "VRTC123",
+    })
+    runtime = server._build_default_client_state()
+    runtime.update({
+        "username": cloud_key,
+        "cloud_runtime": True,
+        "cloud_session_key": cloud_key,
+        "api_token": "pat-secret",
+        "api_token_type": "pat",
+        "deriv_account_id": "VRTC123",
+    })
+    server.clients[browser_cid] = browser
+    server.clients[runtime_cid] = runtime
+
+    monkeypatch.setattr(server.cloud_manager, "has_session", lambda key: key == cloud_key)
+    monkeypatch.setattr(server, "_cleanup_client_runtime", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "_hard_stop_all_strategies", lambda *args, **kwargs: None)
+
+    try:
+        server.disconnect_client(browser_cid, reason="manual_disconnect", emit=False)
+
+        reset = server.clients[browser_cid]
+        assert reset["api_token"] == ""
+        assert reset["ws_connected"] is False
+        assert reset["cloud_session_key"] == cloud_key
+        assert reset["username"] == "alice"
+        assert server.clients[runtime_cid] is runtime
+        assert runtime["cloud_runtime"] is True
+        assert runtime["api_token"] == "pat-secret"
+    finally:
+        server.clients.pop(browser_cid, None)
+        server.clients.pop(runtime_cid, None)
+
+
+def test_logout_does_not_preserve_cloud_session_key(monkeypatch):
+    cid = "browser-cloud-logout"
+    state = server._build_default_client_state()
+    state.update({
+        "username": "alice",
+        "cloud_session_key": "user:alice:token:abc123",
+        "api_token": "pat-secret",
+        "api_token_type": "pat",
+    })
+    server.clients[cid] = state
+    monkeypatch.setattr(server.cloud_manager, "has_session", lambda key: True)
+    monkeypatch.setattr(server, "_cleanup_client_runtime", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "_hard_stop_all_strategies", lambda *args, **kwargs: None)
+
+    try:
+        server.disconnect_client(cid, reason="logout", emit=False)
+        assert server.clients[cid].get("cloud_session_key") in (None, "")
+    finally:
+        server.clients.pop(cid, None)

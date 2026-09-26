@@ -4038,6 +4038,24 @@ def _cloud_identity_for_state(state, require_token=False):
             "identity_type": "",
             "requires_token_verification": True,
         }
+
+    # Cloud Trading runs on its own server-side Deriv runtime after Start.
+    # Browser/PAT disconnects must not orphan that already-verified Cloud
+    # session. Keep using only the opaque Cloud key for status/history/Stop;
+    # Start/Restart/settings still require a live verified token.
+    preserved_key = str(state.get("cloud_session_key") or "").strip().lower()
+    owner_prefix = f"user:{owner}:" if owner else ""
+    if preserved_key and (not owner_prefix or preserved_key.startswith(owner_prefix)):
+        return {
+            "key": preserved_key,
+            "token_verified": False,
+            "token_fingerprint": "",
+            "cloud_account_id": account_id,
+            "connection_mode": connection_mode,
+            "identity_type": "preserved_cloud_session",
+            "requires_token_verification": True,
+        }
+
     return {
         "key": "",
         "token_verified": False,
@@ -4195,11 +4213,35 @@ def disconnect_client(client_id, reason="manual", emit=True):
         pass
     logger.info(f"[{client_id}] 🔻 disconnect_client: reason={reason}")
 
+    preserve_cloud_key = ""
+    preserve_cloud_owner = ""
+    if str(reason or "").strip().lower() not in {"logout", "license_blocked"}:
+        candidate_key = _cloud_key_for_state(state)
+        candidate_owner = str(state.get("username") or "").strip().lower()
+        expected_prefix = f"user:{candidate_owner}:" if candidate_owner else ""
+        if candidate_key and (not expected_prefix or candidate_key.startswith(expected_prefix)):
+            try:
+                if cloud_manager.has_session(candidate_key):
+                    preserve_cloud_key = candidate_key
+                    preserve_cloud_owner = candidate_owner
+            except Exception:
+                pass
+
     _cleanup_client_runtime(client_id, state, reason=reason)
     _hard_stop_all_strategies(state)
 
     clients[client_id] = _build_default_client_state()
     reset_state = clients[client_id]
+    if preserve_cloud_key:
+        reset_state["cloud_session_key"] = preserve_cloud_key
+        if preserve_cloud_owner:
+            reset_state["username"] = preserve_cloud_owner
+        logger.info(
+            "[%s] cloud_session_key_preserved_after_disconnect reason=%s key=%s",
+            client_id,
+            reason,
+            preserve_cloud_key[:42],
+        )
 
     if emit:
         socketio.emit(
