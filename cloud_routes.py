@@ -89,6 +89,20 @@ def register_cloud_routes(
         cid, state = get_client_state()
         if callable(get_cloud_identity):
             info = get_cloud_identity(state, require_token=require_token) or {}
+            live_key = str(info.get("key") or "").strip().lower()
+            owner = _current_user()
+            if live_key:
+                # Keep only the opaque Cloud session key in the signed Flask
+                # session. The PAT itself stays in the dedicated Cloud runtime.
+                session["cloud_session_key"] = live_key
+            elif not require_token:
+                saved_key = str(session.get("cloud_session_key") or "").strip().lower()
+                owner_prefix = f"user:{owner}:" if owner else ""
+                if saved_key and (not owner_prefix or saved_key.startswith(owner_prefix)):
+                    info["key"] = saved_key
+                    info["token_verified"] = False
+                    info["requires_token_verification"] = True
+                    info["identity_type"] = "preserved_cloud_session"
             info.setdefault("client_id", cid)
             info.setdefault("state", state)
             return info

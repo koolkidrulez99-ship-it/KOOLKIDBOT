@@ -4654,6 +4654,7 @@ def login():
                 return render_template("login.html", error=reason)
 
             role = str((user_row or {}).get("role") or "user").lower()
+            session.pop("cloud_session_key", None)
             session["user"] = str((user_row or {}).get("username") or username)
             session["role"] = role
             session["client_id"] = str(uuid.uuid4())
@@ -4782,6 +4783,7 @@ def logout():
         disconnect_client(cid, reason="logout", emit=False)
         clients.pop(cid, None)
 
+    session.pop("cloud_session_key", None)
     session.pop("user", None)
     session.pop("role", None)
     return redirect(url_for("login"))

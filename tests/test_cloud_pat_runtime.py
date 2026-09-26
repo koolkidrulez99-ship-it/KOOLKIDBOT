@@ -155,3 +155,112 @@ def test_logout_does_not_preserve_cloud_session_key(monkeypatch):
         assert server.clients[cid].get("cloud_session_key") in (None, "")
     finally:
         server.clients.pop(cid, None)
+
+
+def _build_cloud_route_test_app(identity_provider, manager):
+    from flask import Flask
+    from cloud_routes import register_cloud_routes
+
+    app = Flask(__name__)
+    app.config["SECRET_KEY"] = "cloud-test-secret"
+    state = {}
+    register_cloud_routes(
+        app,
+        cloud_manager=manager,
+        login_required=lambda: True,
+        get_client_state=lambda: ("cid-cloud-route", state),
+        ensure_tick_subscription=lambda *args, **kwargs: True,
+        get_cloud_identity=identity_provider,
+        can_use_cloud_profile=lambda: True,
+    )
+    return app
+
+
+def test_cloud_status_falls_back_to_signed_session_key_after_browser_runtime_is_gone():
+    cloud_key = "user:alice:token:abc123"
+
+    class Manager:
+        def __init__(self):
+            self.status_keys = []
+
+        def status(self, key):
+            self.status_keys.append(key)
+            return {
+                "status": "success",
+                "running": True,
+                "cloud_enabled": True,
+                "cloud_status": "Running",
+                "settings": {},
+                "allowed_markets": ["R_75"],
+                "current_market": "R_75",
+                "current_stake": 1.0,
+                "session_profit": 0.0,
+                "reinvest_step": 0,
+                "wins": 0,
+                "losses": 0,
+            }
+
+    manager = Manager()
+    app = _build_cloud_route_test_app(
+        lambda state, require_token=False: {
+            "key": "",
+            "token_verified": False,
+            "requires_token_verification": True,
+        },
+        manager,
+    )
+
+    with app.test_client() as client:
+        with client.session_transaction() as sess:
+            sess["user"] = "alice"
+            sess["cloud_session_key"] = cloud_key
+
+        response = client.get("/cloud/under9/status")
+        payload = response.get_json()
+
+    assert response.status_code == 200
+    assert manager.status_keys == [cloud_key]
+    assert payload["running"] is True
+    assert payload["token_verified"] is False
+    assert payload["cloud_identity_type"] == "preserved_cloud_session"
+
+
+def test_verified_cloud_identity_is_saved_in_signed_session_for_later_disconnect():
+    cloud_key = "user:alice:token:abc123"
+
+    class Manager:
+        def status(self, key):
+            return {
+                "status": "success",
+                "running": True,
+                "cloud_enabled": True,
+                "cloud_status": "Running",
+                "settings": {},
+                "allowed_markets": ["R_75"],
+                "current_market": "R_75",
+                "current_stake": 1.0,
+                "session_profit": 0.0,
+                "reinvest_step": 0,
+                "wins": 0,
+                "losses": 0,
+            }
+
+    app = _build_cloud_route_test_app(
+        lambda state, require_token=False: {
+            "key": cloud_key,
+            "token_verified": True,
+            "requires_token_verification": False,
+            "identity_type": "token_fingerprint",
+        },
+        Manager(),
+    )
+
+    with app.test_client() as client:
+        with client.session_transaction() as sess:
+            sess["user"] = "alice"
+
+        response = client.get("/cloud/under9/status")
+        assert response.status_code == 200
+
+        with client.session_transaction() as sess:
+            assert sess["cloud_session_key"] == cloud_key
