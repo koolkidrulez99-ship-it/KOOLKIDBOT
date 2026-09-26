@@ -17,6 +17,16 @@ MODE_THRESHOLDS = {
     "AGGRESSIVE": (56.0, 50.0),
 }
 MODE_TRADE_TYPES = {"digit_differs", "under9", "over0"}
+JUMP_MARKETS = ["JD10", "JD25", "JD50", "JD75", "JD100"]
+STEP_MARKETS = ["STPRNG", "STPRNG2", "STPRNG3", "STPRNG4", "STPRNG5"]
+HIGHER_MARKETS = ["R_75"]
+DERIV_SYMBOL_CASE = {
+    "STPRNG": "stpRNG",
+    "STPRNG2": "stpRNG2",
+    "STPRNG3": "stpRNG3",
+    "STPRNG4": "stpRNG4",
+    "STPRNG5": "stpRNG5",
+}
 SUPPORTED_TRADE_TYPES = {
     "kidpairs",
     "over3_analysis",
@@ -24,6 +34,9 @@ SUPPORTED_TRADE_TYPES = {
     "under9",
     "over0",
     "digit_differs",
+    "odd",
+    "rise",
+    "higher",
     "kid100wins",
     "ai_auto_trading",
 }
@@ -139,13 +152,26 @@ class CloudReinvestEngine:
         kid100_mode = str(raw.get("kid100_mode") or "LOW").strip().upper()
         ai_auto_strategy = str(raw.get("ai_auto_strategy") or "GOLDEN_CARD").strip().upper()
         allowed_markets = _normalize_markets(raw.get("allowed_markets"))
+        trade_type = trade_type if trade_type in SUPPORTED_TRADE_TYPES else "under9"
         selected_market = str(raw.get("selected_market") or allowed_markets[0]).strip().upper()
-        if market_scan_scope == "ONE":
+        if trade_type == "odd":
+            allowed_markets = list(JUMP_MARKETS)
+            selected_market = allowed_markets[0]
+            market_scan_scope = "ALL"
+        elif trade_type == "rise":
+            allowed_markets = list(STEP_MARKETS)
+            selected_market = allowed_markets[0]
+            market_scan_scope = "ALL"
+        elif trade_type == "higher":
+            allowed_markets = list(HIGHER_MARKETS)
+            selected_market = "R_75"
+            market_scan_scope = "ONE"
+        elif market_scan_scope == "ONE":
             allowed_markets = [selected_market]
         return {
             **raw,
             "strategy_name": "reinvest_profits_100",
-            "cloud_trade_type": trade_type if trade_type in SUPPORTED_TRADE_TYPES else "under9",
+            "cloud_trade_type": trade_type,
             "cloud_trade_mode": mode if mode in MODE_TARGETS else "SAFE",
             "kid100_mode": kid100_mode if kid100_mode in {"LOW", "HIGH"} else "LOW",
             "ai_auto_strategy": ai_auto_strategy if ai_auto_strategy in {"GOLDEN_CARD", "LOWEST_PERCENT"} else "GOLDEN_CARD",
@@ -261,7 +287,9 @@ class CloudReinvestEngine:
         self._log("stopped", reason=self.cloud_status)
 
     def needed_symbols(self):
-        return list(self.settings["allowed_markets"]) if self.running else []
+        if not self.running:
+            return []
+        return [DERIV_SYMBOL_CASE.get(symbol, symbol) for symbol in self.settings["allowed_markets"]]
 
     def _market(self, symbol):
         symbol = str(symbol or "").upper()
@@ -274,6 +302,16 @@ class CloudReinvestEngine:
             }
             self.shadow[symbol] = KoolKidStrategy()
         return self.buffers[symbol]
+
+    def _required_history(self):
+        trade_type = self.settings["cloud_trade_type"]
+        if trade_type == "odd":
+            return 4
+        if trade_type == "rise":
+            return 6
+        if trade_type == "higher":
+            return 20
+        return int(self.settings["minimum_history"])
 
     def _cheap_score(self, market, now_ts):
         digits = list(market["digits"])
@@ -293,7 +331,7 @@ class CloudReinvestEngine:
         for symbol, market in self.buffers.items():
             score = self._cheap_score(market, now_ts)
             self.market_scores[symbol] = score
-            if len(market["digits"]) >= self.settings["minimum_history"] and now_ts - market["last_at"] <= 10:
+            if len(market["digits"]) >= self._required_history() and now_ts - market["last_at"] <= 10:
                 rows.append((score, symbol))
         rows.sort(reverse=True)
         previous = tuple(self.deep_markets)
@@ -311,31 +349,134 @@ class CloudReinvestEngine:
 
     def _differ_candidate(self, market):
         digits = list(market["digits"])
-        if len(digits) < self.settings["minimum_history"]:
+        if len(digits) < 100:
             return None
         frequencies = self._frequency_snapshot(digits)
-        mode = self.settings["cloud_trade_mode"]
-        min_signal, min_quality = MODE_THRESHOLDS[mode]
-        long_values = list(frequencies[100].values())
-        concentration = max(long_values) - min(long_values)
-        disagreement = sum(abs(frequencies[25][d] - frequencies[100][d]) for d in range(10)) / 10.0
-        quality = max(0.0, min(100.0, 82.0 - disagreement * 2.0 - max(0.0, concentration - 12.0)))
-        best = None
-        for digit in range(10):
-            long_pct = frequencies[100][digit]
-            medium_pct = frequencies[50][digit]
-            short_pct = frequencies[25][digit]
-            anomaly = max(0.0, short_pct - long_pct)
-            distance = next((idx for idx, value in enumerate(reversed(digits)) if value == digit), len(digits))
-            score = 100.0 - (long_pct * 3.0 + medium_pct * 2.0 + short_pct) + min(12.0, distance * 0.6) - anomaly * 2.5
-            row = {"digit": digit, "score": round(score, 2), "quality": round(quality, 2), "frequencies": frequencies}
-            if best is None or row["score"] > best["score"]:
-                best = row
-        if not best or best["score"] < min_signal or best["quality"] < min_quality:
+        long_freq = frequencies[100]
+        max_pct = max(long_freq.values())
+        min_pct = min(long_freq.values())
+        if max_pct <= min_pct:
             return None
-        if self.last_target == best["digit"] and market["tick"] - self.last_target_tick < self.settings["target_cooldown_ticks"]:
+
+        tick_number = int(market["tick"])
+        tracker = market.setdefault("differs_peak_tracker", {})
+        highest_digits = {digit for digit, pct in long_freq.items() if abs(float(pct) - float(max_pct)) < 1e-9}
+        for digit in highest_digits:
+            current = tracker.get(digit)
+            if not current:
+                tracker[digit] = {"peak_pct": float(max_pct), "peak_tick": tick_number}
+            else:
+                current["peak_pct"] = max(float(current.get("peak_pct", 0.0)), float(max_pct))
+
+        candidates = []
+        for digit, info in list(tracker.items()):
+            digit = int(digit)
+            current_pct = float(long_freq[digit])
+            peak_pct = float((info or {}).get("peak_pct", current_pct))
+            if digit in highest_digits:
+                continue
+            if abs(current_pct - float(min_pct)) < 1e-9 and current_pct < peak_pct:
+                candidates.append({
+                    "digit": digit,
+                    "peak_pct": peak_pct,
+                    "lowest_pct": current_pct,
+                    "peak_tick": int((info or {}).get("peak_tick", tick_number)),
+                })
+        if not candidates:
             return None
-        return best
+
+        candidates.sort(key=lambda row: (row["lowest_pct"], row["peak_tick"], row["digit"]))
+        chosen = candidates[0]
+        if self.last_target == chosen["digit"] and tick_number - self.last_target_tick < self.settings["target_cooldown_ticks"]:
+            return None
+        tracker.pop(chosen["digit"], None)
+        return {
+            "digit": chosen["digit"],
+            "score": round(chosen["peak_pct"] - chosen["lowest_pct"], 2),
+            "quality": 100.0,
+            "frequencies": frequencies,
+            "peak_pct": chosen["peak_pct"],
+            "lowest_pct": chosen["lowest_pct"],
+            "source_signal": "HIGHEST_TO_LOWEST",
+        }
+
+    def _odd_signal(self, symbol, market):
+        if str(symbol or "").upper() not in JUMP_MARKETS:
+            return None
+        digits = list(market["digits"])
+        if len(digits) < 4 or not all((digit % 2) == 0 for digit in digits[-4:]):
+            return None
+        # Trigger only when the four-even streak is first completed.
+        if len(digits) >= 5 and digits[-5] % 2 == 0:
+            return None
+        return {
+            "contract_type": "ODD",
+            "deriv_contract_type": "DIGITODD",
+            "barrier": None,
+            "duration": 1,
+            "score": 100.0,
+            "source_signal": "FOUR_EVEN_STREAK",
+        }
+
+    def _rise_signal(self, symbol, market):
+        if str(symbol or "").upper() not in STEP_MARKETS:
+            return None
+        prices = list(market["prices"])
+        if len(prices) < 6:
+            return None
+        moves = [float(prices[idx]) - float(prices[idx - 1]) for idx in range(len(prices) - 5, len(prices))]
+        if not all(move > 0 for move in moves):
+            return None
+        return {
+            "contract_type": "RISE",
+            "deriv_contract_type": "CALL",
+            "barrier": None,
+            "duration": 1,
+            "score": round(sum(moves), 6),
+            "source_signal": "FIVE_UP_MOVES",
+        }
+
+    def _higher_signal(self, symbol, market):
+        if str(symbol or "").upper() != "R_75":
+            return None
+        prices = list(market["prices"])
+        if len(prices) < 20:
+            return None
+        tick_number = int(market["tick"])
+        armed = market.get("higher_recovery")
+        if armed:
+            armed["trough"] = min(float(armed.get("trough", prices[-1])), float(prices[-1]))
+            if tick_number - int(armed.get("armed_tick", tick_number)) > 60:
+                market["higher_recovery"] = None
+                return None
+            # "Way past" the -7.5 barrier means a full recovery beyond the
+            # pre-drop reference high that created that barrier.
+            if float(prices[-1]) > float(armed["reference_price"]):
+                market["higher_recovery"] = None
+                return {
+                    "contract_type": "HIGHER",
+                    "deriv_contract_type": "HIGHER",
+                    "barrier": -7.5,
+                    "duration": 5,
+                    "score": round(float(prices[-1]) - float(armed["trough"]), 6),
+                    "source_signal": "V75_BARRIER_DROP_RECOVERY",
+                    "reference_price": float(armed["reference_price"]),
+                    "trigger_barrier_price": float(armed["barrier_price"]),
+                    "trough_price": float(armed["trough"]),
+                }
+            return None
+
+        reference = max(float(value) for value in prices[-20:-1])
+        barrier_price = reference - 7.5
+        current = float(prices[-1])
+        if current < barrier_price:
+            market["higher_recovery"] = {
+                "reference_price": reference,
+                "barrier_price": barrier_price,
+                "trough": current,
+                "armed_tick": tick_number,
+            }
+        return None
 
     def _existing_strategy_signal(self, symbol, market):
         trade_type = self.settings["cloud_trade_type"]
@@ -435,13 +576,19 @@ class CloudReinvestEngine:
     def _analyze(self, symbol, market):
         trade_type = self.settings["cloud_trade_type"]
         digits = list(market["digits"])
-        if len(digits) < self.settings["minimum_history"]:
+        if len(digits) < self._required_history():
             return None
         if trade_type in {"kidpairs", "over3_analysis", "mpull_over5"}:
             return self._existing_strategy_signal(symbol, market)
         if trade_type == "digit_differs":
             row = self._differ_candidate(market)
             return ({"contract_type": "DIFFERS", "barrier": row["digit"], **row} if row else None)
+        if trade_type == "odd":
+            return self._odd_signal(symbol, market)
+        if trade_type == "rise":
+            return self._rise_signal(symbol, market)
+        if trade_type == "higher":
+            return self._higher_signal(symbol, market)
         if trade_type == "under9" and digits[-1] == 9 and 9 not in digits[-11:-1]:
             return {"contract_type": "UNDER", "barrier": 9, "score": 100.0, "source_signal": "TEN_TICK_ABSENCE"}
         if trade_type == "over0" and digits[-1] == 0 and 0 not in digits[-11:-1]:
@@ -586,21 +733,22 @@ class CloudReinvestEngine:
             self.shadow[symbol].on_tick(tick, digit)
         except TypeError:
             self.shadow[symbol].on_tick(tick, digit)
-        if len(market["digits"]) == self.settings["minimum_history"]:
+        required_history = self._required_history()
+        if len(market["digits"]) == required_history:
             self.last_rank_at = 0.0
         self._rerank(now_ts)
         if self.trade_locked or self.open_contract_id:
             return []
-        if len(market["digits"]) < self.settings["minimum_history"]:
+        if len(market["digits"]) < required_history:
             self.state = "COLLECTING_DATA"
-            self.last_signal = "Collecting at least 100 ticks per eligible market"
+            self.last_signal = f"Collecting at least {required_history} ticks per eligible market"
             return []
         self.state = "SCANNING"
         if symbol not in self.deep_markets or now_ts < self.market_cooldowns.get(symbol, 0.0):
             return []
         candidate = self._analyze(symbol, market)
         if not candidate:
-            if self.settings["cloud_trade_type"] not in {"under9", "over0", "ai_auto_trading"}:
+            if self.settings["cloud_trade_type"] not in {"under9", "over0", "ai_auto_trading", "digit_differs", "odd", "rise", "higher"}:
                 self.market_cooldowns[symbol] = now_ts + self.settings["scanner_cooldown_seconds"]
             self._log("setup_rejected", symbol=symbol, reason="STRATEGY_CONDITIONS_NOT_MET", cooldown=self.settings["scanner_cooldown_seconds"])
             return []
@@ -617,11 +765,11 @@ class CloudReinvestEngine:
                 "signal_id": self.pending_signal_id,
                 "symbol": symbol,
                 "stake": round(float(self.current_stake), 2),
-                "duration": self.settings["duration"],
+                "duration": int(candidate.get("duration", self.settings["duration"])),
                 "duration_unit": "t",
                 "contract_type": candidate["contract_type"],
-                "deriv_contract_type": f"DIGIT{candidate['contract_type']}",
-                "barrier": int(candidate["barrier"]),
+                "deriv_contract_type": candidate.get("deriv_contract_type") or f"DIGIT{candidate['contract_type']}",
+                "barrier": candidate.get("barrier"),
                 "cloud_trade_type": self.settings["cloud_trade_type"],
                 "signal_tick": market["tick"],
                 "max_signal_age_ticks": self.settings["max_signal_age_ticks"],

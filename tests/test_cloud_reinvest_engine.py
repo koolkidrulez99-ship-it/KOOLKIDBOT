@@ -177,7 +177,7 @@ def test_reinvest_history_persists_duration_and_exit_digit():
 
 
 @pytest.mark.parametrize("trade_type", sorted({
-    "kidpairs", "over3_analysis", "mpull_over5", "under9", "over0", "digit_differs", "kid100wins", "ai_auto_trading",
+    "kidpairs", "over3_analysis", "mpull_over5", "under9", "over0", "digit_differs", "odd", "rise", "higher", "kid100wins", "ai_auto_trading",
 }))
 def test_every_reinvest_trade_type_compounds_the_actual_settled_buy_price(trade_type):
     settings = {
@@ -503,3 +503,145 @@ def test_completed_cloud_sessions_are_persisted_and_can_be_removed_individually(
     assert event["profit"] == 0.8
     remaining = manager.clear_session_event("alice", event["id"])
     assert remaining["session_events"] == []
+
+
+def test_new_cloud_trade_types_use_fixed_market_scopes():
+    odd = CloudReinvestEngine("odd-user", "cid", {"cloud_trade_type": "odd"})
+    rise = CloudReinvestEngine("rise-user", "cid", {"cloud_trade_type": "rise"})
+    higher = CloudReinvestEngine("higher-user", "cid", {"cloud_trade_type": "higher"})
+
+    assert odd.settings["allowed_markets"] == ["JD10", "JD25", "JD50", "JD75", "JD100"]
+    assert rise.settings["allowed_markets"] == ["STPRNG", "STPRNG2", "STPRNG3", "STPRNG4", "STPRNG5"]
+    assert higher.settings["allowed_markets"] == ["R_75"]
+
+
+def test_cloud_odd_waits_for_four_consecutive_even_digits_on_jump_markets():
+    engine = CloudReinvestEngine("alice", "cid", {"cloud_trade_type": "odd"})
+    engine.start("cid")
+    actions = []
+    for index, digit in enumerate([2, 4, 6]):
+        actions += engine.on_tick({"symbol": "JD10", "quote": 100.0 + index}, digit, balance=100, now_ts=1000 + index)
+    assert actions == []
+
+    actions = engine.on_tick({"symbol": "JD10", "quote": 104.0}, 8, balance=100, now_ts=1004)
+
+    assert len(actions) == 1
+    intent = actions[0]["intent"]
+    assert intent["contract_type"] == "ODD"
+    assert intent["deriv_contract_type"] == "DIGITODD"
+    assert intent["barrier"] is None
+    assert intent["duration"] == 1
+
+
+def test_cloud_odd_does_not_scan_non_jump_markets():
+    engine = CloudReinvestEngine("alice", "cid", {"cloud_trade_type": "odd"})
+    engine.start("cid")
+
+    for index, digit in enumerate([2, 4, 6, 8]):
+        actions = engine.on_tick({"symbol": "R_75", "quote": 100.0 + index}, digit, balance=100, now_ts=1000 + index)
+
+    assert actions == []
+
+
+def test_cloud_rise_uses_step_market_and_five_consecutive_up_moves():
+    engine = CloudReinvestEngine("alice", "cid", {"cloud_trade_type": "rise"})
+    engine.start("cid")
+    actions = []
+    for index, price in enumerate([100.0, 101.0, 102.0, 103.0, 104.0, 105.0]):
+        actions = engine.on_tick({"symbol": "stpRNG", "quote": price}, index % 10, balance=100, now_ts=2000 + index)
+
+    assert len(actions) == 1
+    intent = actions[0]["intent"]
+    assert intent["contract_type"] == "RISE"
+    assert intent["deriv_contract_type"] == "CALL"
+    assert intent["barrier"] is None
+    assert intent["duration"] == 1
+
+
+def test_cloud_rise_rejects_mixed_trend():
+    engine = CloudReinvestEngine("alice", "cid", {"cloud_trade_type": "rise"})
+    market = engine._market("STPRNG")
+    market["prices"].extend([100.0, 101.0, 102.0, 101.5, 103.0, 104.0])
+    market["digits"].extend([0, 1, 2, 3, 4, 5])
+    market["tick"] = 6
+
+    assert engine._analyze("STPRNG", market) is None
+
+
+def test_cloud_higher_arms_below_minus_7_5_level_then_enters_after_full_recovery():
+    engine = CloudReinvestEngine("alice", "cid", {"cloud_trade_type": "higher"})
+    engine.start("cid")
+    # Nineteen V75 prices build a reference high of 110.
+    base = [108.0] * 18 + [110.0]
+    for index, price in enumerate(base):
+        assert engine.on_tick({"symbol": "R_75", "quote": price}, index % 10, balance=100, now_ts=3000 + index) == []
+
+    # Price goes below the reference barrier price: 110 - 7.5 = 102.5.
+    assert engine.on_tick({"symbol": "R_75", "quote": 102.0}, 2, balance=100, now_ts=3020) == []
+    assert engine.buffers["R_75"]["higher_recovery"]["barrier_price"] == 102.5
+
+    # Recovery is not enough yet.
+    assert engine.on_tick({"symbol": "R_75", "quote": 108.0}, 8, balance=100, now_ts=3021) == []
+
+    # Going past the original 110 reference triggers the 5-tick Higher.
+    actions = engine.on_tick({"symbol": "R_75", "quote": 110.5}, 5, balance=100, now_ts=3022)
+
+    assert len(actions) == 1
+    intent = actions[0]["intent"]
+    assert intent["contract_type"] == "HIGHER"
+    assert intent["deriv_contract_type"] == "HIGHER"
+    assert intent["barrier"] == -7.5
+    assert intent["duration"] == 5
+
+
+def test_cloud_digit_differs_requires_highest_then_lowest_transition():
+    engine = CloudReinvestEngine("alice", "cid", {"cloud_trade_type": "digit_differs"})
+    market = engine._market("R_10")
+
+    first = ([7] * 20)
+    for digit in [0, 1, 2, 3, 4, 5, 6, 8, 9]:
+        first.extend([digit] * 8)
+    first.extend([0, 1, 2, 3, 4, 5, 6, 8])
+    assert len(first) == 100
+    market["digits"].extend(first)
+    market["tick"] = 100
+
+    assert engine._differ_candidate(market) is None
+    assert 7 in market["differs_peak_tracker"]
+
+    second = []
+    for digit in [0, 1, 2, 3, 4, 5, 6, 8, 9]:
+        second.extend([digit] * 11)
+    second.append(0)
+    assert len(second) == 100
+    market["digits"].clear()
+    market["digits"].extend(second)
+    market["tick"] = 200
+
+    signal = engine._differ_candidate(market)
+
+    assert signal is not None
+    assert signal["digit"] == 7
+    assert signal["source_signal"] == "HIGHEST_TO_LOWEST"
+    assert signal["peak_pct"] > signal["lowest_pct"]
+
+
+def test_cloud_digit_differs_does_not_trade_a_low_digit_that_was_never_highest():
+    engine = CloudReinvestEngine("alice", "cid", {"cloud_trade_type": "digit_differs"})
+    market = engine._market("R_10")
+    digits = ([0] * 20) + ([1] * 10) + ([2] * 10) + ([3] * 10) + ([4] * 10) + ([5] * 10) + ([6] * 10) + ([8] * 10) + ([9] * 9) + [7]
+    market["digits"].extend(digits)
+    market["tick"] = 100
+
+    signal = engine._differ_candidate(market)
+
+    assert signal is None
+    assert 0 in market["differs_peak_tracker"]
+    assert 7 not in market["differs_peak_tracker"]
+
+
+def test_cloud_rise_needed_symbols_use_deriv_step_symbol_casing():
+    engine = CloudReinvestEngine("alice", "cid", {"cloud_trade_type": "rise"})
+    engine.start("cid")
+
+    assert engine.needed_symbols() == ["stpRNG", "stpRNG2", "stpRNG3", "stpRNG4", "stpRNG5"]

@@ -146,6 +146,9 @@
               <option value="under9">Under 9</option>
               <option value="over0">Over 0</option>
               <option value="digit_differs">Digit Differ</option>
+              <option value="odd">Odd - Jump Markets</option>
+              <option value="rise">Rise - Step Markets</option>
+              <option value="higher">Higher - V75 (-7.5)</option>
               <option value="kid100wins">KID100%WINS</option>
               <option value="ai_auto_trading">AI Auto Trading</option>
             </select>
@@ -169,7 +172,7 @@
               <option value="LOWEST_PERCENT">Lowest %</option>
             </select>
           </label>
-          <label>Market Scan
+          <label id="cloudReinvestMarketScopeWrap">Market Scan
             <select id="cloudReinvestMarketScope">
               <option value="ALL">Scan All Markets</option>
               <option value="ONE">Scan One Market</option>
@@ -192,8 +195,14 @@
               <option value="JD50">Jump 50</option>
               <option value="JD75">Jump 75</option>
               <option value="JD100">Jump 100</option>
+              <option value="stpRNG">Step Index 100</option>
+              <option value="stpRNG2">Step Index 200</option>
+              <option value="stpRNG3">Step Index 300</option>
+              <option value="stpRNG4">Step Index 400</option>
+              <option value="stpRNG5">Step Index 500</option>
             </select>
           </label>
+          <div id="cloudFixedMarketNote" class="cloud-market-count" hidden style="align-self:end;padding:8px 10px;border:1px solid rgba(56,189,248,.28);border-radius:9px;background:rgba(14,165,233,.08);"></div>
           <label>Minimum Profit % <input id="cloudMinProfitPercent" type="number" min="0" step="0.1" value="0"></label>
         </div>
         <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:10px;border:1px solid rgba(59,130,246,.35);background:rgba(30,64,175,.16);border-radius:10px;padding:10px;">

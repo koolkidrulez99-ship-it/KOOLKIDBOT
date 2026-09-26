@@ -1,4 +1,5 @@
 import json
+import math
 
 from .barrier_resolver import sanitize_parameters
 from .contract_resolver import contracts_for_candidates, normalize_contract_type
@@ -64,7 +65,8 @@ class OAuthDerivTradeEngine:
             or intent.contract_type
             or intent.button
         )
-        is_unchain_higher_lower = profile_name == "UNCHAIN" and unchain_direction in ("up", "down")
+        strict_higher_lower = bool((intent.req_meta or {}).get("strict_higher_lower")) and str(intent.contract_type or "").upper().strip() in ("HIGHER", "LOWER")
+        is_unchain_higher_lower = (profile_name == "UNCHAIN" and unchain_direction in ("up", "down")) or strict_higher_lower
         deriv_contract = str(intent.contract_type or "").upper().strip() if is_unchain_higher_lower else normalize_contract_type(intent.contract_type)
         debug["deriv_contract_type"] = deriv_contract
         if not deriv_contract:
@@ -127,11 +129,19 @@ class OAuthDerivTradeEngine:
                 removed["symbol"] = sanitized.pop("symbol", None)
             sanitized["underlying_symbol"] = resolved_symbol
 
-            resolved_barrier, barrier_err = validate_unchain_higher_lower_barrier(
-                intent.barrier,
-                unchain_direction,
-                unchain_contract_item,
-            )
+            if strict_higher_lower and profile_name != "UNCHAIN":
+                try:
+                    requested_value = float(intent.barrier)
+                    resolved_barrier = str(intent.barrier).strip()
+                    barrier_err = None if math.isfinite(requested_value) else "Invalid Higher/Lower barrier"
+                except Exception:
+                    resolved_barrier, barrier_err = None, "Invalid Higher/Lower barrier"
+            else:
+                resolved_barrier, barrier_err = validate_unchain_higher_lower_barrier(
+                    intent.barrier,
+                    unchain_direction,
+                    unchain_contract_item,
+                )
             if barrier_err:
                 debug["original_payload"] = parameters
                 debug["sanitized_payload"] = sanitized
@@ -428,14 +438,19 @@ class OAuthDerivTradeEngine:
 
     def _is_plain_rise_fall(self, intent, deriv_contract):
         meta = intent.req_meta or {}
+        profile_name = str(intent.profile or meta.get("profile") or "").upper().strip()
+        explicit_plain = meta.get("plain_rise_fall") is True or meta.get("no_barrier_contract") is True
         return bool(
-            str(intent.profile or meta.get("profile") or "").upper().strip() == "HUMAN"
-            and str(deriv_contract or "").upper().strip() in ("CALL", "PUT")
+            str(deriv_contract or "").upper().strip() in ("CALL", "PUT")
             and (
-                meta.get("plain_rise_fall") is True
-                or meta.get("no_barrier_contract") is True
-                or str(intent.mode or meta.get("mode") or "").lower().startswith("human_rf")
-                or str(intent.mode or meta.get("mode") or "").lower() in ("human_auto_rise_fall", "human_formula_x")
+                explicit_plain
+                or (
+                    profile_name == "HUMAN"
+                    and (
+                        str(intent.mode or meta.get("mode") or "").lower().startswith("human_rf")
+                        or str(intent.mode or meta.get("mode") or "").lower() in ("human_auto_rise_fall", "human_formula_x")
+                    )
+                )
             )
         )
 

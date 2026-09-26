@@ -18772,6 +18772,9 @@ def _filter_cloud_reinvest_markets(client_id, state, settings):
         "under9": "DIGITUNDER",
         "digit_differs": "DIGITDIFF",
         "kid100wins": "DIGITDIFF",
+        "odd": "DIGITODD",
+        "rise": "CALL",
+        "higher": "HIGHER",
     }.get(trade_type, "DIGITOVER")
     ai_auto_strategy = str((settings or {}).get("ai_auto_strategy") or "GOLDEN_CARD").strip().upper()
     wanted_contracts = {wanted_contract}
@@ -18787,6 +18790,12 @@ def _filter_cloud_reinvest_markets(client_id, state, settings):
         for item in active
         if isinstance(item, dict)
     }
+    if trade_type == "odd":
+        requested = [symbol for symbol in ("JD10", "JD25", "JD50", "JD75", "JD100") if symbol in active_map]
+    elif trade_type == "rise":
+        requested = [symbol for symbol in ("STPRNG", "STPRNG2", "STPRNG3", "STPRNG4", "STPRNG5") if symbol in active_map]
+    elif trade_type == "higher":
+        requested = ["R_75"] if "R_75" in active_map else []
     eligible = []
     for raw_symbol in requested:
         symbol = active_map.get(str(raw_symbol or "").upper())
@@ -19230,6 +19239,82 @@ def _send_cloud_accumulator_buy(client_id, *, stake, symbol, growth_rate, signal
         return False, str(exc)
 
 
+def _send_cloud_directional_buy(
+    client_id,
+    *,
+    symbol,
+    stake,
+    contract_type,
+    barrier,
+    duration,
+    signal_id,
+    cloud_strategy,
+):
+    state = clients.get(client_id)
+    ready, ready_msg = _ensure_trade_socket_ready(client_id, state)
+    if not ready:
+        return False, ready_msg
+    deriv_contract = str(contract_type or "").upper().strip()
+    if deriv_contract not in ("CALL", "HIGHER"):
+        return False, "Unsupported Cloud directional contract"
+    stake_value = float(stake)
+    budget_ok, budget_msg, budget_reservation = _reserve_profile_budget(state, "CLOUD", stake_value)
+    if not budget_ok:
+        return False, budget_msg
+    req_id = _new_req_id()
+    strict_higher = deriv_contract == "HIGHER"
+    req_meta = {
+        "profile": "CLOUD",
+        "type": "HIGHER" if strict_higher else "RISE",
+        "contract_type": deriv_contract,
+        "deriv_contract_type": deriv_contract,
+        "barrier": barrier,
+        "stake": stake_value,
+        "symbol": symbol,
+        "time": now_time(),
+        "mode": "CLOUD_REINVEST_100",
+        "duration": int(duration),
+        "duration_unit": "t",
+        "budget_reservation": budget_reservation,
+        "cloud_signal_id": signal_id,
+        "cloud_strategy": cloud_strategy,
+        "strategy_name": "REINVEST PROFITS 100%",
+        "button": "REINVEST PROFITS 100%",
+    }
+    if strict_higher:
+        req_meta["strict_higher_lower"] = True
+        req_meta["unchain_direction"] = "HIGHER"
+    else:
+        req_meta["plain_rise_fall"] = True
+        req_meta["no_barrier_contract"] = True
+    state.setdefault("req_meta", {})[req_id] = req_meta
+    _stamp_trade_latency(req_meta, "buy_send")
+    ok, msg = execute_deriv_trade({
+        "client_id": client_id,
+        "state": state,
+        "req_id": req_id,
+        "profile": "CLOUD",
+        "strategy_name": "REINVEST PROFITS 100%",
+        "button": "REINVEST PROFITS 100%",
+        "contract_type": deriv_contract,
+        "stake": stake_value,
+        "symbol": symbol,
+        "barrier": barrier if strict_higher else None,
+        "duration": int(duration),
+        "duration_unit": "t",
+        "mode": "CLOUD_REINVEST_100",
+        "budget_reservation": budget_reservation,
+        "req_meta": req_meta,
+    })
+    if not ok:
+        try:
+            _release_profile_budget_reservation(state, budget_reservation)
+            _pull_req_meta_by_req_id(state, req_id)
+        except Exception:
+            pass
+    return ok, msg
+
+
 def _handle_cloud_under9_action(client_id, state, action):
     if not isinstance(action, dict):
         return
@@ -19301,28 +19386,52 @@ def _handle_cloud_under9_action(client_id, state, action):
             )
         else:
             trade_type = str(intent.get("contract_type") or "UNDER").upper().replace("DIGIT", "")
-            barrier = int(intent.get("barrier", 9))
             cloud_strategy = str(intent.get("cloud_trade_type") or "under9_reinvest")
             cloud_mode = "CLOUD_REINVEST_100" if cloud_strategy != "under9_reinvest" else "CLOUD_UNDER9"
-            ok, msg = send_buy_with_profile(
-                client_id,
-                "CLOUD",
-                trade_type,
-                stake,
-                symbol,
-                barrier,
-                duration=duration,
-                duration_unit=duration_unit,
-                mode=cloud_mode,
-                emit_balance_after_send=False,
-                extra_meta={
-                    "strategy_name": "REINVEST PROFITS 100%" if cloud_mode == "CLOUD_REINVEST_100" else "Cloud Under 9",
-                    "cloud_signal_id": signal_id,
-                    "cloud_strategy": cloud_strategy,
-                    "button": "REINVEST PROFITS 100%" if cloud_mode == "CLOUD_REINVEST_100" else "Cloud Under 9",
-                },
-                minimum_profit=(stake * max(0.0, float(intent.get("min_profit_percent") or 0.0)) / 100.0) if float(intent.get("min_profit_percent") or 0.0) > 0 else None,
-            )
+            if cloud_strategy == "rise":
+                ok, msg = _send_cloud_directional_buy(
+                    client_id,
+                    symbol=symbol,
+                    stake=stake,
+                    contract_type="CALL",
+                    barrier=None,
+                    duration=1,
+                    signal_id=signal_id,
+                    cloud_strategy=cloud_strategy,
+                )
+            elif cloud_strategy == "higher":
+                ok, msg = _send_cloud_directional_buy(
+                    client_id,
+                    symbol=symbol,
+                    stake=stake,
+                    contract_type="HIGHER",
+                    barrier=float(intent.get("barrier", -7.5)),
+                    duration=5,
+                    signal_id=signal_id,
+                    cloud_strategy=cloud_strategy,
+                )
+            else:
+                raw_barrier = intent.get("barrier")
+                barrier = int(raw_barrier) if raw_barrier not in (None, "") else None
+                ok, msg = send_buy_with_profile(
+                    client_id,
+                    "CLOUD",
+                    trade_type,
+                    stake,
+                    symbol,
+                    barrier,
+                    duration=duration,
+                    duration_unit=duration_unit,
+                    mode=cloud_mode,
+                    emit_balance_after_send=False,
+                    extra_meta={
+                        "strategy_name": "REINVEST PROFITS 100%" if cloud_mode == "CLOUD_REINVEST_100" else "Cloud Under 9",
+                        "cloud_signal_id": signal_id,
+                        "cloud_strategy": cloud_strategy,
+                        "button": "REINVEST PROFITS 100%" if cloud_mode == "CLOUD_REINVEST_100" else "Cloud Under 9",
+                    },
+                    minimum_profit=(stake * max(0.0, float(intent.get("min_profit_percent") or 0.0)) / 100.0) if float(intent.get("min_profit_percent") or 0.0) > 0 else None,
+                )
         if ok:
             cloud_manager.mark_trade_sent(username, signal_id)
             logger.info("[%s] cloud_under9_trade_placed signal_id=%s", client_id, signal_id)

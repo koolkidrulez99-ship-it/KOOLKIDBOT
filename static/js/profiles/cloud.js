@@ -1,7 +1,12 @@
 (function () {
   const PROFILE = "CLOUD";
   const POLL_LABEL = "cloud_under9_status_poll";
-  const DEFAULT_MARKET_LIST = ["R_10","R_25","R_50","R_75","R_100","1HZ10V","1HZ25V","1HZ50V","1HZ75V","1HZ100V","JD10","JD25","JD50","JD75","JD100"];
+  const DEFAULT_MARKET_LIST = ["R_10","R_25","R_50","R_75","R_100","1HZ10V","1HZ25V","1HZ50V","1HZ75V","1HZ100V","JD10","JD25","JD50","JD75","JD100","STPRNG","STPRNG2","STPRNG3","STPRNG4","STPRNG5"];
+  const CLOUD_FIXED_TRADE_MARKETS = {
+    odd: ["JD10","JD25","JD50","JD75","JD100"],
+    rise: ["STPRNG","STPRNG2","STPRNG3","STPRNG4","STPRNG5"],
+    higher: ["R_75"],
+  };
   const DEFAULT_MARKETS = DEFAULT_MARKET_LIST.join(",");
   const KOOLKID_PROFIT_MARKETS = ["R_10","R_25","R_50","R_75","R_100"];
   const MARKET_LABELS = {
@@ -20,6 +25,11 @@
     JD50: "Jump 50",
     JD75: "Jump 75",
     JD100: "Jump 100",
+    STPRNG: "Step Index 100",
+    STPRNG2: "Step Index 200",
+    STPRNG3: "Step Index 300",
+    STPRNG4: "Step Index 400",
+    STPRNG5: "Step Index 500",
   };
   let pollTimer = null;
   let socketBound = false;
@@ -120,9 +130,11 @@
   function readSettings(){
     const preset = ((byId("cloudPreset") || {}).value || "reinvest_profits_100");
     const selected = selectedMarkets();
+    const tradeType = ((byId("cloudReinvestTradeType") || {}).value || "under9");
+    const fixedTradeMarkets = CLOUD_FIXED_TRADE_MARKETS[tradeType] || null;
     const marketScope = ((byId("cloudReinvestMarketScope") || {}).value || "ALL");
     const singleMarket = ((byId("cloudReinvestSingleMarket") || {}).value || DEFAULT_MARKET_LIST[0]);
-    const reinvestMarkets = marketScope === "ONE" ? [singleMarket] : DEFAULT_MARKET_LIST.slice();
+    const reinvestMarkets = fixedTradeMarkets ? fixedTradeMarkets.slice() : (marketScope === "ONE" ? [singleMarket] : DEFAULT_MARKET_LIST.slice());
     const markets = preset === "koolkid_profit"
       ? selected.filter((symbol)=> KOOLKID_PROFIT_MARKETS.includes(symbol))
       : (preset === "reinvest_profits_100" ? reinvestMarkets : selected);
@@ -161,7 +173,7 @@
       balance_percent: readNumber("cloudReinvestPercent", 10),
       market_scan_scope: marketScope,
       selected_market: singleMarket,
-      cloud_trade_type: ((byId("cloudReinvestTradeType") || {}).value || "under9"),
+      cloud_trade_type: tradeType,
       cloud_trade_mode: ((byId("cloudReinvestMode") || {}).value || "SAFE"),
       kid100_mode: ((byId("cloudKid100Mode") || {}).value || "LOW"),
       ai_auto_strategy: ((byId("cloudAiAutoStrategy") || {}).value || "GOLDEN_CARD"),
@@ -195,15 +207,42 @@
     const tradesWrap = byId("cloudTradesPerSessionWrap");
     const kid100Wrap = byId("cloudKid100ModeWrap");
     const aiAutoWrap = byId("cloudAiAutoStrategyWrap");
-    const marketScope = ((byId("cloudReinvestMarketScope") || {}).value || "ALL");
+    const marketScopeEl = byId("cloudReinvestMarketScope");
+    const marketScope = ((marketScopeEl || {}).value || "ALL");
+    const singleMarketEl = byId("cloudReinvestSingleMarket");
     const singleMarketWrap = byId("cloudReinvestSingleMarketWrap");
+    const fixedNote = byId("cloudFixedMarketNote");
+    const fixedMarkets = CLOUD_FIXED_TRADE_MARKETS[tradeType] || null;
     if(fixedWrap) fixedWrap.hidden = stakeMode !== "FIXED";
     if(percentWrap) percentWrap.hidden = stakeMode !== "PERCENT";
     if(modeWrap) modeWrap.hidden = !modeDriven;
     if(tradesWrap) tradesWrap.hidden = modeDriven;
     if(kid100Wrap) kid100Wrap.hidden = !kid100;
     if(aiAutoWrap) aiAutoWrap.hidden = !aiAuto;
-    if(singleMarketWrap) singleMarketWrap.hidden = marketScope !== "ONE";
+    if(fixedMarkets){
+      if(marketScopeEl){
+        marketScopeEl.value = tradeType === "higher" ? "ONE" : "ALL";
+        marketScopeEl.disabled = true;
+      }
+      if(singleMarketEl){
+        singleMarketEl.value = fixedMarkets[0];
+        singleMarketEl.disabled = true;
+      }
+      if(singleMarketWrap) singleMarketWrap.hidden = true;
+      if(fixedNote){
+        fixedNote.hidden = false;
+        fixedNote.innerText = tradeType === "odd"
+          ? "ODD scans Jump markets only • enters after 4 consecutive even digits."
+          : (tradeType === "rise"
+            ? "RISE scans Step markets only • 1-tick Rise after a sustained uptrend."
+            : "HIGHER scans V75 only • -7.5 barrier • 5 ticks after drop-and-recovery.");
+      }
+    }else{
+      if(marketScopeEl) marketScopeEl.disabled = false;
+      if(singleMarketEl) singleMarketEl.disabled = false;
+      if(singleMarketWrap) singleMarketWrap.hidden = marketScope !== "ONE";
+      if(fixedNote) fixedNote.hidden = true;
+    }
     const modeNote = byId("cloudModeSessionNote");
     if(modeNote) modeNote.hidden = !modeDriven;
     updateCloudSessionSummary();

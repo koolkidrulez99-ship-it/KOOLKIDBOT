@@ -1167,3 +1167,232 @@ def test_unchain_rejects_call_put_even_when_step_metadata_has_barrier():
     assert lower is None
     assert "No Deriv Higher/Lower contract" in higher_err
     assert "No Deriv Higher/Lower contract" in lower_err
+
+
+def _cloud_oauth_test_deps(contracts_for_payload, proposal_payloads):
+    return {
+        "logger": server.logger,
+        "connection_mode": lambda state: "pat",
+        "is_demo": lambda account: True,
+        "mask_account": lambda account_id: account_id,
+        "ws_ready_state": lambda state: "OPEN",
+        "otp_authenticated": lambda state: True,
+        "active_symbols": lambda client_id, state: ([{"symbol": "stpRNG"}, {"symbol": "R_75"}], None),
+        "contracts_for": lambda client_id, state, symbol: (contracts_for_payload[symbol], None),
+        "legacy_aliases": {},
+        "duration_matches": server._duration_matches_contracts_for,
+        "safe_payload": server._safe_deriv_payload_text,
+        "proposal_payload_for_connection": server._proposal_payload_for_connection,
+        "request_proposal": lambda client_id, state, payload, timeout_sec=5.0: proposal_payloads.append(dict(payload)) or ({"id": "proposal-cloud", "ask_price": payload.get("amount", 1.0)}, None),
+        "new_req_id": lambda: 999,
+        "debug_log": lambda *args, **kwargs: None,
+        "safe_float": server._safe_float,
+        "now_time": server.now_time,
+        "stamp_latency": lambda meta, stage: None,
+        "mark_ws_unhealthy": lambda *args, **kwargs: None,
+        "should_force_reconnect": lambda state, exc: False,
+    }
+
+
+def test_cloud_rise_oauth_is_one_tick_plain_call_without_barrier():
+    proposals = []
+    state = {
+        "ws": DummyWs(),
+        "ws_connected": True,
+        "api_token_type": "pat",
+        "deriv_account_id": "VRTC-DEMO",
+        "req_meta": {},
+    }
+    deps = _cloud_oauth_test_deps({
+        "stpRNG": {
+            "available": [{
+                "contract_type": "CALL",
+                "barriers": 0,
+                "expiry_type": "tick",
+                "min_contract_duration": "1t",
+                "max_contract_duration": "10t",
+            }]
+        },
+        "R_75": {"available": []},
+    }, proposals)
+    intent = TradeIntent(
+        client_id="cid-cloud-rise",
+        req_id=1201,
+        profile="CLOUD",
+        strategy_name="REINVEST PROFITS 100%",
+        button="REINVEST PROFITS 100%",
+        contract_type="CALL",
+        stake=0.35,
+        symbol="stpRNG",
+        barrier=None,
+        duration=1,
+        duration_unit="t",
+        mode="CLOUD_REINVEST_100",
+        req_meta={
+            "profile": "CLOUD",
+            "type": "RISE",
+            "plain_rise_fall": True,
+            "no_barrier_contract": True,
+            "cloud_strategy": "rise",
+        },
+    )
+
+    ok, msg = OAuthDerivTradeEngine(deps).execute(intent, state=state)
+
+    assert (ok, msg) == (True, "Trade sent")
+    assert proposals[-1]["contract_type"] == "CALL"
+    assert proposals[-1]["duration"] == 1
+    assert proposals[-1]["duration_unit"] == "t"
+    assert proposals[-1]["underlying_symbol"] == "stpRNG"
+    assert "barrier" not in proposals[-1]
+
+
+def test_cloud_higher_oauth_preserves_genuine_higher_and_minus_7_5_barrier():
+    proposals = []
+    state = {
+        "ws": DummyWs(),
+        "ws_connected": True,
+        "api_token_type": "pat",
+        "deriv_account_id": "VRTC-DEMO",
+        "req_meta": {},
+    }
+    deps = _cloud_oauth_test_deps({
+        "stpRNG": {"available": []},
+        "R_75": {
+            "available": [{
+                "contract_type": "HIGHER",
+                "sentiment": "up",
+                "contract_category": "callput",
+                "barriers": 1,
+                "expiry_type": "tick",
+                "min_contract_duration": "5t",
+                "max_contract_duration": "10t",
+            }]
+        },
+    }, proposals)
+    intent = TradeIntent(
+        client_id="cid-cloud-higher",
+        req_id=1202,
+        profile="CLOUD",
+        strategy_name="REINVEST PROFITS 100%",
+        button="REINVEST PROFITS 100%",
+        contract_type="HIGHER",
+        stake=0.35,
+        symbol="R_75",
+        barrier=-7.5,
+        duration=5,
+        duration_unit="t",
+        mode="CLOUD_REINVEST_100",
+        req_meta={
+            "profile": "CLOUD",
+            "type": "HIGHER",
+            "strict_higher_lower": True,
+            "unchain_direction": "HIGHER",
+            "cloud_strategy": "higher",
+        },
+    )
+
+    ok, msg = OAuthDerivTradeEngine(deps).execute(intent, state=state)
+
+    assert (ok, msg) == (True, "Trade sent")
+    assert proposals[-1]["contract_type"] == "HIGHER"
+    assert proposals[-1]["barrier"] == "-7.5"
+    assert proposals[-1]["duration"] == 5
+    assert proposals[-1]["duration_unit"] == "t"
+    assert proposals[-1]["underlying_symbol"] == "R_75"
+
+
+def test_cloud_directional_sender_marks_rise_and_higher_paths(monkeypatch):
+    cid = "cid-cloud-directional-sender"
+    server.clients.pop(cid, None)
+    server.init_client(cid)
+    state = server.clients[cid]
+    state.update({
+        "ws": DummyWs(),
+        "ws_connected": True,
+        "ws_transport_connected": True,
+        "api_token_type": "pat",
+        "deriv_account_id": "VRTC-DEMO",
+        "balance": 100.0,
+        "last_known_trade_balance": 100.0,
+    })
+    captured = []
+    monkeypatch.setattr(server, "_ensure_trade_socket_ready", lambda client_id, state: (True, None))
+    monkeypatch.setattr(server, "_reserve_profile_budget", lambda state, profile, stake: (True, "", {"amount": stake}))
+    monkeypatch.setattr(server, "_release_profile_budget_reservation", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "execute_deriv_trade", lambda request: captured.append(dict(request)) or (True, "Trade sent"))
+
+    rise_ok, _ = server._send_cloud_directional_buy(
+        cid,
+        symbol="stpRNG",
+        stake=0.35,
+        contract_type="CALL",
+        barrier=None,
+        duration=1,
+        signal_id="rise-signal",
+        cloud_strategy="rise",
+    )
+    higher_ok, _ = server._send_cloud_directional_buy(
+        cid,
+        symbol="R_75",
+        stake=0.35,
+        contract_type="HIGHER",
+        barrier=-7.5,
+        duration=5,
+        signal_id="higher-signal",
+        cloud_strategy="higher",
+    )
+
+    assert rise_ok is True
+    assert higher_ok is True
+    rise_request, higher_request = captured[-2:]
+    assert rise_request["contract_type"] == "CALL"
+    assert rise_request["barrier"] is None
+    assert rise_request["duration"] == 1
+    assert rise_request["req_meta"]["plain_rise_fall"] is True
+    assert higher_request["contract_type"] == "HIGHER"
+    assert higher_request["barrier"] == -7.5
+    assert higher_request["duration"] == 5
+    assert higher_request["req_meta"]["strict_higher_lower"] is True
+
+
+def test_cloud_reinvest_market_filter_forces_new_trade_type_scopes(monkeypatch):
+    active = [
+        {"symbol": "JD10"}, {"symbol": "JD25"}, {"symbol": "JD50"}, {"symbol": "JD75"}, {"symbol": "JD100"},
+        {"symbol": "stpRNG"}, {"symbol": "stpRNG2"}, {"symbol": "stpRNG3"}, {"symbol": "stpRNG4"}, {"symbol": "stpRNG5"},
+        {"symbol": "R_75"}, {"symbol": "R_10"},
+    ]
+    monkeypatch.setattr(server, "_get_active_symbols_for_state", lambda client_id, state: (active, None))
+
+    def contracts_for(client_id, state, symbol):
+        key = str(symbol).upper()
+        if key.startswith("JD"):
+            return {"available": [{"contract_type": "DIGITODD"}]}, None
+        if key.startswith("STPRNG"):
+            return {"available": [{"contract_type": "CALL"}]}, None
+        if key == "R_75":
+            return {"available": [{"contract_type": "HIGHER"}]}, None
+        return {"available": [{"contract_type": "DIGITOVER"}]}, None
+
+    monkeypatch.setattr(server, "_get_contracts_for_symbol", contracts_for)
+    stale = ["R_10", "R_75"]
+
+    odd = server._filter_cloud_reinvest_markets("cid", {}, {
+        "strategy_name": "reinvest_profits_100",
+        "cloud_trade_type": "odd",
+        "allowed_markets": stale,
+    })
+    rise = server._filter_cloud_reinvest_markets("cid", {}, {
+        "strategy_name": "reinvest_profits_100",
+        "cloud_trade_type": "rise",
+        "allowed_markets": stale,
+    })
+    higher = server._filter_cloud_reinvest_markets("cid", {}, {
+        "strategy_name": "reinvest_profits_100",
+        "cloud_trade_type": "higher",
+        "allowed_markets": stale,
+    })
+
+    assert odd["allowed_markets"] == ["JD10", "JD25", "JD50", "JD75", "JD100"]
+    assert [str(x).upper() for x in rise["allowed_markets"]] == ["STPRNG", "STPRNG2", "STPRNG3", "STPRNG4", "STPRNG5"]
+    assert higher["allowed_markets"] == ["R_75"]
